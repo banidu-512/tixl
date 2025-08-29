@@ -1,0 +1,23 @@
+{
+  "Id": "de95667b-4b5e-40fc-a6d1-a672c529960e"/*FloatListToIntList*/,
+  "Description": "",
+  "InputUis": [
+    {
+      "InputId": "152697b9-b4b5-454e-9cd1-3bc80e88ab5c"/*FloatList*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 0.0
+      }
+    }
+  ],
+  "SymbolChildUis": [],
+  "OutputUis": [
+    {
+      "OutputId": "b51b9aca-ce74-464a-ba24-b93e274f5eee"/*Result*/,
+      "Position": {
+        "X": -50.0,
+        "Y": 0.0
+      }
+    }
+  ]
+}
