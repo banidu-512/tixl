@@ -1,0 +1,52 @@
+{
+  "Id": "7a610996-913a-443b-921a-12e6b05f4110"/*DMXOutput*/,
+  "Description": "",
+  "InputUis": [
+    {
+      "InputId": "0e2f7f23-99a1-428a-9343-263b29831bc3"/*Connect*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 225.0
+      }
+    },
+    {
+      "InputId": "2845601e-2374-4581-8843-169289290176"/*PortName*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 0.0
+      },
+      "Usage": "CustomDropdown"
+    },
+    {
+      "InputId": "59381a83-3736-4767-948a-18a81180630c"/*DmxUniverse*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 150.0
+      }
+    },
+    {
+      "InputId": "c1f747f5-3634-4142-a16d-346743a13728"/*MaxFps*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 75.0
+      }
+    }
+  ],
+  "SymbolChildUis": [],
+  "OutputUis": [
+    {
+      "OutputId": "d2c7b38a-8514-4521-884f-66d605485458"/*Result*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 200.0
+      }
+    },
+    {
+      "OutputId": "a0d0b722-1959-4240-812a-1845c3a5a096"/*IsConnected*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 300.0
+      }
+    }
+  ]
+}

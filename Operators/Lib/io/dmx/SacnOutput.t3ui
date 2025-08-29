@@ -1,0 +1,113 @@
+{
+  "Id": "e5a8d9e6-3c5a-4bbb-9da3-737b6330b9c3"/*SacnOutput*/,
+  "Description": "",
+  "InputUis": [
+    {
+      "InputId": "1b26f5d5-8141-4b13-b88d-6859ed5a4af8"/*StartUniverse*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 75.0
+      },
+      "Min": 1,
+      "Scale": 1.0,
+      "Clamp": true
+    },
+    {
+      "InputId": "2a8d39a3-5a41-477d-815a-8b8b9d8b1e4a"/*InputsValues*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "InputId": "3f25c04c-0a88-42fb-93d3-05992b861e61"/*DiscoverSources*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 525.0
+      }
+    },
+    {
+      "InputId": "4a9e2d3b-8c6f-4b1d-8d7e-9f3a5b2c1d0e"/*Priority*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 600.0
+      }
+    },
+    {
+      "InputId": "5b1d9c8a-7e3f-4a2b-9c8d-1e0f3a5b2c1d"/*SourceName*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 675.0
+      },
+      "Usage": "Default"
+    },
+    {
+      "InputId": "6f5c4b3a-2e1d-4f9c-8a7b-3d2e1f0c9b8a"/*MaxFps*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 750.0
+      }
+    },
+    {
+      "InputId": "7a8b9c0d-1e2f-3a4b-5c6d-7e8f9a0b1c2d"/*EnableSync*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 825.0
+      }
+    },
+    {
+      "InputId": "8b9c0d1e-2f3a-4b5c-6d7e-8f9a0b1c2d3e"/*SyncUniverse*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 900.0
+      }
+    },
+    {
+      "InputId": "8c6c9a8d-29c5-489e-8c6b-9e4a3c1e2b6a"/*SendUnicast*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 375.0
+      }
+    },
+    {
+      "InputId": "9c233633-959f-4447-b248-4d431c1b18e7"/*SendTrigger*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 225.0
+      }
+    },
+    {
+      "InputId": "c2a9e3e3-a4e9-430b-9c6a-4e1a1e0b8e2e"/*Reconnect*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "InputId": "d9e8d7c6-b5a4-434a-9e3a-4e2b1d0c9a7b"/*TargetIpAddress*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 450.0
+      },
+      "Usage": "CustomDropdown"
+    },
+    {
+      "InputId": "f8a7e0c8-c6c7-4b53-9a3a-3e5f2a4f4e1c"/*LocalIpAddress*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 150.0
+      },
+      "Usage": "CustomDropdown"
+    }
+  ],
+  "SymbolChildUis": [],
+  "OutputUis": [
+    {
+      "OutputId": "a3c4a2e8-bc1b-453a-9773-1952a6ea10a3"/*Result*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 200.0
+      }
+    }
+  ]
+}

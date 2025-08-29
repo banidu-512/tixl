@@ -61,7 +61,7 @@
         <PackageReference Include="SharpDX.Desktop" Version="4.2.0">
             <NoWarn>NU1701</NoWarn>
         </PackageReference>
-        <PackageReference Include="System.Management" Version="9.0.4" />
+        <PackageReference Include="System.Management" Version="8.0.0" />
         <PackageReference Include="System.Runtime.Serialization.Formatters" Version="9.0.4" />
     </ItemGroup>
     <!-- ===============================//======================================= -->
@@ -96,9 +96,7 @@
     </ItemGroup>
 
     <Target Name="CopyDefaults" AfterTargets="AfterBuild">
-        <Copy SourceFiles="@(DefaultUserConfigs)" SkipUnchangedFiles="true"
-            UseHardlinksIfPossible="true"
-            DestinationFiles="@(DefaultUserConfigs->'$(OutputPath)/.tixl/%(RecursiveDir)%(Filename)%(Extension)')" />
+        <Copy SourceFiles="@(DefaultUserConfigs)" SkipUnchangedFiles="true" UseHardlinksIfPossible="true" DestinationFiles="@(DefaultUserConfigs->'$(OutputPath)/.tixl/%(RecursiveDir)%(Filename)%(Extension)')" />
     </Target>
     <!-- ==========================//================================ -->
 
@@ -109,8 +107,7 @@
     </ItemGroup>
 
     <Target Name="CopyResources" AfterTargets="AfterBuild">
-        <Copy SourceFiles="@(Resources)" SkipUnchangedFiles="true" UseHardlinksIfPossible="true"
-            DestinationFiles="@(Resources->'$(OutputPath)/Resources/%(RecursiveDir)%(Filename)%(Extension)')" />
+        <Copy SourceFiles="@(Resources)" SkipUnchangedFiles="true" UseHardlinksIfPossible="true" DestinationFiles="@(Resources->'$(OutputPath)/Resources/%(RecursiveDir)%(Filename)%(Extension)')" />
     </Target>
     <!-- ===========================//=============================== -->
 
@@ -132,8 +129,7 @@
         <Player Include="../Player/bin/ReleasePublished/**/*" Visible="false" />
     </ItemGroup>
     <Target Name="CopyPlayer" AfterTargets="AfterBuild">
-        <Copy SourceFiles="@(Player)" SkipUnchangedFiles="true" UseHardlinksIfPossible="true"
-            DestinationFiles="@(Player->'$(OutputPath)/Player/%(RecursiveDir)%(Filename)%(Extension)')" />
+        <Copy SourceFiles="@(Player)" SkipUnchangedFiles="true" UseHardlinksIfPossible="true" DestinationFiles="@(Player->'$(OutputPath)/Player/%(RecursiveDir)%(Filename)%(Extension)')" />
     </Target>
     <!-- =========================//=============================== -->
 
@@ -199,22 +195,15 @@
         Directories="$(DestinationDir)/$(PackageName)/"/>-->
 
         <!-- Copy the files from the project directory to the export folder -->
-        <Copy SourceFiles="@(ProjectFiles)"
-            DestinationFolder="$(DestinationDir)/$(PackageName)/%(RecursiveDir)"
-            UseHardlinksIfPossible="true" />
+        <Copy SourceFiles="@(ProjectFiles)" DestinationFolder="$(DestinationDir)/$(PackageName)/%(RecursiveDir)" UseHardlinksIfPossible="true" />
     </Target>
 
     <!-- Invokes the above target for all of the packages defined by the PackageNames property -->
-    <Target Name="CopyTixlOperators" AfterTargets="AfterBuild"
-        Condition="'$(Configuration)' == 'Release'">
-        <MSBuild Projects="$(MSBuildProjectFullPath)"
-            Targets="CopyTixlOpProject"
-            Properties="PackageName=%(PackageNames.Identity);ParentFolder=$(OperatorDirectoryName)" />
+    <Target Name="CopyTixlOperators" AfterTargets="AfterBuild" Condition="'$(Configuration)' == 'Release'">
+        <MSBuild Projects="$(MSBuildProjectFullPath)" Targets="CopyTixlOpProject" Properties="PackageName=%(PackageNames.Identity);ParentFolder=$(OperatorDirectoryName)" />
 
         <!-- special case for pixtur project being nested under Operators/user/ -->
-        <MSBuild Projects="$(MSBuildProjectFullPath)"
-            Targets="CopyTixlOpProject"
-            Properties="PackageName=pixtur;ParentFolder=$(OperatorDirectoryName)/user" />
+        <MSBuild Projects="$(MSBuildProjectFullPath)" Targets="CopyTixlOpProject" Properties="PackageName=pixtur;ParentFolder=$(OperatorDirectoryName)/user" />
     </Target>
 
 

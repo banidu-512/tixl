@@ -1,8 +1,8 @@
-﻿using SharpDX.Direct3D11;
+using SharpDX.Direct3D11;
 using T3.Core.Utils;
 using Utilities = T3.Core.Utils.Utilities;
 
-namespace Lib.io.artnet;
+namespace Lib.io.dmx.obsolete;
 
 [Guid("0e881c4d-c4ed-42c1-a2c9-d076b0489395")]
 public sealed class PointsToRGBList : Instance<PointsToRGBList>
@@ -88,7 +88,7 @@ public sealed class PointsToRGBList : Instance<PointsToRGBList>
                     
                 //Log.Debug($"Read {points.Length} elements", this);
                 //Output.Value = new StructuredList<Point>(points);
-                List<float> items = new List<float>();
+                var items = new List<float>();
 
                 for (var connectionIndex = 0; connectionIndex < points.Length; connectionIndex++)
                 {

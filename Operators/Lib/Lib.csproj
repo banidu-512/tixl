@@ -107,6 +107,8 @@
     </PackageReference>
     <PackageReference Include="SharpGLTF.Core" Version="1.0.4" />
     <PackageReference Include="Svg" Version="3.3.0" />
+    <PackageReference Include="System.IO.Ports" Version="8.0.0" />
+    <PackageReference Include="System.Management" Version="8.0.0" />
   </ItemGroup>
   <!-- Include Resources/** into output/Resources -->
   <ItemGroup Condition="'$(Configuration)' == 'Release'">
@@ -162,6 +164,6 @@
 
     <Target Name="ClearBuildOutput" BeforeTargets="BeforeBuild">
         <!-- Clear previous files in the export folder -->
-        <RemoveDir Directories="bin/$(Configuration)"/>
+        <RemoveDir Directories="bin/$(Configuration)" />
     </Target>
 </Project>

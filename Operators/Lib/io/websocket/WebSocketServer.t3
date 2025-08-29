@@ -1,0 +1,31 @@
+{
+  "Id": "f0e1d2c3-b4a5-9876-5432-10fedcba9876"/*WebSocketServer*/,
+  "Inputs": [
+    {
+      "Id": "10293847-56af-becd-8901-23456789abcd"/*SendTrigger*/,
+      "DefaultValue": false
+    },
+    {
+      "Id": "1234abcd-5678-90ef-1234-567890abcdef"/*Listen*/,
+      "DefaultValue": false
+    },
+    {
+      "Id": "4321dcba-8765-fe09-4321-dcba87654321"/*Port*/,
+      "DefaultValue": 8080
+    },
+    {
+      "Id": "a0e35517-337a-4770-985a-34cac95b5b5f"/*SendOnChange*/,
+      "DefaultValue": false
+    },
+    {
+      "Id": "aabbccdd-eeff-0011-2233-445566778899"/*Path*/,
+      "DefaultValue": "/ws"
+    },
+    {
+      "Id": "fedcba12-3456-7890-fedc-ba1234567890"/*Message*/,
+      "DefaultValue": ""
+    }
+  ],
+  "Children": [],
+  "Connections": []
+}

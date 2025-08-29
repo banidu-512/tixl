@@ -1,0 +1,43 @@
+{
+  "Id": "2b1c3d4e-5f6a-7b8c-9d0e-1f2a3b4c5d6e"/*TcpClient*/,
+  "Inputs": [
+    {
+      "Id": "210fedcb-a987-6543-210f-edcba9876543"/*MessageParts*/,
+      "DefaultValue": ""
+    },
+    {
+      "Id": "3210fedc-ba98-7654-3210-fedcba987654"/*Port*/,
+      "DefaultValue": 7777
+    },
+    {
+      "Id": "6543210f-edcb-a987-6543-210fedcba987"/*ListLength*/,
+      "DefaultValue": 1
+    },
+    {
+      "Id": "87654321-0fed-cba9-8765-43210fedcba9"/*PrintToLog*/,
+      "DefaultValue": false
+    },
+    {
+      "Id": "a9876543-210f-edcb-a987-6543210fedcb"/*SendTrigger*/,
+      "DefaultValue": false
+    },
+    {
+      "Id": "ba987654-3210-fedc-ba98-76543210fedc"/*Host*/,
+      "DefaultValue": ""
+    },
+    {
+      "Id": "cba98765-4321-0fed-cba9-876543210fed"/*SendOnChange*/,
+      "DefaultValue": false
+    },
+    {
+      "Id": "edcba987-6543-210f-edcb-a9876543210f"/*Connect*/,
+      "DefaultValue": false
+    },
+    {
+      "Id": "fedcba98-7654-3210-fedc-ba9876543210"/*Separator*/,
+      "DefaultValue": ""
+    }
+  ],
+  "Children": [],
+  "Connections": []
+}

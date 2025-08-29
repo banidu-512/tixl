@@ -1,4 +1,4 @@
-﻿using SharpDX.Direct3D11;
+using SharpDX.Direct3D11;
 using T3.Core.Utils;
 using Utilities = T3.Core.Utils.Utilities;
 using ArtNet.Packets;
@@ -11,7 +11,7 @@ using System.Diagnostics;
 using System.Threading;
 using System;
 
-namespace Lib.io.artnet;
+namespace Lib.io.dmx.obsolete;
 
 [Guid("faa3e182-96e6-45e7-b037-fb2acd88825b")]
 internal sealed class ArtnetPixelOutput : Instance<ArtnetPixelOutput>, IStatusProvider
@@ -155,7 +155,7 @@ internal sealed class ArtnetPixelOutput : Instance<ArtnetPixelOutput>, IStatusPr
                     var factorB = (point.Color.Z - 0.0f) / (1.0f - 0.0f);
                     var vB = (byte)Math.Round(factorB * 255.0f);
 
-                    int startUniverse = (int)point.F2;
+                    var startUniverse = (int)point.F2;
 
                     if (!universes.ContainsKey(startUniverse))
                     {
@@ -167,7 +167,7 @@ internal sealed class ArtnetPixelOutput : Instance<ArtnetPixelOutput>, IStatusPr
                     universes[startUniverse].Add(vB);
                 }
 
-                bool shouldSend = false;
+                var shouldSend = false;
                 if (artNetSendRateHz > 0)
                 {
                     var currentTime = _artNetSendStopwatch.ElapsedMilliseconds;
@@ -221,17 +221,17 @@ internal sealed class ArtnetPixelOutput : Instance<ArtnetPixelOutput>, IStatusPr
 
         foreach (var universe in universes)
         {
-            int universeIndex = universe.Key;
-            List<byte> dmxData = universe.Value;
+            var universeIndex = universe.Key;
+            var dmxData = universe.Value;
 
-            for (int i = 0; i < dmxData.Count; i += 512)
+            for (var i = 0; i < dmxData.Count; i += 512)
             {
-                int currentChunkSize = Math.Min(512, dmxData.Count - i);
-                byte[] chunk = dmxData.GetRange(i, currentChunkSize).ToArray();
+                var currentChunkSize = Math.Min(512, dmxData.Count - i);
+                var chunk = dmxData.GetRange(i, currentChunkSize).ToArray();
 
                 if (chunk.Length < 512)
                 {
-                    byte[] paddedChunk = new byte[512];
+                    var paddedChunk = new byte[512];
                     Array.Copy(chunk, paddedChunk, chunk.Length);
                     chunk = paddedChunk;
                 }
@@ -344,7 +344,7 @@ internal sealed class ArtnetPixelOutput : Instance<ArtnetPixelOutput>, IStatusPr
 
 
     [Input(Guid = "4598c09c-f463-426f-ab1b-c9be10c0ff75")]
-    public readonly InputSlot<T3.Core.DataTypes.BufferWithViews> Points = new InputSlot<T3.Core.DataTypes.BufferWithViews>();
+    public readonly InputSlot<BufferWithViews> Points = new InputSlot<BufferWithViews>();
 
     [Input(Guid = "508ebec1-cd2b-49bf-b77d-787fa3a8c138")]
     public readonly InputSlot<string> IpAddress = new InputSlot<string>();

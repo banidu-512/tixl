@@ -1,0 +1,31 @@
+{
+  "Id": "b469d554-a69f-44a0-a03f-331853b82199"/*SerialOutput*/,
+  "Inputs": [
+    {
+      "Id": "262d4a18-354a-4835-9b22-458db18579e7"/*BaudRate*/,
+      "DefaultValue": 0
+    },
+    {
+      "Id": "3f9e404b-993a-427e-8367-9a9772f76426"/*PortName*/,
+      "DefaultValue": ""
+    },
+    {
+      "Id": "5091d50e-2722-441f-b826-a4cb8610e9d5"/*DataToSend*/,
+      "DefaultValue": ""
+    },
+    {
+      "Id": "7414a929-8a33-405d-a466-933e31972b57"/*Connect*/,
+      "DefaultValue": false
+    },
+    {
+      "Id": "c796590a-335b-4c21-8898-356d3b69601f"/*SendTrigger*/,
+      "DefaultValue": false
+    },
+    {
+      "Id": "daf8e832-6d55-4424-aef9-a92543b1a796"/*AddLineEnding*/,
+      "DefaultValue": false
+    }
+  ],
+  "Children": [],
+  "Connections": []
+}

@@ -1,0 +1,96 @@
+{
+  "Id": "1a1b1c1d-2e2f-3a3b-4c4d-5e5f6a6b7c7d"/*WebSocketClient*/,
+  "Description": "",
+  "InputUis": [
+    {
+      "InputId": "216a0356-ef4a-413a-a656-7497127e31d4"/*SendOnChange*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 375.0
+      }
+    },
+    {
+      "InputId": "54321098-fedc-ba98-7654-321098fedcba"/*Url*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 75.0
+      },
+      "Usage": "Default"
+    },
+    {
+      "InputId": "59074d76-1f4f-406a-b512-5813f4e3420e"/*MessageParts*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 225.0
+      },
+      "Usage": "Default"
+    },
+    {
+      "InputId": "5e725916-4143-4759-8651-e12185c658d3"/*PrintToLog*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 525.0
+      }
+    },
+    {
+      "InputId": "82933c40-da9e-4340-a227-e9bacf6e2063"/*Separator*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 300.0
+      },
+      "Usage": "Default"
+    },
+    {
+      "InputId": "abc12345-def6-7890-abcd-ef1234567890"/*ListLength*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 150.0
+      }
+    },
+    {
+      "InputId": "c7ac22c0-a31e-41f6-b29d-d40956e6688b"/*SendTrigger*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 450.0
+      }
+    },
+    {
+      "InputId": "fedcba98-7654-3210-fedc-ba9876543210"/*Connect*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 0.0
+      }
+    }
+  ],
+  "SymbolChildUis": [],
+  "OutputUis": [
+    {
+      "OutputId": "d7c6b5a4-9876-5432-10fe-dcba98765432"/*ReceivedString*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 200.0
+      }
+    },
+    {
+      "OutputId": "a1b2c3d4-e5f6-a7b8-c9d0-e1f2a3b4c5d6"/*ReceivedLines*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "OutputId": "f9e8d7c6-b5a4-3210-fedc-ba9876543210"/*WasTrigger*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 400.0
+      }
+    },
+    {
+      "OutputId": "abcdef01-2345-6789-abcd-ef0123456789"/*IsConnected*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 500.0
+      }
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+{
+  "Id": "1a1b1c1d-2e2f-3a3b-4c4d-5e5f6a6b7c7d"/*WebSocketClient*/,
+  "Inputs": [
+    {
+      "Id": "216a0356-ef4a-413a-a656-7497127e31d4"/*SendOnChange*/,
+      "DefaultValue": false
+    },
+    {
+      "Id": "54321098-fedc-ba98-7654-321098fedcba"/*Url*/,
+      "DefaultValue": "ws://127.0.0.1:8080/ws"
+    },
+    {
+      "Id": "59074d76-1f4f-406a-b512-5813f4e3420e"/*MessageParts*/,
+      "DefaultValue": ""
+    },
+    {
+      "Id": "5e725916-4143-4759-8651-e12185c658d3"/*PrintToLog*/,
+      "DefaultValue": false
+    },
+    {
+      "Id": "82933c40-da9e-4340-a227-e9bacf6e2063"/*Separator*/,
+      "DefaultValue": ""
+    },
+    {
+      "Id": "abc12345-def6-7890-abcd-ef1234567890"/*ListLength*/,
+      "DefaultValue": 1
+    },
+    {
+      "Id": "c7ac22c0-a31e-41f6-b29d-d40956e6688b"/*SendTrigger*/,
+      "DefaultValue": false
+    },
+    {
+      "Id": "fedcba98-7654-3210-fedc-ba9876543210"/*Connect*/,
+      "DefaultValue": false
+    }
+  ],
+  "Children": [],
+  "Connections": []
+}

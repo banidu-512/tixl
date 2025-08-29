@@ -1,0 +1,55 @@
+{
+  "Id": "e3207424-deaf-4462-acd5-21f2c6f16d1b"/*SacnInput*/,
+  "Description": "",
+  "InputUis": [
+    {
+      "InputId": "0c348760-474e-4e30-a8c1-55e59cb1a908"/*StartUniverse*/,
+      "Position": {
+        "X": -505.05722,
+        "Y": -259.4615
+      },
+      "Min": 1,
+      "Scale": 1.0,
+      "Clamp": true
+    },
+    {
+      "InputId": "24b5d450-4e83-49db-88b1-7d688e64585d"/*LocalIpAddress*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 0.0
+      },
+      "Usage": "CustomDropdown"
+    },
+    {
+      "InputId": "2cffbf1c-ce09-4283-a685-5234e4e49fee"/*NumUniverses*/,
+      "Position": {
+        "X": -505.05722,
+        "Y": -184.46149
+      }
+    },
+    {
+      "InputId": "bed01653-6cd0-4578-81a9-3eda144ab279"/*Timeout*/,
+      "Position": {
+        "X": -505.05722,
+        "Y": -109.46149
+      }
+    },
+    {
+      "InputId": "ca55c1b3-0669-46f1-bcc4-ee2e7f5a6028"/*Active*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 0.0
+      }
+    }
+  ],
+  "SymbolChildUis": [],
+  "OutputUis": [
+    {
+      "OutputId": "b0bcc3de-de79-42ac-a9cc-ec5a699f252b"/*Result*/,
+      "Position": {
+        "X": -211.71448,
+        "Y": -259.70978
+      }
+    }
+  ]
+}

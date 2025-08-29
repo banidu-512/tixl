@@ -1,0 +1,74 @@
+{
+  "Id": "f0e1d2c3-b4a5-9876-5432-10fedcba9876"/*WebSocketServer*/,
+  "Description": "",
+  "InputUis": [
+    {
+      "InputId": "10293847-56af-becd-8901-23456789abcd"/*SendTrigger*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 375.0
+      }
+    },
+    {
+      "InputId": "1234abcd-5678-90ef-1234-567890abcdef"/*Listen*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "InputId": "4321dcba-8765-fe09-4321-dcba87654321"/*Port*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 75.0
+      }
+    },
+    {
+      "InputId": "a0e35517-337a-4770-985a-34cac95b5b5f"/*SendOnChange*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "InputId": "aabbccdd-eeff-0011-2233-445566778899"/*Path*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 150.0
+      },
+      "Usage": "Default"
+    },
+    {
+      "InputId": "fedcba12-3456-7890-fedc-ba1234567890"/*Message*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 225.0
+      },
+      "Usage": "Default"
+    }
+  ],
+  "SymbolChildUis": [],
+  "OutputUis": [
+    {
+      "OutputId": "01234567-89ab-cdef-0123-456789abcdef"/*Result*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 200.0
+      }
+    },
+    {
+      "OutputId": "fedcba09-8765-4321-fedc-ba0987654321"/*IsListening*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "OutputId": "11223344-5566-7788-99aa-bbccddeeff00"/*ConnectionCount*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 400.0
+      }
+    }
+  ]
+}

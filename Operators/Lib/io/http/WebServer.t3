@@ -1,0 +1,19 @@
+{
+  "Id": "aabbccdd-eeff-0011-2233-4455667788aa"/*WebServer*/,
+  "Inputs": [
+    {
+      "Id": "33334444-5555-6666-7777-88889999aaaa"/*Listen*/,
+      "DefaultValue": false
+    },
+    {
+      "Id": "44445555-6666-7777-8888-9999aaaabbbb"/*Port*/,
+      "DefaultValue": 8080
+    },
+    {
+      "Id": "55556666-7777-8888-9999-aaaabbbbcccc"/*HtmlContent*/,
+      "DefaultValue": "<!DOCTYPE html><html><head>    <title>Default T3 WebServer Page</title></head><body>    <h1>Welcome to the T3 WebServer</h1>    <p>Provide your HTML content via the 'HtmlContent' input slot.</p>    <p>Example interaction with a T3 WebSocket:</p>    <div>        <label for='slider1'>Slider 1:</label>        <input type='range' id='slider1' min='0' max='100' value='50'>        <span id='value1'>50</span>    </div>    <div>        <button id='button1'>Send Message</button>    </div>    <div id='status'>Connecting...</div>    <script>        // --- Basic WebSocket Interaction Example ---        // Make sure to change the port to match your T3 WebSocketServer port        const WS_PORT = 8081;        let ws;        const statusEl = document.getElementById('status');        const slider1 = document.getElementById('slider1');        const value1 = document.getElementById('value1');        const button1 = document.getElementById('button1');        function connect() {            ws = new WebSocket(`ws://localhost:${WS_PORT}`);            ws.onopen = () => {                statusEl.textContent = 'Connected';                statusEl.style.color = 'green';            };            ws.onmessage = (event) => {                console.log('Received:', event.data);                statusEl.textContent = `Received: ${event.data}`;                statusEl.style.color = 'blue';                // Example: Update slider if T3 sends 'SET_SLIDER1:75'                if (event.data.startsWith('SET_SLIDER1:')) {                     const val = event.data.split(':')[1];                     slider1.value = val;                     value1.textContent = val;                }            };            ws.onclose = () => {                statusEl.textContent = 'Disconnected. Reconnecting...';                statusEl.style.color = 'orange';                setTimeout(connect, 3000);            };            ws.onerror = (err) => {                statusEl.textContent = 'Error';                statusEl.style.color = 'red';                console.error('WebSocket error:', err);            };        }        slider1.addEventListener('input', function() {            value1.textContent = slider1.value;            if (ws && ws.readyState === WebSocket.OPEN) {                ws.send(`SLIDER1:${slider1.value}`);            }        });        button1.addEventListener('click', function() {             if (ws && ws.readyState === WebSocket.OPEN) {                 ws.send('BUTTON1_CLICKED');             }        });        window.addEventListener('load', connect);    </script></body></html>"
+    }
+  ],
+  "Children": [],
+  "Connections": []
+}

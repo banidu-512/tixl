@@ -1,0 +1,103 @@
+{
+  "Id": "2b1c3d4e-5f6a-7b8c-9d0e-1f2a3b4c5d6e"/*TcpClient*/,
+  "Description": "",
+  "InputUis": [
+    {
+      "InputId": "210fedcb-a987-6543-210f-edcba9876543"/*MessageParts*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 300.0
+      },
+      "Usage": "Default"
+    },
+    {
+      "InputId": "3210fedc-ba98-7654-3210-fedcba987654"/*Port*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 150.0
+      }
+    },
+    {
+      "InputId": "6543210f-edcb-a987-6543-210fedcba987"/*ListLength*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 225.0
+      }
+    },
+    {
+      "InputId": "87654321-0fed-cba9-8765-43210fedcba9"/*PrintToLog*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 600.0
+      }
+    },
+    {
+      "InputId": "a9876543-210f-edcb-a987-6543210fedcb"/*SendTrigger*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 525.0
+      }
+    },
+    {
+      "InputId": "ba987654-3210-fedc-ba98-76543210fedc"/*Host*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 75.0
+      },
+      "Usage": "Default"
+    },
+    {
+      "InputId": "cba98765-4321-0fed-cba9-876543210fed"/*SendOnChange*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 450.0
+      }
+    },
+    {
+      "InputId": "edcba987-6543-210f-edcb-a9876543210f"/*Connect*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "InputId": "fedcba98-7654-3210-fedc-ba9876543210"/*Separator*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 375.0
+      },
+      "Usage": "Default"
+    }
+  ],
+  "SymbolChildUis": [],
+  "OutputUis": [
+    {
+      "OutputId": "e7d6c5b4-a987-6543-210f-edcba9876543"/*ReceivedString*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 200.0
+      }
+    },
+    {
+      "OutputId": "b2c3d4e5-f6a7-b8c9-d0e1-f2a3b4c5d6e7"/*ReceivedLines*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "OutputId": "c9d8e7f6-a5b4-3210-fedc-ba9876543210"/*WasTrigger*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 400.0
+      }
+    },
+    {
+      "OutputId": "bcde1234-5678-90ab-cdef-1234567890ab"/*IsConnected*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 500.0
+      }
+    }
+  ]
+}

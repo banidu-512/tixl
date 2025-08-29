@@ -1,0 +1,25 @@
+{
+  "Id": "7a610996-913a-443b-921a-12e6b05f4110"/*DMXOutput*/,
+  "Inputs": [
+    {
+      "Id": "0e2f7f23-99a1-428a-9343-263b29831bc3"/*Connect*/,
+      "DefaultValue": false
+    },
+    {
+      "Id": "2845601e-2374-4581-8843-169289290176"/*PortName*/,
+      "DefaultValue": ""
+    },
+    {
+      "Id": "59381a83-3736-4767-948a-18a81180630c"/*DmxUniverse*/,
+      "DefaultValue": {
+        "Values": []
+      }
+    },
+    {
+      "Id": "c1f747f5-3634-4142-a16d-346743a13728"/*MaxFps*/,
+      "DefaultValue": 0
+    }
+  ],
+  "Children": [],
+  "Connections": []
+}

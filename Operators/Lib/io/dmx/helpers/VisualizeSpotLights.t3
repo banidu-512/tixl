@@ -80,6 +80,11 @@
           "Id": "8f72275d-d903-4372-852c-51c3db35fe90"/*ShowCenterPoints*/,
           "Type": "System.Boolean",
           "Value": true
+        },
+        {
+          "Id": "d2472768-dd40-436f-af1b-7359289b5118"/*ShowIndices*/,
+          "Type": "System.Boolean",
+          "Value": true
         }
       ],
       "Outputs": []
@@ -96,14 +101,24 @@
       "Name": "DrawSpots",
       "InputValues": [
         {
+          "Id": "6c36bf68-e22f-419d-9ec0-f60a83d6a560"/*BlendMode*/,
+          "Type": "System.Int32",
+          "Value": 3
+        },
+        {
           "Id": "ba7befdf-270b-4ac0-bfc2-7543e2c3097b"/*Color*/,
           "Type": "System.Numerics.Vector4",
           "Value": {
-            "X": 1.0,
-            "Y": 1.0,
-            "Z": 1.0,
-            "W": 0.77
+            "X": 0.5,
+            "Y": 0.5,
+            "Z": 0.5,
+            "W": 1.0
           }
+        },
+        {
+          "Id": "c0351f55-ad27-4fbd-b3d5-668ff49f0ea0"/*CullMode*/,
+          "Type": "SharpDX.Direct3D11.CullMode",
+          "Value": "None"
         }
       ],
       "Outputs": []
@@ -191,9 +206,14 @@
           "Value": 5
         },
         {
+          "Id": "4c91b66c-670d-45ff-94cc-01d1a68cd040"/*RadiusOffset*/,
+          "Type": "System.Single",
+          "Value": 0.56
+        },
+        {
           "Id": "57f3310c-6ed2-4a52-af72-43e083f73360"/*Height*/,
           "Type": "System.Single",
-          "Value": 10.8
+          "Value": 20.0
         },
         {
           "Id": "6ddf5966-9140-4bea-a56b-20690f9f436f"/*BasePivot*/,
@@ -203,7 +223,7 @@
         {
           "Id": "8d290afb-2574-4afa-a545-a0d3588f89f6"/*Radius*/,
           "Type": "System.Single",
-          "Value": 0.012
+          "Value": 0.025
         },
         {
           "Id": "db5e3c51-5765-44d8-a61b-a7b552fce5b3"/*CapSegments*/,

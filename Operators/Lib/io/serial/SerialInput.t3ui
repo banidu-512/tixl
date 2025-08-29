@@ -1,0 +1,70 @@
+{
+  "Id": "f5aabc51-b275-4344-a244-934f4e4f7d3a"/*SerialInput*/,
+  "Description": "",
+  "InputUis": [
+    {
+      "InputId": "235c441e-9214-4e3f-84e3-441f8c43098c"/*Connect*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 150.0
+      }
+    },
+    {
+      "InputId": "4b83b1b5-391b-4a8e-8734-706b1b85169f"/*ListLength*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 150.0
+      }
+    },
+    {
+      "InputId": "8051e8e3-4050-4284-a6a4-2e11c4731804"/*BaudRate*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 75.0
+      },
+      "Description": "Default baudrates:\n9600, \n19200, \n38400, \n57600, \n115200, \n230400, \n460800, \n921600",
+      "Min": 0,
+      "Max": 65000,
+      "Scale": 1.0
+    },
+    {
+      "InputId": "d21e4e71-6731-4a2d-b32e-30810d3c185a"/*PortName*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 0.0
+      },
+      "Usage": "CustomDropdown"
+    }
+  ],
+  "SymbolChildUis": [],
+  "OutputUis": [
+    {
+      "OutputId": "232e4166-433e-497b-85a5-d275a0d4b272"/*ReceivedString*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 200.0
+      }
+    },
+    {
+      "OutputId": "e3b935a1-58a2-4467-b943-2559779e1430"/*WasTrigger*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "OutputId": "7c887943-4c73-4402-8636-e650d4507563"/*IsConnected*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 400.0
+      }
+    },
+    {
+      "OutputId": "0e25fe8e-6c14-4e6e-824e-910b8d9e3d8e"/*ReceivedLines*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 500.0
+      }
+    }
+  ]
+}

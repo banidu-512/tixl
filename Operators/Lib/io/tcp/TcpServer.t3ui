@@ -1,0 +1,66 @@
+{
+  "Id": "3c4d5e6f-7a8b-9c0d-1e2f-3a4b5c6d7e8f"/*TcpServer*/,
+  "Description": "",
+  "InputUis": [
+    {
+      "InputId": "56789abc-def0-1234-5678-9abcdef01234"/*Listen*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "InputId": "6789abcd-ef01-2345-6789-abcdef012345"/*Port*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 75.0
+      }
+    },
+    {
+      "InputId": "789abcde-f012-3456-789a-bcdef0123456"/*Message*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 150.0
+      },
+      "Usage": "Default"
+    },
+    {
+      "InputId": "89abcdef-0123-4567-89ab-cdef01234567"/*SendOnChange*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 225.0
+      }
+    },
+    {
+      "InputId": "9abcdef0-1234-5678-9abc-def012345678"/*SendTrigger*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 300.0
+      }
+    }
+  ],
+  "SymbolChildUis": [],
+  "OutputUis": [
+    {
+      "OutputId": "23456789-abcd-ef01-2345-6789abcdef01"/*Result*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 200.0
+      }
+    },
+    {
+      "OutputId": "3456789a-bcde-f012-3456-789abcdef012"/*IsListening*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "OutputId": "456789ab-cdef-0123-4567-89abcdef0123"/*ConnectionCount*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 400.0
+      }
+    }
+  ]
+}

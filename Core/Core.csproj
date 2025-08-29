@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
     <Import Project="$(SolutionDir)/Tixl.props" />
     <PropertyGroup>
         <TargetFramework>$(TixlNetFrameworkVersion)</TargetFramework>
@@ -34,6 +34,8 @@
         <PackageReference Include="SharpDX.MediaFoundation" Version="4.2.0" />
         <PackageReference Include="SharpDX.XInput" Version="4.2.0" />
         <PackageReference Include="SharpGLTF.Core" Version="1.0.4" />
+        <PackageReference Include="System.IO.Ports" Version="8.0.0" />
+        <PackageReference Include="System.Management" Version="8.0.0" />
         <PackageReference Include="System.ServiceModel.Primitives" Version="4.9.0" />
     </ItemGroup>
 

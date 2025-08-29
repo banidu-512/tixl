@@ -1,0 +1,83 @@
+{
+  "Id": "34e4e63b-2708-4673-b682-1d07d0245e1e"/*UDPOutput*/,
+  "Description": "",
+  "InputUis": [
+    {
+      "InputId": "216a0356-ef4a-413a-a656-7497127e31d4"/*SendOnChange*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 375.0
+      }
+    },
+    {
+      "InputId": "24b5d450-4e83-49db-88b1-7d688e64585d"/*TargetIpAddress*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 75.0
+      },
+      "Usage": "Default"
+    },
+    {
+      "InputId": "36c2bf8b-3e0c-4856-aa4a-32943a4b0223"/*TargetPort*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 150.0
+      }
+    },
+    {
+      "InputId": "59074d76-1f4f-406a-b512-5813f4e3420e"/*MessageParts*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 225.0
+      },
+      "Usage": "Default"
+    },
+    {
+      "InputId": "7ab8f2a6-4874-4235-85a5-d0e1f30c0446"/*Connect*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 525.0
+      }
+    },
+    {
+      "InputId": "82933c40-da9e-4340-a227-e9bacf6e2063"/*Separator*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 300.0
+      },
+      "Usage": "Default"
+    },
+    {
+      "InputId": "9e23335a-d63a-4286-930e-c63e86d0e6f0"/*LocalIpAddress*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 0.0
+      },
+      "Usage": "CustomDropdown"
+    },
+    {
+      "InputId": "c7ac22c0-a31e-41f6-b29d-d40956e6688b"/*SendTrigger*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 450.0
+      }
+    }
+  ],
+  "SymbolChildUis": [],
+  "OutputUis": [
+    {
+      "OutputId": "0e2b808f-63a5-4927-9610-410e5f5227b1"/*Result*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 200.0
+      }
+    },
+    {
+      "OutputId": "07b57f3a-8993-4b9f-8349-d0a4762e4447"/*IsConnected*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 300.0
+      }
+    }
+  ]
+}

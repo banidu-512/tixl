@@ -6,6 +6,10 @@
       "DefaultValue": 0
     },
     {
+      "Id": "24b5d450-4e83-49db-88b1-7d688e64585d"/*LocalIpAddress*/,
+      "DefaultValue": ""
+    },
+    {
       "Id": "3d085f6f-6f4a-4876-805f-22f25497a731"/*Active*/,
       "DefaultValue": false
     },
@@ -15,7 +19,7 @@
     },
     {
       "Id": "c18a9359-3ef8-4e0d-85d8-51f725357388"/*NumUniverses*/,
-      "DefaultValue": 0
+      "DefaultValue": 1
     }
   ],
   "Children": [],
