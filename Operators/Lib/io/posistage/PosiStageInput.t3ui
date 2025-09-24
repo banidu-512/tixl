@@ -1,0 +1,67 @@
+{
+  "Id": "a9e8d7c6-b5a4-4e1a-8d0f-3c5a7b9e2d1f"/*PosiStageInput*/,
+  "Description": "",
+  "InputUis": [
+    {
+      "InputId": "0944714d-693d-4251-93a6-e22a2db64f20"/*Listen*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "InputId": "2ebe418d-407e-46d8-b274-13b41c52accf"/*Port*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 225.0
+      }
+    },
+    {
+      "InputId": "46c2bf8b-3e0c-4856-aa4a-32943a4b0223"/*MulticastIpAddress*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 150.0
+      },
+      "Usage": "Default"
+    },
+    {
+      "InputId": "5e725916-4143-4759-8651-e12185c658d3"/*PrintToLog*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "InputId": "9e23335a-d63a-4286-930e-c63e86d0e6f0"/*LocalIpAddress*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 75.0
+      },
+      "Usage": "CustomDropdown"
+    }
+  ],
+  "SymbolChildUis": [],
+  "OutputUis": [
+    {
+      "OutputId": "c8c4d0f7-c06e-4b1a-9d6c-6f5e4d3c2b1b"/*TrackersAsBuffer*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 200.0
+      }
+    },
+    {
+      "OutputId": "e4b3a2c1-d0e9-4f8a-7b6c-5d4e3f2a1b0c"/*TrackersAsDict*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "OutputId": "9c4d3558-1584-422e-a59b-d08d23e45242"/*IsListening*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 400.0
+      }
+    }
+  ]
+}
