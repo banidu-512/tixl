@@ -1,0 +1,79 @@
+{
+  "Id": "a1b2c3d4-e5f6-7890-1234-567890abcdef"/*FaceMeshOperator*/,
+  "Description": "",
+  "InputUis": [
+    {
+      "InputId": "12345678-1234-5678-9abc-def123456789"/*ImageInput*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "InputId": "34567890-3456-7890-abcd-ef3456789012"/*NumFaces*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 150.0
+      }
+    },
+    {
+      "InputId": "45678901-4567-8901-abcd-ef4567890123"/*MinFaceDetectionConfidence*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 225.0
+      }
+    },
+    {
+      "InputId": "56789012-5678-9012-abcd-ef5678901234"/*MinFacePresenceConfidence*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "InputId": "67890123-6789-0123-abcd-ef6789012345"/*MinTrackingConfidence*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 375.0
+      }
+    },
+    {
+      "InputId": "78901234-7890-1234-abcd-ef7890123456"/*OutputFaceBlendshapes*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 450.0
+      }
+    },
+    {
+      "InputId": "89012345-8901-2345-abcd-ef8901234567"/*OutputFaceTransformationMatrixes*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 525.0
+      }
+    }
+  ],
+  "SymbolChildUis": [],
+  "OutputUis": [
+    {
+      "OutputId": "87654321-4321-8765-cba9-fed987654321"/*ImageOutput*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 200.0
+      }
+    },
+    {
+      "OutputId": "abcdef12-3456-7890-abcd-ef1234567890"/*Landmarks*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "OutputId": "fedcba09-8765-4321-dcba-0987654321f0"/*AdditionalData*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 400.0
+      }
+    }
+  ]
+}

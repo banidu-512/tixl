@@ -1,0 +1,35 @@
+{
+  "Id": "a1b2c3d4-e5f6-7890-1234-567890abcdef"/*FaceMeshOperator*/,
+  "Inputs": [
+    {
+      "Id": "12345678-1234-5678-9abc-def123456789"/*ImageInput*/,
+      "DefaultValue": null
+    },
+    {
+      "Id": "34567890-3456-7890-abcd-ef3456789012"/*NumFaces*/,
+      "DefaultValue": 0
+    },
+    {
+      "Id": "45678901-4567-8901-abcd-ef4567890123"/*MinFaceDetectionConfidence*/,
+      "DefaultValue": 0.0
+    },
+    {
+      "Id": "56789012-5678-9012-abcd-ef5678901234"/*MinFacePresenceConfidence*/,
+      "DefaultValue": 0.0
+    },
+    {
+      "Id": "67890123-6789-0123-abcd-ef6789012345"/*MinTrackingConfidence*/,
+      "DefaultValue": 0.0
+    },
+    {
+      "Id": "78901234-7890-1234-abcd-ef7890123456"/*OutputFaceBlendshapes*/,
+      "DefaultValue": false
+    },
+    {
+      "Id": "89012345-8901-2345-abcd-ef8901234567"/*OutputFaceTransformationMatrixes*/,
+      "DefaultValue": false
+    }
+  ],
+  "Children": [],
+  "Connections": []
+}
