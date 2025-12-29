@@ -13,22 +13,22 @@ namespace T3.Editor.App;
 public class ImGuiDx11RenderForm : RenderForm
 {
     internal static IWindowsFormsMessageHandler[] InputMethods = Array.Empty<IWindowsFormsMessageHandler>();
+
     public ImGuiDx11RenderForm(string title)
         : base(title)
     {
         AllowDrop = true;
 
         DragEnter += OnDragEnter;
-        DragDrop  += OnDragDrop;
-        
-        
+        DragDrop += OnDragDrop;
+
         MouseMove += (o, e) =>
-        {
-            if (this != ProgramWindows.Viewer?.Form)  // Ignore mouse updates from Viewer
-            {
-                ImGui.GetIO().MousePos = new System.Numerics.Vector2(e.X, e.Y);
-            }
-        };
+                     {
+                         if (this != ProgramWindows.Viewer?.Form) // Ignore mouse updates from Viewer
+                         {
+                             ImGui.GetIO().MousePos = new System.Numerics.Vector2(e.X, e.Y);
+                         }
+                     };
     }
 
     #region WM Message Ids
@@ -61,31 +61,28 @@ public class ImGuiDx11RenderForm : RenderForm
     private const int VK_ALT = 0x12;
     #endregion
 
-    
     public static event Action<string[], Vector2> FilesDropped;
-        
-    
+
     private void OnDragEnter(object s, DragEventArgs e)
     {
-        
         if (this == ProgramWindows.Viewer?.Form)
         {
-            e.Effect = DragDropEffects.None; return; 
-            
+            e.Effect = DragDropEffects.None;
+            return;
         } // optional
 
         if (e.Data == null)
         {
             return;
         }
-        
+
         e.Effect = e.Data.GetDataPresent(DataFormats.FileDrop) ||
                    e.Data.GetDataPresent(DataFormats.UnicodeText)
                        ? DragDropEffects.Copy
                        : DragDropEffects.None;
     }
 
-    private void OnDragDrop(object? s, DragEventArgs e)
+    private void OnDragDrop(object s, DragEventArgs e)
     {
         if (this == ProgramWindows.Viewer?.Form) return; // optional
 
@@ -104,14 +101,11 @@ public class ImGuiDx11RenderForm : RenderForm
                 FilesDropped?.Invoke(new[] { t }, pos);
         }
     }
-    
-    
+
     protected override void WndProc(ref System.Windows.Forms.Message m)
     {
         try
         {
-
-
             var filterAltKeyToPreventFocusLoss = (m.Msg == WM_SYSKEYDOWN || m.Msg == WM_SYSKEYUP) && (int)m.WParam == VK_ALT;
             if (!filterAltKeyToPreventFocusLoss)
                 base.WndProc(ref m);
@@ -125,7 +119,6 @@ public class ImGuiDx11RenderForm : RenderForm
 
             switch (m.Msg)
             {
-
                 case WM_LBUTTONDOWN:
                 case WM_LBUTTONDBLCLK:
                 case WM_RBUTTONDOWN:
@@ -161,11 +154,12 @@ public class ImGuiDx11RenderForm : RenderForm
                     return;
                 }
                 case WM_MOUSEWHEEL:
-                    io.MouseWheel += (short)(((uint)(long)m.WParam >> 16) & 0xffff) / 120.0f; // TODO (float)WHEEL_DELTA;
-                    return;
                 case WM_MOUSEHWHEEL:
-                    io.MouseWheelH += (short)(((uint)(long)m.WParam >> 16) & 0xffff) / 120.0f; // TODO (float)WHEEL_DELTA;
-                    return;
+                {
+                    if (MouseWheelPanning.ProcessMouseWheelInput(m, io)) return;
+                    break;
+                }
+
                 case WM_KEYDOWN:
                 case WM_SYSKEYDOWN:
                     switch ((int)m.WParam)

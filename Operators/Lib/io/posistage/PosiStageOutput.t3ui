@@ -8,8 +8,8 @@
         "X": -200.0,
         "Y": 150.0
       },
-      "Usage": "Default",
-      "Description": "The destination IP address for the PSN packets. This is often a multicast address like 236.10.10.10."
+      "Description": "The destination IP address for the PSN packets. This is often a multicast address like 236.10.10.10.",
+      "Usage": "Default"
     },
     {
       "InputId": "36c2bf8b-3e0c-4856-aa4a-32943a4b0223"/*TargetPort*/,
@@ -25,8 +25,8 @@
         "X": -200.0,
         "Y": 600.0
       },
-      "Usage": "Default",
-      "Description": "A name for this PosiStageNet source, which can help identify it on the receiving end."
+      "Description": "A name for this PosiStageNet source, which can help identify it on the receiving end.",
+      "Usage": "Default"
     },
     {
       "InputId": "5e725916-4143-4759-8651-e12185c658d3"/*PrintToLog*/,
@@ -50,8 +50,8 @@
         "X": -200.0,
         "Y": 75.0
       },
-      "Usage": "Default",
-      "Description": "The IP address of the network interface to send from. If left empty, the system will choose one automatically."
+      "Description": "The IP address of the network interface to send from. If left empty, the system will choose one automatically.",
+      "Usage": "Default"
     },
     {
       "InputId": "b16a0356-ef4a-413a-a656-7497127e31d4"/*SendOnChange*/,
@@ -67,8 +67,8 @@
         "X": -200.0,
         "Y": 675.0
       },
-      "Usage": "Default",
-      "Description": "A list of strings to name the individual trackers. The list should correspond to the points in `TrackerData`."
+      "Description": "A list of strings to name the individual trackers. The list should correspond to the points in `TrackerData`.",
+      "Usage": "Default"
     },
     {
       "InputId": "c8c4d0f7-c06e-4b1a-9d6c-6f5e4d3c2b1b"/*TrackerData*/,

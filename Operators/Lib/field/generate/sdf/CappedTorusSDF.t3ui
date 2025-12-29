@@ -12,6 +12,13 @@
       "Description": "Defines the size of the ring"
     },
     {
+      "InputId": "01dec852-5b80-4705-8648-c6fd68199e83"/*Axis*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 210.0
+      }
+    },
+    {
       "InputId": "d37914dd-7bbd-47fa-ad90-9921621afb9e"/*Fill*/,
       "Position": {
         "X": -200.0,

@@ -43,7 +43,7 @@
       "DefaultValue": null
     },
     {
-      "Id": "fecc8310-208e-45de-a43b-bf547663e743"/*BlendMod*/,
+      "Id": "fecc8310-208e-45de-a43b-bf547663e743"/*BlendMode*/,
       "DefaultValue": 0
     }
   ],

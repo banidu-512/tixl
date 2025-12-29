@@ -52,6 +52,7 @@ public sealed class EvaluationContext
         BoolVariables.Clear();
         IntVariables.Clear();
         ObjectVariables.Clear();
+        StringVariables.Clear();
             
         PbrContextSettings.SetDefaultToContext(this);
     }
@@ -160,6 +161,11 @@ public sealed class EvaluationContext
     /// Used to store objects different from float and int
     /// </summary>
     public Dictionary<string, object> ObjectVariables { get; } = new();
+    
+    /// <summary>
+    /// Used to store string vars
+    /// </summary>
+    public Dictionary<string, string> StringVariables { get; } = new();
     #endregion
     
     

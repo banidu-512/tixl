@@ -32,8 +32,8 @@
         "X": -200.0,
         "Y": 300.0
       },
-      "Usage": "Default",
-      "Description": "A list of strings or values that will be joined together to form the message to be sent."
+      "Description": "A list of strings or values that will be joined together to form the message to be sent.",
+      "Usage": "Default"
     },
     {
       "InputId": "c2d3e4f5-a6b7-4890-1234-567890abcdef"/*Connect*/,
@@ -57,8 +57,8 @@
         "X": -200.0,
         "Y": 375.0
       },
-      "Usage": "Default",
-      "Description": "A string used to join the `MessageParts` together before sending."
+      "Description": "A string used to join the `MessageParts` together before sending.",
+      "Usage": "Default"
     },
     {
       "InputId": "f1e2d3c4-b5a6-4789-0123-456789abcdef"/*Host*/,
@@ -66,8 +66,8 @@
         "X": -200.0,
         "Y": 75.0
       },
-      "Usage": "Default",
-      "Description": "The IP address or hostname of the TCP server to connect to (e.g., '127.0.0.1' or 'localhost')."
+      "Description": "The IP address or hostname of the TCP server to connect to (e.g., '127.0.0.1' or 'localhost').",
+      "Usage": "Default"
     },
     {
       "InputId": "f7a8b9c0-d1e2-4345-6789-0abcdef12345"/*SendOnChange*/,

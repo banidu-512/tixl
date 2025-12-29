@@ -10,8 +10,7 @@ using T3.Core.Model;
 using T3.Core.Operator;
 using T3.Core.Operator.Slots;
 using T3.Editor.Gui;
-using T3.Editor.Gui.Graph.Interaction;
-using T3.Editor.Gui.Graph.Legacy.Interaction.Connections;
+using T3.Editor.Gui.Legacy.Interaction.Connections;
 using T3.Editor.Gui.Input;
 using T3.Editor.Gui.Interaction;
 using T3.Editor.Gui.Interaction.Animation;
@@ -194,7 +193,7 @@ public abstract class InputValueUi<T> : IInputUi
                         // TODO: implement with proper SelectionManager
                     }
 
-                    Icons.DrawIconCenter(Icon.ConnectedInput, typeColor);
+                    Icons.DrawIconOnLastItem(Icon.ConnectedInput, typeColor);
                     ImGui.SameLine();
 
                     ImGui.PushStyleVar(ImGuiStyleVar.ButtonTextAlign, new Vector2(1.0f, 0.5f));
@@ -343,7 +342,7 @@ public abstract class InputValueUi<T> : IInputUi
                 }
             }
 
-            Icons.DrawIconCenter(icon, Color.White);
+            Icons.DrawIconOnLastItem(icon, Color.White);
 
             ImGui.SameLine();
 
@@ -679,7 +678,7 @@ internal static class InputArea
                                _                                 => throw new ArgumentOutOfRangeException()
                            };
 
-            Icons.DrawIconCenter(icon, typeColor);
+            Icons.DrawIconOnLastItem(icon, typeColor);
         }
         else
         {
@@ -810,7 +809,7 @@ internal static class InputArea
             }
         }
 
-        Icons.DrawIconCenter(Icon.ConnectedInput, typeColor.Rgba);
+        Icons.DrawIconOnLastItem(Icon.ConnectedInput, typeColor.Rgba);
         ImGui.SameLine();
     }
 

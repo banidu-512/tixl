@@ -6,7 +6,7 @@ using T3.Editor.UiModel.InputsAndTypes;
 
 // ReSharper disable AccessToDisposedClosure
 
-namespace T3.Editor.Gui.Graph.Dialogs;
+namespace T3.Editor.Gui.Dialogs;
 
 internal static class TypeSelector
 {

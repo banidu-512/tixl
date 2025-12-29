@@ -161,7 +161,7 @@ internal static class NodeActions
 
         if (selection.Count == 0)
         {
-            outputWindow.Pinning.PinInstance(compositionOp, components);
+            outputWindow.Pinning.PinInstance(compositionOp, components, unpinIfAlreadySelected);
             return;
         }
         

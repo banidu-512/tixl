@@ -136,7 +136,7 @@ internal sealed partial class AssetLibrary
                     var fadeProgress = (timeSinceChange / 0.5f).Clamp(0, 1);
                     var blinkFade = -MathF.Cos(timeSinceChange * 15f) * (1f - fadeProgress) * 0.7f + 0.75f;
                     var color = UiColors.StatusActivated.Fade(blinkFade);
-                    Icons.DrawIconCenter(Icon.Aim, color);
+                    Icons.DrawIconOnLastItem(Icon.Aim, color);
 
                     if (clicked)
                         //if (CustomComponents.IconButton(Icon.Aim, new Vector2(h)))

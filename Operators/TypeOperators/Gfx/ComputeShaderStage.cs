@@ -40,7 +40,7 @@ public sealed class ComputeShaderStage : Instance<ComputeShaderStage>, IRenderSt
             return;
 
         
-        _prevRenderTargetViews = device.ImmediateContext.OutputMerger.GetRenderTargets(1);
+        _prevRenderTargetViews = device.ImmediateContext.OutputMerger.GetRenderTargets(2);
         device.ImmediateContext.OutputMerger.GetRenderTargets(out _prevDepthStencilView);
         
         csStage.Set(_cs);
@@ -51,22 +51,22 @@ public sealed class ComputeShaderStage : Instance<ComputeShaderStage>, IRenderSt
         csStage.SetSamplers(0, _samplerStates);
         if (_uavs.Length == 4)
         {
-            csStage.SetUnorderedAccessViews(0, _uavs, new[] { -1, 0, -1, -1 });
+            csStage.SetUnorderedAccessViews(0, _uavs, [-1, 0, -1, -1]);
         }
         else if (_uavs.Length == 1)
         {
             if (counter == -1)
                 csStage.SetUnorderedAccessView(0, _uavs[0]);
             else
-                csStage.SetUnorderedAccessViews(0, _uavs, new[] { counter });
+                csStage.SetUnorderedAccessViews(0, _uavs, [counter]);
         }
         else if (_uavs.Length == 2)
         {
-            csStage.SetUnorderedAccessViews(0, _uavs, new[] { 0, 0 });
+            csStage.SetUnorderedAccessViews(0, _uavs, [0, 0]);
         }
         else if (_uavs.Length == 3)
         {
-            csStage.SetUnorderedAccessViews(0, _uavs, new[] { counter, -1, -1 });
+            csStage.SetUnorderedAccessViews(0, _uavs, [counter, -1, -1]);
         }
         else
         {
@@ -81,9 +81,14 @@ public sealed class ComputeShaderStage : Instance<ComputeShaderStage>, IRenderSt
         
         if (_prevRenderTargetViews.Length > 0)
             deviceContext.OutputMerger.SetRenderTargets(_prevDepthStencilView, _prevRenderTargetViews);
-            
+
         foreach (var rtv in _prevRenderTargetViews)
+        {
+            if (rtv == null || rtv.IsDisposed)
+                continue;
+            
             rtv.Dispose();            
+        }
             
         Utilities.Dispose(ref _prevDepthStencilView);
 
@@ -194,6 +199,6 @@ public sealed class ComputeShaderStage : Instance<ComputeShaderStage>, IRenderSt
     [Input(Guid = "4047c9e7-1edb-4c71-b85c-c1b87058c81c")]
     public readonly MultiInputSlot<SharpDX.Direct3D11.SamplerState> SamplerStates = new();
 
-    private RenderTargetView[]? _prevRenderTargetViews;
+    private RenderTargetView?[]? _prevRenderTargetViews;
     private DepthStencilView? _prevDepthStencilView;
 }

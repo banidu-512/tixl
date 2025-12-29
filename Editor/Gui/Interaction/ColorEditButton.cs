@@ -116,7 +116,7 @@ public static class ColorEditButton
             }
 
             var newBrightness = (previousHsb.Z - ImGui.GetMouseDragDelta(ImGuiMouseButton.Right).Y * DragFactor/ Height).Clamp(0, 1);
-            color = Color.ColorFromHsl(previousHsb.X, previousHsb.Y, newBrightness, _previousColor.W);
+            color = Color.ColorFromHsl(previousHsb.X, previousHsb.Y, newBrightness, _previousColor.W).Rgba;
             if(_modifiedSlider)
                 edited |= InputEditStateFlags.Modified;
         }

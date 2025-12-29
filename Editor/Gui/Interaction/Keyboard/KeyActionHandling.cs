@@ -74,7 +74,10 @@ internal static class KeyActionHandling
 
     internal static string ListKeyboardShortcutsForActionWithLabel(this UserActions action)
     {
-        var shortCuts = action.ListShortcuts(); 
+        var shortCuts = action.ListShortcuts();
+        if (string.IsNullOrEmpty(shortCuts))
+            return shortCuts;
+        
         var prefix = shortCuts.Contains(" and ") ? "Shortcuts: " : "Shortcut: ";
         return prefix + shortCuts;
     }
@@ -156,6 +159,7 @@ internal static class KeyActionHandling
         // Camera reset and focus
         RegisterActionsFlags(UserActions.CameraReset, Flags.NeedsWindowHover);
         RegisterActionsFlags(UserActions.CameraFocusSelection, Flags.NeedsWindowHover);
+        
 
         return;
 

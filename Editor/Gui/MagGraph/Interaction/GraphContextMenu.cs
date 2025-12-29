@@ -1,6 +1,7 @@
-﻿using ImGuiNET;
+using ImGuiNET;
 using T3.Core.DataTypes;
 using T3.Core.SystemUi;
+using T3.Editor.Gui.Graph.Dialogs;
 using T3.Editor.Gui.Interaction;
 using T3.Editor.Gui.Interaction.Keyboard;
 using T3.Editor.Gui.Interaction.Variations;
@@ -14,6 +15,7 @@ using T3.Editor.UiModel.Exporting;
 using T3.Editor.UiModel.InputsAndTypes;
 using T3.Editor.UiModel.Modification;
 using T3.Editor.UiModel.ProjectHandling;
+using MagGraphView = T3.Editor.Gui.MagGraph.Ui.MagGraphView;
 
 namespace T3.Editor.Gui.MagGraph.Interaction;
 
@@ -21,7 +23,6 @@ internal static class GraphContextMenu
 {
     internal static void DrawContextMenuContent(GraphUiContext context, ProjectView projectView)
     {
-        var clickPosition = ImGui.GetMousePosOnOpeningCurrentPopup();
         var compositionSymbolUi = context.CompositionInstance.GetSymbolUi();
 
         var nodeSelection = context.Selector;
@@ -86,6 +87,12 @@ internal static class GraphContextMenu
         {
             context.EditCommentDialog.ShowNextFrame();
         }
+
+        if (ImGui.MenuItem("Edit Tour Points"))
+        {
+            EditTourPointsPopup.ShowNextFrame();
+        }
+
         
         if (ImGui.MenuItem("Align select left",
                            UserActions.AlignSelectionLeft.ListShortcuts(),
@@ -362,6 +369,13 @@ internal static class GraphContextMenu
                     CoreUi.Instance.OpenWithDefaultApplication(exportDir);
                     break;
             }
+        }
+
+        ImGui.Separator();
+ 
+        if (ImGui.MenuItem("Copy Symbol Name to Clipboard", oneOpSelected))
+        {
+            ImGui.SetClipboardText("[" + $"{selectedChildUis[0].SymbolChild.ReadableName}" + "]");
         }
 
         // TODO: Clarify if required

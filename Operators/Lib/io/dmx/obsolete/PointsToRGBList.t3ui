@@ -19,8 +19,7 @@
       "Position": {
         "X": 0.0,
         "Y": 0.0
-      },
-      "Description": "A list of float values representing the RGB components of all input points, in the range 0-255."
+      }
     }
   ]
 }

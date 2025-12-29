@@ -16,8 +16,8 @@
         "X": -200.0,
         "Y": 675.0
       },
-      "Usage": "Default",
-      "Description": "The character or string to use as a delimiter when `ParsingMode` is set to 'Split by Delimiter'."
+      "Description": "The character or string to use as a delimiter when `ParsingMode` is set to 'Split by Delimiter'.",
+      "Usage": "Default"
     },
     {
       "InputId": "216a0356-ef4a-413a-a656-7497127e31d4"/*SendOnChange*/,
@@ -33,8 +33,8 @@
         "X": -200.0,
         "Y": 225.0
       },
-      "Usage": "Default",
-      "Description": "A list of strings or values that will be joined together to form the message to be sent."
+      "Description": "A list of strings or values that will be joined together to form the message to be sent.",
+      "Usage": "Default"
     },
     {
       "InputId": "5e725916-4143-4759-8651-e12185c658d3"/*PrintToLog*/,
@@ -50,8 +50,8 @@
         "X": -200.0,
         "Y": 300.0
       },
-      "Usage": "Default",
-      "Description": "A string used to join the `MessageParts` together before sending."
+      "Description": "A string used to join the `MessageParts` together before sending.",
+      "Usage": "Default"
     },
     {
       "InputId": "a1b2c3d4-e5f6-4789-0123-456789abcdef"/*Connect*/,
@@ -67,8 +67,8 @@
         "X": -200.0,
         "Y": 75.0
       },
-      "Usage": "Default",
-      "Description": "The URL of the WebSocket server (e.g., 'ws://localhost:8080')."
+      "Description": "The URL of the WebSocket server (e.g., 'ws://localhost:8080').",
+      "Usage": "Default"
     },
     {
       "InputId": "c7ac22c0-a31e-41f6-b29d-d40956e6688b"/*SendTrigger*/,

@@ -92,7 +92,7 @@
       "Description": "Scaling of the curve. Use the icon in the top right corner to edit this curve in a popup window.\n"
     },
     {
-      "InputId": "542832d1-fc70-4eaa-a003-7fdd9062dc05"/*UseExtend*/,
+      "InputId": "542832d1-fc70-4eaa-a003-7fdd9062dc05"/*UsePointScale*/,
       "Position": {
         "X": 310.13693,
         "Y": 2890.4705

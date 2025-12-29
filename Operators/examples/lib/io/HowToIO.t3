@@ -139,7 +139,7 @@
       "Outputs": []
     },
     {
-      "Id": "1811a7bc-6179-42f0-b18d-7f96cc1c5922"/*UDPOutput*/,
+      "Id": "1811a7bc-6179-42f0-b18d-7f96cc1c5922"/*UdpOutput*/,
       "SymbolId": "34e4e63b-2708-4673-b682-1d07d0245e1e",
       "InputValues": [
         {
@@ -343,7 +343,7 @@
       "Outputs": []
     },
     {
-      "Id": "3b14088f-04b0-47f0-b895-ebe3a5890be0"/*PointsToDMXLights*/,
+      "Id": "3b14088f-04b0-47f0-b895-ebe3a5890be0"/*PointsToDmxLights*/,
       "SymbolId": "c9d7cd19-7fc6-4491-8dfa-3808725c7857",
       "InputValues": [
         {
@@ -474,7 +474,7 @@
       "Outputs": []
     },
     {
-      "Id": "47efd5d0-7755-449a-a7ad-da922d5f14ec"/*PointsToDMXLights*/,
+      "Id": "47efd5d0-7755-449a-a7ad-da922d5f14ec"/*PointsToDmxLights*/,
       "SymbolId": "c9d7cd19-7fc6-4491-8dfa-3808725c7857",
       "InputValues": [
         {
@@ -614,7 +614,7 @@
       "Outputs": []
     },
     {
-      "Id": "61fd9c95-c6be-47ea-a1aa-5aa25725da07"/*PointsToDMXLights*/,
+      "Id": "61fd9c95-c6be-47ea-a1aa-5aa25725da07"/*PointsToDmxLights*/,
       "SymbolId": "c9d7cd19-7fc6-4491-8dfa-3808725c7857",
       "InputValues": [
         {
@@ -741,7 +741,7 @@
       "Outputs": []
     },
     {
-      "Id": "68e2520b-6194-48c6-8b49-396e66af0b35"/*PointsToDMXLights*/,
+      "Id": "68e2520b-6194-48c6-8b49-396e66af0b35"/*PointsToDmxLights*/,
       "SymbolId": "c9d7cd19-7fc6-4491-8dfa-3808725c7857",
       "InputValues": [
         {
@@ -836,7 +836,7 @@
       "Outputs": []
     },
     {
-      "Id": "76d5576a-3fcf-4dc2-a382-47a2a32e40ab"/*UDPInput*/,
+      "Id": "76d5576a-3fcf-4dc2-a382-47a2a32e40ab"/*UdpInput*/,
       "SymbolId": "c029b846-b442-458b-933b-653609827b75",
       "InputValues": [],
       "Outputs": []
@@ -1107,7 +1107,7 @@
       "Outputs": []
     },
     {
-      "Id": "c5f2cbbc-69e7-45bb-a364-43b3157ac6da"/*PointsToDMXLights*/,
+      "Id": "c5f2cbbc-69e7-45bb-a364-43b3157ac6da"/*PointsToDmxLights*/,
       "SymbolId": "c9d7cd19-7fc6-4491-8dfa-3808725c7857",
       "InputValues": [
         {
@@ -1243,7 +1243,7 @@
       "Outputs": []
     },
     {
-      "Id": "ffac09b5-b79e-4026-9d70-fbfad51e3000"/*PointsToDMXLights*/,
+      "Id": "ffac09b5-b79e-4026-9d70-fbfad51e3000"/*PointsToDmxLights*/,
       "SymbolId": "c9d7cd19-7fc6-4491-8dfa-3808725c7857",
       "InputValues": [
         {

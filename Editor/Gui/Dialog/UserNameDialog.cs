@@ -35,7 +35,7 @@ internal sealed class UserNameDialog : ModalDialog
                                       warning,
                                       "Your nickname should be short and not contain spaces or special characters.",
                                       UserSettings.UndefinedUserName,
-                                      true);
+                                      ImGui.IsWindowAppearing());
 
             FormInputs.AddVerticalSpace();
             FormInputs.ApplyIndent();

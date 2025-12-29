@@ -161,7 +161,8 @@ static float MAX_DIST = 300;
 
 struct PSOutput
 {
-    float4 color : SV_Target;
+    float4 color : SV_Target0;
+    float4 Normal : SV_Target1;
     float depth : SV_Depth;
 };
 
@@ -449,6 +450,7 @@ PSOutput psMain(vsOutput input)
     float4 DEBUG_RESULT = float4(normal, 1);
     float4 fieldColor = float4(GetField(float4(p, 1)).rgb, 1);
 
+    uv += 0.5;
     float4 roughnessMetallicOcclusion = RSMOMap.Sample(WrappedSampler, uv);
     frag.Roughness = saturate(roughnessMetallicOcclusion.x + Roughness);
     frag.Metalness = saturate(roughnessMetallicOcclusion.y + Metal);
@@ -479,5 +481,6 @@ PSOutput psMain(vsOutput input)
 
     float viewZ = mul(float4(p, 1), WorldToCamera).z;
     result.depth = ComputeDepthFromViewZ(viewZ);
+    result.Normal = float4(normal, 1.0);
     return result;
 }

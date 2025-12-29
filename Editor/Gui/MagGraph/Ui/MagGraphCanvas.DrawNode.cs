@@ -8,7 +8,7 @@ using T3.Core.Operator.Slots;
 using T3.Core.Resource;
 using T3.Core.Utils;
 using T3.Editor.Gui.OpUis;
-using T3.Editor.Gui.Graph;
+using T3.Editor.Gui;
 using T3.Editor.Gui.MagGraph.Interaction;
 using T3.Editor.Gui.MagGraph.Model;
 using T3.Editor.Gui.MagGraph.States;
@@ -27,6 +27,9 @@ internal sealed partial class MagGraphView
             return;
 
         if (!IsRectVisible(item.Area))
+            return;
+
+        if (item.ChildUi != null && item.ChildUi.CollapsedIntoAnnotationFrameId != Guid.Empty)
             return;
 
         var idleFadeFactor = 1f;
@@ -269,6 +272,8 @@ internal sealed partial class MagGraphView
             }
         }
 
+        var hasHiddenMatchingTypes = false;
+
         // Indicate hidden matching inputs...
         if (_context.DraggedPrimaryOutputType != null
             && item.Variant == MagGraphItem.Variants.Operator
@@ -278,7 +283,7 @@ internal sealed partial class MagGraphView
         {
             Debug.Assert(item.Instance != null); // should be true to operator variant
 
-            var hasMatchingTypes = false;
+            //hasHiddenMatchingTypes = true;
             for (var inputIndex = 0; inputIndex < item.Instance.Inputs.Count; inputIndex++)
             {
                 var inputSlot = item.Instance.Inputs[inputIndex];
@@ -286,12 +291,12 @@ internal sealed partial class MagGraphView
                 if (inputSlot.ValueType == _context.DraggedPrimaryOutputType
                     && !inputSlot.HasInputConnections)
                 {
-                    hasMatchingTypes = true;
+                    hasHiddenMatchingTypes = true;
                     break;
                 }
             }
 
-            if (hasMatchingTypes && item != _context.ActiveItem)
+            if (hasHiddenMatchingTypes && item != _context.ActiveItem)
             {
                 var indicatorPos = new Vector2(pMinVisible.X + 5 * CanvasScale, pMaxVisible.Y - 5 * CanvasScale);
 
@@ -582,7 +587,7 @@ internal sealed partial class MagGraphView
                     context.EditCommentDialog.ShowNextFrame();
                 }
 
-                Icons.DrawIconCenter(Icon.Comment, UiColors.ForegroundFull);
+                Icons.DrawIconOnLastItem(Icon.Comment, UiColors.ForegroundFull);
                 CustomComponents.TooltipForLastItem(UiColors.Text, item.ChildUi.Comment, null, false);
             }
         }
@@ -773,7 +778,15 @@ internal sealed partial class MagGraphView
                     if (isPotentialConnectionEndDropTarget && item != _context.ActiveItem)
                     {
                         fillColor = ColorVariations.Highlight.Apply(type2UiProperties.Color).Fade(Blink);
-                        InputSnapper.RegisterAsPotentialTargetInput(item, center, inputAnchor.SlotId);
+                        var mousePos = ImGui.GetMousePos();
+                        var isHovered = new ImRect(pMin + new Vector2(4 * CanvasScale,0), pMax).Contains(mousePos);
+                        var preventInsideSnapping = isHovered && hasHiddenMatchingTypes;
+                        
+                        if (!preventInsideSnapping)
+                        {
+                            InputSnapper.RegisterAsPotentialTargetInput(item, center, inputAnchor.SlotId);
+                        } 
+                        
                     }
                     else if (inputAnchor.InputLine.ConnectionIn != null)
                     {
@@ -1026,7 +1039,7 @@ internal sealed partial class MagGraphView
                                         IStatusProvider.StatusLevel.Error   => UiColors.StatusError,
                                         _                                   => UiColors.StatusError
                                     };
-                    Icons.DrawIconCenter(Icon.Warning, color);
+                    Icons.DrawIconOnLastItem(Icon.Warning, color);
                     CustomComponents.TooltipForLastItem(UiColors.StatusWarning, statusLevel.ToString(), statusProvider.GetStatusMessage(), false);
                 }
             }
@@ -1036,7 +1049,7 @@ internal sealed partial class MagGraphView
                 var s = item.Size.Y * 0.15f * CanvasScale;
                 ImGui.SetCursorScreenPos(pMinVisible + new Vector2(s, pMaxVisible.Y - pMinVisible.Y - s));
                 ImGui.InvisibleButton("#status", new Vector2(s, s));
-                Icons.DrawIconCenter(Icon.HelpOutline, Color.White with {A = 0.1f});
+                Icons.DrawIconOnLastItem(Icon.HelpOutline, Color.White with {A = 0.1f});
 
                 if (ImGui.BeginItemTooltip())
                 {

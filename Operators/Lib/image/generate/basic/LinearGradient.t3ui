@@ -38,8 +38,8 @@
     {
       "InputId": "29587763-5456-4d33-bfd4-5d47b133f1cd"/*OffsetMode*/,
       "Position": {
-        "X": -296.49213,
-        "Y": 325.46503
+        "X": -241.14078,
+        "Y": 269.39484
       },
       "Description": "Renders a linear color ramp defined by a gradient. This can be very useful in combination with [Steps].\n\n\nSimilar Ops: [NGon] [RoundedRect] [Rings] [RadialGradient] [LinearGradient] [Blob]"
     },
@@ -126,8 +126,8 @@
     {
       "InputId": "e47e9e63-9c94-4c29-9555-2452fa498d57"/*Gradient*/,
       "Position": {
-        "X": 59.73198,
-        "Y": -117.30649
+        "X": -350.11096,
+        "Y": -104.42341
       },
       "GroupTitle": "Gradient"
     }
@@ -178,7 +178,7 @@
     {
       "ChildId": "6e9cfe0c-c7ea-45d6-8b35-140208425b6c"/*GradientsToTexture*/,
       "Position": {
-        "X": 199.73198,
+        "X": -46.656906,
         "Y": -117.30649
       }
     },

@@ -75,8 +75,8 @@ internal sealed class SliceViewPort : Instance<SliceViewPort>
         else if (mode == ViewModes.SliceView)
         {
             // crop/zoom into the slice (existing behavior)
-            m.M31 += MathUtils.Remap(columnIndex + 0.5f, 0, (float)cells.Width, -cells.Width,  cells.Width);
-            m.M32 += MathUtils.Remap(rowIndex    + 0.5f, 0, (float)cells.Height,  cells.Height, -cells.Height);
+            m.M31 += (columnIndex + 0.5f).Remap(0, cells.Width, -cells.Width,  cells.Width);
+            m.M32 += (rowIndex    + 0.5f).Remap(0, cells.Height,  cells.Height, -cells.Height);
             m.M11 *= (cells.Width)  / Math.Max(stretch.X, Eps);
             m.M22 *= (cells.Height) / Math.Max(stretch.Y, Eps);
         }
@@ -84,9 +84,9 @@ internal sealed class SliceViewPort : Instance<SliceViewPort>
         {
             // Center on the selected cell, but **fit** instead of crop.
             // Keep vertical coverage (top→bottom) identical to full view of that row grid: scale Y by cells.Height (no /stretch.Y).
-            // Adjust horizontal scale to match the new viewport aspect: multiply X by cells.Width * (stretch.Y / stretch.X).
-            m.M31 += MathUtils.Remap(columnIndex + 0.5f, 0, (float)cells.Width, -cells.Width,  cells.Width);
-            m.M32 += MathUtils.Remap(rowIndex    + 0.5f, 0, (float)cells.Height,  cells.Height, -cells.Height);
+            // Adjust the horizontal scale to match the new viewport aspect: multiply X by cells.Width * (stretch.Y / stretch.X).
+            m.M31 += (columnIndex + 0.5f).Remap(0, cells.Width, -cells.Width,  cells.Width);
+            m.M32 += (rowIndex    + 0.5f).Remap(0, cells.Height,  cells.Height, -cells.Height);
 
             m.M22 *= cells.Height;                                            // preserve vertical field
             m.M11 *= cells.Width * (stretch.Y / Math.Max(stretch.X, Eps));    // widen/narrow horizontally to fit
@@ -99,7 +99,7 @@ internal sealed class SliceViewPort : Instance<SliceViewPort>
             
         _prevViewports = rasterizer.GetViewports<RawViewportF>();
         _prevRasterizerState = rasterizer.State;
-
+        
         context.RequestedResolution = new Int2((int)cellSizeX.Clamp(1,16384),
                                                (int)cellSizeY.Clamp(1,16384));
         rasterizer.SetViewport(newViewPort);

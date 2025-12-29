@@ -8,11 +8,11 @@
         "X": -505.05722,
         "Y": -259.4615
       },
+      "Description": "The first DMX universe to listen for. Art-Net universes are often specified as Sub-Net and Universe. This operator uses a single integer, where Universe = StartUniverse % 16 and Sub-Net = StartUniverse / 16.",
       "Min": 0,
       "Scale": 1.0,
       "ClampMin": true,
-      "ClampMax": true,
-      "Description": "The first DMX universe to listen for. Art-Net universes are often specified as Sub-Net and Universe. This operator uses a single integer, where Universe = StartUniverse % 16 and Sub-Net = StartUniverse / 16."
+      "ClampMax": true
     },
     {
       "InputId": "24b5d450-4e83-49db-88b1-7d688e64585d"/*LocalIpAddress*/,
@@ -20,8 +20,8 @@
         "X": -200.0,
         "Y": 0.0
       },
-      "Usage": "CustomDropdown",
-      "Description": "The IP address of the network interface to listen on. A dropdown shows available addresses. If you have multiple network cards, make sure to select the one connected to your lighting network."
+      "Description": "The IP address of the network interface to listen on. A dropdown shows available addresses. If you have multiple network cards, make sure to select the one connected to your lighting network.",
+      "Usage": "CustomDropdown"
     },
     {
       "InputId": "3d085f6f-6f4a-4876-805f-22f25497a731"/*Active*/,

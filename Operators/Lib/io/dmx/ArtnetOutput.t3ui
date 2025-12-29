@@ -8,8 +8,8 @@
         "X": -200.0,
         "Y": 600.0
       },
-      "Usage": "CustomDropdown",
-      "Description": "The destination IP address for unicast Art-Net packets. If empty, packets are broadcast to the entire network."
+      "Description": "The destination IP address for unicast Art-Net packets. If empty, packets are broadcast to the entire network.",
+      "Usage": "CustomDropdown"
     },
     {
       "InputId": "168d0023-554f-46cd-9e62-8f3d1f564b8d"/*SendTrigger*/,
@@ -41,8 +41,8 @@
         "X": -200.0,
         "Y": 825.0
       },
-      "Usage": "Default",
-      "Description": "A user-defined name for this Art-Net source, which can help identify it on the network."
+      "Description": "A user-defined name for this Art-Net source, which can help identify it on the network.",
+      "Usage": "Default"
     },
     {
       "InputId": "65fb88ec-5772-4973-bd8b-bb2cb9f557e7"/*PrintArtnetPoll*/,
@@ -106,8 +106,8 @@
         "X": -200.0,
         "Y": 150.0
       },
-      "Usage": "CustomDropdown",
-      "Description": "The IP address of the network interface to send from. A dropdown shows available addresses. If you have multiple network cards, make sure to select the one connected to your lighting network."
+      "Description": "The IP address of the network interface to send from. A dropdown shows available addresses. If you have multiple network cards, make sure to select the one connected to your lighting network.",
+      "Usage": "CustomDropdown"
     }
   ],
   "SymbolChildUis": [],

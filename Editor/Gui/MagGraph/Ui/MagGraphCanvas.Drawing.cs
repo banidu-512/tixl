@@ -15,6 +15,8 @@ namespace T3.Editor.Gui.MagGraph.Ui;
 
 internal sealed partial class MagGraphView
 {
+    private readonly Dictionary<int, (Vector2 source, Vector2 target)> _previousConnectionPositions = new();
+    
     public void DrawGraph(ImDrawListPtr drawList, float graphOpacity)
     {
         _context.GraphOpacity = graphOpacity;
@@ -40,7 +42,7 @@ internal sealed partial class MagGraphView
             // Update view scope if required
             if (FitViewToSelectionHandling.FitViewToSelectionRequested)
             {
-                FocusViewToSelection(_context);
+                _context.ProjectView.FocusViewToSelection();
             }
 
             // Keep visible canvas area to cull non-visible objects later
@@ -56,8 +58,42 @@ internal sealed partial class MagGraphView
             if (!_context.PreventInteraction && !FrameStats.Last.OpenedPopupCapturedMouse)
                 UpdateCanvas(out _, editingFlags);
 
+            // Store previous connection lines damped positions before layout recomputes
+            if (_context.Layout.MagConnections != null)
+            {
+                _previousConnectionPositions.Clear();
+                foreach (var c in _context.Layout.MagConnections)
+                {
+                    if (c.DampedSourcePos != Vector2.Zero || c.DampedTargetPos != Vector2.Zero)
+                    {
+                        _previousConnectionPositions[c.ConnectionHash] = (c.DampedSourcePos, c.DampedTargetPos);
+                    }
+                }
+            }
+
             // Prepare UiModel for frame
             _context.Layout.ComputeLayout(_context);
+
+            // Restore damped positions after layout
+            foreach (var c in _context.Layout.MagConnections)
+            {
+                if (_previousConnectionPositions.TryGetValue(c.ConnectionHash, out var prevPos))
+                {
+                    if (c.DampedSourcePos == Vector2.Zero)
+                        c.DampedSourcePos = prevPos.source;
+                    if (c.DampedTargetPos == Vector2.Zero)
+                        c.DampedTargetPos = prevPos.target;
+                }
+                else
+                {
+                    // New connection - initialize to actual position
+                    if (c.DampedSourcePos == Vector2.Zero)
+                        c.DampedSourcePos = c.SourcePos;
+                    if (c.DampedTargetPos == Vector2.Zero)
+                        c.DampedTargetPos = c.TargetPos;
+                }
+            }
+
             _context.ItemMovement.PrepareFrame(_context);
 
             if (_context.StateMachine.CurrentState == GraphStates.Default)
@@ -267,28 +303,38 @@ internal sealed partial class MagGraphView
     /// <summary>
     /// This a very simple proof-of-concept implementation to test its fidelity.
     /// A simple optimization could be to only do this for some time after a drag manipulation and then apply
-    /// the correct position. Also, this animation does not affect connection lines.
+    /// the correct position.
     ///
     /// It still helps to understand what's going on and feels satisfying. So we're keeping it for now.
     /// </summary>
+
     private void SmoothItemPositions()
     {
+        const float dampAmount = 0.33f;
+
         foreach (var i in _context.Layout.Items.Values)
         {
-            var dampAmount = _context.ItemMovement.DraggedItems.Contains(i)
-                                 ? 0.0f
-                                 : 0.7f;
             i.DampedPosOnCanvas = Vector2.Lerp(i.PosOnCanvas, i.DampedPosOnCanvas, dampAmount);
         }
 
         foreach (var a in _context.Layout.Annotations.Values)
         {
-            // var dampAmount = _context.ItemMovement.DraggedItems.Contains(i)
-            //                      ? 0.0f
-            //                      : 0.7f;
-            var dampAmount = 0.7f;
             a.DampedPosOnCanvas = Vector2.Lerp(a.Annotation.PosOnCanvas, a.DampedPosOnCanvas, dampAmount);
             a.DampedSize = Vector2.Lerp(a.Annotation.Size, a.DampedSize, dampAmount);
+        }
+
+        foreach (var c in _context.Layout.MagConnections)
+        {
+            // Initialize damped positions if they're at zero (new connection or reset)
+            if (c.DampedSourcePos == Vector2.Zero)
+                c.DampedSourcePos = c.SourcePos;
+
+            if (c.DampedTargetPos == Vector2.Zero)
+                c.DampedTargetPos = c.TargetPos;
+
+            c.DampedSourcePos = Vector2.Lerp(c.SourcePos, c.DampedSourcePos, dampAmount);
+            c.DampedTargetPos = Vector2.Lerp(c.TargetPos, c.DampedTargetPos, dampAmount);
+            
         }
     }
 
@@ -337,14 +383,14 @@ internal sealed partial class MagGraphView
         var gridSize = Vector2.One * minSize;
         var maxOpacity = 0.25f;
 
-        var fineGrid = MathUtils.RemapAndClamp(Scale.X, 0.5f, 2f, 0.0f, maxOpacity);
+        var fineGrid = Scale.X.RemapAndClamp(0.5f, 2f, 0.0f, maxOpacity);
         if (fineGrid > 0.01f)
         {
             var color = UiColors.CanvasGrid.Fade(fineGrid);
             DrawBackgroundGrid(drawList, gridSize, color);
         }
 
-        var roughGrid = MathUtils.RemapAndClamp(Scale.X, 0.1f, 2f, 0.0f, maxOpacity);
+        var roughGrid = Scale.X.RemapAndClamp(0.1f, 2f, 0.0f, maxOpacity);
         if (roughGrid > 0.01f)
         {
             var color = UiColors.CanvasGrid.Fade(roughGrid);

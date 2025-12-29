@@ -34,7 +34,7 @@ internal static class VectorValueEdit
                 resultingEditState |= SingleValueEdit.Draw(ref components[index], fieldSize, min, max, clampMin, clampMax, scale, format ??= "{0:0.000}");
 
                 // Draw +/- buttons for single float component with ° format
-                var increment = ImGui.GetIO().KeyShift ? SHIFT_INCREMENT_FLOAT : DEFAULT_INCREMENT_FLOAT;
+                var increment = ImGui.GetIO().KeyShift ? ShiftIncrementFloat : DefaultIncrementFloat;
                 ImGui.SameLine();
                 ImGui.PushFont(Icons.IconFont);
                 if (DrawButton((char)Icon.RotateCounterClockwise+"", buttonSize, !clampMin || components[index] > min))
@@ -94,7 +94,7 @@ internal static class VectorValueEdit
             // Draw +/- buttons for single component
             if (hasButtons)
             {
-                var increment = ImGui.GetIO().KeyShift ? SHIFT_INCREMENT : 1;
+                var increment = ImGui.GetIO().KeyShift ? ShiftIncrement : 1;
                 ImGui.SameLine();
                 if (DrawButton("-", buttonSize, !clampMin || components[index] > min))
                 {
@@ -133,7 +133,7 @@ internal static class VectorValueEdit
         return result;
     }
 
-    private const int SHIFT_INCREMENT = 10;
-    private const float DEFAULT_INCREMENT_FLOAT = 90.0f;
-    private const float SHIFT_INCREMENT_FLOAT = 45.0f;
+    private const int ShiftIncrement = 10;
+    private const float DefaultIncrementFloat = -45.0f;
+    private const float ShiftIncrementFloat = -5.0f;
 }

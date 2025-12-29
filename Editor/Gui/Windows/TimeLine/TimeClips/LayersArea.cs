@@ -303,7 +303,7 @@ internal sealed class LayersArea : ITimeObjectManipulation, IValueSnapAttractor
             var newPos = symbolChildUi.PosOnCanvas;
             newPos.Y += MagGraphItem.GridSize.Y;
             var cmd = new CopySymbolChildrenCommand(compositionSymbolUi,
-                                                    new[] { symbolChildUi },
+                                                    [symbolChildUi],
                                                     null,
                                                     compositionSymbolUi,
                                                     newPos);
@@ -316,7 +316,7 @@ internal sealed class LayersArea : ITimeObjectManipulation, IValueSnapAttractor
             var normalizedCutPosition = ((float)_playback.TimeInBars - clip.TimeRange.Start) / clip.TimeRange.Duration;
 
             // Apply new time range to newly added instance
-            var newChildId = cmd.OldToNewIdDict[clip.Id];
+            var newChildId = cmd.OldToNewChildIds[clip.Id];
             var newInstance = compositionOp.Children[newChildId];
             var newTimeClip = newInstance.Outputs.OfType<ITimeClipProvider>().Single().TimeClip;
 

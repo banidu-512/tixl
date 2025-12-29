@@ -5,7 +5,7 @@ using T3.Core.DataTypes.Vector;
 using T3.Core.Operator;
 using T3.Core.Operator.Slots;
 using T3.Core.SystemUi;
-using T3.Editor.Gui.Graph.Dialogs;
+using T3.Editor.Gui.Dialogs;
 using T3.Editor.Gui.Input;
 using T3.Editor.Gui.Styling;
 using T3.Editor.Gui.UiHelpers;
@@ -88,7 +88,9 @@ internal sealed class ParameterWindow : Window
         instance = null; //allow to unload of instance type in case a recompilation occurs
         
         // Draw dialogs
-        OperatorHelp.EditDescriptionDialog.Draw(symbol); // TODO: This is probably not required...
+        OperatorHelp.EditDescriptionDialog.Draw(symbol); 
+        
+        
         RenameInputDialog.Draw();
 
         if (!symbol.TryGetOrCreateInstance(path, parentSymbol, out instance))

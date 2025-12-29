@@ -47,27 +47,28 @@ internal static class Duplicate
         newSource = ReplaceGuidAttributeWith(newSymbolId, newSource);
         Log.Debug(newSource);
 
+        var sourceSymbolUi = sourceSymbol.GetSymbolUi();
+        
         if (!project.TryCompile(newSource, newTypeName, newSymbolId, nameSpace, out var newSymbol, out _, out var failureLog))
         {
             Log.Error($"Could not compile new symbol '{newTypeName}': {failureLog}");
             return null;
         }
-
-        var sourceSymbolUi = sourceSymbol.GetSymbolUi();
+        
         var newSymbolUi = sourceSymbolUi.CloneForNewSymbol(newSymbol, oldToNewIdMap);
         newSymbolUi.Description = description;
         newSymbolUi.ReadOnly = false;
 
         project.ReplaceSymbolUi(newSymbolUi);
 
-        // Apply content to new symbol
+        // Apply content to a new symbol
         var cmd = new CopySymbolChildrenCommand(sourceSymbolUi,
                                                 null,
-                                                new List<Annotation>(),
+                                                null,
                                                 newSymbolUi,
                                                 Vector2.One);
         cmd.Do();
-        cmd.OldToNewIdDict.ToList().ForEach(x => oldToNewIdMap.Add(x.Key, x.Value));
+        cmd.OldToNewChildIds.ToList().ForEach(x => oldToNewIdMap.Add(x.Key, x.Value));
 
         // Now copy connection from/to inputs/outputs that are not copied with the command 
         // todo: same code as in Symbol.SetInstanceType, factor out common code

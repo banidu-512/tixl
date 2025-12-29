@@ -76,7 +76,7 @@
       "GroupTitle": "Sprites Input"
     },
     {
-      "InputId": "fecc8310-208e-45de-a43b-bf547663e743"/*BlendMod*/,
+      "InputId": "fecc8310-208e-45de-a43b-bf547663e743"/*BlendMode*/,
       "Position": {
         "X": -674.21533,
         "Y": 631.9566

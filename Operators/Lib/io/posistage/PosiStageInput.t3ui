@@ -24,8 +24,8 @@
         "X": -200.0,
         "Y": 150.0
       },
-      "Usage": "Default",
-      "Description": "The multicast IP address to join for receiving PosiStageNet data. The default for PSN is typically 236.10.10.10."
+      "Description": "The multicast IP address to join for receiving PosiStageNet data. The default for PSN is typically 236.10.10.10.",
+      "Usage": "Default"
     },
     {
       "InputId": "5e725916-4143-4759-8651-e12185c658d3"/*PrintToLog*/,
@@ -41,8 +41,8 @@
         "X": -200.0,
         "Y": 75.0
       },
-      "Usage": "CustomDropdown",
-      "Description": "The IP address of the network interface to listen on. A dropdown shows available addresses. Ensure this is the interface connected to your tracking network."
+      "Description": "The IP address of the network interface to listen on. A dropdown shows available addresses. Ensure this is the interface connected to your tracking network.",
+      "Usage": "CustomDropdown"
     }
   ],
   "SymbolChildUis": [],

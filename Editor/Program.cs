@@ -19,6 +19,7 @@ using T3.Editor.Gui.Interaction.StartupCheck;
 using T3.Editor.Gui.Styling;
 using T3.Editor.Gui.UiHelpers;
 using T3.Editor.Gui.Windows;
+using T3.Editor.Skills.Training;
 using T3.Editor.SystemUi;
 using T3.Editor.UiContentDrawing;
 using T3.Editor.UiModel.Helpers;
@@ -137,6 +138,11 @@ internal static class Program
         // ReSharper disable once UnusedVariable
         var userSettings = new UserSettings(saveOnQuit: true);
         
+        if (UserSettings.Config.ProjectDirectories.Count == 0)
+        {
+            UserSettings.Config.ProjectDirectories.Add(FileLocations.DefaultProjectFolder);
+        }
+
         // ReSharper disable once UnusedVariable
         var projectSettings = new ProjectSettings(saveOnQuit: true);
 
@@ -168,6 +174,7 @@ internal static class Program
         KeyActionHandling.InitializeFrame();
         KeyMapSwitching.Initialize();
 
+        // ReSharper disable once JoinDeclarationAndInitializer
         bool forceRecompileProjects;
             
         #if DEBUG
@@ -196,6 +203,7 @@ internal static class Program
             
         // Setup file watching the operator source
         T3Ui.InitializeEnvironment();
+        SkillTraining.Initialize();
             
         Log.RemoveWriter(splashScreen);
             

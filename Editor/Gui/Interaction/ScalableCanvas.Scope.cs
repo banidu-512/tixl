@@ -11,7 +11,7 @@ namespace T3.Editor.Gui.Interaction;
 /// is not available when the transition is requested (e.g. because the Window has not been initialized
 /// yet or is not open). 
 /// </remarks>
-public abstract partial class ScalableCanvas
+public partial class ScalableCanvas
 {
     public CanvasScope GetTargetScope()
     {
@@ -126,8 +126,8 @@ public abstract partial class ScalableCanvas
 
 
     /// <summary>
-    /// To accurately showing the requested area on a canvas we need to have access to the current window's size.
-    /// Frequently this only available after the window has been initialized on the next frame.
+    /// To accurately showing the requested area on a canvas, we need to have access to the current window's size.
+    /// Frequently, this is only available after the window has been initialized on the next frame.
     /// So we first have to call <see cref="RequestTargetViewAreaWithTransition"/>
     /// </summary>
     internal void RequestTargetViewAreaWithTransition(ImRect targetCanvasArea, Transition transition)

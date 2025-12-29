@@ -86,7 +86,7 @@
       }
     },
     {
-      "Id": "542832d1-fc70-4eaa-a003-7fdd9062dc05"/*UseExtend*/,
+      "Id": "542832d1-fc70-4eaa-a003-7fdd9062dc05"/*UsePointScale*/,
       "DefaultValue": true
     },
     {

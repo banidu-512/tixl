@@ -1,5 +1,5 @@
 {
-  "Id": "c9d7cd19-7fc6-4491-8dfa-3808725c7857"/*PointsToDMXLights*/,
+  "Id": "c9d7cd19-7fc6-4491-8dfa-3808725c7857"/*PointsToDmxLights*/,
   "Inputs": [
     {
       "Id": "013cc355-91d6-4ea6-b9f7-f1817b89e4a3"/*RedChannel*/,
@@ -192,7 +192,7 @@
       "DefaultValue": 0
     },
     {
-      "Id": "cf2c3308-8f3f-442d-a563-b419f12e7ad1"/*RGBToCMY*/,
+      "Id": "cf2c3308-8f3f-442d-a563-b419f12e7ad1"/*RgbToCmy*/,
       "DefaultValue": false
     },
     {

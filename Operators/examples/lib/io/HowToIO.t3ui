@@ -60,7 +60,7 @@
       }
     },
     {
-      "ChildId": "1811a7bc-6179-42f0-b18d-7f96cc1c5922"/*UDPOutput*/,
+      "ChildId": "1811a7bc-6179-42f0-b18d-7f96cc1c5922"/*UdpOutput*/,
       "Position": {
         "X": -683.7684,
         "Y": 242.6532
@@ -144,7 +144,7 @@
       }
     },
     {
-      "ChildId": "3b14088f-04b0-47f0-b895-ebe3a5890be0"/*PointsToDMXLights*/,
+      "ChildId": "3b14088f-04b0-47f0-b895-ebe3a5890be0"/*PointsToDmxLights*/,
       "Position": {
         "X": -805.9622,
         "Y": -402.00183
@@ -172,7 +172,7 @@
       }
     },
     {
-      "ChildId": "47efd5d0-7755-449a-a7ad-da922d5f14ec"/*PointsToDMXLights*/,
+      "ChildId": "47efd5d0-7755-449a-a7ad-da922d5f14ec"/*PointsToDmxLights*/,
       "Position": {
         "X": -1133.7686,
         "Y": 242.6532
@@ -214,7 +214,7 @@
       }
     },
     {
-      "ChildId": "61fd9c95-c6be-47ea-a1aa-5aa25725da07"/*PointsToDMXLights*/,
+      "ChildId": "61fd9c95-c6be-47ea-a1aa-5aa25725da07"/*PointsToDmxLights*/,
       "Position": {
         "X": -813.19977,
         "Y": -150.01468
@@ -235,7 +235,7 @@
       }
     },
     {
-      "ChildId": "68e2520b-6194-48c6-8b49-396e66af0b35"/*PointsToDMXLights*/,
+      "ChildId": "68e2520b-6194-48c6-8b49-396e66af0b35"/*PointsToDmxLights*/,
       "Position": {
         "X": -825.0214,
         "Y": 48.417908
@@ -249,7 +249,7 @@
       }
     },
     {
-      "ChildId": "76d5576a-3fcf-4dc2-a382-47a2a32e40ab"/*UDPInput*/,
+      "ChildId": "76d5576a-3fcf-4dc2-a382-47a2a32e40ab"/*UdpInput*/,
       "Position": {
         "X": -833.7684,
         "Y": 186.6532
@@ -415,7 +415,7 @@
       }
     },
     {
-      "ChildId": "c5f2cbbc-69e7-45bb-a364-43b3157ac6da"/*PointsToDMXLights*/,
+      "ChildId": "c5f2cbbc-69e7-45bb-a364-43b3157ac6da"/*PointsToDmxLights*/,
       "Position": {
         "X": -1134.5234,
         "Y": 420.12445
@@ -464,7 +464,7 @@
       }
     },
     {
-      "ChildId": "ffac09b5-b79e-4026-9d70-fbfad51e3000"/*PointsToDMXLights*/,
+      "ChildId": "ffac09b5-b79e-4026-9d70-fbfad51e3000"/*PointsToDmxLights*/,
       "Position": {
         "X": -1443.3889,
         "Y": 593.5699

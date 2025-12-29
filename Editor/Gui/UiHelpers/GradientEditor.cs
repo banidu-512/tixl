@@ -113,7 +113,9 @@ public static class GradientEditor
         if (canInsertNewStep && ImGui.IsItemHovered() && !ImGui.IsItemActive())
         {
             var handleArea = GetHandleAreaForPosition(normalizedPosition);
-            drawList.AddRect(handleArea.Min + Vector2.One, handleArea.Max - Vector2.One, new Color(1f, 1f, 1f, 0.4f));
+           // drawList.AddRect(handleArea.Min + Vector2.One, handleArea.Max - Vector2.One, new Color(1f, 1f, 1f, 0.4f));
+            drawList.AddLine(handleArea.Min + new Vector2(StepHandleSize.X/2,-14), handleArea.Max - new Vector2(StepHandleSize.X / 2, 0), new Color(0.5f, 0.5f, 0.5f, 1.0f));
+           
         }
 
         // Draw CurveOverlays
@@ -220,11 +222,12 @@ public static class GradientEditor
 
         InputEditStateFlags DrawHandle(Gradient.Step step)
         {
-            var StepHandleSize = new Vector2(14, 24) * T3Ui.UiScaleFactor;
+            //var StepHandleSize = new Vector2(12, 16) * T3Ui.UiScaleFactor;
             var stepModified = InputEditStateFlags.Nothing;
             ImGui.PushID(step.Id.GetHashCode());
             var handleArea = GetHandleAreaForPosition(step.NormalizedPosition);
-
+            handleArea.Min.X = areaOnScreen.Min.X - StepHandleSize.X / 2f + areaOnScreen.GetWidth() * step.NormalizedPosition;
+            handleArea.Min.Y = areaOnScreen.Max.Y - StepHandleSize.Y;
             // Interaction
             ImGui.SetCursorScreenPos(handleArea.Min);
             ImGui.InvisibleButton("gradientStep", new Vector2(StepHandleSize.X, areaOnScreen.GetHeight()));
@@ -235,6 +238,7 @@ public static class GradientEditor
             if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenBlockedByPopup))
             {
                 hoveredStep = step;
+                handleArea.Min.Y = areaOnScreen.Max.Y - StepHandleSize.Y -2*T3Ui.UiScaleFactor;
             }
 
             var isDraggedOutside = false;
@@ -282,13 +286,14 @@ public static class GradientEditor
                 stepModified = InputEditStateFlags.ModifiedAndFinished;
             }
 
-            var points = new[]
+            /*var points = new[]
                              {
                                  new Vector2(handleArea.Min.X, handleArea.Max.Y),
                                  handleArea.Max,
-                                 new Vector2(handleArea.Max.X, handleArea.Min.Y),
+                                 new Vector2(handleArea.Max.X , handleArea.Min.Y),
                              };
-            drawList.AddConvexPolyFilled(ref points[0], 3, new Color(0.15f, 0.15f, 0.15f, 1));
+            drawList.AddConvexPolyFilled(ref points[0], 3, new Color(0.15f, 0.15f, 0.15f, 1));*/
+
             drawList.AddRectFilled(handleArea.Min, handleArea.Max, ImGui.ColorConvertFloat4ToU32(step.Color));
 
             if (MathUtils.HasHdrRange(step.Color, out var intensity))
@@ -297,9 +302,9 @@ public static class GradientEditor
                                         Color.Black, 
                                         intensity *4);
             }
-            
-            drawList.AddRect(handleArea.Min, handleArea.Max, UiColors.BackgroundFull);
-            drawList.AddRect(handleArea.Min + Vector2.One, handleArea.Max - Vector2.One, UiColors.ForegroundFull);
+            var borders = new Vector2(T3Ui.UiScaleFactor-.5f);
+            drawList.AddRect(handleArea.Min + borders, handleArea.Max + borders, UiColors.BackgroundFull.Fade(0.7f), 0, ImDrawFlags.None,  T3Ui.UiScaleFactor*2);
+            drawList.AddRect(handleArea.Min , handleArea.Max , UiColors.ForegroundFull, 0, ImDrawFlags.None,  T3Ui.UiScaleFactor);
 
             if (ImGui.IsItemHovered()
                 && ImGui.IsMouseReleased(0)
@@ -389,7 +394,8 @@ public static class GradientEditor
 
         if (gradient.Steps == null || gradient.Steps.Count == 0)
         {
-            Log.Warning("Can't draw invalid gradient");
+            drawList.AddText(areaOnScreen.Min + areaOnScreen.GetSize() * 0.5f - new Vector2(Fonts.FontNormal.FontSize * 0.5f) , UiColors.ForegroundFull.Fade(0.4f),  "?");
+            //Log.Warning("Can't draw invalid gradient");
             return;
         }
 
@@ -481,5 +487,5 @@ public static class GradientEditor
     private const float RemoveThreshold = 15;
     private const float RequiredHeightForHandles = 20;
     private const int MinInsertHeight = 15;
-    public static readonly Vector2 StepHandleSize = new(14, 24);
+    public static Vector2 StepHandleSize => new Vector2(9, 15) * T3Ui.UiScaleFactor;
 }

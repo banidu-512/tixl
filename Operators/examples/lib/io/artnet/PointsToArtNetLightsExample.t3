@@ -445,7 +445,7 @@
       "Outputs": []
     },
     {
-      "Id": "a12f871a-93c0-4bca-a15a-a32dff6fb0e6"/*PointsToDMXLights*/,
+      "Id": "a12f871a-93c0-4bca-a15a-a32dff6fb0e6"/*PointsToDmxLights*/,
       "SymbolId": "c9d7cd19-7fc6-4491-8dfa-3808725c7857",
       "InputValues": [
         {
@@ -696,7 +696,7 @@
       "Outputs": []
     },
     {
-      "Id": "f9d58c9b-1153-4417-8bc1-92fd7c747b15"/*PointsToDMXLights*/,
+      "Id": "f9d58c9b-1153-4417-8bc1-92fd7c747b15"/*PointsToDmxLights*/,
       "SymbolId": "c9d7cd19-7fc6-4491-8dfa-3808725c7857",
       "InputValues": [
         {

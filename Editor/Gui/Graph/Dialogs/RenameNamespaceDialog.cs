@@ -7,7 +7,7 @@ using T3.Editor.Gui.Windows;
 using T3.Editor.Gui.Windows.SymbolLib;
 using T3.Editor.UiModel;
 
-namespace T3.Editor.Gui.Graph.Dialogs;
+namespace T3.Editor.Gui.Dialogs;
 
 internal sealed class RenameNamespaceDialog : ModalDialog
 {
@@ -40,7 +40,7 @@ internal sealed class RenameNamespaceDialog : ModalDialog
             }
             else
             {
-                ImGui.TextColored(UiColors.StatusError, $"No source project found for namespace {nodeName}");
+                ImGui.TextColored(UiColors.StatusError.Rgba, $"No source project found for namespace {nodeName}");
             }
                 
             if (ImGui.Button("Cancel"))

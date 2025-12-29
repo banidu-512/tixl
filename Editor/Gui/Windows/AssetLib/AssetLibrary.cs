@@ -89,7 +89,7 @@ internal sealed partial class AssetLibrary : Window
                 var fileExtensionId = FileExtensionRegistry.GetId(fileInfoExtension);
                 if (!AssetTypeRegistry.TryGetFromId(fileExtensionId, out var assetType))
                 {
-                    Log.Warning($"Can't fine file type for: {fileInfoExtension}");
+                    Log.Warning($"Can't find file type for: {fileInfoExtension}");
                 }
 
                 asset = new AssetItem

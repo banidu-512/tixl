@@ -270,8 +270,14 @@ public sealed class ParameterSettings
                 if (style == ParameterListStyles.WithGroup)
                 {
                     var groupTitle = selectedInputUi.GroupTitle;
-                    if (FormInputs.AddStringInput("##groupTitle", ref groupTitle, "Group Title", null,
-                                                  "Group title shown above parameter\n\nGroup will be collapsed by default if name ends with '...' (three dots)."))
+                    if (FormInputs.AddStringInput("##groupTitle", ref groupTitle, 
+                                                  "Group Title", 
+                                                  null,
+                                                  """
+                                                  Group title shown above parameter
+
+                                                  Group will be collapsed by default if name ends with '...' (three dots).
+                                                  """))
                     {
                         selectedInputUi.GroupTitle = groupTitle;
                         modified = true;

@@ -148,15 +148,13 @@ internal sealed partial class EditableSymbolProject : EditorSymbolPackage
     {
         get
         {
-            if (_allProjectsCache == null)
-            {
-                _allProjectsCache = ProjectSetup
-                    .AllPackages
-                    .Where(x => x is EditableSymbolProject)
-                    .Cast<EditableSymbolProject>()
-                    .OrderByDescending(x => x.CsProjectFile.ModifiedAt)
-                    .ToList();
-            }
+            _allProjectsCache ??= ProjectSetup
+                                 .AllPackages
+                                 .Where(x => x is EditableSymbolProject)
+                                 .Cast<EditableSymbolProject>()
+                                 .OrderByDescending(x => x.CsProjectFile.ModifiedAt)
+                                 .ToList();
+            
             return _allProjectsCache;
         }
     }

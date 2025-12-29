@@ -8,8 +8,7 @@
         "X": -200.0,
         "Y": 900.0
       },
-      "Description": "The algorithm used to undistort the image after calibration. 'Undistort' is generally simpler, 'Remap' offers more control.",
-      "Default": 0
+      "Description": "The algorithm used to undistort the image after calibration. 'Undistort' is generally simpler, 'Remap' offers more control."
     },
     {
       "InputId": "2a3b4c5d-6e7f-4b2c-9dae-1f2a3b4c5d6e"/*Alpha*/,
@@ -17,8 +16,7 @@
         "X": -200.0,
         "Y": 975.0
       },
-      "Description": "Controls the cropping of the undistorted image. 0 crops to show only valid pixels, while 1 shows all original pixels, potentially with black areas at the edges.",
-      "Default": 1.0
+      "Description": "Controls the cropping of the undistorted image. 0 crops to show only valid pixels, while 1 shows all original pixels, potentially with black areas at the edges."
     },
     {
       "InputId": "a3f7d2b1-9c8e-4a6d-8f1c-2b9e3d7a5c2e"/*TextureIn*/,
@@ -50,8 +48,7 @@
         "X": -200.0,
         "Y": 75.0
       },
-      "Description": "Switches the operator's function between 'Passthrough' (raw video), 'Calibration' (for capturing and calculating), and 'LensCorrected' (for applying the correction to the live feed).",
-      "Default": 0
+      "Description": "Switches the operator's function between 'Passthrough' (raw video), 'Calibration' (for capturing and calculating), and 'LensCorrected' (for applying the correction to the live feed)."
     },
     {
       "InputId": "c1f5f0f9-7f4f-4f2f-6f9f-0f7f1f5f3f0f"/*Reset*/,
@@ -67,8 +64,7 @@
         "X": -200.0,
         "Y": 150.0
       },
-      "Description": "The number of inner corners on your chessboard pattern (e.g., a 9x6 board has 8x5 inner corners).",
-      "Default": "7,6"
+      "Description": "The number of inner corners on your chessboard pattern (e.g., a 9x6 board has 8x5 inner corners)."
     },
     {
       "InputId": "d2f6f1f0-8f5f-4f3f-7f0f-1f8f2f6f4f1f"/*FilePath*/,
@@ -76,9 +72,8 @@
         "X": -200.0,
         "Y": 675.0
       },
-      "Usage": "FilePath",
       "Description": "The path to the file for saving or loading the camera calibration data (as a .json file).",
-      "Default": "calibration.dat"
+      "Usage": "FilePath"
     },
     {
       "InputId": "d6e0f5b4-2f9d-4d7f-1e4f-5e2f6f0d8c5f"/*DisplayResolution*/,
@@ -86,8 +81,7 @@
         "X": -200.0,
         "Y": 225.0
       },
-      "Description": "The resolution of the display that is showing the generated checkerboard pattern. This should match your projector or screen resolution.",
-      "Default": "1920,1080"
+      "Description": "The resolution of the display that is showing the generated checkerboard pattern. This should match your projector or screen resolution."
     },
     {
       "InputId": "e3f7f2f1-9f6f-4f4f-8f1f-2f9f3f7f5f2f"/*Save*/,
@@ -103,8 +97,7 @@
         "X": -200.0,
         "Y": 300.0
       },
-      "Description": "The width of the border around the generated checkerboard pattern, measured in squares.",
-      "Default": 1
+      "Description": "The width of the border around the generated checkerboard pattern, measured in squares."
     },
     {
       "InputId": "f4f8f3f2-0f7f-4f5f-9f2f-3f0f4f8f6f3f"/*Load*/,
@@ -120,8 +113,7 @@
         "X": -200.0,
         "Y": 375.0
       },
-      "Description": "The real-world side length of a single square on your physical chessboard, in millimeters. This is crucial for accurate 3D measurements.",
-      "Default": 25.0
+      "Description": "The real-world side length of a single square on your physical chessboard, in millimeters. This is crucial for accurate 3D measurements."
     }
   ],
   "SymbolChildUis": [],
@@ -131,32 +123,28 @@
       "Position": {
         "X": 300.0,
         "Y": 200.0
-      },
-      "Description": "The generated checkerboard pattern texture, used for calibration."
+      }
     },
     {
       "OutputId": "a5f9f4f3-1f8f-4f6f-0f3f-4f1f5f9f7f4f"/*TextureOut*/,
       "Position": {
         "X": 300.0,
         "Y": 300.0
-      },
-      "Description": "The output video texture, either the raw input, the calibration view, or the lens-corrected view, depending on the `Mode`."
+      }
     },
     {
       "OutputId": "b6f0f5f4-2f9f-4f7f-1f4f-5f2f6f0f8f5f"/*IsCalibrated*/,
       "Position": {
         "X": 300.0,
         "Y": 400.0
-      },
-      "Description": "True if valid camera calibration data has been loaded or successfully calculated."
+      }
     },
     {
       "OutputId": "c7f1f6f5-3f0f-4f8f-2f5f-6f3f7f1f9f6f"/*StatusMessage*/,
       "Position": {
         "X": 300.0,
         "Y": 500.0
-      },
-      "Description": "Provides status updates and feedback on the calibration process."
+      }
     }
   ]
 }

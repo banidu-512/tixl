@@ -10,8 +10,12 @@
       }
     },
     {
-      "Id": "d2e663ff-efba-4821-971c-de3489cb0b15"/*Axis*/,
-      "DefaultValue": 1
+      "Id": "bfed14a7-7a97-4379-9419-222bb7a2ba57"/*Normal*/,
+      "DefaultValue": {
+        "X": 0.0,
+        "Y": 0.0,
+        "Z": 0.0
+      }
     }
   ],
   "Children": [],

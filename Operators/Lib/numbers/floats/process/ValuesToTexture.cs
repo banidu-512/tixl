@@ -57,6 +57,7 @@ internal sealed class ValuesToTexture : Instance<ValuesToTexture>
             return;
 
         var gain = Gain.GetValue(context);
+        var offset = Offset.GetValue(context);
         var pow = Pow.GetValue(context);
         if (Math.Abs(pow) < 0.001f)
             return;
@@ -80,7 +81,7 @@ internal sealed class ValuesToTexture : Instance<ValuesToTexture>
             {
                 for (int i = 0; i < sampleCount; i++)
                 {
-                    float v = i < list.Count ? (float)Math.Pow(list[i] * gain, pow) : 0f;
+                    float v = i < list.Count ? (float)Math.Pow((list[i] + offset) * gain, pow) : 0f;
                     _uploadBuffer[o++] = v;
                 }
             }
@@ -91,7 +92,7 @@ internal sealed class ValuesToTexture : Instance<ValuesToTexture>
             {
                 foreach (var list in _valueListsTmp)
                 {
-                    float v = i < list.Count ? (float)Math.Pow(list[i] * gain, pow) : 0f;
+                    float v = i < list.Count ? (float)Math.Pow((list[i] + offset) * gain, pow) : 0f;
                     _uploadBuffer[o++] = v;
                 }
             }
@@ -138,21 +139,14 @@ internal sealed class ValuesToTexture : Instance<ValuesToTexture>
     private GCHandle _uploadHandle;
     private IntPtr _uploadPtr = IntPtr.Zero;
 
-    private float[] _floatBuffer = [];
     private readonly List<List<float>> _valueListsTmp = new();
 
     [Input(Guid = "092C8D1F-A70E-4298-B5DF-52C9D62F8E04")]
     public readonly MultiInputSlot<List<float>> Values = new();
 
-    [Input(Guid = "165F7E0E-6EF0-4BE1-8ED3-61ED0DB752ED")]
-    public readonly InputSlot<bool> UseFullList = new();
-
-    [Input(Guid = "CA67BFAF-EDE7-43BA-B279-FC1DDFBE2FFA")]
-    public readonly InputSlot<int> RangeStart = new();
-
-    [Input(Guid = "DB868176-D51C-41AA-BAFE-68C3E50E725E")]
-    public readonly InputSlot<int> RangeEnd = new();
-
+    [Input(Guid = "748FE756-C7EE-4CC1-929E-078F99BEA628")]
+    public readonly InputSlot<float> Offset = new();
+    
     [Input(Guid = "CC812393-F080-4E17-A525-15B09F8ACDD0")]
     public readonly InputSlot<float> Gain = new();
 

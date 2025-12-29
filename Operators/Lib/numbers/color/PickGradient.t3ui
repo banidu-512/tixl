@@ -3,32 +3,14 @@
   "Description": "Picks one of the connected gradients",
   "InputUis": [
     {
-      "InputId": "167b2013-fbc0-4741-86a8-033d1b8d8995"/*MixFactor*/,
+      "InputId": "b8326dd4-9224-4d37-a490-7686184d8658"/*Index*/,
       "Position": {
         "X": -200.0,
-        "Y": 135.0
-      },
-      "Min": 0.0,
-      "Max": 1.0,
-      "ClampMin": true,
-      "ClampMax": true
-    },
-    {
-      "InputId": "3754ea7a-02f1-4f62-99dc-71bf25664b97"/*GradientB*/,
-      "Position": {
-        "X": -200.0,
-        "Y": 45.0
+        "Y": 75.0
       }
     },
     {
-      "InputId": "97a33534-4e03-4e5a-9ab9-59ce664e6ebf"/*BlendMode*/,
-      "Position": {
-        "X": -200.0,
-        "Y": 90.0
-      }
-    },
-    {
-      "InputId": "e2760876-4115-46da-8183-b62570ad5116"/*GradientA*/,
+      "InputId": "f68298dc-f8d0-4d08-aff5-7d35200f18b3"/*Gradients*/,
       "Position": {
         "X": -200.0,
         "Y": 0.0
@@ -38,7 +20,7 @@
   "SymbolChildUis": [],
   "OutputUis": [
     {
-      "OutputId": "64ae82b9-fc16-4747-b7ac-cd5983226f64"/*Result*/,
+      "OutputId": "64ae82b9-fc16-4747-b7ac-cd5983226f64"/*Selected*/,
       "Position": {
         "X": 0.0,
         "Y": 200.0

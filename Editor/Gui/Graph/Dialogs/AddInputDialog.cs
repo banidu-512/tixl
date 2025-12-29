@@ -7,7 +7,7 @@ using T3.Editor.Gui.Styling;
 using T3.Editor.Gui.UiHelpers;
 using T3.Editor.UiModel.Modification;
 
-namespace T3.Editor.Gui.Graph.Dialogs;
+namespace T3.Editor.Gui.Dialogs;
 
 internal sealed class AddInputDialog : ModalDialog
 {

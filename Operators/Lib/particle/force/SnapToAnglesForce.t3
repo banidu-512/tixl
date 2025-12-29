@@ -28,10 +28,6 @@
     {
       "Id": "e596a8ec-3681-4f45-b72c-d50a97240270"/*Amount*/,
       "DefaultValue": 1.0
-    },
-    {
-      "Id": "e982919b-3b9e-4a18-9d00-d5f2aade082d"/*PlaneSelection*/,
-      "DefaultValue": 0
     }
   ],
   "Children": [

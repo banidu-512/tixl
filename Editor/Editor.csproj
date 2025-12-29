@@ -145,6 +145,7 @@
         <PackageNames Include="TypeOperators" />
         <!-- <PackageNames Include="pixtur"/>-->
         <PackageNames Include="unsplash" />
+        <PackageNames Include="skills" />
         <PackageNames Include="spout" />
         <PackageNames Include="ndi" />
         <!-- Add more as needed -->

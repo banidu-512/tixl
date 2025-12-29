@@ -608,4 +608,20 @@ public static class StringUtils
         
         return string.IsNullOrEmpty(cleaned) ? "ClassName" : cleaned;
     }
+    
+    public static ReadOnlySpan<char> SliceToProgress(string text, float progress)
+    {
+        if (string.IsNullOrEmpty(text))
+            return ReadOnlySpan<char>.Empty;
+
+        progress = Math.Clamp(progress, 0f, 1f);
+
+        // floor is usually what you want for a typewriter reveal
+        var len = (int)(text.Length * progress);
+
+        if ((uint)len > (uint)text.Length)
+            len = text.Length;
+
+        return text.AsSpan(0, len);
+    }
 }

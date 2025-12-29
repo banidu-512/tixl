@@ -7,7 +7,7 @@ using T3.Editor.UiModel.Commands.Graph;
 using T3.Editor.UiModel.ProjectHandling;
 using T3.Editor.UiModel.Selection;
 
-namespace T3.Editor.Gui.Graph.Legacy.Interaction;
+namespace T3.Editor.Gui.Legacy.Interaction;
 
 internal sealed class NodeGraphLayouting
 {

@@ -1,12 +1,12 @@
-﻿#nullable enable
+#nullable enable
 using System.IO;
 using System.Text.RegularExpressions;
 using ImGuiNET;
 using T3.Core.DataTypes.Vector;
 using T3.Core.SystemUi;
 using T3.Core.Utils;
-using T3.Editor.Gui.Graph.Dialogs;
-using T3.Editor.Gui.Graph.Interaction;
+using T3.Editor.Gui.Dialogs;
+using T3.Editor.Gui.Interaction;
 using T3.Editor.Gui.Input;
 using T3.Editor.Gui.Styling;
 using T3.Editor.UiModel;
@@ -91,6 +91,7 @@ internal sealed class OperatorHelp
             {
                 EditDescriptionDialog.ShowNextFrame();
             }
+
             CustomComponents.TooltipForLastItem("Click to edit descriptions and links");
         }
 
@@ -217,7 +218,7 @@ internal sealed class OperatorHelp
         private static SymbolUi? _cachedSymbolUi;
         private static Guid _cachedSymbolId;
 
-        private static readonly List<(string Title, string Url, Icon? Icon)> _cachedLinks = [];
+        private static readonly List<(string Title, string Description, string Url, Icon? Icon)> _cachedLinks = [];
         private static readonly List<(SymbolUi SymbolUi, string Name)> _cachedReferencedSymbols = [];
         private static int _cachedSymbolUiVersion = -1;
 
@@ -254,7 +255,11 @@ internal sealed class OperatorHelp
                 if (!string.IsNullOrEmpty(link.Url))
                 {
                     var title = link.Title ?? link.Type.ToString();
-                    _cachedLinks.Add((title, link.Url, ExternalLink.LinkIcons.TryGetValue(link.Type, out var icon) ? icon : (Icon?)null));
+                    _cachedLinks.Add((title,
+                                      link.Url,
+                                      link.Description,
+                                      ExternalLink.LinkIcons.TryGetValue(link.Type, out var icon) ? icon : (Icon?)null)
+                                    );
                 }
             }
 
@@ -296,7 +301,7 @@ internal sealed class OperatorHelp
             ImGui.SameLine();
             ImGui.PushStyleColor(ImGuiCol.Button, Color.Transparent.Rgba);
 
-            foreach (var (title, url, icon) in _cachedLinks)
+            foreach (var (title, url, description, icon) in _cachedLinks)
             {
                 ImGui.PushStyleColor(ImGuiCol.Text, UiColors.StatusAutomated.Rgba);
                 bool clicked;
@@ -304,7 +309,7 @@ internal sealed class OperatorHelp
                 if (icon.HasValue)
                 {
                     ImGui.Button("    " + title);
-                    Icons.DrawIconCenter(icon.Value, UiColors.StatusAutomated, 0);
+                    Icons.DrawIconOnLastItem(icon.Value, UiColors.StatusAutomated, 0);
                     clicked = ImGui.IsItemClicked();
                 }
                 else
@@ -313,7 +318,7 @@ internal sealed class OperatorHelp
                 }
 
                 ImGui.PopStyleColor();
-                CustomComponents.TooltipForLastItem("Open link in browser", url);
+                CustomComponents.TooltipForLastItem(string.IsNullOrEmpty(description) ? _openLink : description + "\n" + _openLink, url);
 
                 if (clicked)
                     CoreUi.Instance.OpenWithDefaultApplication(url);
@@ -368,4 +373,5 @@ internal sealed class OperatorHelp
     // public bool IsActive => _isDocumentationActive;
     // private bool _isDocumentationActive = false;
     private static float _timeSinceTooltipHovered = 0;
+    private static readonly string _openLink = "Open link in browser:";
 }

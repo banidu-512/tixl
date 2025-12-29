@@ -16,8 +16,8 @@
         "X": -200.0,
         "Y": 75.0
       },
-      "Usage": "CustomDropdown",
-      "Description": "The local IP address for the server to listen on. A dropdown shows available addresses. Using '0.0.0.0' will make the server listen on all available network interfaces."
+      "Description": "The local IP address for the server to listen on. A dropdown shows available addresses. Using '0.0.0.0' will make the server listen on all available network interfaces.",
+      "Usage": "CustomDropdown"
     },
     {
       "InputId": "b1c2d3e4-f5a6-4789-0123-456789abcdef"/*Port*/,
@@ -33,8 +33,8 @@
         "X": -200.0,
         "Y": 225.0
       },
-      "Usage": "Default",
-      "Description": "The message to be broadcast to all connected clients."
+      "Description": "The message to be broadcast to all connected clients.",
+      "Usage": "Default"
     },
     {
       "InputId": "d3e4f5a6-b7c8-4901-2345-67890abcdef1"/*SendOnChange*/,

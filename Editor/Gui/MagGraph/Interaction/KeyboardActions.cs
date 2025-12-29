@@ -21,9 +21,7 @@ internal static class KeyboardActions
 
         if (UserActions.FocusSelection.Triggered())
         {
-            // TODO: Implement
-            Log.Debug("Not implemented yet");
-            context.View.FocusViewToSelection(context);
+            context.ProjectView.FocusViewToSelection();
         }
 
         if (!T3Ui.IsCurrentlySaving && UserActions.Duplicate.Triggered())
@@ -86,9 +84,11 @@ internal static class KeyboardActions
             }
             else
             {
-                // FIXME: This is a work around that needs a legacy graph window to be active
                 if (ProjectView.Focused != null)
-                    NodeActions.PinSelectedToOutputWindow(ProjectView.Focused, context.Selector, compositionOp, true);
+                    NodeActions.PinSelectedToOutputWindow(ProjectView.Focused, 
+                                                          context.Selector, 
+                                                          compositionOp, 
+                                                          true);
             }
         }
 

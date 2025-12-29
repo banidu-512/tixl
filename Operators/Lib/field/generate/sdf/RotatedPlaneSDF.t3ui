@@ -10,10 +10,10 @@
       }
     },
     {
-      "InputId": "d2e663ff-efba-4821-971c-de3489cb0b15"/*Axis*/,
+      "InputId": "bfed14a7-7a97-4379-9419-222bb7a2ba57"/*Normal*/,
       "Position": {
         "X": -200.0,
-        "Y": 150.0
+        "Y": 75.0
       }
     }
   ],

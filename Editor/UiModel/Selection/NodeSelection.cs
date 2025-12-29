@@ -5,6 +5,7 @@ using ImGuiNET;
 using T3.Core.Operator;
 using T3.Core.Operator.Interfaces;
 using T3.Editor.Gui.Interaction.TransformGizmos;
+using T3.Editor.Gui.MagGraph.Model;
 using T3.Editor.Gui.UiHelpers;
 using T3.Editor.Gui.Windows;
 using T3.Editor.UiModel.InputsAndTypes;
@@ -251,6 +252,17 @@ internal sealed class NodeSelection : ISelection
         {
             if (element == null)
                 continue;
+
+            if (element is SymbolUi.Child item && item.CollapsedIntoAnnotationFrameId != Guid.Empty)
+                continue;
+
+            if (element is Annotation annotation && annotation.Collapsed)
+            {
+                bounds.Add(element.PosOnCanvas);
+                bounds.Add(element.PosOnCanvas + new Vector2(element.Size.X,10));
+                continue;
+            } 
+                
             
             if (float.IsInfinity(element.PosOnCanvas.X) || float.IsInfinity(element.PosOnCanvas.Y))
                 element.PosOnCanvas = Vector2.Zero;
@@ -321,4 +333,25 @@ internal sealed class NodeSelection : ISelection
     private static int _lastFrameCount;
     private static Guid _lastSelectionId = Guid.Empty;
 
+    public static void InvalidateSelectedOpsForTransformGizmo(NodeSelection nodeSelection)
+    {
+        // Keep invalidating the selected op to enforce rendering of Transform gizmo  
+        foreach (var si in nodeSelection.GetSelectedInstances().ToList())
+        {
+            if (si is not ITransformable)
+                continue;
+
+            foreach (var i in si.Inputs)
+            {
+                // Skip string inputs to prevent potential interference with resource file paths hooks
+                // I.e. Invalidating these every frame breaks shader recompiling if Shader-op is selected
+                if (i.ValueType != typeof(Vector3))
+                {
+                    continue;
+                }
+
+                i.DirtyFlag.ForceInvalidate();
+            }
+        }
+    }
 }

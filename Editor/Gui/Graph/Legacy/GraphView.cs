@@ -7,13 +7,12 @@ using T3.Core.Resource;
 using T3.Core.SystemUi;
 using T3.Core.UserData;
 using T3.Editor.External;
-using T3.Editor.Gui.Graph.Dialogs;
-using T3.Editor.Gui.Graph.Interaction;
-using T3.Editor.Gui.Graph.Legacy.Interaction;
-using T3.Editor.Gui.Graph.Legacy.Interaction.Connections;
+using T3.Editor.Gui.Dialogs;
 using T3.Editor.Gui.Interaction;
 using T3.Editor.Gui.Interaction.Keyboard;
 using T3.Editor.Gui.Interaction.Variations;
+using T3.Editor.Gui.Legacy.Interaction;
+using T3.Editor.Gui.Legacy.Interaction.Connections;
 using T3.Editor.Gui.MagGraph.Interaction;
 using T3.Editor.Gui.OutputUi;
 using T3.Editor.Gui.Styling;
@@ -28,7 +27,7 @@ using T3.Editor.UiModel.ProjectHandling;
 using T3.Editor.UiModel.Selection;
 using T3.SystemUi;
 
-namespace T3.Editor.Gui.Graph.Legacy;
+namespace T3.Editor.Gui.Legacy;
 
 /// <summary>
 /// A <see cref="IGraphView"/> that displays the graph of an Operator.

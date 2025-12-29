@@ -24,8 +24,8 @@
         "X": -200.0,
         "Y": 0.0
       },
-      "Usage": "Default",
-      "Description": "The URL of the network video stream (e.g., rtsp://192.168.1.100/stream1)."
+      "Description": "The URL of the network video stream (e.g., rtsp://192.168.1.100/stream1).",
+      "Usage": "Default"
     }
   ],
   "SymbolChildUis": [],

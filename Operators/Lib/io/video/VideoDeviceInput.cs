@@ -55,8 +55,6 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
     [Input(Guid = "F187A997-7E4A-48C6-81F9-2A27F150A68A")]
     public readonly InputSlot<Vector2> Reposition = new();
 
-    [Output(Guid = "9C2E4C11-09B6-4F4D-8F99-4A7372D5F2B5", DirtyFlagTrigger = DirtyFlagTrigger.Animated)]
-    public readonly Slot<Int2> Resolution = new();
 
     [Input(Guid = "49019D29-873E-4B7C-A897-C575A384A650", MappedType = typeof(ResolutionFpsTypeEnum))]
     public readonly InputSlot<int> ResolutionFpsType = new();
@@ -64,13 +62,16 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
     [Input(Guid = "805602D5-52B2-4A73-A337-12E00C3C91F2")]
     public readonly InputSlot<Vector2> Scale = new();
 
-    [Output(Guid = "A1B2C3D4-5678-90EF-1234-567890ABCDEF", DirtyFlagTrigger = DirtyFlagTrigger.Animated)]
-    public new readonly Slot<string> Status = new();
-
     // Output slots
     [Output(Guid = "1d0159cc-33d2-46b1-9c0c-7054aa560df5", DirtyFlagTrigger = DirtyFlagTrigger.Animated)]
     public readonly Slot<Texture2D> Texture = new();
-
+    
+    [Output(Guid = "9C2E4C11-09B6-4F4D-8F99-4A7372D5F2B5", DirtyFlagTrigger = DirtyFlagTrigger.Animated)]
+    public readonly Slot<Int2> Resolution = new();
+    
+    [Output(Guid = "A1B2C3D4-5678-90EF-1234-567890ABCDEF", DirtyFlagTrigger = DirtyFlagTrigger.Animated)]
+    public new readonly Slot<string> Status = new();
+    
     [Output(Guid = "868D5FFE-032C-4522-B56B-D96B30841DB7", DirtyFlagTrigger = DirtyFlagTrigger.Animated)]
     public readonly Slot<int> UpdateCount = new();
 

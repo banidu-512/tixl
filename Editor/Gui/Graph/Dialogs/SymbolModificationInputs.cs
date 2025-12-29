@@ -8,7 +8,7 @@ using T3.Editor.Gui.Styling;
 using T3.Editor.UiModel;
 using T3.Editor.UiModel.Helpers;
 
-namespace T3.Editor.Gui.Graph.Dialogs;
+namespace T3.Editor.Gui.Dialogs;
 
 internal static class SymbolModificationInputs
 {
@@ -52,7 +52,9 @@ internal static class SymbolModificationInputs
                                                         out bool isValid)
     {
         var changed = DrawNamespaceInput(ref newNamespace, destinationProject, false, out var namespaceCorrect);
-        changed |= DrawSymbolNameInput(ref newTypeName, newNamespace, destinationProject, true, out var symbolNameValid);
+
+        var autoFocus = ImGui.IsWindowAppearing();
+        changed |= DrawSymbolNameInput(ref newTypeName, newNamespace, destinationProject, autoFocus, out var symbolNameValid);
         isValid = namespaceCorrect && symbolNameValid;
         return changed;
     }
@@ -109,7 +111,7 @@ internal static class SymbolModificationInputs
                                                 We suggested to use PascalCase.
                                                 """,
                                                 null,
-                                                true);
+                                                focus);
 
         return changed;
     }

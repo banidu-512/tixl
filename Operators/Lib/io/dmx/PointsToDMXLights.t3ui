@@ -1,5 +1,5 @@
 {
-  "Id": "c9d7cd19-7fc6-4491-8dfa-3808725c7857"/*PointsToDMXLights*/,
+  "Id": "c9d7cd19-7fc6-4491-8dfa-3808725c7857"/*PointsToDmxLights*/,
   "Description": "Converts a list of 3D points into a list of DMX channel values for controlling lighting fixtures.\n\nThis is a powerful operator for controlling complex lighting setups, especially moving heads. It takes a list of target points (`EffectedPoints`) and a list of fixture positions (`ReferencePoints`) and calculates the required Pan/Tilt angles for each light. It can also map point color and other attributes to DMX channels.\n\nTips:\n- `FixtureChannelSize` must match the DMX footprint of your physical lights.\n- The various `...Channel` inputs define the DMX mapping for each fixture function (Pan, Tilt, Red, etc.).\n- Use the `VisualizeLights` output with a [VisualizeSpotLights] operator to see a 3D preview of your lighting.\n\nAKA: dmx, lights, fixtures, moving head, pan, tilt, lighting control",
   "InputUis": [
     {
@@ -8,8 +8,8 @@
         "X": -200.0,
         "Y": 1875.0
       },
-      "AddPadding": "True",
-      "Description": "The DMX channel for the red color component."
+      "Description": "The DMX channel for the red color component.",
+      "AddPadding": "True"
     },
     {
       "InputId": "032f3617-e1f3-4b41-a3be-61dd63b9f3ba"/*ForwardVector*/,
@@ -41,8 +41,8 @@
         "X": -200.0,
         "Y": 225.0
       },
-      "AddPadding": "True",
-      "Description": "The number of DMX channels used by a single fixture (its DMX footprint)."
+      "Description": "The number of DMX channels used by a single fixture (its DMX footprint).",
+      "AddPadding": "True"
     },
     {
       "InputId": "18cc3a73-3a1a-4370-87b7-e5cd44f4a3ab"/*SetCustomVar2*/,
@@ -207,8 +207,8 @@
         "X": -200.0,
         "Y": 1500.0
       },
-      "AddPadding": "True",
-      "Description": "The total range of motion in degrees for the Tilt motor (e.g., 270)."
+      "Description": "The total range of motion in degrees for the Tilt motor (e.g., 270).",
+      "AddPadding": "True"
     },
     {
       "InputId": "7449cd05-54be-484b-854a-d2143340f925"/*FitInUniverse*/,
@@ -265,8 +265,8 @@
         "X": -200.0,
         "Y": 675.0
       },
-      "AddPadding": "True",
-      "Description": "The range of motion in 3D units that maps to the full 0-255 DMX range for the position channel."
+      "Description": "The range of motion in 3D units that maps to the full 0-255 DMX range for the position channel.",
+      "AddPadding": "True"
     },
     {
       "InputId": "8ceece78-9a08-4c7b-8fea-740e8e5929a6"/*WhiteChannel*/,
@@ -384,7 +384,7 @@
       "Description": "The DMX channel for the fourth custom variable."
     },
     {
-      "InputId": "cf2c3308-8f3f-442d-a563-b419f12e7ad1"/*RGBToCMY*/,
+      "InputId": "cf2c3308-8f3f-442d-a563-b419f12e7ad1"/*RgbToCmy*/,
       "Position": {
         "X": -200.0,
         "Y": 1800.0
@@ -454,8 +454,8 @@
         "X": -200.0,
         "Y": 1275.0
       },
-      "AddPadding": "True",
-      "Description": "The total range of motion in degrees for the Pan motor (e.g., 540)."
+      "Description": "The total range of motion in degrees for the Pan motor (e.g., 540).",
+      "AddPadding": "True"
     },
     {
       "InputId": "f85ecf9f-0c3d-4c10-8ba7-480aa2c7a667"/*InvertTilt*/,

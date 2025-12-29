@@ -17,8 +17,8 @@
         "X": -200.0,
         "Y": 0.0
       },
-      "Usage": "Default",
-      "Description": "The target IP address of the Art-Net receiver or node (e.g., '192.168.1.100' or '255.255.255.255' for broadcast)."
+      "Description": "The target IP address of the Art-Net receiver or node (e.g., '192.168.1.100' or '255.255.255.255' for broadcast).",
+      "Usage": "Default"
     },
     {
       "InputId": "d2e1f0c3-a4b5-4c6d-8e7f-9a0b1c2d3e4f"/*ArtNetSendRate*/,
@@ -26,8 +26,7 @@
         "X": -200.0,
         "Y": 120.0
       },
-      "Description": "The rate in Hertz (frames per second) at which Art-Net packets are sent. Set to 0 for maximum rate. Default is 44.0.",
-      "Default": 44.0
+      "Description": "The rate in Hertz (frames per second) at which Art-Net packets are sent. Set to 0 for maximum rate. Default is 44.0."
     },
     {
       "InputId": "db583506-fd7a-4109-9f37-489c27f237b8"/*Reconnect*/,
@@ -45,8 +44,7 @@
       "Position": {
         "X": -50.0,
         "Y": -45.0
-      },
-      "Description": "The command output of the operator."
+      }
     }
   ],
   "Links": [

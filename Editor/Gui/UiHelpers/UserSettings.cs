@@ -15,7 +15,7 @@ namespace T3.Editor.Gui.UiHelpers;
 /// <summary>
 /// Saves view layout, currently open node and other user settings 
 /// </summary>
-///  todo - make internal, make extendable by external packaages
+///  todo - make internal, make extendable by external packages
 public sealed class UserSettings : Settings<UserSettings.ConfigData>
 {
     internal UserSettings(bool saveOnQuit) : base("userSettings.json", saveOnQuit: saveOnQuit)
@@ -41,12 +41,13 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public GraphHoverModes HoverMode = GraphHoverModes.LastValue;
 
         // Projects
-
-        public string ProjectsFolder = FileLocations.DefaultProjectFolder;
+        public List<string> ProjectDirectories = [];
+        public bool EnableUsbProjectDetection = true;
 
         // UI-Elements
         public bool ShowThumbnails = true;
         public bool ShowMainMenu = true;
+        public bool EnableMainMenuHoverPeek = true;
         public bool ShowTitleAndDescription = true;
         public bool ShowToolbar = true;
         public bool ShowTimeline = true;
@@ -84,6 +85,9 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public int ValueEditSmoothing = 6;
         public float ScrollSmoothing = 0.06f;
 
+        public bool UseTouchPadPanning = false;
+        public float PanSpeed = 20;
+
         // Mag Graph
         public bool DisconnectOnUnsnap = true;
         public float MaxCurveRadius = 350;
@@ -110,6 +114,8 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
 
         public bool EditorHoverPreview = true;
 
+        public bool ShowSkillQuestInHub = true;
+
         // Asset Lib
         public bool SyncWithOperatorSelection = true;
         public bool ScrollAssetLibToActive = true;
@@ -120,8 +126,12 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
 
         // Other settings
         public float GizmoSize = 100;
+
+        // Fullscreen settings
         public int FullScreenIndexMain = 0;
+        // Output window
         public int FullScreenIndexViewer = 0;
+        public Vector4 OutputArea = new(0,0,0,0);
 
         // Timeline
         public float TimeRasterDensity = 1f;

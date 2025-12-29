@@ -277,7 +277,7 @@ internal static class KeyMapEditor
 
     private static bool DrawToggle(string label, bool enabled)
     {
-        return CustomComponents.ToggleButton(label, ref enabled, new Vector2(40, 0));
+        return CustomComponents.ToggleButton(ref enabled, label, new Vector2(40, 0));
     }
 
     private static bool _somethingChanged;

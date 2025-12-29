@@ -14,13 +14,18 @@ namespace T3.Editor.UiModel.ProjectHandling;
 /// </summary>
 internal sealed class Structure
 {
-    private readonly Func<Symbol.Child> _getRoot;
-
-    public Structure(Func<Symbol.Child> getRoot)
+    private readonly Func<Symbol.Child> _getRootAction;
+    
+    public Structure(Func<Symbol.Child> getRootAction)
     {
-        _getRoot = getRoot;
+        _getRootAction = getRootAction;
     }
 
+    public Instance? GetRootInstance()
+    {
+        return GetInstanceFromIdPath([_getRootAction().Id]);
+    }
+    
     public Instance? GetInstanceFromIdPath(IReadOnlyList<Guid>? childPath)
     {
         if (childPath == null || childPath.Count == 0)
@@ -28,7 +33,7 @@ internal sealed class Structure
             return null;
         }
 
-        var rootSymbolChild = _getRoot();
+        Symbol.Child? rootSymbolChild = _getRootAction();
         if (rootSymbolChild == null)
         {
             Log.Error("Root does not exist? \n" + Environment.StackTrace);

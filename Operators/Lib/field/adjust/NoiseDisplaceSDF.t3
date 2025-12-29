@@ -24,6 +24,10 @@
     {
       "Id": "b7a2e12b-9e55-43a5-be79-510f4a28a1f4"/*Scale*/,
       "DefaultValue": 1.0
+    },
+    {
+      "Id": "ee1c1993-3968-45a6-bbfc-9e4e6032ae7b"/*UseLocalSpace*/,
+      "DefaultValue": false
     }
   ],
   "Children": [],

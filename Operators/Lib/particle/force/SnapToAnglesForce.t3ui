@@ -80,13 +80,6 @@
       "Max": 10.0,
       "ClampMin": true,
       "ClampMax": true
-    },
-    {
-      "InputId": "e982919b-3b9e-4a18-9d00-d5f2aade082d"/*PlaneSelection*/,
-      "Position": {
-        "X": -516.99866,
-        "Y": 686.7369
-      }
     }
   ],
   "SymbolChildUis": [

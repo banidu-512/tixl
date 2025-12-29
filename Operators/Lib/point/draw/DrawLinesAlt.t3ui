@@ -24,13 +24,6 @@
       }
     },
     {
-      "InputId": "5396d816-3d18-468d-91af-4003ec13405b"/*SpaceMode*/,
-      "Position": {
-        "X": 209.93845,
-        "Y": 117.51967
-      }
-    },
-    {
       "InputId": "584039ef-c876-432a-800c-b1366c45242b"/*WrapMode*/,
       "Position": {
         "X": 630.7589,

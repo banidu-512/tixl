@@ -8,13 +8,10 @@ using T3.Core.Operator.Interfaces;
 using T3.Core.Operator.Slots;
 using T3.Core.Resource;
 using T3.Core.Utils;
+using T3.Editor.Gui.Dialogs;
 using T3.Editor.Gui.OpUis;
-using T3.Editor.Gui.Graph.Dialogs;
-using T3.Editor.Gui.Graph.Legacy.Interaction;
-using T3.Editor.Gui.Graph.Legacy.Interaction.Connections;
 using T3.Editor.Gui.Input;
 using T3.Editor.Gui.Interaction.TransformGizmos;
-using T3.Editor.Gui.MagGraph.Interaction;
 using T3.Editor.Gui.OutputUi;
 using T3.Editor.Gui.Styling;
 using T3.Editor.Gui.UiHelpers;
@@ -28,9 +25,11 @@ using Color = T3.Core.DataTypes.Vector.Color;
 using Texture2D = T3.Core.DataTypes.Texture2D;
 using Vector2 = System.Numerics.Vector2;
 using T3.Editor.Gui.Interaction.Keyboard;
+using T3.Editor.Gui.Legacy.Interaction;
+using T3.Editor.Gui.Legacy.Interaction.Connections;
+using T3.Editor.Gui.MagGraph.Interaction;
 
-
-namespace T3.Editor.Gui.Graph.Legacy;
+namespace T3.Editor.Gui.Legacy;
 
 /// <summary>
 /// Renders a graphic representation of a SymbolChild within the current GraphWindow.
@@ -100,7 +99,7 @@ internal sealed class GraphNode
                                             IStatusProvider.StatusLevel.Error   => UiColors.StatusError,
                                             _                                   => UiColors.StatusError
                                         };
-                        Icons.DrawIconCenter(Icon.Warning, color);
+                        Icons.DrawIconOnLastItem(Icon.Warning, color);
                         CustomComponents.TooltipForLastItem(UiColors.StatusWarning, statusLevel.ToString(), statusProvider.GetStatusMessage(), false);
                     }
                 }
@@ -113,7 +112,7 @@ internal sealed class GraphNode
                         _projectView.NodeSelection.SetSelection(childUi, instance);
                         _view.EditCommentDialog.ShowNextFrame();
                     }
-                    Icons.DrawIconCenter(Icon.Comment, UiColors.ForegroundFull);
+                    Icons.DrawIconOnLastItem(Icon.Comment, UiColors.ForegroundFull);
                     CustomComponents.TooltipForLastItem( UiColors.Text, childUi.Comment, null, false);
                 }
                     
@@ -988,7 +987,7 @@ internal sealed class GraphNode
                     ImGui.BeginTooltip();
                     ImGui.TextUnformatted($".{outputDef.Name}");
                     ImGui.PushFont(Fonts.FontSmall);
-                    ImGui.TextColored(UiColors.Gray, $"<{TypeNameRegistry.Entries[outputDef.ValueType]}>\n{output.DirtyFlag.NumUpdatesWithinFrame} Updates\n({output.DirtyFlag.Trigger})");
+                    ImGui.TextColored(UiColors.Gray.Rgba, $"<{TypeNameRegistry.Entries[outputDef.ValueType]}>\n{output.DirtyFlag.NumUpdatesWithinFrame} Updates\n({output.DirtyFlag.Trigger})");
                     ImGui.PopFont();
                     ImGui.EndTooltip();
 
@@ -1117,13 +1116,11 @@ internal sealed class GraphNode
                     }
 
                     ImGui.TextUnformatted($".{inputDef.Name}");
-                    ImGui.PushFont(Fonts.FontSmall);
-                    ImGui.TextColored(UiColors.Gray, $"<{TypeNameRegistry.Entries[inputDef.DefaultValue.ValueType]}>");
-                    ImGui.PopFont();
+                    CustomComponents.StylizedText($"<{TypeNameRegistry.Entries[inputDef.DefaultValue.ValueType]}>", Fonts.FontSmall, UiColors.Gray);
                     if (isMissing)
                     {
                         FormInputs.AddVerticalSpace(5);
-                        ImGui.TextColored(UiColors.StatusAttention, $"Requires input");   
+                        ImGui.TextColored(UiColors.StatusAttention.Rgba, $"Requires input");   
                     }
                 }
                 ImGui.EndTooltip();
