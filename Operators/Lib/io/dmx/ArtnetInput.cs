@@ -1,12 +1,9 @@
 #nullable enable
 using System.Diagnostics;
-using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Threading;
-using System.Linq;
 using T3.Core.Utils;
-using T3.Core.Logging;
 
 namespace Lib.io.dmx;
 
@@ -20,6 +17,7 @@ internal sealed class ArtnetInput : Instance<ArtnetInput>, IStatusProvider, ICus
     [Input(Guid = "3d085f6f-6f4a-4876-805f-22f25497a731")]
     public readonly InputSlot<bool> Active = new();
 
+    // Unique GUID for LocalIpAddress in ArtnetInput
     [Input(Guid = "24B5D450-4E83-49DB-88B1-7D688E64585D")]
     public readonly InputSlot<string> LocalIpAddress = new("0.0.0.0 (Any)");
 
@@ -41,11 +39,10 @@ internal sealed class ArtnetInput : Instance<ArtnetInput>, IStatusProvider, ICus
     private string? _lastLocalIp;
 
     private Thread? _listenerThread;
-    private bool _printToLog;
+    private bool _printToLog; // Added for PrintToLog functionality
     private volatile bool _runListener;
     private UdpClient? _udpClient;
     private bool _wasActive;
-    private double _lastRetryTime;
 
     public ArtnetInput()
     {
@@ -54,7 +51,7 @@ internal sealed class ArtnetInput : Instance<ArtnetInput>, IStatusProvider, ICus
 
     private void Update(EvaluationContext context)
     {
-        _printToLog = PrintToLog.GetValue(context);
+        _printToLog = PrintToLog.GetValue(context); // Update printToLog flag
         var active = Active.GetValue(context);
         var localIp = LocalIpAddress.GetValue(context);
 
@@ -65,14 +62,6 @@ internal sealed class ArtnetInput : Instance<ArtnetInput>, IStatusProvider, ICus
             if (active) StartListening();
             _wasActive = active;
             _lastLocalIp = localIp;
-        }
-        else if (active && (_listenerThread == null || !_listenerThread.IsAlive))
-        {
-            if (context.LocalTime - _lastRetryTime > 2.0)
-            {
-                _lastRetryTime = context.LocalTime;
-                StartListening();
-            }
         }
 
         CleanupStaleUniverses(Timeout.GetValue(context));
@@ -125,8 +114,8 @@ internal sealed class ArtnetInput : Instance<ArtnetInput>, IStatusProvider, ICus
             Log.Debug("Artnet Input: Stopping listener.", this);
         }
 
-        _udpClient?.Close();
-        _listenerThread?.Join(200);
+        _udpClient?.Close(); // This will unblock the Receive call in ListenLoop
+        _listenerThread?.Join(200); // Give the thread a moment to shut down
         _listenerThread = null;
         if (_printToLog)
         {
@@ -136,7 +125,7 @@ internal sealed class ArtnetInput : Instance<ArtnetInput>, IStatusProvider, ICus
 
     private void ListenLoop()
     {
-        UdpClient? currentUdpClient = null;
+        UdpClient? currentUdpClient = null; // Declare locally for safer cleanup
         try
         {
             var localIpStr = LocalIpAddress.Value;
@@ -148,7 +137,7 @@ internal sealed class ArtnetInput : Instance<ArtnetInput>, IStatusProvider, ICus
             currentUdpClient.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
             currentUdpClient.Client.Bind(new IPEndPoint(listenIp, ArtNetPort));
 
-            _udpClient = currentUdpClient;
+            _udpClient = currentUdpClient; // Assign to member field after successful bind
 
             if (_printToLog)
             {
@@ -160,7 +149,7 @@ internal sealed class ArtnetInput : Instance<ArtnetInput>, IStatusProvider, ICus
             {
                 try
                 {
-                    if (_udpClient == null) break;
+                    if (_udpClient == null) break; // Check if a client was disposed externally
                     var data = _udpClient.Receive(ref remoteEndPoint);
 
                     if (data.Length < 18 || !data.AsSpan(0, 8).SequenceEqual(_artnetId) || data[8] != 0x00 || data[9] != 0x50) continue;
@@ -186,7 +175,7 @@ internal sealed class ArtnetInput : Instance<ArtnetInput>, IStatusProvider, ICus
                 }
                 catch (SocketException ex)
                 {
-                    if (_runListener)
+                    if (_runListener) // Only log if not intentionally stopping
                     {
                         Log.Warning($"Artnet Input receive socket error: {ex.Message} (Error Code: {ex.ErrorCode})", this);
                     }
@@ -213,7 +202,7 @@ internal sealed class ArtnetInput : Instance<ArtnetInput>, IStatusProvider, ICus
         finally
         {
             currentUdpClient?.Close();
-            if (_udpClient == currentUdpClient) _udpClient = null;
+            if (_udpClient == currentUdpClient) _udpClient = null; // Clear if it's the one we set
         }
     }
 
@@ -285,52 +274,39 @@ internal sealed class ArtnetInput : Instance<ArtnetInput>, IStatusProvider, ICus
     public IStatusProvider.StatusLevel GetStatusLevel() => _lastStatusLevel;
     public string GetStatusMessage() => _lastStatusMessage;
 
-    #region Network Interface Logic
-    private static List<NetworkAdapterInfo> _networkInterfaces = new();
-
-    private static List<NetworkAdapterInfo> GetNetworkInterfaces()
+    string ICustomDropdownHolder.GetValueForInput(Guid id)
     {
-        var list = new List<NetworkAdapterInfo>();
-        list.Add(new NetworkAdapterInfo(IPAddress.Any, IPAddress.Any, "Any"));
-        list.Add(new NetworkAdapterInfo(IPAddress.Loopback, IPAddress.Parse("255.0.0.0"), "Localhost"));
+        if (LocalIpAddress.Value == null)
+            return string.Empty;
         
-        try
-        {
-            list.AddRange(from ni in NetworkInterface.GetAllNetworkInterfaces()
-                          where ni.OperationalStatus == OperationalStatus.Up && ni.NetworkInterfaceType != NetworkInterfaceType.Loopback
-                          from ip in ni.GetIPProperties().UnicastAddresses
-                          where ip.Address.AddressFamily == AddressFamily.InterNetwork
-                          select new NetworkAdapterInfo(ip.Address, ip.IPv4Mask, ni.Name));
-        }
-        catch (Exception e)
-        {
-            Log.Warning("Could not enumerate network interfaces: " + e.Message);
-        }
-        return list;
+        return id == LocalIpAddress.Id ? LocalIpAddress.Value : string.Empty;
     }
-
-    private sealed record NetworkAdapterInfo(IPAddress IpAddress, IPAddress SubnetMask, string Name)
-    {
-        public string DisplayName => $"{Name} ({IpAddress})";
-    }
-    #endregion
-
-    string ICustomDropdownHolder.GetValueForInput(Guid id) => id == LocalIpAddress.Id ? LocalIpAddress.Value : string.Empty;
 
     IEnumerable<string> ICustomDropdownHolder.GetOptionsForInput(Guid id)
     {
-        if (id == LocalIpAddress.Id)
-        {
-            _networkInterfaces = GetNetworkInterfaces();
-            foreach (var adapter in _networkInterfaces) yield return adapter.DisplayName;
-        }
+        return id == LocalIpAddress.Id ? GetLocalIPv4Addresses() : Empty<string>();
     }
 
     void ICustomDropdownHolder.HandleResultForInput(Guid id, string? s, bool i)
     {
         if (string.IsNullOrEmpty(s) || !i || id != LocalIpAddress.Id) return;
-        var foundAdapter = _networkInterfaces.FirstOrDefault(adapter => adapter.DisplayName == s);
-        if (foundAdapter != null) LocalIpAddress.SetTypedInputValue(foundAdapter.IpAddress.ToString());
+        LocalIpAddress.SetTypedInputValue(s.Split(' ')[0]);
+    }
+
+    private static IEnumerable<string> GetLocalIPv4Addresses()
+    {
+        yield return "0.0.0.0 (Any)";
+        yield return "127.0.0.1";
+        if (!NetworkInterface.GetIsNetworkAvailable()) yield break;
+        foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
+        {
+            if (ni.OperationalStatus != OperationalStatus.Up || ni.NetworkInterfaceType == NetworkInterfaceType.Loopback) continue;
+            foreach (var ipInfo in ni.GetIPProperties().UnicastAddresses)
+            {
+                if (ipInfo.Address.AddressFamily == AddressFamily.InterNetwork)
+                    yield return ipInfo.Address.ToString();
+            }
+        }
     }
     #endregion
 }
