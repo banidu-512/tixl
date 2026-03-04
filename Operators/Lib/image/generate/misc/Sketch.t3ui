@@ -81,6 +81,13 @@
       }
     },
     {
+      "InputId": "bb07d23c-11c8-4b96-8a3c-f1f901007585"/*SyncToKeyframes*/,
+      "Position": {
+        "X": 98.33612,
+        "Y": 366.09412
+      }
+    },
+    {
       "InputId": "d9931f47-2fc9-4df3-ab97-1a71e45501d2"/*ShowOnionSkin*/,
       "Position": {
         "X": 679.13983,

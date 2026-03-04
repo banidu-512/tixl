@@ -108,17 +108,12 @@
           "Value": 0.53
         },
         {
-          "Id": "674cabbd-cf31-46ac-9a1a-4f6bd727c977"/*Center*/,
+          "Id": "674cabbd-cf31-46ac-9a1a-4f6bd727c977"/*Offset*/,
           "Type": "System.Numerics.Vector2",
           "Value": {
             "X": -0.5,
             "Y": -0.5
           }
-        },
-        {
-          "Id": "fb8d51fe-b4c2-452a-9e53-b649aed92bd7"/*IgnoreTemplate*/,
-          "Type": "System.Boolean",
-          "Value": false
         }
       ],
       "Outputs": []
@@ -202,12 +197,6 @@
       "SourceSlotId": "e47bf25e-351a-44e6-84c6-ad3abc93531a",
       "TargetParentOrChildId": "d34889a1-59ed-4481-8265-9038698f3568",
       "TargetSlotId": "c9a801ec-13fb-4ad4-b0cd-d125b5db500a"
-    },
-    {
-      "SourceParentOrChildId": "d2fd6315-30b6-48c6-90bd-c58ef0843c15",
-      "SourceSlotId": "97a91f72-1e40-412c-911e-70b142e16925",
-      "TargetParentOrChildId": "d34889a1-59ed-4481-8265-9038698f3568",
-      "TargetSlotId": "fb8d51fe-b4c2-452a-9e53-b649aed92bd7"
     }
   ]
 }

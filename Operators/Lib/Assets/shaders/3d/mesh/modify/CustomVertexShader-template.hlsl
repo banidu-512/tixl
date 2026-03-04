@@ -71,11 +71,11 @@ void main(uint3 i : SV_DispatchThreadID)
     }
 
     PbrVertex v= SourceVertices[vertexIndex];
-
+{
 //- METHOD -------------------------------------
 /*{method}*/
 //----------------------------------------------
-
+}
     ResultVertices[vertexIndex] = v;
 }
 

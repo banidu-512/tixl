@@ -24,7 +24,9 @@ cbuffer Params : register(b0)
     float ShrinkWithDistance;
     float OffsetU;
     float UseWForWidth;
+
     float UseWForU;
+    float WidthFactor;
 };
 
 cbuffer Transforms : register(b1)
@@ -75,6 +77,8 @@ psInput vsMain(uint id : SV_VertexID)
     uint particleId = id / 6;
     float3 cornerFactors = Corners[quadIndex];
 
+    float f = cornerFactors.x;
+
     // Point pointAA = Points[ particleId<1 ? 0: particleId-1];
     Point pointA = Points[particleId];
     Point pointB = Points[particleId + 1];
@@ -91,7 +95,7 @@ psInput vsMain(uint id : SV_VertexID)
     float4 camUpInWorld = mul(float4(0, 1, 0, 0), CameraToWorld);
     float4 camUpInObject = mul(camUpInWorld, WorldToObject);
 
-    float3 posInObject = cornerFactors.x < 0.5 ? pointA.Position : pointB.Position;
+    float3 posInObject = f < 0.5 ? pointA.Position : pointB.Position;
     float3 posAInCamera = mul(float4(pointA.Position, 1), ObjectToCamera).xyz;
     float3 posBInCamera = mul(float4(pointB.Position, 1), ObjectToCamera).xyz;
     float4 lineInCamera = float4(posAInCamera - posBInCamera, 1);
@@ -101,30 +105,30 @@ psInput vsMain(uint id : SV_VertexID)
     float3 sideInCamera = normalize(cross(lineCenterInCamera, lineInCamera.xyz));
 
     output.texCoord = float2(
-        cornerFactors.x,
+        f,
         cornerFactors.y / 2 + 0.5);
 
     float4 posInCamera = mul(float4(posInObject, 1), ObjectToCamera);
-    posInCamera.xyz += sideInCamera * Size / 1000 * cornerFactors.y;
+
+    float pFx1 = lerp(pointA.FX1, pointB.FX1, f);
+    float pFx2 = lerp(pointA.FX2, pointB.FX2, f);
+
+    float sizeFxFactor = WidthFactor < 0.5 ? 1 : ((WidthFactor < 1.5) ? pFx1 : pFx2);
+
+    posInCamera.xyz += sideInCamera * Size * sizeFxFactor / 1000 * cornerFactors.y;
 
     output.position = mul(posInCamera, CameraToClipSpace);
     output.fog = pow(saturate(-posInCamera.z / FogDistance), FogBias);
-    output.color = Color * (cornerFactors.x < 0.5 ? pointA.Color : pointB.Color);
+    output.color = Color * (f < 0.5 ? pointA.Color : pointB.Color);
     return output;
 }
 
 float4 psMain(psInput input) : SV_TARGET
 {
-    // return float4(1,1,0,1);
     float4 imgColor = texture2.Sample(texSampler, input.texCoord);
-    // return float4(input.texCoord.xx,0,1);
     float dFromLineCenter = abs(input.texCoord.y - 0.5) * 2;
-    // float a= 1;//smoothstep(1,0.95,dFromLineCenter) ;
 
     float4 col = input.color * imgColor;
     col.rgb = lerp(col.rgb, FogColor.rgb, input.fog);
     return clamp(col, float4(0, 0, 0, 0), float4(1000, 1000, 1000, 1));
-
-    // float4 color = lerp(input.color * imgColor, FogColor, input.fog); // * input.color;
-    // return clamp(float4(color.rgb, color.a * a), 0, float4(100,100,100,1));
 }

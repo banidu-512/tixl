@@ -6,8 +6,8 @@
     {
       "InputId": "022f1959-a62b-49de-817a-3930bc8ec32b"/*EnableDepthWrite*/,
       "Position": {
-        "X": 416.5924,
-        "Y": 886.76996
+        "X": 510.461,
+        "Y": 916.3779
       },
       "Description": "This defines whether the mesh / plane covers itself or is covered by or covers other meshes."
     },
@@ -77,16 +77,23 @@
     {
       "InputId": "a83bdfb1-c92d-4844-9e43-8ce09959fae9"/*EnableDepthTest*/,
       "Position": {
-        "X": 416.5924,
-        "Y": 851.76996
+        "X": 510.461,
+        "Y": 881.3778
       },
       "Description": "This defines whether the mesh / plane covers itself or is covered by or covers other meshes."
     },
     {
+      "InputId": "b646098a-b62c-44dd-b6f7-f8d4821b0c12"/*Filtering*/,
+      "Position": {
+        "X": 440.66754,
+        "Y": 676.7888
+      }
+    },
+    {
       "InputId": "c8d0e44e-acd1-4045-b565-e1ce0b722e70"/*BlendMode*/,
       "Position": {
-        "X": 439.18604,
-        "Y": 935.5263
+        "X": 510.461,
+        "Y": 846.3778
       },
       "GroupTitle": "Additional Options",
       "Description": "Selects the blend mode."
@@ -152,8 +159,8 @@
     {
       "ChildId": "409f7ef6-f0d2-4c18-89a6-5ee2b872f12d"/*OutputMergerStage*/,
       "Position": {
-        "X": 719.18604,
-        "Y": 865.5263
+        "X": 790.461,
+        "Y": 846.3778
       }
     },
     {
@@ -180,8 +187,8 @@
     {
       "ChildId": "6a7dd7a0-5d91-4d5b-85a4-c0d6f7a46c42"/*PickBlendMode*/,
       "Position": {
-        "X": 579.18604,
-        "Y": 935.5263
+        "X": 650.461,
+        "Y": 846.3778
       }
     },
     {
@@ -267,8 +274,8 @@
     {
       "ChildId": "e76bed8a-fa21-4016-88b1-37cb772c07d0"/*DepthStencilState*/,
       "Position": {
-        "X": 556.5924,
-        "Y": 851.76996
+        "X": 650.461,
+        "Y": 881.3778
       }
     },
     {

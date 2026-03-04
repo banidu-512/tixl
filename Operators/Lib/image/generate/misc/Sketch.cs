@@ -42,6 +42,9 @@ internal sealed class Sketch : Instance<Sketch>
         [Input(Guid = "046a932b-6331-4e97-b289-be88420951cc")]
         public readonly InputSlot<float> OnionSkinRange = new InputSlot<float>();
 
+        [Input(Guid = "bb07d23c-11c8-4b96-8a3c-f1f901007585")]
+        public readonly InputSlot<bool> SyncToKeyframes = new InputSlot<bool>();
+
 
     private enum ShowModes
     {

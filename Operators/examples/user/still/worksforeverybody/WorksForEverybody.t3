@@ -384,11 +384,6 @@
           "Id": "b4895a95-5ff4-4583-9ec3-befcf0f7b18b"/*B*/,
           "Type": "System.Single",
           "Value": 13.2
-        },
-        {
-          "Id": "fb8d51fe-b4c2-452a-9e53-b649aed92bd7"/*IgnoreTemplate*/,
-          "Type": "System.Boolean",
-          "Value": false
         }
       ],
       "Outputs": []
@@ -2316,11 +2311,6 @@
           "Id": "b4895a95-5ff4-4583-9ec3-befcf0f7b18b"/*B*/,
           "Type": "System.Single",
           "Value": 10.0
-        },
-        {
-          "Id": "fb8d51fe-b4c2-452a-9e53-b649aed92bd7"/*IgnoreTemplate*/,
-          "Type": "System.Boolean",
-          "Value": false
         }
       ],
       "Outputs": []

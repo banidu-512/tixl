@@ -38,8 +38,8 @@ internal abstract class MfVideoWriter : IDisposable
         _videoPixelSize = session.RenderToFileResolution;
         _videoInputFormat = _videoInputFormatId;
         _supportAudio = session.Settings.ExportAudio;
-        Bitrate = 2000000;
-        Framerate = 60; //TODO: is this actually used?
+        Bitrate = session.Settings.Bitrate;
+        Framerate =  (int)(session.Settings.FrameRate +0.5f);   // Is this used? 
         _frameIndex = -1;
     }
 
@@ -398,12 +398,12 @@ internal abstract class MfVideoWriter : IDisposable
     /// <summary>
     /// Gets or sets the average video bitrate in bits per second.
     /// </summary>
-    protected int Bitrate;
+    protected readonly int Bitrate;
 
     /// <summary>
     /// Gets or sets the video framerate (frames per second).
     /// </summary>
-    protected int Framerate;
+    protected readonly int Framerate;
 }
 
 /// <summary>
@@ -416,9 +416,6 @@ internal sealed class Mp4VideoWriter : MfVideoWriter
     /// <summary>
     /// Initializes a new instance of the Mp4VideoWriter class.
     /// </summary>
-    /// <param name="filePath">The output file path.</param>
-    /// <param name="videoPixelSize">The target pixel size of the video.</param>
-    /// <param name="supportAudio">Whether to support audio in the output file.</param>
     public Mp4VideoWriter(RenderProcess.ExportSession session)
         : base(session)
     {

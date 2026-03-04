@@ -5,16 +5,13 @@ internal sealed class CustomPixelShader : Instance<CustomPixelShader>
 {
 
         [Input(Guid = "5f90f885-0ccc-4014-a921-dc710257835a")]
-        public readonly InputSlot<T3.Core.DataTypes.Texture2D> FxTexture = new InputSlot<T3.Core.DataTypes.Texture2D>();
+        public readonly InputSlot<T3.Core.DataTypes.Texture2D> ImageA = new InputSlot<T3.Core.DataTypes.Texture2D>();
 
         [Input(Guid = "e63cf24c-0e01-47d4-9532-18261310315e")]
-        public readonly InputSlot<T3.Core.DataTypes.Texture2D> FxTexture2 = new InputSlot<T3.Core.DataTypes.Texture2D>();
-
-        [Input(Guid = "8c3ffefe-8721-4dde-b252-22eb8be02d3f")]
-        public readonly InputSlot<string> ShaderCode = new InputSlot<string>();
+        public readonly InputSlot<T3.Core.DataTypes.Texture2D> ImageB = new InputSlot<T3.Core.DataTypes.Texture2D>();
 
         [Input(Guid = "674cabbd-cf31-46ac-9a1a-4f6bd727c977")]
-        public readonly InputSlot<System.Numerics.Vector2> Center = new InputSlot<System.Numerics.Vector2>();
+        public readonly InputSlot<System.Numerics.Vector2> Offset = new InputSlot<System.Numerics.Vector2>();
 
         [Input(Guid = "3d84725a-594b-46d8-aa21-eec99026115d")]
         public readonly InputSlot<float> A = new InputSlot<float>();
@@ -28,6 +25,21 @@ internal sealed class CustomPixelShader : Instance<CustomPixelShader>
         [Input(Guid = "db522fd4-5cfc-49f6-9983-02ec0dd6090a")]
         public readonly InputSlot<float> D = new InputSlot<float>();
 
+        [Input(Guid = "b4914d9d-7a39-46e1-8b45-803e1449039a")]
+        public readonly InputSlot<System.Numerics.Vector2> GainAndBias = new InputSlot<System.Numerics.Vector2>();
+
+        [Input(Guid = "e1c50230-8821-4109-8119-fd8b66b43e7f")]
+        public readonly InputSlot<T3.Core.DataTypes.Gradient> Gradient = new InputSlot<T3.Core.DataTypes.Gradient>();
+
+        [Input(Guid = "8c3ffefe-8721-4dde-b252-22eb8be02d3f")]
+        public readonly InputSlot<string> ShaderCode = new InputSlot<string>();
+
+        [Input(Guid = "c9a801ec-13fb-4ad4-b0cd-d125b5db500a")]
+        public readonly InputSlot<string> AdditionalCode = new InputSlot<string>();
+
+        [Input(Guid = "1ed14f4d-3b1e-4f24-9d83-d96005217716")]
+        public readonly InputSlot<string> TemplateFile = new InputSlot<string>();
+
         [Input(Guid = "83e06d04-02bd-40cc-8666-d5dd62a9e63e")]
         public readonly InputSlot<T3.Core.DataTypes.Vector.Int2> Resolution = new InputSlot<T3.Core.DataTypes.Vector.Int2>();
 
@@ -39,12 +51,6 @@ internal sealed class CustomPixelShader : Instance<CustomPixelShader>
 
         [Input(Guid = "a965b7d3-c78f-4da7-ae70-c461cc9b173c")]
         public readonly InputSlot<bool> Clear = new InputSlot<bool>();
-
-        [Input(Guid = "c9a801ec-13fb-4ad4-b0cd-d125b5db500a")]
-        public readonly InputSlot<string> AdditionalCode = new InputSlot<string>();
-
-        [Input(Guid = "fb8d51fe-b4c2-452a-9e53-b649aed92bd7")]
-        public readonly InputSlot<bool> IgnoreTemplate = new InputSlot<bool>();
 
         [Input(Guid = "b898c5a9-1c4b-4958-a7c1-01c27da10f6a")]
         public readonly MultiInputSlot<SharpDX.Direct3D11.ShaderResourceView> ShaderResources = new MultiInputSlot<SharpDX.Direct3D11.ShaderResourceView>();

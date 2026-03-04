@@ -1,0 +1,240 @@
+{
+  "Id": "f9a3cbf2-a32a-4940-84ca-de11250d02cc"/*SdfReflectionLinePointsExample*/,
+  "Description": "A nice 3d-fractal laser scene",
+  "InputUis": [],
+  "SymbolChildUis": [
+    {
+      "ChildId": "0bb2bd48-f775-49a4-b49a-ce134925098c"/*SdfReflectionLinePoints*/,
+      "Position": {
+        "X": 280.0,
+        "Y": 168.53516
+      }
+    },
+    {
+      "ChildId": "122a2fa9-fa02-4638-8854-5dc6fcd7427f"/*Add*/,
+      "Position": {
+        "X": 140.0,
+        "Y": 133.53516
+      }
+    },
+    {
+      "ChildId": "2195441f-4cd4-42f7-a891-4b21e5d1794a"/*Blob*/,
+      "Position": {
+        "X": 498.42773,
+        "Y": 231.56445
+      }
+    },
+    {
+      "ChildId": "380af89b-4686-4579-8c36-8cd485834fad"/*Fxaa*/,
+      "Position": {
+        "X": 778.42773,
+        "Y": 336.56445
+      }
+    },
+    {
+      "ChildId": "5e177afb-6bf1-428e-8ac7-2bc8d0f03dfc"/*SetMaterial*/,
+      "Position": {
+        "X": 638.42773,
+        "Y": 126.56445
+      }
+    },
+    {
+      "ChildId": "63dbd215-2d00-4e3e-b61c-35a7e5bfa1b9"/*CustomSDF*/,
+      "Position": {
+        "X": 58.154297,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "7177345b-8dc9-4d76-a3a6-0ffd06af33d5"/*DrawRayLines*/,
+      "Position": {
+        "X": 638.42773,
+        "Y": 161.56445
+      }
+    },
+    {
+      "ChildId": "7d723ce6-2b4e-4d81-b68d-bc91cc4f8ec6"/*DrawPoints*/,
+      "Position": {
+        "X": 638.42773,
+        "Y": 196.56445
+      }
+    },
+    {
+      "ChildId": "871e9b8e-0cef-498c-bd06-5bd32b8f8e23"/*MapPointAttributes*/,
+      "Position": {
+        "X": 498.42773,
+        "Y": 196.56445
+      }
+    },
+    {
+      "ChildId": "8c37b04e-879d-4ba9-a964-3c5185f67d79"/*SetFog*/,
+      "Position": {
+        "X": 778.42773,
+        "Y": 231.56445
+      }
+    },
+    {
+      "ChildId": "9758ba48-1d2e-44eb-8763-6db6599fc02f"/*OrbitCamera*/,
+      "Position": {
+        "X": 778.42773,
+        "Y": 266.56445
+      }
+    },
+    {
+      "ChildId": "9892aca8-072f-4f1f-a709-bad739bd909a"/*RadialPoints*/,
+      "Position": {
+        "X": 280.0,
+        "Y": 98.53516
+      }
+    },
+    {
+      "ChildId": "a4ac5e56-61c9-4bdd-a37c-c9c04290b6b0"/*RenderTarget*/,
+      "Position": {
+        "X": 778.42773,
+        "Y": 301.56445
+      }
+    },
+    {
+      "ChildId": "a7a76ba7-7082-43af-be5b-b9d21bbb2422"/*Group*/,
+      "Position": {
+        "X": 778.42773,
+        "Y": 126.56445
+      }
+    },
+    {
+      "ChildId": "b96aba56-ea78-434f-aa47-2699bae0120c"/*Bloom*/,
+      "Position": {
+        "X": 778.42773,
+        "Y": 371.56445
+      }
+    },
+    {
+      "ChildId": "f1bf3916-8665-46df-b51a-4e41b8724826"/*RaymarchField*/,
+      "Position": {
+        "X": 498.42773,
+        "Y": 126.56445
+      }
+    },
+    {
+      "ChildId": "f30ad6e6-803e-421f-948d-521522bf1c38"/*Time*/,
+      "Position": {
+        "X": 0.0,
+        "Y": 133.53516
+      }
+    },
+    {
+      "ChildId": "ff6ffac1-7e3b-4387-a5e6-c7219e6b966a"/*MapPointAttributes*/,
+      "Position": {
+        "X": 498.42773,
+        "Y": 161.56445
+      }
+    }
+  ],
+  "OutputUis": [
+    {
+      "OutputId": "2550d2e7-2cb8-4da8-86da-383e1117877a"/*Result*/,
+      "Position": {
+        "X": 1188.4277,
+        "Y": 198.28223
+      }
+    }
+  ],
+  "TourPoints": [
+    {
+      "Id": "2d811cef-f279-449c-8f8c-520e9350ca16",
+      "ChildId": "63dbd215-2d00-4e3e-b61c-35a7e5bfa1b9",
+      "Description": "We start with a fractal by J. Baker.",
+      "Style": "InfoFor"
+    },
+    {
+      "Id": "f1cc30d2-e134-4aff-bcab-33c2c5bdcd36",
+      "ChildId": "f1bf3916-8665-46df-b51a-4e41b8724826",
+      "Description": "And raymarch it. \nWe adjusted the Max Steps parameter to add some depth.",
+      "Style": "InfoFor"
+    },
+    {
+      "Id": "5a389dbd-b4e8-4a91-ac29-25a548ce99cc",
+      "ChildId": "f1bf3916-8665-46df-b51a-4e41b8724826",
+      "Description": "Also notice, how we also increased SpecularAA to avoid flickering of the reflective edges.",
+      "Style": "InfoFor"
+    },
+    {
+      "Id": "2de2fd48-48de-47e6-93a1-a26cc24851df",
+      "ChildId": "5e177afb-6bf1-428e-8ac7-2bc8d0f03dfc",
+      "Description": "We increase metalness to make it shine and reflective.",
+      "Style": "InfoFor"
+    },
+    {
+      "Id": "cc762bc4-1b29-4e3a-91f7-2e489728e9e4",
+      "ChildId": "9892aca8-072f-4f1f-a709-bad739bd909a",
+      "Description": "This is the source points. Since this is a shader, we can bumb up the count.",
+      "Style": "InfoFor"
+    },
+    {
+      "Id": "925247db-9cd0-4d53-816a-f5e68e82ff6a",
+      "ChildId": "9892aca8-072f-4f1f-a709-bad739bd909a",
+      "Description": "We animate the orientation of the points so that the point's Z-axis slow rotate around the ring.",
+      "Style": "InfoFor"
+    },
+    {
+      "Id": "b519630a-01bb-4be3-b25c-4bee4304f085",
+      "ChildId": "0bb2bd48-f775-49a4-b49a-ce134925098c",
+      "Description": "This is the central operator.\nIt generates a new point buffer that can be used with [DrawLines].\nFor each source point it raymarches the SDF in the point's Z-direction.\nWhen it comes close to a surface, this direction is is reflected and the process repeated until we reach the max reflection count.",
+      "Style": "InfoFor"
+    },
+    {
+      "Id": "7f3be854-d7ec-4624-9ca8-ec6407730306",
+      "ChildId": "0bb2bd48-f775-49a4-b49a-ce134925098c",
+      "Description": "It writes the total distance traveled into the FX1 attribute.",
+      "Style": "InfoFor"
+    },
+    {
+      "Id": "428a5de8-9882-403c-9ae3-aa24e3dac728",
+      "ChildId": "ff6ffac1-7e3b-4387-a5e6-c7219e6b966a",
+      "Description": "We can then use this distance to fade out the lines with distance.",
+      "Style": "InfoFor"
+    },
+    {
+      "Id": "890692e3-fa04-41ef-9a3e-98bb5c839898",
+      "ChildId": "ff6ffac1-7e3b-4387-a5e6-c7219e6b966a",
+      "Description": "Try to experiment with the gradient and the Range parameter.",
+      "Style": "CallToAction"
+    },
+    {
+      "Id": "a88fd45f-ad57-4551-8b92-934b13d989da",
+      "ChildId": "7177345b-8dc9-4d76-a3a6-0ffd06af33d5",
+      "Description": "We then draw the lines. We use [DrawLayLines] instead of [DrawLines] because it can handle lines behind the camera.\nNotice how we do not write Depth and use additive blending.",
+      "Style": "InfoFor"
+    },
+    {
+      "Id": "fe96d6f5-d1c1-4ca2-a021-76af17136c17",
+      "ChildId": "871e9b8e-0cef-498c-bd06-5bd32b8f8e23",
+      "Description": "We use the FX1 to draw little \"Reflection points\". The gradient starts with black so we don't draw these at the source positions.",
+      "Style": "InfoFor"
+    },
+    {
+      "Id": "58adf1cb-8c8d-4b26-95ae-546e28eb9914",
+      "ChildId": "7d723ce6-2b4e-4d81-b68d-bc91cc4f8ec6",
+      "Description": "Once again we use additive blending.",
+      "Style": "InfoFor"
+    },
+    {
+      "Id": "8170fa69-477f-4613-a501-92a2b037e93f",
+      "ChildId": "7d723ce6-2b4e-4d81-b68d-bc91cc4f8ec6",
+      "Description": "Also notice how we disable Alpha cut off to have a smooth fading out blob.",
+      "Style": "InfoFor"
+    },
+    {
+      "Id": "4d383aa9-a30b-4cbc-a524-b052ebf5d6a5",
+      "ChildId": "2195441f-4cd4-42f7-a891-4b21e5d1794a",
+      "Description": "For the blob we set a fixed low resolution to enable caching.",
+      "Style": "InfoFor"
+    },
+    {
+      "Id": "e701545e-96e3-4209-9237-deca89af3aad",
+      "ChildId": "8c37b04e-879d-4ba9-a964-3c5185f67d79",
+      "Description": "Try bypassing this op.",
+      "Style": "InfoFor"
+    }
+  ]
+}

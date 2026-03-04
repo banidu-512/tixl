@@ -40,6 +40,10 @@
       "DefaultValue": true
     },
     {
+      "Id": "b646098a-b62c-44dd-b6f7-f8d4821b0c12"/*Filtering*/,
+      "DefaultValue": "MinMagMipLinear"
+    },
+    {
       "Id": "c8d0e44e-acd1-4045-b565-e1ce0b722e70"/*BlendMode*/,
       "DefaultValue": 0
     },
@@ -329,6 +333,12 @@
       "SourceSlotId": "51334471-d9fe-4574-8541-f87b67f2deab",
       "TargetParentOrChildId": "00000000-0000-0000-0000-000000000000",
       "TargetSlotId": "e4a8d926-7abd-4d2a-82a1-b7d140cb457f"
+    },
+    {
+      "SourceParentOrChildId": "00000000-0000-0000-0000-000000000000",
+      "SourceSlotId": "b646098a-b62c-44dd-b6f7-f8d4821b0c12",
+      "TargetParentOrChildId": "2d7a0d50-d3fd-42fb-b411-158e7ea708af",
+      "TargetSlotId": "a870921f-a28c-4501-9f31-38a18b0acdcc"
     },
     {
       "SourceParentOrChildId": "5b880701-7935-48c4-8cad-f3fc0cc9cb3f",

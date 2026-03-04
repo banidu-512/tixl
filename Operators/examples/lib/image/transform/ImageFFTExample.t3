@@ -1256,7 +1256,7 @@
           "Value": 8.0
         },
         {
-          "Id": "674cabbd-cf31-46ac-9a1a-4f6bd727c977"/*Center*/,
+          "Id": "674cabbd-cf31-46ac-9a1a-4f6bd727c977"/*Offset*/,
           "Type": "System.Numerics.Vector2",
           "Value": {
             "X": 0.24,
@@ -1873,7 +1873,7 @@
       "Name": "spectrum preview",
       "InputValues": [
         {
-          "Id": "674cabbd-cf31-46ac-9a1a-4f6bd727c977"/*Center*/,
+          "Id": "674cabbd-cf31-46ac-9a1a-4f6bd727c977"/*Offset*/,
           "Type": "System.Numerics.Vector2",
           "Value": {
             "X": 0.5,
@@ -2037,7 +2037,7 @@
       "Name": "spectrum preview",
       "InputValues": [
         {
-          "Id": "674cabbd-cf31-46ac-9a1a-4f6bd727c977"/*Center*/,
+          "Id": "674cabbd-cf31-46ac-9a1a-4f6bd727c977"/*Offset*/,
           "Type": "System.Numerics.Vector2",
           "Value": {
             "X": 0.5,
@@ -2057,7 +2057,7 @@
       "SymbolId": "46daab0e-e957-413e-826c-0699569d0e07",
       "InputValues": [
         {
-          "Id": "674cabbd-cf31-46ac-9a1a-4f6bd727c977"/*Center*/,
+          "Id": "674cabbd-cf31-46ac-9a1a-4f6bd727c977"/*Offset*/,
           "Type": "System.Numerics.Vector2",
           "Value": {
             "X": 12.0,
@@ -2095,7 +2095,7 @@
           "Value": 0.8
         },
         {
-          "Id": "674cabbd-cf31-46ac-9a1a-4f6bd727c977"/*Center*/,
+          "Id": "674cabbd-cf31-46ac-9a1a-4f6bd727c977"/*Offset*/,
           "Type": "System.Numerics.Vector2",
           "Value": {
             "X": 6.7,
@@ -2464,7 +2464,7 @@
       "SymbolId": "46daab0e-e957-413e-826c-0699569d0e07",
       "InputValues": [
         {
-          "Id": "674cabbd-cf31-46ac-9a1a-4f6bd727c977"/*Center*/,
+          "Id": "674cabbd-cf31-46ac-9a1a-4f6bd727c977"/*Offset*/,
           "Type": "System.Numerics.Vector2",
           "Value": {
             "X": 12.0,
@@ -2545,7 +2545,7 @@
           "Value": 8.0
         },
         {
-          "Id": "674cabbd-cf31-46ac-9a1a-4f6bd727c977"/*Center*/,
+          "Id": "674cabbd-cf31-46ac-9a1a-4f6bd727c977"/*Offset*/,
           "Type": "System.Numerics.Vector2",
           "Value": {
             "X": 0.24,
@@ -3288,7 +3288,7 @@
           "Value": 0.41
         },
         {
-          "Id": "674cabbd-cf31-46ac-9a1a-4f6bd727c977"/*Center*/,
+          "Id": "674cabbd-cf31-46ac-9a1a-4f6bd727c977"/*Offset*/,
           "Type": "System.Numerics.Vector2",
           "Value": {
             "X": 8.23,

@@ -52,6 +52,9 @@ internal sealed class Layer2d : Instance<Layer2d>, ITransformable
         [Input(Guid = "022f1959-a62b-49de-817a-3930bc8ec32b")]
         public readonly InputSlot<bool> EnableDepthWrite = new InputSlot<bool>();
 
+        [Input(Guid = "b646098a-b62c-44dd-b6f7-f8d4821b0c12")]
+        public readonly InputSlot<SharpDX.Direct3D11.Filter> Filtering = new InputSlot<SharpDX.Direct3D11.Filter>();
+
     public enum ScaleModes
     {
         FitHeight,

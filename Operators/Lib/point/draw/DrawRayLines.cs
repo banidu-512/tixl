@@ -40,4 +40,7 @@ internal sealed class DrawRayLines : Instance<DrawRayLines>
 
     [Input(Guid = "037a162b-2054-44b1-b536-b532ab0c14b7", MappedType = typeof(SharedEnums.BlendModes))]
     public readonly InputSlot<int> BlendMod = new();
+
+        [Input(Guid = "ee15ed79-2c1e-4d21-9509-aa021d3a9115")]
+        public readonly InputSlot<int> WidthFactor = new InputSlot<int>();
 }

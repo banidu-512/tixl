@@ -329,7 +329,7 @@
       "Name": "fake shadow coloring",
       "InputValues": [
         {
-          "Id": "01898885-4140-4435-bb44-a7a6f6f32657"/*Center*/,
+          "Id": "01898885-4140-4435-bb44-a7a6f6f32657"/*Offset*/,
           "Type": "System.Numerics.Vector3",
           "Value": {
             "X": -0.26,
