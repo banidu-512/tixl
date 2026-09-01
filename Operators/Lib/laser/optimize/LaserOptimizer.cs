@@ -317,6 +317,10 @@ internal sealed class LaserOptimizer : Instance<LaserOptimizer>
         if (outputCount == 0)
             return;
 
+        // Guard against invalid parameters that would cause math errors
+        if (maxJumpDistance <= 0 || blankingDelayPoints <= 0)
+            return;
+
         var distance = MathF.Sqrt(CalculateDistanceSquared(fromX, fromY, toX, toY));
 
         if (distance > maxJumpDistance)

@@ -28,5 +28,13 @@ To get started read the [documentation](https://github.com/tixl3d/tixl/wiki) or 
 
 If you have questions or feedback, please join us on Discord: https://discord.gg/YmSyQdeH3S 
 
+## Laser Operators (this fork)
 
+This fork adds show-laser support on the `feature/laser-operators` branch:
 
+- **EtherDreamOutput** - stream laser frames to an Ether Dream DAC (TCP 7765) with device discovery, warm-up handling and E-stop support
+- **PONKOutput / PONKInput** - exchange laser frames with PONK-compatible software such as MadMapper (UDP multicast 239.255.10.24:5583)
+- **CITPLaser** - publish laser feeds as CITP/CAEX previews for Capture media servers
+- **LaserCamera / LaserOptimizer** - project 3D scene content into laser coordinates and optimize it for scanners (path reordering, blanking, corner dwell)
+
+Full documentation, protocol references, troubleshooting and safety notes: see [`wiki/Home.md`](wiki/Home.md).

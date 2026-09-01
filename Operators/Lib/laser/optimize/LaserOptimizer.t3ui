@@ -2,49 +2,55 @@
   "FormatVersion": 2,
   "TixlVersion": "4.2.0.2",
   "Id": "77932588-e3bb-42e5-8032-3f5759031653"/*LaserOptimizer*/,
-  "Description": "",
+  "Description": "Prepares a laser point list for output: reorders paths to minimize scanner travel and inserts blanking/corner points for clean rendering.\n\nThe input is split into segments at blanked points (I = 0). With EnableOptimization on, a greedy nearest-neighbour pass visits the segments in the cheapest order, reversing them when that shortens the path. Jumps longer than MaxJumpDistance get blanking delay points so the scanners settle before the beam turns on again, and corners sharper than CornerAngleThreshold get repeated anchor points ('corner dwell') to keep them crisp.\n\nTypical signal chain: LaserCamera -> LaserOptimizer -> EtherDreamOutput / PONKOutput.",
   "InputUis": [
-    {
-      "InputId": "8feb10bf-1aba-406a-810c-b27c1ba7295e"/*CornerAnchorCount*/,
-      "Position": {
-        "X": -200.0,
-        "Y": 300.0
-      }
-    },
     {
       "InputId": "b9bdbeb2-fd13-4814-a00b-50bdd5c356fa"/*LaserPoints*/,
       "Position": {
         "X": -200.0,
         "Y": 0.0
-      }
+      },
+      "Description": "The laser point list to optimize, e.g. LaserCamera.LaserPoints or PONKInput.LaserPoints. Blanked points (I = 0) mark the segment boundaries between shapes."
     },
     {
       "InputId": "bc05e8b6-e1c4-4877-a940-571ffc190296"/*MaxJumpDistance*/,
       "Position": {
         "X": -200.0,
         "Y": 75.0
-      }
+      },
+      "Description": "Jumps longer than this (in 16-bit laser coordinate units, full screen = 65534) count as 'long' and receive blanking delay points. Default 5000."
     },
     {
       "InputId": "be0b8966-3cc6-4923-b727-68cd6ed68d73"/*BlankingDelayPoints*/,
       "Position": {
         "X": -200.0,
         "Y": 150.0
-      }
-    },
-    {
-      "InputId": "c0339847-2bb7-40a0-97ec-2e30a5eefe00"/*EnableOptimization*/,
-      "Position": {
-        "X": -200.0,
-        "Y": 375.0
-      }
+      },
+      "Description": "Maximum number of blanked points inserted for long jumps (clamped to 0..100); the actual count scales with jump distance. More delay gives the scanners time to arrive before the beam switches on."
     },
     {
       "InputId": "fc4c0603-eb70-484e-b80e-e5834a9fdc8e"/*CornerAngleThreshold*/,
       "Position": {
         "X": -200.0,
         "Y": 225.0
-      }
+      },
+      "Description": "Corners with a turn angle below this threshold (in degrees, 180 = straight line) are considered sharp and get extra anchor points. Lower values only affect very sharp corners."
+    },
+    {
+      "InputId": "8feb10bf-1aba-406a-810c-b27c1ba7295e"/*CornerAnchorCount*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 300.0
+      },
+      "Description": "How many times a sharp corner point is repeated (1..10) so the beam dwells there and renders the corner brightly and stably."
+    },
+    {
+      "InputId": "c0339847-2bb7-40a0-97ec-2e30a5eefe00"/*EnableOptimization*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 375.0
+      },
+      "Description": "If enabled, segments are greedily reordered (nearest-neighbour, flipping direction when shorter) to minimize travel between shapes. If disabled, the original point order is preserved and only blanking/corner processing is applied."
     }
   ],
   "SymbolChildUis": [],

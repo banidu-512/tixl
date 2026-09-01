@@ -2,14 +2,15 @@
   "FormatVersion": 2,
   "TixlVersion": "4.2.0.2",
   "Id": "7b3f8e2d-1a4c-4f5d-9e6a-2b7c8d9e0f1a"/*CITPLaser*/,
-  "Description": "",
+  "Description": "Publishes laser point feeds to Capture (or any CITP/CAEX-compatible media server) as laser preview feeds.\n\nSpeaks the CITP protocol with the CAEX laser extension: it listens for PLoc discovery on multicast 224.0.0.180:4809, connects to the peer's TCP port, answers GetLaserFeedList with one feed per connected LaserPointsFeeds input, honors LaserFeedControl (start/stop + requested FPS) and streams each feed as CAEX LaserFeedFrame datagrams.\n\nCoordinates are converted from 16-bit ILDA range to CITP's 12-bit laser space (default Scale 1/16) and colors to RGB565. This is a preview/visualization path, not a laser control path - use EtherDreamOutput or PONKOutput to drive real scanners.",
   "InputUis": [
     {
       "InputId": "8a4b9f3e-2b5d-5e6f-0f7b-3c8d9e0f1a2b"/*Enable*/,
       "Position": {
         "X": -200.0,
         "Y": 0.0
-      }
+      },
+      "Description": "Starts and stops the CITP client: discovery listener, TCP connection and frame streaming."
     },
     {
       "InputId": "9b5c0a4f-3c6e-6f7a-1a8c-4d9e0f1a2b3c"/*LocalIpAddress*/,
@@ -17,70 +18,87 @@
         "X": -200.0,
         "Y": 75.0
       },
-      "Usage": "CustomDropdown"
+      "Description": "Network interface used for discovery and streaming (dropdown of all IPv4 adapters). When set, discovery packets arriving on other subnets are ignored."
     },
     {
       "InputId": "0c6d1b5a-4d7f-7a8b-2b9d-5e0f1a2b3c4d"/*LaserPointsFeeds*/,
       "Position": {
         "X": -200.0,
         "Y": 150.0
-      }
+      },
+      "Description": "One or more laser point lists; every connected input becomes its own laser feed, numbered by input order (see ActiveFeeds)."
     },
     {
       "InputId": "1d7e2c6b-5e8a-8b9c-3c0e-6f1a2b3c4d5e"/*ScaleX*/,
       "Position": {
         "X": -200.0,
         "Y": 225.0
-      }
+      },
+      "Description": "Scale applied to X before conversion to CITP's 12-bit coordinate space (0..4095). The default 1/16 maps the full 16-bit ILDA range (-32768..32767) onto that space."
     },
     {
       "InputId": "2e8f3d7c-6f9a-9a0b-4d1f-7a2b3c4d5e6f"/*OffsetX*/,
       "Position": {
         "X": -200.0,
         "Y": 300.0
-      }
+      },
+      "Description": "Offset applied to X (in 16-bit laser units) before scaling - shifts the feed horizontally."
     },
     {
       "InputId": "3f9a4e8d-7a0b-0b1c-5c2a-8a3c4d5e6f7a"/*ScaleY*/,
       "Position": {
         "X": -200.0,
         "Y": 375.0
-      }
+      },
+      "Description": "Scale applied to Y before conversion to CITP's 12-bit coordinate space (0..4095). The default 1/16 maps the full 16-bit ILDA range onto that space."
     },
     {
       "InputId": "4a0b5f9e-8a1c-1c2d-6d3a-9b4d5e6f7a8b"/*OffsetY*/,
       "Position": {
         "X": -200.0,
         "Y": 450.0
-      }
+      },
+      "Description": "Offset applied to Y (in 16-bit laser units) before scaling - shifts the feed vertically."
     },
     {
       "InputId": "5b1c6a0f-9a2d-2d3e-7a4b-0b5e6f7a8b9c"/*PrintToLog*/,
       "Position": {
         "X": -200.0,
         "Y": 525.0
-      }
+      },
+      "Description": "Writes discovery, connection and per-frame details to the application log."
     },
     {
       "InputId": "6c2d7b10-0b3e-3e4f-8b5c-1c6f7a8b9c9d"/*FeedName*/,
       "Position": {
         "X": -200.0,
         "Y": 600.0
-      }
+      },
+      "Description": "Base name advertised in the LaserFeedList; each feed is announced as '<name> 0', '<name> 1', ... Defaults to 'Laser Feed'."
     },
     {
       "InputId": "7d3e8c21-1c4f-4f5a-9c6d-2d7a8b9c9d9e"/*SourceKey*/,
       "Position": {
         "X": -200.0,
         "Y": 675.0
-      }
+      },
+      "Description": "Numeric source key sent with every LaserFeedList/LaserFeedFrame so the receiver can identify this sender. 0 generates a random key on start."
     },
     {
       "InputId": "8E4F9D32-2D5E-4F6A-9B7C-4D8E9F0A1B2C"/*ReconnectTrigger*/,
       "Position": {
         "X": -200.0,
         "Y": 750.0
-      }
+      },
+      "Description": "Pulse to tear down and restart the CITP connection (discovery + TCP)."
+    },
+    {
+      "InputId": "9F5A0B43-3E6F-5A7B-0C8D-5E9F0A1B2C3D"/*CapturePort*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 825.0
+      },
+      "Description": "Manual TCP port override for a direct connection to 127.0.0.1. 0 uses discovery. Note: the current build hardcodes a direct connection in StartCitpClient, which bypasses this setting."
     }
   ],
   "SymbolChildUis": [],

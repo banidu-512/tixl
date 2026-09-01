@@ -2,49 +2,63 @@
   "FormatVersion": 2,
   "TixlVersion": "4.2.0.2",
   "Id": "21f7de8e-2fb3-4222-b951-01e7aabca6b8"/*EtherDreamOutput*/,
-  "Description": "",
+  "Description": "Streams laser frames to an [Ether Dream](https://etherdream.com) DAC over TCP.\n\nRuns a background connection loop and a background send loop: frames queued from the graph are paced into the DAC's buffer at the configured ScanRate. Handles automatic reconnection, retries while the light engine warms up, and emergency-stop (E-Stop) clearing.\n\nSet **SimulationMode** to exercise the whole graph without any hardware - frames are counted and status outputs are faked.\n\n**Inputs:** a StructuredList of LaserPoint (e.g. from LaserOptimizer). Coordinates are ILDA-style 16-bit (-32768..32767, origin at the center); RGB and intensity are 16-bit. Blanked points have I = 0.\n\n**Outputs:** IsConnected, BufferFullness (DAC buffer fill in points), StatusMessage, PointsSent and a trigger Command. The operator also reports its state through the node's status bar (hover the warning icon).",
   "InputUis": [
     {
       "InputId": "02674c5e-e869-4572-b8fd-2ef35adb5a5a"/*LaserPoints*/,
       "Position": {
         "X": -200.0,
         "Y": 0.0
-      }
+      },
+      "Description": "The laser frame to stream, as a StructuredList of LaserPoint. Connect LaserOptimizer.OptimizedPoints, LaserCamera.LaserPoints or PONKInput.LaserPoints."
     },
     {
       "InputId": "0c7ee9f2-2009-4ce4-a04b-ed7d8386f146"/*Enable*/,
       "Position": {
         "X": -200.0,
         "Y": 300.0
-      }
+      },
+      "Description": "Master switch. When disabled, any open connection is torn down and the status shows a hint. A connection is only attempted when this is on and SimulationMode is off."
     },
     {
       "InputId": "1390d6f9-67c2-4f74-9438-7fa60a4bb5d6"/*Port*/,
       "Position": {
         "X": -200.0,
         "Y": 150.0
-      }
+      },
+      "Description": "Not used by the current connection logic - the Ether Dream protocol uses the fixed TCP port 7765. Kept for future protocol extensions."
     },
     {
       "InputId": "64a26581-2477-4f80-ae7b-0fdb27c0a101"/*ScanRate*/,
       "Position": {
         "X": -200.0,
         "Y": 225.0
-      }
+      },
+      "Description": "Points per second requested from the DAC, clamped to 100..100000. 30000 = 30kpps (typical for show lasers). Frames are paced into the DAC buffer at this rate."
     },
     {
       "InputId": "90fbb4d3-37ce-4bf7-9638-729d06a2c6f8"/*SimulationMode*/,
       "Position": {
         "X": -200.0,
         "Y": 375.0
-      }
+      },
+      "Description": "If enabled, no device connection is made. Points are counted, IsConnected reports true and BufferFullness is simulated - useful for building a laser scene without hardware attached."
     },
     {
       "InputId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"/*DiscoverDevices*/,
       "Position": {
         "X": -200.0,
         "Y": 450.0
-      }
+      },
+      "Description": "Listens for Ether Dream UDP broadcasts on port 7654 and logs every DAC found on the network. Also fills the IpAddress dropdown with the discovered devices. Only one operator can own the discovery port; others reuse the shared discovery results."
+    },
+    {
+      "InputId": "b0b4f4c2-5f4a-497d-bed4-b40e8e159b4c"/*PrintToLog*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 600.0
+      },
+      "Description": "Writes detailed connection, queue and first-point info to the application log."
     },
     {
       "InputId": "b1c2d3e4-f5a6-7890-bcde-123456789abc"/*LocalIpAddress*/,
@@ -52,7 +66,7 @@
         "X": -200.0,
         "Y": 525.0
       },
-      "Usage": "CustomDropdown"
+      "Description": "Network interface used for device discovery, as a dropdown of all IPv4 adapters. Only affects discovery broadcasts, not the data connection to the DAC."
     },
     {
       "InputId": "c12cd058-8c3a-426f-9af0-17ec41319a66"/*IpAddress*/,
@@ -60,28 +74,23 @@
         "X": -200.0,
         "Y": 75.0
       },
-      "Usage": "CustomDropdown"
-    },
-    {
-      "InputId": "b0b4f4c2-5f4a-497d-bed4-b40e8e159b4c"/*PrintToLog*/,
-      "Position": {
-        "X": -200.0,
-        "Y": 600.0
-      }
+      "Description": "IP address of the Ether Dream DAC to connect to (TCP 7765). With DiscoverDevices enabled the dropdown lists all DACs found on the network."
     },
     {
       "InputId": "e7f8a9b0-c1d2-4e3f-9a8b-7c6d5e4f3b2a"/*LoopLastFrame*/,
       "Position": {
         "X": -200.0,
         "Y": 675.0
-      }
+      },
+      "Description": "If enabled, the last complete frame keeps being streamed whenever no new frames arrive (e.g. the transport is paused), so the projector image freezes instead of going dark."
     },
     {
       "InputId": "f3a4b5c6-d7e8-4901-8234-56789abcdef0"/*ClearEStop*/,
       "Position": {
         "X": -200.0,
         "Y": 750.0
-      }
+      },
+      "Description": "Toggle to request clearing an active emergency stop on the DAC. If the device refuses (e.g. interlock still open) the status falls back to a warning and you can toggle again."
     }
   ],
   "SymbolChildUis": [],

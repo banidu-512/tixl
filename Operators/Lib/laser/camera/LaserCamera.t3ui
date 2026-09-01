@@ -2,70 +2,79 @@
   "FormatVersion": 2,
   "TixlVersion": "4.2.0.2",
   "Id": "2ccc2f86-fe71-42ff-b91d-812763f5c6cf"/*LaserCamera*/,
-  "Description": "",
+  "Description": "Projects 3D scene points into 2D laser space.\n\nReads points from a GPU structured buffer of Point structs (the same buffers used by point/particle rendering, e.g. the output of [PointsToLines] setups) and projects them through a Camera into normalized laser coordinates: ILDA-style 16-bit XY in -32767..32767 with 16-bit RGB. Points behind the camera or far outside the view frustum are culled, and remaining coordinates are clamped to the valid DAC range.\n\nTypical signal chain: scene points -> LaserCamera -> LaserOptimizer -> EtherDreamOutput / PONKOutput / CITPLaser.\n\nOutput PointCount plus the SampleX/SampleY arrays are debugging aids showing the first converted points.",
   "InputUis": [
     {
       "InputId": "419decc0-d0c2-475b-b618-2db7b371f144"/*PointBuffer*/,
       "Position": {
         "X": -200.0,
         "Y": 0.0
-      }
+      },
+      "Description": "The structured GPU buffer of 3D points (Point structs) to project - connect the point buffer of the scene content you want to render with the laser."
     },
     {
       "InputId": "f151b1b0-b820-47f6-b2cf-be1c2b339dca"/*Camera*/,
       "Position": {
         "X": -200.0,
         "Y": 75.0
-      }
+      },
+      "Description": "The camera used to project the 3D points into laser space. Typically connect the same Camera that renders the scene view, so the laser shows what the audience sees."
     },
     {
       "InputId": "633130fa-67a9-4c8a-8c69-deb4ed198a50"/*Resolution*/,
       "Position": {
         "X": -200.0,
         "Y": 150.0
-      }
+      },
+      "Description": "Reserved for aspect-ratio handling of the projection; currently unused by the projection math."
     },
     {
       "InputId": "154b095b-d6fc-4283-b2b5-86778f6e68dd"/*StartIndex*/,
       "Position": {
         "X": -200.0,
         "Y": 225.0
-      }
+      },
+      "Description": "Index of the first buffer element to read - lets you project only a slice of a larger point buffer."
     },
     {
       "InputId": "8c823c87-4d14-43e3-843d-d452e008b1ae"/*MaxCount*/,
       "Position": {
         "X": -200.0,
         "Y": 300.0
-      }
+      },
+      "Description": "Maximum number of points to read from the buffer. 0 reads all remaining elements from StartIndex on."
     },
     {
       "InputId": "950943bf-935a-484e-9667-16180784adc2"/*TriggerUpdate*/,
       "Position": {
         "X": -200.0,
         "Y": 375.0
-      }
+      },
+      "Description": "Pulse to true to read the buffer once on the next frame (useful when UpdateContinuously is off). The input resets to false automatically."
     },
     {
       "InputId": "e5c90440-378b-49d3-8c5c-72dcd65a2cda"/*UpdateContinuously*/,
       "Position": {
         "X": -200.0,
         "Y": 450.0
-      }
+      },
+      "Description": "If enabled, the buffer is read and reprojected every frame. Otherwise the output only refreshes when TriggerUpdate pulses or a setting changes."
     },
     {
       "InputId": "1e63ba21-b821-4aa4-9612-8f620523a72e"/*UseAsync*/,
       "Position": {
         "X": -200.0,
         "Y": 525.0
-      }
+      },
+      "Description": "Reads the GPU buffer asynchronously so the GPU-to-CPU copy does not stall the render thread. The projected output arrives roughly one frame later."
     },
     {
       "InputId": "73241494-c686-4013-96c0-ef40d5932f7f"/*PrintToLog*/,
       "Position": {
         "X": -200.0,
         "Y": 600.0
-      }
+      },
+      "Description": "Logs how many points were read and how many were culled by depth/frustum tests on each update."
     }
   ],
   "SymbolChildUis": [],
