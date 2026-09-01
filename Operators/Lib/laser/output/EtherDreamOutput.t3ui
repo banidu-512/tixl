@@ -1,0 +1,125 @@
+{
+  "FormatVersion": 2,
+  "TixlVersion": "4.2.0.2",
+  "Id": "21f7de8e-2fb3-4222-b951-01e7aabca6b8"/*EtherDreamOutput*/,
+  "Description": "",
+  "InputUis": [
+    {
+      "InputId": "02674c5e-e869-4572-b8fd-2ef35adb5a5a"/*LaserPoints*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "InputId": "0c7ee9f2-2009-4ce4-a04b-ed7d8386f146"/*Enable*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "InputId": "1390d6f9-67c2-4f74-9438-7fa60a4bb5d6"/*Port*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 150.0
+      }
+    },
+    {
+      "InputId": "64a26581-2477-4f80-ae7b-0fdb27c0a101"/*ScanRate*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 225.0
+      }
+    },
+    {
+      "InputId": "90fbb4d3-37ce-4bf7-9638-729d06a2c6f8"/*SimulationMode*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 375.0
+      }
+    },
+    {
+      "InputId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"/*DiscoverDevices*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 450.0
+      }
+    },
+    {
+      "InputId": "b1c2d3e4-f5a6-7890-bcde-123456789abc"/*LocalIpAddress*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 525.0
+      },
+      "Usage": "CustomDropdown"
+    },
+    {
+      "InputId": "c12cd058-8c3a-426f-9af0-17ec41319a66"/*IpAddress*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 75.0
+      },
+      "Usage": "CustomDropdown"
+    },
+    {
+      "InputId": "b0b4f4c2-5f4a-497d-bed4-b40e8e159b4c"/*PrintToLog*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 600.0
+      }
+    },
+    {
+      "InputId": "e7f8a9b0-c1d2-4e3f-9a8b-7c6d5e4f3b2a"/*LoopLastFrame*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 675.0
+      }
+    },
+    {
+      "InputId": "f3a4b5c6-d7e8-4901-8234-56789abcdef0"/*ClearEStop*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 750.0
+      }
+    }
+  ],
+  "SymbolChildUis": [],
+  "OutputUis": [
+    {
+      "OutputId": "a5c6baf1-46ae-4ff1-a7c6-cdf8e29abc8b"/*IsConnected*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 200.0
+      }
+    },
+    {
+      "OutputId": "7c93e6e4-3908-4972-98f9-b193a0016c94"/*BufferFullness*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "OutputId": "4b7eadb3-125b-45e5-95da-15cd65a269bf"/*StatusMessage*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 400.0
+      }
+    },
+    {
+      "OutputId": "9c188446-3a09-4d88-a124-a00dd50efaeb"/*PointsSent*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 500.0
+      }
+    },
+    {
+      "OutputId": "d1e2f3a4-b5c6-4789-9012-345a6789cdef"/*Command*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 600.0
+      }
+    }
+  ]
+}

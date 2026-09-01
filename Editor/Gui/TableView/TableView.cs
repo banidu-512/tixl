@@ -106,7 +106,15 @@ public static class TableList
                 {
                     FieldInfo fi = members[fieldIndex];
                     var o = fi.GetValue(obj);
-                    if (o is float f)
+                    if (o is int i)
+                    {
+                        if (DrawIntManipulation(ref i, objectIndex * 1000 + fieldIndex))
+                        {
+                            fi.SetValue(obj, i);
+                            objModified = true;
+                        }
+                    }
+                    else if (o is float f)
                     {
                         if (DrawFloatManipulation(ref f, objectIndex* 1000+ fieldIndex))
                         {
@@ -218,6 +226,27 @@ public static class TableList
             }
 
             var fieldModified = ImGui.DragFloat("##sdf", ref f, 0.01f);
+
+            if (grayedOut)
+            {
+                ImGui.PopStyleColor();
+            }
+            ImGui.SameLine();
+            ImGui.PopID();
+            return fieldModified;
+        }
+
+        bool DrawIntManipulation(ref int i, int id)
+        {
+            ImGui.PushID(id);
+            ImGui.SetNextItemWidth(valueColumnWidth);
+            var grayedOut = (i == 0);
+            if (grayedOut)
+            {
+                ImGui.PushStyleColor(ImGuiCol.Text, UiColors.BackgroundFull.Rgba);
+            }
+
+            var fieldModified = ImGui.DragInt("##sdf", ref i, 1f);
 
             if (grayedOut)
             {

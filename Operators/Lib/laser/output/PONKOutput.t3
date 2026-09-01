@@ -1,0 +1,79 @@
+{
+  "FormatVersion": 2,
+  "TixlVersion": "4.2.0.2",
+  "Id": "A1B2C3D4-E5F6-7890-ABCD-EF1234567890"/*PONKOutput*/,
+  "Inputs": [
+    {
+      "Id": "B1C2D3E4-F5A6-7890-ABCD-EF1234567801"/*Enable*/,
+      "DefaultValue": false
+    },
+    {
+      "Id": "B1C2D3E4-F5A6-7890-ABCD-EF1234567802"/*SimulationMode*/,
+      "DefaultValue": true
+    },
+    {
+      "Id": "B1C2D3E4-F5A6-7890-ABCD-EF1234567803"/*UseMulticast*/,
+      "DefaultValue": true
+    },
+    {
+      "Id": "B1C2D3E4-F5A6-7890-ABCD-EF1234567804"/*LocalIpAddress*/,
+      "DefaultValue": ""
+    },
+    {
+      "Id": "B1C2D3E4-F5A6-7890-ABCD-EF1234567805"/*TargetIpAddress*/,
+      "DefaultValue": "239.255.10.24"
+    },
+    {
+      "Id": "B1C2D3E4-F5A6-7890-ABCD-EF1234567806"/*Port*/,
+      "DefaultValue": 5583
+    },
+    {
+      "Id": "B1C2D3E4-F5A6-7890-ABCD-EF1234567807"/*SenderName*/,
+      "DefaultValue": "TiXL"
+    },
+    {
+      "Id": "B1C2D3E4-F5A6-7890-ABCD-EF1234567808"/*LoopLastFrame*/,
+      "DefaultValue": true
+    },
+    {
+      "Id": "B1C2D3E4-F5A6-7890-ABCD-EF1234567809"/*PrintToLog*/,
+      "DefaultValue": false
+    },
+    {
+      "Id": "B1C2D3E4-F5A6-7890-ABCD-EF123456780A"/*MaxScanSpeed*/,
+      "DefaultValue": 1.0f
+    },
+    {
+      "Id": "B1C2D3E4-F5A6-7890-ABCD-EF123456780B"/*PathNumber*/,
+      "DefaultValue": 1
+    },
+    {
+      "Id": "B1C2D3E4-F5A6-7890-EF12-3456780C1234"/*LaserPoints*/,
+      "DefaultValue": null
+    }
+  ],
+  "Outputs": [
+    {
+      "Id": "C1D2E3F4-A5B6-7890-ABCD-EF1234567890"/*IsConnected*/,
+      "DefaultValue": false
+    },
+    {
+      "Id": "C1D2E3F4-A5B6-7890-ABCD-EF1234567891"/*PacketsSent*/,
+      "DefaultValue": 0
+    },
+    {
+      "Id": "C1D2E3F4-A5B6-7890-ABCD-EF1234567892"/*StatusMessage*/,
+      "DefaultValue": ""
+    },
+    {
+      "Id": "C1D2E3F4-A5B6-7890-ABCD-EF1234567893"/*PointsSent*/,
+      "DefaultValue": 0
+    },
+    {
+      "Id": "C1D2E3F4-A5B6-7890-ABCD-EF1234567894"/*Command*/,
+      "DefaultValue": null
+    }
+  ],
+  "Children": [],
+  "Connections": []
+}

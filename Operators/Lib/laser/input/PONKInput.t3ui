@@ -1,0 +1,117 @@
+{
+  "FormatVersion": 2,
+  "TixlVersion": "4.2.0.2",
+  "Id": "B2C3D4E5-F6A7-8901-ABCD-EF1234567890"/*PONKInput*/,
+  "Description": "Receives laser path frames from any PONK-compliant sender (e.g. MadMapper) via UDP multicast or unicast. Parses the PONK protocol, reassembles chunked frames, converts XY_F32_RGB_U8 and XY_U16_RGB points to TiXL LaserPoint format, and outputs them as a StructuredList. Includes configurable coordinate remapping and sender ID filtering.",
+  "InputUis": [
+    {
+      "InputId": "f1e2d3c4-b5a6-7890-abcd-ef1234567801"/*Active*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "InputId": "f1e2d3c4-b5a6-7890-abcd-ef1234567802"/*LocalIpAddress*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 75.0
+      },
+      "Usage": "CustomDropdown"
+    },
+    {
+      "InputId": "f1e2d3c4-b5a6-7890-abcd-ef1234567803"/*Port*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 150.0
+      }
+    },
+    {
+      "InputId": "f1e2d3c4-b5a6-7890-abcd-ef1234567804"/*PrintToLog*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 225.0
+      }
+    },
+    {
+      "InputId": "f1e2d3c4-b5a6-7890-abcd-ef1234567805"/*Timeout*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "InputId": "f1e2d3c4-b5a6-7890-abcd-ef1234567806"/*ExpectedSenderId*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 375.0
+      }
+    },
+    {
+      "InputId": "f1e2d3c4-b5a6-7890-abcd-ef1234567807"/*MinX*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 450.0
+      }
+    },
+    {
+      "InputId": "f1e2d3c4-b5a6-7890-abcd-ef1234567808"/*MaxX*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 525.0
+      }
+    },
+    {
+      "InputId": "f1e2d3c4-b5a6-7890-abcd-ef1234567809"/*MinY*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 600.0
+      }
+    },
+    {
+      "InputId": "f1e2d3c4-b5a6-7890-abcd-ef123456780a"/*MaxY*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 675.0
+      }
+    }
+  ],
+  "SymbolChildUis": [],
+  "OutputUis": [
+    {
+      "OutputId": "e1d2c3b4-a5f6-7890-abcd-ef1234567890"/*LaserPoints*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 100.0
+      }
+    },
+    {
+      "OutputId": "f2e3d4c5-b6a7-8901-abcd-ef1234567891"/*StatusMessage*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 200.0
+      }
+    },
+    {
+      "OutputId": "a3b4c5d6-c7d8-9012-abcd-ef1234567892"/*FrameCount*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "OutputId": "b4c5d6e7-d8e9-0123-abcd-ef1234567893"/*SenderName*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 400.0
+      }
+    },
+    {
+      "OutputId": "c5d6e7f8-e9f0-1234-abcd-ef1234567894"/*SenderId*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 500.0
+      }
+    }
+  ]
+}

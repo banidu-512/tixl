@@ -1,0 +1,66 @@
+{
+  "FormatVersion": 2,
+  "TixlVersion": "4.2.0.2",
+  "Id": "2ccc2f86-fe71-42ff-b91d-812763f5c6cf"/*LaserCamera*/,
+  "Inputs": [
+    {
+      "Id": "154b095b-d6fc-4283-b2b5-86778f6e68dd"/*StartIndex*/,
+      "DefaultValue": 0
+    },
+    {
+      "Id": "1e63ba21-b821-4aa4-9612-8f620523a72e"/*UseAsync*/,
+      "DefaultValue": false
+    },
+    {
+      "Id": "419decc0-d0c2-475b-b618-2db7b371f144"/*PointBuffer*/,
+      "DefaultValue": null
+    },
+    {
+      "Id": "633130fa-67a9-4c8a-8c69-deb4ed198a50"/*Resolution*/,
+      "DefaultValue": {
+        "X": 0,
+        "Y": 0
+      }
+    },
+    {
+      "Id": "8c823c87-4d14-43e3-843d-d452e008b1ae"/*MaxCount*/,
+      "DefaultValue": 0
+    },
+    {
+      "Id": "950943bf-935a-484e-9667-16180784adc2"/*TriggerUpdate*/,
+      "DefaultValue": false
+    },
+    {
+      "Id": "e5c90440-378b-49d3-8c5c-72dcd65a2cda"/*UpdateContinuously*/,
+      "DefaultValue": false
+    },
+    {
+      "Id": "f151b1b0-b820-47f6-b2cf-be1c2b339dca"/*Camera*/,
+      "DefaultValue": null
+    },
+    {
+      "Id": "73241494-c686-4013-96c0-ef40d5932f7f"/*PrintToLog*/,
+      "DefaultValue": false
+    }
+  ],
+  "Outputs": [
+    {
+      "Id": "972566b4-e695-4ac5-8a35-f364e3a00cd2"/*LaserPoints*/,
+      "DefaultValue": null
+    },
+    {
+      "Id": "96ffbcee-eb76-4a81-bf5a-b8c7f72e2666"/*PointCount*/,
+      "DefaultValue": 0
+    },
+    {
+      "Id": "9a391338-75db-4b1b-9b34-2a0d91bfd774"/*SampleX*/,
+      "DefaultValue": null
+    },
+    {
+      "Id": "5d962770-7de7-4000-8a09-da028d941df1"/*SampleY*/,
+      "DefaultValue": null
+    }
+  ],
+  "Children": [],
+  "Connections": []
+}

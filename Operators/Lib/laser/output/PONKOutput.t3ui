@@ -1,0 +1,131 @@
+{
+  "FormatVersion": 2,
+  "TixlVersion": "4.2.0.2",
+  "Id": "A1B2C3D4-E5F6-7890-ABCD-EF1234567890"/*PONKOutput*/,
+  "Description": "Streams laser path frames to a PONK-compatible receiver (e.g. MadMapper, MadLaser) via UDP multicast or unicast. Implements the PONK (Pathes Over NetworK) protocol with support for XY_F32_RGB_U8 point format and render hints (MAXSPEED, PATHNUMB metadata).",
+  "InputUis": [
+    {
+      "InputId": "B1C2D3E4-F5A6-7890-ABCD-EF1234567801"/*Enable*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "InputId": "B1C2D3E4-F5A6-7890-ABCD-EF1234567802"/*SimulationMode*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 75.0
+      }
+    },
+    {
+      "InputId": "B1C2D3E4-F5A6-7890-ABCD-EF1234567803"/*UseMulticast*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 150.0
+      }
+    },
+    {
+      "InputId": "B1C2D3E4-F5A6-7890-ABCD-EF1234567804"/*LocalIpAddress*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 225.0
+      },
+      "Usage": "CustomDropdown"
+    },
+    {
+      "InputId": "B1C2D3E4-F5A6-7890-ABCD-EF1234567805"/*TargetIpAddress*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "InputId": "B1C2D3E4-F5A6-7890-ABCD-EF1234567806"/*Port*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 375.0
+      }
+    },
+    {
+      "InputId": "B1C2D3E4-F5A6-7890-ABCD-EF1234567807"/*SenderName*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 450.0
+      }
+    },
+    {
+      "InputId": "B1C2D3E4-F5A6-7890-ABCD-EF1234567808"/*LoopLastFrame*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 525.0
+      }
+    },
+    {
+      "InputId": "B1C2D3E4-F5A6-7890-ABCD-EF1234567809"/*PrintToLog*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 600.0
+      }
+    },
+    {
+      "InputId": "B1C2D3E4-F5A6-7890-ABCD-EF123456780A"/*MaxScanSpeed*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 675.0
+      }
+    },
+    {
+      "InputId": "B1C2D3E4-F5A6-7890-ABCD-EF123456780B"/*PathNumber*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 750.0
+      }
+    },
+    {
+      "InputId": "B1C2D3E4-F5A6-7890-EF12-3456780C1234"/*LaserPoints*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 825.0
+      }
+    }
+  ],
+  "SymbolChildUis": [],
+  "OutputUis": [
+    {
+      "OutputId": "C1D2E3F4-A5B6-7890-ABCD-EF1234567890"/*IsConnected*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 100.0
+      }
+    },
+    {
+      "OutputId": "C1D2E3F4-A5B6-7890-ABCD-EF1234567891"/*PacketsSent*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 200.0
+      }
+    },
+    {
+      "OutputId": "C1D2E3F4-A5B6-7890-ABCD-EF1234567892"/*StatusMessage*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "OutputId": "C1D2E3F4-A5B6-7890-ABCD-EF1234567893"/*PointsSent*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 400.0
+      }
+    },
+    {
+      "OutputId": "C1D2E3F4-A5B6-7890-ABCD-EF1234567894"/*Command*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 500.0
+      }
+    }
+  ]
+}

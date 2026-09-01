@@ -1,0 +1,67 @@
+{
+  "FormatVersion": 2,
+  "TixlVersion": "4.2.0.2",
+  "Id": "77932588-e3bb-42e5-8032-3f5759031653"/*LaserOptimizer*/,
+  "Description": "",
+  "InputUis": [
+    {
+      "InputId": "8feb10bf-1aba-406a-810c-b27c1ba7295e"/*CornerAnchorCount*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "InputId": "b9bdbeb2-fd13-4814-a00b-50bdd5c356fa"/*LaserPoints*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "InputId": "bc05e8b6-e1c4-4877-a940-571ffc190296"/*MaxJumpDistance*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 75.0
+      }
+    },
+    {
+      "InputId": "be0b8966-3cc6-4923-b727-68cd6ed68d73"/*BlankingDelayPoints*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 150.0
+      }
+    },
+    {
+      "InputId": "c0339847-2bb7-40a0-97ec-2e30a5eefe00"/*EnableOptimization*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 375.0
+      }
+    },
+    {
+      "InputId": "fc4c0603-eb70-484e-b80e-e5834a9fdc8e"/*CornerAngleThreshold*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 225.0
+      }
+    }
+  ],
+  "SymbolChildUis": [],
+  "OutputUis": [
+    {
+      "OutputId": "bb8a62df-ffb7-4eaf-b36e-362941de082d"/*OptimizedPoints*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 200.0
+      }
+    },
+    {
+      "OutputId": "f8fbfd4d-618b-4061-801a-8d2415d3bf3a"/*PointCount*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 300.0
+      }
+    }
+  ]
+}

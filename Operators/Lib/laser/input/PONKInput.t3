@@ -1,0 +1,71 @@
+{
+  "FormatVersion": 2,
+  "TixlVersion": "4.2.0.2",
+  "Id": "B2C3D4E5-F6A7-8901-ABCD-EF1234567890"/*PONKInput*/,
+  "Inputs": [
+    {
+      "Id": "f1e2d3c4-b5a6-7890-abcd-ef1234567801"/*Active*/,
+      "DefaultValue": true
+    },
+    {
+      "Id": "f1e2d3c4-b5a6-7890-abcd-ef1234567802"/*LocalIpAddress*/,
+      "DefaultValue": ""
+    },
+    {
+      "Id": "f1e2d3c4-b5a6-7890-abcd-ef1234567803"/*Port*/,
+      "DefaultValue": 5583
+    },
+    {
+      "Id": "f1e2d3c4-b5a6-7890-abcd-ef1234567804"/*PrintToLog*/,
+      "DefaultValue": false
+    },
+    {
+      "Id": "f1e2d3c4-b5a6-7890-abcd-ef1234567805"/*Timeout*/,
+      "DefaultValue": 1.2
+    },
+    {
+      "Id": "f1e2d3c4-b5a6-7890-abcd-ef1234567806"/*ExpectedSenderId*/,
+      "DefaultValue": 0
+    },
+    {
+      "Id": "f1e2d3c4-b5a6-7890-abcd-ef1234567807"/*MinX*/,
+      "DefaultValue": -1.0
+    },
+    {
+      "Id": "f1e2d3c4-b5a6-7890-abcd-ef1234567808"/*MaxX*/,
+      "DefaultValue": 1.0
+    },
+    {
+      "Id": "f1e2d3c4-b5a6-7890-abcd-ef1234567809"/*MinY*/,
+      "DefaultValue": -1.0
+    },
+    {
+      "Id": "f1e2d3c4-b5a6-7890-abcd-ef123456780a"/*MaxY*/,
+      "DefaultValue": 1.0
+    }
+  ],
+  "Outputs": [
+    {
+      "Id": "e1d2c3b4-a5f6-7890-abcd-ef1234567890"/*LaserPoints*/,
+      "DefaultValue": null
+    },
+    {
+      "Id": "f2e3d4c5-b6a7-8901-abcd-ef1234567891"/*StatusMessage*/,
+      "DefaultValue": ""
+    },
+    {
+      "Id": "a3b4c5d6-c7d8-9012-abcd-ef1234567892"/*FrameCount*/,
+      "DefaultValue": 0
+    },
+    {
+      "Id": "b4c5d6e7-d8e9-0123-abcd-ef1234567893"/*SenderName*/,
+      "DefaultValue": ""
+    },
+    {
+      "Id": "c5d6e7f8-e9f0-1234-abcd-ef1234567894"/*SenderId*/,
+      "DefaultValue": 0
+    }
+  ],
+  "Children": [],
+  "Connections": []
+}
