@@ -1,0 +1,56 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <Import Project="$(SolutionDir)/Tixl.props" />
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <IsArchived>true</IsArchived>
+    <Deterministic>true</Deterministic>
+    <NoWarn>$(NoWarn);NU1900;CS8981</NoWarn>
+    <PackageId>cb95a9f0-6d40-48f5-ac98-ca2162ffcf1e</PackageId>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.8.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\StreamDiffusion\StreamDiffusion.csproj" />
+    <ProjectReference Include="..\..\Logging\Logging.csproj" />
+  </ItemGroup>
+  <Target Name="CreatePackageInfo" AfterTargets="AfterBuild">
+    <ItemGroup Label="Define json structure of referenced operator packages">
+      <OpPacks Include="@(Operators)">
+        <OpPackageInfoJson>{
+    "Identity": "%(Identity)",
+    "Version": "%(Version)", 
+    "ResourcesOnly": "%(ResourcesOnly)"
+}</OpPackageInfoJson>
+      </OpPacks>
+    </ItemGroup>
+    <PropertyGroup>
+      <OperatorReferenceArray>@(OpPacks -> '%(OpPackageInfoJson)', ',')</OperatorReferenceArray>
+      <OperatorPackageInfoJson>{
+    "HomeGuid": "$(HomeGuid)", 
+    "PackageId": "$(PackageId)",
+    "RootNamespace": "$(RootNamespace)",
+    "AssemblyFileName": "$(RootNamespace)",
+    "Version": "$(VersionPrefix)",
+    "EditorVersion": "$(EditorVersion)",
+    "IsEditorOnly": "$(IsEditorOnly)",
+    "OperatorPackages": [$(OperatorReferenceArray)
+    ]
+}</OperatorPackageInfoJson>
+    </PropertyGroup>
+    <WriteLinesToFile File="$(OutputPath)/OperatorPackage.json" Lines="$(OperatorPackageInfoJson)" Overwrite="True" Encoding="UTF-8" />
+  </Target>
+  <Target Name="ClearBuildOutput" BeforeTargets="BeforeBuild">
+    <RemoveDir Directories="bin/$(Configuration)" />
+  </Target>
+</Project>

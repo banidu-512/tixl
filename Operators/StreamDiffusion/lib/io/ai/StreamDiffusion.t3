@@ -1,0 +1,84 @@
+{
+  "FormatVersion": 3,
+  "Id": "9A7B3C8D-4E2F-5A6B-7C8D-9E0F1A2B3C4D"/*StreamDiffusion*/,
+  "Inputs": [
+    {
+      "Id": "A1B2C3D4-E5F6-7890-ABCD-EF1234567890"/*EnginePath*/,
+      "DefaultValue": "C:\\Users\\Artonurban\\AITEST\\tixl-repo\\exported_sd15-fp16"
+    },
+    {
+      "Id": "B2C3D4E5-F6A7-8901-BCDE-F12345678901"/*Mode*/,
+      "DefaultValue": 0
+    },
+    {
+      "Id": "C3D4E5F6-A7B8-9012-CDEF-123456789012"/*Prompt*/,
+      "DefaultValue": "a beautiful landscape"
+    },
+    {
+      "Id": "D4E5F6A7-B8C9-0123-DEF0-234567890123"/*NegativePrompt*/,
+      "DefaultValue": ""
+    },
+    {
+      "Id": "E5F6A7B8-C9D0-1234-EF01-345678901234"/*Seed*/,
+      "DefaultValue": -1
+    },
+    {
+      "Id": "F6A7B8C9-D0E1-2345-F012-456789012345"/*Width*/,
+      "DefaultValue": 384
+    },
+    {
+      "Id": "A7B8C9D0-E1F2-3456-0123-567890123456"/*Height*/,
+      "DefaultValue": 384
+    },
+    {
+      "Id": "B8C9D0E1-F2A3-4567-1234-678901234567"/*Guidance*/,
+      "DefaultValue": 1.0
+    },
+    {
+      "Id": "C9D0E1F2-A3B4-5678-2345-789012345678"/*Strength*/,
+      "DefaultValue": 0.8
+    },
+    {
+      "Id": "D0E1F2A3-B4C5-6789-3456-890123456789"/*Steps*/,
+      "DefaultValue": 1
+    },
+    {
+      "Id": "E1F2A3B4-C5D6-7890-4567-901234567890"/*InputImage*/,
+      "DefaultValue": null
+    },
+    {
+      "Id": "D1E2F3A4-B5C6-7890-1234-567890123456"/*MatchInputSize*/,
+      "DefaultValue": false
+    },
+    {
+      "Id": "E2F3A4B5-C6D7-8901-2345-678901234567"/*ResizeMode*/,
+      "DefaultValue": 0
+    },
+    {
+      "Id": "F3A4B5C6-D7E8-9012-3456-789012345678"/*PreserveDetails*/,
+      "DefaultValue": 0.0
+    },
+    {
+      "Id": "F2A3B4C5-D6E7-8901-5678-012345678901"/*ModelType*/,
+      "DefaultValue": 1
+    },
+    {
+      "Id": "A3B4C5D6-E7F8-9012-6789-123456789012"/*CudaDevice*/,
+      "DefaultValue": 0
+    },
+    {
+      "Id": "C7D8E9F0-A1B2-3456-7890-1234567890AB"/*ExecutionProviderParam*/,
+      "DefaultValue": 2
+    },
+    {
+      "Id": "B4C5D6E7-F8A9-0123-7890-234567890123"/*TriggerGenerate*/,
+      "DefaultValue": false
+    },
+    {
+      "Id": "C5D6E7F8-A9B0-1234-8901-345678901234"/*AutoGenerate*/,
+      "DefaultValue": false
+    }
+  ],
+  "Children": [],
+  "Connections": []
+}
