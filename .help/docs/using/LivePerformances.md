@@ -87,6 +87,27 @@ You can use a virtual MIDI device like [LoopBe1](https://www.nerds.de/en/loopbe1
 
 You can capture a live performance — audio and the MIDI / OSC events that drove it — with a single click on the timeline toolbar's record button, then replay it later to tune the visuals against the exact session you played. See [Recording](./Recording.md) for details.
 
+## Locking Operators with a PIN
+
+During a set you often want certain operators to be untouchable — a perfected chain of effects should not be nudged, re-wired or accidentally deleted mid-show. Select the operators, right-click and pick **Lock with PIN...**. Enter a PIN of 4 to 8 digits (a numeric pad is shown; you can also type on the keyboard) and confirm it.
+
+Locked operators show a magenta lock glyph next to their title and a magenta corner indicator, plus a lock icon in the context menu. While locked they cannot be:
+
+- moved or re-arranged (dragging, alignment, layouting, section drags, display-style changes)
+- deleted, renamed or commented
+- disabled or bypassed
+- rewired (no new cables in or out, no ripping or splitting existing ones)
+- edited in the parameter window (it becomes read-only: a lock notice replaces the parameters, and name, namespace and tags can't be changed)
+- edited on the timeline (their keyframe curves stay off the dope sheet until unlocked)
+
+Locking also clears the undo history: commands from before you locked cannot undo a locked operator away.
+
+The pinpad accepts clicks on its keypad or typing on the keyboard (digits, Backspace, Enter to confirm, Escape to cancel). The last digit you entered briefly appears next to the dots, and **Clear** resets the entry. A wrong PIN shakes the display and flashes it; after three wrong attempts the pinpad enforces a short timeout (3 seconds, doubling with each further miss, at most 15) so it can't be opened by mashing guesses. The timeout also applies to the keyboard, and everything resets once the dialog is closed.
+
+To unlock, right-click a locked operator and pick **Unlock...** — the pinpad appears and the PIN releases every locked operator in the selection that shares it. Copying and duplicating a locked operator still works; the duplicate starts out unlocked.
+
+The PIN is stored as a salted hash in the project file. This protects against accidental edits and casual fiddling, not against someone who deliberately edits the project files. The lock protects the graph, not playback: snapshots and presets still change a locked operator's values when recalled, and operators *inside* a locked composition remain editable unless locked themselves.
+
 ## Advanced Steps
 
 In addition to the basic setups described above, TiXL offers many advanced features that can help you create complex, sophisticated live performance setups. Here are a few examples:
