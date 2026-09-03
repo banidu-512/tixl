@@ -1,448 +1,523 @@
+// Bake a signed distance field volume from a triangle mesh.
+//
+// Stage 1 (MeshToVoxel):  scatter sample points per triangle into an occupancy volume
+// Stage 2 (ClassifyInside*): parity voting along the x/y/z axes builds an inside mask
+// Stage 3 (Preprocess/JFA/Postprocess): jump flooding spreads nearest-surface voxel
+//           coordinates and writes normalized signed distances.
+//
+// Ported from Fire-Aalt/com.firealt.mesh-to-sdf (Runtime/Resources/*.compute).
+// Note: the voxel textures are ping-ponged through SRV reads, so no typed UAV
+// loads are required beyond R32_FLOAT for the inside mask.
+//
+// All kernels share the Params cbuffer. KernelParam is used by MeshToVoxel
+// (triangle count) and Jfa (sampling offset). All resources have unique
+// registers so every kernel can be compiled from this single file.
+
+struct PbrVertex
 {
-  "FormatVersion": 3,
-  "Id": "1b69d98a-0b38-4563-aa43-aac5b8395c2b"/*SlidingHistory*/,
-  "Inputs": [
+    float3 Position;
+    float3 Normal;
+    float3 Tangent;
+    float3 Bitangent;
+    float2 TexCoord;
+    float2 TexCoord2;
+    float Selected;
+    float3 ColorRGB;
+};
+
+StructuredBuffer<PbrVertex> VertexBuffer : register(t0);
+StructuredBuffer<uint3> FaceIndices : register(t1);
+Texture3D<float4> VoxelRead : register(t2);      // nearest-surface seeds or occupancy (x)
+Texture3D<float> InsideMaskRead : register(t3);
+Texture3D<uint> ScratchRead : register(t4);      // scatter mode: flipped float distances
+Texture3D<float> SdfRead : register(t5);         // smoothing: the baked distance volume
+
+SamplerState MeshSdfLinear : register(s0);       // linear clamp, used by the smoothing passes
+
+RWTexture3D<float4> VoxelWrite : register(u0);   // occupancy / seed coordinates
+RWTexture3D<float> InsideMaskWrite : register(u1);
+RWTexture3D<float> SdfWrite : register(u2);      // final normalized signed distance
+RWTexture3D<uint> ScratchWrite : register(u3);   // scatter mode: flipped float distances
+
+cbuffer Params : register(b0)
+{
+    uint3 VoxelSize;
+    uint KernelParam;               // MeshToVoxel: face count, Jfa: sampling offset
+    float3 VoxelOrigin;             // world position of voxel (0,0,0)
+    float VoxelScale;               // voxels per world unit
+    float SampleDensity;            // MeshToVoxel: sample points per voxel^2 of triangle area
+    float DistanceNormalization;    // divides voxel distances (volume resolution)
+    int InsideVoteThreshold;
+    int MaxSamples;                 // MeshToVoxel: upper bound of samples per triangle
+    float ClearValue;               // written by ClearSdf
+    float Signed;                   // 0 = keep distance unsigned (JumpFlood_Unsigned mode)
+    float SliceZ;                   // z slice processed by ClosestPointBrute
+    float Smoothing;                // 0..1 blend toward the local average
+    float SmoothingRadius;          // smoothing reach in voxels
+    float Padding3;
+    float Padding4;
+    float Padding5;
+}
+
+// from https://beta.observablehq.com/@jrus/plastic-sequence
+float2 plastic(float index)
+{
+    return float2(frac(0.7548776662466927 * index), frac(0.5698402909980532 * index));
+}
+
+// sample n on the triangle (origin, edgeA, edgeB) using a low discrepancy sequence
+float3 triangleSample(int n, float3 origin, float3 edgeA, float3 edgeB)
+{
+    float2 s = plastic((float)n);
+    s = s.x + s.y > 1.0 ? 1.0 - s : s;
+    return origin + s.x * edgeA + s.y * edgeB;
+}
+
+[numthreads(8, 8, 8)]
+void ClearVoxels(uint3 id : SV_DispatchThreadID)
+{
+    if (any(id >= VoxelSize))
+        return;
+    VoxelWrite[id] = float4(0, 0, 0, 0);
+    InsideMaskWrite[id] = 0;
+}
+
+// Initialize the distance volume with a large positive distance while no mesh has been baked
+[numthreads(8, 8, 8)]
+void ClearSdf(uint3 id : SV_DispatchThreadID)
+{
+    if (any(id >= VoxelSize))
+        return;
+    SdfWrite[id] = ClearValue;
+}
+
+[numthreads(128, 1, 1)]
+void MeshToVoxel(uint3 id : SV_DispatchThreadID)
+{
+    uint faceId = id.x;
+    if (faceId >= KernelParam)
+        return;
+
+    uint3 face = FaceIndices[faceId];
+    float3 a = (VertexBuffer[face.x].Position - VoxelOrigin) * VoxelScale;
+    float3 b = (VertexBuffer[face.y].Position - VoxelOrigin) * VoxelScale;
+    float3 c = (VertexBuffer[face.z].Position - VoxelOrigin) * VoxelScale;
+    float3 ab = b - a;
+    float3 ac = c - a;
+    uint3 lastVoxelIdx = uint3(0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu);
+
+    // Scale sample count with the triangle area (in voxel units) so that even very
+    // large / low-poly triangles produce a gap-free surface. Sparse sampling would
+    // break the inside/outside parity voting later on.
+    float area = 0.5 * length(cross(ab, ac));
+    int sampleCount = (int)clamp(area * SampleDensity, 16.0, (float)MaxSamples);
+
+    for (int i = 0; i < sampleCount; i++)
     {
-      "Id": "41748add-f957-4a48-b7a5-43ff868bc814"/*HistoryLength*/,
-      "DefaultValue": 1024
-    },
-    {
-      "Id": "48699e66-a59b-4cbb-b131-171ce9fcade3"/*Texture2d*/,
-      "DefaultValue": null
-    },
-    {
-      "Id": "561b8bdc-557c-4a7d-8759-14486def65e4"/*SourceSlice*/,
-      "DefaultValue": 0.0
-    },
-    {
-      "Id": "5d42ff17-a552-4437-877a-a27a369866d7"/*IsEnabled*/,
-      "DefaultValue": true
-    },
-    {
-      "Id": "72db9342-9c07-4557-8b67-e3dc6ee55271"/*ResetTrigger*/,
-      "DefaultValue": false
-    },
-    {
-      "Id": "adc812a8-d86b-4ac9-b33f-99f78e0c8c44"/*Direction*/,
-      "DefaultValue": 0
+        float3 pointOnTri = triangleSample(i, a, ab, ac);
+        uint3 voxelIdx = uint3(floor(pointOnTri));
+        if (!any(voxelIdx >= VoxelSize) && any(voxelIdx != lastVoxelIdx))
+        {
+            // The surface stage only needs a non-zero occupancy marker.
+            VoxelWrite[voxelIdx] = float4(1, 0, 0, 1);
+            lastVoxelIdx = voxelIdx;
+        }
     }
-  ],
-  "Children": [
+}
+
+void FillInsideSegmentX(uint y, uint z, int startX, int endX)
+{
+    for (int x = startX; x < endX; x++)
     {
-      "Id": "1b3cb295-1bfa-4e55-a60b-1a1981eca7da"/*ComputeShaderStage*/,
-      "SymbolId": "8bef116d-7d1c-4c1b-b902-25c1d5e925a9",
-      "InputValues": [
-        {
-          "Id": "180cae35-10e3-47f3-8191-f6ecea7d321c"/*Dispatch*/,
-          "Type": "T3.Core.DataTypes.Vector.Int3",
-          "Value": {
-            "X": 64,
-            "Y": 1,
-            "Z": 1
-          }
-        }
-      ],
-      "Outputs": []
-    },
-    {
-      "Id": "29c4a760-ecc6-459e-8a49-4992ba4c7839"/*SrvFromTexture2d*/,
-      "SymbolId": "c2078514-cf1d-439c-a732-0d7b31b5084a",
-      "InputValues": [],
-      "Outputs": []
-    },
-    {
-      "Id": "2cdce12d-cc9c-4ccb-b9dd-6f7a68b9ee70"/*Texture2d*/,
-      "SymbolId": "f52db9a4-fde9-49ca-9ef7-131825c34e65",
-      "InputValues": [
-        {
-          "Id": "2c9e4cb0-0333-439e-abcc-1148a840a260"/*ResourceOptionFlags*/,
-          "Type": "SharpDX.Direct3D11.ResourceOptionFlags",
-          "Value": "GenerateMipMaps"
-        },
-        {
-          "Id": "58ff26e7-6beb-44cb-910b-fe467402cee9"/*MipLevels*/,
-          "Type": "System.Int32",
-          "Value": 7
-        },
-        {
-          "Id": "67cd82c3-504b-4c80-8c49-5b303733ed52"/*Format*/,
-          "Type": "SharpDX.DXGI.Format",
-          "Value": "R16G16B16A16_Float"
-        },
-        {
-          "Id": "cfebc37f-6813-416a-9073-e48d31074115"/*BindFlags*/,
-          "Type": "SharpDX.Direct3D11.BindFlags",
-          "Value": "ShaderResource, RenderTarget, UnorderedAccess"
-        }
-      ],
-      "Outputs": []
-    },
-    {
-      "Id": "37983b13-b8ea-4c71-838f-d41e505687cc"/*FloatsToBuffer*/,
-      "SymbolId": "724da755-2d0c-42ab-8335-8c88ec5fb078",
-      "InputValues": [],
-      "Outputs": []
-    },
-    {
-      "Id": "492d1b5f-cc6d-4eb8-855a-eff0a98dae58"/*PickInt*/,
-      "SymbolId": "81555155-ae6f-40aa-961d-b6badb77af21",
-      "InputValues": [],
-      "Outputs": []
-    },
-    {
-      "Id": "4de5154b-0489-45ed-8c36-8ef585118428"/*Int2*/,
-      "SymbolId": "f1218934-f874-4f70-a077-0ebe7d12104d",
-      "InputValues": [
-        {
-          "Id": "53602af2-48d9-42ab-80c3-ae1f1e600d28"/*Y*/,
-          "Type": "System.Int32",
-          "Value": 1
-        }
-      ],
-      "Outputs": []
-    },
-    {
-      "Id": "5bc5d5e6-f84c-4766-a8ef-ce58bf9e2d59"/*Int2Components*/,
-      "SymbolId": "f86358e0-2573-4acd-9a90-e95108e8a4da",
-      "InputValues": [],
-      "Outputs": []
-    },
-    {
-      "Id": "5ef75ec2-dba1-4741-b2d3-fd4beee6b738"/*IntsToBuffer*/,
-      "SymbolId": "2eb20a76-f8f7-49e9-93a5-1e5981122b50",
-      "InputValues": [],
-      "Outputs": []
-    },
-    {
-      "Id": "72a2020d-e075-4cb4-9de9-5a2d56e8b787"/*GetTextureSize*/,
-      "SymbolId": "daec568f-f7b4-4d81-a401-34d62462daab",
-      "InputValues": [],
-      "Outputs": []
-    },
-    {
-      "Id": "7480a3d0-41bd-4e07-abcb-514406ba3df4"/*Execute*/,
-      "SymbolId": "936e4324-bea2-463a-b196-6064a2d8a6b2",
-      "InputValues": [
-        {
-          "Id": "d68b5569-b43d-4a0d-9524-35289ce08098"/*IsEnabled*/,
-          "Type": "System.Boolean",
-          "Value": true
-        }
-      ],
-      "Outputs": []
-    },
-    {
-      "Id": "7b36f2cc-e9cc-449d-ab14-de0312d9e562"/*UavFromTexture2d*/,
-      "SymbolId": "84e02044-3011-4a5e-b76a-c904d9b4557f",
-      "InputValues": [],
-      "Outputs": []
-    },
-    {
-      "Id": "8acb18e3-2d94-4061-84a3-31bdbbde4a9d"/*BoolToFloat*/,
-      "SymbolId": "9db2fcbf-54b9-4222-878b-80d1a0dc6edf",
-      "InputValues": [],
-      "Outputs": []
-    },
-    {
-      "Id": "90d83d65-a4a2-4de3-9d0b-24899154e908"/*GenerateMips*/,
-      "SymbolId": "32a6a351-6d22-4915-aa0e-e0483b7f4e76",
-      "InputValues": [],
-      "Outputs": []
-    },
-    {
-      "Id": "91747425-4e33-4a86-9e14-15eebbdcf51d"/*HasTimeChanged*/,
-      "SymbolId": "2443b2fd-c397-4ea6-9588-b595f918cf01",
-      "InputValues": [
-        {
-          "Id": "bc112889-77a8-4967-a9b7-683b7c7017fe"/*Mode*/,
-          "Type": "System.Int32",
-          "Value": 2
-        }
-      ],
-      "Outputs": []
-    },
-    {
-      "Id": "9dbdef95-13ea-4517-8df6-956a0bec9441"/*CalcDispatchCount*/,
-      "SymbolId": "eb68addb-ec59-416f-8608-ff9d2319f3a3",
-      "InputValues": [],
-      "Outputs": []
-    },
-    {
-      "Id": "cba6a810-6b82-46ac-9f0c-0936549e7a26"/*ComputeShader*/,
-      "SymbolId": "a256d70f-adb3-481d-a926-caf35bd3e64c",
-      "InputValues": [
-        {
-          "Id": "afb69c81-5063-4cb9-9d42-841b994b5ec0"/*Source*/,
-          "Type": "System.String",
-          "Value": "Lib:shaders/img/generate/SlidingHistory.hlsl"
-        }
-      ],
-      "Outputs": []
-    },
-    {
-      "Id": "da84d2fe-8541-447c-ac78-abea00a0d45c"/*ExecuteTextureUpdate*/,
-      "SymbolId": "6c2f8241-9f4b-451e-8a1d-871631d21163",
-      "InputValues": [],
-      "Outputs": []
-    },
-    {
-      "Id": "e1d889c2-47ae-45c9-a68b-ae0e98fe8e9d"/*PickInt*/,
-      "SymbolId": "81555155-ae6f-40aa-961d-b6badb77af21",
-      "InputValues": [],
-      "Outputs": []
-    },
-    {
-      "Id": "e21edf1e-b3f0-46a7-82c1-918547863075"/*And*/,
-      "SymbolId": "a18ae2d3-1735-40b8-bebb-65a6788bc872",
-      "InputValues": [
-        {
-          "Id": "af89954f-9f79-4782-95ab-f40bb50339c8"/*B*/,
-          "Type": "System.Boolean",
-          "Value": false
-        }
-      ],
-      "Outputs": []
-    },
-    {
-      "Id": "ea89ec91-e3d3-499f-9adc-c34120d96056"/*CalcInt2DispatchCount*/,
-      "SymbolId": "cc11774e-82dd-409f-97fb-5be3f2746f9d",
-      "InputValues": [],
-      "Outputs": []
-    },
-    {
-      "Id": "ef83e4a5-e4b7-48df-b467-322e12dce771"/*ClampInt*/,
-      "SymbolId": "5f734c25-9f1a-436c-b56c-7e0a1e07fdda",
-      "InputValues": [
-        {
-          "Id": "23e55b5d-b469-4d0f-a495-7e87fe65cccf"/*Max*/,
-          "Type": "System.Int32",
-          "Value": 16384
-        },
-        {
-          "Id": "e715919d-f3e3-4708-90a6-b55efb379257"/*Min*/,
-          "Type": "System.Int32",
-          "Value": 1
-        }
-      ],
-      "Outputs": []
+        uint3 at = uint3((uint)x, y, z);
+        InsideMaskWrite[at] = InsideMaskWrite[at] + 1.0;
     }
-  ],
-  "Connections": [
+}
+
+void FillInsideSegmentY(uint x, uint z, int startY, int endY)
+{
+    for (int y = startY; y < endY; y++)
     {
-      "SourceParentOrChildId": "da84d2fe-8541-447c-ac78-abea00a0d45c",
-      "SourceSlotId": "c955f2a2-9823-4844-ac11-98ea07dc50aa",
-      "TargetParentOrChildId": "00000000-0000-0000-0000-000000000000",
-      "TargetSlotId": "724ecde4-fd33-4a59-a8df-51cb21e70bd3"
-    },
+        uint3 at = uint3(x, (uint)y, z);
+        InsideMaskWrite[at] = InsideMaskWrite[at] + 1.0;
+    }
+}
+
+void FillInsideSegmentZ(uint x, uint y, int startZ, int endZ)
+{
+    for (int z = startZ; z < endZ; z++)
     {
-      "SourceParentOrChildId": "9dbdef95-13ea-4517-8df6-956a0bec9441",
-      "SourceSlotId": "35c0e513-812f-49e2-96fa-17541751c19b",
-      "TargetParentOrChildId": "1b3cb295-1bfa-4e55-a60b-1a1981eca7da",
-      "TargetSlotId": "180cae35-10e3-47f3-8191-f6ecea7d321c"
-    },
+        uint3 at = uint3(x, y, (uint)z);
+        InsideMaskWrite[at] = InsideMaskWrite[at] + 1.0;
+    }
+}
+
+[numthreads(1, 8, 8)]
+void ClassifyInsideX(uint3 id : SV_DispatchThreadID)
+{
+    if (id.y >= VoxelSize.y || id.z >= VoxelSize.z)
+        return;
+    bool onSurfaceRun = false;
+    int pendingInsideStart = -1;
+    for (uint x = 0; x < VoxelSize.x; x++)
     {
-      "SourceParentOrChildId": "37983b13-b8ea-4c71-838f-d41e505687cc",
-      "SourceSlotId": "f5531ffb-dbde-45d3-af2a-bd90bcbf3710",
-      "TargetParentOrChildId": "1b3cb295-1bfa-4e55-a60b-1a1981eca7da",
-      "TargetSlotId": "34cf06fe-8f63-4f14-9c59-35a2c021b817"
-    },
+        bool isSurface = VoxelRead.Load(int4(x, id.y, id.z, 0)).x > 0.5;
+        if (isSurface)
+        {
+            if (!onSurfaceRun)
+            {
+                if (pendingInsideStart < 0)
+                {
+                    pendingInsideStart = (int)x + 1;
+                }
+                else
+                {
+                    FillInsideSegmentX(id.y, id.z, pendingInsideStart, (int)x);
+                    pendingInsideStart = -1;
+                }
+                onSurfaceRun = true;
+            }
+        }
+        else
+        {
+            onSurfaceRun = false;
+        }
+    }
+}
+
+[numthreads(8, 1, 8)]
+void ClassifyInsideY(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= VoxelSize.x || id.z >= VoxelSize.z)
+        return;
+    bool onSurfaceRun = false;
+    int pendingInsideStart = -1;
+    for (uint y = 0; y < VoxelSize.y; y++)
     {
-      "SourceParentOrChildId": "5ef75ec2-dba1-4741-b2d3-fd4beee6b738",
-      "SourceSlotId": "f5531ffb-dbde-45d3-af2a-bd90bcbf3710",
-      "TargetParentOrChildId": "1b3cb295-1bfa-4e55-a60b-1a1981eca7da",
-      "TargetSlotId": "34cf06fe-8f63-4f14-9c59-35a2c021b817"
-    },
+        bool isSurface = VoxelRead.Load(int4(id.x, y, id.z, 0)).x > 0.5;
+        if (isSurface)
+        {
+            if (!onSurfaceRun)
+            {
+                if (pendingInsideStart < 0)
+                {
+                    pendingInsideStart = (int)y + 1;
+                }
+                else
+                {
+                    FillInsideSegmentY(id.x, id.z, pendingInsideStart, (int)y);
+                    pendingInsideStart = -1;
+                }
+                onSurfaceRun = true;
+            }
+        }
+        else
+        {
+            onSurfaceRun = false;
+        }
+    }
+}
+
+[numthreads(8, 8, 1)]
+void ClassifyInsideZ(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= VoxelSize.x || id.y >= VoxelSize.y)
+        return;
+    bool onSurfaceRun = false;
+    int pendingInsideStart = -1;
+    for (uint z = 0; z < VoxelSize.z; z++)
     {
-      "SourceParentOrChildId": "7b36f2cc-e9cc-449d-ab14-de0312d9e562",
-      "SourceSlotId": "83d2dcfd-3850-45d8-bb1b-93fe9c9f4334",
-      "TargetParentOrChildId": "1b3cb295-1bfa-4e55-a60b-1a1981eca7da",
-      "TargetSlotId": "599384c2-bf6c-4953-be74-d363292ab1c7"
-    },
+        bool isSurface = VoxelRead.Load(int4(id.x, id.y, z, 0)).x > 0.5;
+        if (isSurface)
+        {
+            if (!onSurfaceRun)
+            {
+                if (pendingInsideStart < 0)
+                {
+                    pendingInsideStart = (int)z + 1;
+                }
+                else
+                {
+                    FillInsideSegmentZ(id.x, id.y, pendingInsideStart, (int)z);
+                    pendingInsideStart = -1;
+                }
+                onSurfaceRun = true;
+            }
+        }
+        else
+        {
+            onSurfaceRun = false;
+        }
+    }
+}
+
+// Copy occupancy into seed coordinates: surface voxels seed the flood fill.
+[numthreads(8, 8, 8)]
+void Preprocess(uint3 id : SV_DispatchThreadID)
+{
+    if (any(id >= VoxelSize))
+        return;
+    float isSurface = VoxelRead.Load(int4(id, 0)).x;
+    VoxelWrite[id] = float4(id, isSurface > 0.5 ? 1.0 : 0.0);
+}
+
+void JfaIter(uint offset, uint3 id)
+{
+    float4 closest = VoxelRead.Load(int4(id, 0));
+    float closestDistSq = 3.402823466e+38;
+    int3 bounds = int3(VoxelSize);
+    int intOffset = (int)offset;
+    for (int i = -1; i <= 1; i++)
     {
-      "SourceParentOrChildId": "cba6a810-6b82-46ac-9f0c-0936549e7a26",
-      "SourceSlotId": "6c118567-8827-4422-86cc-4d4d00762d87",
-      "TargetParentOrChildId": "1b3cb295-1bfa-4e55-a60b-1a1981eca7da",
-      "TargetSlotId": "5c0e9c96-9aba-4757-ae1f-cc50fb6173f1"
-    },
+        for (int j = -1; j <= 1; j++)
+        {
+            for (int k = -1; k <= 1; k++)
+            {
+                int3 at = int3(id) + int3(i, j, k) * intOffset;
+                if (any(at < 0) || any(at >= bounds))
+                    continue;
+                float4 voxel = VoxelRead.Load(int4(at, 0));
+                // not a seed / hasn't seen a seed
+                if (voxel.w == 0.0)
+                    continue;
+                float3 delta = float3(id) - voxel.xyz;
+                float voxelDistSq = dot(delta, delta);
+                if (voxelDistSq < closestDistSq)
+                {
+                    closestDistSq = voxelDistSq;
+                    closest = voxel;
+                }
+            }
+        }
+    }
+    VoxelWrite[id] = closest;
+}
+
+[numthreads(8, 8, 8)]
+void Jfa(uint3 id : SV_DispatchThreadID)
+{
+    if (any(id >= VoxelSize))
+        return;
+    JfaIter(KernelParam, id);
+}
+
+[numthreads(8, 8, 8)]
+void Postprocess(uint3 id : SV_DispatchThreadID)
+{
+    if (any(id >= VoxelSize))
+        return;
+    float3 seedPos = VoxelRead.Load(int4(id, 0)).xyz;
+    float3 delta = seedPos - float3(id);
+    float dist = sqrt(dot(delta, delta)) / DistanceNormalization;
+    if (Signed > 0.5 && InsideMaskRead.Load(int4(id, 0)) >= InsideVoteThreshold)
+        dist = -dist;
+    SdfWrite[id] = dist;
+}
+
+// ---------------------------------------------------------------- exact mode
+
+// Squared distance from p to triangle (a,b,c), in voxel units.
+float PointTriangleDistSq(float3 p, float3 a, float3 b, float3 c)
+{
+    float3 ab = b - a;
+    float3 ac = c - a;
+    float3 ap = p - a;
+    float d1 = dot(ab, ap);
+    float d2 = dot(ac, ap);
+    if (d1 <= 0 && d2 <= 0)
+        return dot(ap, ap);
+    float3 bp = p - b;
+    float d3 = dot(ab, bp);
+    float d4 = dot(ac, bp);
+    if (d3 >= 0 && d4 <= d3)
+        return dot(bp, bp);
+    float vc = d1 * d4 - d3 * d2;
+    if (vc <= 0 && d1 >= 0 && d3 <= 0)
     {
-      "SourceParentOrChildId": "29c4a760-ecc6-459e-8a49-4992ba4c7839",
-      "SourceSlotId": "dc71f39f-3fba-4fc6-b8ef-ce57c82bf78e",
-      "TargetParentOrChildId": "1b3cb295-1bfa-4e55-a60b-1a1981eca7da",
-      "TargetSlotId": "88938b09-d5a7-437c-b6e1-48a5b375d756"
-    },
+        float v = d1 / (d1 - d3);
+        float3 q = a + ab * v - p;
+        return dot(q, q);
+    }
+    float3 cp = p - c;
+    float d5 = dot(ab, cp);
+    float d6 = dot(ac, cp);
+    if (d6 >= 0 && d5 <= d6)
+        return dot(cp, cp);
+    float vb = d5 * d2 - d1 * d6;
+    if (vb <= 0 && d2 >= 0 && d6 <= 0)
     {
-      "SourceParentOrChildId": "00000000-0000-0000-0000-000000000000",
-      "SourceSlotId": "48699e66-a59b-4cbb-b131-171ce9fcade3",
-      "TargetParentOrChildId": "29c4a760-ecc6-459e-8a49-4992ba4c7839",
-      "TargetSlotId": "d5afa102-2f88-431e-9cd4-af91e41f88f6"
-    },
+        float w = d2 / (d2 - d6);
+        float3 q = a + ac * w - p;
+        return dot(q, q);
+    }
+    float va = d3 * d6 - d5 * d4;
+    if (va <= 0 && (d4 - d3) >= 0 && (d5 - d6) >= 0)
     {
-      "SourceParentOrChildId": "4de5154b-0489-45ed-8c36-8ef585118428",
-      "SourceSlotId": "3265ff5f-9d8d-48d5-a6f8-9085b4f19a78",
-      "TargetParentOrChildId": "2cdce12d-cc9c-4ccb-b9dd-6f7a68b9ee70",
-      "TargetSlotId": "b77088a9-2676-4caa-809a-5e0f120d25d7"
-    },
+        float w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+        float3 q = b + (c - b) * w - p;
+        return dot(q, q);
+    }
+    float denom = 1.0 / (va + vb + vc);
+    float v = vb * denom;
+    float w = vc * denom;
+    float3 q = a + ab * v + ac * w - p;
+    return dot(q, q);
+}
+
+// Exact distance from every voxel center to the nearest triangle (brute force).
+// Dispatched one z slice at a time so the OS can preempt between dispatches.
+[numthreads(8, 8, 1)]
+void ClosestPointBrute(uint3 tid : SV_DispatchThreadID)
+{
+    uint3 id = uint3(tid.x, tid.y, (uint)SliceZ);
+    if (any(id >= VoxelSize))
+        return;
+
+    float3 p = float3(id) + 0.5;
+    float bestDistSq = 3.402823466e+38;
+    for (uint f = 0; f < KernelParam; f++)
     {
-      "SourceParentOrChildId": "8acb18e3-2d94-4061-84a3-31bdbbde4a9d",
-      "SourceSlotId": "f0321a54-e844-482f-a161-7f137abc54b0",
-      "TargetParentOrChildId": "37983b13-b8ea-4c71-838f-d41e505687cc",
-      "TargetSlotId": "49556d12-4cd1-4341-b9d8-c356668d296c"
-    },
+        uint3 face = FaceIndices[f];
+        float3 a = (VertexBuffer[face.x].Position - VoxelOrigin) * VoxelScale;
+        float3 b = (VertexBuffer[face.y].Position - VoxelOrigin) * VoxelScale;
+        float3 c = (VertexBuffer[face.z].Position - VoxelOrigin) * VoxelScale;
+        float distSq = PointTriangleDistSq(p, a, b, c);
+        bestDistSq = min(bestDistSq, distSq);
+    }
+
+    VoxelWrite[id] = float4(sqrt(bestDistSq) / DistanceNormalization, 0, 0, 0);
+}
+
+// Applies the inside mask sign to an unsigned distance volume (exact mode).
+[numthreads(8, 8, 8)]
+void ApplyInsideSign(uint3 id : SV_DispatchThreadID)
+{
+    if (any(id >= VoxelSize))
+        return;
+    float dist = VoxelRead.Load(int4(id, 0)).x;
+    if (Signed > 0.5 && InsideMaskRead.Load(int4(id, 0)) >= InsideVoteThreshold)
+        dist = -dist;
+    SdfWrite[id] = dist;
+}
+
+// --------------------------------------- exact scatter mode (AMD TressFX style)
+// This is the method used by vvvv's VL.Fuse.DomainExtensions MeshToSDF:
+// every triangle writes the exact signed distance into the grid cells around its
+// bounding box; an atomic minimum keeps the closest surface. Distances are exact
+// within the margin shell around the mesh; far cells keep the initial value.
+
+// order-preserving float -> uint mapping so InterlockedMin finds the float minimum
+uint FloatFlipDist(float f)
+{
+    uint x = asuint(f);
+    return (x << 1) | (x >> 31);
+}
+
+float IFloatFlipDist(uint x)
+{
+    return asfloat((x >> 1) | (x << 31));
+}
+
+[numthreads(8, 8, 8)]
+void InitSdfScatter(uint3 id : SV_DispatchThreadID)
+{
+    if (any(id >= VoxelSize))
+        return;
+    ScratchWrite[id] = FloatFlipDist(ClearValue);
+}
+
+[numthreads(64, 1, 1)]
+void BakeSDFScatter(uint3 tid : SV_DispatchThreadID)
+{
+    const int margin = 15;
+
+    uint faceId = tid.x;
+    if (faceId >= KernelParam)
+        return;
+
+    uint3 face = FaceIndices[faceId];
+    float3 a = (VertexBuffer[face.x].Position - VoxelOrigin) * VoxelScale;
+    float3 b = (VertexBuffer[face.y].Position - VoxelOrigin) * VoxelScale;
+    float3 c = (VertexBuffer[face.z].Position - VoxelOrigin) * VoxelScale;
+    float3 nTri = cross(b - a, c - a);
+
+    int3 gridMin = max(int3(0, 0, 0), (int3)floor(min(a, min(b, c))) - margin);
+    int3 gridMax = min((int3)VoxelSize - 1, (int3)ceil(max(a, max(b, c))) + margin);
+
+    for (int z = gridMin.z; z <= gridMax.z; z++)
     {
-      "SourceParentOrChildId": "00000000-0000-0000-0000-000000000000",
-      "SourceSlotId": "561b8bdc-557c-4a7d-8759-14486def65e4",
-      "TargetParentOrChildId": "37983b13-b8ea-4c71-838f-d41e505687cc",
-      "TargetSlotId": "49556d12-4cd1-4341-b9d8-c356668d296c"
-    },
+        for (int y = gridMin.y; y <= gridMax.y; y++)
+        {
+            for (int x = gridMin.x; x <= gridMax.x; x++)
+            {
+                float3 p = float3(x, y, z) + 0.5;
+                float dist = sqrt(PointTriangleDistSq(p, a, b, c)) / DistanceNormalization;
+                dist = (dot(p - a, nTri) < 0.0) ? dist : -dist;
+                InterlockedMin(ScratchWrite[uint3(x, y, z)], FloatFlipDist(dist));
+            }
+        }
+    }
+}
+
+[numthreads(8, 8, 8)]
+void FinalizeSdfScatter(uint3 id : SV_DispatchThreadID)
+{
+    if (any(id >= VoxelSize))
+        return;
+    SdfWrite[id] = IFloatFlipDist(ScratchRead.Load(int4(id, 0)));
+}
+
+// ------------------------------------------------------------- smoothing
+
+// Average of the 27 neighbors (scaled by SmoothingRadius), trilinearly sampled
+// so the radius can be fractional. Border behavior: clamp to the volume edge.
+float MeshSdfAverage(uint3 id)
+{
+    float sum = 0;
+    [unroll]
+    for (int z = -1; z <= 1; z++)
     {
-      "SourceParentOrChildId": "ef83e4a5-e4b7-48df-b467-322e12dce771",
-      "SourceSlotId": "e6aae72f-8c22-4133-ba0d-c3635751d715",
-      "TargetParentOrChildId": "492d1b5f-cc6d-4eb8-855a-eff0a98dae58",
-      "TargetSlotId": "2c0a4eb2-da56-449d-91b8-5ba0870fbeb4"
-    },
-    {
-      "SourceParentOrChildId": "5bc5d5e6-f84c-4766-a8ef-ce58bf9e2d59",
-      "SourceSlotId": "dc835127-e03b-4afa-b91a-468781b5b599",
-      "TargetParentOrChildId": "492d1b5f-cc6d-4eb8-855a-eff0a98dae58",
-      "TargetSlotId": "2c0a4eb2-da56-449d-91b8-5ba0870fbeb4"
-    },
-    {
-      "SourceParentOrChildId": "5bc5d5e6-f84c-4766-a8ef-ce58bf9e2d59",
-      "SourceSlotId": "dc835127-e03b-4afa-b91a-468781b5b599",
-      "TargetParentOrChildId": "492d1b5f-cc6d-4eb8-855a-eff0a98dae58",
-      "TargetSlotId": "2c0a4eb2-da56-449d-91b8-5ba0870fbeb4"
-    },
-    {
-      "SourceParentOrChildId": "00000000-0000-0000-0000-000000000000",
-      "SourceSlotId": "adc812a8-d86b-4ac9-b33f-99f78e0c8c44",
-      "TargetParentOrChildId": "492d1b5f-cc6d-4eb8-855a-eff0a98dae58",
-      "TargetSlotId": "8bbc412b-f574-4a2b-9cbc-bf4f60aebb17"
-    },
-    {
-      "SourceParentOrChildId": "492d1b5f-cc6d-4eb8-855a-eff0a98dae58",
-      "SourceSlotId": "9ddd1c52-865a-4930-84ec-98d3c0ffaa9c",
-      "TargetParentOrChildId": "4de5154b-0489-45ed-8c36-8ef585118428",
-      "TargetSlotId": "53602af2-48d9-42ab-80c3-ae1f1e600d28"
-    },
-    {
-      "SourceParentOrChildId": "e1d889c2-47ae-45c9-a68b-ae0e98fe8e9d",
-      "SourceSlotId": "9ddd1c52-865a-4930-84ec-98d3c0ffaa9c",
-      "TargetParentOrChildId": "4de5154b-0489-45ed-8c36-8ef585118428",
-      "TargetSlotId": "579e72d6-638e-4b17-bb4e-88a55e3a1d4d"
-    },
-    {
-      "SourceParentOrChildId": "72a2020d-e075-4cb4-9de9-5a2d56e8b787",
-      "SourceSlotId": "be16d5d3-4d21-4d5a-9e4c-c7b2779b6bdc",
-      "TargetParentOrChildId": "5bc5d5e6-f84c-4766-a8ef-ce58bf9e2d59",
-      "TargetSlotId": "425ba347-d82a-49ec-b8b4-d0f8f7e3a504"
-    },
-    {
-      "SourceParentOrChildId": "00000000-0000-0000-0000-000000000000",
-      "SourceSlotId": "adc812a8-d86b-4ac9-b33f-99f78e0c8c44",
-      "TargetParentOrChildId": "5ef75ec2-dba1-4741-b2d3-fd4beee6b738",
-      "TargetSlotId": "49556d12-4cd1-4341-b9d8-c356668d296c"
-    },
-    {
-      "SourceParentOrChildId": "00000000-0000-0000-0000-000000000000",
-      "SourceSlotId": "48699e66-a59b-4cbb-b131-171ce9fcade3",
-      "TargetParentOrChildId": "72a2020d-e075-4cb4-9de9-5a2d56e8b787",
-      "TargetSlotId": "8b15d8e1-10c7-41e1-84db-a85e31e0c909"
-    },
-    {
-      "SourceParentOrChildId": "1b3cb295-1bfa-4e55-a60b-1a1981eca7da",
-      "SourceSlotId": "c382284f-7e37-4eb0-b284-bc735247f26b",
-      "TargetParentOrChildId": "7480a3d0-41bd-4e07-abcb-514406ba3df4",
-      "TargetSlotId": "5d73ebe6-9aa0-471a-ae6b-3f5bfd5a0f9c"
-    },
-    {
-      "SourceParentOrChildId": "e21edf1e-b3f0-46a7-82c1-918547863075",
-      "SourceSlotId": "c02d701d-a915-4d2e-bb31-5c6cd27a999e",
-      "TargetParentOrChildId": "7480a3d0-41bd-4e07-abcb-514406ba3df4",
-      "TargetSlotId": "d68b5569-b43d-4a0d-9524-35289ce08098"
-    },
-    {
-      "SourceParentOrChildId": "2cdce12d-cc9c-4ccb-b9dd-6f7a68b9ee70",
-      "SourceSlotId": "007129e4-0eae-4cb9-a142-90c1c171a5fb",
-      "TargetParentOrChildId": "7b36f2cc-e9cc-449d-ab14-de0312d9e562",
-      "TargetSlotId": "4a4f6830-1809-42c9-91eb-d4dbd0290043"
-    },
-    {
-      "SourceParentOrChildId": "00000000-0000-0000-0000-000000000000",
-      "SourceSlotId": "72db9342-9c07-4557-8b67-e3dc6ee55271",
-      "TargetParentOrChildId": "8acb18e3-2d94-4061-84a3-31bdbbde4a9d",
-      "TargetSlotId": "253b9ae4-fac5-4641-bf0c-d8614606a840"
-    },
-    {
-      "SourceParentOrChildId": "2cdce12d-cc9c-4ccb-b9dd-6f7a68b9ee70",
-      "SourceSlotId": "007129e4-0eae-4cb9-a142-90c1c171a5fb",
-      "TargetParentOrChildId": "90d83d65-a4a2-4de3-9d0b-24899154e908",
-      "TargetSlotId": "a4e3001c-0663-48ec-8f56-b11ff0b40850"
-    },
-    {
-      "SourceParentOrChildId": "cba6a810-6b82-46ac-9f0c-0936549e7a26",
-      "SourceSlotId": "a6fe06e0-b6a9-463c-9e62-930c58b0a0a1",
-      "TargetParentOrChildId": "9dbdef95-13ea-4517-8df6-956a0bec9441",
-      "TargetSlotId": "3979e440-7888-4249-9975-74b21c6b813c"
-    },
-    {
-      "SourceParentOrChildId": "492d1b5f-cc6d-4eb8-855a-eff0a98dae58",
-      "SourceSlotId": "9ddd1c52-865a-4930-84ec-98d3c0ffaa9c",
-      "TargetParentOrChildId": "9dbdef95-13ea-4517-8df6-956a0bec9441",
-      "TargetSlotId": "f79ccc37-05fd-4f81-97d6-6c1cafca180c"
-    },
-    {
-      "SourceParentOrChildId": "7480a3d0-41bd-4e07-abcb-514406ba3df4",
-      "SourceSlotId": "e81c99ce-fcee-4e7c-a1c7-0aa3b352b7e1",
-      "TargetParentOrChildId": "da84d2fe-8541-447c-ac78-abea00a0d45c",
-      "TargetSlotId": "088ddcee-1407-4cd8-85bc-6704b8ea73b1"
-    },
-    {
-      "SourceParentOrChildId": "90d83d65-a4a2-4de3-9d0b-24899154e908",
-      "SourceSlotId": "ac14864f-3288-4cab-87a0-636cee626a2b",
-      "TargetParentOrChildId": "da84d2fe-8541-447c-ac78-abea00a0d45c",
-      "TargetSlotId": "5599a8ac-0686-4fa8-806c-52a44f910f11"
-    },
-    {
-      "SourceParentOrChildId": "5bc5d5e6-f84c-4766-a8ef-ce58bf9e2d59",
-      "SourceSlotId": "cd0bd085-dd4a-46a5-bf00-39a199434b30",
-      "TargetParentOrChildId": "e1d889c2-47ae-45c9-a68b-ae0e98fe8e9d",
-      "TargetSlotId": "2c0a4eb2-da56-449d-91b8-5ba0870fbeb4"
-    },
-    {
-      "SourceParentOrChildId": "ef83e4a5-e4b7-48df-b467-322e12dce771",
-      "SourceSlotId": "e6aae72f-8c22-4133-ba0d-c3635751d715",
-      "TargetParentOrChildId": "e1d889c2-47ae-45c9-a68b-ae0e98fe8e9d",
-      "TargetSlotId": "2c0a4eb2-da56-449d-91b8-5ba0870fbeb4"
-    },
-    {
-      "SourceParentOrChildId": "ef83e4a5-e4b7-48df-b467-322e12dce771",
-      "SourceSlotId": "e6aae72f-8c22-4133-ba0d-c3635751d715",
-      "TargetParentOrChildId": "e1d889c2-47ae-45c9-a68b-ae0e98fe8e9d",
-      "TargetSlotId": "2c0a4eb2-da56-449d-91b8-5ba0870fbeb4"
-    },
-    {
-      "SourceParentOrChildId": "00000000-0000-0000-0000-000000000000",
-      "SourceSlotId": "adc812a8-d86b-4ac9-b33f-99f78e0c8c44",
-      "TargetParentOrChildId": "e1d889c2-47ae-45c9-a68b-ae0e98fe8e9d",
-      "TargetSlotId": "8bbc412b-f574-4a2b-9cbc-bf4f60aebb17"
-    },
-    {
-      "SourceParentOrChildId": "00000000-0000-0000-0000-000000000000",
-      "SourceSlotId": "5d42ff17-a552-4437-877a-a27a369866d7",
-      "TargetParentOrChildId": "e21edf1e-b3f0-46a7-82c1-918547863075",
-      "TargetSlotId": "1931b0fe-0df0-4ba1-9da5-b3eceaa87888"
-    },
-    {
-      "SourceParentOrChildId": "91747425-4e33-4a86-9e14-15eebbdcf51d",
-      "SourceSlotId": "4883b1ec-16c1-422f-8db6-c74c3d48e5be",
-      "TargetParentOrChildId": "e21edf1e-b3f0-46a7-82c1-918547863075",
-      "TargetSlotId": "af89954f-9f79-4782-95ab-f40bb50339c8"
-    },
-    {
-      "SourceParentOrChildId": "4de5154b-0489-45ed-8c36-8ef585118428",
-      "SourceSlotId": "3265ff5f-9d8d-48d5-a6f8-9085b4f19a78",
-      "TargetParentOrChildId": "ea89ec91-e3d3-499f-9adc-c34120d96056",
-      "TargetSlotId": "714e7c0d-0137-4bc6-9e5b-93386b2efe13"
-    },
-    {
-      "SourceParentOrChildId": "cba6a810-6b82-
+        [unroll]
+        for (int y = -1; y <= 1; y++)
+        {
+            [unroll]
+            for (int x = -1; x <= 1; x++)
+            {
+                float3 uvw = (float3(id) + 0.5 + float3(x, y, z) * SmoothingRadius) / float3(VoxelSize);
+                sum += VoxelRead.SampleLevel(MeshSdfLinear, uvw, 0).x;
+            }
+        }
+    }
+    return sum / 27.0;
+}
+
+// First smoothing pass reads the freshly baked distance volume
+[numthreads(8, 8, 8)]
+void SmoothFirstPass(uint3 id : SV_DispatchThreadID)
+{
+    if (any(id >= VoxelSize))
+        return;
+    float center = SdfRead.Load(int4(id, 0));
+    float avg = MeshSdfAverage(id);
+    VoxelWrite[id] = float4(lerp(center, avg, Smoothing), 0, 0, 1);
+}
+
+// Second smoothing pass ping-pongs through the voxel textures
+[numthreads(8, 8, 8)]
+void SmoothPass(uint3 id : SV_DispatchThreadID)
+{
+    if (any(id >= VoxelSize))
+        return;
+    float center = VoxelRead.Load(int4(id, 0)).x;
+    float avg = MeshSdfAverage(id);
+    VoxelWrite[id] = float4(lerp(center, avg, Smoothing), 0, 0, 1);
+}
+
+// Copies the smoothed result back into the distance volume
+[numthreads(8, 8, 8)]
+void SmoothCopyBack(uint3 id : SV_DispatchThreadID)
+{
+    if (any(id >= VoxelSize))
+        return;
+    SdfWrite[id] = VoxelRead.Load(int4(id, 0)).x;
+}
