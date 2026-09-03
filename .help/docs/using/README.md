@@ -45,7 +45,7 @@ Reference and how-tos for the day-to-day work: the UI, the graph, connecting inp
 
 ## Live use and data management
 
-- [TiXL for VJ and live performances](LivePerformances.md)
+- [TiXL for VJ and live performances](LivePerformances.md) — incl. locking operators with a PIN
 - [Using backups](Backups.md)
 - [Sharing example projects](SharingExampleProjects.md)
 - [FAQ](FAQ.md)

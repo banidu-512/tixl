@@ -36,7 +36,7 @@ internal static class GraphContextMenu
     {
         Undo = 1,
         SelectMenu, SelectCustomOps, SelectConnected, SelectConnectedInputs,
-        Disabled, Bypassed, Disconnect, ControlSnapshots, Rename, AddComment, AlignLeft, LayoutInputs,
+        Disabled, Bypassed, LockWithPin, UnlockWithPin, Disconnect, ControlSnapshots, Rename, AddComment, AlignLeft, LayoutInputs,
         DisplayMenu, DisplaySmall, DisplayResizable, DisplayExpanded, DisplayBackground, DisplayPin,
         GenerateProxy,
         Copy, Duplicate, Paste, Delete, RenameOutput,
@@ -80,9 +80,12 @@ internal static class GraphContextMenu
                                      : $"{selectedChildUis.Count} Selected Items";
             CustomComponents.DrawMenuGroupLabel(selectionLabel);
 
+            var anyLocked = selectedChildUis.Exists(c => c.IsLocked);
+
             var allSelectedDisabled = selectedChildUis.TrueForAll(c => c.SymbolChild.IsDisabled);
             if (CustomComponents.DrawMenuItem((int)MenuItemIds.Disabled, Icon.None, "Disabled",
                                               UserActions.ToggleDisabled.ListShortcuts(), isChecked: allSelectedDisabled,
+                                              isEnabled: !anyLocked,
                                               reserveIconColumn: false, state: allSelectedDisabled ? emphasized : muted))
             {
                 NodeActions.ToggleDisabledForSelectedElements(nodeSelection);
@@ -91,9 +94,25 @@ internal static class GraphContextMenu
             var allSelectedBypassed = selectedChildUis.TrueForAll(c => c.SymbolChild.IsBypassed);
             if (CustomComponents.DrawMenuItem((int)MenuItemIds.Bypassed, Icon.None, "Bypassed",
                                               UserActions.ToggleBypassed.ListShortcuts(), isChecked: allSelectedBypassed,
+                                              isEnabled: !anyLocked,
                                               reserveIconColumn: false, state: allSelectedBypassed ? emphasized : muted))
             {
                 NodeActions.ToggleBypassedForSelectedElements(nodeSelection);
+            }
+
+            if (anyLocked)
+            {
+                if (CustomComponents.DrawMenuItem((int)MenuItemIds.UnlockWithPin, Icon.Locked, "Unlock...",
+                                                  isChecked: false, isEnabled: true, reserveIconColumn: false,
+                                                  state: emphasized))
+                {
+                    context.PinPadDialog.OpenForUnlock(selectedChildUis);
+                }
+            }
+            else if (CustomComponents.DrawMenuItem((int)MenuItemIds.LockWithPin, Icon.Locked, "Lock with PIN...",
+                                                   isChecked: false, isEnabled: true, reserveIconColumn: false, state: muted))
+            {
+                context.PinPadDialog.OpenForLock(selectedChildUis);
             }
 
             var selectedIds = new HashSet<Guid>(selectedChildUis.Select(c => c.Id));
@@ -103,14 +122,14 @@ internal static class GraphContextMenu
                                                                  || Array.Exists(item.OutputLines, l => l.ConnectionsOut.Exists(o => !selectedIds.Contains(o.TargetItem.Id)))));
 
             if (CustomComponents.DrawMenuItem((int)MenuItemIds.Disconnect, Icon.None, "Disconnect",
-                                              UserActions.Disconnect.ListShortcuts(), isChecked: false, isEnabled: canDisconnect,
+                                              UserActions.Disconnect.ListShortcuts(), isChecked: false, isEnabled: canDisconnect && !anyLocked,
                                               reserveIconColumn: false, state: muted))
             {
                 NodeActions.DisconnectNodes(context.CompositionInstance, nodeSelection.Selection.ToList());
                 context.Layout.FlagStructureAsChanged();
             }
 
-            if (canModify)
+            if (canModify && !anyLocked)
             {
                 var snapshotsEnabled = selectedChildUis.Any(c => c.EnabledForSnapshots);
                 if (CustomComponents.DrawMenuItem((int)MenuItemIds.ControlSnapshots, Icon.None, "Control with Snapshots",
@@ -122,14 +141,14 @@ internal static class GraphContextMenu
             }
 
             if (CustomComponents.DrawMenuItem((int)MenuItemIds.Rename, Icon.None, "Rename",
-                                              isChecked: false, isEnabled: oneOpSelected, reserveIconColumn: false, state: muted))
+                                              isChecked: false, isEnabled: oneOpSelected && !anyLocked, reserveIconColumn: false, state: muted))
             {
                 RenamingOperator.OpenForChildUi(selectedChildUis[0]);
                 context.StateMachine.SetState(GraphStates.RenameChild, context);
             }
 
             if (CustomComponents.DrawMenuItem((int)MenuItemIds.AddComment, Icon.None, "Add Comment...",
-                                              UserActions.AddComment.ListShortcuts(), isChecked: false, isEnabled: oneOpSelected,
+                                              UserActions.AddComment.ListShortcuts(), isChecked: false, isEnabled: oneOpSelected && !anyLocked,
                                               reserveIconColumn: false, state: muted))
             {
                 context.EditCommentDialog.ShowNextFrame();
@@ -137,7 +156,7 @@ internal static class GraphContextMenu
 
             var canAlign = context.StateMachine.CurrentState == GraphStates.Default && selectedChildUis.Count > 1;
             if (CustomComponents.DrawMenuItem((int)MenuItemIds.AlignLeft, Icon.None, "Align Select Left",
-                                              UserActions.AlignSelectionLeft.ListShortcuts(), isChecked: false, isEnabled: canAlign,
+                                              UserActions.AlignSelectionLeft.ListShortcuts(), isChecked: false, isEnabled: canAlign && !anyLocked,
                                               reserveIconColumn: false, state: muted))
             {
                 Modifications.AlignSelectionToLeft(context);
@@ -145,13 +164,13 @@ internal static class GraphContextMenu
 
             var canLayout = context.StateMachine.CurrentState == GraphStates.Default && selectedChildUis.Count > 0;
             if (CustomComponents.DrawMenuItem((int)MenuItemIds.LayoutInputs, Icon.None, "Layout Inputs",
-                                              UserActions.LayoutSelection.ListShortcuts(), isChecked: false, isEnabled: canLayout,
+                                              UserActions.LayoutSelection.ListShortcuts(), isChecked: false, isEnabled: canLayout && !anyLocked,
                                               reserveIconColumn: false, state: muted))
             {
                 TreeLayouting.LayoutInputsOfSelection(context);
             }
 
-            DrawDisplayAsSubMenu(context, nodeSelection, selectedChildUis, oneOpSelected, someOpsSelected);
+            DrawDisplayAsSubMenu(context, nodeSelection, selectedChildUis, oneOpSelected, someOpsSelected, anyLocked);
         }
 
         CustomComponents.SeparatorLine();
@@ -315,7 +334,8 @@ internal static class GraphContextMenu
         var selectedInputUis = nodeSelection.GetSelectedNodes<IInputUi>().ToList();
         var selectedOutputUis = nodeSelection.GetSelectedNodes<IOutputUi>().ToList();
 
-        var canDelete = (someOpsSelected || selectedInputUis.Count > 0 || selectedOutputUis.Count > 0) && !isSaving;
+        var canDelete = (someOpsSelected || selectedInputUis.Count > 0 || selectedOutputUis.Count > 0) && !isSaving
+                        && !selectedChildUis.Exists(c => c.IsLocked);
         if (CustomComponents.DrawMenuItem((int)MenuItemIds.Delete, Icon.None, "Delete",
                                           "Del", isChecked: false, isEnabled: canDelete, reserveIconColumn: false, state: muted))
         {
@@ -382,7 +402,7 @@ internal static class GraphContextMenu
     }
 
     private static void DrawDisplayAsSubMenu(GraphUiContext context, NodeSelection nodeSelection, List<SymbolUi.Child> selectedChildUis,
-                                             bool oneOpSelected, bool someOpsSelected)
+                                             bool oneOpSelected, bool someOpsSelected, bool anyLocked)
     {
         const CustomComponents.ButtonStates emphasized = CustomComponents.ButtonStates.Emphasized;
         const CustomComponents.ButtonStates muted = CustomComponents.ButtonStates.Default;
@@ -392,7 +412,7 @@ internal static class GraphContextMenu
 
         var isSmall = selectedChildUis.Any(child => child.Style == SymbolUi.Child.Styles.Default);
         if (CustomComponents.DrawMenuItem((int)MenuItemIds.DisplaySmall, Icon.None, "Small",
-                                          isChecked: isSmall, isEnabled: someOpsSelected, reserveIconColumn: false,
+                                          isChecked: isSmall, isEnabled: someOpsSelected && !anyLocked, reserveIconColumn: false,
                                           state: isSmall ? emphasized : muted))
         {
             foreach (var childUi in selectedChildUis)
@@ -403,7 +423,7 @@ internal static class GraphContextMenu
 
         var isResizable = selectedChildUis.Any(child => child.Style == SymbolUi.Child.Styles.Resizable);
         if (CustomComponents.DrawMenuItem((int)MenuItemIds.DisplayResizable, Icon.None, "Resizable",
-                                          isChecked: isResizable, isEnabled: someOpsSelected, reserveIconColumn: false,
+                                          isChecked: isResizable, isEnabled: someOpsSelected && !anyLocked, reserveIconColumn: false,
                                           state: isResizable ? emphasized : muted))
         {
             foreach (var childUi in selectedChildUis)
@@ -414,7 +434,7 @@ internal static class GraphContextMenu
 
         var isExpanded = selectedChildUis.Any(child => child.Style == SymbolUi.Child.Styles.Expanded);
         if (CustomComponents.DrawMenuItem((int)MenuItemIds.DisplayExpanded, Icon.None, "Expanded",
-                                          isChecked: isExpanded, isEnabled: someOpsSelected, reserveIconColumn: false,
+                                          isChecked: isExpanded, isEnabled: someOpsSelected && !anyLocked, reserveIconColumn: false,
                                           state: isExpanded ? emphasized : muted))
         {
             foreach (var childUi in selectedChildUis)
@@ -482,7 +502,9 @@ internal static class GraphContextMenu
         }
 
         if (CustomComponents.DrawMenuItem((int)MenuItemIds.PasteValues, Icon.None, "Paste Values",
-                                          UserActions.PasteValues.ListShortcuts(), reserveCheckmarkColumn: false, reserveIconColumn: false,
+                                          UserActions.PasteValues.ListShortcuts(), isChecked: false,
+                                          isEnabled: someOpsSelected && !selectedChildUis.Exists(c => c.IsLocked),
+                                          reserveCheckmarkColumn: false, reserveIconColumn: false,
                                           state: muted))
         {
             NodeActions.PasteValues(nodeSelection, context.View, context.CompositionInstance);
@@ -522,7 +544,8 @@ internal static class GraphContextMenu
         if (!CustomComponents.DrawSubMenu((int)MenuItemIds.SymbolDefMenu, "Symbol Definition", isEnabled: !isSaving))
             return;
 
-        var canRename = oneOpSelected && !selectedChildUis[0].SymbolChild.Symbol.SymbolPackage.IsReadOnly;
+        var canRename = oneOpSelected && !selectedChildUis[0].SymbolChild.Symbol.SymbolPackage.IsReadOnly
+                        && !selectedChildUis[0].IsLocked;
         if (CustomComponents.DrawMenuItem((int)MenuItemIds.RenameSymbol, Icon.None, "Rename Symbol...",
                                           isChecked: false, isEnabled: canRename, reserveCheckmarkColumn: false, reserveIconColumn: false,
                                           state: muted))
@@ -541,8 +564,11 @@ internal static class GraphContextMenu
             context.DuplicateSymbolDialog.ShowNextFrame();
         }
 
+        // Combining removes the selected ops from this composition, so locked ops must be
+        // unlocked first - the lock would otherwise be destroyed along with them.
         if (CustomComponents.DrawMenuItem((int)MenuItemIds.CombineIntoNewType, Icon.None, "Combine into New Type...",
-                                          isChecked: false, isEnabled: someOpsSelected, reserveCheckmarkColumn: false, reserveIconColumn: false,
+                                          isChecked: false, isEnabled: someOpsSelected && !selectedChildUis.Exists(c => c.IsLocked),
+                                          reserveCheckmarkColumn: false, reserveIconColumn: false,
                                           state: muted))
         {
             context.NameSpaceForDialogEdits = projectView.CompositionInstance.Symbol.Namespace ?? string.Empty;

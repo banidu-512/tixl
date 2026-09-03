@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using T3.Core.Operator;
 using T3.Editor.UiModel.Selection;
 
@@ -102,6 +104,65 @@ public partial class SymbolUi
             
         internal Styles Style;
         internal string Comment;
+
+        /// <summary>
+        /// True while the operator is protected by a PIN lock: it can't be moved, deleted,
+        /// renamed or parameter-edited until unlocked through the pinpad. A guard against
+        /// accidental changes — not protection against a determined user with file access.
+        /// </summary>
+        internal bool IsLocked;
+
+        /// <summary>
+        /// Salted SHA-256 hash (hex string) of the PIN. Never serialized in plain text.
+        /// A locked child without a hash is treated as unlocked when read back.
+        /// </summary>
+        internal string? LockPinHash;
+
+        internal const int MinPinLength = 4;
+        internal const int MaxPinLength = 8;
+
+        internal static bool IsValidPinLength(string pin)
+            => pin.Length is >= MinPinLength and <= MaxPinLength;
+
+        internal void LockWith(string pin)
+        {
+            IsLocked = true;
+            LockPinHash = ComputePinHash(pin);
+        }
+
+        internal bool VerifyPin(string pin)
+        {
+            if (LockPinHash == null || !IsValidPinLength(pin))
+                return false;
+
+            var candidate = ComputePinHash(pin);
+
+            // Constant-time compare so a wrong guess can't be timed
+            return CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(LockPinHash),
+                                                           Encoding.UTF8.GetBytes(candidate));
+        }
+
+        internal void Unlock()
+        {
+            IsLocked = false;
+            LockPinHash = null;
+        }
+
+        // The salt keeps plain hashes of obvious pins ("1234") out of rainbow tables; the
+        // constant is fine because the threat model is casual, not cryptographic.
+        private static string ComputePinHash(string pin)
+        {
+            var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(Salt + pin));
+            var builder = new StringBuilder(bytes.Length * 2);
+            foreach (var b in bytes)
+            {
+                builder.Append(b.ToString("x2"));
+            }
+
+            return builder.ToString();
+        }
+
+        private const string Salt = "TiXL.Lock:";
 
         //internal bool IsDisabled { get => SymbolChild.Outputs.FirstOrDefault().Value?.IsDisabled ?? false; set => SetDisabled(value); }
 

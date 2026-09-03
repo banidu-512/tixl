@@ -203,6 +203,7 @@ internal sealed class GraphUiContext
     internal readonly AddOutputDialog AddOutputDialog = new();
     internal readonly RenameOutputDialog RenameOutputDialog = new();
     internal readonly CombineToSymbolDialog CombineToSymbolDialog = new();
+    internal readonly PinPadDialog PinPadDialog = new();
     internal readonly DuplicateSymbolDialog DuplicateSymbolDialog = new();
     public readonly RenameSymbolDialog RenameSymbolDialog = new();
 
@@ -218,6 +219,7 @@ internal sealed class GraphUiContext
     public ChangeSymbol.SymbolModificationResults DrawDialogs(ProjectView projectView)
     {
         EditCommentDialog.Draw(Selector);
+        PinPadDialog.Draw();
         var results = ChangeSymbol.SymbolModificationResults.Nothing;
         
         if (projectView.CompositionInstance != null)

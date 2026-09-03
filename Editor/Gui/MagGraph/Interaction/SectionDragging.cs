@@ -49,13 +49,17 @@ internal static class SectionDragging
                 _draggedNodes.Clear();
                 if (context.Selector.IsNodeSelected(section))
                 {
-                    _draggedNodes.AddRange(context.Selector.GetSelectedNodes<ISelectableCanvasObject>());
+                    _draggedNodes.AddRange(context.Selector.GetSelectedNodes<ISelectableCanvasObject>()
+                                                  .Where(n => n is not SymbolUi.Child { IsLocked: true }));
                 }
                 else
                 {
                     if (!ImGui.GetIO().KeyCtrl)
-                        _draggedNodes.AddRange(FindOpsInSection(context.ProjectView.InstView.SymbolUi, section));
-                    
+                    {
+                        _draggedNodes.AddRange(FindOpsInSection(context.ProjectView.InstView.SymbolUi, section)
+                                                   .Where(n => n is not SymbolUi.Child { IsLocked: true }));
+                    }
+
                     _draggedNodes.Add(section);
                 }
 

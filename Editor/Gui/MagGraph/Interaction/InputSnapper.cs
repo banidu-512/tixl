@@ -50,6 +50,10 @@ internal static class InputSnapper
         if (context.TempConnections.Count == 0)
             return false;
 
+        // Locked operators refuse new connections into their inputs
+        if (MagItemMovement.IsLocked(BestInputMatch.Item))
+            return false;
+
         if (context.MacroCommand == null)
         {
             context.StartMacroCommand("Create connection");

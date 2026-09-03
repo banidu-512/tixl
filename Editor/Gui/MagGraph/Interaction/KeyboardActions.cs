@@ -148,6 +148,7 @@ internal static class KeyboardActions
         if (!T3Ui.IsCurrentlySaving
             && UserActions.LayoutSelection.Triggered()
             && nodeSelection.Selection.Count > 0
+            && !nodeSelection.GetSelectedChildUis().Any(c => c.IsLocked)
             && context.StateMachine.CurrentState == GraphStates.Default)
         {
             TreeLayouting.LayoutInputsOfSelection(context);
@@ -198,7 +199,7 @@ internal static class KeyboardActions
         //     NodeNavigation.SelectBelow();
         // }
 
-        if (UserActions.AddComment.Triggered())
+        if (UserActions.AddComment.Triggered() && !nodeSelection.GetSelectedChildUis().Any(c => c.IsLocked))
         {
             context.EditCommentDialog.ShowNextFrame();
         }
@@ -209,7 +210,8 @@ internal static class KeyboardActions
             if (oneSelected && UserActions.RenameChild.Triggered())
             {
                 if (context.Layout.Items.TryGetValue(nodeSelection.Selection[0].Id, out var item)
-                    && item.Variant == MagGraphItem.Variants.Operator)
+                    && item.Variant == MagGraphItem.Variants.Operator
+                    && !MagItemMovement.IsLocked(item))
                 {
                     RenamingOperator.OpenForChildUi(item.ChildUi!);
                     context.StateMachine.SetState(GraphStates.RenameChild, context);

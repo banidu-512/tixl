@@ -179,6 +179,9 @@ internal static class Modifications
         
         foreach (var i in context.Selector.Selection)
         {
+            if (i is SymbolUi.Child { IsLocked: true })
+                continue;
+
             var pos = i.PosOnCanvas;
             pos.X = minX;
             i.PosOnCanvas= pos;
@@ -243,6 +246,9 @@ internal static class Modifications
                     continue;
                 }
 
+                if (childUi.IsLocked)
+                    continue;
+
                 //uiItems.Add(new ItemWithChildUi(item, childUi));
                 deletedItems.Add(item);
                 deletedChildUis.Add(childUi);
@@ -280,7 +286,7 @@ internal static class Modifications
 
             foreach (var hiddenOp in hiddenOps)
             {
-                if (deletedChildUis.Contains(hiddenOp))
+                if (deletedChildUis.Contains(hiddenOp) || hiddenOp.IsLocked)
                     continue;
 
                 deletedChildUis.Add(hiddenOp);

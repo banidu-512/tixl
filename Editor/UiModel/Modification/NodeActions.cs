@@ -35,6 +35,9 @@ internal static class NodeActions
     internal static void ToggleBypassedForSelectedElements(NodeSelection nodeSelection)
     {
         var selectedChildUis = nodeSelection.GetSelectedChildUis().ToList();
+        selectedChildUis.RemoveAll(c => c.IsLocked);
+        if (selectedChildUis.Count == 0)
+            return;
 
         var allSelectedAreBypassed = selectedChildUis.TrueForAll(selectedChildUi => selectedChildUi.SymbolChild.IsBypassed);
         var shouldBypass = !allSelectedAreBypassed;
@@ -51,6 +54,9 @@ internal static class NodeActions
     public static void ToggleDisabledForSelectedElements(NodeSelection nodeSelection)
     {
         var selectedChildren = nodeSelection.GetSelectedChildUis().ToList();
+        selectedChildren.RemoveAll(c => c.IsLocked);
+        if (selectedChildren.Count == 0)
+            return;
 
         var allSelectedDisabled = selectedChildren.TrueForAll(selectedChildUi => selectedChildUi.SymbolChild.IsDisabled);
         var shouldDisable = !allSelectedDisabled;
@@ -72,6 +78,11 @@ internal static class NodeActions
     {
         var commands = new List<ICommand>();
         selectedChildUis ??= nodeSelection.GetSelectedChildUis().ToList();
+
+        // PIN-locked ops refuse deletion - unlock them first
+        selectedChildUis.RemoveAll(c => c.IsLocked);
+        if (selectedChildUis.Count == 0 && nodeSelection.Selection.All(s => s is SymbolUi.Child))
+            return;
 
         // Deleting a collapsed section deletes its hidden contents with it - once the
         // header is gone they would have no visible representation left on the canvas
@@ -318,6 +329,7 @@ internal static class NodeActions
         try
         {
             var selectedChildUis = nodeSelection.GetSelectedChildUis().ToList();
+            selectedChildUis.RemoveAll(c => c.IsLocked);
             if (selectedChildUis.Count ==0)
             {
                 Log.Debug("Please select ops to paste values into.");
@@ -577,6 +589,10 @@ internal static class NodeActions
             }
 
             if (node is not SymbolUi.Child childUi)
+                continue;
+
+            // PIN-locked ops refuse disconnection
+            if (childUi.IsLocked)
                 continue;
 
             if (!compositionOp.Children.TryGetChildInstance(childUi.Id, out var instance) || instance.Parent == null)

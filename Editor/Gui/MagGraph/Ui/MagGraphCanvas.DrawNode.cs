@@ -285,6 +285,17 @@ internal sealed partial class MagGraphView
                                  labelPos,
                                  labelColor.Fade(CanvasScale.RemapAndClamp(0.3f, 0.7f, 0, 1)),
                                  name.AddSpacesForImGuiOutput());
+
+                // A lock glyph right of the title makes PIN-locked ops obvious at a glance
+                if (item.ChildUi is { IsLocked: true })
+                {
+                    var labelWidth = requiredLabelSize * (fontSize / Fonts.FontNormal.FontSize);
+                    var lockSize = fontSize * 0.9f;
+                    var lockPos = new Vector2(labelPos.X + labelWidth + 4 * CanvasScale,
+                                              labelPos.Y + (fontSize - lockSize) / 2);
+                    Icons.DrawIconAtScreenPosition(Icon.Locked, lockPos, new Vector2(lockSize), drawList,
+                                                   UiColors.StatusAttention.Fade(CanvasScale.RemapAndClamp(0.3f, 0.7f, 0, 1)));
+                }
             }
         }
 
@@ -577,6 +588,12 @@ internal sealed partial class MagGraphView
                 {
                     DrawIndicator(drawList, UiColors.StatusControlled, idleFadeFactor, pMin, pMax, CanvasScale, ref indicatorCount, "enabled for snapshot");
                 }
+            }
+
+            // PIN lock indicator
+            if (item.ChildUi.IsLocked)
+            {
+                DrawIndicator(drawList, UiColors.StatusAttention, idleFadeFactor, pMin, pMax, CanvasScale, ref indicatorCount, "locked with PIN");
             }
 
             // Disabled indicator

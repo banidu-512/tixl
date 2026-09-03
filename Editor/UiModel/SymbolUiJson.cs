@@ -110,6 +110,12 @@ internal static class SymbolUiJson
             if (!string.IsNullOrEmpty(childUi.Comment))
                 writer.WriteObject(JsonKeys.Comment, childUi.Comment);
 
+            if (childUi.IsLocked && !string.IsNullOrEmpty(childUi.LockPinHash))
+            {
+                writer.WriteObject(nameof(SymbolUi.Child.IsLocked), true);
+                writer.WriteObject(nameof(SymbolUi.Child.LockPinHash), childUi.LockPinHash);
+            }
+
             writer.WritePropertyName(JsonKeys.Position);
             _vector2ToJson(writer, childUi.PosOnCanvas);
 
@@ -466,6 +472,17 @@ internal static class SymbolUiJson
             if (childEntry[JsonKeys.Comment] != null)
             {
                 childUi.Comment = childEntry[JsonKeys.Comment]?.Value<string>() ?? string.Empty;
+            }
+
+            // A lock without a hash can never be opened again - treat it as unlocked
+            var pinHash = childEntry[nameof(SymbolUi.Child.LockPinHash)]?.Value<string>();
+            var isLockedToken = childEntry[nameof(SymbolUi.Child.IsLocked)];
+            if (isLockedToken != null
+                && isLockedToken.Value<bool>()
+                && !string.IsNullOrEmpty(pinHash))
+            {
+                childUi.IsLocked = true;
+                childUi.LockPinHash = pinHash;
             }
 
             var positionToken = childEntry[JsonKeys.Position];

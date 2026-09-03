@@ -1145,6 +1145,11 @@ internal sealed partial class MagItemMovement
 
         foreach (var potentialConnection in newConnections)
         {
+            // Dragged items are never locked (filtered on drag start), but the stationary
+            // target of a snap-connection can be - refuse wiring into it
+            if (IsLocked(potentialConnection.TargetItem))
+                continue;
+
             // Avoid accidental vertical double connections to item above when snapping a horizontal connection
             if (potentialConnection.TargetItem.OutputLines.Length > 0
                 && potentialConnection.TargetItem.OutputLines[0].ConnectionsOut.Count > 0)
@@ -1546,8 +1551,19 @@ internal sealed partial class MagItemMovement
     {
         Debug.Assert(context.MacroCommand != null);
         
+        // Programmatic pushes (splice inserts, snap collapses) must leave PIN-locked ops in place
+        var movableList = new List<MagGraphItem>();
+        foreach (var item in movableItems)
+        {
+            if (!IsLocked(item))
+                movableList.Add(item);
+        }
+
+        if (movableList.Count == 0)
+            return;
+
         // Move items left...
-        var affectedItemsAsNodes = movableItems.Select(i => i as ISelectableCanvasObject).ToList();
+        var affectedItemsAsNodes = movableList.Select(i => i as ISelectableCanvasObject).ToList();
         var newMoveComment = new ModifyCanvasElementsCommand(context.CompositionInstance.Symbol.Id, affectedItemsAsNodes, context.Selector);
         context.MacroCommand.AddExecutedCommandForUndo(newMoveComment);
 
@@ -1563,7 +1579,7 @@ internal sealed partial class MagItemMovement
         // shove ops across their section's bottom/right border - grow those frames to keep them
         _growSectionIds.Clear();
         var symbolUi = context.CompositionInstance.GetSymbolUi();
-        foreach (var item in movableItems)
+        foreach (var item in movableList)
         {
             if (item.ChildUi == null || item.ChildUi.SectionId == Guid.Empty)
                 continue;
@@ -1689,7 +1705,7 @@ internal sealed partial class MagItemMovement
         _draggedItemsFromSelection = false;
         foreach (var id in selectedIds)
         {
-            if (_layout.Items.TryGetValue(id, out var i))
+            if (_layout.Items.TryGetValue(id, out var i) && !IsLocked(i))
             {
                 DraggedItems.Add(i);
             }
@@ -1702,7 +1718,7 @@ internal sealed partial class MagItemMovement
         _draggedItemsFromSelection = true;
         foreach (var s in selection)
         {
-            if (_layout.Items.TryGetValue(s.Id, out var i))
+            if (_layout.Items.TryGetValue(s.Id, out var i) && !IsLocked(i))
             {
                 DraggedItems.Add(i);
             }
@@ -1714,7 +1730,15 @@ internal sealed partial class MagItemMovement
         DraggedItems.Clear();
         _draggedItemsFromSelection = false;
         CollectSnappedItems(item, DraggedItems);
+        DraggedItems.RemoveWhere(IsLocked);
     }
+
+    internal static bool IsLocked(MagGraphItem item)
+        => item.ChildUi != null && item.ChildUi.IsLocked;
+
+    internal static bool ConnectionTouchesLockedOp(MagGraphConnection connection)
+        => (connection.SourceItem != null && IsLocked(connection.SourceItem))
+           || (connection.TargetItem != null && IsLocked(connection.TargetItem));
 
     internal bool IsItemDragged(MagGraphItem item) => DraggedItems.Contains(item);
 
