@@ -1,0 +1,43 @@
+{
+  "FormatVersion": 2,
+  "TixlVersion": "4.2.0.2",
+  "Id": "77932588-e3bb-42e5-8032-3f5759031653"/*LaserOptimizer*/,
+  "Inputs": [
+    {
+      "Id": "8feb10bf-1aba-406a-810c-b27c1ba7295e"/*CornerAnchorCount*/,
+      "DefaultValue": 3
+    },
+    {
+      "Id": "b9bdbeb2-fd13-4814-a00b-50bdd5c356fa"/*LaserPoints*/,
+      "DefaultValue": null
+    },
+    {
+      "Id": "bc05e8b6-e1c4-4877-a940-571ffc190296"/*MaxJumpDistance*/,
+      "DefaultValue": 5000.0
+    },
+    {
+      "Id": "be0b8966-3cc6-4923-b727-68cd6ed68d73"/*BlankingDelayPoints*/,
+      "DefaultValue": 5
+    },
+    {
+      "Id": "c0339847-2bb7-40a0-97ec-2e30a5eefe00"/*EnableOptimization*/,
+      "DefaultValue": true
+    },
+    {
+      "Id": "fc4c0603-eb70-484e-b80e-e5834a9fdc8e"/*CornerAngleThreshold*/,
+      "DefaultValue": 30.0
+    }
+  ],
+  "Outputs": [
+    {
+      "Id": "bb8a62df-ffb7-4eaf-b36e-362941de082d"/*OptimizedPoints*/,
+      "DefaultValue": null
+    },
+    {
+      "Id": "f8fbfd4d-618b-4061-801a-8d2415d3bf3a"/*PointCount*/,
+      "DefaultValue": 0
+    }
+  ],
+  "Children": [],
+  "Connections": []
+}

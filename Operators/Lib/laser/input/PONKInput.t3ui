@@ -1,0 +1,126 @@
+{
+  "FormatVersion": 2,
+  "TixlVersion": "4.2.0.2",
+  "Id": "B2C3D4E5-F6A7-8901-ABCD-EF1234567890"/*PONKInput*/,
+  "Description": "Receives laser path frames from any PONK-compliant sender (e.g. MadMapper) via UDP multicast or unicast.\n\nA background listener thread binds to Port (default 5583) and joins the default multicast group 239.255.10.24; unicast packets to the same port are received as well. Chunked frames are reassembled and verified with the byte-sum checksum, decoded in both mandatory formats (XY_F32_RGB_U8 and XY_U16_RGB) and republished as a StructuredList of LaserPoint in TiXL's ILDA-style 16-bit range.\n\nUse the Min/Max X/Y inputs to zoom incoming content into a sub-rectangle of the laser frame. FrameCount, SenderName and SenderId report the stream state.",
+  "InputUis": [
+    {
+      "InputId": "f1e2d3c4-b5a6-7890-abcd-ef1234567801"/*Active*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 0.0
+      },
+      "Description": "Starts and stops the UDP listener. The thread auto-restarts if it dies from a socket error."
+    },
+    {
+      "InputId": "f1e2d3c4-b5a6-7890-abcd-ef1234567802"/*LocalIpAddress*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 75.0
+      },
+      "Description": "Network interface to bind for listening (dropdown of all IPv4 adapters); the multicast group is joined on this interface. Empty binds to all interfaces."
+    },
+    {
+      "InputId": "f1e2d3c4-b5a6-7890-abcd-ef1234567803"/*Port*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 150.0
+      },
+      "Description": "UDP port to listen on. The PONK default is 5583 - receivers send to this port unless configured otherwise."
+    },
+    {
+      "InputId": "f1e2d3c4-b5a6-7890-abcd-ef1234567804"/*PrintToLog*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 225.0
+      },
+      "Description": "Writes bind/join events, CRC mismatches and per-frame receive info to the application log."
+    },
+    {
+      "InputId": "f1e2d3c4-b5a6-7890-abcd-ef1234567805"/*Timeout*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 300.0
+      },
+      "Description": "Seconds after which incomplete frames (with missing chunks) are discarded to free their buffers."
+    },
+    {
+      "InputId": "f1e2d3c4-b5a6-7890-abcd-ef1234567806"/*ExpectedSenderId*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 375.0
+      },
+      "Description": "Only accept frames from the sender with this numeric id; 0 accepts any sender. Use the SenderId output to find the id of a specific sender."
+    },
+    {
+      "InputId": "f1e2d3c4-b5a6-7890-abcd-ef1234567807"/*MinX*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 450.0
+      },
+      "Description": "Left edge of the sub-rectangle of the incoming frame that is stretched to the full laser output. PONK coordinates run in -1..1; the default -1 shows the full width."
+    },
+    {
+      "InputId": "f1e2d3c4-b5a6-7890-abcd-ef1234567808"/*MaxX*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 525.0
+      },
+      "Description": "Right edge of the displayed X range in PONK coordinates (-1..1). E.g. -0.5..0.5 zooms into the middle half; content outside the range is clamped."
+    },
+    {
+      "InputId": "f1e2d3c4-b5a6-7890-abcd-ef1234567809"/*MinY*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 600.0
+      },
+      "Description": "Bottom edge of the displayed Y range in PONK coordinates (-1..1); the default -1 shows the full height."
+    },
+    {
+      "InputId": "f1e2d3c4-b5a6-7890-abcd-ef123456780a"/*MaxY*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 675.0
+      },
+      "Description": "Top edge of the displayed Y range in PONK coordinates (-1..1); the default 1 shows the full height."
+    }
+  ],
+  "SymbolChildUis": [],
+  "OutputUis": [
+    {
+      "OutputId": "e1d2c3b4-a5f6-7890-abcd-ef1234567890"/*LaserPoints*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 100.0
+      }
+    },
+    {
+      "OutputId": "f2e3d4c5-b6a7-8901-abcd-ef1234567891"/*StatusMessage*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 200.0
+      }
+    },
+    {
+      "OutputId": "a3b4c5d6-c7d8-9012-abcd-ef1234567892"/*FrameCount*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "OutputId": "b4c5d6e7-d8e9-0123-abcd-ef1234567893"/*SenderName*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 400.0
+      }
+    },
+    {
+      "OutputId": "c5d6e7f8-e9f0-1234-abcd-ef1234567894"/*SenderId*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 500.0
+      }
+    }
+  ]
+}

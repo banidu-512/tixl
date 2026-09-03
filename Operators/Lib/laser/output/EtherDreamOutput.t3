@@ -1,0 +1,75 @@
+{
+  "FormatVersion": 2,
+  "TixlVersion": "4.2.0.2",
+  "Id": "21f7de8e-2fb3-4222-b951-01e7aabca6b8"/*EtherDreamOutput*/,
+  "Inputs": [
+    {
+      "Id": "02674c5e-e869-4572-b8fd-2ef35adb5a5a"/*LaserPoints*/,
+      "DefaultValue": null
+    },
+    {
+      "Id": "0c7ee9f2-2009-4ce4-a04b-ed7d8386f146"/*Enable*/,
+      "DefaultValue": false
+    },
+    {
+      "Id": "1390d6f9-67c2-4f74-9438-7fa60a4bb5d6"/*Port*/,
+      "DefaultValue": 7765
+    },
+    {
+      "Id": "64a26581-2477-4f80-ae7b-0fdb27c0a101"/*ScanRate*/,
+      "DefaultValue": 30000
+    },
+    {
+      "Id": "90fbb4d3-37ce-4bf7-9638-729d06a2c6f8"/*SimulationMode*/,
+      "DefaultValue": true
+    },
+    {
+      "Id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"/*DiscoverDevices*/,
+      "DefaultValue": false
+    },
+    {
+      "Id": "b0b4f4c2-5f4a-497d-bed4-b40e8e159b4c"/*PrintToLog*/,
+      "DefaultValue": false
+    },
+    {
+      "Id": "b1c2d3e4-f5a6-7890-bcde-123456789abc"/*LocalIpAddress*/,
+      "DefaultValue": ""
+    },
+    {
+      "Id": "c12cd058-8c3a-426f-9af0-17ec41319a66"/*IpAddress*/,
+      "DefaultValue": "192.168.1.100"
+    },
+    {
+      "Id": "e7f8a9b0-c1d2-4e3f-9a8b-7c6d5e4f3b2a"/*LoopLastFrame*/,
+      "DefaultValue": true
+    },
+    {
+      "Id": "f3a4b5c6-d7e8-4901-8234-56789abcdef0"/*ClearEStop*/,
+      "DefaultValue": false
+    }
+  ],
+  "Outputs": [
+    {
+      "Id": "a5c6baf1-46ae-4ff1-a7c6-cdf8e29abc8b"/*IsConnected*/,
+      "DefaultValue": false
+    },
+    {
+      "Id": "7c93e6e4-3908-4972-98f9-b193a0016c94"/*BufferFullness*/,
+      "DefaultValue": 0
+    },
+    {
+      "Id": "4b7eadb3-125b-45e5-95da-15cd65a269bf"/*StatusMessage*/,
+      "DefaultValue": ""
+    },
+    {
+      "Id": "9c188446-3a09-4d88-a124-a00dd50efaeb"/*PointsSent*/,
+      "DefaultValue": 0
+    },
+    {
+      "Id": "d1e2f3a4-b5c6-4789-9012-345a6789cdef"/*Command*/,
+      "DefaultValue": null
+    }
+  ],
+  "Children": [],
+  "Connections": []
+}

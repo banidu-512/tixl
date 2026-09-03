@@ -1,0 +1,142 @@
+{
+  "FormatVersion": 2,
+  "TixlVersion": "4.2.0.2",
+  "Id": "A1B2C3D4-E5F6-7890-ABCD-EF1234567890"/*PONKOutput*/,
+  "Description": "Streams laser path frames to a PONK-compatible receiver (e.g. MadMapper's Ponk input) via UDP multicast or unicast.\n\nImplements the PONK (Pathes Over NetworK) protocol: each frame is packed in the mandatory XY_F32_RGB_U8 format (float XY in -1..1, 8-bit RGB), tagged with PATHNUMB and MAXSPEED render hints, split into up-to-1420-byte chunks and sent to the default group 239.255.10.24:5583. Frames carry a byte-sum checksum; a stable random sender id is generated per operator instance.\n\nSet **SimulationMode** to test without a receiver. Accepts a StructuredList of LaserPoint (from LaserCamera, LaserOptimizer, ...).",
+  "InputUis": [
+    {
+      "InputId": "B1C2D3E4-F5A6-7890-ABCD-EF1234567801"/*Enable*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 0.0
+      },
+      "Description": "Master switch. When disabled the UDP socket is closed; changing it (or any network setting) restarts the connection."
+    },
+    {
+      "InputId": "B1C2D3E4-F5A6-7890-ABCD-EF1234567802"/*SimulationMode*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 75.0
+      },
+      "Description": "If enabled, no socket is opened - frames are only counted and IsConnected reports a simulated true, so the graph can be built without a receiver."
+    },
+    {
+      "InputId": "B1C2D3E4-F5A6-7890-ABCD-EF1234567803"/*UseMulticast*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 150.0
+      },
+      "Description": "Send to the multicast group (how MadMapper expects to find PONK senders) instead of a single unicast address."
+    },
+    {
+      "InputId": "B1C2D3E4-F5A6-7890-ABCD-EF1234567804"/*LocalIpAddress*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 225.0
+      },
+      "Description": "Network interface the packets leave on (dropdown of all IPv4 adapters). Select the NIC that reaches the receiver so multicast goes out on the right wire; empty lets the OS choose."
+    },
+    {
+      "InputId": "B1C2D3E4-F5A6-7890-ABCD-EF1234567805"/*TargetIpAddress*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 300.0
+      },
+      "Description": "Destination IP address: the PONK default multicast group 239.255.10.24 (offered in the dropdown) or a receiver's unicast IP when UseMulticast is off."
+    },
+    {
+      "InputId": "B1C2D3E4-F5A6-7890-ABCD-EF1234567806"/*Port*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 375.0
+      },
+      "Description": "Destination UDP port. The PONK default is 5583."
+    },
+    {
+      "InputId": "B1C2D3E4-F5A6-7890-ABCD-EF1234567807"/*SenderName*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 450.0
+      },
+      "Description": "Human-readable name embedded in every packet header (up to 31 ASCII characters); receivers like MadMapper display it to identify the source."
+    },
+    {
+      "InputId": "B1C2D3E4-F5A6-7890-ABCD-EF1234567808"/*LoopLastFrame*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 525.0
+      },
+      "Description": "If enabled, the last complete frame keeps being sent whenever no new frames arrive, so the receiver keeps showing the image instead of going dark."
+    },
+    {
+      "InputId": "B1C2D3E4-F5A6-7890-ABCD-EF1234567809"/*PrintToLog*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 600.0
+      },
+      "Description": "Writes socket setup, retry and send-error details to the application log."
+    },
+    {
+      "InputId": "B1C2D3E4-F5A6-7890-ABCD-EF123456780A"/*MaxScanSpeed*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 675.0
+      },
+      "Description": "Sent as the MAXSPEED path metadata - a render hint telling the receiver the requested scanner-speed multiplier. 1.0 = neutral."
+    },
+    {
+      "InputId": "B1C2D3E4-F5A6-ABCD-EF123456780B"/*PathNumber*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 750.0
+      },
+      "Description": "Sent as the PATHNUMB path metadata - identifies the path/shape across frames so receivers can dispatch it to fixtures or layers."
+    },
+    {
+      "InputId": "B1C2D3E4-F5A6-7890-EF12-3456780C1234"/*LaserPoints*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 825.0
+      },
+      "Description": "The laser frame to send, as a StructuredList of LaserPoint. Coordinates are clamped from the 16-bit ILDA range into PONK's normalized -1..1, colors are reduced to 8-bit."
+    }
+  ],
+  "SymbolChildUis": [],
+  "OutputUis": [
+    {
+      "OutputId": "C1D2E3F4-A5B6-7890-ABCD-EF1234567890"/*IsConnected*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 100.0
+      }
+    },
+    {
+      "OutputId": "C1D2E3F4-A5B6-7890-ABCD-EF1234567891"/*PacketsSent*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 200.0
+      }
+    },
+    {
+      "OutputId": "C1D2E3F4-A5B6-7890-ABCD-EF1234567892"/*StatusMessage*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "OutputId": "C1D2E3F4-A5B6-7890-ABCD-EF1234567893"/*PointsSent*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 400.0
+      }
+    },
+    {
+      "OutputId": "C1D2E3F4-A5B6-7890-ABCD-EF1234567894"/*Command*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 500.0
+      }
+    }
+  ]
+}
