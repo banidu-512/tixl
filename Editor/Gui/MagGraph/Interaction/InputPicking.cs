@@ -80,6 +80,10 @@ internal static class InputPicking
         Debug.Assert(context.MacroCommand != null);
         Debug.Assert(context.ItemForInputSelection.Variant == MagGraphItem.Variants.Operator); // This will bite us later...
         
+        // Locked operators refuse new connections into their inputs
+        if (MagItemMovement.IsLocked(context.ItemForInputSelection))
+            return;
+
         if (context.ActiveSourceItem.OutputLines.Length == 0)
         {
             Log.Warning("no visible output to connect?");

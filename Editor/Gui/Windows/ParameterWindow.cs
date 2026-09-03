@@ -141,6 +141,15 @@ internal sealed class ParameterWindow : Window
         if (!TryGetUiDefinitions(instance, out var symbolUi, out var symbolChildUi))
             return;
 
+        if (symbolChildUi.IsLocked)
+        {
+            // Read-only header instead of DrawSymbolHeader - its namespace field and
+            // tag/settings buttons would otherwise stay editable on a locked op
+            DrawLockedHeader(instance);
+            DrawLockedNotice();
+            return;
+        }
+
         var modified = false;
         modified |= DrawSymbolHeader(instance, symbolUi);
 
@@ -393,6 +402,47 @@ internal sealed class ParameterWindow : Window
     }
 
     private static Dictionary<SymbolUi.SymbolTags, Color> _tagColors = UpdateTagColors();
+
+    /// <summary>
+    /// Read-only stand-in for DrawSymbolHeader: shows which symbol is locked without
+    /// offering its namespace field, tags or settings toggle for edits.
+    /// </summary>
+    private static void DrawLockedHeader(Instance op)
+    {
+        ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(5, 5));
+        ImGui.BeginChild("header", new Vector2(0, ImGui.GetFrameHeight() + 5),
+                         ImGuiChildFlags.AlwaysUseWindowPadding,
+                         ImGuiWindowFlags.NoScrollbar
+                         | ImGuiWindowFlags.NoScrollWithMouse
+                         | ImGuiWindowFlags.NoBackground);
+        ImGui.AlignTextToFramePadding();
+        Icon.Locked.DrawAtCursor(UiColors.StatusAttention);
+        ImGui.SameLine();
+        ImGui.PushFont(Fonts.FontBold);
+        ImGui.TextUnformatted(op.Symbol.Name);
+        ImGui.PopFont();
+        ImGui.SameLine();
+        ImGui.PushStyleColor(ImGuiCol.Text, UiColors.TextDisabled.Rgba);
+        ImGui.TextUnformatted(" in ");
+        ImGui.PopStyleColor();
+        ImGui.SameLine();
+        ImGui.TextUnformatted(op.Symbol.Namespace ?? string.Empty);
+        ImGui.EndChild();
+        ImGui.PopStyleVar();
+    }
+
+    private static void DrawLockedNotice()
+    {
+        FormInputs.AddVerticalSpace();
+        ImGui.Indent(5 * T3Ui.UiScaleFactor);
+        Icon.Locked.DrawAtCursor(UiColors.StatusAttention);
+        ImGui.SameLine();
+        ImGui.PushFont(Fonts.FontSmall);
+        ImGui.TextUnformatted("This operator is locked with a PIN.");
+        ImGui.PopFont();
+        FormInputs.AddHint("Right-click the operator in the graph and pick Unlock... to edit its parameters.");
+        ImGui.Unindent(5 * T3Ui.UiScaleFactor);
+    }
 
     private void DrawParametersArea(Instance instance, SymbolUi.Child symbolChildUi, SymbolUi symbolUi)
     {

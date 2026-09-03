@@ -363,6 +363,13 @@ namespace T3.Editor.Gui.MagGraph.States
                               Debug.Assert(sourceItem.OutputLines.Length > 0);
                               Debug.Assert(context.ActiveSourceOutputId != Guid.Empty);
 
+                              // Locked operators refuse new connections from their outputs
+                              if (MagItemMovement.IsLocked(sourceItem))
+                              {
+                                  context.StateMachine.SetState(Default, context);
+                                  return;
+                              }
+
                               // Click
                               if (!ImGui.IsMouseDown(ImGuiMouseButton.Left))
                               {
@@ -408,6 +415,13 @@ namespace T3.Editor.Gui.MagGraph.States
                               Debug.Assert(sourceItem.OutputLines.Length > 0 ||
                                            sourceItem.Variant == MagGraphItem.Variants.Output);
                               Debug.Assert(context.ActiveTargetInputId != Guid.Empty);
+
+                              // Locked operators refuse new connections into their inputs
+                              if (MagItemMovement.IsLocked(context.ActiveTargetItem))
+                              {
+                                  context.StateMachine.SetState(Default, context);
+                                  return;
+                              }
 
                               // Click
                               var released = !ImGui.IsMouseDown(ImGuiMouseButton.Left);
@@ -457,6 +471,11 @@ namespace T3.Editor.Gui.MagGraph.States
                               if (ImGui.IsMouseDragging(ImGuiMouseButton.Left))
                               {
                                   if (context.ConnectionHovering.ConnectionHoversWhenClicked.Count == 0)
+                                      return;
+
+                                  // Ripping a cable rewires both of its operators - locked ones refuse
+                                  if (context.ConnectionHovering.ConnectionHoversWhenClicked.Exists(
+                                          h => MagItemMovement.ConnectionTouchesLockedOp(h.Connection)))
                                       return;
 
                                   var connection = context.ConnectionHovering.ConnectionHoversWhenClicked[0].Connection;
@@ -593,6 +612,11 @@ namespace T3.Editor.Gui.MagGraph.States
                               if (ImGui.IsMouseDragging(ImGuiMouseButton.Left))
                               {
                                   if (context.ConnectionHovering.ConnectionHoversWhenClicked.Count == 0)
+                                      return;
+
+                                  // Ripping a cable rewires both of its operators - locked ones refuse
+                                  if (context.ConnectionHovering.ConnectionHoversWhenClicked.Exists(
+                                          h => MagItemMovement.ConnectionTouchesLockedOp(h.Connection)))
                                       return;
 
                                   context.StartMacroCommand("Reconnect from output");

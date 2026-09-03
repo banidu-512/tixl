@@ -49,6 +49,10 @@ internal static class OutputSnapper
         if (context.TempConnections.Count == 0)
             return false;
 
+        // Locked operators refuse new connections from their outputs
+        if (MagItemMovement.IsLocked(BestOutputMatch.Item))
+            return false;
+
         Debug.Assert(context.MacroCommand != null);
 
         var didSomething = false;

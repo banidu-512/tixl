@@ -882,6 +882,10 @@ internal sealed class TimeLineCanvas : AnimationCanvas
         var children = compositionOp.Children.Values;
         foreach (var child in children)
         {
+            // PIN-locked ops keep their animation off the timeline - keyframe edits would modify them
+            if (symbolUi.ChildUis.TryGetValue(child.SymbolChildId, out var timelineChildUi) && timelineChildUi.IsLocked)
+                continue;
+
             var isChildSelected = Selected.Unknown;
 
             for (var inputIndex = 0; inputIndex < child.Inputs.Count; inputIndex++)

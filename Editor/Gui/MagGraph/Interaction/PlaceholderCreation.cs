@@ -29,6 +29,14 @@ internal sealed class PlaceholderCreation
             return;
         }
 
+        // Splitting a cable rewires both of its operators - locked ones refuse
+        if (context.ConnectionHovering.ConnectionHoversWhenClicked.Exists(
+                h => MagItemMovement.ConnectionTouchesLockedOp(h.Connection)))
+        {
+            context.StateMachine.SetState(GraphStates.Default, context);
+            return;
+        }
+
         context.TempConnections.Clear();
 
         context.StartMacroCommand("Insert operator");
