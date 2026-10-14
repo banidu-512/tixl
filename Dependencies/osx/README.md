@@ -15,11 +15,15 @@ Two local modifications to the release binary, applied offline (see the commit t
 
 1. The upstream build links with `-undefined dynamic_lookup`, leaving ~92 OpenCL (`cl*`) imports to be
    resolved from whatever the process has loaded. On Apple Silicon nothing provides OpenCL, so dyld refuses
-   the image outright ("symbol not found in flat namespace '_clBuildProgram'"). Those imports are marked as
-   weak (`N_WEAK_REF`) so dyld binds them to NULL instead; the CPU paths never call them.
-2. Both modifications invalidate the ad-hoc signature, so the file must be re-signed before macOS will load
-   it: `codesign --force --sign - libmediapipe_c.dylib`. The macOS CI workflow and the DMG build do this
-   automatically; on a dev machine run it once after checkout.
+   the image outright ("symbol not found in flat namespace '_clBuildProgram'"). Marking them weak is not
+   enough in flat-namespace mode, so the process must carry the symbols instead: the checked-in
+   `mediapipe-opencl-stub.c` exports no-ops for exactly those 92 symbols and is built as
+   `libmediapipe_opencl_stub.dylib` by the macOS CI and `Installer/macOS/build-dmg.sh`;
+   `MediapipeNativeLibrary` loads it before the first mediapipe_c P/Invoke. The CPU paths never call any
+   of them.
+2. The dylib's ad-hoc signature does not survive git round-trips untouched, so the file must be re-signed
+   before macOS will load it: `codesign --force --sign - libmediapipe_c.dylib`. The macOS CI workflow and
+   the DMG build do this automatically; on a dev machine run it once after checkout.
 
 ## BASS
 

@@ -59,9 +59,9 @@ jobs:
       - name: MediaPipe Smoke
         run: |
           dotnet build Mediapipe.Tests -c Release --nologo
-          ls -la Mediapipe.Tests/bin/Release/net10.0/libmediapipe_c.dylib
-          codesign -dv Mediapipe.Tests/bin/Release/net10.0/libmediapipe_c.dylib 2>&1 || true
+          ls -la Mediapipe.Tests/bin/Release/net10.0/libmediapipe_c.dylib Mediapipe.Tests/bin/Release/net10.0/libmediapipe_opencl_stub.dylib
           codesign --force --sign - Mediapipe.Tests/bin/Release/net10.0/libmediapipe_c.dylib
+          codesign --force --sign - Mediapipe.Tests/bin/Release/net10.0/libmediapipe_opencl_stub.dylib
           dotnet test Mediapipe.Tests -c Release --no-build --nologo
 
   build:

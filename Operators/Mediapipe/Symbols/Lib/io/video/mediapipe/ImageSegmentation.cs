@@ -34,7 +34,7 @@ internal sealed class ImageSegmentationResultPacket
 }
 
 [Guid("23456789-0abc-def1-2345-67890abcdef1")]
-[ExportDependencies("mediapipe_c.dll", "libmediapipe_c.so", "libmediapipe_c.dylib", "OpenCvSharpExtern.dll", "Emgu.CV.dll", "cvextern.dll", "OpenGL.Net.dll", "CppSharp.Runtime.dll", "Google.Protobuf.dll")]
+[ExportDependencies("mediapipe_c.dll", "libmediapipe_c.so", "libmediapipe_c.dylib", "libmediapipe_opencl_stub.dylib", "OpenCvSharpExtern.dll", "Emgu.CV.dll", "cvextern.dll", "OpenGL.Net.dll", "CppSharp.Runtime.dll", "Google.Protobuf.dll")]
 public class ImageSegmentation : Instance<ImageSegmentation>
 {
     [Output(Guid = "90abcdef-1234-5678-90ab-cdef12345678", DirtyFlagTrigger = DirtyFlagTrigger.Animated)]

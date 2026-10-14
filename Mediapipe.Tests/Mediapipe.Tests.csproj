@@ -42,4 +42,12 @@
     <Content Include="../Operators/Mediapipe/Assets/blaze_face_short_range.tflite" Link="Assets/blaze_face_short_range.tflite" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
+  <!-- macOS: libmediapipe_c.dylib resolves its OpenCL imports by dynamic lookup and Apple Silicon ships
+       no OpenCL, so the no-op stub must be in the process before the first P/Invoke (MediapipeNativeLibrary
+       loads it from the app directory). Needs clang (Xcode command line tools). -->
+  <Target Name="BuildOpenClStub" BeforeTargets="BeforeBuild" Condition="$([MSBuild]::IsOSPlatform('OSX'))">
+    <MakeDir Directories="$(OutputPath)" />
+    <Exec Command="clang -arch x86_64 -arch arm64 -shared -o &quot;$(OutputPath)libmediapipe_opencl_stub.dylib&quot; &quot;$(MSBuildThisFileDirectory)../Dependencies/osx/mediapipe-opencl-stub.c&quot;" />
+  </Target>
+
 </Project>

@@ -75,6 +75,12 @@ mkdir -p "$contents/MacOS" "$payload"
 # Everything the Editor finds relative to itself stays next to its executable, as in the Linux tarball.
 cp -a "$build_dir/." "$payload/"
 
+# libmediapipe_c.dylib resolves its OpenCL imports by dynamic lookup and Apple Silicon macOS has no
+# OpenCL - the no-op stub must be in the process before the first mediapipe_c P/Invoke (loaded by
+# MediapipeNativeLibrary). Built from the checked-in source; the signing loop below ad-hoc signs it.
+clang -arch x86_64 -arch arm64 -shared -o "$payload/libmediapipe_opencl_stub.dylib" \
+    "$root/Dependencies/osx/mediapipe-opencl-stub.c"
+
 # Same split as the other installers: package metadata ships from the source tree.
 for package in Lib Examples; do
     mkdir -p "$payload/Operators/$package/.meta"
