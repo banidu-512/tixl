@@ -26,11 +26,12 @@
 
   <!-- Ship the same mediapipe_c native the editor carries (Dependencies root on Windows, the platform
        folders elsewhere), so the tests exercise the shipped library on every platform instead of
-       depending on whatever resolution happens to find. -->
+       depending on whatever resolution happens to find. Link is explicit because the sources live
+       outside the project folder. -->
   <ItemGroup>
-    <Content Include="../Dependencies/mediapipe_c.dll" Condition="$([MSBuild]::IsOSPlatform('Windows'))" CopyToOutputDirectory="PreserveNewest" />
-    <Content Include="../Dependencies/linux-x64/libmediapipe_c.so" Condition="$([MSBuild]::IsOSPlatform('Linux'))" CopyToOutputDirectory="PreserveNewest" />
-    <Content Include="../Dependencies/osx/libmediapipe_c.dylib" Condition="$([MSBuild]::IsOSPlatform('OSX'))" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="../Dependencies/mediapipe_c.dll" Link="mediapipe_c.dll" Condition="$([MSBuild]::IsOSPlatform('Windows'))" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="../Dependencies/linux-x64/libmediapipe_c.so" Link="libmediapipe_c.so" Condition="$([MSBuild]::IsOSPlatform('Linux'))" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="../Dependencies/osx/libmediapipe_c.dylib" Link="libmediapipe_c.dylib" Condition="$([MSBuild]::IsOSPlatform('OSX'))" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <!-- The task models the operators use; enough of them to drive every task type once. -->
