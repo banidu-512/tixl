@@ -37,6 +37,13 @@ jobs:
           key: nuget-linux-${{ hashFiles('**/*.csproj', 'Tixl.props', 'Directory.Build.props') }}
           restore-keys: nuget-linux-
 
+      # The bundled libmediapipe_c.so links mesa's GL at load time (libEGL.so.1, libGLESv2.so.2);
+      # the runner image doesn't carry them.
+      - name: Install GL Libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libegl1 libgles2
+
       - name: MediaPipe Smoke
         run: dotnet test Mediapipe.Tests -c Release --nologo
 
