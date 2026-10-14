@@ -524,7 +524,8 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
         if (settings.ResolutionFpsType == ResolutionFpsTypeEnum.Custom)
         {
             var session = VideoDecoderSession.TryOpen(url, VideoPlaybackOptimization.FastSeeking, out error,
-                                                       BuildDemuxerOptions(settings, includeFormatSettings: true), inputFormat);
+                                                       BuildDemuxerOptions(settings, includeFormatSettings: true), inputFormat,
+                                                       lowLatency: true);
             if (session != null)
             {
                 customFormatAccepted = true;
@@ -535,7 +536,9 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
             if (!OperatingSystem.IsWindows())
             {
                 var mjpegOptions = BuildDemuxerOptions(settings, includeFormatSettings: true)!;
-                mjpegOptions["input_format"] = "mjpeg";                session = VideoDecoderSession.TryOpen(url, VideoPlaybackOptimization.FastSeeking, out error, mjpegOptions, inputFormat);
+                mjpegOptions["input_format"] = "mjpeg";
+                session = VideoDecoderSession.TryOpen(url, VideoPlaybackOptimization.FastSeeking, out error, mjpegOptions, inputFormat,
+                                                      lowLatency: true);
                 if (session != null)
                 {
                     customFormatAccepted = true;
@@ -546,7 +549,8 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
 
         // Device-default format — when a custom size was requested it is resized in software instead.
         return VideoDecoderSession.TryOpen(url, VideoPlaybackOptimization.FastSeeking, out error,
-                                           BuildDemuxerOptions(settings, includeFormatSettings: false), inputFormat);
+                                           BuildDemuxerOptions(settings, includeFormatSettings: false), inputFormat,
+                                           lowLatency: true);
     }
 
     private static string BuildCaptureUrl(WebcamWithIndex device, out string inputFormat)

@@ -18,6 +18,7 @@ internal class PoseLandmarkDetectionRequest
     public int Width;
     public int Height;
     public long Timestamp;
+    public long SentTickCount;
 }
 
 internal class PoseLandmarkDetectionResultPacket
@@ -32,6 +33,10 @@ internal class PoseLandmarkDetectionResultPacket
 [ExportDependencies("mediapipe_c.dll", "libmediapipe_c.so", "libmediapipe_c.dylib", "libmediapipe_opencl_stub.dylib", "OpenCvSharpExtern.dll", "Emgu.CV.dll", "cvextern.dll", "OpenGL.Net.dll", "CppSharp.Runtime.dll", "Google.Protobuf.dll")]
 public class PoseLandmarkDetection : Instance<PoseLandmarkDetection>
 {
+    // MediaPipe resizes to its model input (~256px) internally; a camera frame wider than this only
+    // burns downsample/memcpy time before hitting that resize.
+    private const int MaxInferenceWidth = 640;
+
     [Output(Guid = "cdef1234-5678-90ab-cdef-1234567890ab", DirtyFlagTrigger = DirtyFlagTrigger.Animated)]
     public readonly Slot<Texture2D?> OutputTexture = new();
 
@@ -90,10 +95,12 @@ public class PoseLandmarkDetection : Instance<PoseLandmarkDetection>
 
         if (_processingTask == null || _processingTask.IsCompleted || _poseLandmarker == null ||
             maxPoses != _activeMaxPoses ||
+            Acceleration.GetValue(context) != _activeAcceleration ||
             Math.Abs(minPoseDetectionConfidence - _activeMinPoseDetectionConfidence) > 0.001f ||
             Math.Abs(minPosePresenceConfidence - _activeMinPosePresenceConfidence) > 0.001f ||
             Math.Abs(minTrackingConfidence - _activeMinTrackingConfidence) > 0.001f)
         {
+            _activeAcceleration = Acceleration.GetValue(context);
             InitializeWorker(maxPoses, minPoseDetectionConfidence, minPosePresenceConfidence, minTrackingConfidence, debug);
         }
 
@@ -103,7 +110,9 @@ public class PoseLandmarkDetection : Instance<PoseLandmarkDetection>
             return;
         }
 
-        if (_inputQueue.Count < 1)
+        // Only hand the worker a frame when it is idle - a queued frame would be one inference old
+        // by the time it is picked up, and the newer one it could have had is then dropped.
+        if (_inputQueue.IsEmpty && !_workerBusy)
         {
             var request = CreateRequestFromTexture(inputTexture);
             if (request != null)
@@ -176,12 +185,15 @@ public class PoseLandmarkDetection : Instance<PoseLandmarkDetection>
     private readonly object _timestampLock = new object();
 
     private Task? _processingTask;
+    private volatile bool _workerBusy;
     private CancellationTokenSource? _cancellationTokenSource;
     private readonly ConcurrentQueue<PoseLandmarkDetectionRequest> _inputQueue = new();
     private readonly ConcurrentQueue<PoseLandmarkDetectionResultPacket> _outputQueue = new();
     private PoseLandmarkDetectionResultPacket? _currentResult;
+    private int _latencyLogCounter;
     
     private int _activeMaxPoses = -1;
+    private int _activeAcceleration = -1;
     private float _activeMinPoseDetectionConfidence = -1f;
     private float _activeMinPosePresenceConfidence = -1f;
     private float _activeMinTrackingConfidence = -1f;
@@ -242,13 +254,9 @@ public class PoseLandmarkDetection : Instance<PoseLandmarkDetection>
                     return;
                 }
 
-                var baseOptions = new Mediapipe.Tasks.Core.CoreBaseOptions(
-                    modelAssetPath: fullPath,
-                    delegateCase: Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU
-                );
-
-                PoseLandmarkerOptions options = new(
-                    baseOptions,
+                var wantsGpu = _activeAcceleration == 1;
+                PoseLandmarkerOptions BuildOptions(Mediapipe.Tasks.Core.CoreBaseOptions.Delegate delegateCase) => new(
+                    new Mediapipe.Tasks.Core.CoreBaseOptions(modelAssetPath: fullPath, delegateCase: delegateCase),
                     VisionRunningMode.VIDEO,
                     maxPoses,
                     minPoseDetectionConfidence,
@@ -259,7 +267,16 @@ public class PoseLandmarkDetection : Instance<PoseLandmarkDetection>
 
                 lock (_poseLandmarkerLock)
                 {
-                    _poseLandmarker = PoseLandmarker.CreateFromOptions(options);
+                    try
+                    {
+                        _poseLandmarker = PoseLandmarker.CreateFromOptions(BuildOptions(wantsGpu ? Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.GPU : Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU));
+                    }
+                    catch (Exception gpuEx) when (wantsGpu)
+                    {
+                        Log.Warning($"[PoseLandmarkDetection] GPU acceleration not available ({gpuEx.Message}) - using CPU.", this);
+                        _poseLandmarker = PoseLandmarker.CreateFromOptions(BuildOptions(Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU));
+                    }
+
                 }
                 _cancellationTokenSource = new CancellationTokenSource();
                 var token = _cancellationTokenSource.Token;
@@ -282,10 +299,19 @@ public class PoseLandmarkDetection : Instance<PoseLandmarkDetection>
         {
             if (_inputQueue.TryDequeue(out var request))
             {
+                // Whatever piled up while the previous inference ran is stale by now - only the newest
+                // frame is worth its latency, the rest goes straight back to the pool.
+                while (_inputQueue.TryDequeue(out var newer))
+                {
+                    ReturnBufferToPool(request.PixelData);
+                    request = newer;
+                }
+
                 try
                 {
                     if (_poseLandmarker != null && request.PixelData != null)
                     {
+                        _workerBusy = true;
                         ProcessFrame(request, debug);
                     }
                 }
@@ -295,6 +321,7 @@ public class PoseLandmarkDetection : Instance<PoseLandmarkDetection>
                 }
                 finally
                 {
+                    _workerBusy = false;
                     ReturnBufferToPool(request.PixelData);
                 }
             }
@@ -307,6 +334,9 @@ public class PoseLandmarkDetection : Instance<PoseLandmarkDetection>
 
     private void ProcessFrame(PoseLandmarkDetectionRequest request, bool debug)
     {
+        var queueLatencyMs = Environment.TickCount64 - request.SentTickCount;
+        var inferenceStopwatch = System.Diagnostics.Stopwatch.StartNew();
+
         using var image = new Image(ImageFormat.Types.Format.Srgb, request.Width, request.Height, request.Width * 3, request.PixelData!);
 
         PoseLandmarker? landmarker;
@@ -316,6 +346,13 @@ public class PoseLandmarkDetection : Instance<PoseLandmarkDetection>
         }
 
         var result = landmarker?.DetectForVideo(image, request.Timestamp);
+        inferenceStopwatch.Stop();
+
+        if (debug && ++_latencyLogCounter % 90 == 1)
+        {
+            Log.Debug($"[PoseLandmarkDetection] frame latency {queueLatencyMs + inferenceStopwatch.ElapsedMilliseconds}ms " +
+                      $"(queue {queueLatencyMs}ms, inference {inferenceStopwatch.ElapsedMilliseconds}ms)", this);
+        }
 
         if (result != null && result.Value.PoseLandmarks != null && result.Value.PoseLandmarks.Count > 0)
         {
@@ -512,7 +549,14 @@ public class PoseLandmarkDetection : Instance<PoseLandmarkDetection>
 
         try
         {
-            byte[] buffer = GetBuffer(width * height * 3);
+            // MediaPipe resizes to its model input (~256px) internally; feeding the full camera image
+            // makes that resize - and every memcpy around it - several times more expensive than the
+            // inference itself. Downsample on the way out (the landmarker needs nowhere near 1080p).
+            var downscale = Math.Min(1.0f, (float)MaxInferenceWidth / width);
+            var inferenceWidth = Math.Max(1, (int)(width * downscale));
+            var inferenceHeight = Math.Max(1, (int)(height * downscale));
+
+            byte[] buffer = GetBuffer(inferenceWidth * inferenceHeight * 3);
             unsafe
             {
                 IntPtr srcPtr = dataBox.DataPointer;
@@ -521,16 +565,20 @@ public class PoseLandmarkDetection : Instance<PoseLandmarkDetection>
                 fixed (byte* dst = buffer)
                 {
                     IntPtr dstPtr = (IntPtr)dst;
-                    Parallel.For(0, height, y =>
-                    {
-                        byte* rowSrc = (byte*)srcPtr + (y * rowPitch);
-                        byte* rowDst = (byte*)dstPtr + (y * width * 3);
+                    float sourceXStep = (float)width / inferenceWidth;
+                    float sourceYStep = (float)height / inferenceHeight;
 
-                        for (int x = 0; x < width; x++)
+                    Parallel.For(0, inferenceHeight, iy =>
+                    {
+                        byte* rowSrc = (byte*)srcPtr + ((int)(iy * sourceYStep)) * rowPitch;
+                        byte* rowDst = (byte*)dstPtr + iy * inferenceWidth * 3;
+
+                        for (int ix = 0; ix < inferenceWidth; ix++)
                         {
-                            rowDst[x * 3] = rowSrc[x * 4 + 2];     // R
-                            rowDst[x * 3 + 1] = rowSrc[x * 4 + 1]; // G
-                            rowDst[x * 3 + 2] = rowSrc[x * 4];     // B
+                            int sx = (int)(ix * sourceXStep);
+                            rowDst[ix * 3] = rowSrc[sx * 4 + 2];     // R
+                            rowDst[ix * 3 + 1] = rowSrc[sx * 4 + 1]; // G
+                            rowDst[ix * 3 + 2] = rowSrc[sx * 4];     // B
                         }
                     });
                 }
@@ -542,9 +590,10 @@ public class PoseLandmarkDetection : Instance<PoseLandmarkDetection>
             return new PoseLandmarkDetectionRequest
             {
                 PixelData = buffer,
-                Width = width,
-                Height = height,
-                Timestamp = ts
+                Width = inferenceWidth,
+                Height = inferenceHeight,
+                Timestamp = ts,
+                SentTickCount = Environment.TickCount64
             };
         }
         finally
@@ -1031,6 +1080,9 @@ public class PoseLandmarkDetection : Instance<PoseLandmarkDetection>
 
     [Input(Guid = "abcdef12-3456-7890-abcd-ef1234567890")]
     public readonly InputSlot<bool> CorrectAspectRatio = new(false);
+
+    [Input(Guid = "a1b2c3d4-0007-4a9b-8c2d-101010101010")]
+    public readonly InputSlot<int> Acceleration = new(0);
 
     [Input(Guid = "bcdef123-4567-890a-bcde-f1234567890a")]
     public readonly InputSlot<float> ZScale = new(1.0f);

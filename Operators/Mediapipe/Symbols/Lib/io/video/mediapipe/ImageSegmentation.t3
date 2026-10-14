@@ -2,7 +2,11 @@
   "FormatVersion": 3,
   "Id": "23456789-0abc-def1-2345-67890abcdef1"/*ImageSegmentation*/,
   "Inputs": [
-    {
+        {
+      "Id": "a1b2c3d4-0005-4a9b-8c2d-101010101010"/*Acceleration*/,
+      "DefaultValue": 0
+    },
+{
       "Id": "34567890-abcd-ef12-3456-7890abcdef12"/*InputTexture*/,
       "DefaultValue": null
     },

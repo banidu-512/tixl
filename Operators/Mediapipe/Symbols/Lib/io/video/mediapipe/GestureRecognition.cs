@@ -121,9 +121,11 @@ public class GestureRecognition : Instance<GestureRecognition>
 
         if (_processingTask == null || _processingTask.IsCompleted || _handLandmarker == null ||
             maxHands != _activeMaxHands ||
+            Acceleration.GetValue(context) != _activeAcceleration ||
             Math.Abs(minHandDetectionConfidence - _activeMinHandDetectionConfidence) > 0.001f ||
             Math.Abs(minHandPresenceConfidence - _activeMinHandPresenceConfidence) > 0.001f)
         {
+            _activeAcceleration = Acceleration.GetValue(context);
             InitializeWorker(maxHands, minHandDetectionConfidence, minHandPresenceConfidence, debug);
         }
 
@@ -220,6 +222,7 @@ public class GestureRecognition : Instance<GestureRecognition>
     private readonly ConcurrentQueue<GestureRecognitionResultPacket> _outputQueue = new();
     private GestureRecognitionResultPacket? _currentResult;
     private int _activeMaxHands = -1;
+    private int _activeAcceleration = -1;
     private float _activeMinHandDetectionConfidence = -1f;
     private float _activeMinHandPresenceConfidence = -1f;
     private readonly object _workerLock = new object();
@@ -285,20 +288,24 @@ public class GestureRecognition : Instance<GestureRecognition>
                     return;
                 }
 
-                var baseOptions = new Mediapipe.Tasks.Core.CoreBaseOptions(
-                    modelAssetPath: fullPath,
-                    delegateCase: Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU
-                );
-
-                HandLandmarkerOptions options = new(
-                    baseOptions,
+                var wantsGpu = _activeAcceleration == 1;
+                HandLandmarkerOptions BuildOptions(Mediapipe.Tasks.Core.CoreBaseOptions.Delegate delegateCase) => new(
+                    new Mediapipe.Tasks.Core.CoreBaseOptions(modelAssetPath: fullPath, delegateCase: delegateCase),
                     VisionRunningMode.VIDEO,
                     maxHands
                 );
 
                 lock (_handLandmarkerLock)
                 {
-                    _handLandmarker = HandLandmarker.CreateFromOptions(options);
+                    try
+                    {
+                        _handLandmarker = HandLandmarker.CreateFromOptions(BuildOptions(wantsGpu ? Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.GPU : Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU));
+                    }
+                    catch (Exception gpuEx) when (wantsGpu)
+                    {
+                        Log.Warning($"[GestureRecognition] GPU acceleration not available ({gpuEx.Message}) - using CPU.", this);
+                        _handLandmarker = HandLandmarker.CreateFromOptions(BuildOptions(Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU));
+                    }
                 }
                 _cancellationTokenSource = new CancellationTokenSource();
                 var token = _cancellationTokenSource.Token;
@@ -1272,6 +1279,9 @@ public class GestureRecognition : Instance<GestureRecognition>
 
     [Input(Guid = "15C6D7E8-F9A0-81B2-34D5-678901234567")]
     public readonly InputSlot<bool> CorrectAspectRatio = new(false);
+
+    [Input(Guid = "a1b2c3d4-0004-4a9b-8c2d-101010101010")]
+    public readonly InputSlot<int> Acceleration = new(0);
 
     [Input(Guid = "B6D7E8F9-0AB1-92C3-45E6-789012345678")]
     public readonly InputSlot<float> ZScale = new(1.0f);

@@ -88,8 +88,9 @@ public class ImageSegmentation : Instance<ImageSegmentation>
 
         OutputTexture.Value = inputTexture;
 
-        if (_processingTask == null || _processingTask.IsCompleted || _imageSegmenter == null || model != _activeModel)
+        if (_processingTask == null || _processingTask.IsCompleted || _imageSegmenter == null || model != _activeModel || Acceleration.GetValue(context) != _activeAcceleration)
         {
+            _activeAcceleration = Acceleration.GetValue(context);
             InitializeWorker(debug, model);
         }
 
@@ -165,6 +166,7 @@ public class ImageSegmentation : Instance<ImageSegmentation>
     private ImageSegmentationResultPacket? _currentResult;
     private readonly object _workerLock = new object();
     private SegmentationModel _activeModel;
+    private int _activeAcceleration = -1;
     
     private readonly ConcurrentDictionary<(int width, int height), T3.Graphics.Compat.Texture2D> _cachedStagingTextures = new();
     private readonly object _textureCacheLock = new object();
@@ -233,13 +235,9 @@ public class ImageSegmentation : Instance<ImageSegmentation>
                     return;
                 }
 
-                var baseOptions = new Mediapipe.Tasks.Core.CoreBaseOptions(
-                    modelAssetPath: fullPath,
-                    delegateCase: Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU
-                );
-
-                ImageSegmenterOptions options = new(
-                    baseOptions,
+                var wantsGpu = _activeAcceleration == 1;
+                ImageSegmenterOptions BuildOptions(Mediapipe.Tasks.Core.CoreBaseOptions.Delegate delegateCase) => new(
+                    new Mediapipe.Tasks.Core.CoreBaseOptions(modelAssetPath: fullPath, delegateCase: delegateCase),
                     VisionRunningMode.VIDEO,
                     outputCategoryMask: true,
                     outputConfidenceMasks: true
@@ -247,7 +245,15 @@ public class ImageSegmentation : Instance<ImageSegmentation>
 
                 lock (_imageSegmenterLock)
                 {
-                    _imageSegmenter = ImageSegmenter.CreateFromOptions(options);
+                    try
+                    {
+                        _imageSegmenter = ImageSegmenter.CreateFromOptions(BuildOptions(wantsGpu ? Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.GPU : Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU));
+                    }
+                    catch (Exception gpuEx) when (wantsGpu)
+                    {
+                        Log.Warning($"[ImageSegmentation] GPU acceleration not available ({gpuEx.Message}) - using CPU.", this);
+                        _imageSegmenter = ImageSegmenter.CreateFromOptions(BuildOptions(Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU));
+                    }
                 }
                 _cancellationTokenSource = new CancellationTokenSource();
                 var token = _cancellationTokenSource.Token;
@@ -999,6 +1005,9 @@ public class ImageSegmentation : Instance<ImageSegmentation>
 
     [Input(Guid = "67890abc-def1-2345-6789-0abcdef12345")]
     public readonly InputSlot<string> SelectedCategories = new();
+
+    [Input(Guid = "a1b2c3d4-0005-4a9b-8c2d-101010101010")]
+    public readonly InputSlot<int> Acceleration = new(0);
 
     [Input(Guid = "7890abcd-ef12-3456-7890-abcdef123456")]
     public readonly InputSlot<bool> Debug = new(false);

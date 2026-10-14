@@ -33,6 +33,7 @@ internal class HandLandmarkDetectionRequest
     public int Width;
     public int Height;
     public long Timestamp;
+    public long SentTickCount;
 }
 
 internal class HandLandmarkDetectionResultPacket
@@ -46,6 +47,10 @@ internal class HandLandmarkDetectionResultPacket
 [ExportDependencies("mediapipe_c.dll", "libmediapipe_c.so", "libmediapipe_c.dylib", "libmediapipe_opencl_stub.dylib", "OpenCvSharpExtern.dll", "Emgu.CV.dll", "cvextern.dll", "OpenGL.Net.dll", "CppSharp.Runtime.dll", "Google.Protobuf.dll")]
 public class HandLandmarkDetection : Instance<HandLandmarkDetection>
 {
+    // MediaPipe resizes to its model input (~224px) internally; a camera frame wider than this only
+    // burns downsample/memcpy time before hitting that resize.
+    private const int MaxInferenceWidth = 640;
+
     [Output(Guid = "def01234-5678-90ab-cdef-1234567890ab", DirtyFlagTrigger = DirtyFlagTrigger.Animated)]
     public readonly Slot<Texture2D> OutputTexture = new();
 
@@ -100,10 +105,12 @@ public class HandLandmarkDetection : Instance<HandLandmarkDetection>
 
         if (_processingTask == null || _processingTask.IsCompleted || _handLandmarker == null ||
             maxHands != _activeMaxHands ||
+            Acceleration.GetValue(context) != _activeAcceleration ||
             Math.Abs(minHandDetectionConfidence - _activeMinHandDetectionConfidence) > 0.001f ||
             Math.Abs(minHandPresenceConfidence - _activeMinHandPresenceConfidence) > 0.001f ||
             Math.Abs(minTrackingConfidence - _activeMinTrackingConfidence) > 0.001f)
         {
+            _activeAcceleration = Acceleration.GetValue(context);
             InitializeWorker(maxHands, minHandDetectionConfidence, minHandPresenceConfidence, minTrackingConfidence, debug);
         }
 
@@ -113,7 +120,9 @@ public class HandLandmarkDetection : Instance<HandLandmarkDetection>
             return;
         }
 
-        if (_inputQueue.Count < 1)
+        // Only hand the worker a frame when it is idle - a queued frame would be one inference old
+        // by the time it is picked up, and the newer one it could have had is then dropped.
+        if (_inputQueue.IsEmpty && !_workerBusy)
         {
             var request = CreateRequestFromTexture(inputTexture);
             if (request != null)
@@ -186,12 +195,15 @@ public class HandLandmarkDetection : Instance<HandLandmarkDetection>
     private readonly object _landmarksLock = new object();
 
     private Task? _processingTask;
+    private volatile bool _workerBusy;
     private CancellationTokenSource? _cancellationTokenSource;
     private readonly ConcurrentQueue<HandLandmarkDetectionRequest> _inputQueue = new();
     private readonly ConcurrentQueue<HandLandmarkDetectionResultPacket> _outputQueue = new();
     private HandLandmarkDetectionResultPacket? _currentResult;
+    private int _latencyLogCounter;
     
     private int _activeMaxHands = -1;
+    private int _activeAcceleration = -1;
     private float _activeMinHandDetectionConfidence = -1f;
     private float _activeMinHandPresenceConfidence = -1f;
     private float _activeMinTrackingConfidence = -1f;
@@ -252,13 +264,9 @@ public class HandLandmarkDetection : Instance<HandLandmarkDetection>
                     return;
                 }
 
-                var baseOptions = new Mediapipe.Tasks.Core.CoreBaseOptions(
-                    modelAssetPath: fullPath,
-                    delegateCase: Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU
-                );
-
-                HandLandmarkerOptions options = new(
-                    baseOptions,
+                var wantsGpu = _activeAcceleration == 1;
+                HandLandmarkerOptions BuildOptions(Mediapipe.Tasks.Core.CoreBaseOptions.Delegate delegateCase) => new(
+                    new Mediapipe.Tasks.Core.CoreBaseOptions(modelAssetPath: fullPath, delegateCase: delegateCase),
                     VisionRunningMode.VIDEO,
                     maxHands,
                     minHandDetectionConfidence,
@@ -268,7 +276,17 @@ public class HandLandmarkDetection : Instance<HandLandmarkDetection>
 
                 lock (_handLandmarkerLock)
                 {
-                    _handLandmarker = HandLandmarker.CreateFromOptions(options);
+                    try
+                    {
+                        _handLandmarker = HandLandmarker.CreateFromOptions(BuildOptions(wantsGpu ? Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.GPU : Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU));
+                    }
+                    catch (Exception gpuEx) when (wantsGpu)
+                    {
+                        // The Windows/macOS natives are CPU-only builds, and GPU delegates additionally
+                        // need a working GL/EGL context - never worth crashing the op over.
+                        Log.Warning($"[HandLandmarkDetection] GPU acceleration not available ({gpuEx.Message}) - using CPU.", this);
+                        _handLandmarker = HandLandmarker.CreateFromOptions(BuildOptions(Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU));
+                    }
                 }
                 _cancellationTokenSource = new CancellationTokenSource();
                 var token = _cancellationTokenSource.Token;
@@ -291,10 +309,19 @@ public class HandLandmarkDetection : Instance<HandLandmarkDetection>
         {
             if (_inputQueue.TryDequeue(out var request))
             {
+                // Whatever piled up while the previous inference ran is stale by now - only the newest
+                // frame is worth its latency, the rest goes straight back to the pool.
+                while (_inputQueue.TryDequeue(out var newer))
+                {
+                    ReturnBufferToPool(request.PixelData);
+                    request = newer;
+                }
+
                 try
                 {
                     if (_handLandmarker != null && request.PixelData != null)
                     {
+                        _workerBusy = true;
                         ProcessFrame(request, debug);
                     }
                 }
@@ -304,6 +331,7 @@ public class HandLandmarkDetection : Instance<HandLandmarkDetection>
                 }
                 finally
                 {
+                    _workerBusy = false;
                     ReturnBufferToPool(request.PixelData);
                 }
             }
@@ -316,6 +344,9 @@ public class HandLandmarkDetection : Instance<HandLandmarkDetection>
 
     private void ProcessFrame(HandLandmarkDetectionRequest request, bool debug)
     {
+        var queueLatencyMs = Environment.TickCount64 - request.SentTickCount;
+        var inferenceStopwatch = System.Diagnostics.Stopwatch.StartNew();
+
         using var image = new Image(Mediapipe.ImageFormat.Types.Format.Srgb, request.Width, request.Height, request.Width * 3, request.PixelData!);
 
         HandLandmarker? landmarker;
@@ -325,6 +356,13 @@ public class HandLandmarkDetection : Instance<HandLandmarkDetection>
         }
 
         var result = landmarker?.DetectForVideo(image, request.Timestamp);
+        inferenceStopwatch.Stop();
+
+        if (debug && ++_latencyLogCounter % 90 == 1)
+        {
+            Log.Debug($"[HandLandmarkDetection] frame latency {queueLatencyMs + inferenceStopwatch.ElapsedMilliseconds}ms " +
+                      $"(queue {queueLatencyMs}ms, inference {inferenceStopwatch.ElapsedMilliseconds}ms)", this);
+        }
 
         if (result != null && result.Value.HandLandmarks != null && result.Value.HandLandmarks.Count > 0)
         {
@@ -517,7 +555,14 @@ public class HandLandmarkDetection : Instance<HandLandmarkDetection>
 
         try
         {
-            byte[] buffer = GetBuffer(width * height * 3);
+            // MediaPipe resizes to its model input (~224px) internally; feeding the full camera image
+            // makes that resize - and every memcpy around it - several times more expensive than the
+            // inference itself. Downsample on the way out (the landmarker needs nowhere near 1080p).
+            var downscale = Math.Min(1.0f, (float)MaxInferenceWidth / width);
+            var inferenceWidth = Math.Max(1, (int)(width * downscale));
+            var inferenceHeight = Math.Max(1, (int)(height * downscale));
+
+            byte[] buffer = GetBuffer(inferenceWidth * inferenceHeight * 3);
             unsafe
             {
                 IntPtr srcPtr = dataBox.DataPointer;
@@ -526,16 +571,20 @@ public class HandLandmarkDetection : Instance<HandLandmarkDetection>
                 fixed (byte* dst = buffer)
                 {
                     IntPtr dstPtr = (IntPtr)dst;
-                    Parallel.For(0, height, y =>
-                    {
-                        byte* rowSrc = (byte*)srcPtr + (y * rowPitch);
-                        byte* rowDst = (byte*)dstPtr + (y * width * 3);
+                    float sourceXStep = (float)width / inferenceWidth;
+                    float sourceYStep = (float)height / inferenceHeight;
 
-                        for (int x = 0; x < width; x++)
+                    Parallel.For(0, inferenceHeight, iy =>
+                    {
+                        byte* rowSrc = (byte*)srcPtr + ((int)(iy * sourceYStep)) * rowPitch;
+                        byte* rowDst = (byte*)dstPtr + iy * inferenceWidth * 3;
+
+                        for (int ix = 0; ix < inferenceWidth; ix++)
                         {
-                            rowDst[x * 3] = rowSrc[x * 4 + 2];     // R
-                            rowDst[x * 3 + 1] = rowSrc[x * 4 + 1]; // G
-                            rowDst[x * 3 + 2] = rowSrc[x * 4];     // B
+                            int sx = (int)(ix * sourceXStep);
+                            rowDst[ix * 3] = rowSrc[sx * 4 + 2];     // R
+                            rowDst[ix * 3 + 1] = rowSrc[sx * 4 + 1]; // G
+                            rowDst[ix * 3 + 2] = rowSrc[sx * 4];     // B
                         }
                     });
                 }
@@ -547,9 +596,10 @@ public class HandLandmarkDetection : Instance<HandLandmarkDetection>
             return new HandLandmarkDetectionRequest
             {
                 PixelData = buffer,
-                Width = width,
-                Height = height,
-                Timestamp = ts
+                Width = inferenceWidth,
+                Height = inferenceHeight,
+                Timestamp = ts,
+                SentTickCount = Environment.TickCount64
             };
         }
         finally
@@ -912,6 +962,11 @@ public class HandLandmarkDetection : Instance<HandLandmarkDetection>
 
     [Input(Guid = "bcdef123-4567-890a-bcde-f1234567890a")]
     public readonly InputSlot<bool> CorrectAspectRatio = new(false);
+
+    /// <summary>0 = CPU delegate (works everywhere), 1 = GPU delegate (falls back to CPU when the
+    /// native build or the platform lacks GPU/GL support).</summary>
+    [Input(Guid = "a1b2c3d4-0001-4a9b-8c2d-101010101010")]
+    public readonly InputSlot<int> Acceleration = new(0);
 
     [Input(Guid = "cdef1234-5678-90ab-cdef-1234567890ab")]
     public readonly InputSlot<float> ZScale = new(1.0f);

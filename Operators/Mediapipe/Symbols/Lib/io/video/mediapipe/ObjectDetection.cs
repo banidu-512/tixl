@@ -104,14 +104,16 @@ public class ObjectDetection : Instance<ObjectDetection>
         OutputTexture.Value = inputTexture;
 
         bool paramsChanged = maxObjects != _activeMaxObjects || Math.Abs(minDetectionConfidence - _activeMinDetectionConfidence) > 0.001f;
+        bool accelerationChanged = Acceleration.GetValue(context) != _activeAcceleration;
         bool taskDead = _processingTask == null || _processingTask.IsCompleted;
         bool detectorMissing = _objectDetector == null;
         bool modelChanged = model != _activeModel;
         bool allowlistChanged = categoryAllowlist != _activeCategoryAllowlist;
         bool denylistChanged = categoryDenylist != _activeCategoryDenylist;
 
-        if (taskDead || detectorMissing || paramsChanged || modelChanged || allowlistChanged || denylistChanged)
+        if (taskDead || detectorMissing || paramsChanged || modelChanged || allowlistChanged || denylistChanged || accelerationChanged)
         {
+            _activeAcceleration = Acceleration.GetValue(context);
             InitializeWorker(maxObjects, minDetectionConfidence, debug, model, categoryAllowlist!, categoryDenylist!);
         }
 
@@ -186,6 +188,7 @@ public class ObjectDetection : Instance<ObjectDetection>
     private readonly ConcurrentQueue<ObjectDetectionResultPacket> _outputQueue = new();
     private ObjectDetectionResultPacket? _currentResult;
     private int _activeMaxObjects = -1;
+    private int _activeAcceleration = -1;
     private float _activeMinDetectionConfidence = -1f;
     private DetectionModel _activeModel;
     private string _activeCategoryAllowlist = "";
@@ -250,9 +253,12 @@ public class ObjectDetection : Instance<ObjectDetection>
                     return;
                 }
 
+                var wantsGpu = _activeAcceleration == 1;
                 var baseOptions = new Mediapipe.Tasks.Core.CoreBaseOptions(
                                                                            modelAssetPath: fullPath,
-                                                                           delegateCase: Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU
+                                                                           delegateCase: wantsGpu
+                                                                               ? Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.GPU
+                                                                               : Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU
                                                                           );
 
                 var allowList = string.IsNullOrEmpty(categoryAllowlist)
@@ -273,7 +279,26 @@ public class ObjectDetection : Instance<ObjectDetection>
 
                 lock (_objectDetectorLock)
                 {
-                    _objectDetector = ObjectDetector.CreateFromOptions(options);
+                    try
+                    {
+                        _objectDetector = ObjectDetector.CreateFromOptions(options);
+                    }
+                    catch (Exception gpuEx) when (wantsGpu)
+                    {
+                        Log.Warning($"[ObjectDetection] GPU acceleration not available ({gpuEx.Message}) - using CPU.", this);
+                        baseOptions = new Mediapipe.Tasks.Core.CoreBaseOptions(
+                                                                           modelAssetPath: fullPath,
+                                                                           delegateCase: Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU
+                                                                          );
+                        options = new ObjectDetectorOptions(
+                                                    baseOptions,
+                                                    VisionRunningMode.VIDEO,
+                                                    maxResults: maxObjects,
+                                                    scoreThreshold: minDetectionConfidence,
+                                                    categoryAllowList: allowList,
+                                                    categoryDenyList: denyList);
+                        _objectDetector = ObjectDetector.CreateFromOptions(options);
+                    }
                 }
 
                 _cancellationTokenSource = new CancellationTokenSource();
@@ -910,6 +935,9 @@ public class ObjectDetection : Instance<ObjectDetection>
 
     [Input(Guid = "0abcdef1-2345-6789-0abc-def123456789")]
     public readonly InputSlot<bool> CorrectAspectRatio = new(false);
+
+    [Input(Guid = "a1b2c3d4-0006-4a9b-8c2d-101010101010")]
+    public readonly InputSlot<int> Acceleration = new(0);
 
     [Input(Guid = "abcdef12-3456-7890-abcd-ef1234567890")]
     public readonly InputSlot<float> ZScale = new(1.0f);

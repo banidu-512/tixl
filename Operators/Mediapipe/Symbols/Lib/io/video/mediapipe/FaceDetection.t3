@@ -2,7 +2,11 @@
   "FormatVersion": 3,
   "Id": "a1b2c3d4-e5f6-4798-89ab-cdef12345679"/*FaceDetection*/,
   "Inputs": [
-    {
+        {
+      "Id": "a1b2c3d4-0002-4a9b-8c2d-101010101010"/*Acceleration*/,
+      "DefaultValue": 0
+    },
+{
       "Id": "a3b4c5d6-e7f8-4389-e6b1-901234567681"/*DetectionSize*/,
       "DefaultValue": 3.0
     },

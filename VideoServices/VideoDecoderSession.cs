@@ -70,7 +70,8 @@ public sealed class VideoDecoderSession : IDisposable
     /// </summary>
     public static unsafe VideoDecoderSession? TryOpen(string url, VideoPlaybackOptimization optimization, out string? error,
                                                       IReadOnlyDictionary<string, string>? demuxerOptions = null,
-                                                      string? inputFormat = null)
+                                                      string? inputFormat = null,
+                                                      bool lowLatency = false)
     {
         error = null;
         if (!FfmpegLibrary.EnsureInitialized())
@@ -106,11 +107,20 @@ public sealed class VideoDecoderSession : IDisposable
         MediaDictionary? options = null;
         try
         {
+            options = new MediaDictionary();
             if (demuxerOptions != null)
             {
-                options = new MediaDictionary();
                 foreach (var pair in demuxerOptions)
                     options[pair.Key] = pair.Value;
+            }
+
+            if (lowLatency)
+            {
+                // Live capture: skip the demuxer's probe/frame buffering and hand decoded frames straight
+                // through. fflags are comma/plus-composed — merge with any caller-provided value.
+                var fflags = options.ContainsKey("fflags") ? options["fflags"] + "+nobuffer" : "nobuffer";
+                options["fflags"] = fflags;
+                options["avioflags"] = "direct";
             }
 
             formatContext = FormatContext.OpenInputUrl(url, forcedFormat, options);
@@ -157,6 +167,8 @@ public sealed class VideoDecoderSession : IDisposable
             {
                 codecContext = new CodecContext(codec);
                 codecContext.FillParameters(codecParameters);
+                if (lowLatency)
+                    codecContext.Flags |= AV_CODEC_FLAG.LowDelay;
                 codecContext.Open();
             }
 

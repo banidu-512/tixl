@@ -88,8 +88,9 @@ namespace Lib.io.video.mediapipe
             OutputTexture.Value = inputTexture;
 
             if (_processingTask == null || _processingTask.IsCompleted || _faceDetector == null ||
-                maxFaces != _activeMaxFaces || Math.Abs(confidenceThreshold - _activeConfidenceThreshold) > 0.001f)
+                maxFaces != _activeMaxFaces || Math.Abs(confidenceThreshold - _activeConfidenceThreshold) > 0.001f || Acceleration.GetValue(context) != _activeAcceleration)
             {
+                _activeAcceleration = Acceleration.GetValue(context);
                 InitializeWorker(maxFaces, confidenceThreshold, debug);
             }
 
@@ -162,6 +163,7 @@ namespace Lib.io.video.mediapipe
         private readonly ConcurrentQueue<FaceDetectionResultPacket> _outputQueue = new();
         private FaceDetectionResultPacket? _currentResult;
         private int _activeMaxFaces = -1;
+        private int _activeAcceleration = -1;
         private float _activeConfidenceThreshold = -1f;
         private readonly object _workerLock = new object();
         
@@ -217,13 +219,9 @@ namespace Lib.io.video.mediapipe
                         return;
                     }
 
-                    var baseOptions = new Mediapipe.Tasks.Core.CoreBaseOptions(
-                        modelAssetPath: fullPath,
-                        delegateCase: Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU
-                    );
-
-                    FaceDetectorOptions options = new(
-                        baseOptions,
+                    var wantsGpu = _activeAcceleration == 1;
+                    FaceDetectorOptions BuildOptions(Mediapipe.Tasks.Core.CoreBaseOptions.Delegate delegateCase) => new(
+                        new Mediapipe.Tasks.Core.CoreBaseOptions(modelAssetPath: fullPath, delegateCase: delegateCase),
                         VisionRunningMode.VIDEO,
                         minDetectionConfidence: 0.5f,
                         minSuppressionThreshold: 0.3f
@@ -231,7 +229,15 @@ namespace Lib.io.video.mediapipe
 
                     lock (_faceDetectorLock)
                     {
-                        _faceDetector = Mediapipe.Tasks.Vision.FaceDetector.FaceDetector.CreateFromOptions(options);
+                        try
+                        {
+                            _faceDetector = Mediapipe.Tasks.Vision.FaceDetector.FaceDetector.CreateFromOptions(BuildOptions(wantsGpu ? Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.GPU : Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU));
+                        }
+                        catch (Exception gpuEx) when (wantsGpu)
+                        {
+                            Log.Warning($"[FaceDetection] GPU acceleration not available ({gpuEx.Message}) - using CPU.", this);
+                            _faceDetector = Mediapipe.Tasks.Vision.FaceDetector.FaceDetector.CreateFromOptions(BuildOptions(Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU));
+                        }
                     }
                     _cancellationTokenSource = new CancellationTokenSource();
                     var token = _cancellationTokenSource.Token;
@@ -1009,6 +1015,9 @@ namespace Lib.io.video.mediapipe
 
         [Input(Guid = "F3A4B5C6-D7E8-59F0-01A2-345678901CD4")]
         public readonly InputSlot<bool> CorrectAspectRatio = new(false);
+
+        [Input(Guid = "a1b2c3d4-0002-4a9b-8c2d-101010101010")]
+        public readonly InputSlot<int> Acceleration = new(0);
 
         [Input(Guid = "A4B5C6D7-E8F9-60A1-12B3-456789012DE5")]
         public readonly InputSlot<float> ZScale = new(1.0f);

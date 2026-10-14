@@ -93,11 +93,13 @@ namespace Lib.io.video.mediapipe
             OutputTexture.Value = inputTexture;
 
             if (_processingTask == null || _processingTask.IsCompleted || _faceLandmarker == null || 
-                maxFaces != _activeMaxFaces || 
+                maxFaces != _activeMaxFaces ||
+                Acceleration.GetValue(context) != _activeAcceleration ||
                 Math.Abs(minFaceDetectionConfidence - _activeMinFaceDetectionConfidence) > 0.001f ||
                 Math.Abs(minFacePresenceConfidence - _activeMinFacePresenceConfidence) > 0.001f ||
                 Math.Abs(minTrackingConfidence - _activeMinTrackingConfidence) > 0.001f)
             {
+                _activeAcceleration = Acceleration.GetValue(context);
                 InitializeWorker(maxFaces, minFaceDetectionConfidence, minFacePresenceConfidence, minTrackingConfidence, debug);
             }
 
@@ -173,6 +175,7 @@ namespace Lib.io.video.mediapipe
         private Point[]? _landmarksArray;
         
         private int _activeMaxFaces = -1;
+        private int _activeAcceleration = -1;
         private float _activeMinFaceDetectionConfidence = -1f;
         private float _activeMinFacePresenceConfidence = -1f;
         private float _activeMinTrackingConfidence = -1f;
@@ -230,9 +233,9 @@ namespace Lib.io.video.mediapipe
                         return;
                     }
 
-                    var baseOptions = new CoreBaseOptions(modelAssetPath: modelPath, delegateCase: CoreBaseOptions.Delegate.CPU);
-                    var options = new FaceLandmarkerOptions(
-                        baseOptions: baseOptions,
+                    var wantsGpu = _activeAcceleration == 1;
+                    FaceLandmarkerOptions BuildOptions(CoreBaseOptions.Delegate delegateCase) => new(
+                        baseOptions: new CoreBaseOptions(modelAssetPath: modelPath, delegateCase: delegateCase),
                         runningMode: VisionRunningMode.VIDEO,
                         numFaces: _activeMaxFaces,
                         minFaceDetectionConfidence: _activeMinFaceDetectionConfidence,
@@ -244,7 +247,15 @@ namespace Lib.io.video.mediapipe
 
                     lock (_faceLandmarkerLock)
                     {
-                        _faceLandmarker = FaceLandmarker.CreateFromOptions(options);
+                        try
+                        {
+                            _faceLandmarker = FaceLandmarker.CreateFromOptions(BuildOptions(wantsGpu ? CoreBaseOptions.Delegate.GPU : CoreBaseOptions.Delegate.CPU));
+                        }
+                        catch (Exception gpuEx) when (wantsGpu)
+                        {
+                            Log.Warning($"[FaceLandmark] GPU acceleration not available ({gpuEx.Message}) - using CPU.", this);
+                            _faceLandmarker = FaceLandmarker.CreateFromOptions(BuildOptions(CoreBaseOptions.Delegate.CPU));
+                        }
                     }
                     _cancellationTokenSource = new CancellationTokenSource();
                     var token = _cancellationTokenSource.Token;
@@ -1161,6 +1172,9 @@ namespace Lib.io.video.mediapipe
 
         [Input(Guid = "cdef0123-4567-890a-bcde-f01234567890")]
         public readonly InputSlot<bool> CorrectAspectRatio = new(false);
+
+        [Input(Guid = "a1b2c3d4-0003-4a9b-8c2d-101010101010")]
+        public readonly InputSlot<int> Acceleration = new(0);
 
         [Input(Guid = "01234567-890a-bcde-f012-34567890abcd")]
         public readonly InputSlot<float> ZScale = new(1.0f);
