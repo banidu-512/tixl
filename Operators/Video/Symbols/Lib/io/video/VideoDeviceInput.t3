@@ -7,6 +7,18 @@
       "DefaultValue": 0
     },
     {
+      "Id": "d7a2f851-4c93-46b8-8e71-3b95c6e2d740"/*Brightness*/,
+      "DefaultValue": 128.0
+    },
+    {
+      "Id": "a5f4d2b8-63e9-4c17-8d40-52b7e9c6f183"/*Focus*/,
+      "DefaultValue": 0.0
+    },
+    {
+      "Id": "84b6e3c9-1a52-4f7d-9e28-67d3f1a5b496"/*Exposure*/,
+      "DefaultValue": 0.0
+    },
+    {
       "Id": "22513b82-e77a-417a-8a46-24e677f072d4"/*DeactivateWhenNotShowing*/,
       "DefaultValue": false
     },
@@ -29,6 +41,18 @@
     {
       "Id": "67e149a5-f7b6-47bc-b147-3b9b11c19c29"/*Reconnect*/,
       "DefaultValue": false
+    },
+    {
+      "Id": "d91c4a7e-5b36-4e82-9f10-7c64a2d8e513"/*Pan*/,
+      "DefaultValue": 0.0
+    },
+    {
+      "Id": "2e75b9c3-8d41-4a6f-b520-93e78f1c4a62"/*Tilt*/,
+      "DefaultValue": 0.0
+    },
+    {
+      "Id": "6c38a1f4-92d7-4b5e-8c63-1f94b6d3a758"/*Zoom*/,
+      "DefaultValue": 100.0
     },
     {
       "Id": "805602d5-52b2-4a73-a337-12e00c3c91f2"/*Scale*/,

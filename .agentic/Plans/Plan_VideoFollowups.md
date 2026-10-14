@@ -53,8 +53,10 @@ The `Video` package exists, FFmpeg ops + natives moved out of Lib, registration 
       `<Operators Include="Video"/>` or the GUIDs won't resolve. Decide: auto-add on load vs a "missing package"
       prompt. (First-party Examples/template already updated.)
 - [ ] **Move `SwiftCamDevice` (+ swiftcam.dll) into `Video`** — a later phase.
-- [ ] **OpenCV camera ops** (`VideoDeviceInput`, `CameraCalibrator`) — blocked: Lib only sheds EmguCV once
-      `OnvifCamera` (PTZ) and `Video2DPointScanner` (DMX) also move/drop OpenCV. Separate decision; not "video".
+- [ ] **OpenCV camera ops** — `VideoDeviceInput` is DONE (2026-10-08: ported onto FFmpeg dshow/v4l2 and
+      moved into `Video`, see [Plan_VideoDeviceInput.md](Plan_VideoDeviceInput.md)). `CameraCalibrator`
+      remains blocked: Lib only sheds EmguCV once `OnvifCamera` (PTZ) and `Video2DPointScanner` (DMX)
+      also move/drop OpenCV. Separate decision; not "video".
 
 ## From the decode milestone — M2 caching ([archive/Plan_FfmpegVideo.md](archive/Plan_FfmpegVideo.md) — M1 DONE, M2 partial)
 

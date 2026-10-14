@@ -470,6 +470,13 @@
       }
     },
     {
+      "ChildId": "c91b68de-8ff3-4097-b8c8-1f2614bdc21d"/*SendToOutput*/,
+      "Position": {
+        "X": -1501.8445,
+        "Y": 205.36282
+      }
+    },
+    {
       "ChildId": "cecfc09f-2f16-4866-afe0-96bf34184e7d"/*PointsOnMesh*/,
       "SectionId": "297fac84-de17-4b6c-87b2-08935862abaf",
       "Position": {

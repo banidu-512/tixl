@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
 using System.Threading;
 using Sdcb.FFmpeg.Codecs;
+using Sdcb.FFmpeg.Common;
 using Sdcb.FFmpeg.Formats;
 using Sdcb.FFmpeg.Raw;
 using Sdcb.FFmpeg.Utils;
@@ -64,15 +65,41 @@ public sealed class VideoDecoderSession : IDisposable
     /// <summary>
     /// Opens <paramref name="url"/> (file or network stream) and selects the best video stream. Returns null
     /// on failure. <paramref name="demuxerOptions"/> passes demuxer options (e.g. <c>rtsp_transport=tcp</c>).
+    /// <paramref name="inputFormat"/> forces the demuxer by short name (e.g. <c>v4l2</c>, <c>dshow</c>) for
+    /// URLs that content probing cannot identify, like capture device nodes.
     /// </summary>
     public static unsafe VideoDecoderSession? TryOpen(string url, VideoPlaybackOptimization optimization, out string? error,
-                                                      IReadOnlyDictionary<string, string>? demuxerOptions = null)
+                                                      IReadOnlyDictionary<string, string>? demuxerOptions = null,
+                                                      string? inputFormat = null)
     {
         error = null;
         if (!FfmpegLibrary.EnsureInitialized())
         {
             error = FfmpegLibrary.StatusError ?? "FFmpeg is not available";
             return null;
+        }
+
+        InputFormat? forcedFormat = null;
+        if (!string.IsNullOrEmpty(inputFormat))
+        {
+            try
+            {
+                var found = InputFormat.FindByShortName(inputFormat);
+                if (found == null)
+                {
+                    // Means the demuxer was never registered (no avdevice_register_all) or the name is
+                    // wrong — passing an empty format would silently fall back to byte-probing the URL.
+                    error = $"Input format '{inputFormat}' not found in this FFmpeg build.";
+                    return null;
+                }
+
+                forcedFormat = found;
+            }
+            catch (Exception e)
+            {
+                error = $"Unknown input format '{inputFormat}': {e.Message}";
+                return null;
+            }
         }
 
         FormatContext? formatContext = null;
@@ -86,7 +113,7 @@ public sealed class VideoDecoderSession : IDisposable
                     options[pair.Key] = pair.Value;
             }
 
-            formatContext = FormatContext.OpenInputUrl(url, null, options);
+            formatContext = FormatContext.OpenInputUrl(url, forcedFormat, options);
             formatContext.LoadStreamInfo();
 
             var stream = formatContext.FindBestStreamOrNull(AVMediaType.Video);
@@ -398,17 +425,29 @@ public sealed class VideoDecoderSession : IDisposable
                 continue;
             }
 
-            try
+            if (_packet.StreamIndex == _videoStreamIndex)
             {
-                if (_packet.StreamIndex == _videoStreamIndex)
-                    _codecContext.SendPacket(_packet);
+                // Raw call instead of CodecContext.SendPacket: Sdcb's wrapper throws on any negative
+                // return without exposing the code, but AVERROR_INVALIDDATA must be skippable — live
+                // capture devices start streaming mid-frame, so the first buffer(s) are fragments the
+                // decoder rejects. The ffmpeg CLI drops those packets and carries on; so does this.
+                var sendResult = ffmpeg.avcodec_send_packet(_codecContext, _packet);
+                if (sendResult == AvErrorInvalidData)
+                {
+                    Log.Debug("Skipped an undecodable packet (fragmentary start of a live stream).");
+                }
+                else if (sendResult < 0)
+                {
+                    throw new FFmpegException($"Error sending a packet for decoding: [FFmpeg error {sendResult}]");
+                }
             }
-            finally
-            {
-                _packet.Unref();
-            }
+
+            _packet.Unref();
         }
     }
+
+    // AVERROR_INVALIDDATA — see the send-packet handling above.
+    private const int AvErrorInvalidData = -1094995529;
 
     /// <summary>
     /// Seeks to the keyframe at or before <paramref name="targetPts"/> and flushes the decoder. The caller

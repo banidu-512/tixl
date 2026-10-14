@@ -1073,6 +1073,11 @@
       "SymbolName": "Lib.render.camera.OrbitCamera",
       "InputValues": [
         {
+          "Id": "21f595ad-0808-48f1-bdd8-118d1527944c"/*FOV*/,
+          "Type": "System.Single",
+          "Value": 65.0
+        },
+        {
           "Id": "8b75047f-03b7-4619-8869-2906e66731d1"/*OrbitAngleAndWobble*/,
           "Type": "System.Numerics.Vector2",
           "Value": {
@@ -1145,6 +1150,13 @@
       "Id": "c7871b37-6d17-4099-9e56-db2b426b1e7e"/*OscillateVec3*/,
       "SymbolId": "8a6ab5ec-caa6-4baa-a9d1-2079af22685c",
       "SymbolName": "Lib.numbers.anim.animators.OscillateVec3",
+      "InputValues": [],
+      "Outputs": []
+    },
+    {
+      "Id": "c91b68de-8ff3-4097-b8c8-1f2614bdc21d"/*SendToOutput*/,
+      "SymbolId": "0b8f2d4e-6a1c-47d3-9f5e-8c2a1b7d4e60",
+      "SymbolName": "Lib.render.output.SendToOutput",
       "InputValues": [],
       "Outputs": []
     },
@@ -1784,6 +1796,12 @@
       "SourceSlotId": "1f4e7cac-1f62-4633-b0f3-a3017a026753",
       "TargetParentOrChildId": "badf9e48-e789-42de-8fea-6af901d453e1",
       "TargetSlotId": "be057b0a-1302-4076-bde1-6ae453815642"
+    },
+    {
+      "SourceParentOrChildId": "2745b191-3062-4079-8a4d-f4132a898330",
+      "SourceSlotId": "05c886f7-2c2c-4fe8-8b66-d6967dc43367",
+      "TargetParentOrChildId": "c91b68de-8ff3-4097-b8c8-1f2614bdc21d",
+      "TargetSlotId": "8a4dd1b3-2e6f-4c25-9d0a-7f3b61c8e942"
     },
     {
       "SourceParentOrChildId": "77eabcd8-9cec-43a6-be9f-bb1a19c7fb21",

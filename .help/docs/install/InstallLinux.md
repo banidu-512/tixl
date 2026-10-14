@@ -188,8 +188,9 @@ them yourself.
 
 A few features rely on Windows-only libraries:
 
-- Computer vision operators based on OpenCV and MediaPipe.
-- NDI input and output, webcams and screen capture.
+- Computer vision operators based on OpenCV and MediaPipe. Webcam capture itself works — `[VideoDeviceInput]`
+  opens cameras through FFmpeg's V4L2 backend.
+- NDI input and output, and screen capture.
 - Recording what other programs play (loopback). Live input from a microphone or line-in works.
 - Spout video sharing, which only exists on Windows.
 - SpaceMouse support, gamepads and Ableton Link.

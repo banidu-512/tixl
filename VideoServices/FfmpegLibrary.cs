@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Runtime.Loader;
+using Sdcb.FFmpeg.Formats;
 using Sdcb.FFmpeg.Raw;
 using Sdcb.FFmpeg.Utils;
 using T3.Core.Logging;
@@ -85,12 +86,18 @@ public static class FfmpegLibrary
         if (isRestricted && !allowRestricted)
         {
             StatusError = "Bundled FFmpeg build is GPL/non-free and not permitted — an LGPL build is required. "
-                          + "For development, TIXL_FFMPEG_ALLOW_RESTRICTED=1 allows it.";
+                          + "A system-wide FFmpeg may have been picked up instead of the bundled libraries (see the log); "
+                          + "for development, TIXL_FFMPEG_ALLOW_RESTRICTED=1 allows it.";
             Log.Warning(StatusError);
+            // Identifies WHICH build answered — the bundled LGPL build has no --enable-gpl, so seeing it here
+            // means resolution fell through to a system-wide libavcodec.
+            var configurationHead = configuration.Length <= 400 ? configuration : configuration[..400] + "…";
+            Log.Warning($"Rejected FFmpeg configuration: {configurationHead}");
             return;
         }
 
         IsAvailable = true;
+        RegisterDeviceDemuxers();
         ConfigureLogging();
         var licenseLabel = isRestricted ? "GPL/non-free — development build" : "LGPL";
         T3.Core.Resource.ThirdPartyRuntimeInfo.Register("FFmpeg", $"{VersionInfo} ({licenseLabel})");
@@ -99,6 +106,78 @@ public static class FfmpegLibrary
         else
             Log.Debug($"FFmpeg {VersionInfo} loaded (LGPL).");
     }
+
+    // libavdevice's demuxers (v4l2 on Linux, dshow on Windows, ...) are invisible to av_find_input_format
+    // until avdevice_register_all runs: shared FFmpeg has no load-time hook, the application must opt in
+    // (the ffmpeg CLI does). Without it, a forced device format resolves to null and avformat falls back
+    // to byte-probing the device node, which cameras without V4L2_CAP_READWRITE reject with EINVAL.
+    //
+    // The export is invoked through an explicitly loaded handle instead of a DllImport: a plain DllImport
+    // can be hijacked by a system-wide libavdevice (a different FFmpeg copy entirely), whose registration
+    // would land in the system libavformat and never reach the bundled one this process decodes with.
+    private static void RegisterDeviceDemuxers()
+    {
+        var libraryName = OperatingSystem.IsWindows() ? "avdevice-61.dll"
+                          : OperatingSystem.IsLinux() ? "libavdevice.so.61"
+                          : "libavdevice.61.dylib";
+
+        var directory = Path.GetDirectoryName(typeof(FfmpegLibrary).Assembly.Location);
+        var libraryPath = string.IsNullOrEmpty(directory) ? null : Path.Combine(directory, libraryName);
+        if (libraryPath == null || !File.Exists(libraryPath))
+        {
+            Log.Warning($"FFmpeg device library '{libraryName}' not found next to VideoServices — device capture will be unavailable.");
+            return;
+        }
+
+        try
+        {
+            // libavdevice binds its own libavformat dependency by soname at load time — make sure the bundled
+            // copy is in the process first, or (with a system FFmpeg installed) the registration below would
+            // land in the system's libavformat instead of the one this process decodes with. No-op when the
+            // preload already loaded it.
+            var formatPath = Path.Combine(directory!, OperatingSystem.IsWindows() ? "avformat-61.dll" : "libavformat.so.61");
+            if (File.Exists(formatPath))
+                NativeLibrary.TryLoad(formatPath, out _);
+
+            if (!NativeLibrary.TryLoad(libraryPath, out var handle))
+            {
+                Log.Warning($"Could not load '{libraryPath}' — device capture will be unavailable.");
+                return;
+            }
+
+            try
+            {
+                var register = (RegisterDeviceDemuxersDelegate)Marshal.GetDelegateForFunctionPointer(
+                                   NativeLibrary.GetExport(handle, "avdevice_register_all"),
+                                   typeof(RegisterDeviceDemuxersDelegate));
+                register();
+            }
+            finally
+            {
+                // avdevice stays registered for the process lifetime; closing our handle keeps the library
+                // loaded (the demuxer list references its static memory).
+                NativeLibrary.Free(handle);
+            }
+
+            // Verify the registration took effect — a no-op here means capture formats stay unresolvable
+            // even though plain file/network decoding works, which is hard to diagnose from the outside.
+            // The assembly location matters: on operator-package hot-reload a SECOND VideoServices copy
+            // initializes in the same process, and its view of the shared native libraries is what this
+            // log line is about.
+            var deviceFormats = InputFormat.All
+                                           .Select(f => f.Name)
+                                           .ToList();
+            var deviceNames = deviceFormats.Where(n => n.Contains("v4l2") || n.Contains("dshow") || n.Contains("avfoundation")).ToList();
+            Log.Debug($"FFmpeg device demuxers registered: {(deviceNames.Count > 0 ? string.Join(", ", deviceNames) : "NONE FOUND")} " +
+                      $"({deviceFormats.Count} demuxers total, from '{typeof(FfmpegLibrary).Assembly.Location}')");
+        }
+        catch (Exception e)
+        {
+            Log.Warning($"Could not register FFmpeg device demuxers: {e.Message} — device capture will be unavailable.");
+        }
+    }
+
+    private delegate void RegisterDeviceDemuxersDelegate();
 
     // Route libav* logging through TiXL's logger instead of FFmpeg's default raw-stderr callback. Benign,
     // repetitive notices (e.g. swscale's "deprecated pixel format" warning when decoding full-range sources)
@@ -126,8 +205,12 @@ public static class FfmpegLibrary
 
     // The FFmpeg libraries live next to this assembly, which is not on the OS library search path inside the
     // editor's custom operator load context. So a library's inter-dependencies (avcodec → avutil/swresample)
-    // won't resolve by name. Pre-load each by full path, avutil first, so dependencies are already in the
-    // process by the time something needs them - the loader then matches them by name and loads nothing twice.
+    // won't resolve by name. Pre-load each by full path, dependencies first, so dependencies are already in
+    // the process by the time something needs them - the loader then matches them by name and loads nothing
+    // twice. The order is load-bearing beyond convenience: when libavdevice gets loaded before libavformat,
+    // its by-soname dependency bind falls through to a SYSTEM-wide libavformat if one is installed, and
+    // avdevice_register_all then registers its demuxers into that copy - invisible to the bundled libavformat
+    // this process decodes with.
     private static void PreloadNativeLibraries()
     {
         var directory = Path.GetDirectoryName(typeof(FfmpegLibrary).Assembly.Location);
@@ -141,7 +224,10 @@ public static class FfmpegLibrary
             => fileName.Contains("avutil") ? 0
                : fileName.Contains("swresample") ? 1
                : fileName.Contains("swscale") ? 2
-               : 3;
+               : fileName.Contains("avcodec") ? 3
+               : fileName.Contains("avformat") ? 4
+               : fileName.Contains("avdevice") ? 6
+               : 5;
 
         var libraries = Directory.GetFiles(directory)
                                  .Where(IsFfmpegLibrary)

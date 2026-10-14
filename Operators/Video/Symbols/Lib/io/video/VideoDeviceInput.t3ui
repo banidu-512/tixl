@@ -1,7 +1,7 @@
 {
   "FormatVersion": 3,
   "Id": "cd5a182e-254b-4e65-820b-ff754122614c"/*VideoDeviceInput*/,
-  "Description": "Captures live video from a connected device like a webcam, capture card, or NDI source.\n\nThis operator provides access to video devices available on your system. You can select the device, resolution, and frame rate. It also allows for basic image manipulation like flipping and repositioning.\n\nTips:\n- To save system resources, enable `DeactivateWhenNotShowing`. This will pause the capture when the operator is not being rendered.\n- Use `OpenSettings` to access the device-specific configuration dialog for more advanced options like exposure and color balance.\n- The `Status` output provides useful information for troubleshooting connection issues.\n\nAKA: webcam, camera, capture card, ndi, directshow, video input",
+  "Description": "Captures live video from a connected device like a webcam or capture card, with the basic camera hardware configs built in: Pan, Tilt, Zoom, Focus, Exposure and Brightness are applied to the camera automatically whenever their input changes — several settings at once, and each can be patched/animated.\n\nDevices are opened through FFmpeg — DirectShow on Windows, V4L2 on Linux. You can select the device, resolution, and frame rate; the capture runs on its own thread and automatically retries when a device is unplugged and returns. Basic image manipulation like flipping, rotation, scaling and repositioning is done in software.\n\nTips:\n- To save system resources, enable `DeactivateWhenNotShowing`. This will pause the capture when the operator is not being rendered.\n- The config inputs only touch the camera when their value changes, and only if the camera actually implements the control. Values are in device units (Zoom 100 = 1x, Pan/Tilt in 1/64°); `Status` shows the supported range after an apply.\n- On Linux the resolution and frame-rate dropdowns only list defaults; with `ResolutionFpsType` set to `Custom`, type any value — the driver negotiates the closest match and the image is resized in software when the device can't deliver the requested size.\n- A `Reconnect` trigger also rescans the device list, so cameras plugged in after startup become selectable.\n- The `Status` output provides useful information for troubleshooting connection issues.\n\nAKA: webcam, camera, capture card, ptz, pan, tilt, zoom, video input",
   "InputUis": [
     {
       "InputId": "11f7432d-31f1-44b9-8f75-b1569b314b13"/*CustomFps*/,
@@ -58,6 +58,54 @@
         "Y": 900.0
       },
       "Description": "A trigger to force a reconnection to the video device, which can be useful if the device becomes unresponsive or if settings have been changed externally."
+    },
+    {
+      "InputId": "d91c4a7e-5b36-4e82-9f10-7c64a2d8e513"/*Pan*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 975.0
+      },
+      "Description": "Camera pan in device units (UVC: 1/64°). Applied when the value changes; ignored if the camera has no pan."
+    },
+    {
+      "InputId": "2e75b9c3-8d41-4a6f-b520-93e78f1c4a62"/*Tilt*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 1050.0
+      },
+      "Description": "Camera tilt in device units (UVC: 1/64°). Applied when the value changes; ignored if the camera has no tilt."
+    },
+    {
+      "InputId": "6c38a1f4-92d7-4b5e-8c63-1f94b6d3a758"/*Zoom*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 1125.0
+      },
+      "Description": "Camera zoom in device units (UVC: 100 = 1x). Applied when the value changes; ignored if the camera has no zoom."
+    },
+    {
+      "InputId": "a5f4d2b8-63e9-4c17-8d40-52b7e9c6f183"/*Focus*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 1200.0
+      },
+      "Description": "Camera focus in device units (absolute). Applied when the value changes; ignored if the camera has no manual focus."
+    },
+    {
+      "InputId": "84b6e3c9-1a52-4f7d-9e28-67d3f1a5b496"/*Exposure*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 1275.0
+      },
+      "Description": "Camera exposure in device units (UVC absolute exposure: 0.1 ms). Applied when the value changes; ignored if the camera has no manual exposure."
+    },
+    {
+      "InputId": "d7a2f851-4c93-46b8-8e71-3b95c6e2d740"/*Brightness*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 1350.0
+      },
+      "Description": "Camera brightness in device units. Applied when the value changes; ignored if the camera has no brightness control."
     },
     {
       "InputId": "805602d5-52b2-4a73-a337-12e00c3c91f2"/*Scale*/,
