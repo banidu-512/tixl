@@ -718,10 +718,12 @@ public class ObjectDetection : Instance<ObjectDetection>
         foreach (var detection in detections)
         {
             var bbox = detection.BoundingBox;
-            int x = (int)(bbox!.CenterX - bbox.Width / 2);
-            int y = (int)(bbox.CenterY - bbox.Height / 2);
-            int w = (int)(bbox.Width);
-            int h = (int)(bbox.Height);
+            // MediaPipe boxes are normalized to the source image (origin top-left, same as the mat);
+            // drawing the raw values as pixels collapsed every box into the top-left corner.
+            int x = (int)((bbox!.CenterX - bbox.Width / 2) * matWidth);
+            int y = (int)((bbox.CenterY - bbox.Height / 2) * matHeight);
+            int w = (int)(bbox.Width * matWidth);
+            int h = (int)(bbox.Height * matHeight);
 
             Cv2.Rectangle(mat, new OpenCvSharp.Rect(x, y, w, h), boxColor, 2);
 

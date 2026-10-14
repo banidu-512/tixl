@@ -139,7 +139,7 @@ public class PoseLandmarkDetection : Instance<PoseLandmarkDetection>
                 using var mat = Texture2DToMat(inputTexture);
                 if (!mat.Empty())
                 {
-                    DrawDebugVisualsFromLandmarks(mat, _currentResult.Landmarks, correctAspectRatio);
+                    DrawDebugVisualsFromLandmarks(mat, _currentResult.Landmarks);
                     UpdateDebugTextureFromMat(mat);
                 }
             }
@@ -665,28 +665,25 @@ public class PoseLandmarkDetection : Instance<PoseLandmarkDetection>
         }
     }
 
-    private void DrawDebugVisualsFromLandmarks(Mat mat, Point[]? landmarks, bool correctAspectRatio)
+    private void DrawDebugVisualsFromLandmarks(Mat mat, Point[]? landmarks)
     {
         if (landmarks == null || landmarks.Length == 0) return;
 
         var landmarkColor = new Scalar(0, 255, 0, 255);
         int matWidth = mat.Width;
         int matHeight = mat.Height;
-        float aspectRatio = (float)matWidth / matHeight;
 
         for (int i = 0; i < landmarks.Length; i++)
         {
             var point = landmarks[i];
-            
-            float x = point.Position.X / 2.0f;
-            if (correctAspectRatio) x /= aspectRatio;
-            x += 0.5f;
-            
-            float y = 0.5f - (point.Position.Y / 2.0f);
-            
-            int px = (int)(x * matWidth);
-            int py = (int)(y * matHeight);
-            
+
+            // The stored landmarks are MediaPipe's normalized image coordinates re-centered to ±0.5
+            // (see the landmark conversion) - map them straight back to pixels. Going through the
+            // processed-output inverse (X/2 + 0.5) here squeezed the points to half scale around
+            // the image center.
+            int px = (int)((point.Position.X + 0.5f) * matWidth);
+            int py = (int)((0.5f - point.Position.Y) * matHeight);
+
             Cv2.Circle(mat, px, py, 2, landmarkColor, -1, LineTypes.AntiAlias);
         }
     }

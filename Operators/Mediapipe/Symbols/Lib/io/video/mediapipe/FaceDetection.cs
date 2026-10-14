@@ -125,7 +125,9 @@ namespace Lib.io.video.mediapipe
                     using var mat = Texture2DToMat(inputTexture);
                     if (!mat.Empty())
                     {
-                        DrawDebugVisuals(mat, _currentResult);
+                        // The stored coordinates carry the conversion-time aspect factor in X - invert
+                        // it with the same value, or boxes land compressed on non-square images.
+                        DrawDebugVisuals(mat, _currentResult, correctAspectRatio ? (float)mat.Width / mat.Height : 1.0f);
                         UpdateDebugTextureFromMat(mat);
                     }
                 }
@@ -719,7 +721,7 @@ namespace Lib.io.video.mediapipe
             }
         }
 
-        private void DrawDebugVisuals(Mat mat, FaceDetectionResultPacket result)
+        private void DrawDebugVisuals(Mat mat, FaceDetectionResultPacket result, float aspectRatio)
         {
             if (result.Detections == null || result.Detections.Length == 0) return;
             
@@ -739,9 +741,9 @@ namespace Lib.io.video.mediapipe
                 var p3 = result.Detections[baseIdx + 2];
                 var p4 = result.Detections[baseIdx + 3];
                 
-                int x1 = (int)((p1.Position.X + 1.0f) / 2.0f * mat.Width);
+                int x1 = (int)((p1.Position.X / aspectRatio + 1.0f) / 2.0f * mat.Width);
                 int y1 = (int)((1.0f - p1.Position.Y) / 2.0f * mat.Height);
-                int x2 = (int)((p3.Position.X + 1.0f) / 2.0f * mat.Width);
+                int x2 = (int)((p3.Position.X / aspectRatio + 1.0f) / 2.0f * mat.Width);
                 int y2 = (int)((1.0f - p3.Position.Y) / 2.0f * mat.Height);
                 
                 int width = x2 - x1;
@@ -763,7 +765,7 @@ namespace Lib.io.video.mediapipe
                     if (kpIdx >= result.Detections.Length) break;
                     
                     var kp = result.Detections[kpIdx];
-                    int kpX = (int)((kp.Position.X + 1.0f) / 2.0f * mat.Width);
+                    int kpX = (int)((kp.Position.X / aspectRatio + 1.0f) / 2.0f * mat.Width);
                     int kpY = (int)((1.0f - kp.Position.Y) / 2.0f * mat.Height);
                     
                     Cv2.Circle(mat, new OpenCvSharp.Point(kpX, kpY), 2, keypointColor, -1);

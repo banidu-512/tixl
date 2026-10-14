@@ -14,6 +14,7 @@ using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using T3.Core.Animation;
 using T3.Core.Stats;
+using T3.Editor.Gui;
 using T3.Editor.Gui.Windows.Analyze;
 using T3.Core.Logging;
 using T3.Core.Model;
@@ -336,6 +337,13 @@ internal static class DebugServer
             case "newProject":
                 HandleNewProject(request, context);
                 break;
+
+            case "save":            {
+                // Synchronous on purpose: the reply confirms the files are on disk.
+                T3Ui.Save(saveAll: true);
+                context.SendOk(new JObject { ["saved"] = true });
+                break;
+            }
 
             case "addOp":
                 HandleAddOp(request, context);
@@ -1777,6 +1785,24 @@ internal static class DebugServer
             return;
         }
 
+        // Creating over an existing project re-scaffolds its folder out from under the loaded assembly,
+        // which crashes the frame loop when the open home symbol disappears. Refuse instead - agents
+        // driving this over the protocol should openProject the existing one.
+        var projectShortName = name.Split('.').Last();
+        if (Directory.Exists(Path.Combine(UserSettings.Config.ProjectDirectories[0], projectShortName)))
+        {
+            context.SendError("PROJECT_EXISTS", $"A project folder named '{projectShortName}' already exists - open it instead of creating it");
+            return;
+        }
+        foreach (var loaded in EditableSymbolProject.AllProjects)
+        {
+            if (string.Equals(loaded.CsProjectFile.Name, projectShortName, StringComparison.OrdinalIgnoreCase))
+            {
+                context.SendError("PROJECT_EXISTS", $"A project named '{projectShortName}' is already loaded - open it instead of creating it");
+                return;
+            }
+        }
+
         // Scaffolds files and compiles - blocks the frame loop for the duration.
         if (!ProjectSetup.TryCreateProject(name, shareResources: true, out var newProject, out var failureLog))
         {
@@ -2073,6 +2099,30 @@ internal static class DebugServer
         }
 
         outputWindow.Pinning.PinInstance(instance, view);
+
+        // Optionally select which output of the pinned instance to display (e.g. "DebugTexture").
+        var outputName = request["outputName"]?.Value<string>();
+        if (!string.IsNullOrEmpty(outputName))
+        {
+            Guid outputId = Guid.Empty;
+            foreach (var definition in instance.Symbol.OutputDefinitions)
+            {
+                if (string.Equals(definition.Name, outputName, StringComparison.OrdinalIgnoreCase))
+                {
+                    outputId = definition.Id;
+                    break;
+                }
+            }
+
+            if (outputId == Guid.Empty)
+            {
+                context.SendError("UNKNOWN_OUTPUT", $"[{instance.Symbol.Name}] has no output named '{outputName}'");
+                return;
+            }
+
+            outputWindow.Pinning.SelectOutput(outputId);
+        }
+
         context.SendOk(new JObject());
     }
 
