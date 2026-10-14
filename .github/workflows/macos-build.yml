@@ -52,6 +52,11 @@ jobs:
       - name: OpenCV Smoke
         run: dotnet run --project OpenCvSmoke -c Release
 
+      # Drives the bundled libmediapipe_c.dylib (universal2) through the Tasks API the mediapipe
+      # operators use, so a native/API mismatch fails here instead of inside the editor.
+      - name: MediaPipe Smoke
+        run: dotnet test Mediapipe.Tests -c Release --nologo
+
   build:
     needs: verify
     # Apple Silicon runner: the DMG is osx-arm64 only.

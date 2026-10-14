@@ -1,0 +1,44 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <Import Project="$(SolutionDir)/Tixl.props" />
+  <PropertyGroup>
+    <TargetFramework>$(TixlNetFrameworkVersion)</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Deterministic>true</Deterministic>
+    <NoWarn>$(NoWarn);NU1701</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.8.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Operators\Mediapipe\Mediapipe.csproj" />
+  </ItemGroup>
+
+  <!-- Ship the same mediapipe_c native the editor carries (Dependencies root on Windows, the platform
+       folders elsewhere), so the tests exercise the shipped library on every platform instead of
+       depending on whatever resolution happens to find. -->
+  <ItemGroup>
+    <Content Include="../Dependencies/mediapipe_c.dll" Condition="$([MSBuild]::IsOSPlatform('Windows'))" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="../Dependencies/linux-x64/libmediapipe_c.so" Condition="$([MSBuild]::IsOSPlatform('Linux'))" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="../Dependencies/osx/libmediapipe_c.dylib" Condition="$([MSBuild]::IsOSPlatform('OSX'))" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <!-- The task models the operators use; enough of them to drive every task type once. -->
+  <ItemGroup>
+    <Content Include="../Operators/Mediapipe/Assets/hand_landmarker.task" Link="Assets/hand_landmarker.task" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="../Operators/Mediapipe/Assets/pose_landmarker.task" Link="Assets/pose_landmarker.task" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="../Operators/Mediapipe/Assets/selfie_segmenter.tflite" Link="Assets/selfie_segmenter.tflite" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="../Operators/Mediapipe/Assets/blaze_face_short_range.tflite" Link="Assets/blaze_face_short_range.tflite" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>
