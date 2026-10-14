@@ -54,8 +54,14 @@ jobs:
 
       # Drives the bundled libmediapipe_c.dylib (universal2) through the Tasks API the mediapipe
       # operators use, so a native/API mismatch fails here instead of inside the editor.
+      # The release dylib must be (at least ad-hoc) signed for dyld on Apple Silicon; the shipped DMG
+      # re-signs all dylibs anyway, so re-signing here matches what actually ships.
       - name: MediaPipe Smoke
-        run: dotnet test Mediapipe.Tests -c Release --nologo
+        run: |
+          ls -la Mediapipe.Tests/bin/Release/net10.0/libmediapipe_c.dylib
+          codesign -dv Mediapipe.Tests/bin/Release/net10.0/libmediapipe_c.dylib 2>&1 || true
+          codesign --force --sign - Mediapipe.Tests/bin/Release/net10.0/libmediapipe_c.dylib
+          dotnet test Mediapipe.Tests -c Release --nologo
 
   build:
     needs: verify
