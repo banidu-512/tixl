@@ -128,8 +128,13 @@
     <PackageReference Include="ManagedBass.Mix" Version="4.0.2" />
     <PackageReference Include="OpenCvSharp4" Version="4.13.0.20260627" />
     <PackageReference Include="OpenCvSharp4.Extensions" Version="4.13.0.20260627" />
-    <PackageReference Include="OpenCvSharp4.runtime.win" Version="4.13.0.20260627" />
-    <PackageReference Include="OpenCvSharp4.Windows" Version="4.13.0.20260627" />
+    <!-- OpenCV natives, one package per platform (the managed references above stay unconditional). The Linux
+         slim build is self-contained (OpenCV statically linked; no GTK/X11 — TiXL ops never call highgui).
+         Like the FFmpeg natives in the Video package, each is restored only on the platform that can use it. -->
+    <PackageReference Include="OpenCvSharp4.runtime.win" Version="4.13.0.20260627" Condition="$([MSBuild]::IsOSPlatform('Windows'))" />
+    <PackageReference Include="OpenCvSharp4.official.runtime.linux-x64.slim" Version="4.13.0.20260627" Condition="$([MSBuild]::IsOSPlatform('Linux'))" />
+    <PackageReference Include="OpenCvSharp4.runtime.osx.arm64" Version="4.13.0.20260627" Condition="$([MSBuild]::IsOSPlatform('OSX'))" />
+    <PackageReference Include="OpenCvSharp4.runtime.osx.x64" Version="4.13.0.20260627" Condition="$([MSBuild]::IsOSPlatform('OSX'))" />
     <PackageReference Include="SharpGLTF.Core" Version="1.0.6" />
     <PackageReference Include="Svg" Version="3.4.8" />
     <!-- Cross-platform SVG. Svg.Custom is a fork of the Svg library above and declares the same types in the

@@ -18,9 +18,13 @@
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
-    <!-- Managed bindings + native LGPL DLLs so the test host can decode real files. -->
+    <!-- Managed bindings + the same native LGPL FFmpeg the Video operator package ships, so tests exercise
+         the shipped configuration on every platform instead of whatever the OS provides (a system FFmpeg with
+         a matching soname silently serves different codecs — or a GPL build the shipped editor would reject).
+         Sdcb.FFmpeg.runtime.* is a GPL build and deliberately not used here. -->
     <PackageReference Include="Sdcb.FFmpeg" Version="7.0.0" />
-    <PackageReference Include="Sdcb.FFmpeg.runtime.windows-x64" Version="7.1.0" />
+    <PackageReference Include="FFmpeg.LGPL" Version="20250329.1.0" Condition="$([MSBuild]::IsOSPlatform('Windows'))" />
+    <PackageReference Include="TqkLibrary.FFmpeg.Lgpl3.Native.Linux.x64" Version="7.1.5.1" Condition="$([MSBuild]::IsOSPlatform('Linux'))" />
   </ItemGroup>
 
   <ItemGroup>

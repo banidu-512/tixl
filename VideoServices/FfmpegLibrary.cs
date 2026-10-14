@@ -121,9 +121,8 @@ public static class FfmpegLibrary
                           : OperatingSystem.IsLinux() ? "libavdevice.so.61"
                           : "libavdevice.61.dylib";
 
-        var directory = Path.GetDirectoryName(typeof(FfmpegLibrary).Assembly.Location);
-        var libraryPath = string.IsNullOrEmpty(directory) ? null : Path.Combine(directory, libraryName);
-        if (libraryPath == null || !File.Exists(libraryPath))
+        var libraryPath = FindBundledLibrary(libraryName);
+        if (libraryPath == null)
         {
             Log.Warning($"FFmpeg device library '{libraryName}' not found next to VideoServices — device capture will be unavailable.");
             return;
@@ -135,8 +134,11 @@ public static class FfmpegLibrary
             // copy is in the process first, or (with a system FFmpeg installed) the registration below would
             // land in the system's libavformat instead of the one this process decodes with. No-op when the
             // preload already loaded it.
-            var formatPath = Path.Combine(directory!, OperatingSystem.IsWindows() ? "avformat-61.dll" : "libavformat.so.61");
-            if (File.Exists(formatPath))
+            var formatName = OperatingSystem.IsWindows() ? "avformat-61.dll"
+                             : OperatingSystem.IsMacOS() ? "libavformat.61.dylib"
+                             : "libavformat.so.61";
+            var formatPath = FindBundledLibrary(formatName);
+            if (formatPath != null)
                 NativeLibrary.TryLoad(formatPath, out _);
 
             if (!NativeLibrary.TryLoad(libraryPath, out var handle))
@@ -217,36 +219,89 @@ public static class FfmpegLibrary
         if (string.IsNullOrEmpty(directory) || !Directory.Exists(directory))
             return;
 
-        if (OperatingSystem.IsMacOS() && !Directory.EnumerateFiles(directory).Any(IsFfmpegLibrary))
+        // The shipped layout has the libraries flat next to this assembly; NuGet package references keep them
+        // under runtimes/<rid>/native (test hosts, project-reference consumers). Without a full-path preload, a
+        // name-based request for e.g. "libavcodec.so.61" falls through to the OS loader and can pick up a
+        // system-wide FFmpeg — a different build with a different codec set (and possibly GPL) — before the
+        // bundled one is ever seen.
+        var bundledFolders = BundledLibraryFolders(directory!);
+        var hasBundledLibraries = bundledFolders.Any(f => Directory.EnumerateFiles(f).Any(IsFfmpegLibrary));
+
+        if (OperatingSystem.IsMacOS() && !hasBundledLibraries)
             UseInstalledLibrariesOnMac();
 
-        static int LoadOrder(string fileName)
-            => fileName.Contains("avutil") ? 0
-               : fileName.Contains("swresample") ? 1
-               : fileName.Contains("swscale") ? 2
-               : fileName.Contains("avcodec") ? 3
-               : fileName.Contains("avformat") ? 4
-               : fileName.Contains("avdevice") ? 6
-               : 5;
+        foreach (var folder in bundledFolders)
+        {
+            var loaded = false;
+            foreach (var path in OrderedFfmpegLibraries(folder))
+                loaded |= NativeLibrary.TryLoad(path, out _);
 
-        var libraries = Directory.GetFiles(directory)
-                                 .Where(IsFfmpegLibrary)
-                                 .OrderBy(path => LoadOrder(Path.GetFileName(path)));
-
-        foreach (var path in libraries)
-            NativeLibrary.TryLoad(path, out _);
+            // Stop after the first layout that provided libraries so the bundled build wins over any
+            // same-soname copies deeper in the search order.
+            if (loaded)
+                break;
+        }
     }
 
     /// <summary>
-    /// macOS has no LGPL FFmpeg package to ship yet, so a development machine uses an installed one: the folder
-    /// in TIXL_FFMPEG_DIR, or Homebrew's ffmpeg@7 (FFmpeg 7.x = avcodec-61, which these bindings need; plain
-    /// "ffmpeg" is already 8.x). Sdcb.FFmpeg asks for "libavutil.59.dylib" by name and finds nothing outside
-    /// the standard paths, so the request falls through to this handler.
+    /// The folders that may hold the bundled FFmpeg libraries, best layout first: flat next to the assembly,
+    /// then NuGet's runtimes/&lt;rid&gt;/native for this platform's RIDs.
+    /// </summary>
+    private static IEnumerable<string> BundledLibraryFolders(string directory)
+    {
+        yield return directory;
+
+        var runtimesRoot = Path.Combine(directory, "runtimes");
+        if (!Directory.Exists(runtimesRoot))
+            yield break;
+
+        var architecture = RuntimeInformation.ProcessArchitecture;
+        string[] rids;
+        if (OperatingSystem.IsWindows())
+            rids = architecture == Architecture.Arm64 ? ["win-arm64"] : ["win-x64"];
+        else if (OperatingSystem.IsMacOS())
+            rids = architecture == Architecture.Arm64 ? ["osx-arm64"] : ["osx-x64"];
+        else
+            rids = architecture == Architecture.Arm64 ? ["linux-arm64"] : ["linux-x64"];
+
+        foreach (var rid in rids)
+        {
+            var nativeDir = Path.Combine(runtimesRoot, rid, "native");
+            if (Directory.Exists(nativeDir))
+                yield return nativeDir;
+        }
+    }
+
+    /// <summary>
+    /// Finds a bundled FFmpeg library by exact file name, flat next to the assembly or under the NuGet runtimes
+    /// layout, or null when this installation carries none.
+    /// </summary>
+    internal static string? FindBundledLibrary(string fileName)
+    {
+        var directory = Path.GetDirectoryName(typeof(FfmpegLibrary).Assembly.Location);
+        if (string.IsNullOrEmpty(directory) || !Directory.Exists(directory))
+            return null;
+
+        return BundledLibraryFolders(directory!)
+                   .Select(folder => Path.Combine(folder, fileName))
+                   .FirstOrDefault(File.Exists);
+    }
+
+    /// <summary>
+    /// macOS has no LGPL FFmpeg package to ship yet (the DMG build compiles one via Installer/macOS/
+    /// build-ffmpeg.sh; the DMG carries it next to the Video package, which the preload above picks up), so
+    /// a development machine or CI uses an installed one: the folder in TIXL_FFMPEG_DIR, or Homebrew's
+    /// ffmpeg@7 (FFmpeg 7.x = avcodec-61, which these bindings need; plain "ffmpeg" is already 8.x).
+    /// Sdcb.FFmpeg asks for "libavutil.59.dylib" by name and finds nothing outside the standard paths, so
+    /// the request falls through to this handler.
     /// </summary>
     /// <remarks>
-    /// Loaded by the resolved Cellar path, never copied: Homebrew's libraries reference each other by absolute
-    /// path, and a copy next to this assembly would put a second avutil into the process. Homebrew builds are
-    /// GPL, so the license check below still refuses them unless TIXL_FFMPEG_ALLOW_RESTRICTED is set.
+    /// Loaded by the resolved path, never copied: Homebrew's libraries reference each other by absolute
+    /// path, and a copy next to this assembly would put a second avutil into the process. Self-built dylibs
+    /// reference the (temporary) build prefix by install name, so they must be preloaded in dependency
+    /// order — dyld then matches each dependency against the already-loaded image instead of the dead path.
+    /// Homebrew builds are GPL, so the license check below still refuses them unless
+    /// TIXL_FFMPEG_ALLOW_RESTRICTED is set.
     /// </remarks>
     private static void UseInstalledLibrariesOnMac()
     {
@@ -264,6 +319,10 @@ public static class FfmpegLibrary
             return;
         }
 
+        var loaded = false;
+        foreach (var path in OrderedFfmpegLibraries(folder))
+            loaded |= NativeLibrary.TryLoad(path, out _);
+
         var bindings = AssemblyLoadContext.GetLoadContext(typeof(ffmpeg).Assembly) ?? AssemblyLoadContext.Default;
         bindings.ResolvingUnmanagedDll += (_, name) =>
                                           {
@@ -275,7 +334,25 @@ public static class FfmpegLibrary
                                               return NativeLibrary.TryLoad(resolved, out var handle) ? handle : IntPtr.Zero;
                                           };
 
-        Log.Debug($"FFmpeg: using the libraries installed in {folder}.");
+        Log.Debug($"FFmpeg: using the libraries installed in {folder} ({(loaded ? "preloaded" : "resolved on demand")}).");
+    }
+
+    /// <summary>The FFmpeg libraries in a folder, dependencies first (avutil → swresample → swscale →
+    /// avcodec → avformat → avfilter → avdevice).</summary>
+    private static IEnumerable<string> OrderedFfmpegLibraries(string folder)
+    {
+        static int LoadOrder(string fileName)
+            => fileName.Contains("avutil") ? 0
+               : fileName.Contains("swresample") ? 1
+               : fileName.Contains("swscale") ? 2
+               : fileName.Contains("avcodec") ? 3
+               : fileName.Contains("avformat") ? 4
+               : fileName.Contains("avdevice") ? 6
+               : 5;
+
+        return Directory.EnumerateFiles(folder)
+                        .Where(IsFfmpegLibrary)
+                        .OrderBy(path => LoadOrder(Path.GetFileName(path)));
     }
 
     /// <summary>

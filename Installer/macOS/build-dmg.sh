@@ -103,6 +103,14 @@ if [[ ! -f "$payload/libbass.dylib" ]]; then
     echo "Warning: libbass.dylib is missing - audio won't work. See Dependencies/osx/README.md." >&2
 fi
 
+# Bundle an LGPL FFmpeg with the Video operator package (next to its VideoServices.dll, where
+# FfmpegLibrary looks). There is no LGPL macOS FFmpeg package to reference, so it is compiled
+# here; Homebrew's FFmpeg stays GPL and is only a development fallback.
+echo "Building FFmpeg (LGPL)..."
+ffmpeg_dir="$payload/Operators/Video"
+"$script_dir/build-ffmpeg.sh" "$ffmpeg_dir"
+
+
 # Vulkan: the loader next to the executable (VulkanLoader looks there first), and MoltenVK registered through
 # an ICD file the launcher names in VK_DRIVER_FILES.
 if [[ -f "$vulkan_lib_dir/libvulkan.1.dylib" && -f "$vulkan_lib_dir/libMoltenVK.dylib" ]]; then
@@ -125,6 +133,7 @@ fi
 
 # Icon: AppIcon.png is the logo on Apple's icon grid (a rounded square spanning 824 of 1024 px, with a shadow) -
 # a full-bleed square looks oversized next to every other app and covers its name in the app switcher.
+
 iconset="$output/TiXL.iconset"
 rm -rf "$iconset"
 mkdir -p "$iconset"

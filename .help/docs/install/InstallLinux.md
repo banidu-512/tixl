@@ -188,8 +188,11 @@ them yourself.
 
 A few features rely on Windows-only libraries:
 
-- Computer vision operators based on OpenCV and MediaPipe. Webcam capture itself works — `[VideoDeviceInput]`
-  opens cameras through FFmpeg's V4L2 backend.
+- The MediaPipe operators. The OpenCV operators ([CameraCalibrator], the DMX point scanner and
+  [OnvifCamera]) work — each system ships its own OpenCV build. Webcam capture works too:
+  `[VideoDeviceInput]` opens cameras through FFmpeg's V4L2 backend.
+- Hardware-accelerated video export on AMD and Intel GPUs (NVIDIA's NVENC works). The software
+  encoders cover the rest.
 - NDI input and output, and screen capture.
 - Recording what other programs play (loopback). Live input from a microphone or line-in works.
 - Spout video sharing, which only exists on Windows.

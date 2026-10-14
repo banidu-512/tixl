@@ -13,9 +13,16 @@ namespace T3.VideoServices;
 /// </summary>
 public static class HardwareEncoderProbe
 {
-    // Vendor order: NVIDIA NVENC, Intel Quick Sync, AMD AMF. The first that opens wins.
-    private static readonly string[] H264Candidates = { "h264_nvenc", "h264_qsv", "h264_amf" };
-    private static readonly string[] HevcCandidates = { "hevc_nvenc", "hevc_qsv", "hevc_amf" };
+    // Vendor order: NVIDIA NVENC, Intel Quick Sync, AMD AMF; Apple's VideoToolbox first on macOS.
+    // The first that opens wins. (VAAPI is deliberately absent: its encoders need a hardware-frame
+    // pipeline this encode path doesn't have, unlike NVENC/QSV/AMF/VideoToolbox which accept
+    // system-memory frames.)
+    private static readonly string[] H264Candidates = OperatingSystem.IsMacOS()
+                                                          ? ["h264_videotoolbox", "h264_nvenc", "h264_qsv", "h264_amf"]
+                                                          : ["h264_nvenc", "h264_qsv", "h264_amf"];
+    private static readonly string[] HevcCandidates = OperatingSystem.IsMacOS()
+                                                          ? ["hevc_videotoolbox", "hevc_nvenc", "hevc_qsv", "hevc_amf"]
+                                                          : ["hevc_nvenc", "hevc_qsv", "hevc_amf"];
 
     /// <summary>The working H.264 hardware encoder name (e.g. <c>h264_nvenc</c>), or null if none initializes.</summary>
     public static string? H264HardwareEncoder => _h264 ??= FindWorkingEncoder(H264Candidates);

@@ -20,8 +20,13 @@ decode pool, referenced by the decode plan's M2) and `Plan_VideoDeviceInput.md`.
 Render-export is fully in-process via the bundled LGPL FFmpeg (H.264/OpenH264, HEVC/libkvazaar, ProRes, VP9,
 AV1, FFV1, HAP ×3). Deferred polish:
 
-- [ ] **Wine/Linux render test** — the *original driving reason* for the whole milestone (MF couldn't run
-      off-Windows). Validate a real export produces a playable file under Wine/Linux.
+- [x] **Wine/Linux render test — test-suite half DONE 2026-10-14.** `VideoServices.Tests` runs on Linux
+      against the exact shipped native build (TqkLibrary FFmpeg 7.1.5, avcodec-61) and round-trips every
+      software codec through a decoder, incl. HEVC/libkvazaar; NVENC hardware round-trip verified on an
+      NVIDIA GTX 1070. (Historical note: before that date the Linux test host silently loaded the distro's
+      GPL FFmpeg — the test csproj now references the shipped natives packages, and `FfmpegLibrary`
+      preloads them from NuGet's runtimes/<rid>/native layout. 66/66 green.) Still open: driving a real
+      render from the editor UI on Linux.
 - [x] **Colour-primaries / range fidelity (BT.709) — DONE.** `VideoFileEncoder` now tags the stream
       `bt709` primaries/trc/colorspace + `mpeg` (limited) range, **and** drives a raw `SwsContext` with
       `sws_setColorspaceDetails(ITU709)` so the RGBA→YUV matrix is actually 709 (swscale defaults to 601;
@@ -53,10 +58,14 @@ The `Video` package exists, FFmpeg ops + natives moved out of Lib, registration 
       `<Operators Include="Video"/>` or the GUIDs won't resolve. Decide: auto-add on load vs a "missing package"
       prompt. (First-party Examples/template already updated.)
 - [ ] **Move `SwiftCamDevice` (+ swiftcam.dll) into `Video`** — a later phase.
-- [ ] **OpenCV camera ops** — `VideoDeviceInput` is DONE (2026-10-08: ported onto FFmpeg dshow/v4l2 and
-      moved into `Video`, see [Plan_VideoDeviceInput.md](Plan_VideoDeviceInput.md)). `CameraCalibrator`
-      remains blocked: Lib only sheds EmguCV once `OnvifCamera` (PTZ) and `Video2DPointScanner` (DMX)
-      also move/drop OpenCV. Separate decision; not "video".
+- [x] **OpenCV camera ops — cross-platform natives, DONE 2026-10-14.** `VideoDeviceInput` was DONE earlier
+      (2026-10-08: FFmpeg dshow/v4l2, moved into `Video`). The OpenCV ops (`CameraCalibrator`,
+      `OnvifCamera`, `Video2DPointScanner`) now carry per-platform natives in Lib/Io (Windows
+      `runtime.win`, Linux `official.runtime.linux-x64.slim` — self-contained, no GTK/X11, verified by an
+      ALC-path smoke test on Debian — macOS `runtime.osx.arm64`/`osx.x64`, wired for the DMG but not yet
+      verified on Apple hardware). `[ExportDependencies]` declares all three file names; the
+      player-export filter ships them only when a declaring op is exported. The old "Lib only sheds
+      EmguCV once OnvifCamera/Video2DPointScanner move" note was stale — no Emgu references remain.
 
 ## From the decode milestone — M2 caching ([archive/Plan_FfmpegVideo.md](archive/Plan_FfmpegVideo.md) — M1 DONE, M2 partial)
 

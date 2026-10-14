@@ -29,7 +29,7 @@ The status describes the current development version. Please report anything tha
 | Writing and compiling C# operators | Works | Works | Works |
 | Exporting a project as an executable | Works | Partial | Partial |
 | Image and image-sequence export | Works | Works | Works |
-| Video export | Works | Works | Partial |
+| Video export | Works | Works | Works |
 
 Windows renders with DirectX 11; Linux and macOS render with Vulkan (on macOS through MoltenVK, which
 translates Vulkan to Metal). Shaders are compiled with the Slang compiler on Linux and macOS, which TiXL
@@ -40,9 +40,6 @@ runs.
 
 **Exported executables** run on the system you exported from — there is no export for another system. On
 macOS the export is a folder with the executable, not an app you can put in Applications.
-
-**Video export on macOS** works only with the development setup for FFmpeg described under
-[Video](#video).
 
 ## Rendering details
 
@@ -63,20 +60,23 @@ scenes. These are bugs being worked on, not missing features.
 
 | Feature | Windows | Linux | macOS |
 |---|---|---|---|
-| Video playback ([PlayVideo], video clips on the timeline) | Works | Works | Partial |
-| Network streams (RTSP) | Works | Works | Partial |
-| Hardware-accelerated video export | Works | Not yet | Not yet |
-| Webcams and capture cards | Works | Not yet | Planned |
+| Video playback ([PlayVideo], video clips on the timeline) | Works | Works | Works |
+| Network streams (RTSP) | Works | Works | Works |
+| Hardware-accelerated video export | Works | Partial | Partial |
+| Webcams and capture cards | Works | Works | Planned |
 | NDI input and output | Works | Not yet | Not yet |
 | Spout (sharing video with other apps) | Works | — | — |
 | Syphon (sharing video with other apps) | — | — | Planned |
 | Screen capture | Works | Not yet | Not yet |
 | Timeline thumbnails of video clips | Works | Not yet | Not yet |
 
-TiXL plays and exports video with FFmpeg. Windows and Linux include it. On macOS there is no included
-FFmpeg yet: for now, install it with Homebrew (`brew install ffmpeg@7`) and start TiXL with
-`TIXL_FFMPEG_ALLOW_RESTRICTED=1`. Homebrew's FFmpeg is licensed differently from the one TiXL ships, which
-is why TiXL doesn't use it without being told to.
+TiXL plays and exports video with FFmpeg; Windows, Linux and macOS all ship it. Hardware export uses
+the GPU's video encoder: NVIDIA (NVENC) on Windows and Linux, Intel/AMD Quick Sync and AMF on Windows,
+and Apple's VideoToolbox on macOS. On Linux, AMD and Intel GPUs don't support hardware export yet;
+the software encoders cover them.
+
+TiXL's camera input works through FFmpeg's V4L2 backend on Linux and DirectShow on Windows. macOS
+camera support (AVFoundation) is planned.
 
 Spout only exists on Windows, and Syphon only on macOS; Syphon support is planned.
 
@@ -114,8 +114,12 @@ already carries the name TiXL.
 | Feature | Windows | Linux | macOS |
 |---|---|---|---|
 | MediaPipe (pose, hands, face) | Works | Planned | Planned |
-| OpenCV operators (camera calibration, point scanning) | Works | Not yet | Not yet |
+| OpenCV operators (camera calibration, point scanning) | Works | Works | Partial |
 | Beat and bar detection from audio | Works | Works | Works |
+
+The OpenCV operators ([CameraCalibrator], the DMX point scanner and [OnvifCamera]) run on all three
+systems; each ships its own OpenCV build. On macOS the OpenCV build is new and hasn't been verified on
+Apple hardware yet. MediaPipe still needs its Windows library.
 
 ## Editor and system integration
 
