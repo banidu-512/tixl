@@ -94,12 +94,13 @@ namespace Lib.io.video.mediapipe
 
             if (_processingTask == null || _processingTask.IsCompleted || _faceLandmarker == null || 
                 maxFaces != _activeMaxFaces ||
-                Acceleration.GetValue(context) != _activeAcceleration ||
+                Acceleration.GetValue(context) != _activeAcceleration || InferenceThreads.GetValue(context) != _activeInferenceThreads ||
                 Math.Abs(minFaceDetectionConfidence - _activeMinFaceDetectionConfidence) > 0.001f ||
                 Math.Abs(minFacePresenceConfidence - _activeMinFacePresenceConfidence) > 0.001f ||
                 Math.Abs(minTrackingConfidence - _activeMinTrackingConfidence) > 0.001f)
             {
                 _activeAcceleration = Acceleration.GetValue(context);
+                _activeInferenceThreads = InferenceThreads.GetValue(context);
                 InitializeWorker(maxFaces, minFaceDetectionConfidence, minFacePresenceConfidence, minTrackingConfidence, debug);
             }
 
@@ -175,7 +176,8 @@ namespace Lib.io.video.mediapipe
         private Point[]? _landmarksArray;
         
         private int _activeMaxFaces = -1;
-        private int _activeAcceleration = -1;
+        private MediaPipeAcceleration? _activeAcceleration;
+        private int _activeInferenceThreads = -1;
         private float _activeMinFaceDetectionConfidence = -1f;
         private float _activeMinFacePresenceConfidence = -1f;
         private float _activeMinTrackingConfidence = -1f;
@@ -233,9 +235,13 @@ namespace Lib.io.video.mediapipe
                         return;
                     }
 
-                    var wantsGpu = _activeAcceleration == 1;
+                    var acceleration = _activeAcceleration ?? MediaPipeAcceleration.Cpu;
+                var delegateCase = acceleration == MediaPipeAcceleration.Xnnpack ? CoreBaseOptions.Delegate.Xnnpack
+                    : acceleration == MediaPipeAcceleration.Gpu ? CoreBaseOptions.Delegate.GPU
+                    : CoreBaseOptions.Delegate.CPU;
+                var inferenceThreads = _activeInferenceThreads;
                     FaceLandmarkerOptions BuildOptions(CoreBaseOptions.Delegate delegateCase) => new(
-                        baseOptions: new CoreBaseOptions(modelAssetPath: modelPath, delegateCase: delegateCase),
+                        baseOptions: new CoreBaseOptions(modelAssetPath: modelPath, delegateCase: delegateCase, numThreads: inferenceThreads),
                         runningMode: VisionRunningMode.VIDEO,
                         numFaces: _activeMaxFaces,
                         minFaceDetectionConfidence: _activeMinFaceDetectionConfidence,
@@ -249,9 +255,9 @@ namespace Lib.io.video.mediapipe
                     {
                         try
                         {
-                            _faceLandmarker = FaceLandmarker.CreateFromOptions(BuildOptions(wantsGpu ? CoreBaseOptions.Delegate.GPU : CoreBaseOptions.Delegate.CPU));
+                            _faceLandmarker = FaceLandmarker.CreateFromOptions(BuildOptions(delegateCase));
                         }
-                        catch (Exception gpuEx) when (wantsGpu)
+                        catch (Exception gpuEx) when (acceleration != MediaPipeAcceleration.Cpu)
                         {
                             Log.Warning($"[FaceLandmark] GPU acceleration not available ({gpuEx.Message}) - using CPU.", this);
                             _faceLandmarker = FaceLandmarker.CreateFromOptions(BuildOptions(CoreBaseOptions.Delegate.CPU));
@@ -1174,7 +1180,11 @@ namespace Lib.io.video.mediapipe
         public readonly InputSlot<bool> CorrectAspectRatio = new(false);
 
         [Input(Guid = "a1b2c3d4-0003-4a9b-8c2d-101010101010")]
-        public readonly InputSlot<int> Acceleration = new(0);
+        public readonly InputSlot<MediaPipeAcceleration> Acceleration = new(MediaPipeAcceleration.Xnnpack);
+
+        /// <summary>Worker threads for the Xnnpack acceleration (0 = library default). Ignored by Cpu and Gpu.</summary>
+        [Input(Guid = "a1b2c3d4-1003-4a9b-8c2d-101010101010")]
+        public readonly InputSlot<int> InferenceThreads = new(0);
 
         [Input(Guid = "01234567-890a-bcde-f012-34567890abcd")]
         public readonly InputSlot<float> ZScale = new(1.0f);

@@ -121,11 +121,12 @@ public class GestureRecognition : Instance<GestureRecognition>
 
         if (_processingTask == null || _processingTask.IsCompleted || _handLandmarker == null ||
             maxHands != _activeMaxHands ||
-            Acceleration.GetValue(context) != _activeAcceleration ||
+            Acceleration.GetValue(context) != _activeAcceleration || InferenceThreads.GetValue(context) != _activeInferenceThreads ||
             Math.Abs(minHandDetectionConfidence - _activeMinHandDetectionConfidence) > 0.001f ||
             Math.Abs(minHandPresenceConfidence - _activeMinHandPresenceConfidence) > 0.001f)
         {
             _activeAcceleration = Acceleration.GetValue(context);
+            _activeInferenceThreads = InferenceThreads.GetValue(context);
             InitializeWorker(maxHands, minHandDetectionConfidence, minHandPresenceConfidence, debug);
         }
 
@@ -222,7 +223,8 @@ public class GestureRecognition : Instance<GestureRecognition>
     private readonly ConcurrentQueue<GestureRecognitionResultPacket> _outputQueue = new();
     private GestureRecognitionResultPacket? _currentResult;
     private int _activeMaxHands = -1;
-    private int _activeAcceleration = -1;
+    private MediaPipeAcceleration? _activeAcceleration;
+    private int _activeInferenceThreads = -1;
     private float _activeMinHandDetectionConfidence = -1f;
     private float _activeMinHandPresenceConfidence = -1f;
     private readonly object _workerLock = new object();
@@ -288,9 +290,13 @@ public class GestureRecognition : Instance<GestureRecognition>
                     return;
                 }
 
-                var wantsGpu = _activeAcceleration == 1;
+                var acceleration = _activeAcceleration ?? MediaPipeAcceleration.Cpu;
+            var delegateCase = acceleration == MediaPipeAcceleration.Xnnpack ? Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.Xnnpack
+                : acceleration == MediaPipeAcceleration.Gpu ? Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.GPU
+                : Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU;
+            var inferenceThreads = _activeInferenceThreads;
                 HandLandmarkerOptions BuildOptions(Mediapipe.Tasks.Core.CoreBaseOptions.Delegate delegateCase) => new(
-                    new Mediapipe.Tasks.Core.CoreBaseOptions(modelAssetPath: fullPath, delegateCase: delegateCase),
+                    new Mediapipe.Tasks.Core.CoreBaseOptions(modelAssetPath: fullPath, delegateCase: delegateCase, numThreads: inferenceThreads),
                     VisionRunningMode.VIDEO,
                     maxHands
                 );
@@ -299,9 +305,9 @@ public class GestureRecognition : Instance<GestureRecognition>
                 {
                     try
                     {
-                        _handLandmarker = HandLandmarker.CreateFromOptions(BuildOptions(wantsGpu ? Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.GPU : Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU));
+                        _handLandmarker = HandLandmarker.CreateFromOptions(BuildOptions(delegateCase));
                     }
-                    catch (Exception gpuEx) when (wantsGpu)
+                    catch (Exception gpuEx) when (acceleration != MediaPipeAcceleration.Cpu)
                     {
                         Log.Warning($"[GestureRecognition] GPU acceleration not available ({gpuEx.Message}) - using CPU.", this);
                         _handLandmarker = HandLandmarker.CreateFromOptions(BuildOptions(Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU));
@@ -1281,7 +1287,11 @@ public class GestureRecognition : Instance<GestureRecognition>
     public readonly InputSlot<bool> CorrectAspectRatio = new(false);
 
     [Input(Guid = "a1b2c3d4-0004-4a9b-8c2d-101010101010")]
-    public readonly InputSlot<int> Acceleration = new(0);
+    public readonly InputSlot<MediaPipeAcceleration> Acceleration = new(MediaPipeAcceleration.Xnnpack);
+
+    /// <summary>Worker threads for the Xnnpack acceleration (0 = library default). Ignored by Cpu and Gpu.</summary>
+    [Input(Guid = "a1b2c3d4-1004-4a9b-8c2d-101010101010")]
+    public readonly InputSlot<int> InferenceThreads = new(0);
 
     [Input(Guid = "B6D7E8F9-0AB1-92C3-45E6-789012345678")]
     public readonly InputSlot<float> ZScale = new(1.0f);

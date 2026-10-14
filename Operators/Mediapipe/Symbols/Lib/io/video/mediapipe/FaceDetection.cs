@@ -88,9 +88,10 @@ namespace Lib.io.video.mediapipe
             OutputTexture.Value = inputTexture;
 
             if (_processingTask == null || _processingTask.IsCompleted || _faceDetector == null ||
-                maxFaces != _activeMaxFaces || Math.Abs(confidenceThreshold - _activeConfidenceThreshold) > 0.001f || Acceleration.GetValue(context) != _activeAcceleration)
+                maxFaces != _activeMaxFaces || Math.Abs(confidenceThreshold - _activeConfidenceThreshold) > 0.001f || Acceleration.GetValue(context) != _activeAcceleration || InferenceThreads.GetValue(context) != _activeInferenceThreads)
             {
                 _activeAcceleration = Acceleration.GetValue(context);
+                _activeInferenceThreads = InferenceThreads.GetValue(context);
                 InitializeWorker(maxFaces, confidenceThreshold, debug);
             }
 
@@ -163,7 +164,8 @@ namespace Lib.io.video.mediapipe
         private readonly ConcurrentQueue<FaceDetectionResultPacket> _outputQueue = new();
         private FaceDetectionResultPacket? _currentResult;
         private int _activeMaxFaces = -1;
-        private int _activeAcceleration = -1;
+        private MediaPipeAcceleration? _activeAcceleration;
+        private int _activeInferenceThreads = -1;
         private float _activeConfidenceThreshold = -1f;
         private readonly object _workerLock = new object();
         
@@ -219,9 +221,13 @@ namespace Lib.io.video.mediapipe
                         return;
                     }
 
-                    var wantsGpu = _activeAcceleration == 1;
+                    var acceleration = _activeAcceleration ?? MediaPipeAcceleration.Cpu;
+                var delegateCase = acceleration == MediaPipeAcceleration.Xnnpack ? Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.Xnnpack
+                    : acceleration == MediaPipeAcceleration.Gpu ? Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.GPU
+                    : Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU;
+                var inferenceThreads = _activeInferenceThreads;
                     FaceDetectorOptions BuildOptions(Mediapipe.Tasks.Core.CoreBaseOptions.Delegate delegateCase) => new(
-                        new Mediapipe.Tasks.Core.CoreBaseOptions(modelAssetPath: fullPath, delegateCase: delegateCase),
+                        new Mediapipe.Tasks.Core.CoreBaseOptions(modelAssetPath: fullPath, delegateCase: delegateCase, numThreads: inferenceThreads),
                         VisionRunningMode.VIDEO,
                         minDetectionConfidence: 0.5f,
                         minSuppressionThreshold: 0.3f
@@ -231,9 +237,9 @@ namespace Lib.io.video.mediapipe
                     {
                         try
                         {
-                            _faceDetector = Mediapipe.Tasks.Vision.FaceDetector.FaceDetector.CreateFromOptions(BuildOptions(wantsGpu ? Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.GPU : Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU));
+                            _faceDetector = Mediapipe.Tasks.Vision.FaceDetector.FaceDetector.CreateFromOptions(BuildOptions(delegateCase));
                         }
-                        catch (Exception gpuEx) when (wantsGpu)
+                        catch (Exception gpuEx) when (acceleration != MediaPipeAcceleration.Cpu)
                         {
                             Log.Warning($"[FaceDetection] GPU acceleration not available ({gpuEx.Message}) - using CPU.", this);
                             _faceDetector = Mediapipe.Tasks.Vision.FaceDetector.FaceDetector.CreateFromOptions(BuildOptions(Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU));
@@ -1017,7 +1023,12 @@ namespace Lib.io.video.mediapipe
         public readonly InputSlot<bool> CorrectAspectRatio = new(false);
 
         [Input(Guid = "a1b2c3d4-0002-4a9b-8c2d-101010101010")]
-        public readonly InputSlot<int> Acceleration = new(0);
+        public readonly InputSlot<MediaPipeAcceleration> Acceleration = new(MediaPipeAcceleration.Xnnpack);
+
+        /// <summary>Worker threads for the Xnnpack acceleration (0 = library default). Ignored by Cpu and Gpu.</summary>
+        [Input(Guid = "a1b2c3d4-1002-4a9b-8c2d-101010101010")]
+        public readonly InputSlot<int> InferenceThreads = new(0);
+
 
         [Input(Guid = "A4B5C6D7-E8F9-60A1-12B3-456789012DE5")]
         public readonly InputSlot<float> ZScale = new(1.0f);

@@ -95,12 +95,13 @@ public class PoseLandmarkDetection : Instance<PoseLandmarkDetection>
 
         if (_processingTask == null || _processingTask.IsCompleted || _poseLandmarker == null ||
             maxPoses != _activeMaxPoses ||
-            Acceleration.GetValue(context) != _activeAcceleration ||
+            Acceleration.GetValue(context) != _activeAcceleration || InferenceThreads.GetValue(context) != _activeInferenceThreads ||
             Math.Abs(minPoseDetectionConfidence - _activeMinPoseDetectionConfidence) > 0.001f ||
             Math.Abs(minPosePresenceConfidence - _activeMinPosePresenceConfidence) > 0.001f ||
             Math.Abs(minTrackingConfidence - _activeMinTrackingConfidence) > 0.001f)
         {
             _activeAcceleration = Acceleration.GetValue(context);
+            _activeInferenceThreads = InferenceThreads.GetValue(context);
             InitializeWorker(maxPoses, minPoseDetectionConfidence, minPosePresenceConfidence, minTrackingConfidence, debug);
         }
 
@@ -193,7 +194,8 @@ public class PoseLandmarkDetection : Instance<PoseLandmarkDetection>
     private int _latencyLogCounter;
     
     private int _activeMaxPoses = -1;
-    private int _activeAcceleration = -1;
+    private MediaPipeAcceleration? _activeAcceleration;
+    private int _activeInferenceThreads = -1;
     private float _activeMinPoseDetectionConfidence = -1f;
     private float _activeMinPosePresenceConfidence = -1f;
     private float _activeMinTrackingConfidence = -1f;
@@ -254,9 +256,13 @@ public class PoseLandmarkDetection : Instance<PoseLandmarkDetection>
                     return;
                 }
 
-                var wantsGpu = _activeAcceleration == 1;
+                var acceleration = _activeAcceleration ?? MediaPipeAcceleration.Cpu;
+            var delegateCase = acceleration == MediaPipeAcceleration.Xnnpack ? Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.Xnnpack
+                : acceleration == MediaPipeAcceleration.Gpu ? Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.GPU
+                : Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU;
+            var inferenceThreads = _activeInferenceThreads;
                 PoseLandmarkerOptions BuildOptions(Mediapipe.Tasks.Core.CoreBaseOptions.Delegate delegateCase) => new(
-                    new Mediapipe.Tasks.Core.CoreBaseOptions(modelAssetPath: fullPath, delegateCase: delegateCase),
+                    new Mediapipe.Tasks.Core.CoreBaseOptions(modelAssetPath: fullPath, delegateCase: delegateCase, numThreads: inferenceThreads),
                     VisionRunningMode.VIDEO,
                     maxPoses,
                     minPoseDetectionConfidence,
@@ -269,9 +275,9 @@ public class PoseLandmarkDetection : Instance<PoseLandmarkDetection>
                 {
                     try
                     {
-                        _poseLandmarker = PoseLandmarker.CreateFromOptions(BuildOptions(wantsGpu ? Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.GPU : Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU));
+                        _poseLandmarker = PoseLandmarker.CreateFromOptions(BuildOptions(delegateCase));
                     }
-                    catch (Exception gpuEx) when (wantsGpu)
+                    catch (Exception gpuEx) when (acceleration != MediaPipeAcceleration.Cpu)
                     {
                         Log.Warning($"[PoseLandmarkDetection] GPU acceleration not available ({gpuEx.Message}) - using CPU.", this);
                         _poseLandmarker = PoseLandmarker.CreateFromOptions(BuildOptions(Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU));
@@ -1082,7 +1088,11 @@ public class PoseLandmarkDetection : Instance<PoseLandmarkDetection>
     public readonly InputSlot<bool> CorrectAspectRatio = new(false);
 
     [Input(Guid = "a1b2c3d4-0007-4a9b-8c2d-101010101010")]
-    public readonly InputSlot<int> Acceleration = new(0);
+    public readonly InputSlot<MediaPipeAcceleration> Acceleration = new(MediaPipeAcceleration.Xnnpack);
+
+    /// <summary>Worker threads for the Xnnpack acceleration (0 = library default). Ignored by Cpu and Gpu.</summary>
+    [Input(Guid = "a1b2c3d4-1007-4a9b-8c2d-101010101010")]
+    public readonly InputSlot<int> InferenceThreads = new(0);
 
     [Input(Guid = "bcdef123-4567-890a-bcde-f1234567890a")]
     public readonly InputSlot<float> ZScale = new(1.0f);

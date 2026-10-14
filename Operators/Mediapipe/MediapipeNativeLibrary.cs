@@ -1,5 +1,7 @@
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using T3.Core.Model;
+using T3.Core.Operator.Slots;
 
 namespace Mediapipe;
 
@@ -16,11 +18,35 @@ internal static class MediapipeNativeLibrary
     [ModuleInitializer]
     internal static void Initialize()
     {
+        RegisterAccelerationInputType();
+
         if (!OperatingSystem.IsMacOS())
             return;
 
         var stub = Path.Combine(AppContext.BaseDirectory, "libmediapipe_opencl_stub.dylib");
         if (File.Exists(stub))
             NativeLibrary.TryLoad(stub, out _);
+    }
+
+    /// <summary>
+    /// Operator-package types must register themselves with Core's input-value registries for their
+    /// enums to be usable as input slot types (the editor reflects the field and looks the type up
+    /// here when creating input definitions). Indexer assignments keep this idempotent across
+    /// package hot-reloads, which load a second copy of this assembly into the same process.
+    /// </summary>
+    private static void RegisterAccelerationInputType()
+    {
+        var type = typeof(Lib.io.video.mediapipe.MediaPipeAcceleration);
+
+        TypeNameRegistry.Entries[type] = "MediaPipeAcceleration";
+        InputValueCreators.Entries[type] = () => new InputValue<Lib.io.video.mediapipe.MediaPipeAcceleration>(Lib.io.video.mediapipe.MediaPipeAcceleration.Cpu);
+        TypeValueToJsonConverters.Entries[type] = (writer, obj) => writer.WriteValue(obj.ToString());
+        JsonToTypeValueConverters.Entries[type] = token =>
+        {
+            if (Enum.TryParse(token.ToString(), out Lib.io.video.mediapipe.MediaPipeAcceleration result))
+                return result;
+
+            return Lib.io.video.mediapipe.MediaPipeAcceleration.Xnnpack;
+        };
     }
 }

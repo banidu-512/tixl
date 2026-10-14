@@ -105,12 +105,13 @@ public class HandLandmarkDetection : Instance<HandLandmarkDetection>
 
         if (_processingTask == null || _processingTask.IsCompleted || _handLandmarker == null ||
             maxHands != _activeMaxHands ||
-            Acceleration.GetValue(context) != _activeAcceleration ||
+            Acceleration.GetValue(context) != _activeAcceleration || InferenceThreads.GetValue(context) != _activeInferenceThreads ||
             Math.Abs(minHandDetectionConfidence - _activeMinHandDetectionConfidence) > 0.001f ||
             Math.Abs(minHandPresenceConfidence - _activeMinHandPresenceConfidence) > 0.001f ||
             Math.Abs(minTrackingConfidence - _activeMinTrackingConfidence) > 0.001f)
         {
             _activeAcceleration = Acceleration.GetValue(context);
+            _activeInferenceThreads = InferenceThreads.GetValue(context);
             InitializeWorker(maxHands, minHandDetectionConfidence, minHandPresenceConfidence, minTrackingConfidence, debug);
         }
 
@@ -203,7 +204,8 @@ public class HandLandmarkDetection : Instance<HandLandmarkDetection>
     private int _latencyLogCounter;
     
     private int _activeMaxHands = -1;
-    private int _activeAcceleration = -1;
+    private MediaPipeAcceleration? _activeAcceleration;
+        private int _activeInferenceThreads = -1;
     private float _activeMinHandDetectionConfidence = -1f;
     private float _activeMinHandPresenceConfidence = -1f;
     private float _activeMinTrackingConfidence = -1f;
@@ -264,9 +266,14 @@ public class HandLandmarkDetection : Instance<HandLandmarkDetection>
                     return;
                 }
 
-                var wantsGpu = _activeAcceleration == 1;
+                var acceleration = _activeAcceleration ?? MediaPipeAcceleration.Cpu;
+//var wantsGpu = acceleration == MediaPipeAcceleration.Gpu;
+var delegateCase = acceleration == MediaPipeAcceleration.Xnnpack ? Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.Xnnpack
+        : acceleration == MediaPipeAcceleration.Gpu ? Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.GPU
+        : Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU;
+var inferenceThreads = _activeInferenceThreads;
                 HandLandmarkerOptions BuildOptions(Mediapipe.Tasks.Core.CoreBaseOptions.Delegate delegateCase) => new(
-                    new Mediapipe.Tasks.Core.CoreBaseOptions(modelAssetPath: fullPath, delegateCase: delegateCase),
+                    new Mediapipe.Tasks.Core.CoreBaseOptions(modelAssetPath: fullPath, delegateCase: delegateCase, numThreads: inferenceThreads),
                     VisionRunningMode.VIDEO,
                     maxHands,
                     minHandDetectionConfidence,
@@ -278,9 +285,9 @@ public class HandLandmarkDetection : Instance<HandLandmarkDetection>
                 {
                     try
                     {
-                        _handLandmarker = HandLandmarker.CreateFromOptions(BuildOptions(wantsGpu ? Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.GPU : Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU));
+                        _handLandmarker = HandLandmarker.CreateFromOptions(BuildOptions(delegateCase));
                     }
-                    catch (Exception gpuEx) when (wantsGpu)
+                    catch (Exception gpuEx) when (acceleration != MediaPipeAcceleration.Cpu)
                     {
                         // The Windows/macOS natives are CPU-only builds, and GPU delegates additionally
                         // need a working GL/EGL context - never worth crashing the op over.
@@ -963,10 +970,15 @@ public class HandLandmarkDetection : Instance<HandLandmarkDetection>
     [Input(Guid = "bcdef123-4567-890a-bcde-f1234567890a")]
     public readonly InputSlot<bool> CorrectAspectRatio = new(false);
 
-    /// <summary>0 = CPU delegate (works everywhere), 1 = GPU delegate (falls back to CPU when the
-    /// native build or the platform lacks GPU/GL support).</summary>
+    /// <summary>Inference acceleration: Cpu = plain single-threaded TF Lite (works everywhere),
+    /// Xnnpack = multithreaded CPU (the fast default; see InferenceThreads), Gpu = OpenGL/EGL
+    /// delegate (Linux native has it; the CPU-only Windows/macOS natives fall back to Cpu).</summary>
     [Input(Guid = "a1b2c3d4-0001-4a9b-8c2d-101010101010")]
-    public readonly InputSlot<int> Acceleration = new(0);
+    public readonly InputSlot<MediaPipeAcceleration> Acceleration = new(MediaPipeAcceleration.Xnnpack);
+
+    /// <summary>Worker threads for the Xnnpack acceleration (0 = library default). Ignored by Cpu and Gpu.</summary>
+    [Input(Guid = "a1b2c3d4-1001-4a9b-8c2d-101010101010")]
+    public readonly InputSlot<int> InferenceThreads = new(0);
 
     [Input(Guid = "cdef1234-5678-90ab-cdef-1234567890ab")]
     public readonly InputSlot<float> ZScale = new(1.0f);

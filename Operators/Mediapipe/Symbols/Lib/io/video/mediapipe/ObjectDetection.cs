@@ -104,7 +104,7 @@ public class ObjectDetection : Instance<ObjectDetection>
         OutputTexture.Value = inputTexture;
 
         bool paramsChanged = maxObjects != _activeMaxObjects || Math.Abs(minDetectionConfidence - _activeMinDetectionConfidence) > 0.001f;
-        bool accelerationChanged = Acceleration.GetValue(context) != _activeAcceleration;
+        bool accelerationChanged = Acceleration.GetValue(context) != _activeAcceleration || InferenceThreads.GetValue(context) != _activeInferenceThreads;
         bool taskDead = _processingTask == null || _processingTask.IsCompleted;
         bool detectorMissing = _objectDetector == null;
         bool modelChanged = model != _activeModel;
@@ -114,6 +114,7 @@ public class ObjectDetection : Instance<ObjectDetection>
         if (taskDead || detectorMissing || paramsChanged || modelChanged || allowlistChanged || denylistChanged || accelerationChanged)
         {
             _activeAcceleration = Acceleration.GetValue(context);
+            _activeInferenceThreads = InferenceThreads.GetValue(context);
             InitializeWorker(maxObjects, minDetectionConfidence, debug, model, categoryAllowlist!, categoryDenylist!);
         }
 
@@ -188,7 +189,8 @@ public class ObjectDetection : Instance<ObjectDetection>
     private readonly ConcurrentQueue<ObjectDetectionResultPacket> _outputQueue = new();
     private ObjectDetectionResultPacket? _currentResult;
     private int _activeMaxObjects = -1;
-    private int _activeAcceleration = -1;
+    private MediaPipeAcceleration? _activeAcceleration;
+    private int _activeInferenceThreads = -1;
     private float _activeMinDetectionConfidence = -1f;
     private DetectionModel _activeModel;
     private string _activeCategoryAllowlist = "";
@@ -253,12 +255,16 @@ public class ObjectDetection : Instance<ObjectDetection>
                     return;
                 }
 
-                var wantsGpu = _activeAcceleration == 1;
+                var acceleration = _activeAcceleration ?? MediaPipeAcceleration.Cpu;
+                var wantsGpu = acceleration == MediaPipeAcceleration.Gpu;
+                var delegateCase = acceleration == MediaPipeAcceleration.Xnnpack ? Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.Xnnpack
+                                 : acceleration == MediaPipeAcceleration.Gpu ? Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.GPU
+                                 : Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU;
+                var inferenceThreads = _activeInferenceThreads;
                 var baseOptions = new Mediapipe.Tasks.Core.CoreBaseOptions(
                                                                            modelAssetPath: fullPath,
-                                                                           delegateCase: wantsGpu
-                                                                               ? Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.GPU
-                                                                               : Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU
+                                                                           delegateCase: delegateCase,
+                                                                           numThreads: inferenceThreads
                                                                           );
 
                 var allowList = string.IsNullOrEmpty(categoryAllowlist)
@@ -283,7 +289,7 @@ public class ObjectDetection : Instance<ObjectDetection>
                     {
                         _objectDetector = ObjectDetector.CreateFromOptions(options);
                     }
-                    catch (Exception gpuEx) when (wantsGpu)
+                    catch (Exception gpuEx) when (acceleration != MediaPipeAcceleration.Cpu)
                     {
                         Log.Warning($"[ObjectDetection] GPU acceleration not available ({gpuEx.Message}) - using CPU.", this);
                         baseOptions = new Mediapipe.Tasks.Core.CoreBaseOptions(
@@ -937,7 +943,11 @@ public class ObjectDetection : Instance<ObjectDetection>
     public readonly InputSlot<bool> CorrectAspectRatio = new(false);
 
     [Input(Guid = "a1b2c3d4-0006-4a9b-8c2d-101010101010")]
-    public readonly InputSlot<int> Acceleration = new(0);
+    public readonly InputSlot<MediaPipeAcceleration> Acceleration = new(MediaPipeAcceleration.Xnnpack);
+
+    /// <summary>Worker threads for the Xnnpack acceleration (0 = library default). Ignored by Cpu and Gpu.</summary>
+    [Input(Guid = "a1b2c3d4-1006-4a9b-8c2d-101010101010")]
+    public readonly InputSlot<int> InferenceThreads = new(0);
 
     [Input(Guid = "abcdef12-3456-7890-abcd-ef1234567890")]
     public readonly InputSlot<float> ZScale = new(1.0f);

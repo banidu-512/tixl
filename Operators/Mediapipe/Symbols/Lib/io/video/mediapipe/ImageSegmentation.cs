@@ -88,9 +88,10 @@ public class ImageSegmentation : Instance<ImageSegmentation>
 
         OutputTexture.Value = inputTexture;
 
-        if (_processingTask == null || _processingTask.IsCompleted || _imageSegmenter == null || model != _activeModel || Acceleration.GetValue(context) != _activeAcceleration)
+        if (_processingTask == null || _processingTask.IsCompleted || _imageSegmenter == null || model != _activeModel || Acceleration.GetValue(context) != _activeAcceleration || InferenceThreads.GetValue(context) != _activeInferenceThreads)
         {
             _activeAcceleration = Acceleration.GetValue(context);
+            _activeInferenceThreads = InferenceThreads.GetValue(context);
             InitializeWorker(debug, model);
         }
 
@@ -166,7 +167,8 @@ public class ImageSegmentation : Instance<ImageSegmentation>
     private ImageSegmentationResultPacket? _currentResult;
     private readonly object _workerLock = new object();
     private SegmentationModel _activeModel;
-    private int _activeAcceleration = -1;
+    private MediaPipeAcceleration? _activeAcceleration;
+    private int _activeInferenceThreads = -1;
     
     private readonly ConcurrentDictionary<(int width, int height), T3.Graphics.Compat.Texture2D> _cachedStagingTextures = new();
     private readonly object _textureCacheLock = new object();
@@ -235,9 +237,13 @@ public class ImageSegmentation : Instance<ImageSegmentation>
                     return;
                 }
 
-                var wantsGpu = _activeAcceleration == 1;
+                var acceleration = _activeAcceleration ?? MediaPipeAcceleration.Cpu;
+            var delegateCase = acceleration == MediaPipeAcceleration.Xnnpack ? Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.Xnnpack
+                : acceleration == MediaPipeAcceleration.Gpu ? Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.GPU
+                : Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU;
+            var inferenceThreads = _activeInferenceThreads;
                 ImageSegmenterOptions BuildOptions(Mediapipe.Tasks.Core.CoreBaseOptions.Delegate delegateCase) => new(
-                    new Mediapipe.Tasks.Core.CoreBaseOptions(modelAssetPath: fullPath, delegateCase: delegateCase),
+                    new Mediapipe.Tasks.Core.CoreBaseOptions(modelAssetPath: fullPath, delegateCase: delegateCase, numThreads: inferenceThreads),
                     VisionRunningMode.VIDEO,
                     outputCategoryMask: true,
                     outputConfidenceMasks: true
@@ -247,9 +253,9 @@ public class ImageSegmentation : Instance<ImageSegmentation>
                 {
                     try
                     {
-                        _imageSegmenter = ImageSegmenter.CreateFromOptions(BuildOptions(wantsGpu ? Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.GPU : Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU));
+                        _imageSegmenter = ImageSegmenter.CreateFromOptions(BuildOptions(delegateCase));
                     }
-                    catch (Exception gpuEx) when (wantsGpu)
+                    catch (Exception gpuEx) when (acceleration != MediaPipeAcceleration.Cpu)
                     {
                         Log.Warning($"[ImageSegmentation] GPU acceleration not available ({gpuEx.Message}) - using CPU.", this);
                         _imageSegmenter = ImageSegmenter.CreateFromOptions(BuildOptions(Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU));
@@ -1007,7 +1013,11 @@ public class ImageSegmentation : Instance<ImageSegmentation>
     public readonly InputSlot<string> SelectedCategories = new();
 
     [Input(Guid = "a1b2c3d4-0005-4a9b-8c2d-101010101010")]
-    public readonly InputSlot<int> Acceleration = new(0);
+    public readonly InputSlot<MediaPipeAcceleration> Acceleration = new(MediaPipeAcceleration.Xnnpack);
+
+    /// <summary>Worker threads for the Xnnpack acceleration (0 = library default). Ignored by Cpu and Gpu.</summary>
+    [Input(Guid = "a1b2c3d4-1005-4a9b-8c2d-101010101010")]
+    public readonly InputSlot<int> InferenceThreads = new(0);
 
     [Input(Guid = "7890abcd-ef12-3456-7890-abcdef123456")]
     public readonly InputSlot<bool> Debug = new(false);

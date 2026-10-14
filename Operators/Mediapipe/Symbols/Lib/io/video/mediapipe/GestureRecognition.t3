@@ -4,6 +4,10 @@
   "Inputs": [
         {
       "Id": "a1b2c3d4-0004-4a9b-8c2d-101010101010"/*Acceleration*/,
+      "DefaultValue": 1
+    },
+    {
+      "Id": "a1b2c3d4-1004-4a9b-8c2d-101010101010"/*InferenceThreads*/,
       "DefaultValue": 0
     },
 {
