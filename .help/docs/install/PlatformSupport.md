@@ -114,12 +114,12 @@ already carries the name TiXL.
 | Feature | Windows | Linux | macOS |
 |---|---|---|---|
 | MediaPipe (pose, hands, face) | Works | Planned | Planned |
-| OpenCV operators (camera calibration, point scanning) | Works | Works | Partial |
+| OpenCV operators (camera calibration, point scanning) | Works | Works | Works |
 | Beat and bar detection from audio | Works | Works | Works |
 
 The OpenCV operators ([CameraCalibrator], the DMX point scanner and [OnvifCamera]) run on all three
-systems; each ships its own OpenCV build. On macOS the OpenCV build is new and hasn't been verified on
-Apple hardware yet. MediaPipe still needs its Windows library.
+systems; each ships its own OpenCV build. The macOS build runs as part of TiXL's CI on Apple Silicon.
+MediaPipe still needs its Windows library.
 
 ## Editor and system integration
 
