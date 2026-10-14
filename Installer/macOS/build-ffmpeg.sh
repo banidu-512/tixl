@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the FFmpeg shared libraries bundled with the macOS app: an LGPL build (no GPL/nonfree
-# components, matching the license the shipped Windows/Linux builds enforce) of the same 7.1
-# series whose avcodec-61 the Sdcb.FFmpeg 7.0.0 bindings require.
+# components, matching the license the shipped Windows/Linux builds enforce) of the 7.1 series
+# whose avcodec-61 the Sdcb.FFmpeg 7.0.0 bindings require.
 #
 # The dylibs land in the directory given as the only argument, flat, named like Homebrew's
 # (libavcodec.61.dylib, ...) - which is where FfmpegLibrary looks, next to the Video package's
@@ -16,10 +16,12 @@
 # FFmpeg's libmp3lame probe.)
 #
 # Environment:
-#   TIXL_FFMPEG_VERSION   FFmpeg release to build (default 7.1.1)
+#   TIXL_FFMPEG_VERSION   FFmpeg release to build (default 7.1.5 - the same 7.1.5 series the Linux
+#                         bundle ships; 7.1.1 predates the SVT-AV1 4.x API and fails to compile
+#                         against Homebrew's svt-av1)
 set -euo pipefail
 
-version="${TIXL_FFMPEG_VERSION:-7.1.1}"
+version="${TIXL_FFMPEG_VERSION:-7.1.5}"
 out_dir="${1:?usage: build-ffmpeg.sh <output-directory>}"
 
 brew_packages=(pkg-config openh264 kvazaar libvpx aom svt-av1 opus)
