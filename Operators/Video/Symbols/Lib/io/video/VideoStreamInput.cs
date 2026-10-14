@@ -33,6 +33,10 @@ namespace Lib.io.video
         private CancellationTokenSource? _cancellationTokenSource;
         private Thread? _captureThread;
 
+        // Capture threads whose join timed out. They observe cancellation and exit on their own; keeping
+        // the reference (and with it their token source) alive is what lets them poll that token safely.
+        private readonly List<Thread> _orphanedThreads = [];
+
         private Texture2D? _gpuTexture;
         private bool _lastConnectState;
         private volatile string _lastStatusMessage = "Not connected.";
@@ -43,6 +47,12 @@ namespace Lib.io.video
         private int _sharedWidth;
         private int _sharedHeight;
         private bool _hasFrame;
+
+        // Frame handoff bookkeeping: the capture thread bumps the counter under the lock; the eval thread
+        // uploads only when it sees a counter it has not uploaded yet.
+        private int _sharedFrameCounter;
+        private int _uploadedFrameCounter;
+        private byte[]? _uploadBuffer;
 
         public VideoStreamInput()
         {
@@ -86,18 +96,39 @@ namespace Lib.io.video
 
             _lastConnectState = shouldConnect;
 
+            // New frame? A stream delivers ~25-30 fps while the editor evaluates ~60 — uploading every
+            // evaluation would send each frame twice. The handoff copies under the lock so the GPU work
+            // below never blocks the capture thread mid-copy.
+            var hasNewFrame = false;
+            var hadFrame = false;
+            var frameWidth = 0;
+            var frameHeight = 0;
             lock (_lockObject)
             {
-                if (_hasFrame && _sharedRgba != null)
+                hadFrame = _hasFrame;
+                if (_hasFrame && _sharedRgba != null && _sharedFrameCounter != _uploadedFrameCounter)
                 {
-                    UploadFrameToGpu(_sharedRgba, _sharedWidth, _sharedHeight);
-                    Texture.Value = _gpuTexture;
-                    Resolution.Value = new Int2(_sharedWidth, _sharedHeight);
+                    var byteCount = _sharedWidth * _sharedHeight * 4;
+                    if (_uploadBuffer == null || _uploadBuffer.Length < byteCount)
+                        _uploadBuffer = new byte[byteCount];
+
+                    Array.Copy(_sharedRgba, _uploadBuffer, byteCount);
+                    frameWidth = _sharedWidth;
+                    frameHeight = _sharedHeight;
+                    _uploadedFrameCounter = _sharedFrameCounter;
+                    hasNewFrame = true;
                 }
-                else
-                {
-                    Texture.Value = null;
-                }
+            }
+
+            if (hasNewFrame)
+            {
+                UploadFrameToGpu(_uploadBuffer!, frameWidth, frameHeight);
+                Texture.Value = _gpuTexture;
+                Resolution.Value = new Int2(frameWidth, frameHeight);
+            }
+            else if (!hadFrame)
+            {
+                Texture.Value = null;
             }
 
             // Update the status as a side effect. This does NOT trigger a new update.
@@ -109,6 +140,19 @@ namespace Lib.io.video
         private void StartCaptureThread(string url)
         {
             if (IsCaptureThreadRunning() || string.IsNullOrWhiteSpace(url)) return;
+
+            // A timed-out previous thread may still be inside a network read; give it time to observe
+            // cancellation (its socket timeout bounds the wait) so two threads never hold one stream.
+            foreach (var orphan in _orphanedThreads)
+            {
+                var waited = 0;
+                while (orphan.IsAlive && waited < 2000)
+                {
+                    Thread.Sleep(50);
+                    waited += 50;
+                }
+            }
+            _orphanedThreads.RemoveAll(t => !t.IsAlive);
 
             _cancellationTokenSource = new CancellationTokenSource();
             var token = _cancellationTokenSource.Token;
@@ -126,9 +170,21 @@ namespace Lib.io.video
             if (!IsCaptureThreadRunning()) return;
 
             _cancellationTokenSource?.Cancel();
-            _captureThread?.Join(TimeSpan.FromSeconds(3));
+
+            if (!_captureThread!.Join(TimeSpan.FromSeconds(3)))
+            {
+                // The thread is stuck in a slow network read (the rtsp socket timeout bounds this at ~5 s).
+                // It observes cancellation and exits on its own; disposing its token source under a running
+                // thread is the one way this op could take the editor down, so the source stays alive.
+                Log.Warning("Video stream thread did not exit in time; leaving it to finish on its own.", this);
+                _orphanedThreads.Add(_captureThread);
+            }
+            else
+            {
+                _cancellationTokenSource?.Dispose();
+            }
+
             _captureThread = null;
-            _cancellationTokenSource?.Dispose();
             _cancellationTokenSource = null;
             SetStatus("Disconnected");
         }
@@ -177,6 +233,7 @@ namespace Lib.io.video
                         _sharedWidth = rgba.Width;
                         _sharedHeight = rgba.Height;
                         _hasFrame = true;
+                        _sharedFrameCounter++;
                     }
                 }
             }

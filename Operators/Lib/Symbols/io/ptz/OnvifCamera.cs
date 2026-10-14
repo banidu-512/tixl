@@ -246,16 +246,17 @@ namespace Lib.io.ptz
             if (!_captureThread.Join(TimeSpan.FromSeconds(2)))
             {
                 Log.Warning("OnvifCamera: Capture thread did not finish in time. Leaking VideoCapture to avoid crash.", this);
-                // Do not dispose _capture, as the thread is still using it.
+                // Do not dispose _capture or the token source: the thread is still using both and polls
+                // the token to notice cancellation. Both die with the thread.
             }
             else
             {
                 _capture?.Dispose();
                 _capture = null;
+                _cancellationTokenSource?.Dispose();
             }
-            
+
             _captureThread = null;
-            _cancellationTokenSource?.Dispose();
             _cancellationTokenSource = null;
             _connected = false;
             SetStatus("Disconnected");
