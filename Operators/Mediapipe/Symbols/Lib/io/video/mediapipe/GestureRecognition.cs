@@ -301,21 +301,29 @@ public class GestureRecognition : Instance<GestureRecognition>
                     maxHands
                 );
 
+                HandLandmarker? landmarker = null;
                 lock (_handLandmarkerLock)
                 {
                     try
                     {
-                        _handLandmarker = HandLandmarker.CreateFromOptions(BuildOptions(delegateCase));
+                        landmarker = HandLandmarker.CreateFromOptions(BuildOptions(delegateCase));
                     }
                     catch (Exception gpuEx) when (acceleration != MediaPipeAcceleration.Cpu)
                     {
                         Log.Warning($"[GestureRecognition] GPU acceleration not available ({gpuEx.Message}) - using CPU.", this);
-                        _handLandmarker = HandLandmarker.CreateFromOptions(BuildOptions(Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU));
+                        landmarker = HandLandmarker.CreateFromOptions(BuildOptions(Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU));
                     }
+                    _handLandmarker = landmarker;
                 }
-                _cancellationTokenSource = new CancellationTokenSource();
-                var token = _cancellationTokenSource.Token;
-                _processingTask = Task.Run(() => WorkerLoop(token, debug), token);
+
+                if (landmarker != null)
+                {
+                    _cancellationTokenSource = new CancellationTokenSource();
+                    var token = _cancellationTokenSource.Token;
+                    // The worker loop owns this instance; StopWorker closes it only after that task
+                    // has exited, so DetectForVideo can never run on a closed landmarker.
+                    _processingTask = Task.Run(() => WorkerLoop(token, landmarker, debug), token);
+                }
         }
         }
         catch (Exception ex)
@@ -328,7 +336,7 @@ public class GestureRecognition : Instance<GestureRecognition>
         }
     }
 
-    private void WorkerLoop(CancellationToken token, bool debug)
+    private void WorkerLoop(CancellationToken token, HandLandmarker landmarker, bool debug)
     {
         while (!token.IsCancellationRequested)
         {
@@ -336,9 +344,9 @@ public class GestureRecognition : Instance<GestureRecognition>
             {
                 try
                 {
-                    if (_handLandmarker != null && request.PixelData != null)
+                    if (request.PixelData != null)
                     {
-                        ProcessFrame(request, debug);
+                        ProcessFrame(request, landmarker, debug);
                     }
                 }
                 catch (Exception ex)
@@ -357,23 +365,17 @@ public class GestureRecognition : Instance<GestureRecognition>
         }
     }
 
-    private void ProcessFrame(GestureRecognitionRequest request, bool debug)
+    private void ProcessFrame(GestureRecognitionRequest request, HandLandmarker landmarker, bool debug)
     {
         using var image = new Image(ImageFormat.Types.Format.Srgb, request.Width, request.Height, request.Width * 3, request.PixelData!);
 
-        HandLandmarker? landmarker;
-        lock (_handLandmarkerLock)
-        {
-            landmarker = _handLandmarker;
-        }
+        var result = landmarker.DetectForVideo(image, request.Timestamp);
 
-        var result = landmarker?.DetectForVideo(image, request.Timestamp);
-
-        if (result != null && result.Value.HandLandmarks != null && result.Value.HandLandmarks.Count > 0)
+        if (result.HandLandmarks != null && result.HandLandmarks.Count > 0)
         {
-            var landmarks = ConvertHandLandmarkerResultToLandmarks(result.Value, request.MinHandDetectionConfidence, request.MinHandPresenceConfidence, request.MaxHands, request.Width, request.Height, debug);
-            var worldLandmarks = ConvertHandLandmarkerResultToWorldLandmarks(result.Value, request.MaxHands, debug);
-            var handedness = ConvertHandedness(result.Value);
+            var landmarks = ConvertHandLandmarkerResultToLandmarks(result, request.MinHandDetectionConfidence, request.MinHandPresenceConfidence, request.MaxHands, request.Width, request.Height, debug);
+            var worldLandmarks = ConvertHandLandmarkerResultToWorldLandmarks(result, request.MaxHands, debug);
+            var handedness = ConvertHandedness(result);
             
             var packet = new GestureRecognitionResultPacket
             {
@@ -401,32 +403,38 @@ public class GestureRecognition : Instance<GestureRecognition>
         lock (_workerLock)
         {
             _cancellationTokenSource?.Cancel();
-            try
+            var task = _processingTask;
+            _processingTask = null;
+
+            HandLandmarker? landmarker;
+            lock (_handLandmarkerLock)
             {
-                if (_processingTask != null && !_processingTask.IsCompleted)
-                {
-                    if (!_processingTask.Wait(1000))
-                    {
-                        if (debug) Log.Warning("[GestureRecognition] THREAD SAFETY: Worker task did not complete within timeout", this);
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                if (debug) Log.Error($"[GestureRecognition] THREAD SAFETY: Error waiting for worker task: {ex.Message}", this);
+                landmarker = _handLandmarker;
+                _handLandmarker = null;
             }
 
-            try
+            if (landmarker != null)
             {
-                lock (_handLandmarkerLock)
+                // DetectForVideo cannot be interrupted and runs on the worker outside every lock, so
+                // Close() must wait until that task has fully exited or it is a use-after-free in
+                // native code. The worker loop holds its own reference, making the hand-off safe
+                // without ever blocking the eval thread on an in-flight inference.
+                Task.Run(async () =>
                 {
-                    _handLandmarker?.Close();
-                    _handLandmarker = null;
-                }
-            }
-            catch (Exception ex)
-            {
-                if (debug) Log.Error($"[GestureRecognition] RESOURCE MANAGEMENT: Error closing HandLandmarker: {ex.Message}", this);
+                    if (task != null)
+                    {
+                        try { await task; }
+                        catch (Exception) { }
+                    }
+                    try
+                    {
+                        landmarker.Close();
+                    }
+                    catch (Exception ex)
+                    {
+                        if (debug) Log.Error($"[GestureRecognition] Error closing HandLandmarker: {ex.Message}", this);
+                    }
+                });
             }
 
             while (_inputQueue.TryDequeue(out var req))
@@ -1181,6 +1189,10 @@ public class GestureRecognition : Instance<GestureRecognition>
     {
         if (!isDisposing) return;
 
+        // Stops the worker task and hands the landmarker to its deferred closer - closing it here
+        // directly could hit a frame still running on the worker thread.
+        StopWorker(false);
+
         try
         {
             lock (_handLandmarkerLock)
@@ -1286,6 +1298,9 @@ public class GestureRecognition : Instance<GestureRecognition>
     [Input(Guid = "15C6D7E8-F9A0-81B2-34D5-678901234567")]
     public readonly InputSlot<bool> CorrectAspectRatio = new(false);
 
+    /// <summary>Inference acceleration: Cpu = plain single-threaded TF Lite (works everywhere),
+    /// Xnnpack = multithreaded CPU (the fast default; see InferenceThreads), Gpu = OpenGL/EGL
+    /// delegate (Linux native has it; the CPU-only Windows/macOS natives fall back to Cpu).</summary>
     [Input(Guid = "a1b2c3d4-0004-4a9b-8c2d-101010101010")]
     public readonly InputSlot<MediaPipeAcceleration> Acceleration = new(MediaPipeAcceleration.Xnnpack);
 

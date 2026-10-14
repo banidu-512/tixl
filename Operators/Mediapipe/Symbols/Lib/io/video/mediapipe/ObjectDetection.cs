@@ -283,11 +283,12 @@ public class ObjectDetection : Instance<ObjectDetection>
                                                     categoryDenyList: denyList
                                                    );
 
+                ObjectDetector? detector = null;
                 lock (_objectDetectorLock)
                 {
                     try
                     {
-                        _objectDetector = ObjectDetector.CreateFromOptions(options);
+                        detector = ObjectDetector.CreateFromOptions(options);
                     }
                     catch (Exception gpuEx) when (acceleration != MediaPipeAcceleration.Cpu)
                     {
@@ -303,13 +304,19 @@ public class ObjectDetection : Instance<ObjectDetection>
                                                     scoreThreshold: minDetectionConfidence,
                                                     categoryAllowList: allowList,
                                                     categoryDenyList: denyList);
-                        _objectDetector = ObjectDetector.CreateFromOptions(options);
+                        detector = ObjectDetector.CreateFromOptions(options);
                     }
+                    _objectDetector = detector;
                 }
 
-                _cancellationTokenSource = new CancellationTokenSource();
-                var token = _cancellationTokenSource.Token;
-                _processingTask = Task.Run(() => WorkerLoop(token, debug), token);
+                if (detector != null)
+                {
+                    _cancellationTokenSource = new CancellationTokenSource();
+                    var token = _cancellationTokenSource.Token;
+                    // The worker loop owns this instance; StopWorker closes it only after that task
+                    // has exited, so DetectForVideo can never run on a closed detector.
+                    _processingTask = Task.Run(() => WorkerLoop(token, detector, debug), token);
+                }
             }
         }
         catch (Exception ex)
@@ -322,7 +329,7 @@ public class ObjectDetection : Instance<ObjectDetection>
         }
     }
 
-    private void WorkerLoop(CancellationToken token, bool debug)
+    private void WorkerLoop(CancellationToken token, ObjectDetector detector, bool debug)
     {
         while (!token.IsCancellationRequested)
         {
@@ -330,9 +337,9 @@ public class ObjectDetection : Instance<ObjectDetection>
             {
                 try
                 {
-                    if (_objectDetector != null && request.PixelData != null)
+                    if (request.PixelData != null)
                     {
-                        ProcessFrame(request, debug);
+                        ProcessFrame(request, detector, debug);
                     }
                 }
                 catch (Exception ex)
@@ -351,21 +358,15 @@ public class ObjectDetection : Instance<ObjectDetection>
         }
     }
 
-    private void ProcessFrame(ObjectDetectionRequest request, bool debug)
+    private void ProcessFrame(ObjectDetectionRequest request, ObjectDetector detector, bool debug)
     {
         using var image = new Image(Mediapipe.ImageFormat.Types.Format.Srgb, request.Width, request.Height, request.Width * 3, request.PixelData!);
 
-        ObjectDetector? detector;
-        lock (_objectDetectorLock)
-        {
-            detector = _objectDetector;
-        }
+        var result = detector.DetectForVideo(image, request.Timestamp);
 
-        var result = detector?.DetectForVideo(image, request.Timestamp);
-
-        if (result != null && result.Value.Detections != null && result.Value.Detections.Count > 0)
+        if (result.Detections != null && result.Detections.Count > 0)
         {
-            var detections = ConvertDetectionResultToDetections(result.Value, request.MinDetectionConfidence, request.MaxObjects, debug);
+            var detections = ConvertDetectionResultToDetections(result, request.MinDetectionConfidence, request.MaxObjects, debug);
             var packet = new ObjectDetectionResultPacket
                              {
                                  Detections = detections,
@@ -394,29 +395,38 @@ public class ObjectDetection : Instance<ObjectDetection>
             if (_objectDetector == null && (_processingTask == null || _processingTask.IsCompleted)) return;
 
             _cancellationTokenSource?.Cancel();
-            try
+            var task = _processingTask;
+            _processingTask = null;
+
+            ObjectDetector? detector;
+            lock (_objectDetectorLock)
             {
-                if (_processingTask != null && !_processingTask.IsCompleted)
-                {
-                    _processingTask.Wait(200);
-                }
-            }
-            catch (Exception ex)
-            {
-                if (debug) Log.Error($"[ObjectDetection] THREAD SAFETY: Error waiting for worker task: {ex.Message}", this);
+                detector = _objectDetector;
+                _objectDetector = null;
             }
 
-            try
+            if (detector != null)
             {
-                lock (_objectDetectorLock)
+                // DetectForVideo cannot be interrupted and runs on the worker outside every lock, so
+                // Close() must wait until that task has fully exited or it is a use-after-free in
+                // native code. The worker loop holds its own reference, making the hand-off safe
+                // without ever blocking the eval thread on an in-flight inference.
+                Task.Run(async () =>
                 {
-                    _objectDetector?.Close();
-                    _objectDetector = null;
-                }
-            }
-            catch (Exception ex)
-            {
-                if (debug) Log.Error($"[ObjectDetection] RESOURCE MANAGEMENT: Error closing ObjectDetector: {ex.Message}", this);
+                    if (task != null)
+                    {
+                        try { await task; }
+                        catch (Exception) { }
+                    }
+                    try
+                    {
+                        detector.Close();
+                    }
+                    catch (Exception ex)
+                    {
+                        if (debug) Log.Error($"[ObjectDetection] Error closing ObjectDetector: {ex.Message}", this);
+                    }
+                });
             }
 
             while (_inputQueue.TryDequeue(out var req))
@@ -855,6 +865,10 @@ public class ObjectDetection : Instance<ObjectDetection>
     {
         if (!isDisposing) return;
 
+        // Stops the worker task and hands the detector to its deferred closer - closing it here
+        // directly could hit a frame still running on the worker thread.
+        StopWorker(false);
+
         try
         {
             lock (_objectDetectorLock)
@@ -942,6 +956,9 @@ public class ObjectDetection : Instance<ObjectDetection>
     [Input(Guid = "0abcdef1-2345-6789-0abc-def123456789")]
     public readonly InputSlot<bool> CorrectAspectRatio = new(false);
 
+    /// <summary>Inference acceleration: Cpu = plain single-threaded TF Lite (works everywhere),
+    /// Xnnpack = multithreaded CPU (the fast default; see InferenceThreads), Gpu = OpenGL/EGL
+    /// delegate (Linux native has it; the CPU-only Windows/macOS natives fall back to Cpu).</summary>
     [Input(Guid = "a1b2c3d4-0006-4a9b-8c2d-101010101010")]
     public readonly InputSlot<MediaPipeAcceleration> Acceleration = new(MediaPipeAcceleration.Xnnpack);
 

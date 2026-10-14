@@ -249,21 +249,29 @@ public class ImageSegmentation : Instance<ImageSegmentation>
                     outputConfidenceMasks: true
                 );
 
+                ImageSegmenter? segmenter = null;
                 lock (_imageSegmenterLock)
                 {
                     try
                     {
-                        _imageSegmenter = ImageSegmenter.CreateFromOptions(BuildOptions(delegateCase));
+                        segmenter = ImageSegmenter.CreateFromOptions(BuildOptions(delegateCase));
                     }
                     catch (Exception gpuEx) when (acceleration != MediaPipeAcceleration.Cpu)
                     {
                         Log.Warning($"[ImageSegmentation] GPU acceleration not available ({gpuEx.Message}) - using CPU.", this);
-                        _imageSegmenter = ImageSegmenter.CreateFromOptions(BuildOptions(Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU));
+                        segmenter = ImageSegmenter.CreateFromOptions(BuildOptions(Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU));
                     }
+                    _imageSegmenter = segmenter;
                 }
-                _cancellationTokenSource = new CancellationTokenSource();
-                var token = _cancellationTokenSource.Token;
-                _processingTask = Task.Run(() => WorkerLoop(token, debug), token);
+
+                if (segmenter != null)
+                {
+                    _cancellationTokenSource = new CancellationTokenSource();
+                    var token = _cancellationTokenSource.Token;
+                    // The worker loop owns this instance; StopWorker closes it only after that task
+                    // has exited, so SegmentForVideo can never run on a closed segmenter.
+                    _processingTask = Task.Run(() => WorkerLoop(token, segmenter, debug), token);
+                }
             }
         }
         catch (Exception ex)
@@ -276,7 +284,7 @@ public class ImageSegmentation : Instance<ImageSegmentation>
         }
     }
 
-    private void WorkerLoop(CancellationToken token, bool debug)
+    private void WorkerLoop(CancellationToken token, ImageSegmenter segmenter, bool debug)
     {
         while (!token.IsCancellationRequested)
         {
@@ -284,9 +292,9 @@ public class ImageSegmentation : Instance<ImageSegmentation>
             {
                 try
                 {
-                    if (_imageSegmenter != null && request.PixelData != null)
+                    if (request.PixelData != null)
                     {
-                        ProcessFrame(request, debug);
+                        ProcessFrame(request, segmenter, debug);
                     }
                 }
                 catch (Exception ex)
@@ -305,17 +313,11 @@ public class ImageSegmentation : Instance<ImageSegmentation>
         }
     }
 
-    private void ProcessFrame(ImageSegmentationRequest request, bool debug)
+    private void ProcessFrame(ImageSegmentationRequest request, ImageSegmenter segmenter, bool debug)
     {
         using var image = new Image(Mediapipe.ImageFormat.Types.Format.Srgb, request.Width, request.Height, request.Width * 3, request.PixelData!);
 
-        ImageSegmenter? segmenter;
-        lock (_imageSegmenterLock)
-        {
-            segmenter = _imageSegmenter;
-        }
-
-        var result = segmenter?.SegmentForVideo(image, request.Timestamp);
+        var result = segmenter.SegmentForVideo(image, request.Timestamp);
 
         if (result is { } validResult && validResult.ConfidenceMasks != null && validResult.ConfidenceMasks.Count > 0)
         {
@@ -366,29 +368,38 @@ public class ImageSegmentation : Instance<ImageSegmentation>
         lock (_workerLock)
         {
             _cancellationTokenSource?.Cancel();
-            try
+            var task = _processingTask;
+            _processingTask = null;
+
+            ImageSegmenter? segmenter;
+            lock (_imageSegmenterLock)
             {
-                if (_processingTask != null && !_processingTask.IsCompleted)
-                {
-                    _processingTask.Wait(200);
-                }
-            }
-            catch (Exception ex)
-            {
-                if (debug) Log.Error($"[ImageSegmentation] THREAD SAFETY: Error waiting for worker task: {ex.Message}", this);
+                segmenter = _imageSegmenter;
+                _imageSegmenter = null;
             }
 
-            try
+            if (segmenter != null)
             {
-                lock (_imageSegmenterLock)
+                // SegmentForVideo cannot be interrupted and runs on the worker outside every lock, so
+                // Close() must wait until that task has fully exited or it is a use-after-free in
+                // native code. The worker loop holds its own reference, making the hand-off safe
+                // without ever blocking the eval thread on an in-flight inference.
+                Task.Run(async () =>
                 {
-                    _imageSegmenter?.Close();
-                    _imageSegmenter = null;
-                }
-            }
-            catch (Exception ex)
-            {
-                if (debug) Log.Error($"[ImageSegmentation] RESOURCE MANAGEMENT: Error closing ImageSegmenter: {ex.Message}", this);
+                    if (task != null)
+                    {
+                        try { await task; }
+                        catch (Exception) { }
+                    }
+                    try
+                    {
+                        segmenter.Close();
+                    }
+                    catch (Exception ex)
+                    {
+                        if (debug) Log.Error($"[ImageSegmentation] Error closing ImageSegmenter: {ex.Message}", this);
+                    }
+                });
             }
 
             while (_inputQueue.TryDequeue(out var req))
@@ -948,6 +959,10 @@ public class ImageSegmentation : Instance<ImageSegmentation>
     {
         if (!isDisposing) return;
 
+        // Stops the worker task and hands the segmenter to its deferred closer - closing it here
+        // directly could hit a frame still running on the worker thread.
+        StopWorker(false);
+
         try
         {
             lock (_imageSegmenterLock)
@@ -1012,6 +1027,9 @@ public class ImageSegmentation : Instance<ImageSegmentation>
     [Input(Guid = "67890abc-def1-2345-6789-0abcdef12345")]
     public readonly InputSlot<string> SelectedCategories = new();
 
+    /// <summary>Inference acceleration: Cpu = plain single-threaded TF Lite (works everywhere),
+    /// Xnnpack = multithreaded CPU (the fast default; see InferenceThreads), Gpu = OpenGL/EGL
+    /// delegate (Linux native has it; the CPU-only Windows/macOS natives fall back to Cpu).</summary>
     [Input(Guid = "a1b2c3d4-0005-4a9b-8c2d-101010101010")]
     public readonly InputSlot<MediaPipeAcceleration> Acceleration = new(MediaPipeAcceleration.Xnnpack);
 

@@ -271,22 +271,29 @@ public class PoseLandmarkDetection : Instance<PoseLandmarkDetection>
                     outputSegmentationMasks: true
                 );
 
+                PoseLandmarker? landmarker = null;
                 lock (_poseLandmarkerLock)
                 {
                     try
                     {
-                        _poseLandmarker = PoseLandmarker.CreateFromOptions(BuildOptions(delegateCase));
+                        landmarker = PoseLandmarker.CreateFromOptions(BuildOptions(delegateCase));
                     }
                     catch (Exception gpuEx) when (acceleration != MediaPipeAcceleration.Cpu)
                     {
                         Log.Warning($"[PoseLandmarkDetection] GPU acceleration not available ({gpuEx.Message}) - using CPU.", this);
-                        _poseLandmarker = PoseLandmarker.CreateFromOptions(BuildOptions(Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU));
+                        landmarker = PoseLandmarker.CreateFromOptions(BuildOptions(Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU));
                     }
-
+                    _poseLandmarker = landmarker;
                 }
-                _cancellationTokenSource = new CancellationTokenSource();
-                var token = _cancellationTokenSource.Token;
-                _processingTask = Task.Run(() => WorkerLoop(token, debug), token);
+
+                if (landmarker != null)
+                {
+                    _cancellationTokenSource = new CancellationTokenSource();
+                    var token = _cancellationTokenSource.Token;
+                    // The worker loop owns this instance; StopWorker closes it only after that task
+                    // has exited, so DetectForVideo can never run on a closed landmarker.
+                    _processingTask = Task.Run(() => WorkerLoop(token, landmarker, debug), token);
+                }
             }
         }
         catch (Exception ex)
@@ -299,7 +306,7 @@ public class PoseLandmarkDetection : Instance<PoseLandmarkDetection>
         }
     }
 
-    private void WorkerLoop(CancellationToken token, bool debug)
+    private void WorkerLoop(CancellationToken token, PoseLandmarker landmarker, bool debug)
     {
         while (!token.IsCancellationRequested)
         {
@@ -315,10 +322,10 @@ public class PoseLandmarkDetection : Instance<PoseLandmarkDetection>
 
                 try
                 {
-                    if (_poseLandmarker != null && request.PixelData != null)
+                    if (request.PixelData != null)
                     {
                         _workerBusy = true;
-                        ProcessFrame(request, debug);
+                        ProcessFrame(request, landmarker, debug);
                     }
                 }
                 catch (Exception ex)
@@ -338,20 +345,14 @@ public class PoseLandmarkDetection : Instance<PoseLandmarkDetection>
         }
     }
 
-    private void ProcessFrame(PoseLandmarkDetectionRequest request, bool debug)
+    private void ProcessFrame(PoseLandmarkDetectionRequest request, PoseLandmarker landmarker, bool debug)
     {
         var queueLatencyMs = Environment.TickCount64 - request.SentTickCount;
         var inferenceStopwatch = System.Diagnostics.Stopwatch.StartNew();
 
         using var image = new Image(ImageFormat.Types.Format.Srgb, request.Width, request.Height, request.Width * 3, request.PixelData!);
 
-        PoseLandmarker? landmarker;
-        lock (_poseLandmarkerLock)
-        {
-            landmarker = _poseLandmarker;
-        }
-
-        var result = landmarker?.DetectForVideo(image, request.Timestamp);
+        var result = landmarker.DetectForVideo(image, request.Timestamp);
         inferenceStopwatch.Stop();
 
         if (debug && ++_latencyLogCounter % 90 == 1)
@@ -360,11 +361,11 @@ public class PoseLandmarkDetection : Instance<PoseLandmarkDetection>
                       $"(queue {queueLatencyMs}ms, inference {inferenceStopwatch.ElapsedMilliseconds}ms)", this);
         }
 
-        if (result != null && result.Value.PoseLandmarks != null && result.Value.PoseLandmarks.Count > 0)
+        if (result.PoseLandmarks != null && result.PoseLandmarks.Count > 0)
         {
-            var landmarks = ConvertPoseLandmarkerResultToLandmarks(result.Value, _activeMaxPoses);
-            var worldLandmarks = ConvertPoseLandmarkerResultToWorldLandmarks(result.Value, _activeMaxPoses);
-            var segmentationMask = ConvertSegmentationMask(result.Value, request.Width, request.Height);
+            var landmarks = ConvertPoseLandmarkerResultToLandmarks(result, _activeMaxPoses);
+            var worldLandmarks = ConvertPoseLandmarkerResultToWorldLandmarks(result, _activeMaxPoses);
+            var segmentationMask = ConvertSegmentationMask(result, request.Width, request.Height);
             
             var packet = new PoseLandmarkDetectionResultPacket
             {
@@ -392,29 +393,38 @@ public class PoseLandmarkDetection : Instance<PoseLandmarkDetection>
         lock (_workerLock)
         {
             _cancellationTokenSource?.Cancel();
-            try
+            var task = _processingTask;
+            _processingTask = null;
+
+            PoseLandmarker? landmarker;
+            lock (_poseLandmarkerLock)
             {
-                if (_processingTask != null && !_processingTask.IsCompleted)
-                {
-                    _processingTask.Wait(200);
-                }
-            }
-            catch (Exception ex)
-            {
-                if (debug) Log.Error($"[PoseLandmarkDetection] Error waiting for worker task: {ex.Message}", this);
+                landmarker = _poseLandmarker;
+                _poseLandmarker = null;
             }
 
-            try
+            if (landmarker != null)
             {
-                lock (_poseLandmarkerLock)
+                // DetectForVideo cannot be interrupted and runs on the worker outside every lock, so
+                // Close() must wait until that task has fully exited or it is a use-after-free in
+                // native code. The worker loop holds its own reference, making the hand-off safe
+                // without ever blocking the eval thread on an in-flight inference.
+                Task.Run(async () =>
                 {
-                    _poseLandmarker?.Close();
-                    _poseLandmarker = null;
-                }
-            }
-            catch (Exception ex)
-            {
-                if (debug) Log.Error($"[PoseLandmarkDetection] Error closing PoseLandmarker: {ex.Message}", this);
+                    if (task != null)
+                    {
+                        try { await task; }
+                        catch (Exception) { }
+                    }
+                    try
+                    {
+                        landmarker.Close();
+                    }
+                    catch (Exception ex)
+                    {
+                        if (debug) Log.Error($"[PoseLandmarkDetection] Error closing PoseLandmarker: {ex.Message}", this);
+                    }
+                });
             }
 
             while (_inputQueue.TryDequeue(out var req))
@@ -992,6 +1002,10 @@ public class PoseLandmarkDetection : Instance<PoseLandmarkDetection>
     {
         if (!isDisposing) return;
 
+        // Stops the worker task and hands the landmarker to its deferred closer - closing it here
+        // directly could hit a frame still running on the worker thread.
+        StopWorker(false);
+
         try
         {
             lock (_poseLandmarkerLock)
@@ -1088,6 +1102,9 @@ public class PoseLandmarkDetection : Instance<PoseLandmarkDetection>
     [Input(Guid = "abcdef12-3456-7890-abcd-ef1234567890")]
     public readonly InputSlot<bool> CorrectAspectRatio = new(false);
 
+    /// <summary>Inference acceleration: Cpu = plain single-threaded TF Lite (works everywhere),
+    /// Xnnpack = multithreaded CPU (the fast default; see InferenceThreads), Gpu = OpenGL/EGL
+    /// delegate (Linux native has it; the CPU-only Windows/macOS natives fall back to Cpu).</summary>
     [Input(Guid = "a1b2c3d4-0007-4a9b-8c2d-101010101010")]
     public readonly InputSlot<MediaPipeAcceleration> Acceleration = new(MediaPipeAcceleration.Xnnpack);
 

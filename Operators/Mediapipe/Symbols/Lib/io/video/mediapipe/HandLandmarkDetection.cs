@@ -105,6 +105,11 @@ public class HandLandmarkDetection : Instance<HandLandmarkDetection>
 
         OutputTexture.Value = inputTexture;
 
+        // Read back on the worker thread when converting results - changing these never needs a reinit,
+        // so they must be assigned on every evaluation, not only when one happens to run.
+        _activeConstantSize = constantSize;
+        _activeHandSize = handSize;
+
         if (_processingTask == null || _processingTask.IsCompleted || _handLandmarker == null ||
             maxHands != _activeMaxHands ||
             Acceleration.GetValue(context) != _activeAcceleration || InferenceThreads.GetValue(context) != _activeInferenceThreads ||
@@ -114,8 +119,6 @@ public class HandLandmarkDetection : Instance<HandLandmarkDetection>
         {
             _activeAcceleration = Acceleration.GetValue(context);
             _activeInferenceThreads = InferenceThreads.GetValue(context);
-            _activeConstantSize = constantSize;
-            _activeHandSize = handSize;
             InitializeWorker(maxHands, minHandDetectionConfidence, minHandPresenceConfidence, minTrackingConfidence, debug);
         }
 
@@ -211,7 +214,7 @@ public class HandLandmarkDetection : Instance<HandLandmarkDetection>
     private MediaPipeAcceleration? _activeAcceleration;
     private volatile bool _activeConstantSize;
     private volatile float _activeHandSize = 0.15f;
-        private int _activeInferenceThreads = -1;
+    private int _activeInferenceThreads = -1;
     private float _activeMinHandDetectionConfidence = -1f;
     private float _activeMinHandPresenceConfidence = -1f;
     private float _activeMinTrackingConfidence = -1f;
@@ -287,23 +290,31 @@ var inferenceThreads = _activeInferenceThreads;
                     minTrackingConfidence
                 );
 
+                HandLandmarker? landmarker = null;
                 lock (_handLandmarkerLock)
                 {
                     try
                     {
-                        _handLandmarker = HandLandmarker.CreateFromOptions(BuildOptions(delegateCase));
+                        landmarker = HandLandmarker.CreateFromOptions(BuildOptions(delegateCase));
                     }
                     catch (Exception gpuEx) when (acceleration != MediaPipeAcceleration.Cpu)
                     {
                         // The Windows/macOS natives are CPU-only builds, and GPU delegates additionally
                         // need a working GL/EGL context - never worth crashing the op over.
                         Log.Warning($"[HandLandmarkDetection] GPU acceleration not available ({gpuEx.Message}) - using CPU.", this);
-                        _handLandmarker = HandLandmarker.CreateFromOptions(BuildOptions(Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU));
+                        landmarker = HandLandmarker.CreateFromOptions(BuildOptions(Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU));
                     }
+                    _handLandmarker = landmarker;
                 }
-                _cancellationTokenSource = new CancellationTokenSource();
-                var token = _cancellationTokenSource.Token;
-                _processingTask = Task.Run(() => WorkerLoop(token, debug), token);
+
+                if (landmarker != null)
+                {
+                    _cancellationTokenSource = new CancellationTokenSource();
+                    var token = _cancellationTokenSource.Token;
+                    // The worker loop owns this instance; StopWorker closes it only after that task has
+                    // exited, so DetectForVideo can never run on a closed landmarker.
+                    _processingTask = Task.Run(() => WorkerLoop(token, landmarker, debug), token);
+                }
             }
         }
         catch (Exception ex)
@@ -316,7 +327,7 @@ var inferenceThreads = _activeInferenceThreads;
         }
     }
 
-    private void WorkerLoop(CancellationToken token, bool debug)
+    private void WorkerLoop(CancellationToken token, HandLandmarker landmarker, bool debug)
     {
         while (!token.IsCancellationRequested)
         {
@@ -332,10 +343,10 @@ var inferenceThreads = _activeInferenceThreads;
 
                 try
                 {
-                    if (_handLandmarker != null && request.PixelData != null)
+                    if (request.PixelData != null)
                     {
                         _workerBusy = true;
-                        ProcessFrame(request, debug);
+                        ProcessFrame(request, landmarker, debug);
                     }
                 }
                 catch (Exception ex)
@@ -355,20 +366,14 @@ var inferenceThreads = _activeInferenceThreads;
         }
     }
 
-    private void ProcessFrame(HandLandmarkDetectionRequest request, bool debug)
+    private void ProcessFrame(HandLandmarkDetectionRequest request, HandLandmarker landmarker, bool debug)
     {
         var queueLatencyMs = Environment.TickCount64 - request.SentTickCount;
         var inferenceStopwatch = System.Diagnostics.Stopwatch.StartNew();
 
         using var image = new Image(Mediapipe.ImageFormat.Types.Format.Srgb, request.Width, request.Height, request.Width * 3, request.PixelData!);
 
-        HandLandmarker? landmarker;
-        lock (_handLandmarkerLock)
-        {
-            landmarker = _handLandmarker;
-        }
-
-        var result = landmarker?.DetectForVideo(image, request.Timestamp);
+        var result = landmarker.DetectForVideo(image, request.Timestamp);
         inferenceStopwatch.Stop();
 
         if (debug && ++_latencyLogCounter % 90 == 1)
@@ -377,10 +382,10 @@ var inferenceThreads = _activeInferenceThreads;
                       $"(queue {queueLatencyMs}ms, inference {inferenceStopwatch.ElapsedMilliseconds}ms)", this);
         }
 
-        if (result != null && result.Value.HandLandmarks != null && result.Value.HandLandmarks.Count > 0)
+        if (result.HandLandmarks != null && result.HandLandmarks.Count > 0)
         {
-            var landmarks = ConvertHandLandmarkerResultToLandmarks(result.Value, _activeMaxHands);
-            var worldLandmarks = ConvertHandLandmarkerResultToWorldLandmarks(result.Value, _activeMaxHands);
+            var landmarks = ConvertHandLandmarkerResultToLandmarks(result, _activeMaxHands);
+            var worldLandmarks = ConvertHandLandmarkerResultToWorldLandmarks(result, _activeMaxHands);
             var packet = new HandLandmarkDetectionResultPacket
             {
                 Landmarks = landmarks,
@@ -405,29 +410,38 @@ var inferenceThreads = _activeInferenceThreads;
         lock (_workerLock)
         {
             _cancellationTokenSource?.Cancel();
-            try
+            var task = _processingTask;
+            _processingTask = null;
+
+            HandLandmarker? landmarker;
+            lock (_handLandmarkerLock)
             {
-                if (_processingTask != null && !_processingTask.IsCompleted)
-                {
-                    _processingTask.Wait(200);
-                }
-            }
-            catch (Exception ex)
-            {
-                if (debug) Log.Error($"[HandLandmarkDetection] Error waiting for worker task: {ex.Message}", this);
+                landmarker = _handLandmarker;
+                _handLandmarker = null;
             }
 
-            try
+            if (landmarker != null)
             {
-                lock (_handLandmarkerLock)
+                // DetectForVideo cannot be interrupted and runs on the worker outside every lock, so
+                // Close() must wait until that task has fully exited or it is a use-after-free in
+                // native code. The worker loop holds its own reference, making the hand-off safe
+                // without ever blocking the eval thread on an in-flight inference.
+                Task.Run(async () =>
                 {
-                    _handLandmarker?.Close();
-                    _handLandmarker = null;
-                }
-            }
-            catch (Exception ex)
-            {
-                if (debug) Log.Error($"[HandLandmarkDetection] Error closing HandLandmarker: {ex.Message}", this);
+                    if (task != null)
+                    {
+                        try { await task; }
+                        catch (Exception) { }
+                    }
+                    try
+                    {
+                        landmarker.Close();
+                    }
+                    catch (Exception ex)
+                    {
+                        if (debug) Log.Error($"[HandLandmarkDetection] Error closing HandLandmarker: {ex.Message}", this);
+                    }
+                });
             }
 
             while (_inputQueue.TryDequeue(out var req))
@@ -899,6 +913,10 @@ var inferenceThreads = _activeInferenceThreads;
     {
         if (!isDisposing) return;
 
+        // Stops the worker task and hands the landmarker to its deferred closer - closing it here
+        // directly could hit a frame still running on the worker thread.
+        StopWorker(false);
+
         try
         {
             lock (_handLandmarkerLock)
@@ -910,6 +928,9 @@ var inferenceThreads = _activeInferenceThreads;
         catch (Exception)
         {
         }
+
+        _debugTexture?.Dispose();
+        _debugTexture = null;
 
         lock (_textureCacheLock)
         {

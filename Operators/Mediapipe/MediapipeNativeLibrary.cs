@@ -18,7 +18,17 @@ internal static class MediapipeNativeLibrary
     [ModuleInitializer]
     internal static void Initialize()
     {
-        RegisterAccelerationInputType();
+        // Best-effort: this assembly is also loaded standalone (unit tests exercise the native tasks
+        // without T3.Core on the probe path), and a throwing module initializer would kill the whole
+        // process. In the editor Core is always present and the registration runs.
+        try
+        {
+            RegisterAccelerationInputType();
+        }
+        catch (Exception)
+        {
+            // Core unavailable - enum inputs fall back to their int values.
+        }
 
         if (!OperatingSystem.IsMacOS())
             return;

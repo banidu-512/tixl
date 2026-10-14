@@ -233,21 +233,29 @@ namespace Lib.io.video.mediapipe
                         minSuppressionThreshold: 0.3f
                     );
 
+                    Mediapipe.Tasks.Vision.FaceDetector.FaceDetector? detector = null;
                     lock (_faceDetectorLock)
                     {
                         try
                         {
-                            _faceDetector = Mediapipe.Tasks.Vision.FaceDetector.FaceDetector.CreateFromOptions(BuildOptions(delegateCase));
+                            detector = Mediapipe.Tasks.Vision.FaceDetector.FaceDetector.CreateFromOptions(BuildOptions(delegateCase));
                         }
                         catch (Exception gpuEx) when (acceleration != MediaPipeAcceleration.Cpu)
                         {
                             Log.Warning($"[FaceDetection] GPU acceleration not available ({gpuEx.Message}) - using CPU.", this);
-                            _faceDetector = Mediapipe.Tasks.Vision.FaceDetector.FaceDetector.CreateFromOptions(BuildOptions(Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU));
+                            detector = Mediapipe.Tasks.Vision.FaceDetector.FaceDetector.CreateFromOptions(BuildOptions(Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU));
                         }
+                        _faceDetector = detector;
                     }
-                    _cancellationTokenSource = new CancellationTokenSource();
-                    var token = _cancellationTokenSource.Token;
-                    _processingTask = Task.Run(() => WorkerLoop(token, debug), token);
+
+                    if (detector != null)
+                    {
+                        _cancellationTokenSource = new CancellationTokenSource();
+                        var token = _cancellationTokenSource.Token;
+                        // The worker loop owns this instance; StopWorker closes it only after that task
+                        // has exited, so DetectForVideo can never run on a closed detector.
+                        _processingTask = Task.Run(() => WorkerLoop(token, detector, debug), token);
+                    }
                 }
             }
             catch (Exception ex)
@@ -260,7 +268,7 @@ namespace Lib.io.video.mediapipe
             }
         }
 
-        private void WorkerLoop(CancellationToken token, bool debug)
+        private void WorkerLoop(CancellationToken token, Mediapipe.Tasks.Vision.FaceDetector.FaceDetector detector, bool debug)
         {
             while (!token.IsCancellationRequested)
             {
@@ -268,9 +276,9 @@ namespace Lib.io.video.mediapipe
                 {
                     try
                     {
-                        if (_faceDetector != null && request.PixelData != null)
+                        if (request.PixelData != null)
                         {
-                            ProcessFrame(request, debug);
+                            ProcessFrame(request, detector, debug);
                         }
                     }
                     catch (Exception ex)
@@ -289,17 +297,11 @@ namespace Lib.io.video.mediapipe
             }
         }
 
-        private void ProcessFrame(FaceDetectionRequest request, bool debug)
+        private void ProcessFrame(FaceDetectionRequest request, Mediapipe.Tasks.Vision.FaceDetector.FaceDetector detector, bool debug)
         {
             using var image = new Image(Mediapipe.ImageFormat.Types.Format.Srgb, request.Width, request.Height, request.Width * 3, request.PixelData!);
-            
-            Mediapipe.Tasks.Vision.FaceDetector.FaceDetector? detector;
-            lock (_faceDetectorLock)
-            {
-                detector = _faceDetector;
-            }
-            
-            var result = detector?.DetectForVideo(image, request.Timestamp);
+
+            var result = detector.DetectForVideo(image, request.Timestamp);
 
             if (result is { } validResult && validResult.Detections != null && validResult.Detections.Count > 0)
             {
@@ -499,34 +501,40 @@ namespace Lib.io.video.mediapipe
             lock (_workerLock)
             {
                 _cancellationTokenSource?.Cancel();
-                try
+                var task = _processingTask;
+                _processingTask = null;
+
+                Mediapipe.Tasks.Vision.FaceDetector.FaceDetector? detector;
+                lock (_faceDetectorLock)
                 {
-                    if (_processingTask != null && !_processingTask.IsCompleted)
+                    detector = _faceDetector;
+                    _faceDetector = null;
+                }
+
+                if (detector != null)
+                {
+                    // DetectForVideo cannot be interrupted and runs on the worker outside every lock, so
+                    // Close() must wait until that task has fully exited or it is a use-after-free in
+                    // native code. The worker loop holds its own reference, making the hand-off safe
+                    // without ever blocking the eval thread on an in-flight inference.
+                    Task.Run(async () =>
                     {
-                        if (!_processingTask.Wait(1000))
+                        if (task != null)
                         {
-                            if (debug) Log.Warning("[FaceDetection] THREAD SAFETY: Worker task did not complete within timeout", this);
+                            try { await task; }
+                            catch (Exception) { }
                         }
-                    }
+                        try
+                        {
+                            detector.Close();
+                        }
+                        catch (Exception ex)
+                        {
+                            if (debug) Log.Error($"[FaceDetection] Error closing FaceDetector: {ex.Message}", this);
+                        }
+                    });
                 }
-                catch (Exception ex)
-                {
-                    if (debug) Log.Error($"[FaceDetection] THREAD SAFETY: Error waiting for worker task: {ex.Message}", this);
-                }
-                
-                try
-                {
-                    lock (_faceDetectorLock)
-                    {
-                        _faceDetector?.Close();
-                        _faceDetector = null;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    if (debug) Log.Error($"[FaceDetection] RESOURCE MANAGEMENT: Error closing FaceDetector: {ex.Message}", this);
-                }
-                
+
                 while (_inputQueue.TryDequeue(out var req))
                 {
                     ReturnBufferToPool(req.PixelData);
@@ -931,6 +939,10 @@ namespace Lib.io.video.mediapipe
         {
             if (isDisposing)
             {
+                // Stops the worker task and hands the detector to its deferred closer - closing it here
+                // directly could hit a frame still running on the worker thread.
+                StopWorker(false);
+
                 try
                 {
                     lock (_faceDetectorLock)
@@ -1023,6 +1035,9 @@ namespace Lib.io.video.mediapipe
         [Input(Guid = "F3A4B5C6-D7E8-59F0-01A2-345678901CD4")]
         public readonly InputSlot<bool> CorrectAspectRatio = new(false);
 
+        /// <summary>Inference acceleration: Cpu = plain single-threaded TF Lite (works everywhere),
+        /// Xnnpack = multithreaded CPU (the fast default; see InferenceThreads), Gpu = OpenGL/EGL
+        /// delegate (Linux native has it; the CPU-only Windows/macOS natives fall back to Cpu).</summary>
         [Input(Guid = "a1b2c3d4-0002-4a9b-8c2d-101010101010")]
         public readonly InputSlot<MediaPipeAcceleration> Acceleration = new(MediaPipeAcceleration.Xnnpack);
 

@@ -251,21 +251,29 @@ namespace Lib.io.video.mediapipe
                         outputFaceTransformationMatrixes: false
                     );
 
+                    FaceLandmarker? landmarker = null;
                     lock (_faceLandmarkerLock)
                     {
                         try
                         {
-                            _faceLandmarker = FaceLandmarker.CreateFromOptions(BuildOptions(delegateCase));
+                            landmarker = FaceLandmarker.CreateFromOptions(BuildOptions(delegateCase));
                         }
                         catch (Exception gpuEx) when (acceleration != MediaPipeAcceleration.Cpu)
                         {
                             Log.Warning($"[FaceLandmark] GPU acceleration not available ({gpuEx.Message}) - using CPU.", this);
-                            _faceLandmarker = FaceLandmarker.CreateFromOptions(BuildOptions(CoreBaseOptions.Delegate.CPU));
+                            landmarker = FaceLandmarker.CreateFromOptions(BuildOptions(CoreBaseOptions.Delegate.CPU));
                         }
+                        _faceLandmarker = landmarker;
                     }
-                    _cancellationTokenSource = new CancellationTokenSource();
-                    var token = _cancellationTokenSource.Token;
-                    _processingTask = Task.Run(() => WorkerLoop(token, debug), token);
+
+                    if (landmarker != null)
+                    {
+                        _cancellationTokenSource = new CancellationTokenSource();
+                        var token = _cancellationTokenSource.Token;
+                        // The worker loop owns this instance; StopWorker closes it only after that task
+                        // has exited, so DetectForVideo can never run on a closed landmarker.
+                        _processingTask = Task.Run(() => WorkerLoop(token, landmarker, debug), token);
+                    }
                 }
             }
             catch (Exception ex)
@@ -278,7 +286,7 @@ namespace Lib.io.video.mediapipe
             }
         }
 
-        private void WorkerLoop(CancellationToken token, bool debug)
+        private void WorkerLoop(CancellationToken token, FaceLandmarker landmarker, bool debug)
         {
             while (!token.IsCancellationRequested)
             {
@@ -286,9 +294,9 @@ namespace Lib.io.video.mediapipe
                 {
                     try
                     {
-                        if (_faceLandmarker != null && request.PixelData != null)
+                        if (request.PixelData != null)
                         {
-                            ProcessFrame(request, debug);
+                            ProcessFrame(request, landmarker, debug);
                         }
                     }
                     catch (Exception ex)
@@ -307,26 +315,20 @@ namespace Lib.io.video.mediapipe
             }
         }
 
-        private void ProcessFrame(FaceLandmarkRequest request, bool debug)
+        private void ProcessFrame(FaceLandmarkRequest request, FaceLandmarker landmarker, bool debug)
         {
             using var image = new Image(ImageFormat.Types.Format.Srgba, request.Width, request.Height, request.Width * 4, request.PixelData!);
-            
-            FaceLandmarker? landmarker;
-            lock (_faceLandmarkerLock)
-            {
-                landmarker = _faceLandmarker;
-            }
-            
-            var result = landmarker?.DetectForVideo(image, request.Timestamp);
 
-            if (result != null && result.Value.FaceLandmarks != null && result.Value.FaceLandmarks.Count > 0)
+            var result = landmarker.DetectForVideo(image, request.Timestamp);
+
+            if (result.FaceLandmarks != null && result.FaceLandmarks.Count > 0)
             {
                 var packet = new FaceLandmarkResultPacket
                 {
-                    FaceCount = result.Value.FaceLandmarks.Count,
-                    Landmarks = RawToPoints(result.Value),
-                    FaceData = CalculateRawBounds(result.Value),
-                    Blendshapes = CalculateBlendshapes(result.Value)
+                    FaceCount = result.FaceLandmarks.Count,
+                    Landmarks = RawToPoints(result),
+                    FaceData = CalculateRawBounds(result),
+                    Blendshapes = CalculateBlendshapes(result)
                 };
                 _outputQueue.Enqueue(packet);
             }
@@ -529,31 +531,40 @@ namespace Lib.io.video.mediapipe
             lock (_workerLock)
             {
                 _cancellationTokenSource?.Cancel();
-                try
+                var task = _processingTask;
+                _processingTask = null;
+
+                FaceLandmarker? landmarker;
+                lock (_faceLandmarkerLock)
                 {
-                    if (_processingTask != null && !_processingTask.IsCompleted)
+                    landmarker = _faceLandmarker;
+                    _faceLandmarker = null;
+                }
+
+                if (landmarker != null)
+                {
+                    // DetectForVideo cannot be interrupted and runs on the worker outside every lock, so
+                    // Close() must wait until that task has fully exited or it is a use-after-free in
+                    // native code. The worker loop holds its own reference, making the hand-off safe
+                    // without ever blocking the eval thread on an in-flight inference.
+                    Task.Run(async () =>
                     {
-                        _processingTask.Wait(200);
-                    }
+                        if (task != null)
+                        {
+                            try { await task; }
+                            catch (Exception) { }
+                        }
+                        try
+                        {
+                            landmarker.Close();
+                        }
+                        catch (Exception ex)
+                        {
+                            if (debug) Log.Error($"[FaceLandmark] Error closing FaceLandmarker: {ex.Message}", this);
+                        }
+                    });
                 }
-                catch (Exception ex)
-                {
-                    if (debug) Log.Error($"[FaceLandmark] Error waiting for worker task: {ex.Message}", this);
-                }
-                
-                try
-                {
-                    lock (_faceLandmarkerLock)
-                    {
-                        _faceLandmarker?.Close();
-                        _faceLandmarker = null;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    if (debug) Log.Error($"[FaceLandmark] Error closing FaceLandmarker: {ex.Message}", this);
-                }
-                
+
                 while (_inputQueue.TryDequeue(out var req))
                 {
                     ReturnBufferToPool(req.PixelData);
@@ -1174,6 +1185,9 @@ namespace Lib.io.video.mediapipe
         [Input(Guid = "cdef0123-4567-890a-bcde-f01234567890")]
         public readonly InputSlot<bool> CorrectAspectRatio = new(false);
 
+        /// <summary>Inference acceleration: Cpu = plain single-threaded TF Lite (works everywhere),
+        /// Xnnpack = multithreaded CPU (the fast default; see InferenceThreads), Gpu = OpenGL/EGL
+        /// delegate (Linux native has it; the CPU-only Windows/macOS natives fall back to Cpu).</summary>
         [Input(Guid = "a1b2c3d4-0003-4a9b-8c2d-101010101010")]
         public readonly InputSlot<MediaPipeAcceleration> Acceleration = new(MediaPipeAcceleration.Xnnpack);
 
