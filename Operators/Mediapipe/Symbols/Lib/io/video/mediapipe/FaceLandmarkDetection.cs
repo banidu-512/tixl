@@ -445,6 +445,7 @@ namespace Lib.io.video.mediapipe
                 device.ImmediateContext.UnmapSubresource(stagingTexture, 0);
             }
  
+            Cv2.CvtColor(mat, mat, ColorConversionCodes.RGBA2BGRA);
             return mat;
         }
         #endregion
@@ -806,14 +807,8 @@ namespace Lib.io.video.mediapipe
                     byte* src = (byte*)dataBox.DataPointer;
                     System.Runtime.InteropServices.Marshal.Copy((IntPtr)src, buffer, 0, width * height * 4);
                     
-                    Parallel.For(0, width * height, i =>
-                    {
-                        int idx = i * 4;
-                        byte b = buffer[idx];
-                        byte r = buffer[idx + 2];
-                        buffer[idx] = r;
-                        buffer[idx + 2] = b;
-                    });
+                    // The camera texture is RGBA and the MediaPipe image below is Srgba -
+                    // the bytes are already in the right order, no channel swizzle.
                 }
 
                 long ts;

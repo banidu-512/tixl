@@ -595,9 +595,9 @@ var inferenceThreads = _activeInferenceThreads;
                         for (int ix = 0; ix < inferenceWidth; ix++)
                         {
                             int sx = (int)(ix * sourceXStep);
-                            rowDst[ix * 3] = rowSrc[sx * 4 + 2];     // R
+                            rowDst[ix * 3] = rowSrc[sx * 4];     // R
                             rowDst[ix * 3 + 1] = rowSrc[sx * 4 + 1]; // G
-                            rowDst[ix * 3 + 2] = rowSrc[sx * 4];     // B
+                            rowDst[ix * 3 + 2] = rowSrc[sx * 4 + 2];     // B
                         }
                     });
                 }
@@ -1045,6 +1045,7 @@ var inferenceThreads = _activeInferenceThreads;
             device.ImmediateContext.UnmapSubresource(stagingTexture, 0);
         }
 
+        Cv2.CvtColor(mat, mat, ColorConversionCodes.RGBA2BGRA);
         return mat;
     }
     #endregion

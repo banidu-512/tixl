@@ -680,9 +680,9 @@ namespace Lib.io.video.mediapipe
                             
                             for (int x = 0; x < width; x++)
                             {
-                                rowDst[x * 3] = rowSrc[x * 4 + 2];     // R
+                                rowDst[x * 3] = rowSrc[x * 4];     // R
                                 rowDst[x * 3 + 1] = rowSrc[x * 4 + 1]; // G
-                                rowDst[x * 3 + 2] = rowSrc[x * 4];     // B
+                                rowDst[x * 3 + 2] = rowSrc[x * 4 + 2];     // B
                             }
                         });
                     }
@@ -840,6 +840,7 @@ namespace Lib.io.video.mediapipe
                 device.ImmediateContext.UnmapSubresource(stagingTexture, 0);
             }
  
+            Cv2.CvtColor(mat, mat, ColorConversionCodes.RGBA2BGRA);
             return mat;
         }
         #endregion

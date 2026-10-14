@@ -582,9 +582,9 @@ public class PoseLandmarkDetection : Instance<PoseLandmarkDetection>
                         for (int ix = 0; ix < inferenceWidth; ix++)
                         {
                             int sx = (int)(ix * sourceXStep);
-                            rowDst[ix * 3] = rowSrc[sx * 4 + 2];     // R
+                            rowDst[ix * 3] = rowSrc[sx * 4];     // R
                             rowDst[ix * 3 + 1] = rowSrc[sx * 4 + 1]; // G
-                            rowDst[ix * 3 + 2] = rowSrc[sx * 4];     // B
+                            rowDst[ix * 3 + 2] = rowSrc[sx * 4 + 2];     // B
                         }
                     });
                 }
@@ -814,6 +814,7 @@ public class PoseLandmarkDetection : Instance<PoseLandmarkDetection>
             device.ImmediateContext.UnmapSubresource(stagingTexture, 0);
         }
 
+        Cv2.CvtColor(mat, mat, ColorConversionCodes.RGBA2BGRA);
         return mat;
     }
     #endregion
