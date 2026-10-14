@@ -11,6 +11,9 @@
 # Encoders match the shipped Windows/Linux set (software: OpenH264, kvazaar, VPX, AV1 via
 # SVT, FFV1, ProRes, HAP) plus Apple's VideoToolbox hardware H.264/HEVC, which is a system
 # framework and LGPL-clean. avdevice brings the avfoundation demuxer for camera input.
+# (MP3 *encoding* via libmp3lame is omitted: TiXL's export audio is AAC through FFmpeg's native
+# encoder, MP3 decoding needs no external library, and Homebrew's lame 4.0 build doesn't satisfy
+# FFmpeg's libmp3lame probe.)
 #
 # Environment:
 #   TIXL_FFMPEG_VERSION   FFmpeg release to build (default 7.1.1)
@@ -19,7 +22,7 @@ set -euo pipefail
 version="${TIXL_FFMPEG_VERSION:-7.1.1}"
 out_dir="${1:?usage: build-ffmpeg.sh <output-directory>}"
 
-brew_packages=(pkg-config openh264 kvazaar libvpx aom svt-av1 lame opus)
+brew_packages=(pkg-config openh264 kvazaar libvpx aom svt-av1 opus)
 if ! brew list --versions "${brew_packages[@]}" >/dev/null 2>&1; then
     echo "Installing FFmpeg build dependencies (Homebrew bottles, no compilation)..."
     brew install --quiet "${brew_packages[@]}"
@@ -54,10 +57,13 @@ configure_flags=(
     --enable-libvpx
     --enable-libaom
     --enable-libsvtav1
-    --enable-libmp3lame
     --enable-libopus
     --enable-videotoolbox
     --enable-audiotoolbox
+    # Homebrew's keg paths are not in the compiler's default search order; the explicit flags also
+    # cover FFmpeg's direct compile-and-link probes for the dependencies pkg-config can't resolve.
+    --extra-cflags=-I/opt/homebrew/include
+    --extra-ldflags=-L/opt/homebrew/lib
 )
 ( cd "$source_dir" && ./configure "${configure_flags[@]}" )
 
