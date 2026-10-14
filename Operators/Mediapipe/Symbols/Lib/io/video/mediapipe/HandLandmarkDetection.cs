@@ -92,6 +92,8 @@ public class HandLandmarkDetection : Instance<HandLandmarkDetection>
         
         var correctAspectRatio = CorrectAspectRatio.GetValue(context);
         var zScale = ZScale.GetValue(context);
+        var constantSize = ConstantSize.GetValue(context);
+        var handSize = HandSize.GetValue(context);
 
         if (!enabled || inputTexture == null || inputTexture.IsDisposed)
         {
@@ -112,6 +114,8 @@ public class HandLandmarkDetection : Instance<HandLandmarkDetection>
         {
             _activeAcceleration = Acceleration.GetValue(context);
             _activeInferenceThreads = InferenceThreads.GetValue(context);
+            _activeConstantSize = constantSize;
+            _activeHandSize = handSize;
             InitializeWorker(maxHands, minHandDetectionConfidence, minHandPresenceConfidence, minTrackingConfidence, debug);
         }
 
@@ -205,6 +209,8 @@ public class HandLandmarkDetection : Instance<HandLandmarkDetection>
     
     private int _activeMaxHands = -1;
     private MediaPipeAcceleration? _activeAcceleration;
+    private volatile bool _activeConstantSize;
+    private volatile float _activeHandSize = 0.15f;
         private int _activeInferenceThreads = -1;
     private float _activeMinHandDetectionConfidence = -1f;
     private float _activeMinHandPresenceConfidence = -1f;
@@ -787,13 +793,32 @@ var inferenceThreads = _activeInferenceThreads;
 
                 if (handLandmarks.landmarks != null && handLandmarks.landmarks.Count > 0)
                 {
+                    // Normalized image coordinates shrink as the hand moves away from the camera
+                    // (plain perspective). When ConstantSize is on, rescale each hand's landmark cloud
+                    // around its wrist so the wrist->middle-knuckle distance is always HandSize - the
+                    // hand keeps its position in the frame but no longer changes size with distance.
+                    // Z is depth relative to the wrist in the same scale, so it is scaled by the same
+                    // factor and stays consistent.
+                    var wristX = handLandmarks.landmarks[0].X - 0.5f;
+                    var wristY = 0.5f - handLandmarks.landmarks[0].Y;
+                    var sizeScale = 1f;
+                    if (_activeConstantSize && handLandmarks.landmarks.Count > 9)
+                    {
+                        var knuckleX = handLandmarks.landmarks[9].X - 0.5f;
+                        var knuckleY = 0.5f - handLandmarks.landmarks[9].Y;
+                        var apparentSize = MathF.Sqrt((knuckleX - wristX) * (knuckleX - wristX)
+                                                      + (knuckleY - wristY) * (knuckleY - wristY));
+                        if (apparentSize > 1e-5f)
+                            sizeScale = _activeHandSize / apparentSize;
+                    }
+
                     for (int i = 0; i < handLandmarks.landmarks.Count && i < 21; i++)
                     {
                         var landmark = handLandmarks.landmarks[i];
 
-                        var centeredX = landmark.X - 0.5f;
-                        var centeredY = 0.5f - landmark.Y;
-                        var z = -landmark.Z; // Flip Z to match FaceLandmarkDetection
+                        var centeredX = (landmark.X - 0.5f - wristX) * sizeScale + wristX;
+                        var centeredY = (0.5f - landmark.Y - wristY) * sizeScale + wristY;
+                        var z = -landmark.Z * sizeScale; // Flip Z to match FaceLandmarkDetection
 
                         landmarks.Add(new Point
                         {
@@ -979,6 +1004,16 @@ var inferenceThreads = _activeInferenceThreads;
     /// <summary>Worker threads for the Xnnpack acceleration (0 = library default). Ignored by Cpu and Gpu.</summary>
     [Input(Guid = "a1b2c3d4-1001-4a9b-8c2d-101010101010")]
     public readonly InputSlot<int> InferenceThreads = new(0);
+
+    /// <summary>Rescales each hand's landmark cloud around its wrist so its size no longer depends
+    /// on the distance to the camera.</summary>
+    [Input(Guid = "a1b2c3d4-2001-4a9b-8c2d-101010101010")]
+    public readonly InputSlot<bool> ConstantSize = new(false);
+
+    /// <summary>Target wrist-to-middle-knuckle distance (in centered, +/-0.5 image units) when
+    /// ConstantSize is on.</summary>
+    [Input(Guid = "a1b2c3d4-2002-4a9b-8c2d-101010101010")]
+    public readonly InputSlot<float> HandSize = new(0.15f);
 
     [Input(Guid = "cdef1234-5678-90ab-cdef-1234567890ab")]
     public readonly InputSlot<float> ZScale = new(1.0f);
