@@ -11,6 +11,16 @@ it is CPU-only — exactly the export set the Windows `mediapipe_c.dll` has, whi
 binding and the mediapipe operators run against (CPU delegate only; the GPU classes in the vendor tree are
 never called). Apache 2.0; licence text in `Dependencies/licenses`.
 
+Two local modifications to the release binary, applied offline (see the commit that introduced them):
+
+1. The upstream build links with `-undefined dynamic_lookup`, leaving ~92 OpenCL (`cl*`) imports to be
+   resolved from whatever the process has loaded. On Apple Silicon nothing provides OpenCL, so dyld refuses
+   the image outright ("symbol not found in flat namespace '_clBuildProgram'"). Those imports are marked as
+   weak (`N_WEAK_REF`) so dyld binds them to NULL instead; the CPU paths never call them.
+2. Both modifications invalidate the ad-hoc signature, so the file must be re-signed before macOS will load
+   it: `codesign --force --sign - libmediapipe_c.dylib`. The macOS CI workflow and the DMG build do this
+   automatically; on a dev machine run it once after checkout.
+
 ## BASS
 
 Copied into the Editor and Player output on macOS only (see the `osx` item groups in `Editor/Editor.csproj`
