@@ -26,7 +26,7 @@ The Ether Dream protocol port is fixed at 7765; there is nothing to configure th
 ## Safety states
 
 * While the projector's light engine warms up, sends fail and are retried quietly.
-* The app-bar **LASER** master button drops all transmission; the DAC buffer runs dry and the projector goes dark. See [Laser safety](Laser%20Safety.md).
+* The app-bar **LASER** master button zeroes the beam while the scanners keep scanning the last geometry (settled blanking) - never a dry buffer holding a stale lit point. See [Laser safety](Laser%20Safety.md).
 
 ## Usage notes
 

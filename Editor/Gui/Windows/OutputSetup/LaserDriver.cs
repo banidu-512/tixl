@@ -87,7 +87,12 @@ internal static class LaserDriver
 
             var frame = ComputeFrame(output, context);
             if (frame is { Length: > 0 })
-                stream.SubmitFrame(frame);
+            {
+                // The stream re-applies the safety stage at the door - pass the output's current
+                // config so edited limits take effect on the next frame without recreating the stream.
+                var processing = output.LaserProcessing ?? LaserProcessingSettings.Default;
+                stream.SubmitFrame(frame, processing.Safety.ToConfig());
+            }
         }
 
         // A stream whose plug (or its binding, or the output) vanished stops its threads — the

@@ -20,7 +20,7 @@ TiXL cannot guarantee any of this for you. As a rule of thumb for DIY setups: **
 
 ## While programming with TiXL
 
-* Keep the app-bar **LASER** master button off until everything else is verified - it defaults to off on every editor start, and nothing transmits while it is off.
+* Keep the app-bar **LASER** master button off until everything else is verified - it defaults to off on every editor start, and while it is off every beam is zeroed (the scanners keep scanning the last geometry, settled, but emit no light).
 * New laser outputs start **uncalibrated**: content is ignored and only a tiny alignment rectangle streams. Aim it on the wall, extend it step by step, and only then switch **Calibrated** on.
 * Use blanked/low-intensity test frames first; check what the projector actually shows against what the software thinks (the output's live frame preview and the plug's status line).
 * Remember that scan failures smear the beam into a stationary blob: if the scanners stop (or your point data collapses to a point), a full-power stationary beam burns. The optimization blanking (see [Laser optimization](LaserOptimizer.md)) reduces - not removes - this risk.
@@ -45,9 +45,13 @@ Three layers of software safety ship with the laser output. They reduce risk fro
 
 **The app-bar LASER master button**:
 
-* Defaults to **off** on every editor start; nothing transmits until you click it.
-* A click drops all transmission - every projector goes dark.
+* Defaults to **off** on every editor start; no light leaves the projector until you click it.
+* A click zeroes every beam at once - the scanners keep scanning the last geometry (settled, so they never park mid-stroke) with the intensity zeroed.
 * It stays orange while any laser output is still uncalibrated: the alignment rectangle, not show content, is what streams.
+
+**The transport door** (built into every transport, always active):
+
+* The output's safety limits are re-applied to every frame right at the point of submission, before encoding - no code path can stream a frame that skips the safe zone, jump/dwell limits or brightness ceiling.
 
 **The frame watchdog** (built into the transports, always active):
 

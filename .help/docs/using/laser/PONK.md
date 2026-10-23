@@ -24,7 +24,7 @@ Streams laser frames to a PONK-compatible receiver (e.g. MadMapper's Ponk input)
 * Sender identity: a 32-byte name (the plug's `Sender name`) plus a stable random id.
 * **Threading model mirrors [EtherDream](EtherDream.md)**: a connection loop owns the UDP socket (bind + multicast interface/TTL/group options) and a send loop drains a queue of max 5 frames. Send errors are retried up to 20 times before the socket is rebuilt.
 * **Watchdog**: no fresh frames for about a second blanks the beam instead of looping a stale lit frame.
-* The app-bar **LASER** master button drops all transmission; receivers time out to blank.
+* The app-bar **LASER** master button keeps sending the last frame zero-colored, so the beam is off while the geometry keeps scanning (settled blanking).
 
 ## Usage notes
 

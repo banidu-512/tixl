@@ -25,13 +25,15 @@ namespace T3.Core.Output;
 /// <see cref="LaserOutputStream"/> per bound laser plug streams the frames the setup's laser
 /// pipeline produces to that plug's hardware. The stream runs its own connection/send threads and
 /// applies the plug's device settings (scan rate, brightness ceiling, channel order) as the final
-/// audit before encoding — the setup pipeline (optimizer + safety) has already run upstream.
+/// audit before encoding.
 ///
-/// Safety model carried over from the operator era: the global <see cref="LaserMasterEnable"/>
-/// gates all transmission (off = transmit nothing, the buffer runs dry and the projector goes
-/// dark), a frame watchdog blanks the beam when no fresh frames arrive within its grace period,
-/// and every frame leads with dark approach points so a fresh frame never streaks the beam from
-/// the scanners' park position.
+/// Safety model: the output's safety limits (safe zone, jump/dwell limits, brightness) are
+/// re-applied by <see cref="SubmitFrame"/> at the stream door, so nothing unclamped can reach an
+/// encode even from a caller that skipped the setup pipeline; the global
+/// <see cref="LaserMasterEnable"/> blanks the beam while the scanners keep scanning the last
+/// geometry (settled blanking), a frame watchdog blanks the beam when no fresh frames arrive
+/// within its grace period, and every frame leads with dark approach points so a fresh frame
+/// never streaks the beam from the scanners' park position.
 /// </summary>
 public sealed class LaserOutputStream : IDisposable
 {
@@ -57,12 +59,37 @@ public sealed class LaserOutputStream : IDisposable
         }
     }
 
-    private LaserOutputStream(IStream inner) => _inner = inner;
+    private LaserOutputStream(IStream inner)
+    {
+        _inner = inner;
+        _safetyStats = new LaserSafetyTransforms.Stats();
+    }
 
     private readonly IStream _inner;
+    private readonly List<LaserPoint> _safetyWorkList = new(4096);
+    private LaserSafetyTransforms.Stats _safetyStats;
 
-    /// <summary>Queues a processed frame for the send thread; copies out of the caller's buffer.</summary>
-    public void SubmitFrame(LaserPoint[] frame) => _inner.SubmitFrame(frame);
+    /// <summary>
+    /// Queues a frame for the send thread, re-applying the output's safety limits at the door -
+    /// the non-bypassable stage that runs no matter what the caller did upstream. Copies out of
+    /// the caller's buffer; call from one thread only (the render thread).
+    /// </summary>
+    public void SubmitFrame(LaserPoint[] frame, in LaserSafetyTransforms.Config safety)
+    {
+        var count = frame.Length;
+        if (count == 0)
+            return;
+
+        // The safety transforms are idempotent (clamps, subdivision, dwell blanking), so
+        // re-applying the stage the setup pipeline already ran is safe and never inflates
+        // the point count.
+        _safetyWorkList.Clear();
+        for (var i = 0; i < count; i++)
+            _safetyWorkList.Add(frame[i]);
+
+        var result = LaserSafetyTransforms.Apply(_safetyWorkList, in safety, ref _safetyStats);
+        _inner.SubmitFrame(result.ToArray());
+    }
 
     public bool IsConnected => _inner.IsConnected;
 
@@ -411,16 +438,24 @@ public sealed class LaserOutputStream : IDisposable
                 if (_isPlaying)
                     recoverEscalation = 0;
 
-                // Master kill: transmit NOTHING - drop queued frames and let the DAC buffer
-                // run dry, so the projector/scope goes fully dark (no XY movement either).
+                // Master off: settled blanking - keep scanning a zero-color copy of the last
+                // frame so the beam is off while the scanners stay settled. Letting the buffer
+                // run dry would leave the projector holding whatever point it received last.
                 if (!LaserMasterEnable.Enabled)
                 {
                     _pointQueue.Clear();
-                    _lastFrame = null;
+                    if (_lastFrame is { Length: > 0 } && !_masterBlankApplied)
+                    {
+                        _lastFrame = BlankFrame(_lastFrame, ref _blankFrameScratch);
+                        _masterBlankApplied = true;
+                    }
+
                     try { await Task.Delay(15, token); }
                     catch (OperationCanceledException) { return; }
                     continue;
                 }
+
+                _masterBlankApplied = false;
 
                 // Pick the frame to stream: fresh frames first, otherwise loop the last one
                 // so the buffer stays fed between the driver's ~30 Hz submissions. Looping
@@ -752,6 +787,7 @@ public sealed class LaserOutputStream : IDisposable
         private volatile int _bufferFullness;
         private long _lastEnqueueTimestamp;
         private volatile bool _watchdogBlanked;
+        private bool _masterBlankApplied;
         private LaserPoint[] _blankFrameScratch = Array.Empty<LaserPoint>();
         private LaserPoint[] _approachScratch = Array.Empty<LaserPoint>();
         private volatile bool _killedSocket;
@@ -1020,14 +1056,24 @@ public sealed class LaserOutputStream : IDisposable
 
             while (!token.IsCancellationRequested && !_disposed)
             {
-                // Master kill: transmit NOTHING while disabled - receivers time out to blank.
+                // Master off: settled blanking - keep sending a zero-color copy of the last
+                // frame so the beam is off while the geometry keeps scanning; a silent sender
+                // leaves receivers blanking on their own timeout with the scanners parked.
                 if (!LaserMasterEnable.Enabled)
                 {
                     _pointQueue.Clear();
+                    if (_lastFrame is { Length: > 0 } && !_masterBlankApplied)
+                    {
+                        _lastFrame = BlankFrameCopy(_lastFrame);
+                        _masterBlankApplied = true;
+                    }
+
                     try { await Task.Delay(15, token); }
                     catch (OperationCanceledException) { return; }
                     continue;
                 }
+
+                _masterBlankApplied = false;
 
                 LaserPoint[]? frame = null;
                 if (_pointQueue.TryDequeue(out var points) && points.Length > 0)
@@ -1266,6 +1312,7 @@ public sealed class LaserOutputStream : IDisposable
         private int _consecutiveErrors;
         private long _lastEnqueueTimestamp;
         private volatile bool _watchdogBlanked;
+        private bool _masterBlankApplied;
     }
     #endregion
 
@@ -1852,19 +1899,34 @@ public sealed class LaserOutputStream : IDisposable
             var token = _cts?.Token ?? default;
             using var udpSender = new UdpClient();
             var target = new IPEndPoint(MulticastAddress, MulticastPort);
+            LaserPoint[]? lastFrame = null;
+            var blankScratch = Array.Empty<LaserPoint>();
 
             while (!token.IsCancellationRequested && !_disposed)
             {
-                // Master kill: transmit NOTHING while disabled - receivers time out to blank.
+                // Master off: settled blanking - keep sending a zero-color copy of the last
+                // frame so the beam is off while the geometry keeps moving; UDP is lossy, so
+                // a one-off blank would be lost and the receiver keeps its last lit frame.
                 if (!LaserMasterEnable.Enabled)
                 {
                     _frameQueue.Clear();
+                    if (_feedActive && lastFrame is { Length: > 0 })
+                    {
+                        var blanked = LaserOutputStream.BlankFrame(lastFrame, ref blankScratch);
+                        try
+                        {
+                            SendLaserFeedFrame(udpSender, blanked, target);
+                        }
+                        catch { /* transient socket errors retry on the next tick */ }
+                    }
+
                     Thread.Sleep(15);
                     continue;
                 }
 
                 if (_feedActive && _frameQueue.TryDequeue(out var frame))
                 {
+                    lastFrame = frame;
                     try
                     {
                         SendLaserFeedFrame(udpSender, frame, target);
