@@ -52,8 +52,8 @@ internal sealed class CollabManager
 
     private CollabUserIdentity _localIdentity = new();
 
-    private CollabTransport? _transport;
-    private LanDiscoveryScanner? _discoveryScanner;
+    private CollabTransport _transport;
+    private LanDiscoveryScanner _discoveryScanner;
     private readonly List<DiscoveredSession> _discovered = [];
 
     /// <summary>Ops applied or received since session start; replayed to late joiners.</summary>
@@ -280,7 +280,7 @@ internal sealed class CollabManager
         }
     }
 
-    private static IPAddress? ResolveHostName(string host)
+    private static IPAddress ResolveHostName(string host)
     {
         try
         {
@@ -304,11 +304,6 @@ internal sealed class CollabManager
 
         _sessionLog.Clear();
         _opsReceivedThisSecond.Clear();
-        while (_pendingDisconnects.TryDequeue(out _))
-        {
-            // Drop disconnect events from the dead session; replaying them into a future
-            // session would remove peers it never had.
-        }
         _localPresence = new PresencePacket();
         _password = "";
         RoomCode = "";
@@ -346,9 +341,9 @@ internal sealed class CollabManager
     private readonly Dictionary<int, PresencePacket> _latestPresenceByPeer = new();
 
     /// <summary>Display info about a session participant, or null when nothing is known yet.</summary>
-    public CollabPeerDisplay? GetPresence(int peerId)
+    public CollabPeerDisplay GetPresence(int peerId)
     {
-        PresencePacket? presence = null;
+        PresencePacket presence = null;
         Guid userId;
 
         var transportPeer = Peers.FirstOrDefault(p => p.AssignedId == peerId);
@@ -419,19 +414,7 @@ internal sealed class CollabManager
             return;
 
         ProcessPendingDisconnects();
-
-        // A disconnect handled above can end the session (host loss, relay link death), and
-        // Leave() disposes the transport — nothing below may run against it.
-        if (State == SessionState.Off)
-            return;
-
         DrainInboundQueue();
-
-        // A message handler can also end the session (auth failure, host bye) — the transport
-        // is gone at that point, so the remaining steps must not run.
-        if (State == SessionState.Off)
-            return;
-
         SendHeartbeatsAndPrune();
         SendLocalPresence();
         RefreshDiscoveredSessions();
@@ -496,22 +479,17 @@ internal sealed class CollabManager
 
     private void DrainInboundQueue()
     {
-        if (_transport == null)
-            return;
-
         var processed = 0;
-        // A message handler may end the session (auth failure, host bye), nulling the transport
-        // mid-loop — the null-conditional keeps the loop condition safe on the next iteration.
-        while (processed < MaxInboundPerFrame && _transport?.Inbound.TryDequeue(out var message) == true)
+        while (processed < MaxInboundPerFrame && _transport.Inbound.TryDequeue(out var message))
         {
             processed++;
             if (message.Peer.SessionClosed && message.IsPresence)
                 continue;
 
-            if (message is { IsPresence: true, Presence: { } presence })
-                HandlePresence(message.Peer, presence);
-            else if (message.Json is { } json)
-                HandleJson(message.Peer, json);
+            if (message.IsPresence)
+                HandlePresence(message.Peer, message.Presence);
+            else
+                HandleJson(message.Peer, message.Json);
         }
     }
 
@@ -537,7 +515,7 @@ internal sealed class CollabManager
             var buffer = new byte[CollabProtocol.MaxPresencePayload];
             var size = presence.Encode(buffer);
             if (size > 0)
-                _transport?.SendToPeer(other, CollabProtocol.FrameType.Presence, buffer.AsSpan(0, size));
+                _transport.SendToPeer(other, CollabProtocol.FrameType.Presence, buffer.AsSpan(0, size));
         }
     }
 
@@ -654,11 +632,11 @@ internal sealed class CollabManager
 
     private sealed class PendingHandshake
     {
-        public byte[]? Salt;
-        public byte[]? Nonce;
+        public byte[] Salt;
+        public byte[] Nonce;
     }
 
-    private PendingHandshake? _localAwaitedAuth;
+    private PendingHandshake _localAwaitedAuth;
 
     private void HandleHostHello(CollabPeerConnection peer, JObject json)
     {
@@ -688,7 +666,7 @@ internal sealed class CollabManager
     private void HandleHostAuth(CollabPeerConnection peer, JObject json)
     {
         var pending = _localAwaitedAuth;
-        if (pending?.Salt == null || pending.Nonce == null)
+        if (pending?.Salt == null)
         {
             RejectPeer(peer, "no challenge pending");
             return;
@@ -1295,7 +1273,7 @@ internal sealed class CollabManager
             }
 
             if (peer.IsAuthenticated)
-                _transport?.SendToPeer(peer, CollabProtocol.FrameType.Heartbeat, timestamp);
+                _transport.SendToPeer(peer, CollabProtocol.FrameType.Heartbeat, timestamp);
         }
     }
 
@@ -1347,7 +1325,7 @@ internal sealed class CollabManager
 
     private void SendJson(CollabPeerConnection peer, object message) => _transport?.SendJson(peer, message);
 
-    private void BroadcastSystemMessage(object message, CollabPeerConnection? except = null) => _transport?.BroadcastJson(Peers, message, except);
+    private void BroadcastSystemMessage(object message, CollabPeerConnection except) => _transport?.BroadcastJson(Peers, message, except);
 
     /// <summary>LAN discovery announcement used in the settings tab.</summary>
     public sealed class DiscoveredSession
