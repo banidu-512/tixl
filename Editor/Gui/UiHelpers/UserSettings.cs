@@ -11,6 +11,7 @@ using T3.Editor.Gui.Windows.RenderExport;
 using T3.Editor.Gui.Windows.TimeLine;
 
 using T3.Editor.Gui.Windows.OutputSetup;
+using T3.Editor.Collab;
 
 namespace T3.Editor.Gui.UiHelpers;
 
@@ -196,6 +197,23 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public string UserName = UndefinedUserName;
         public bool EnableAutoBackup = true;
         public bool MinimalBackup = true;
+
+        // Collaboration
+        /// <summary>Persistent participant id; also seeds the per-user accent color.</summary>
+        public string CollabUserId = "";
+
+        /// <summary>Display name override. Falls back to the Discord name, then the OS user name.</summary>
+        public string CollabDisplayName = "";
+
+        public int CollabPort = CollabProtocol.DefaultTcpPort;
+        public bool CollabLanDiscovery = true;
+        public string CollabPassword = "";
+
+        public string CollabDiscordClientId = "";
+        public string CollabDiscordClientSecret = "";
+        public string CollabDiscordUserId = "";
+        public string CollabDiscordUserName = "";
+        public string CollabDiscordUserAvatar = "";
 
         public float GizmoSize = 100;
 

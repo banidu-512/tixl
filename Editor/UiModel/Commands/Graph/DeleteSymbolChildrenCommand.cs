@@ -173,4 +173,8 @@ public class DeleteSymbolChildrenCommand : ICommand
     private readonly Guid _compositionSymbolId;
     private readonly ChildEntry[] _removedChildren;
     private readonly List<ConnectionEntry> _removedConnections = new();
+
+    // Read access for the collab wire encoder; does not participate in undo semantics.
+    internal Guid CompositionSymbolIdForCollab => _compositionSymbolId;
+    internal IEnumerable<Guid> RemovedChildIdsForCollab => _removedChildren.Select(e => e.ChildId);
 }

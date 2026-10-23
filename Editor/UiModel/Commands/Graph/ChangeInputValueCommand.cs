@@ -160,4 +160,11 @@ public sealed class ChangeInputValueCommand : ICommand
     private readonly bool _wasAnimated;
     private readonly double _animationTime;
     private readonly List<VDefinition> _originalKeyframes;
+
+    // Read access for the collab wire encoder; does not participate in undo semantics.
+    internal Guid CompositionSymbolIdForCollab => _inputParentSymbolId;
+    internal Guid ChildIdForCollab => _childId;
+    internal Guid InputIdForCollab => _inputId;
+    internal InputValue NewValueForCollab => _newValue;
+    internal bool WasAnimatedForCollab => _wasAnimated;
 }

@@ -23,6 +23,15 @@ We hope to bring together a community of artists, developers and creative tinker
 ## Installation
 Please follow the [installation guide](https://github.com/tixl3d/tixl/wiki/help.Installation).
 
+## Collaboration (experimental)
+This branch adds live multi-user editing of a shared graph. Sessions are configured in **Settings → Collaboration**:
+
+- **LAN**: one instance hosts on a configurable port; others join via network discovery or a direct IP. Optionally password protected (PBKDF2/HMAC challenge-response; the password never crosses the wire).
+- **Online**: either a direct address (open port or VPN such as Tailscale), or a room on a relay via the included `CollabRelay` server project (`dotnet run --project CollabRelay` — the host shares the generated room code, joiners enter it; no port forwarding needed).
+- **Identity**: local nickname, or Discord login (OAuth2, configured with a client id/secret from the Discord Developer Portal).
+
+Synced edits: adding/deleting operators, connections, parameter value changes, renames and node moves. Participants see each other's cursors and selection outlines in the graph. Late joiners receive a replay of the session's edit history, so everyone should open the same project before joining. Undo histories stay local on purpose — remote commands are applied directly and never enter your undo stack.
+
 ## Get Help
 To get started read the [documentation](https://github.com/tixl3d/tixl/wiki) or watch [tutorial videos](https://www.youtube.com/watch?v=eH2E02U6P5Q&list=PLj-rnPROvbn3LigXGRSDvmLtgTwmNHcQs&index=4).
 

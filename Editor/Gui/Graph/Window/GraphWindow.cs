@@ -311,6 +311,8 @@ internal sealed class GraphWindow : Windows.Window
         }
         drawList.ChannelsMerge();
 
+        Collab.CollabPresenceOverlay.Draw(ProjectView, GraphCanvas, drawList);
+
         // if (ProjectView?.InstView != null)
         //     _editDescriptionDialog.Draw(ProjectView.InstView.Symbol);
         //
