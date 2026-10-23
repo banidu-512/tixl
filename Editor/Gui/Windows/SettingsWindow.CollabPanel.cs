@@ -337,7 +337,7 @@ internal sealed partial class SettingsWindow
         FormInputs.AddVerticalSpace();
         CustomComponents.HelpText("""
                                   How it works:
-                                  - Everyone opens the same project. Participants who join late receive all edits made during the session.
+                                  - Late joiners receive full snapshots of the compositions edited in the session - their local changes to those compositions are replaced by the host's state.
                                   - Graph edits are synchronized: adding and deleting operators, connections, parameter changes, renames and moving nodes.
                                   - Undo/Redo are session-wide while connected: Ctrl+Z reverts the last edit of ANY participant (the host keeps the shared history).
                                   - Parameters someone is editing are soft-locked: they appear disabled with a "(locked)" marker until released.
