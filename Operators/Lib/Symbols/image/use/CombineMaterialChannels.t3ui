@@ -1,7 +1,7 @@
 {
   "FormatVersion": 3,
   "Id": "085b7841-9502-4b49-896e-3b1fa023f1bf"/*CombineMaterialChannels*/,
-  "Description": "Combines roughness, metallic, and ambient occlusion texture maps that are loaded with [LoadImage] into a single texture for [SetMaterial] to create PBR materials.\n\nIf no normal map is available, [NormalMap] can be used to generate one.\n\nOlder version: [CombineMaterialChannels2]",
+  "Description": "Combines roughness, metallic and ambient occlusion maps into a single texture for PBR materials with [SetMaterial].\n\nThe maps are typically loaded with [LoadImage]. If no normal map is available, [NormalMap] can generate one.\n\nAKA: pbr, orm, roughness, metallic, occlusion\n\nSee also: [CombineMaterialChannels2], [SetMaterial]",
   "SymbolTags": "8",
   "InputUis": [
     {
@@ -10,7 +10,7 @@
         "X": -514.44653,
         "Y": 790.6531
       },
-      "Description": "Hold the \"Alt\" key and left-click to create points on the curve to fine-tune how the loaded roughness map is used.\nRight-click on the points opens more options such as interpolation etc.",
+      "Description": "Curve that remaps the values of the roughness map.\n\nTips:\n- Alt + click on the curve adds points; right-click a point for more options like interpolation.",
       "AddPadding": "True"
     },
     {
@@ -19,7 +19,7 @@
         "X": -514.44653,
         "Y": 745.6531
       },
-      "Description": "Enables the generation of mipmaps which ensure that textures also look good from different distances and angles."
+      "Description": "Generates mipmaps, which improve quality when the texture is seen from different distances and angles."
     },
     {
       "InputId": "34ba88b4-7fe0-4f40-9433-feab3b6e81f0"/*Resolution*/,
@@ -28,7 +28,7 @@
         "Y": 565.6531
       },
       "GroupTitle": "Settings",
-      "Description": "Overwrite the resolution of the input image."
+      "Description": "Overrides the resolution of the input images."
     },
     {
       "InputId": "55ee3c9c-ffbc-4322-bb44-69d1b7001ff8"/*Occlusion*/,
@@ -37,7 +37,7 @@
         "X": -515.9635,
         "Y": 463.74335
       },
-      "Description": "Input for an AmbientOcclusionMap via a [LoadImage] operator."
+      "Description": "Ambient occlusion map, e.g. from a [LoadImage]."
     },
     {
       "InputId": "ae7df1c8-ffd1-4a32-9f25-769fc7630f6f"/*Metallic*/,
@@ -46,7 +46,7 @@
         "X": -515.9635,
         "Y": 418.74335
       },
-      "Description": "Input for a MetallicMap via a [LoadImage] operator."
+      "Description": "Metallic map, e.g. from a [LoadImage]."
     },
     {
       "InputId": "c697d838-f9a3-4ee7-af3d-713494f0ae93"/*Roughness*/,
@@ -55,215 +55,245 @@
         "X": -515.9635,
         "Y": 373.74335
       },
-      "Description": "Input for a RoughnessMap via a [LoadImage] operator."
+      "Description": "Roughness map, e.g. from a [LoadImage]."
     }
   ],
   "SymbolChildUis": [
     {
-      "ChildId": "0dd1d663-17b3-473b-ba5c-8a4bfbae6cf4"/*VertexShaderStage*/,
+      "ChildId": "0dd1d663-17b3-473b-ba5c-8a4bfbae6cf4",
+      "SymbolName": "Types.Gfx.VertexShaderStage",
       "Position": {
         "X": 648.1795,
         "Y": 0.23039246
       }
     },
     {
-      "ChildId": "1346dad8-4394-4b50-a53e-75c73fcd1158"/*Rasterizer*/,
+      "ChildId": "1346dad8-4394-4b50-a53e-75c73fcd1158",
+      "SymbolName": "Lib.render._dx11.api.Rasterizer",
       "Position": {
         "X": 648.1795,
         "Y": 92.23064
       }
     },
     {
-      "ChildId": "33d6d853-f868-40f2-a128-94b83e8956a2"/*Execute*/,
+      "ChildId": "33d6d853-f868-40f2-a128-94b83e8956a2",
+      "SymbolName": "Lib.flow.Execute",
       "Position": {
         "X": 849.42194,
         "Y": -52.63765
       }
     },
     {
-      "ChildId": "34e8bb2a-fa64-4ad5-bce4-df177cc9951f"/*PixelShaderStage*/,
+      "ChildId": "34e8bb2a-fa64-4ad5-bce4-df177cc9951f",
+      "SymbolName": "Types.Gfx.PixelShaderStage",
       "Position": {
         "X": 648.1795,
         "Y": 148.23064
       }
     },
     {
-      "ChildId": "3af09105-2b58-4eed-a3fd-491da10c7538"/*ResolutionConstBuffer*/,
+      "ChildId": "3af09105-2b58-4eed-a3fd-491da10c7538",
+      "SymbolName": "Lib.render._dx11.api.ResolutionConstBuffer",
       "Position": {
         "X": 271.97748,
         "Y": -9.486237
       }
     },
     {
-      "ChildId": "3cc52076-b74f-4131-a49a-5153a7a9a6e0"/*_TransformsCBuffer*/,
+      "ChildId": "3cc52076-b74f-4131-a49a-5153a7a9a6e0",
+      "SymbolName": "Lib.render._dx11.api._TransformsCBuffer",
       "Position": {
         "X": 271.97748,
         "Y": 89.51378
       }
     },
     {
-      "ChildId": "437f3b27-c95b-457e-b831-1bada75b9165"/*SrvFromTexture2d*/,
+      "ChildId": "437f3b27-c95b-457e-b831-1bada75b9165",
+      "SymbolName": "Lib.render._dx11.api.SrvFromTexture2d",
       "Position": {
         "X": 270.43866,
         "Y": 489.42123
       }
     },
     {
-      "ChildId": "4979cae3-cf03-448e-ad8a-4ee764fd3982"/*SamplerState*/,
+      "ChildId": "4979cae3-cf03-448e-ad8a-4ee764fd3982",
+      "SymbolName": "Types.Gfx.SamplerState",
       "Position": {
         "X": 268.42255,
         "Y": 570.4746
       }
     },
     {
-      "ChildId": "5a0d1fd1-135c-41b9-8136-bdf287a700cf"/*GetTextureSize*/,
+      "ChildId": "5a0d1fd1-135c-41b9-8136-bdf287a700cf",
+      "SymbolName": "Lib.render._dx11.api.GetTextureSize",
       "Position": {
         "X": -86.938934,
         "Y": 323.12024
       }
     },
     {
-      "ChildId": "5da69ac4-e1e1-4e54-b1d1-49768e0b9883"/*InputAssemblerStage*/,
+      "ChildId": "5da69ac4-e1e1-4e54-b1d1-49768e0b9883",
+      "SymbolName": "Lib.render._dx11.api.InputAssemblerStage",
       "Position": {
         "X": 648.1795,
         "Y": -55.769608
       }
     },
     {
-      "ChildId": "62017ce6-6292-47dc-86b4-8e3b13988508"/*SrvFromTexture2d*/,
+      "ChildId": "62017ce6-6292-47dc-86b4-8e3b13988508",
+      "SymbolName": "Lib.render._dx11.api.SrvFromTexture2d",
       "Position": {
         "X": 270.43866,
         "Y": 377.42123
       }
     },
     {
-      "ChildId": "6a5a7616-04ac-4c2d-a19e-0e97cc7ed8ae"/*GetTextureSize*/,
+      "ChildId": "6a5a7616-04ac-4c2d-a19e-0e97cc7ed8ae",
+      "SymbolName": "Lib.render._dx11.api.GetTextureSize",
       "Position": {
         "X": -86.938934,
         "Y": 379.12024
       }
     },
     {
-      "ChildId": "6c645173-f424-49f7-a468-7f9b561a9d4d"/*GetTextureSize*/,
+      "ChildId": "6c645173-f424-49f7-a468-7f9b561a9d4d",
+      "SymbolName": "Lib.render._dx11.api.GetTextureSize",
       "Position": {
         "X": -86.938934,
         "Y": 435.12024
       }
     },
     {
-      "ChildId": "7258a987-3cba-48a1-bcec-f6b9ae9ba0b5"/*BlendState*/,
+      "ChildId": "7258a987-3cba-48a1-bcec-f6b9ae9ba0b5",
+      "SymbolName": "Types.Gfx.BlendState",
       "Position": {
         "X": 149.57573,
         "Y": 696.2931
       }
     },
     {
-      "ChildId": "88773604-395d-4b2e-82bf-ea53b71a70f3"/*Draw*/,
+      "ChildId": "88773604-395d-4b2e-82bf-ea53b71a70f3",
+      "SymbolName": "Lib.render._dx11.api.Draw",
       "Position": {
         "X": 651.56854,
         "Y": 468.22552
       }
     },
     {
-      "ChildId": "8f8ca2a0-db16-4f80-926f-c33679b240af"/*BoolToFloat*/,
+      "ChildId": "8f8ca2a0-db16-4f80-926f-c33679b240af",
+      "SymbolName": "Lib.numbers.bool.convert.BoolToFloat",
       "Position": {
         "X": 63.061066,
         "Y": 379.12024
       }
     },
     {
-      "ChildId": "9c017e8c-6ba3-4eb4-a244-960712771bdc"/*BoolToFloat*/,
+      "ChildId": "9c017e8c-6ba3-4eb4-a244-960712771bdc",
+      "SymbolName": "Lib.numbers.bool.convert.BoolToFloat",
       "Position": {
         "X": 63.061066,
         "Y": 323.12024
       }
     },
     {
-      "ChildId": "9e2d73b7-56ab-43e5-a84c-8680c0bac9da"/*SrvFromTexture2d*/,
+      "ChildId": "9e2d73b7-56ab-43e5-a84c-8680c0bac9da",
+      "SymbolName": "Lib.render._dx11.api.SrvFromTexture2d",
       "Position": {
         "X": 270.43866,
         "Y": 433.42123
       }
     },
     {
-      "ChildId": "a5255db7-e342-461a-bc98-34582439011f"/*FloatsToBuffer*/,
+      "ChildId": "a5255db7-e342-461a-bc98-34582439011f",
+      "SymbolName": "Lib.render._dx11.api.FloatsToBuffer",
       "Position": {
         "X": 270.43866,
         "Y": 239.4213
       }
     },
     {
-      "ChildId": "aa53a374-46ea-4808-8620-2621c8d020e1"/*clampedSampler*/,
+      "ChildId": "aa53a374-46ea-4808-8620-2621c8d020e1",
+      "SymbolName": "Types.Gfx.SamplerState",
       "Position": {
         "X": 268.42255,
         "Y": 613.4746
       }
     },
     {
-      "ChildId": "b927cace-4f35-49f3-9895-a7d36e29732c"/*CurvesToTexture*/,
+      "ChildId": "b927cace-4f35-49f3-9895-a7d36e29732c",
+      "SymbolName": "Lib.numbers.curve.CurvesToTexture",
       "Position": {
         "X": -167.86224,
         "Y": 826.8135
       }
     },
     {
-      "ChildId": "c551150a-02ae-4221-b051-1ab252c54be1"/*RenderTargetBlendDescription*/,
+      "ChildId": "c551150a-02ae-4221-b051-1ab252c54be1",
+      "SymbolName": "Types.Gfx.RenderTargetBlendDescription",
       "Position": {
         "X": -0.42427063,
         "Y": 696.2931
       }
     },
     {
-      "ChildId": "c73887d0-ba29-4da3-9cbe-e525f9c50f8e"/*OutputMergerStage*/,
+      "ChildId": "c73887d0-ba29-4da3-9cbe-e525f9c50f8e",
+      "SymbolName": "Lib.render._dx11.api.OutputMergerStage",
       "Position": {
         "X": 654.12665,
         "Y": 387.15356
       }
     },
     {
-      "ChildId": "c862eb80-be90-4cc0-b81e-997a4e2fd9f8"/*BoolToFloat*/,
+      "ChildId": "c862eb80-be90-4cc0-b81e-997a4e2fd9f8",
+      "SymbolName": "Lib.numbers.bool.convert.BoolToFloat",
       "Position": {
         "X": 63.061066,
         "Y": 446.12024
       }
     },
     {
-      "ChildId": "cb385e02-cf45-4c57-ac4d-31f5667761f9"/*VertexShader*/,
+      "ChildId": "cb385e02-cf45-4c57-ac4d-31f5667761f9",
+      "SymbolName": "Types.Gfx.VertexShader",
       "Position": {
         "X": 271.97748,
         "Y": 46.513763
       }
     },
     {
-      "ChildId": "d29baa5a-b8ea-421f-b43f-ba5e331074e6"/*MaxInt2*/,
+      "ChildId": "d29baa5a-b8ea-421f-b43f-ba5e331074e6",
+      "SymbolName": "Lib.numbers.int2.process.MaxInt2",
       "Position": {
         "X": 73.90674,
         "Y": -125.05841
       }
     },
     {
-      "ChildId": "d8aaaaa3-6bfd-4a79-9af2-bc30406cc0b5"/*RenderTarget*/,
+      "ChildId": "d8aaaaa3-6bfd-4a79-9af2-bc30406cc0b5",
+      "SymbolName": "Lib.image.generate.basic.RenderTarget",
       "Position": {
         "X": 1081.9591,
         "Y": -147.28555
       }
     },
     {
-      "ChildId": "de4742b7-85e2-49fb-af36-5cc8baf8cd1d"/*SrvFromTexture2d*/,
+      "ChildId": "de4742b7-85e2-49fb-af36-5cc8baf8cd1d",
+      "SymbolName": "Lib.render._dx11.api.SrvFromTexture2d",
       "Position": {
         "X": -17.862244,
         "Y": 826.8135
       }
     },
     {
-      "ChildId": "f6828aa6-0fa6-405f-ae95-83841a159d2d"/*RasterizerState*/,
+      "ChildId": "f6828aa6-0fa6-405f-ae95-83841a159d2d",
+      "SymbolName": "Types.Gfx.RasterizerState",
       "Position": {
         "X": 274.60547,
         "Y": 148.75381
       }
     },
     {
-      "ChildId": "fbbdb444-11cf-4b25-b6ae-b4f1923b592e"/*PixelShader*/,
+      "ChildId": "fbbdb444-11cf-4b25-b6ae-b4f1923b592e",
+      "SymbolName": "Types.Gfx.PixelShader",
       "Position": {
         "X": 256.89246,
         "Y": -197.9327

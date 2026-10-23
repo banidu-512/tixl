@@ -21,6 +21,7 @@ using T3.Editor.Compilation;
 using T3.Editor.Gui;
 using T3.Editor.Gui.InputUi.SimpleInputUis;
 using T3.Editor.Gui.Interaction.Timing;
+using T3.IoServices.Midi;
 using T3.Serialization;
 using ShaderCompiler = T3.Core.Resource.ShaderCompiling.ShaderCompiler;
 
@@ -225,7 +226,11 @@ internal static partial class PlayerExporter
             Log.Debug("Skipped optional dependencies: " + string.Join(", ", dependencyFilter.ExcludedPatterns));
         }
 
-        reason = "Exported successfully to " + exportDir;
+        reason = $"""
+                  Exported successfully to {exportDir}
+
+                  {BassLicenseNote}
+                  """;
         return true;
     }
 
@@ -583,6 +588,14 @@ internal static partial class PlayerExporter
     public const string NoContentSupplierReason = "Add a [SendToOutput] inside this operator. "
                                                   + "An executable ships what its sends put on the setup's outputs.";
 
+    /// <summary>
+    /// Shown where the export is offered and in its result: the player ships BASS, whose free license only
+    /// covers non-commercial use. The license text travels with every export in its licenses folder.
+    /// </summary>
+    public const string BassLicenseNote = "Exported executables include the BASS audio library (un4seen.com). It is free for "
+                                          + "non-commercial use; distributing an executable commercially requires a BASS license "
+                                          + "from un4seen. See licenses/BASS-un4seen.txt in the export folder.";
+
     /// <summary>Whether this op holds anything an export could ship — the check behind an offered export button.</summary>
     public static bool CanExport(Instance exportedInstance)
     {
@@ -795,10 +808,33 @@ internal static partial class PlayerExporter
                                                 ConfigData: configData);
 
         if (JsonUtils.TrySaveJson(exportSettings, Path.Combine(exportDir, ExportSettings.FileName)))
+        {
+            CopyMidiAliases(exportDir);
             return true;
+        }
 
         reason = $"Failed to save export settings to {ExportSettings.FileName}";
         return false;
+    }
+
+    /// <summary>
+    /// The alias table is machine-specific, but shipping this machine's copy gives the show a working start and a
+    /// file to edit on site. Same name and format as in the settings folder.
+    /// </summary>
+    private static void CopyMidiAliases(string exportDir)
+    {
+        var sourcePath = MidiDeviceAliases.FilePath;
+        if (sourcePath == null || !File.Exists(sourcePath) || MidiDeviceAliases.Entries.Count == 0)
+            return;
+
+        try
+        {
+            File.Copy(sourcePath, Path.Combine(exportDir, MidiDeviceAliases.FileName), overwrite: true);
+        }
+        catch (Exception e)
+        {
+            Log.Warning($"Could not copy {MidiDeviceAliases.FileName}: {e.Message}");
+        }
     }
 
     private static readonly List<Instance> _contentSuppliers = [];

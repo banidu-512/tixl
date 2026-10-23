@@ -13,8 +13,11 @@ using ImGuiNET;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using T3.Core.Animation;
+using T3.Core.Settings;
 using T3.Core.Stats;
+using T3.Editor.Gui.Windows;
 using T3.Editor.Gui.Windows.Analyze;
+using T3.Editor.Gui.Windows.Layouts;
 using T3.Core.Logging;
 using T3.Core.Model;
 using T3.Core.Operator;
@@ -233,6 +236,19 @@ internal static class DebugServer
                                    });
                 break;
 
+            // The settings folder is version-suffixed, so an older release's folder usually sits beside it.
+            // Guessing from the file system picks the wrong one; ask the editor which it opened.
+            case "getPaths":
+                context.SendOk(new JObject
+                                   {
+                                       ["settings"] = FileLocations.SettingsDirectory,
+                                       ["log"] = FileWriter.Instance?.LogDirectory,
+                                       ["temp"] = FileLocations.TempFolder,
+                                       ["cache"] = FileLocations.CacheDirectory,
+                                       ["projects"] = FileLocations.DefaultProjectFolder,
+                                   });
+                break;
+
             case "shutdown":
                 context.SendOk(new JObject());
                 // Same path as the exit dialog's confirmed Exit button; unsaved changes are discarded.
@@ -262,6 +278,10 @@ internal static class DebugServer
                 HandleGetMetrics(context);
                 break;
 
+            case "getFrameSamples":
+                HandleGetFrameSamples(context);
+                break;
+
             case "screenshot":
                 HandleScreenshot(request, context);
                 break;
@@ -272,6 +292,10 @@ internal static class DebugServer
 
             case "openProject":
                 HandleOpenProject(request, context);
+                break;
+
+            case "openWindow":
+                HandleOpenWindow(request, context);
                 break;
 
             case "select":
@@ -436,6 +460,17 @@ internal static class DebugServer
                     UserSettings.Config.TargetFrameRate = Math.Max(0, value.Value);
 
                 context.SendOk(new JObject { ["targetFrameRate"] = UserSettings.Config.TargetFrameRate });
+                break;
+            }
+
+            case "setFrameLatency":
+            {
+                // 1 or 2 frames in flight; without a value it only reports.
+                var value = request["value"]?.Value<int>();
+                if (value != null)
+                    UserSettings.Config.FrameLatency = Math.Clamp(value.Value, 1, 2);
+
+                context.SendOk(new JObject { ["frameLatency"] = UserSettings.Config.FrameLatency });
                 break;
             }
 
@@ -1029,6 +1064,21 @@ internal static class DebugServer
         context.SendOk(result);
     }
 
+    /// <summary>The Performance window's rolling frame, CPU and present durations (oldest first), the data of its CSV export.</summary>
+    private static void HandleGetFrameSamples(RequestContext context)
+    {
+        var frames = PerformanceMetrics.FrameDuration.AsOrderedSpan(new float[PerformanceMetrics.WindowSize]);
+        var cpus = PerformanceMetrics.CpuFrameDuration.AsOrderedSpan(new float[PerformanceMetrics.WindowSize]);
+        var presents = PerformanceMetrics.PresentDuration.AsOrderedSpan(new float[PerformanceMetrics.WindowSize]);
+        context.SendOk(new JObject
+                           {
+                               ["totalFrames"] = PerformanceMetrics.TotalFrameCount,
+                               ["frameMs"] = new JArray(frames.ToArray().Select(v => Math.Round(v, 2))),
+                               ["cpuMs"] = new JArray(cpus.ToArray().Select(v => Math.Round(v, 2))),
+                               ["presentMs"] = new JArray(presents.ToArray().Select(v => Math.Round(v, 2))),
+                           });
+    }
+
     private static JToken TryGetGpuMemoryInfo()
     {
         try
@@ -1130,6 +1180,40 @@ internal static class DebugServer
     /// <summary>
     /// Captures the editor UI of the last presented frame. 'region': "graph" crops to the graph canvas.
     /// </summary>
+    /// <summary>
+    /// Shows an editor window by its type name so panels can be captured with a UI screenshot.
+    /// For the settings window, <c>section</c> selects the category.
+    /// </summary>
+    private static void HandleOpenWindow(JObject request, RequestContext context)
+    {
+        var name = request["name"]?.Value<string>();
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            context.SendError("MISSING_PARAM", "openWindow requires a 'name' (window type name, e.g. SettingsWindow)");
+            return;
+        }
+
+        foreach (var window in WindowManager.GetAllWindows())
+        {
+            if (!string.Equals(window.GetType().Name, name, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            window.Config.Visible = true;
+
+            var section = request["section"]?.Value<string>();
+            if (window is SettingsWindow settingsWindow && !string.IsNullOrEmpty(section) && !settingsWindow.TrySelectCategory(section))
+            {
+                context.SendError("INVALID_PARAM", $"Unknown settings section '{section}'");
+                return;
+            }
+
+            context.SendOk(new JObject { ["window"] = window.GetType().Name });
+            return;
+        }
+
+        context.SendError("NOT_FOUND", $"No window of type '{name}'");
+    }
+
     private static void HandleScreenshotWindow(JObject request, RequestContext context)
     {
         var path = request["path"]?.Value<string>();

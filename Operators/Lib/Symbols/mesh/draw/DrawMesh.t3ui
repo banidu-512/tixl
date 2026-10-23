@@ -1,7 +1,7 @@
 {
   "FormatVersion": 3,
   "Id": "a3c5471e-079b-4d4b-886a-ec02d6428ff6"/*DrawMesh*/,
-  "Description": "Uses PBR rendering to draw incoming geometry and meshnodes according to the desired settings.\nFor convenience Tooll adds a default reflection and two point lights attached to the camera to a RenderTarget. You can override these by adding [SetEnvironment] and [SetMaterial] operators further up (further right) in your graph.\nYou can adjust various parameters to achieve wireframe or both sided rendering.\n\nAn interactive tutorial for the complete TiXL render pipeline can be found at [HowToDrawThings].\n\nThe most commonly used render methods are [DrawMesh], [DrawMeshUnlit], [DrawMeshHatched] and [DrawMeshAtPoints].\n\nThey can then be combined with [SetMaterial], [SetFog], [SetPointLight] and many others to create the look of scenes.",
+  "Description": "Draws a mesh with PBR shading using the current material, lights, fog and environment.\n\nIf no [SetEnvironment] or lights are defined, the render target provides a default reflection and two point lights attached to the camera. These can be overridden with [SetEnvironment], [SetMaterial], [SetPointLight] and [SetFog] further up the graph. Fill mode and culling allow wireframe or double-sided rendering.\n\nSee also: [DrawMeshUnlit], [DrawMeshHatched], [DrawMeshAtPoints], [DrawMeshWithShadow]\n\nAlso check out the [HowToDrawThings] tutorial.",
   "SymbolTags": "1",
   "InputUis": [
     {
@@ -10,7 +10,7 @@
         "X": 1526.489,
         "Y": 3627.165
       },
-      "Description": "Select shading mode"
+      "Description": "Default: uses the mesh normals.\nFlat: computes facet normals per pixel, giving a faceted look."
     },
     {
       "InputId": "155c2396-0e05-4437-8171-288048b1158a"/*Filter*/,
@@ -19,7 +19,7 @@
         "Y": 3905.177
       },
       "GroupTitle": "Texture Options",
-      "Description": "Defines the mode for texture filtering"
+      "Description": "Texture filtering mode."
     },
     {
       "InputId": "2c4b5f3a-e9ec-432e-b1ae-6d999ae44f1b"/*FillMode*/,
@@ -28,7 +28,7 @@
         "Y": 4099.43
       },
       "GroupTitle": "Draw Style",
-      "Description": "Toggles between colored Wireframe Rendering or default shading method."
+      "Description": "Solid or wireframe rendering."
     },
     {
       "InputId": "2fdf0184-1459-4589-9633-2c739462ed66"/*FragmentField*/,
@@ -37,7 +37,7 @@
         "Y": 3098.7122
       },
       "GroupTitle": "Field Overrides...",
-      "Description": "An optional shader graph with a color function. \n\nIt will use the world position.xyz to generate a color that is multiplied before drawing the fragment.\nTry [SphereField]->[SdfToColor]->.FragmentField."
+      "Description": "Optional field whose color is multiplied with each fragment, evaluated at the world position.\n\nTry [SphereSDF] -> [SDFToColor] -> FragmentField."
     },
     {
       "InputId": "4748d9ab-58a4-41d7-a2ee-6f7dfed86211"/*AlphaCutOff*/,
@@ -45,7 +45,7 @@
         "X": 1824.954,
         "Y": 3585.8855
       },
-      "Description": "This value controls transparency if a texture containing an alpha channel is used."
+      "Description": "Fragments with an alpha below this value are discarded. 0 disables alpha testing."
     },
     {
       "InputId": "8c9dee45-d165-48c8-b8dd-b7f47e77fd00"/*Color*/,
@@ -54,7 +54,7 @@
         "Y": 3445.8855
       },
       "GroupTitle": "Appearance",
-      "Description": "Defines the shading color of the mesh.\nIf a [SetMaterial] is used, these colors are multiplied with its settings."
+      "Description": "Tints the mesh. Multiplied with the material colors set by [SetMaterial]."
     },
     {
       "InputId": "96df9e72-189f-4efc-82a6-b2f482166e34"/*ShaderDefines*/,
@@ -62,7 +62,7 @@
         "X": 1816.4573,
         "Y": 3133.7122
       },
-      "Description": "Additional shader code that can be injected before rendering. \nUsing this requirese knowledge about the internal implementation. Passing invalid code will break the rendering.\nThis is similar to shader flags but most powerful because it also allows to define methods that are applied before rendering the fragment.\n\nOptions are...\n\n#define USE_WORLDSPACE",
+      "Description": "Additional HLSL code inserted into the generated shader, e.g. #define statements or helper functions. Invalid code breaks rendering.",
       "Usage": "Multiline"
     },
     {
@@ -71,16 +71,14 @@
       "Position": {
         "X": 1339.876,
         "Y": 3887.7703
-      },
-      "Description": "Input for Incoming Mesh Geometry"
+      }
     },
     {
       "InputId": "9c17fa15-35f1-49d4-802f-a3a796cad96a"/*BlendMode*/,
       "Position": {
         "X": 2404.7104,
         "Y": 4175.523
-      },
-      "Description": "Selects the Blendmode."
+      }
     },
     {
       "InputId": "9e957f4a-6502-4905-8d97-331f8b54097c"/*Culling*/,
@@ -88,7 +86,7 @@
         "X": 2404.7104,
         "Y": 4064.43
       },
-      "Description": "Defines the transparency of the surfaces.\nNone: All surfaces are \"bothsided\" or always visible from all sides\nFront: The normals are flipped (frontside is transparent / backside visible)\nBack: Default (Frontside is visible / backside is invisible)"
+      "Description": "Which faces are hidden.\n\nNone: both sides are drawn.\nFront: front faces are hidden, only back faces are visible.\nBack: back faces are hidden (default)."
     },
     {
       "InputId": "b50b3fc7-35e1-421d-be0a-b3008a54c33c"/*EnableZTest*/,
@@ -96,7 +94,7 @@
         "X": 2404.7104,
         "Y": 4210.523
       },
-      "Description": "If enabled discards fragments sorted out by z-buffer.\n\nThis defines whether the mesh covers itself or is covered by or covers other meshes.",
+      "Description": "If enabled, fragments hidden behind already drawn geometry (according to the depth buffer) are discarded.",
       "AddPadding": "True"
     },
     {
@@ -105,7 +103,7 @@
         "X": 1824.9539,
         "Y": 3655.8855
       },
-      "Description": "This reduces specular aliasing on silhouettes and high-frequency normalmap regions.",
+      "Description": "Reduces specular aliasing on silhouettes and in high-frequency normal map regions.",
       "Min": 0.0,
       "Max": 20.0,
       "ClampMin": true
@@ -116,7 +114,7 @@
         "X": 2039.8054,
         "Y": 4026.683
       },
-      "Description": "Defines how the texture behaves when repeated.\n\nWrap: The texture repeats itself continuously\nMirror: The texture is mirrored and repeats infinitely.\nClamp: The texture is cut off at the edge\nBorder: Unclear\nMirrOnce: The texture is mirrored once, then cut off"
+      "Description": "How the texture is sampled outside the 0..1 UV range.\n\nWrap: repeats.\nMirror: repeats mirrored.\nClamp: extends the edge pixels.\nBorder: uses the sampler border color.\nMirrorOnce: mirrors once, then clamps."
     },
     {
       "InputId": "d7bd3003-8589-4537-92e8-e95c5eb2bfab"/*UseMaterialId*/,
@@ -124,6 +122,7 @@
         "X": 1332.4364,
         "Y": 4254.673
       },
+      "Description": "Selects a material by name from the materials available in the current context, instead of the active default material.",
       "Usage": "CustomDropdown"
     },
     {
@@ -132,26 +131,29 @@
         "X": 2404.7104,
         "Y": 4245.523
       },
-      "Description": "This defines whether the mesh covers itself or is covered by or covers other meshes."
+      "Description": "If enabled, the mesh writes into the depth buffer so it can occlude itself and geometry drawn later."
     }
   ],
   "SymbolChildUis": [
     {
-      "ChildId": "01992f57-197e-459f-938f-159805816b8d"/*IntToFloat*/,
+      "ChildId": "01992f57-197e-459f-938f-159805816b8d",
+      "SymbolName": "Lib.numbers.int.basic.IntToFloat",
       "Position": {
         "X": 1824.9539,
         "Y": 3620.8855
       }
     },
     {
-      "ChildId": "036bd517-a749-4fc7-bdf1-3845d2e51166"/*linearSampler*/,
+      "ChildId": "036bd517-a749-4fc7-bdf1-3845d2e51166",
+      "SymbolName": "Types.Gfx.SamplerState",
       "Position": {
         "X": 2229.872,
         "Y": 3962.612
       }
     },
     {
-      "ChildId": "0cd63020-d4dc-4de9-9ee9-db2449ab24c3"/*Vector4Components*/,
+      "ChildId": "0cd63020-d4dc-4de9-9ee9-db2449ab24c3",
+      "SymbolName": "Lib.numbers.vec4.Vector4Components",
       "Style": "Resizable",
       "Size": {
         "X": 111.079544,
@@ -163,21 +165,24 @@
       }
     },
     {
-      "ChildId": "151209ef-f52b-4c88-9d9c-5a8882fb0e1d"/*GenerateShaderGraphCode*/,
+      "ChildId": "151209ef-f52b-4c88-9d9c-5a8882fb0e1d",
+      "SymbolName": "Lib.field.render._.GenerateShaderGraphCode",
       "Position": {
         "X": 1956.4573,
         "Y": 3098.7122
       }
     },
     {
-      "ChildId": "159b164f-1700-409b-95d7-d91d82b59f13"/*texSampler*/,
+      "ChildId": "159b164f-1700-409b-95d7-d91d82b59f13",
+      "SymbolName": "Types.Gfx.SamplerState",
       "Position": {
         "X": 2481.5154,
         "Y": 3902.5068
       }
     },
     {
-      "ChildId": "1ac59a27-5de5-43c3-a308-320cab00aa65"/*Execute*/,
+      "ChildId": "1ac59a27-5de5-43c3-a308-320cab00aa65",
+      "SymbolName": "Lib.flow.Execute",
       "Style": "Resizable",
       "Size": {
         "X": 55.07945,
@@ -189,14 +194,16 @@
       }
     },
     {
-      "ChildId": "2e15e2f9-8bff-4cb1-bf47-b34759e86658"/*GetForegroundColor*/,
+      "ChildId": "2e15e2f9-8bff-4cb1-bf47-b34759e86658",
+      "SymbolName": "Lib.flow.context.GetForegroundColor",
       "Position": {
         "X": 1544.9539,
         "Y": 3480.8855
       }
     },
     {
-      "ChildId": "2f12f5cb-cbdd-4d9a-b4ad-d2b577d2e965"/*_TransformsCBuffer*/,
+      "ChildId": "2f12f5cb-cbdd-4d9a-b4ad-d2b577d2e965",
+      "SymbolName": "Lib.render._dx11.api._TransformsCBuffer",
       "Style": "Expanded",
       "Size": {
         "X": 140.0,
@@ -208,154 +215,176 @@
       }
     },
     {
-      "ChildId": "44cb1668-6160-42b6-a7fe-803922b5e272"/*InputAssemblerStage*/,
+      "ChildId": "44cb1668-6160-42b6-a7fe-803922b5e272",
+      "SymbolName": "Lib.render._dx11.api.InputAssemblerStage",
       "Position": {
         "X": 2863.2698,
         "Y": 3271.7793
       }
     },
     {
-      "ChildId": "5080e389-beeb-4de0-b15e-4b858275bbe8"/*ContextCBuffers*/,
+      "ChildId": "5080e389-beeb-4de0-b15e-4b858275bbe8",
+      "SymbolName": "Lib.render.shading._.ContextCBuffers",
       "Position": {
         "X": 2544.7104,
         "Y": 3461.748
       }
     },
     {
-      "ChildId": "56be1fd2-548c-4814-9e1b-5ab09f95cf1d"/*PixelShaderFromSource*/,
+      "ChildId": "56be1fd2-548c-4814-9e1b-5ab09f95cf1d",
+      "SymbolName": "Types.Gfx.PixelShaderFromSource",
       "Position": {
         "X": 2096.4573,
         "Y": 3098.7122
       }
     },
     {
-      "ChildId": "6483c4a0-43f8-46c3-83b7-62cc38db958c"/*clampedSampler*/,
+      "ChildId": "6483c4a0-43f8-46c3-83b7-62cc38db958c",
+      "SymbolName": "Types.Gfx.SamplerState",
       "Position": {
         "X": 2544.7104,
         "Y": 3951.748
       }
     },
     {
-      "ChildId": "66935d7d-2e35-4ebf-b810-0805cd26c1af"/*IntValue*/,
+      "ChildId": "66935d7d-2e35-4ebf-b810-0805cd26c1af",
+      "SymbolName": "Types.Values.IntValue",
       "Position": {
         "X": 2091.1904,
         "Y": 4426.1104
       }
     },
     {
-      "ChildId": "69767494-70bc-4ac8-aa51-a552037edf79"/*SetPixelAndVertexShaderStage*/,
+      "ChildId": "69767494-70bc-4ac8-aa51-a552037edf79",
+      "SymbolName": "Lib.render._dx11.fxsetup.SetPixelAndVertexShaderStage",
       "Position": {
         "X": 2684.7104,
         "Y": 3321.748
       }
     },
     {
-      "ChildId": "818d5323-00f1-45d9-b88f-6991ba26fb81"/*MultiplyInt*/,
+      "ChildId": "818d5323-00f1-45d9-b88f-6991ba26fb81",
+      "SymbolName": "Lib.numbers.int.basic.MultiplyInt",
       "Position": {
         "X": 2091.1904,
         "Y": 4356.1104
       }
     },
     {
-      "ChildId": "840e6d54-1fff-44fc-85dd-7c0de4a56561"/*BlendColors*/,
+      "ChildId": "840e6d54-1fff-44fc-85dd-7c0de4a56561",
+      "SymbolName": "Lib.numbers.color.BlendColors",
       "Position": {
         "X": 1684.9539,
         "Y": 3445.8855
       }
     },
     {
-      "ChildId": "8632c707-a14d-4813-96ee-7370558e0502"/*OutputMergerStage*/,
+      "ChildId": "8632c707-a14d-4813-96ee-7370558e0502",
+      "SymbolName": "Lib.render._dx11.api.OutputMergerStage",
       "Position": {
         "X": 2684.7104,
         "Y": 4175.523
       }
     },
     {
-      "ChildId": "8b54e06f-d2f5-4db7-b139-a26bee700f3e"/*_MeshBufferComponents*/,
+      "ChildId": "8b54e06f-d2f5-4db7-b139-a26bee700f3e",
+      "SymbolName": "Lib.mesh._._MeshBufferComponents",
       "Position": {
         "X": 1479.876,
         "Y": 3887.7703
       }
     },
     {
-      "ChildId": "92de3521-0c60-4c9f-a8ec-3993e4c9f4eb"/*RasterizerState*/,
+      "ChildId": "92de3521-0c60-4c9f-a8ec-3993e4c9f4eb",
+      "SymbolName": "Types.Gfx.RasterizerState",
       "Position": {
         "X": 2544.7104,
         "Y": 4064.43
       }
     },
     {
-      "ChildId": "97815f59-3b53-4a94-89d0-c2bc9da4a65d"/*GetBufferComponents*/,
+      "ChildId": "97815f59-3b53-4a94-89d0-c2bc9da4a65d",
+      "SymbolName": "Lib.render._dx11.buffer.GetBufferComponents",
       "Position": {
         "X": 1696.4711,
         "Y": 3933.1995
       }
     },
     {
-      "ChildId": "a925f7b5-c1d6-4f76-bbd6-896cd5424cb9"/*GetBufferComponents*/,
+      "ChildId": "a925f7b5-c1d6-4f76-bbd6-896cd5424cb9",
+      "SymbolName": "Lib.render._dx11.buffer.GetBufferComponents",
       "Position": {
         "X": 1729.4662,
         "Y": 3844.2825
       }
     },
     {
-      "ChildId": "ac78d542-8551-4d5c-9dc4-8c594f27e4e5"/*VertexShader*/,
+      "ChildId": "ac78d542-8551-4d5c-9dc4-8c594f27e4e5",
+      "SymbolName": "Types.Gfx.VertexShader",
       "Position": {
         "X": 2544.7104,
         "Y": 3321.748
       }
     },
     {
-      "ChildId": "acf51f9f-7cbb-40a2-86c4-fc5e215f774c"/*GetSRVProperties*/,
+      "ChildId": "acf51f9f-7cbb-40a2-86c4-fc5e215f774c",
+      "SymbolName": "Lib.render._dx11.api.GetSRVProperties",
       "Position": {
         "X": 2091.1904,
         "Y": 4321.1104
       }
     },
     {
-      "ChildId": "ad43d468-55d5-4d7f-abac-0e30d42be56c"/*Draw*/,
+      "ChildId": "ad43d468-55d5-4d7f-abac-0e30d42be56c",
+      "SymbolName": "Lib.render._dx11.api.Draw",
       "Position": {
         "X": 2091.1904,
         "Y": 4461.1104
       }
     },
     {
-      "ChildId": "e57d129b-4621-4971-ba62-7ab87cafadcb"/*FloatsToBuffer*/,
+      "ChildId": "e57d129b-4621-4971-ba62-7ab87cafadcb",
+      "SymbolName": "Lib.render._dx11.api.FloatsToBuffer",
       "Position": {
         "X": 1964.9539,
         "Y": 3410.8855
       }
     },
     {
-      "ChildId": "e6011858-d023-4c8a-8222-3c0ff4c8018c"/*DepthStencilState*/,
+      "ChildId": "e6011858-d023-4c8a-8222-3c0ff4c8018c",
+      "SymbolName": "Types.Gfx.DepthStencilState",
       "Position": {
         "X": 2544.7104,
         "Y": 4210.523
       }
     },
     {
-      "ChildId": "eddca9ff-0408-4623-b5a4-7ff8e9c5917c"/*Rasterizer*/,
+      "ChildId": "eddca9ff-0408-4623-b5a4-7ff8e9c5917c",
+      "SymbolName": "Lib.render._dx11.api.Rasterizer",
       "Position": {
         "X": 2684.7104,
         "Y": 4064.43
       }
     },
     {
-      "ChildId": "ef1f459a-d7ca-4c5a-9fa7-fcdfb1bb7f18"/*SrvFromTexture2d*/,
+      "ChildId": "ef1f459a-d7ca-4c5a-9fa7-fcdfb1bb7f18",
+      "SymbolName": "Lib.render._dx11.api.SrvFromTexture2d",
       "Position": {
         "X": 2382.018,
         "Y": 3853.5764
       }
     },
     {
-      "ChildId": "f27c8d6d-0135-47a1-bc31-65f489469d32"/*PickBlendMode*/,
+      "ChildId": "f27c8d6d-0135-47a1-bc31-65f489469d32",
+      "SymbolName": "Lib.render._dx11.fxsetup.PickBlendMode",
       "Position": {
         "X": 2544.7104,
         "Y": 4175.523
       }
     },
     {
-      "ChildId": "fb2a9567-d2b1-41df-a1ab-d855b1f94151"/*GetPbrParameters*/,
+      "ChildId": "fb2a9567-d2b1-41df-a1ab-d855b1f94151",
+      "SymbolName": "Lib.render.shading._.GetPbrParameters",
       "Position": {
         "X": 2242.018,
         "Y": 3643.5764

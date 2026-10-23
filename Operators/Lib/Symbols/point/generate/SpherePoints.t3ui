@@ -1,7 +1,7 @@
 {
   "FormatVersion": 3,
   "Id": "1a241222-200b-417d-a8c7-131e3b48cc36"/*SpherePoints*/,
-  "Description": "Generates a sphere with evenly distributed points on its surface.\n\nNeeds a [DrawPoints], [DrawLines], or [DrawMeshAtPoints] or similar in order to become visible.\n\nSimilar: [GridPoints], [RadialPoints], [PointsOnMesh]",
+  "Description": "Generates evenly distributed points on the surface of a sphere.\n\nNeeds [DrawPoints], [DrawLines], [DrawMeshAtPoints] or similar in order to become visible.\n\nSee also: [GridPoints], [RadialPoints], [PointsOnMesh]",
   "SymbolTags": "1",
   "InputUis": [
     {
@@ -10,7 +10,6 @@
         "X": -230.48734,
         "Y": 585.5762
       },
-      "Description": "Controls the amount of points distributed on the sphere",
       "Min": 2,
       "Max": 10000,
       "Scale": 1.0,
@@ -23,7 +22,6 @@
         "X": 134.58586,
         "Y": 796.0112
       },
-      "Description": "Controls the radius of the sphere",
       "Min": -5000.0,
       "Max": 5000.0,
       "Scale": 0.1,
@@ -36,7 +34,7 @@
         "X": 134.58586,
         "Y": 866.0112
       },
-      "Description": "Shifts the points on the sphere with varying values\n\nProTip: If the points should leave the surface of the sphere, [RandomizePoints] can be of help",
+      "Description": "Randomly shifts the points on the sphere surface.\n\nTips:\n- Use [RandomizePoints] to move points off the surface.",
       "AddPadding": "True"
     },
     {
@@ -45,7 +43,6 @@
         "X": -5.414154,
         "Y": 691.0112
       },
-      "Description": "Moves the center of the sphere",
       "AddPadding": "True"
     },
     {
@@ -60,42 +57,48 @@
   ],
   "SymbolChildUis": [
     {
-      "ChildId": "1b2e9b82-684c-4948-83f3-add3b65b9f0e"/*ClampInt*/,
+      "ChildId": "1b2e9b82-684c-4948-83f3-add3b65b9f0e",
+      "SymbolName": "Lib.numbers.int.process.ClampInt",
       "Position": {
         "X": -90.487335,
         "Y": 585.5762
       }
     },
     {
-      "ChildId": "5532a7b9-5d88-49d5-8ab3-595b1b23c6ff"/*GetBufferComponents*/,
+      "ChildId": "5532a7b9-5d88-49d5-8ab3-595b1b23c6ff",
+      "SymbolName": "Lib.render._dx11.buffer.GetBufferComponents",
       "Position": {
         "X": 274.58585,
         "Y": 949.35144
       }
     },
     {
-      "ChildId": "6099658d-b6ee-4e45-a1b4-66a393fcba74"/*ComputeShader*/,
+      "ChildId": "6099658d-b6ee-4e45-a1b4-66a393fcba74",
+      "SymbolName": "Types.Gfx.ComputeShader",
       "Position": {
         "X": 134.58588,
         "Y": 513.35504
       }
     },
     {
-      "ChildId": "6ad56331-5bea-4edf-a514-9012c26259a4"/*ExecuteBufferUpdate*/,
+      "ChildId": "6ad56331-5bea-4edf-a514-9012c26259a4",
+      "SymbolName": "Lib.render._dx11.fxsetup.ExecuteBufferUpdate",
       "Position": {
         "X": 556.18445,
         "Y": 715.95337
       }
     },
     {
-      "ChildId": "6fb0b6c7-7c78-497c-b8bc-9344bf14d7f5"/*StructuredBufferWithViews*/,
+      "ChildId": "6fb0b6c7-7c78-497c-b8bc-9344bf14d7f5",
+      "SymbolName": "Types.Gfx.StructuredBufferWithViews",
       "Position": {
         "X": 274.58585,
         "Y": 914.3513
       }
     },
     {
-      "ChildId": "7dd3873c-b1a5-483c-935c-55b9dfe940b3"/*FloatsToBuffer*/,
+      "ChildId": "7dd3873c-b1a5-483c-935c-55b9dfe940b3",
+      "SymbolName": "Lib.render._dx11.api.FloatsToBuffer",
       "Style": "Resizable",
       "Size": {
         "X": 76.37291,
@@ -107,21 +110,24 @@
       }
     },
     {
-      "ChildId": "97bf31ee-7901-4ea4-9786-1494763a8b4e"/*ComputeShaderStage*/,
+      "ChildId": "97bf31ee-7901-4ea4-9786-1494763a8b4e",
+      "SymbolName": "Types.Gfx.ComputeShaderStage",
       "Position": {
         "X": 556.18445,
         "Y": 575.95337
       }
     },
     {
-      "ChildId": "9fd9f77c-359f-4ca2-8459-4a2b9a35f9f7"/*CalcDispatchCount*/,
+      "ChildId": "9fd9f77c-359f-4ca2-8459-4a2b9a35f9f7",
+      "SymbolName": "Lib.render._dx11.api.CalcDispatchCount",
       "Position": {
         "X": 274.58588,
         "Y": 548.35504
       }
     },
     {
-      "ChildId": "fcd3f3d6-1f56-43c1-810e-ab227db51b51"/*Vector3Components*/,
+      "ChildId": "fcd3f3d6-1f56-43c1-810e-ab227db51b51",
+      "SymbolName": "Lib.numbers.vec3.Vector3Components",
       "Position": {
         "X": 134.58585,
         "Y": 691.0112

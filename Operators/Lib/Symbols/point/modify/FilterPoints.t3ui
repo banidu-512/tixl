@@ -1,7 +1,7 @@
 {
   "FormatVersion": 3,
   "Id": "18251874-5d5a-4384-8dcd-fcf297e54886"/*FilterPoints*/,
-  "Description": "Selects (i.e., picks) points based on the given criteria.\n\nCan be used to reduce the overall amount of points to increase performance.\n\nUseful combination [DrawPoints] [MeshFacesPoints] [MeshVerticesToPoints]\n\nVaguely similar [ClearSomePoints].",
+  "Description": "Picks a subset of points based on start index, step and count.\n\nCan be used to reduce the overall amount of points to increase performance.\n\nSee also: [ClearSomePoints], [DrawPoints], [MeshFacesPoints], [MeshVerticesToPoints]",
   "SymbolTags": "1",
   "InputUis": [
     {
@@ -19,7 +19,7 @@
         "Y": 731.94434
       },
       "GroupTitle": "Selection",
-      "Description": "Defines how many points are allowed through the filter"
+      "Description": "Number of points in the result."
     },
     {
       "InputId": "537e6055-9c33-4b14-aa17-b34fd9d6bb61"/*Seed*/,
@@ -27,7 +27,6 @@
         "X": 52.325134,
         "Y": 1096.3247
       },
-      "Description": "Changes the random seed for the scatter effect",
       "Min": 0,
       "Max": 1
     },
@@ -38,7 +37,7 @@
         "Y": 828.4669
       },
       "GroupTitle": "Scattering",
-      "Description": "Scatters the selection by adding randomness to the indexes",
+      "Description": "Randomly offsets the picked indices.",
       "Min": 0.0,
       "Max": 1.0,
       "Scale": 0.001,
@@ -51,7 +50,7 @@
         "X": 52.32511,
         "Y": 863.4669
       },
-      "Description": "Defines the distance between the selected points.\nOr defines how many points are skipped during the selection if more than two points are passed through the filter.",
+      "Description": "Distance in indices between picked points.",
       "AddPadding": "True"
     },
     {
@@ -60,61 +59,69 @@
         "X": 52.325134,
         "Y": 1061.3247
       },
-      "Description": "Defines which point is defined as the first / starting point"
+      "Description": "Index of the first picked point."
     }
   ],
   "SymbolChildUis": [
     {
-      "ChildId": "11e4abb5-e38e-41cc-9134-be389b0abb4d"/*IntsToBuffer*/,
+      "ChildId": "11e4abb5-e38e-41cc-9134-be389b0abb4d",
+      "SymbolName": "Lib.numbers.int.process.IntsToBuffer",
       "Position": {
         "X": 192.3251,
         "Y": 991.3247
       }
     },
     {
-      "ChildId": "4038f156-f640-4850-83ee-c589c08b820f"/*ClampInt*/,
+      "ChildId": "4038f156-f640-4850-83ee-c589c08b820f",
+      "SymbolName": "Lib.numbers.int.process.ClampInt",
       "Position": {
         "X": -227.6749,
         "Y": 731.94434
       }
     },
     {
-      "ChildId": "47b9d823-abc9-4915-bf2b-9f523477e080"/*ComputeShader*/,
+      "ChildId": "47b9d823-abc9-4915-bf2b-9f523477e080",
+      "SymbolName": "Types.Gfx.ComputeShader",
       "Position": {
         "X": -227.6749,
         "Y": 661.94434
       }
     },
     {
-      "ChildId": "4f15ef13-4d85-40c1-a9d4-cd58e6f43a51"/*ExecuteBufferUpdate*/,
+      "ChildId": "4f15ef13-4d85-40c1-a9d4-cd58e6f43a51",
+      "SymbolName": "Lib.render._dx11.fxsetup.ExecuteBufferUpdate",
       "Position": {
         "X": 491.3331,
         "Y": 863.8563
       }
     },
     {
-      "ChildId": "679dff61-1551-4fb8-8936-fc5852f003d2"/*ComputeShaderStage*/,
+      "ChildId": "679dff61-1551-4fb8-8936-fc5852f003d2",
+      "SymbolName": "Types.Gfx.ComputeShaderStage",
       "Position": {
         "X": 491.3331,
         "Y": 653.8562
       }
     },
     {
-      "ChildId": "7b7029cf-8853-46a5-bb0b-b3f6d19d1f78"/*GetBufferComponents*/,
+      "ChildId": "7b7029cf-8853-46a5-bb0b-b3f6d19d1f78",
+      "SymbolName": "Lib.render._dx11.buffer.GetBufferComponents",
       "Position": {
         "X": 52.325104,
         "Y": 956.3247
       }
     },
     {
-      "ChildId": "941ce9b7-d4da-42f7-a34a-966453db9c50"/*CalcDispatchCount*/,
+      "ChildId": "941ce9b7-d4da-42f7-a34a-966453db9c50",
+      "SymbolName": "Lib.render._dx11.api.CalcDispatchCount",
       "Position": {
         "X": -87.67489,
         "Y": 696.94434
       }
     },
     {
-      "ChildId": "c233eff9-6135-4624-86ea-c3ac38226637"/*FloatsToBuffer*/,
+      "ChildId": "c233eff9-6135-4624-86ea-c3ac38226637",
+      "SymbolName": "Lib.render._dx11.api.FloatsToBuffer",
       "Style": "Resizable",
       "Size": {
         "X": 138.28679,
@@ -126,14 +133,16 @@
       }
     },
     {
-      "ChildId": "c28149ce-aa09-4c42-ad20-603a4d876f15"/*GetBufferComponents*/,
+      "ChildId": "c28149ce-aa09-4c42-ad20-603a4d876f15",
+      "SymbolName": "Lib.render._dx11.buffer.GetBufferComponents",
       "Position": {
         "X": -232.7972,
         "Y": 1229.5376
       }
     },
     {
-      "ChildId": "e7bca03d-a5d1-485f-a9cc-27654b1be4de"/*StructuredBufferWithViews*/,
+      "ChildId": "e7bca03d-a5d1-485f-a9cc-27654b1be4de",
+      "SymbolName": "Types.Gfx.StructuredBufferWithViews",
       "Position": {
         "X": -232.7972,
         "Y": 1194.5376

@@ -1,7 +1,7 @@
 {
   "FormatVersion": 3,
   "Id": "0814a593-80ab-416f-a3ca-eef78b0a9c0c"/*WrapPointPosition*/,
-  "Description": "Can be used to wrap positions around a cubic volume, e.g., around the current camera position.",
+  "Description": "Wraps point positions around a cubic volume, e.g., around the current camera position, so points leaving one side reappear on the opposite side.\n\nF1 is set to fade towards the edges of the volume.\n\nSee also: [WrapPoints]",
   "SymbolTags": "8",
   "InputUis": [
     {
@@ -17,6 +17,7 @@
         "X": -233.76004,
         "Y": 742.2818
       },
+      "Description": "Uses the position of the current camera as center instead of Position.",
       "AddPadding": "True"
     },
     {
@@ -24,7 +25,8 @@
       "Position": {
         "X": -233.76004,
         "Y": 787.2818
-      }
+      },
+      "Description": "Turns wrapped points into separators so lines are not drawn across the volume."
     },
     {
       "InputId": "dbe72c8b-6cc2-454b-83db-712f0cd4211c"/*GPoints*/,
@@ -45,28 +47,32 @@
   ],
   "SymbolChildUis": [
     {
-      "ChildId": "05aa7d10-61bc-4367-8725-6516df8562f2"/*BoolToFloat*/,
+      "ChildId": "05aa7d10-61bc-4367-8725-6516df8562f2",
+      "SymbolName": "Lib.numbers.bool.convert.BoolToFloat",
       "Position": {
         "X": 60.47794,
         "Y": 897.4007
       }
     },
     {
-      "ChildId": "54a32572-a01e-4386-8184-4257ed3a5018"/*_TransformsCBuffer*/,
+      "ChildId": "54a32572-a01e-4386-8184-4257ed3a5018",
+      "SymbolName": "Lib.render._dx11.api._TransformsCBuffer",
       "Position": {
         "X": 245.84155,
         "Y": 788.5999
       }
     },
     {
-      "ChildId": "605f8c94-a19b-4012-b603-258639e55d97"/*GetSRVProperties*/,
+      "ChildId": "605f8c94-a19b-4012-b603-258639e55d97",
+      "SymbolName": "Lib.render._dx11.api.GetSRVProperties",
       "Position": {
         "X": 64.20232,
         "Y": 381.3481
       }
     },
     {
-      "ChildId": "682dda16-0b98-4443-afe4-d086a83690ee"/*FloatsToBuffer*/,
+      "ChildId": "682dda16-0b98-4443-afe4-d086a83690ee",
+      "SymbolName": "Lib.render._dx11.api.FloatsToBuffer",
       "Style": "Resizable",
       "Size": {
         "X": 133.98141,
@@ -78,56 +84,64 @@
       }
     },
     {
-      "ChildId": "6990aeab-3425-4ecd-9540-ec329f3af0bf"/*Vector3Components*/,
+      "ChildId": "6990aeab-3425-4ecd-9540-ec329f3af0bf",
+      "SymbolName": "Lib.numbers.vec3.Vector3Components",
       "Position": {
         "X": 71.86014,
         "Y": 611.572
       }
     },
     {
-      "ChildId": "841b1322-6578-4c19-ad12-ade68e949c1a"/*ExecuteBufferUpdate*/,
+      "ChildId": "841b1322-6578-4c19-ad12-ade68e949c1a",
+      "SymbolName": "Lib.render._dx11.fxsetup.ExecuteBufferUpdate",
       "Position": {
         "X": 682.4039,
         "Y": 360.61105
       }
     },
     {
-      "ChildId": "9a2914f8-917c-46ed-b9fa-045b83d87da0"/*BoolToFloat*/,
+      "ChildId": "9a2914f8-917c-46ed-b9fa-045b83d87da0",
+      "SymbolName": "Lib.numbers.bool.convert.BoolToFloat",
       "Position": {
         "X": 71.86014,
         "Y": 723.572
       }
     },
     {
-      "ChildId": "a6273b02-4df0-4efd-ad1e-ffea319e0356"/*ComputeShader*/,
+      "ChildId": "a6273b02-4df0-4efd-ad1e-ffea319e0356",
+      "SymbolName": "Types.Gfx.ComputeShader",
       "Position": {
         "X": 61.013245,
         "Y": 301.01743
       }
     },
     {
-      "ChildId": "c766cecd-dadb-4d3a-af32-3717a413cd9a"/*CalcDispatchCount*/,
+      "ChildId": "c766cecd-dadb-4d3a-af32-3717a413cd9a",
+      "SymbolName": "Lib.render._dx11.api.CalcDispatchCount",
       "Position": {
         "X": 258.8332,
         "Y": 349.5899
       }
     },
     {
-      "ChildId": "e04c661c-a77b-4662-86a9-7cf49694caaa"/*GetBufferComponents*/,
+      "ChildId": "e04c661c-a77b-4662-86a9-7cf49694caaa",
+      "SymbolName": "Lib.render._dx11.buffer.GetBufferComponents",
       "Position": {
         "X": -67.777115,
         "Y": 414.65637
       }
     },
     {
-      "ChildId": "e313fd36-402f-45c7-b829-1077340b328b"/*Vector3Components*/,
+      "ChildId": "e313fd36-402f-45c7-b829-1077340b328b",
+      "SymbolName": "Lib.numbers.vec3.Vector3Components",
       "Position": {
         "X": 71.86014,
         "Y": 667.572
       }
     },
     {
-      "ChildId": "eaa82489-3ed9-4b8a-b857-b3a14797d20e"/*ComputeShaderStage*/,
+      "ChildId": "eaa82489-3ed9-4b8a-b857-b3a14797d20e",
+      "SymbolName": "Types.Gfx.ComputeShaderStage",
       "Position": {
         "X": 483.2537,
         "Y": 316.74768

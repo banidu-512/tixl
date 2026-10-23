@@ -1,7 +1,7 @@
 {
   "FormatVersion": 3,
   "Id": "da93f7d1-ef91-4b4a-9708-2d9b1baa4c14"/*RemapColor*/,
-  "Description": "Replaces the colors of an image with a gradient based on its brightness. This can be used to emulate gradient curves or level adjustments or color cycling effects.\n\nTip: This operator can be used to simulate \"adjustment curves\" from image manipulation software when gradient interpolation is set to spline.\n\nNote: The gradient's alpha channel can control the intensity of the effect.\n\nAlso consider using [Tint].",
+  "Description": "Replaces the colors of an image with a gradient based on their brightness.\n\nThis can emulate adjustment curves (with spline gradient interpolation), level adjustments or color cycling effects. The gradient's alpha becomes the output alpha unless DontColorAlpha is enabled.\n\nAKA: gradientmap, colorramp, lut, curves\n\nSee also: [Tint]",
   "SymbolTags": "1",
   "InputUis": [
     {
@@ -9,14 +9,16 @@
       "Position": {
         "X": -414.2527,
         "Y": 513.4169
-      }
+      },
+      "Description": "Number of samples used to convert the gradient into a texture."
     },
     {
       "InputId": "7023f71c-1c13-4d66-85e7-b0918cb8b02c"/*Repeat*/,
       "Position": {
         "X": 79.535034,
         "Y": 787.2047
-      }
+      },
+      "Description": "Number of gradient repetitions over the brightness range. Use WrapMode to define how it repeats."
     },
     {
       "InputId": "7777f86d-dbf7-44d4-9da4-99a819038095"/*DontColorAlpha*/,
@@ -24,7 +26,8 @@
         "X": -60.464966,
         "Y": 577.20465
       },
-      "GroupTitle": "Options"
+      "GroupTitle": "Options",
+      "Description": "Keeps the alpha computed from the input instead of using the gradient alpha."
     },
     {
       "InputId": "876f6f64-7cb4-4060-8571-e0b78b437d41"/*Image*/,
@@ -39,6 +42,7 @@
         "X": 79.535034,
         "Y": 682.2047
       },
+      "Description": "Multiplies the brightness before the gradient lookup.",
       "Min": 0.0,
       "Max": 5.0
     },
@@ -48,6 +52,7 @@
         "X": -60.464966,
         "Y": 717.2047
       },
+      "Description": "Applies gain (X) and bias (Y) to the brightness before the gradient lookup.",
       "Min": 0.0,
       "Max": 1.0,
       "ClampMin": true,
@@ -60,7 +65,8 @@
         "X": 79.535034,
         "Y": 647.2047
       },
-      "GroupTitle": "Wrap and Cyle"
+      "GroupTitle": "Wrap and Cyle",
+      "Description": "Offsets the gradient lookup. Animate it for color cycling."
     },
     {
       "InputId": "c45d487b-3221-44c7-bf9e-b982a65280f6"/*Gradient*/,
@@ -81,61 +87,70 @@
       "Position": {
         "X": -60.464966,
         "Y": 612.2047
-      }
+      },
+      "Description": "UseGrayScale: maps the average RGB brightness to the gradient.\nIndividualChannels: maps each channel separately to the matching channel of the gradient."
     },
     {
       "InputId": "eb070a0b-703d-43cc-a877-cf9e371ebd05"/*WrapMode*/,
       "Position": {
         "X": 79.535034,
         "Y": 857.2047
-      }
+      },
+      "Description": "How the gradient is sampled outside the 0 to 1 range."
     }
   ],
   "SymbolChildUis": [
     {
-      "ChildId": "05aef49e-71e0-4f76-b01f-536dc193d0dd"/*IntToFloat*/,
+      "ChildId": "05aef49e-71e0-4f76-b01f-536dc193d0dd",
+      "SymbolName": "Lib.numbers.int.basic.IntToFloat",
       "Position": {
         "X": 79.535034,
         "Y": 612.2047
       }
     },
     {
-      "ChildId": "06c9a212-c48b-4ff1-8882-a309fd0f9d7d"/*Vector2Components*/,
+      "ChildId": "06c9a212-c48b-4ff1-8882-a309fd0f9d7d",
+      "SymbolName": "Lib.numbers.vec2.Vector2Components",
       "Position": {
         "X": 79.535034,
         "Y": 717.2047
       }
     },
     {
-      "ChildId": "0ea5f0cd-02af-4872-8d07-3fc4ce0c4330"/*BoolToFloat*/,
+      "ChildId": "0ea5f0cd-02af-4872-8d07-3fc4ce0c4330",
+      "SymbolName": "Lib.numbers.bool.convert.BoolToFloat",
       "Position": {
         "X": 79.535034,
         "Y": 577.2047
       }
     },
     {
-      "ChildId": "8a6eb902-2cf7-4b63-a565-141f711dc3c6"/*TransformImage*/,
+      "ChildId": "8a6eb902-2cf7-4b63-a565-141f711dc3c6",
+      "SymbolName": "Lib.image.transform.TransformImage",
       "Position": {
         "X": -69.930084,
         "Y": 498.14648
       }
     },
     {
-      "ChildId": "9c2895b1-8571-4326-a744-0f65ed4b5420"/*_multiImageFxSetupStatic*/,
+      "ChildId": "9c2895b1-8571-4326-a744-0f65ed4b5420",
+      "SymbolName": "Lib.image.fx._._multiImageFxSetupStatic",
       "Position": {
         "X": 219.53503,
         "Y": 472.2047
       }
     },
     {
-      "ChildId": "b5d87d34-5883-4013-b357-522eeb62f3e4"/*GenerateMips*/,
+      "ChildId": "b5d87d34-5883-4013-b357-522eeb62f3e4",
+      "SymbolName": "Lib.render._dx11.api.GenerateMips",
       "Position": {
         "X": -88.86948,
         "Y": 429.20715
       }
     },
     {
-      "ChildId": "fdffba0b-5f7e-4a97-af75-21dfe98a569d"/*GradientsToTexture*/,
+      "ChildId": "fdffba0b-5f7e-4a97-af75-21dfe98a569d",
+      "SymbolName": "Lib.numbers.color.GradientsToTexture",
       "Position": {
         "X": -274.2527,
         "Y": 478.41687

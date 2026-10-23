@@ -1,7 +1,7 @@
 {
   "FormatVersion": 3,
   "Id": "348652c3-abf5-4fe9-873b-89d1acaaf0ff"/*Locator*/,
-  "Description": "Can be used to add a visible transform gizmo and its position in a scene (only visible if 'Toggle Gizmos and Floor Grid' is enabled in the Output window).\n\nThe 'Pos' output can be linked to the 'Translation' input of any operator to synchronize (link) their position.\n(e.g. a [PointLight] with any mesh or geometry via [Transform] and the [GodRays] effect).\n\nThe 'Distance to Camera' output allows using the locator as a visible target for [DepthOfField].\n\nHelpful in combination with [TransformPoints], [TransformMesh]",
+  "Description": "Adds a visible point with an interactive transform gizmo to a scene and outputs its position.\n\nThe Pos output can be connected to position inputs of other operators to link them, e.g. a [PointLight], a [Transform] or the [GodRays] effect. The DistanceToCamera output allows using the locator as a visible focus target for [DepthOfField].\n\nThe locator is only drawn if gizmos are enabled (see Visibility).\n\nAKA: null, empty, helper, target, marker\n\nSee also: [TransformPoints], [TransformMesh], [RotateTowards]",
   "SymbolTags": "9",
   "InputUis": [
     {
@@ -9,8 +9,7 @@
       "Position": {
         "X": -14.877502,
         "Y": -425.41354
-      },
-      "Description": "Defines the color of the Locator"
+      }
     },
     {
       "InputId": "43f63f2d-72f0-4d73-9311-fba7e4e32b31"/*Size*/,
@@ -19,15 +18,14 @@
         "Y": -515.41345
       },
       "GroupTitle": "Visible Gizmo",
-      "Description": "Scales the Locator (only visible if 'Toggle Gizmos and Floor Grid' are enabled in the Output window)"
+      "Description": "Scales the drawn locator."
     },
     {
       "InputId": "53aeef4f-37f8-40a6-b552-cb35f5fb887c"/*Position*/,
       "Position": {
         "X": 84.13989,
         "Y": 279.4007
-      },
-      "Description": "Defines the position of the Locator"
+      }
     },
     {
       "InputId": "d7b88971-a4fb-4761-a2a2-0abeffd01552"/*Thickness*/,
@@ -35,7 +33,7 @@
         "X": -14.877502,
         "Y": -470.41354
       },
-      "Description": "Defines the thickness of the visible Locator"
+      "Description": "Line thickness of the drawn locator."
     },
     {
       "InputId": "f7a4cab5-6095-4b7f-98d0-faea091dda29"/*Label*/,
@@ -43,7 +41,7 @@
         "X": 202.61462,
         "Y": 62.041412
       },
-      "Description": "Text field to give the locator a name that can be seen in the viewport",
+      "Description": "Name displayed next to the locator in the viewport.",
       "Usage": "Default"
     },
     {
@@ -52,131 +50,149 @@
         "X": 984.24615,
         "Y": -51.569153
       },
-      "Description": "Defines the settings that control the visibility of the locator\n\nOff = Locator always invisible\nOn = Locator always visible\nIfSelected = Locator becomes visible when selected in the 'Graph' Window\nInherit = Locator is visible when 'Toggle Gizmos and Floor Grid' is activated\n"
+      "Description": "Off = Never visible\nOn = Always visible\nIfSelected = Visible when selected in the graph\nInherit = Visible when \"Toggle Gizmos and Floor Grid\" is enabled in the output window"
     }
   ],
   "SymbolChildUis": [
     {
-      "ChildId": "24e3c012-3353-4fac-bc44-b52adcdcd8b1"/*Add*/,
+      "ChildId": "24e3c012-3353-4fac-bc44-b52adcdcd8b1",
+      "SymbolName": "Lib.numbers.float.basic.Add",
       "Position": {
         "X": 408.55453,
         "Y": -58.7258
       }
     },
     {
-      "ChildId": "2a57dc55-42eb-4d2c-a83f-8e318ea193ef"/*Point*/,
+      "ChildId": "2a57dc55-42eb-4d2c-a83f-8e318ea193ef",
+      "SymbolName": "Types.Values.Point",
       "Position": {
         "X": 408.55453,
         "Y": -93.7258
       }
     },
     {
-      "ChildId": "2a9efde2-971e-494b-a6a7-a24cf70bb5fa"/*Vec3Distance*/,
+      "ChildId": "2a9efde2-971e-494b-a6a7-a24cf70bb5fa",
+      "SymbolName": "Lib.numbers.vec3.Vec3Distance",
       "Position": {
         "X": 935.6139,
         "Y": 411.3455
       }
     },
     {
-      "ChildId": "2c566c7d-fc53-42f2-82fd-6ff409547f1f"/*GetPosition*/,
+      "ChildId": "2c566c7d-fc53-42f2-82fd-6ff409547f1f",
+      "SymbolName": "Lib.flow.context.GetPosition",
       "Position": {
         "X": 800.97894,
         "Y": 567.73584
       }
     },
     {
-      "ChildId": "5467e2c7-c58f-4fdd-a8c6-2cd8b8902b5f"/*DrawLines*/,
+      "ChildId": "5467e2c7-c58f-4fdd-a8c6-2cd8b8902b5f",
+      "SymbolName": "Lib.point.draw.DrawLines",
       "Position": {
         "X": 552.3097,
         "Y": -282.30582
       }
     },
     {
-      "ChildId": "5aac90da-37f2-4272-b032-2bde60b9c883"/*Transform*/,
+      "ChildId": "5aac90da-37f2-4272-b032-2bde60b9c883",
+      "SymbolName": "Lib.render.transform.Transform",
       "Position": {
         "X": 1124.2461,
         "Y": -191.56918
       }
     },
     {
-      "ChildId": "60b07966-acbc-4618-9544-20c9e9909cac"/*Multiply*/,
+      "ChildId": "60b07966-acbc-4618-9544-20c9e9909cac",
+      "SymbolName": "Lib.numbers.float.basic.Multiply",
       "Position": {
         "X": 268.55453,
         "Y": -58.7258
       }
     },
     {
-      "ChildId": "6f6fb927-e326-44b9-9fc8-e98f3094742d"/*DrawLines*/,
+      "ChildId": "6f6fb927-e326-44b9-9fc8-e98f3094742d",
+      "SymbolName": "Lib.point.draw.DrawLines",
       "Position": {
         "X": 554.71497,
         "Y": -419.48523
       }
     },
     {
-      "ChildId": "70856336-e6a7-41dd-be49-038884c06061"/*RenderTarget*/,
+      "ChildId": "70856336-e6a7-41dd-be49-038884c06061",
+      "SymbolName": "Lib.image.generate.basic.RenderTarget",
       "Position": {
         "X": 342.61462,
         "Y": 132.04141
       }
     },
     {
-      "ChildId": "729a6e0d-cb77-48b2-9af1-f3254cb6aa34"/*BlendColors*/,
+      "ChildId": "729a6e0d-cb77-48b2-9af1-f3254cb6aa34",
+      "SymbolName": "Lib.numbers.color.BlendColors",
       "Position": {
         "X": 414.71497,
         "Y": -384.48523
       }
     },
     {
-      "ChildId": "775e76e6-2877-4861-8ac1-2fbd1d8358aa"/*Execute*/,
+      "ChildId": "775e76e6-2877-4861-8ac1-2fbd1d8358aa",
+      "SymbolName": "Lib.flow.Execute",
       "Position": {
         "X": 1124.2461,
         "Y": -16.569183
       }
     },
     {
-      "ChildId": "7bd73815-ffcd-49a6-a2c8-42941897e3dc"/*DrawBillboards*/,
+      "ChildId": "7bd73815-ffcd-49a6-a2c8-42941897e3dc",
+      "SymbolName": "Lib.point.draw.DrawBillboards",
       "Position": {
         "X": 548.55457,
         "Y": -93.7258
       }
     },
     {
-      "ChildId": "83afb584-2ea6-4b14-8568-7b3422cc9bc0"/*AddVec3*/,
+      "ChildId": "83afb584-2ea6-4b14-8568-7b3422cc9bc0",
+      "SymbolName": "Lib.numbers.vec3.AddVec3",
       "Position": {
         "X": 940.9789,
         "Y": 637.73584
       }
     },
     {
-      "ChildId": "8ed18c9d-bfe9-483b-a3f9-7f92ff1a597e"/*CommonPointSets*/,
+      "ChildId": "8ed18c9d-bfe9-483b-a3f9-7f92ff1a597e",
+      "SymbolName": "Lib.point.generate.CommonPointSets",
       "Position": {
         "X": 183.45894,
         "Y": -447.34372
       }
     },
     {
-      "ChildId": "930c4e94-0c1d-4d7a-ba23-580b376b14a2"/*VisibleGizmos*/,
+      "ChildId": "930c4e94-0c1d-4d7a-ba23-580b376b14a2",
+      "SymbolName": "Lib.render.gizmo.VisibleGizmos",
       "Position": {
         "X": 1124.2461,
         "Y": -86.56918
       }
     },
     {
-      "ChildId": "bdea751d-06b1-4f3b-a086-4a8ed37ac8d4"/*CamPosition*/,
+      "ChildId": "bdea751d-06b1-4f3b-a086-4a8ed37ac8d4",
+      "SymbolName": "Lib.render.camera.CamPosition",
       "Position": {
         "X": 795.6139,
         "Y": 376.3455
       }
     },
     {
-      "ChildId": "e20c6578-4fcb-4bb7-9022-f50ee8154e13"/*Execute*/,
+      "ChildId": "e20c6578-4fcb-4bb7-9022-f50ee8154e13",
+      "SymbolName": "Lib.flow.Execute",
       "Position": {
         "X": 1124.2461,
         "Y": -296.56915
       }
     },
     {
-      "ChildId": "f2c24cc8-f965-45ee-9b5a-fc964fa84c40"/*Text*/,
+      "ChildId": "f2c24cc8-f965-45ee-9b5a-fc964fa84c40",
+      "SymbolName": "Lib.render.basic.Text",
       "Position": {
         "X": 342.61462,
         "Y": 62.041412

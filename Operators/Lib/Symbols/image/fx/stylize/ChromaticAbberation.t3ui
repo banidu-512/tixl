@@ -1,7 +1,7 @@
 {
   "FormatVersion": 3,
   "Id": "8a203866-148d-4785-ae0e-61328b7646bb"/*ChromaticAbberation*/,
-  "Description": "Simulates an imaging error of optical camera lenses that manifests itself as blurring or discoloration at the outer edges.\n\nAlso see [ChromaticDistortion]\n\nUseful Ops for a PostFX Pipeline: [MotionBlur] [DepthOfField] [ChromaticAberration] [Glow] [Grain] [Blur]",
+  "Description": "Simulates the chromatic aberration of camera lenses, which blurs and splits colors towards the outer edges of the image.\n\nAKA: aberration, fringe, rgbsplit, lens\n\nSee also: [ChromaticDistortion], [MotionBlur], [DepthOfField], [Glow], [Grain], [Blur]",
   "SymbolTags": "1",
   "InputUis": [
     {
@@ -65,14 +65,16 @@
   ],
   "SymbolChildUis": [
     {
-      "ChildId": "a978b641-0aee-40ff-b880-6409489ff863"/*IntToFloat*/,
+      "ChildId": "a978b641-0aee-40ff-b880-6409489ff863",
+      "SymbolName": "Lib.numbers.int.basic.IntToFloat",
       "Position": {
         "X": 293.77438,
         "Y": 131.91797
       }
     },
     {
-      "ChildId": "e214dd0d-2a6f-40d8-a3c0-c3d18fd4e346"/*_ImageFxShaderSetupStatic*/,
+      "ChildId": "e214dd0d-2a6f-40d8-a3c0-c3d18fd4e346",
+      "SymbolName": "Lib.render._dx11.fxsetup._ImageFxShaderSetupStatic",
       "Style": "Resizable",
       "Size": {
         "X": 94.37823,

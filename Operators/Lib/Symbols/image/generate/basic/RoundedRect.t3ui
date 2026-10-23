@@ -1,7 +1,7 @@
 {
   "FormatVersion": 3,
   "Id": "bf7fcd04-0cf6-4518-86cc-48f74483d98d"/*RoundedRect*/,
-  "Description": "Generates a rounded rectangle.\n\nCan be customized to create a variety of shapes, similarly to [Blob].\n\nAKA: rectangle, square, ellipse, circle, rings, blob, vignette\n\nTips:\n\nSimilar Ops: [NGon] [RoundedRect] [Rings] [RadialGradient] [LinearGradient] [Blob]",
+  "Description": "Generates a rectangle with rounded corners and an optional stroke.\n\nIt can be customized to create a variety of shapes like squares, pills or circles, similar to [Blob].\n\nAKA: rectangle, square, pill, frame, vignette\n\nSee also: [Blob], [NGon], [BoxGradient], [Rings], [RadialGradient]",
   "SymbolTags": "1",
   "InputUis": [
     {
@@ -89,7 +89,7 @@
         "X": -202.27362,
         "Y": 776.44977
       },
-      "Description": "Generate mipmaps (scaled-down versions of this image for use in situations where many small copies are shown on screen.)\nWill increase memory usage."
+      "Description": "Generates mipmaps (scaled-down versions of the image that improve quality when it is displayed small). Increases memory usage."
     },
     {
       "InputId": "d2401798-593b-4cc3-85d8-3570ddec1f2a"/*Scale*/,
@@ -142,35 +142,40 @@
   ],
   "SymbolChildUis": [
     {
-      "ChildId": "17626164-1e7e-46cd-9904-caf0c6b6113c"/*Vector2Components*/,
+      "ChildId": "17626164-1e7e-46cd-9904-caf0c6b6113c",
+      "SymbolName": "Lib.numbers.vec2.Vector2Components",
       "Position": {
         "X": -31.638813,
         "Y": 187.50772
       }
     },
     {
-      "ChildId": "3b04103f-1853-4ca8-b753-ce42d42e16c0"/*Vector4Components*/,
+      "ChildId": "3b04103f-1853-4ca8-b753-ce42d42e16c0",
+      "SymbolName": "Lib.numbers.vec4.Vector4Components",
       "Position": {
         "X": -20.982021,
         "Y": -98.211716
       }
     },
     {
-      "ChildId": "3eade3a0-95d8-4c6e-835e-945af6dfd902"/*Vector4Components*/,
+      "ChildId": "3eade3a0-95d8-4c6e-835e-945af6dfd902",
+      "SymbolName": "Lib.numbers.vec4.Vector4Components",
       "Position": {
         "X": -23.49123,
         "Y": 15.887933
       }
     },
     {
-      "ChildId": "624bc5a4-40ec-4ca6-a01e-d7a4f44f989d"/*Vector2Components*/,
+      "ChildId": "624bc5a4-40ec-4ca6-a01e-d7a4f44f989d",
+      "SymbolName": "Lib.numbers.vec2.Vector2Components",
       "Position": {
         "X": -31.638813,
         "Y": 131.50772
       }
     },
     {
-      "ChildId": "cae1229c-4a86-48e1-bf7f-ed6b3bea46bf"/*_ImageFxShaderSetupStatic*/,
+      "ChildId": "cae1229c-4a86-48e1-bf7f-ed6b3bea46bf",
+      "SymbolName": "Lib.render._dx11.fxsetup._ImageFxShaderSetupStatic",
       "Style": "Resizable",
       "Size": {
         "X": 111.97416,
@@ -182,7 +187,8 @@
       }
     },
     {
-      "ChildId": "d2b77680-42d7-4801-9eb1-73edaf4b9397"/*Vector4Components*/,
+      "ChildId": "d2b77680-42d7-4801-9eb1-73edaf4b9397",
+      "SymbolName": "Lib.numbers.vec4.Vector4Components",
       "Position": {
         "X": -20.982021,
         "Y": -42.211716

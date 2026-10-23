@@ -1,7 +1,7 @@
 {
   "FormatVersion": 3,
   "Id": "f634e126-8834-46ea-bd6e-5ebfdc8b0733"/*Bloom*/,
-  "Description": "A more versatile and faster version of [Glow].\n\nThis uses a down sampling and blurring cascade to create multiple blurred copies of the original image and then combines these layers additively while applying a gradient.\n\nPlease also try the presets and check the documentation of the parameters.\n\nUseful Ops for a PostFX Pipeline: [MotionBlur] [DepthOfField] [ChromaticAbberation] [Bloom] [Glow] [Grain] [Blur]",
+  "Description": "Adds a glow around bright areas of the image. A more versatile and faster version of [Glow].\n\nIt uses a downsampling and blurring cascade to create multiple blurred copies of the image and then combines these layers additively while applying a gradient.\n\nAKA: glare, halo, glow\n\nTips:\n- Try the presets and check the documentation of the parameters.\n- Use [ToneMapping] to clamp or compress the result.\n\nSee also: [MotionBlur], [DepthOfField], [ChromaticAbberation], [Glow], [Grain], [Blur]",
   "InputUis": [
     {
       "InputId": "2064aba1-658e-4795-a4fc-5be1026d7064"/*MaxLevels*/,
@@ -18,7 +18,7 @@
         "X": 1598.7069,
         "Y": 1531.1553
       },
-      "Description": "Limit the glow to brighter areas.",
+      "Description": "Limits the glow to brighter areas.",
       "Min": 0.0,
       "Max": 5.0,
       "Scale": 0.1,
@@ -66,7 +66,7 @@
         "Y": 1566.1553
       },
       "GroupTitle": "Settings",
-      "Description": "The overall intensity values below 1 are hardly noticeable.",
+      "Description": "The overall intensity. Values below 1 are hardly noticeable.",
       "Min": 0.0,
       "Max": 100.0,
       "Scale": 0.01,
@@ -80,7 +80,7 @@
         "Y": 1706.1553
       },
       "GroupTitle": "Advanced",
-      "Description": "Can be used to colorize or shape the glow. \nIt's multiplied onto each blur kernel with the more blurred levels on the right.\n\nTIP:\n- You can also adjust the brightness above 1 (hold CTRL while dragging the brightness slider) to amplify levels like the core."
+      "Description": "Can be used to colorize or shape the glow. It is multiplied onto each blur level, with the more blurred levels on the right.\n\nTips:\n- You can also adjust the brightness above 1 (hold Ctrl while dragging the brightness slider) to amplify levels like the core."
     },
     {
       "InputId": "c6a0cadc-9e1c-40ac-97f1-d9271b5376df"/*Blur*/,
@@ -96,75 +96,85 @@
         "X": 1598.7069,
         "Y": 1741.1553
       },
-      "Description": "Clamp the blur kernels before combining. \nThis will give a slightly different look. It will _NOT_ clamp the results. Use [ToneMap] for that."
+      "Description": "Clamps the blur levels before combining them. This gives a slightly different look.\n\nIt does not clamp the result. Use [ToneMapping] for that."
     }
   ],
   "SymbolChildUis": [
     {
-      "ChildId": "3d023b05-0e92-4bd4-a8a8-abcd19812977"/*VertexShader*/,
+      "ChildId": "3d023b05-0e92-4bd4-a8a8-abcd19812977",
+      "SymbolName": "Types.Gfx.VertexShader",
       "Position": {
         "X": 1598.7069,
         "Y": 1776.1553
       }
     },
     {
-      "ChildId": "4823df36-a042-49df-8473-a97e5f322b03"/*SrvFromTexture2d*/,
+      "ChildId": "4823df36-a042-49df-8473-a97e5f322b03",
+      "SymbolName": "Lib.render._dx11.api.SrvFromTexture2d",
       "Position": {
         "X": 1598.7069,
         "Y": 1461.1553
       }
     },
     {
-      "ChildId": "48c3a944-c4e0-4a56-b74d-73eaf8ac3ff8"/*PixelShader*/,
+      "ChildId": "48c3a944-c4e0-4a56-b74d-73eaf8ac3ff8",
+      "SymbolName": "Types.Gfx.PixelShader",
       "Position": {
         "X": 1598.7069,
         "Y": 1881.1553
       }
     },
     {
-      "ChildId": "68481ea7-a7f6-4211-88c9-2a05715754e6"/*PixelShader*/,
+      "ChildId": "68481ea7-a7f6-4211-88c9-2a05715754e6",
+      "SymbolName": "Types.Gfx.PixelShader",
       "Position": {
         "X": 1598.7069,
         "Y": 1811.1553
       }
     },
     {
-      "ChildId": "7ce88a2d-c7b7-4b75-8469-258902a577ee"/*PixelShader*/,
+      "ChildId": "7ce88a2d-c7b7-4b75-8469-258902a577ee",
+      "SymbolName": "Types.Gfx.PixelShader",
       "Position": {
         "X": 1598.7069,
         "Y": 1846.1553
       }
     },
     {
-      "ChildId": "858f906b-8c10-4111-988d-c0bdf8a7efe5"/*PixelShader*/,
+      "ChildId": "858f906b-8c10-4111-988d-c0bdf8a7efe5",
+      "SymbolName": "Types.Gfx.PixelShader",
       "Position": {
         "X": 1598.7069,
         "Y": 1916.1553
       }
     },
     {
-      "ChildId": "8ccc18ff-0a66-45d4-a7b8-568739683a45"/*PointSampler*/,
+      "ChildId": "8ccc18ff-0a66-45d4-a7b8-568739683a45",
+      "SymbolName": "Types.Gfx.SamplerState",
       "Position": {
         "X": 1598.7069,
         "Y": 2021.1553
       }
     },
     {
-      "ChildId": "cf64c29b-8dbb-4585-b671-194d17b79220"/*LinearSampler*/,
+      "ChildId": "cf64c29b-8dbb-4585-b671-194d17b79220",
+      "SymbolName": "Types.Gfx.SamplerState",
       "Position": {
         "X": 1598.7069,
         "Y": 1986.1553
       }
     },
     {
-      "ChildId": "e403c2c4-3b85-4179-9670-8fff46589d6b"/*PixelShader*/,
+      "ChildId": "e403c2c4-3b85-4179-9670-8fff46589d6b",
+      "SymbolName": "Types.Gfx.PixelShader",
       "Position": {
         "X": 1598.7069,
         "Y": 1951.1553
       }
     },
     {
-      "ChildId": "ed37e5c7-d022-4569-9961-8c9eef1631d2"/*_ExecuteBloomPasses*/,
+      "ChildId": "ed37e5c7-d022-4569-9961-8c9eef1631d2",
+      "SymbolName": "Lib.image.fx._._ExecuteBloomPasses",
       "Position": {
         "X": 1738.7069,
         "Y": 1426.1553

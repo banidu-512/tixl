@@ -4,7 +4,7 @@ using NAudio.Midi;
 using T3.Core.IO;
 using T3.Core.Logging;
 
-namespace T3.IoServices;
+namespace T3.IoServices.Midi;
 
 public static class MidiConnectionManager
 {
@@ -48,7 +48,7 @@ public static class MidiConnectionManager
     /// <summary>
     /// Checks if a MIDI device is currently being controlled and should block passthrough.
     /// </summary>
-    public static bool IsDeviceInControlMode(MidiIn midiIn)
+    public static bool IsDeviceInControlMode(MidiInputDevice midiIn)
     {
         if (_devicesByMidiIn.TryGetValue(midiIn, out var device))
         {
@@ -137,13 +137,13 @@ public static class MidiConnectionManager
 
     // FIXME: remove
 
-    public static MidiInCapabilities GetDescriptionForMidiIn(MidiIn midiIn)
+    public static MidiDeviceInfo GetDescriptionForMidiIn(MidiInputDevice midiIn)
     {
         _devicesByMidiIn.TryGetValue(midiIn, out var description);
         return description;
     }
 
-    public static bool TryGetMidiOut(string productName, out MidiOut midiOut)
+    public static bool TryGetMidiOut(string productName, out MidiOutputDevice midiOut)
     {
         midiOut = null;
         foreach (var (midi, device) in _midiOutsWithDevices)
@@ -158,7 +158,7 @@ public static class MidiConnectionManager
         return false;
     }
 
-    public static bool TryGetMidiIn(string productName, out MidiIn midiIn)
+    public static bool TryGetMidiIn(string productName, out MidiInputDevice midiIn)
     {
         midiIn = null;
         foreach (var (midiIn2, device) in _devicesByMidiIn)
@@ -171,6 +171,98 @@ public static class MidiConnectionManager
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Resolves a device name stored in a project to the physical product name on this machine.
+    /// Physical names pass through. An alias without a mapping resolves to itself, which matches no device.
+    /// </summary>
+    public static string ResolveDeviceName(string deviceName)
+    {
+        if (!MidiDeviceAlias.IsAlias(deviceName))
+            return deviceName;
+
+        if (!_aliasesLoaded)
+            ReloadAliases();
+
+        return _productNamesByAlias.TryGetValue(deviceName, out var productName) && !string.IsNullOrEmpty(productName)
+                   ? productName
+                   : deviceName;
+    }
+
+    /// <summary>
+    /// Reverse lookup used by teaching so newly taught ops store the alias instead of the fragile product name.
+    /// With several aliases on one device the first in settings order wins.
+    /// </summary>
+    public static bool TryGetAliasForProductName(string productName, out string alias)
+    {
+        alias = null;
+        if (string.IsNullOrEmpty(productName))
+            return false;
+
+        foreach (var entry in MidiDeviceAliases.Entries)
+        {
+            if (entry.ProductName != productName || string.IsNullOrEmpty(entry.Alias))
+                continue;
+
+            alias = entry.Alias;
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Increments whenever the alias table or the set of open devices changes, so ops can cache their
+    /// resolved device instead of resolving it every frame.
+    /// </summary>
+    public static int DevicesVersion { get; private set; } = 1;
+
+    /// <summary>
+    /// Rebuilds the alias lookup from <see cref="MidiDeviceAliases"/>. Called by its Load and Save.
+    /// </summary>
+    public static void ReloadAliases()
+    {
+        _productNamesByAlias.Clear();
+        _aliasNames.Clear();
+        _aliasesLoaded = true;
+        DevicesVersion++;
+
+        foreach (var entry in MidiDeviceAliases.Entries)
+        {
+            if (string.IsNullOrEmpty(entry.Alias) || !_productNamesByAlias.TryAdd(entry.Alias, entry.ProductName ?? string.Empty))
+                continue;
+
+            _aliasNames.Add(entry.Alias);
+        }
+    }
+
+    /// <summary>
+    /// The configured alias names in settings order, for device dropdowns.
+    /// </summary>
+    public static IReadOnlyList<string> AliasNames
+    {
+        get
+        {
+            if (!_aliasesLoaded)
+                ReloadAliases();
+
+            return _aliasNames;
+        }
+    }
+
+    /// <summary>
+    /// Status text for an op whose device was not found, naming the alias when one is involved.
+    /// </summary>
+    public static string GetMissingDeviceMessage(string requestedName, string resolvedName)
+    {
+        if (!MidiDeviceAlias.IsAlias(requestedName))
+            return $"MIDI device '{requestedName}' is not connected.\nTry Settings » Midi » Rescan devices.";
+
+        if (requestedName == resolvedName)
+            return $"MIDI alias '{requestedName}' is not mapped on this machine.\nMap it in Settings » Midi.";
+
+        return $"MIDI device '{resolvedName}' for alias '{requestedName}' is not connected.\nTry Settings » Midi » Rescan devices.";
     }
 
     /// <summary>
@@ -195,70 +287,52 @@ public static class MidiConnectionManager
 
     private static void ScanAndRegisterToMidiDevices(bool logInformation = false)
     {
-        Log.Debug("Capturing Midi devices...");
+        var provider = MidiDeviceProvider.Current;
+        if (!provider.IsAvailable)
+        {
+            Log.Debug("This system offers no MIDI devices.");
+            DevicesVersion++;
+            return;
+        }
+
+        Log.Debug($"Capturing Midi devices via {provider.Name}...");
         if (!string.IsNullOrEmpty(CoreSettings.Config.LimitMidiDeviceCapture))
         {
             var settingsString = CoreSettings.Config.LimitMidiDeviceCapture.Replace("\n", "; ");
             Log.Debug($"NOTE: In settings Midi device capture is limited to '{settingsString}");
         }
 
-        for (var index = 0; index < MidiIn.NumberOfDevices; index++)
+        var openedInputs = new List<MidiInputDevice>();
+        var openedOutputs = new List<MidiOutputDevice>();
+        provider.OpenDevices(ShouldCapture, openedInputs, openedOutputs);
+
+        foreach (var input in openedInputs)
         {
-            var deviceInputInfo = MidiIn.DeviceInfo(index);
-            var deviceInfoProductName = deviceInputInfo.ProductName;
-
-            if (!IsMidiDeviceCaptureEnabled(deviceInfoProductName))
-            {
-                Log.Debug($" skipping '{deviceInfoProductName}' (disabled in setting)");
-                continue;
-            }
-
             if (logInformation)
-                Log.Debug($" listening to '{deviceInfoProductName}'...");
-
-            MidiIn newMidiIn;
-            try
             {
-                newMidiIn = new MidiIn(index);
-            }
-            catch (NAudio.MmException e)
-            {
-                Log.Error(e.Message == "MemoryAllocationError"
-                              ? " > The device is already being used by an application."
-                              : $" > {e.Message} {deviceInfoProductName}");
-                continue;
+                Log.Debug($" listening to '{input.Info.ProductName}'...");
             }
 
-            newMidiIn.Start();
-
-            _devicesByMidiIn[newMidiIn] = deviceInputInfo;
+            input.Start();
+            _devicesByMidiIn[input] = input.Info;
         }
 
-        for (var index = 0; index < MidiOut.NumberOfDevices; index++)
+        foreach (var output in openedOutputs)
         {
-            var deviceOutputInfo = MidiOut.DeviceInfo(index);
-            var deviceInfoProductName = deviceOutputInfo.ProductName;
+            _midiOutsWithDevices[output] = output.Info;
+        }
 
-            if (!IsMidiDeviceCaptureEnabled(deviceInfoProductName))
+        DevicesVersion++;
+
+        bool ShouldCapture(string productName)
+        {
+            if (IsMidiDeviceCaptureEnabled(productName))
             {
-                Log.Debug($" skipping '{deviceInfoProductName}' (disabled in setting)");
-                continue;
+                return true;
             }
 
-            MidiOut newMidiOut;
-            try
-            {
-                newMidiOut = new MidiOut(index);
-            }
-            catch (NAudio.MmException e)
-            {
-                Log.Error(e.Message == "MemoryAllocationError"
-                              ? " > The device is already being used by an application."
-                              : $" > {e.Message} {deviceInfoProductName}");
-                continue;
-            }
-                
-            _midiOutsWithDevices[newMidiOut] = deviceOutputInfo;
+            Log.Debug($" skipping '{productName}' (disabled in setting)");
+            return false;
         }
     }
 
@@ -302,17 +376,24 @@ public static class MidiConnectionManager
         }
 
         _midiOutsWithDevices.Clear();
+        DevicesVersion++;
+
+        // The ALSA backend keeps one sequencer client and a reading thread behind all of these; CoreMIDI keeps its client.
+        MidiDeviceProvider.Current.Shutdown();
     }
 
     private static readonly List<IMidiConsumer> _midiInputConsumers = new();
 
+    private static readonly Dictionary<string, string> _productNamesByAlias = new();
+    private static readonly List<string> _aliasNames = new();
+    private static bool _aliasesLoaded;
+
     /// <summary>
-    /// Sadly, we have to maintain this list, because NAudio does not provide an easy means
-    /// to get the produceName of an incoming midi-message.
+    /// The opened input ports, keyed so a consumer can resolve the device an incoming message came from.
     /// </summary>
-    public static IReadOnlyDictionary<MidiIn, MidiInCapabilities> MidiIns => _devicesByMidiIn;
-    private static readonly Dictionary<MidiIn, MidiInCapabilities> _devicesByMidiIn = new();
-        
-    public static IReadOnlyDictionary<MidiOut, MidiOutCapabilities> MidiOutsWithDevices => _midiOutsWithDevices;
-    private static readonly Dictionary<MidiOut, MidiOutCapabilities> _midiOutsWithDevices = new();
+    public static IReadOnlyDictionary<MidiInputDevice, MidiDeviceInfo> MidiIns => _devicesByMidiIn;
+    private static readonly Dictionary<MidiInputDevice, MidiDeviceInfo> _devicesByMidiIn = new();
+
+    public static IReadOnlyDictionary<MidiOutputDevice, MidiDeviceInfo> MidiOutsWithDevices => _midiOutsWithDevices;
+    private static readonly Dictionary<MidiOutputDevice, MidiDeviceInfo> _midiOutsWithDevices = new();
 }

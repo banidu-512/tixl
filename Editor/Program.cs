@@ -6,12 +6,14 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Reflection;
+using System.Runtime;
 using T3.Core.Compilation;
 using T3.Core.IO;
 using T3.Core.Resource;
 using T3.Core.Resource.ShaderCompiling;
 using T3.Core.SystemUi;
 using T3.Core.Settings;
+using T3.IoServices.Midi;
 using T3.Editor.App;
 using T3.Editor.Compilation;
 using T3.Editor.Gui;
@@ -86,6 +88,9 @@ internal static class Program
     {
         // Must run before any code that may trigger assembly resolution.
         T3.Core.Diagnostics.AssemblyLoadDiagnostics.Install();
+
+        // Background-only gen2 collections: a blocking one over a large heap would freeze rendering for many frames.
+        GCSettings.LatencyMode = GCLatencyMode.SustainedLowLatency;
 
         // Must run before anything reads FileLocations.SettingsDirectory (e.g. the log path below).
         ApplyVersionIdOverrideArg(args);
@@ -173,6 +178,7 @@ internal static class Program
 
         // ReSharper disable once UnusedVariable
         var projectSettings = new CoreSettings(saveOnQuit: true);
+        MidiDeviceAliases.Load(FileLocations.SettingsDirectory);
 
         if (UserSettings.Config.ProjectDirectories.Count == 0)
         {

@@ -1,7 +1,7 @@
 {
   "FormatVersion": 3,
   "Id": "941410e5-2023-43c6-87b1-55386bb048ac"/*PolarCoordinates*/,
-  "Description": "Applies a polar coordinate transformation that converts between circular and rectangular coordinates. In other words, it wraps and unwraps round images.\n\nAlso see [Equirectangle], [ConvertEquirectangle]",
+  "Description": "Converts an image between rectangular and polar coordinates. In other words, it wraps a strip into a circle or unwraps a round image into a strip.\n\nAKA: polar, radial, wrap, unwrap, tunnel\n\nSee also: [Equirectangle], [ConvertEquirectangle], [BubbleZoom]",
   "SymbolTags": "1",
   "InputUis": [
     {
@@ -9,7 +9,8 @@
       "Position": {
         "X": 132.69783,
         "Y": 344.3758
-      }
+      },
+      "Description": "Scales the angle (X) and radius (Y) lookups. Only for Cartesian2Polar."
     },
     {
       "InputId": "4c07b8bd-c78d-44ce-bb95-8114284af2bf"/*Center*/,
@@ -27,14 +28,16 @@
       "Position": {
         "X": 132.69783,
         "Y": 254.3758
-      }
+      },
+      "Description": "Rotates the angle proportional to the radius. Only for Cartesian2Polar."
     },
     {
       "InputId": "6f17f1b4-0b5e-4934-8be1-c8198443fac3"/*RadialOffset*/,
       "Position": {
         "X": 132.69783,
         "Y": 209.3758
-      }
+      },
+      "Description": "Shifts the image along the radius."
     },
     {
       "InputId": "83f2dc32-5830-4558-9137-f6805f3f6ff6"/*Radius*/,
@@ -51,7 +54,8 @@
       "Position": {
         "X": 132.69783,
         "Y": 434.3758
-      }
+      },
+      "Description": "Cartesian2Polar: Wraps the image around the center. The horizontal axis becomes the angle, the vertical axis the radius.\nPolar2Cartesian: Unwraps a round image into a strip."
     },
     {
       "InputId": "caa14f08-f004-4af8-a448-116e21106d5b"/*Resolution*/,
@@ -66,7 +70,8 @@
       "Position": {
         "X": 132.69783,
         "Y": 164.3758
-      }
+      },
+      "Description": "Exponent applied to the radius. 1 is linear."
     },
     {
       "InputId": "dfa1d71d-2964-41c2-bb04-86a39c36ce6e"/*Image*/,
@@ -79,28 +84,32 @@
   ],
   "SymbolChildUis": [
     {
-      "ChildId": "33e714dd-8965-43ae-beac-d69d3eaa4b74"/*Padding*/,
+      "ChildId": "33e714dd-8965-43ae-beac-d69d3eaa4b74",
+      "SymbolName": "Types.Values.Value",
       "Position": {
         "X": 369.5064,
         "Y": 283.64453
       }
     },
     {
-      "ChildId": "4e802ec0-5c25-45bf-a872-df12ec246e68"/*IntToFloat*/,
+      "ChildId": "4e802ec0-5c25-45bf-a872-df12ec246e68",
+      "SymbolName": "Lib.numbers.int.basic.IntToFloat",
       "Position": {
         "X": 345.46982,
         "Y": 173.30325
       }
     },
     {
-      "ChildId": "872a5ad8-bfc8-4185-9728-114421de2bab"/*Vector2Components*/,
+      "ChildId": "872a5ad8-bfc8-4185-9728-114421de2bab",
+      "SymbolName": "Lib.numbers.vec2.Vector2Components",
       "Position": {
         "X": 342.51605,
         "Y": 336.79608
       }
     },
     {
-      "ChildId": "91c5c3c3-9df6-4c01-bf3a-57085d6ccf8f"/*_ImageFxShaderSetupStatic*/,
+      "ChildId": "91c5c3c3-9df6-4c01-bf3a-57085d6ccf8f",
+      "SymbolName": "Lib.render._dx11.fxsetup._ImageFxShaderSetupStatic",
       "Style": "Resizable",
       "Size": {
         "X": 94.37823,
@@ -112,7 +121,8 @@
       }
     },
     {
-      "ChildId": "978a7d86-a94f-43c1-9fae-7699b66372e5"/*Vector2Components*/,
+      "ChildId": "978a7d86-a94f-43c1-9fae-7699b66372e5",
+      "SymbolName": "Lib.numbers.vec2.Vector2Components",
       "Position": {
         "X": 298.5258,
         "Y": 33.04373

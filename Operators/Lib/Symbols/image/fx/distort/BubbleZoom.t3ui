@@ -1,7 +1,7 @@
 {
   "FormatVersion": 3,
   "Id": "ca3f3c1b-6f22-4bf3-b06b-d2b0d85a8881"/*BubbleZoom*/,
-  "Description": "An image effect that enlarges the inner circular region with a smooth edge. Other terms for this would be 'Bulge', 'Blob distort', 'Fish Eye zoom', 'Magnifying glass'",
+  "Description": "Magnifies a circular region of the image with a smooth edge.\n\nAKA: bulge, fisheye, magnifier, lens, loupe\n\nSee also: [PolarCoordinates], [Displace]",
   "SymbolTags": "8",
   "InputUis": [
     {
@@ -24,6 +24,7 @@
         "X": 60.989746,
         "Y": 125.87604
       },
+      "Description": "Shapes the falloff across the feather zone.",
       "Min": 0.0,
       "Max": 1.0,
       "ClampMin": true,
@@ -36,7 +37,8 @@
       "Position": {
         "X": 60.989807,
         "Y": -84.12396
-      }
+      },
+      "Description": "Colors blended over the transition zone using their alpha. Left is the inside."
     },
     {
       "InputId": "1e93d2b1-d21c-44bd-a96c-9844b9a89c8f"/*Feather*/,
@@ -44,6 +46,7 @@
         "X": 200.98975,
         "Y": 55.876038
       },
+      "Description": "Width of the transition between the zoomed inside and the original outside.",
       "Min": -1.0,
       "Max": 1.0,
       "Scale": 0.001
@@ -53,7 +56,8 @@
       "Position": {
         "X": 200.98975,
         "Y": 195.87604
-      }
+      },
+      "Description": "Blends between zooming inside (0) and outside (1) the circle."
     },
     {
       "InputId": "277c5e50-7d0f-416f-ba14-69ba407802dc"/*Center*/,
@@ -80,6 +84,7 @@
         "X": 200.98975,
         "Y": 20.876038
       },
+      "Description": "Zoom factor inside the circle. 1 = no zoom, values below 1 shrink the image.",
       "AddPadding": "True"
     },
     {
@@ -88,33 +93,38 @@
         "X": 59.044525,
         "Y": 423.13467
       },
-      "GroupTitle": "Obsolete"
+      "GroupTitle": "Obsolete",
+      "Description": "Not used anymore."
     }
   ],
   "SymbolChildUis": [
     {
-      "ChildId": "523b7aec-d6f1-4982-8e10-02da1c410d89"/*Vector2Components*/,
+      "ChildId": "523b7aec-d6f1-4982-8e10-02da1c410d89",
+      "SymbolName": "Lib.numbers.vec2.Vector2Components",
       "Position": {
         "X": 200.98975,
         "Y": -49.123962
       }
     },
     {
-      "ChildId": "a6a5cc16-8a4b-40cb-9f5a-6f4f161d168c"/*GradientsToTexture*/,
+      "ChildId": "a6a5cc16-8a4b-40cb-9f5a-6f4f161d168c",
+      "SymbolName": "Lib.numbers.color.GradientsToTexture",
       "Position": {
         "X": 200.98976,
         "Y": -84.12396
       }
     },
     {
-      "ChildId": "b0e83e5e-f93a-41cf-b952-ff79bb00e657"/*Vector2Components*/,
+      "ChildId": "b0e83e5e-f93a-41cf-b952-ff79bb00e657",
+      "SymbolName": "Lib.numbers.vec2.Vector2Components",
       "Position": {
         "X": 200.98975,
         "Y": 125.87604
       }
     },
     {
-      "ChildId": "ff0114df-e1dd-496e-a012-3bb7d04c5f23"/*_multiImageFxSetupStatic*/,
+      "ChildId": "ff0114df-e1dd-496e-a012-3bb7d04c5f23",
+      "SymbolName": "Lib.image.fx._._multiImageFxSetupStatic",
       "Position": {
         "X": 340.98975,
         "Y": -154.12396

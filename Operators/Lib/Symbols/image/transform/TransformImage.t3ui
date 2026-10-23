@@ -1,7 +1,7 @@
 {
   "FormatVersion": 3,
   "Id": "32e18957-3812-4f64-8663-18454518d005"/*TransformImage*/,
-  "Description": "Rotates, offsets, and scales the incoming image.\nIt includes texture wrapping modes: Repeat, Mirror, Clamp, Border...\nIt's a powerful and versatile operator with many use cases such as tiling textures, patterns, decals...\n\nTo control how the image changes when it's repeating use: [MirrorRepeat]\nA more sophisticated version: [KochKaleidoskope]",
+  "Description": "Moves, rotates and scales an image, with wrap modes like repeat, mirror, clamp and border for the area outside.\n\nThis makes it useful for tiling textures, patterns and decals.\n\nAKA: transform, move, rotate, scale, tile, offset\n\nSee also: [MirrorRepeat], [KochKaleidoskope], [Crop]",
   "SymbolTags": "1",
   "InputUis": [
     {
@@ -18,7 +18,7 @@
         "X": 131.552,
         "Y": 205.0227
       },
-      "Description": "Defines how the area around the image will be rendered"
+      "Description": "How the area outside the image is rendered."
     },
     {
       "InputId": "53538db0-2b65-4c92-80b1-ea6aecbc49ae"/*Stretch*/,
@@ -26,7 +26,7 @@
         "X": 271.552,
         "Y": 30.022705
       },
-      "Description": "Scales the incoming image in the following directions:\n\nX: Width\nY: Height",
+      "Description": "Scales the image horizontally (X) and vertically (Y).",
       "AddPadding": "True"
     },
     {
@@ -34,8 +34,7 @@
       "Position": {
         "X": 411.552,
         "Y": 100.022705
-      },
-      "Description": "Linearly scales the incoming image"
+      }
     },
     {
       "InputId": "5c76dc8d-3a28-4b93-b3a0-e008c1ff14e9"/*Resolution*/,
@@ -44,7 +43,7 @@
         "Y": 130.15018
       },
       "GroupTitle": "Settings",
-      "Description": "Overwrites the resolution of the incoming image"
+      "Description": "Overrides the output resolution. If 0, the resolution of the input image is used."
     },
     {
       "InputId": "64e5cdf2-19b0-461c-b936-ea46ee58028f"/*Filter*/,
@@ -52,7 +51,7 @@
         "X": 411.552,
         "Y": 275.0227
       },
-      "Description": "Defines the image filtering used"
+      "Description": "Texture filtering used for sampling the image."
     },
     {
       "InputId": "6a786aa9-edf4-4363-9e34-0ddc7e763f0b"/*Rotation*/,
@@ -60,7 +59,7 @@
         "X": 411.552,
         "Y": 135.0227
       },
-      "Description": "Rotates the incoming image",
+      "Description": "Rotation in degrees.",
       "AddPadding": "True",
       "Min": -180.0,
       "Max": 180.0,
@@ -73,7 +72,6 @@
         "Y": -39.977295
       },
       "GroupTitle": "Transform",
-      "Description": "Moves the incoming image",
       "Min": -1.0,
       "Max": 1.0,
       "Scale": 0.001,
@@ -85,69 +83,76 @@
         "X": -190.43478,
         "Y": 200.15018
       },
-      "Description": "This can be useful to scale down and "
+      "Description": "Multiplies the output resolution. Values below 1 can be used to downscale the image."
     },
     {
       "InputId": "c31a95a9-2cfb-4eea-8006-97f883d11847"/*GenerateMips*/,
       "Position": {
         "X": 411.55203,
         "Y": 240.0227
-      },
-      "Description": "Defines whether mipmaps should be generated"
+      }
     }
   ],
   "SymbolChildUis": [
     {
-      "ChildId": "25acd8a3-db12-457a-98a9-f70e51be66d5"/*Vector2Components*/,
+      "ChildId": "25acd8a3-db12-457a-98a9-f70e51be66d5",
+      "SymbolName": "Lib.numbers.vec2.Vector2Components",
       "Position": {
         "X": 411.552,
         "Y": 30.022705
       }
     },
     {
-      "ChildId": "31adbf53-34ea-4f3a-981b-cf1757e60933"/*Wrap*/,
+      "ChildId": "31adbf53-34ea-4f3a-981b-cf1757e60933",
+      "SymbolName": "Lib.render._dx11.fxsetup._ImageFxShaderSetupStatic",
       "Position": {
         "X": 551.552,
         "Y": -74.977295
       }
     },
     {
-      "ChildId": "401e51a0-e6cc-4132-9b19-a593e406c1a0"/*AddInt*/,
+      "ChildId": "401e51a0-e6cc-4132-9b19-a593e406c1a0",
+      "SymbolName": "Lib.numbers.int.basic.AddInt",
       "Position": {
         "X": 271.552,
         "Y": 205.0227
       }
     },
     {
-      "ChildId": "6133eec4-9179-4a64-8b2c-a3109e0cf651"/*New Resolution*/,
+      "ChildId": "6133eec4-9179-4a64-8b2c-a3109e0cf651",
+      "SymbolName": "Lib.numbers.int2.process.Int2Components",
       "Position": {
         "X": 411.552,
         "Y": 380.0227
       }
     },
     {
-      "ChildId": "6fd25409-5867-4a4a-a36e-29eb1c162137"/*Vector2*/,
+      "ChildId": "6fd25409-5867-4a4a-a36e-29eb1c162137",
+      "SymbolName": "Types.Values.Vector2",
       "Position": {
         "X": -23.192413,
         "Y": 497.38913
       }
     },
     {
-      "ChildId": "93cbb499-e916-4517-a172-71fb2f194925"/*GetTextureSize*/,
+      "ChildId": "93cbb499-e916-4517-a172-71fb2f194925",
+      "SymbolName": "Lib.render._dx11.api.GetTextureSize",
       "Position": {
         "X": -50.434784,
         "Y": 95.15018
       }
     },
     {
-      "ChildId": "9a5e9045-713f-4c0b-ad14-b78e167078ce"/*OrgResolution*/,
+      "ChildId": "9a5e9045-713f-4c0b-ad14-b78e167078ce",
+      "SymbolName": "Lib.numbers.int2.process.Int2Components",
       "Position": {
         "X": 411.55203,
         "Y": 310.0227
       }
     },
     {
-      "ChildId": "a4d78db8-f0a6-4ed3-b4f8-39eae5c464b3"/*IntToWrapmode*/,
+      "ChildId": "a4d78db8-f0a6-4ed3-b4f8-39eae5c464b3",
+      "SymbolName": "Lib.render.shading.IntToWrapmode",
       "Style": "Expanded",
       "Size": {
         "X": 110.0,
@@ -159,14 +164,16 @@
       }
     },
     {
-      "ChildId": "bf478418-fbc1-4e6c-a85b-c53129d432e9"/*Vector2Components*/,
+      "ChildId": "bf478418-fbc1-4e6c-a85b-c53129d432e9",
+      "SymbolName": "Lib.numbers.vec2.Vector2Components",
       "Position": {
         "X": 411.552,
         "Y": -39.977295
       }
     },
     {
-      "ChildId": "c93d2ff8-d2ea-4bb8-add5-c766e5446e34"/*ScaleResolution*/,
+      "ChildId": "c93d2ff8-d2ea-4bb8-add5-c766e5446e34",
+      "SymbolName": "Lib.numbers.int2.process.ScaleResolution",
       "Position": {
         "X": -50.434784,
         "Y": 165.15018

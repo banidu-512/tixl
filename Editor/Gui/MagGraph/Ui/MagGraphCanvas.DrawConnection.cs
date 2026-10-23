@@ -23,27 +23,6 @@ internal sealed partial class MagGraphView
 
         var type = connection.Type;
 
-        // if (!TypeUiRegistry.TryGetPropertiesForType(type, out var typeUiProperties))
-        //     return;
-
-        var isSelected = context.Selector.IsSelected(connection.SourceItem) ||
-                         context.Selector.IsSelected(connection.TargetItem);
-
-        var typeUiProperties = TypeUiRegistry.GetPropertiesForType(type);
-
-        var anchorSize = 4 * CanvasScale;
-        var idleFadeProgress = MathUtils.RemapAndClamp(connection.SourceOutput.DirtyFlag.FramesSinceLastUpdate, 0, 100, 1, 0f);
-
-        var color = typeUiProperties.Color.Fade(_context.GraphOpacity);
-
-        var wasHoveredLastFrame = !_context.PreventInteraction && ConnectionHovering.IsHovered(connection);
-        var selectedColor = isSelected || wasHoveredLastFrame
-                                ? ColorVariations.OperatorLabel.Apply(color)
-                                : ColorVariations.ConnectionLines.Apply(color);
-
-        var typeColor = ColorVariations.ConnectionLines.Apply(selectedColor).Fade(MathUtils.Lerp(0.6f, 1, idleFadeProgress));
-        var connectionTypeColor = ColorVariations.OperatorLabel.Apply(selectedColor).Fade(MathUtils.Lerp(0.6f, 1, idleFadeProgress));
-
         Vector2 sourceOnCanvas;
         if (connection.SourceItem.IsCollapsedAway)
         {
@@ -72,6 +51,38 @@ internal sealed partial class MagGraphView
             targetOnCanvas = connection.DampedTargetPos;
         }
 
+        // Cull before any ImGui call: these are the costliest part of drawing connections in large graphs.
+        var boundsOnCanvas = connection.SourceItem.Area;
+        boundsOnCanvas.Add(connection.TargetItem.VerticalStackArea);
+        boundsOnCanvas.Add(sourceOnCanvas);
+        boundsOnCanvas.Add(targetOnCanvas);
+        if (connection.Style is MagGraphConnection.ConnectionStyles.BottomToLeft or MagGraphConnection.ConnectionStyles.RightToTop)
+        {
+            // Bezier control points reach out by half the distance between the end points
+            boundsOnCanvas.Expand(Vector2.Distance(sourceOnCanvas, targetOnCanvas) / 2);
+        }
+
+        if (!IsRectVisible(boundsOnCanvas))
+            return;
+
+        var isSelected = context.Selector.IsSelected(connection.SourceItem) ||
+                         context.Selector.IsSelected(connection.TargetItem);
+
+        var typeUiProperties = TypeUiRegistry.GetPropertiesForType(type);
+
+        var anchorSize = 4 * CanvasScale;
+        var idleFadeProgress = MathUtils.RemapAndClamp(connection.SourceOutput.DirtyFlag.FramesSinceLastUpdate, 0, 100, 1, 0f);
+
+        var color = typeUiProperties.Color.Fade(_context.GraphOpacity);
+
+        var wasHoveredLastFrame = !_context.PreventInteraction && ConnectionHovering.IsHovered(connection);
+        var selectedColor = isSelected || wasHoveredLastFrame
+                                ? ColorVariations.OperatorLabel.Apply(color)
+                                : ColorVariations.ConnectionLines.Apply(color);
+
+        var typeColor = ColorVariations.ConnectionLines.Apply(selectedColor).Fade(MathUtils.Lerp(0.6f, 1, idleFadeProgress));
+        var connectionTypeColor = ColorVariations.OperatorLabel.Apply(selectedColor).Fade(MathUtils.Lerp(0.6f, 1, idleFadeProgress));
+
         var targetPosOnScreen = TransformPosition(targetOnCanvas);
 
         //var targetPosOnScreen = TransformPosition(connection.DampedTargetPos);
@@ -86,13 +97,7 @@ internal sealed partial class MagGraphView
                 case MagGraphConnection.ConnectionStyles.MainOutToMainInSnappedHorizontal:
                 case MagGraphConnection.ConnectionStyles.MainOutToInputSnappedHorizontal:
                 {
-                    var isPotentialSplitTarget = _context.ItemMovement.SpliceSets.Count > 0
-                                                 && !_context.ItemMovement.DraggedItems.Contains(connection.SourceItem)
-                                                 && _context.ItemMovement.SpliceSets
-                                                            .Any(sp
-                                                                     => sp.Direction == MagGraphItem.Directions.Horizontal
-                                                                        && sp.Type == type);
-                    if (isPotentialSplitTarget)
+                    if (IsPotentialSplitTarget(connection, MagGraphItem.Directions.Horizontal))
                     {
                         var extend = new Vector2(0, MagGraphItem.GridSize.Y * CanvasScale * 0.25f);
 
@@ -114,13 +119,7 @@ internal sealed partial class MagGraphView
 
                 case MagGraphConnection.ConnectionStyles.MainOutToMainInSnappedVertical:
                 {
-                    var isPotentialSplitTarget = _context.ItemMovement.SpliceSets.Count > 0
-                                                 && !_context.ItemMovement.DraggedItems.Contains(connection.SourceItem)
-                                                 && _context.ItemMovement.SpliceSets
-                                                            .Any(x
-                                                                     => x.Direction == MagGraphItem.Directions.Vertical
-                                                                        && x.Type == type);
-                    if (isPotentialSplitTarget)
+                    if (IsPotentialSplitTarget(connection, MagGraphItem.Directions.Vertical))
                     {
                         var extend = new Vector2(MagGraphItem.GridSize.X * CanvasScale * 0.06f, 0);
 
@@ -243,5 +242,24 @@ internal sealed partial class MagGraphView
                     break;
             }
         }
+    }
+
+    /// <summary>
+    /// A plain loop rather than LINQ: a lambda capturing the connection type would allocate a closure for every
+    /// connection on every frame, even when nothing is dragged.
+    /// </summary>
+    private bool IsPotentialSplitTarget(MagGraphConnection connection, MagGraphItem.Directions direction)
+    {
+        var movement = _context.ItemMovement;
+        if (movement.SpliceSets.Count == 0 || movement.DraggedItems.Contains(connection.SourceItem))
+            return false;
+
+        foreach (var spliceLink in movement.SpliceSets)
+        {
+            if (spliceLink.Direction == direction && spliceLink.Type == connection.Type)
+                return true;
+        }
+
+        return false;
     }
 }

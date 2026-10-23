@@ -1,7 +1,7 @@
 {
   "FormatVersion": 3,
   "Id": "9c378944-9a57-4ae4-a88e-36c07244bcf7"/*SimForceOffset*/,
-  "Description": "Creates a gizmo with a spherical force that can be used to affect points\n\nNeeds a [DrawPoints], [DrawLines], or [DrawMeshAtPoints] or similar in order to become visible.\n\nNeeds Points as a base, for example: [RadialPoints], [SpherePoints], [PointsOnMesh]",
+  "Description": "Pushes or pulls the points of a simulation buffer within a spherical area and adds a constant gravity offset on every frame.\n\nAs the buffer is modified in place, the offset accumulates over time; use it with [PointSimulation]. A draw operator like [DrawPoints], [DrawLines] or [DrawMeshAtPoints] is needed to make the points visible.",
   "SymbolTags": "8",
   "InputUis": [
     {
@@ -9,8 +9,7 @@
       "Position": {
         "X": -257.97385,
         "Y": 272.30927
-      },
-      "Description": "Point input"
+      }
     },
     {
       "InputId": "2cce4aac-2d41-4c0d-a046-9a5529b912b1"/*Radius*/,
@@ -18,7 +17,7 @@
         "X": -168.55247,
         "Y": 615.88995
       },
-      "Description": "Defines the size of the Force",
+      "Description": "Points within this distance from Center are fully affected.",
       "AddPadding": "True"
     },
     {
@@ -26,8 +25,7 @@
       "Position": {
         "X": -162.4124,
         "Y": 875.356
-      },
-      "Description": "Randomizes the amount of the force"
+      }
     },
     {
       "InputId": "4267c75c-35a6-4feb-9a98-92c3d676dcae"/*RadiusFallOff*/,
@@ -35,7 +33,7 @@
         "X": -167.80368,
         "Y": 691.5903
       },
-      "Description": "Defines the size of the falloff / smooth area"
+      "Description": "Distance beyond Radius over which the effect fades out. 0 creates a hard edge."
     },
     {
       "InputId": "b30b9a6e-1407-48e8-9eaa-955250f289e7"/*RadialForce*/,
@@ -43,7 +41,7 @@
         "X": -165.15796,
         "Y": 750.1206
       },
-      "Description": "Multiplier to increase the amount of force"
+      "Description": "Strength of the push away from Center. Negative values pull the points towards it."
     },
     {
       "InputId": "cc7cf8dc-13f4-4442-94b5-2c7cda64776c"/*Center*/,
@@ -60,7 +58,7 @@
         "X": -160.04121,
         "Y": 955.8399
       },
-      "Description": "Adds a linear force on the defined axis"
+      "Description": "Constant offset applied to all affected points on every frame."
     },
     {
       "InputId": "e68e305e-9e2b-4bf2-9a85-4630697a8c34"/*UseWForMass*/,
@@ -68,8 +66,7 @@
         "X": -165.15796,
         "Y": 795.1206
       },
-      "GroupTitle": "Advanced",
-      "Description": "Controls how much the F-Value is affected"
+      "GroupTitle": "Advanced"
     },
     {
       "InputId": "e6b12dd3-fd25-4b4c-a3bb-bd4da9c1c1e2"/*IsEnabled*/,
@@ -86,110 +83,125 @@
         "X": -160.04121,
         "Y": 1000.8399
       },
-      "Description": "Defines how much the force decays based on the distance"
+      "Description": "How quickly the radial force decreases with distance from Center."
     }
   ],
   "SymbolChildUis": [
     {
-      "ChildId": "15590912-166e-48cc-8d9f-f4433fd27e80"/*VisibleGizmos*/,
+      "ChildId": "15590912-166e-48cc-8d9f-f4433fd27e80",
+      "SymbolName": "Lib.render.gizmo.VisibleGizmos",
       "Position": {
         "X": 733.0986,
         "Y": 921.5135
       }
     },
     {
-      "ChildId": "17002cf8-11c7-4c8a-ade6-5c1d3a777f3e"/*CalcDispatchCount*/,
+      "ChildId": "17002cf8-11c7-4c8a-ade6-5c1d3a777f3e",
+      "SymbolName": "Lib.render._dx11.api.CalcDispatchCount",
       "Position": {
         "X": 175.32147,
         "Y": 349.5899
       }
     },
     {
-      "ChildId": "1a93d5c7-21d6-4083-bb18-94203b4484ba"/*HasValueIncreased*/,
+      "ChildId": "1a93d5c7-21d6-4083-bb18-94203b4484ba",
+      "SymbolName": "Lib.numbers.float.logic.HasValueIncreased",
       "Position": {
         "X": 49.092148,
         "Y": 1385.3154
       }
     },
     {
-      "ChildId": "1b654ccf-c468-4e21-a6e1-6e4c63e2b7e5"/*Vector3Components*/,
+      "ChildId": "1b654ccf-c468-4e21-a6e1-6e4c63e2b7e5",
+      "SymbolName": "Lib.numbers.vec3.Vector3Components",
       "Position": {
         "X": -33.856777,
         "Y": 955.549
       }
     },
     {
-      "ChildId": "3551777c-ae29-42ab-b0ff-40c9f0811f2f"/*_Time_old*/,
+      "ChildId": "3551777c-ae29-42ab-b0ff-40c9f0811f2f",
+      "SymbolName": "Lib.numbers.anim._obsolete._Time_old",
       "Position": {
         "X": -80.90779,
         "Y": 1385.3154
       }
     },
     {
-      "ChildId": "3a14aa32-6439-4666-94c0-9dce8f3cb9c0"/*GetSRVProperties*/,
+      "ChildId": "3a14aa32-6439-4666-94c0-9dce8f3cb9c0",
+      "SymbolName": "Lib.render._dx11.api.GetSRVProperties",
       "Position": {
         "X": -19.309402,
         "Y": 381.3481
       }
     },
     {
-      "ChildId": "443725bf-2413-4664-ae7a-837e191cd991"/*Transform*/,
+      "ChildId": "443725bf-2413-4664-ae7a-837e191cd991",
+      "SymbolName": "Lib.render.transform.Transform",
       "Position": {
         "X": 583.0986,
         "Y": 921.5135
       }
     },
     {
-      "ChildId": "62af7013-2150-4f11-b4b8-0d667125dcf9"/*DrawSphereGizmo*/,
+      "ChildId": "62af7013-2150-4f11-b4b8-0d667125dcf9",
+      "SymbolName": "Lib.render.gizmo.DrawSphereGizmo",
       "Position": {
         "X": 283.09857,
         "Y": 1131.2611
       }
     },
     {
-      "ChildId": "69e3b040-b625-47ff-b2b1-69eb4da32fad"/*ComputeShader*/,
+      "ChildId": "69e3b040-b625-47ff-b2b1-69eb4da32fad",
+      "SymbolName": "Types.Gfx.ComputeShader",
       "Position": {
         "X": -22.498474,
         "Y": 301.01743
       }
     },
     {
-      "ChildId": "72613f8e-347d-404c-81a8-61b7b54ae476"/*ComputeShaderStage*/,
+      "ChildId": "72613f8e-347d-404c-81a8-61b7b54ae476",
+      "SymbolName": "Types.Gfx.ComputeShaderStage",
       "Position": {
         "X": 399.74197,
         "Y": 316.74768
       }
     },
     {
-      "ChildId": "85a60322-558c-423d-82d8-ef954d364e37"/*Execute*/,
+      "ChildId": "85a60322-558c-423d-82d8-ef954d364e37",
+      "SymbolName": "Lib.flow.Execute",
       "Position": {
         "X": 883.0986,
         "Y": 352.20996
       }
     },
     {
-      "ChildId": "893f19de-53bd-4806-a304-94167b1872cc"/*Add*/,
+      "ChildId": "893f19de-53bd-4806-a304-94167b1872cc",
+      "SymbolName": "Lib.numbers.float.basic.Add",
       "Position": {
         "X": 19.195297,
         "Y": 1144.4751
       }
     },
     {
-      "ChildId": "ac0e6c9f-d184-4502-a2e9-15c467307505"/*AddNoise*/,
+      "ChildId": "ac0e6c9f-d184-4502-a2e9-15c467307505",
+      "SymbolName": "Lib.point.modify.AddNoise",
       "Position": {
         "X": 172.84995,
         "Y": 56.282227
       }
     },
     {
-      "ChildId": "bf9b2c82-6b59-4331-966f-71b170466c5d"/*ExecuteBufferUpdate*/,
+      "ChildId": "bf9b2c82-6b59-4331-966f-71b170466c5d",
+      "SymbolName": "Lib.render._dx11.fxsetup.ExecuteBufferUpdate",
       "Position": {
         "X": 1326.475,
         "Y": 302.7491
       }
     },
     {
-      "ChildId": "cb52c46d-447a-48ec-b62d-519db5abd6f6"/*FloatsToBuffer*/,
+      "ChildId": "cb52c46d-447a-48ec-b62d-519db5abd6f6",
+      "SymbolName": "Lib.render._dx11.api.FloatsToBuffer",
       "Style": "Resizable",
       "Size": {
         "X": 132.81848,
@@ -201,21 +213,24 @@
       }
     },
     {
-      "ChildId": "db8dc556-002b-4b79-9bea-fe6f331c80c4"/*GetBufferComponents*/,
+      "ChildId": "db8dc556-002b-4b79-9bea-fe6f331c80c4",
+      "SymbolName": "Lib.render._dx11.buffer.GetBufferComponents",
       "Position": {
         "X": -151.28883,
         "Y": 414.65637
       }
     },
     {
-      "ChildId": "dbaa1c45-0010-4637-8a66-64808ca786b2"/*Vector3Components*/,
+      "ChildId": "dbaa1c45-0010-4637-8a66-64808ca786b2",
+      "SymbolName": "Lib.numbers.vec3.Vector3Components",
       "Position": {
         "X": -80.57406,
         "Y": 574.15137
       }
     },
     {
-      "ChildId": "eb8b420d-b6fd-448e-870d-18e3673be8b9"/*And*/,
+      "ChildId": "eb8b420d-b6fd-448e-870d-18e3673be8b9",
+      "SymbolName": "Lib.numbers.bool.combine.And",
       "Position": {
         "X": 271.42996,
         "Y": 1353.1864

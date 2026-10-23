@@ -1,7 +1,7 @@
 {
   "FormatVersion": 3,
   "Id": "f2a0a8d9-e2dc-476b-ac97-de13101a6fdb"/*ZollnerPattern*/,
-  "Description": "Creates an image for an optical illusion.\n\nOriginally programmed for [WorksForEverybody]\n\nOther interesting patterns can be generated with [SinForm] [ZollnerPattern] [FraserGrid] [Raster] [CheckerBoard] [RyojiPattern2] [RyojiPattern1]",
+  "Description": "Generates the pattern of the Zöllner illusion: parallel bars crossed by short hooks that make the bars appear tilted.\n\nOriginally programmed for [WorksForEverybody]. The RGB channels of a connected Image can modulate bar width, hook length and hook rotation.\n\nAKA: illusion, optical, zollner\n\nSee also: [FraserGrid], [Raster], [CheckerBoard], [SinForm]",
   "SymbolTags": "64",
   "InputUis": [
     {
@@ -11,7 +11,7 @@
         "Y": 474.05212
       },
       "GroupTitle": "Appearance",
-      "Description": "Stretches the pattern on the x and y axis"
+      "Description": "Stretches the pattern horizontally and vertically."
     },
     {
       "InputId": "3ee9d4c7-8f6d-453a-a6ff-262250e6559a"/*RAffects_BarWidth*/,
@@ -27,7 +27,7 @@
         "X": -219.05618,
         "Y": 780.9896
       },
-      "Description": "Smoothes the edges",
+      "Description": "Softness of the edges.",
       "Min": -2.0,
       "Max": 2.0,
       "Scale": 0.02
@@ -38,7 +38,7 @@
         "X": -223.4553,
         "Y": 519.05206
       },
-      "Description": "Transforms the pattern on the x and y axis"
+      "Description": "Moves the pattern."
     },
     {
       "InputId": "68bbb3ac-e8f2-4ed9-afd8-8a912c97f1ca"/*RowSwift*/,
@@ -54,8 +54,7 @@
       "Position": {
         "X": -198.85258,
         "Y": 994.4314
-      },
-      "Description": "Defines the length of the hooks"
+      }
     },
     {
       "InputId": "8f8a92bf-cdc6-45cd-9ff7-5d01cd31bd8e"/*BAffects_HookRotation*/,
@@ -69,8 +68,7 @@
       "Position": {
         "X": -198.85258,
         "Y": 1039.4314
-      },
-      "Description": "Defines the thickness of the hooks"
+      }
     },
     {
       "InputId": "98131a97-a883-473f-809a-1c4d9eabce63"/*AmplifyIllusion*/,
@@ -85,8 +83,7 @@
       "Position": {
         "X": -223.4553,
         "Y": 429.05206
-      },
-      "Description": "Defines the background color"
+      }
     },
     {
       "InputId": "a2765fe8-c65a-4510-9e07-0c76521506bd"/*HookRotation*/,
@@ -111,7 +108,7 @@
         "Y": 32.122437
       },
       "GroupTitle": "Color",
-      "Description": "Defines the color of the line"
+      "Description": "Color of the bars and hooks."
     },
     {
       "InputId": "c409ea13-e805-4e37-94d6-f3633810f906"/*Resolution*/,
@@ -128,7 +125,7 @@
         "Y": 1129.4314
       },
       "GroupTitle": "Elements",
-      "Description": "Defines the thickness of the center bars"
+      "Description": "Thickness of the center bars."
     },
     {
       "InputId": "da1779e6-36fd-4b5d-9730-3f3da244ca40"/*Rotate*/,
@@ -136,7 +133,6 @@
         "X": -223.4553,
         "Y": 609.0521
       },
-      "Description": "Rotates the pattern",
       "Min": -180.0,
       "Max": 180.0,
       "Scale": 0.01
@@ -147,7 +143,6 @@
         "X": -223.4553,
         "Y": 564.05206
       },
-      "Description": "Uniformly scales the pattern",
       "Min": -10.0,
       "Max": 10.0,
       "Scale": 0.1
@@ -162,14 +157,16 @@
   ],
   "SymbolChildUis": [
     {
-      "ChildId": "1d826834-8f19-479b-b52d-26beedb6b2af"/*Vector2Components*/,
+      "ChildId": "1d826834-8f19-479b-b52d-26beedb6b2af",
+      "SymbolName": "Lib.numbers.vec2.Vector2Components",
       "Position": {
         "X": -27.883774,
         "Y": 506.75793
       }
     },
     {
-      "ChildId": "469a583c-e7e8-4221-b444-5209e25c0916"/*_ImageFxShaderSetupStatic*/,
+      "ChildId": "469a583c-e7e8-4221-b444-5209e25c0916",
+      "SymbolName": "Lib.render._dx11.fxsetup._ImageFxShaderSetupStatic",
       "Style": "Resizable",
       "Size": {
         "X": 110.08065,
@@ -181,21 +178,24 @@
       }
     },
     {
-      "ChildId": "72a4dcc8-3853-442b-959e-ef454baa36fc"/*Vector4Components*/,
+      "ChildId": "72a4dcc8-3853-442b-959e-ef454baa36fc",
+      "SymbolName": "Lib.numbers.vec4.Vector4Components",
       "Position": {
         "X": -31.06601,
         "Y": 282.1068
       }
     },
     {
-      "ChildId": "861f3584-ec68-4345-a051-64950276c37e"/*Vector4Components*/,
+      "ChildId": "861f3584-ec68-4345-a051-64950276c37e",
+      "SymbolName": "Lib.numbers.vec4.Vector4Components",
       "Position": {
         "X": -31.066011,
         "Y": 12.897135
       }
     },
     {
-      "ChildId": "faba9d95-0c99-472d-9ed2-bfd9701006e4"/*Vector2Components*/,
+      "ChildId": "faba9d95-0c99-472d-9ed2-bfd9701006e4",
+      "SymbolName": "Lib.numbers.vec2.Vector2Components",
       "Position": {
         "X": -27.883774,
         "Y": 450.75793

@@ -1,6 +1,7 @@
 using NAudio.Midi;
 using T3.IoServices;
 using T3.Core.Utils;
+using T3.IoServices.Midi;
 
 namespace Lib.io.midi;
 
@@ -27,7 +28,8 @@ internal sealed class MidiPitchbendOutput : Instance<MidiPitchbendOutput>, MidiC
     }
     private void Update(EvaluationContext context)
     {
-        var deviceName = Device.GetValue(context);
+        _deviceCache.Update(Device.GetValue(context), forOutput: true);
+        var deviceName = _deviceCache.ProductName;
         var foundDevice = false;
 
         var useFloat = UsePitchFloat.GetValue(context);
@@ -97,7 +99,7 @@ internal sealed class MidiPitchbendOutput : Instance<MidiPitchbendOutput>, MidiC
             }
                 
         }
-        _lastErrorMessage = !foundDevice ? $"Can't find MidiDevice {deviceName}" : null;
+        _lastErrorMessage = foundDevice ? null : _deviceCache.MissingMessage ?? _lastErrorMessage;
     }
         
     //private double _lastNoteOnTime;
@@ -131,6 +133,15 @@ internal sealed class MidiPitchbendOutput : Instance<MidiPitchbendOutput>, MidiC
             yield break;
         }
             
+        foreach (var alias in MidiConnectionManager.AliasNames)
+            
+        {
+            
+            yield return alias;
+            
+        }
+
+            
         foreach (var device in MidiConnectionManager.MidiOutsWithDevices.Values)
         {
             yield return device.ProductName;
@@ -163,6 +174,7 @@ internal sealed class MidiPitchbendOutput : Instance<MidiPitchbendOutput>, MidiC
     public void OnSettingsChanged() {}
 
     private string _lastErrorMessage;
+    private MidiDeviceNameCache _deviceCache;
     #endregion
 
     [Input(Guid = "5B25A41F-7609-4E19-98A2-1ECFAEB397BB", MappedType = typeof(SendModes))]

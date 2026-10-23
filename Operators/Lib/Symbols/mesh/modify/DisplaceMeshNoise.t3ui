@@ -1,7 +1,7 @@
 {
   "FormatVersion": 3,
   "Id": "b5709297-c714-4019-9d0b-6982590b5590"/*DisplaceMeshNoise*/,
-  "Description": "Displaces a Mesh with Perlin noise.",
+  "Description": "Displaces the vertices of a mesh with 3D simplex noise.\n\nTangents and normals are updated by sampling the noise at neighboring positions, so shading follows the displacement.\n\nAKA: noise, turbulence, wobble\n\nSee also: [DisplaceMesh], [TextureDisplaceMesh]",
   "SymbolTags": "65",
   "InputUis": [
     {
@@ -10,7 +10,8 @@
         "X": 618.68,
         "Y": 1844.1096
       },
-      "GroupTitle": "Advanced"
+      "GroupTitle": "Advanced",
+      "Description": "Distance of the neighboring samples used to compute the new tangents and normals, relative to the noise frequency."
     },
     {
       "InputId": "093a468c-c208-4caf-be4f-d5d7d9ceddeb"/*OffsetDirection*/,
@@ -18,6 +19,7 @@
         "X": 618.68,
         "Y": 1984.1096
       },
+      "Description": "Constant value added to the noise before scaling, which shifts the displacement in one direction.",
       "AddPadding": "True"
     },
     {
@@ -26,6 +28,7 @@
         "X": 478.67996,
         "Y": 1914.1096
       },
+      "Description": "Position used to sample the noise.\n\nPointSpace: the UV coordinates of the vertex.\nWorldSpace: the vertex position transformed to world space.\nObjectSpace: the vertex position of the mesh.",
       "AddPadding": "True"
     },
     {
@@ -34,6 +37,7 @@
         "X": 618.68,
         "Y": 1634.1096
       },
+      "Description": "Scale of the noise pattern. Higher values create smaller details.",
       "AddPadding": "True"
     },
     {
@@ -41,14 +45,16 @@
       "Position": {
         "X": 478.67996,
         "Y": 2019.1094
-      }
+      },
+      "Description": "Weights the displacement by the vertex selection, e.g. from [SelectVertices]."
     },
     {
       "InputId": "9a82f2a6-390e-4073-bc80-e5fd3b1c0bfe"/*UseWAsWeight*/,
       "Position": {
         "X": 618.68,
         "Y": 1879.1096
-      }
+      },
+      "Description": "Currently has no effect."
     },
     {
       "InputId": "b7559321-2dbe-4fe0-ab86-52532d008980"/*Amount*/,
@@ -56,14 +62,16 @@
         "X": 618.68,
         "Y": 1599.1096
       },
-      "GroupTitle": "Settings"
+      "GroupTitle": "Settings",
+      "Description": "Strength of the displacement. 100 corresponds to a maximum offset of about one unit."
     },
     {
       "InputId": "b89b6730-de46-4d56-b2a8-b7d6f6876620"/*Phase*/,
       "Position": {
         "X": 618.68,
         "Y": 1669.1096
-      }
+      },
+      "Description": "Moves through the noise; can be animated."
     },
     {
       "InputId": "e02379a9-fadf-46d4-a6c2-74264e91b5a6"/*AmountDistribution*/,
@@ -71,6 +79,7 @@
         "X": 478.67996,
         "Y": 1739.1096
       },
+      "Description": "Scales the displacement per axis.",
       "AddPadding": "True"
     },
     {
@@ -78,14 +87,16 @@
       "Position": {
         "X": 618.68,
         "Y": 1704.1096
-      }
+      },
+      "Description": "Random noise offset per vertex."
     },
     {
       "InputId": "f108f6f7-5e6f-43c8-9d0b-c2e7bf5adf9c"/*Direction*/,
       "Position": {
         "X": 478.67996,
         "Y": 1949.1096
-      }
+      },
+      "Description": "WorldSpace: the noise offsets along the X, Y and Z axes.\nSurfaceNormal: the noise offsets in the tangent space of each vertex, so Z moves along the normal."
     },
     {
       "InputId": "fb86f0d6-1e5c-478f-b723-9f9462e2966c"/*InputMesh*/,
@@ -98,98 +109,112 @@
   ],
   "SymbolChildUis": [
     {
-      "ChildId": "24c75d3e-8d1d-409a-a1e1-5a28fefb9e3d"/*_AssembleMeshBuffers*/,
+      "ChildId": "24c75d3e-8d1d-409a-a1e1-5a28fefb9e3d",
+      "SymbolName": "Lib.mesh._._AssembleMeshBuffers",
       "Position": {
         "X": 1585.0348,
         "Y": 1756.7668
       }
     },
     {
-      "ChildId": "2e62c3a2-90f5-4402-98c2-706c6dde1de9"/*BoolToFloat*/,
+      "ChildId": "2e62c3a2-90f5-4402-98c2-706c6dde1de9",
+      "SymbolName": "Lib.numbers.bool.convert.BoolToFloat",
       "Position": {
         "X": 618.68,
         "Y": 2019.1094
       }
     },
     {
-      "ChildId": "3f4f743b-16f8-449b-8e21-8909f139445a"/*StructuredBufferWithViews*/,
+      "ChildId": "3f4f743b-16f8-449b-8e21-8909f139445a",
+      "SymbolName": "Types.Gfx.StructuredBufferWithViews",
       "Position": {
         "X": 1215.6698,
         "Y": 2000.9585
       }
     },
     {
-      "ChildId": "4befcc89-f6c1-4ad9-886d-85fa32190456"/*IntToFloat*/,
+      "ChildId": "4befcc89-f6c1-4ad9-886d-85fa32190456",
+      "SymbolName": "Lib.numbers.int.basic.IntToFloat",
       "Position": {
         "X": 618.68,
         "Y": 1914.1096
       }
     },
     {
-      "ChildId": "4d8db5ed-e74d-47eb-90d9-8798edbb2ca9"/*ExecuteBufferUpdate*/,
+      "ChildId": "4d8db5ed-e74d-47eb-90d9-8798edbb2ca9",
+      "SymbolName": "Lib.render._dx11.fxsetup.ExecuteBufferUpdate",
       "Position": {
         "X": 1408.2328,
         "Y": 1686.214
       }
     },
     {
-      "ChildId": "52b7b099-d1a3-40bd-a745-a72c532588f0"/*Vector3Components*/,
+      "ChildId": "52b7b099-d1a3-40bd-a745-a72c532588f0",
+      "SymbolName": "Lib.numbers.vec3.Vector3Components",
       "Position": {
         "X": 618.68,
         "Y": 1739.1096
       }
     },
     {
-      "ChildId": "5c8d9fc6-6335-4f42-aed3-8c9d1948f6f3"/*ComputeShaderStage*/,
+      "ChildId": "5c8d9fc6-6335-4f42-aed3-8c9d1948f6f3",
+      "SymbolName": "Types.Gfx.ComputeShaderStage",
       "Position": {
         "X": 1408.2328,
         "Y": 1476.214
       }
     },
     {
-      "ChildId": "7b745cc4-28d6-4458-9fcc-8f91c7401ffd"/*_TransformsCBuffer*/,
+      "ChildId": "7b745cc4-28d6-4458-9fcc-8f91c7401ffd",
+      "SymbolName": "Lib.render._dx11.api._TransformsCBuffer",
       "Position": {
         "X": 1268.2328,
         "Y": 1546.214
       }
     },
     {
-      "ChildId": "7b8eaf92-c02e-49d9-b359-69a764a1b3c7"/*GetBufferComponents*/,
+      "ChildId": "7b8eaf92-c02e-49d9-b359-69a764a1b3c7",
+      "SymbolName": "Lib.render._dx11.buffer.GetBufferComponents",
       "Position": {
         "X": 1215.6698,
         "Y": 2070.9587
       }
     },
     {
-      "ChildId": "96a03b82-ed42-4f9a-97ba-4c6585bdc261"/*IntToFloat*/,
+      "ChildId": "96a03b82-ed42-4f9a-97ba-4c6585bdc261",
+      "SymbolName": "Lib.numbers.int.basic.IntToFloat",
       "Position": {
         "X": 618.68,
         "Y": 1949.1096
       }
     },
     {
-      "ChildId": "9f989136-78db-4616-a82c-b7e881078678"/*_MeshBufferComponents*/,
+      "ChildId": "9f989136-78db-4616-a82c-b7e881078678",
+      "SymbolName": "Lib.mesh._._MeshBufferComponents",
       "Position": {
         "X": 935.66986,
         "Y": 1860.9585
       }
     },
     {
-      "ChildId": "a076a7d2-2873-4a3a-83e6-20329dfa91ec"/*CalcDispatchCount*/,
+      "ChildId": "a076a7d2-2873-4a3a-83e6-20329dfa91ec",
+      "SymbolName": "Lib.render._dx11.api.CalcDispatchCount",
       "Position": {
         "X": 1084.0747,
         "Y": 1506.0455
       }
     },
     {
-      "ChildId": "b9f39bed-6d5c-4ce2-a10a-4f8d9006419d"/*IntValue*/,
+      "ChildId": "b9f39bed-6d5c-4ce2-a10a-4f8d9006419d",
+      "SymbolName": "Types.Values.IntValue",
       "Position": {
         "X": 1075.6698,
         "Y": 2035.9585
       }
     },
     {
-      "ChildId": "d4f98a35-970f-423d-a47d-4bfb1c59d1c1"/*FloatsToBuffer*/,
+      "ChildId": "d4f98a35-970f-423d-a47d-4bfb1c59d1c1",
+      "SymbolName": "Lib.render._dx11.api.FloatsToBuffer",
       "Style": "Resizable",
       "Size": {
         "X": 157.6828,
@@ -201,14 +226,16 @@
       }
     },
     {
-      "ChildId": "f3c93648-f742-437b-a4e5-0876eb9d4989"/*GetBufferComponents*/,
+      "ChildId": "f3c93648-f742-437b-a4e5-0876eb9d4989",
+      "SymbolName": "Lib.render._dx11.buffer.GetBufferComponents",
       "Position": {
         "X": 935.66986,
         "Y": 1930.9585
       }
     },
     {
-      "ChildId": "f93ee2c8-46c6-468b-b6e5-caaf6930b4e5"/*ComputeShader*/,
+      "ChildId": "f93ee2c8-46c6-468b-b6e5-caaf6930b4e5",
+      "SymbolName": "Types.Gfx.ComputeShader",
       "Position": {
         "X": 944.0747,
         "Y": 1471.0455

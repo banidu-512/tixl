@@ -1,7 +1,7 @@
 {
   "FormatVersion": 3,
   "Id": "4f5999c9-8ade-4e31-8379-afb7db56e170"/*TextureMapForce*/,
-  "Description": "Accelerate particles from a signed normal map. The map is stretched to the camera clip space.\n\nThis force can be very powerful in creating effects, such as particles flowing along images or tracing contours. It utilizes the R and G channels of the signed normal map to accelerate along the X and Y axes.\n\nImportant: This implies that the normal map needs to have negative values. One option is using [NormalMap] with the Gray_ToNormalizedRGBSigned mode. This can be especially potent when combined with the Rotation parameter.\n\nTip: You can also use the [ImageLevels] operator to verify that the texture contains negative values.\n\nYou can use the ViewConfinement and DepthConcentration parameters to keep the particles within the visible area for the camera view.\n\nPlease also check the example.",
+  "Description": "Accelerates particles by the vectors of a signed normal map that is stretched over the camera view.\n\nEach particle is projected into the camera view and samples the map at that position. The R and G channels accelerate it along the screen X and Y axes, the alpha channel scales the effect. This can create particles flowing along images or tracing contours.\n\nThe map needs negative values. One option is [NormalMap] with the Gray_ToNormalizedRGBSigned mode, which works especially well together with the Twist parameter. ViewConfinement and DepthConcentration keep the particles within the visible area of the camera.\n\nTips:\n- Use [ImageLevels] to verify that the texture contains negative values.\n\nSee also: [VectorFieldForce], [TurbulenceForce]",
   "SymbolTags": "1",
   "InputUis": [
     {
@@ -19,6 +19,7 @@
         "X": 219.55301,
         "Y": 1308.7299
       },
+      "Description": "Rotates the vectors of the map in degrees.",
       "Min": -180.0,
       "Max": 180.0,
       "Format": "{0:0.0}°"
@@ -29,7 +30,7 @@
         "X": 79.55301,
         "Y": 1238.7299
       },
-      "Description": "Controls the random distribution. Please check [BiasAndGainExample] and read the documentation on Wiki -> Rendering for Artists.",
+      "Description": "Shapes the random distribution used by the variation parameters.",
       "AddPadding": "True",
       "Min": 0.0,
       "Max": 1.0,
@@ -44,6 +45,7 @@
         "X": 79.55301,
         "Y": 1343.7299
       },
+      "Description": "Color the particles are blended towards where the force is strong.",
       "Min": 0.0,
       "Max": 1.0,
       "ClampMin": true
@@ -65,7 +67,7 @@
         "Y": 1133.7299
       },
       "GroupTitle": "Spin",
-      "Description": "Applies a rotation along the view direction.",
+      "Description": "Rotates the particle velocity around the Z axis in degrees each frame.",
       "Min": -180.0,
       "Max": 180.0,
       "Format": "{0:0.0}°"
@@ -76,6 +78,7 @@
         "X": 79.55301,
         "Y": 923.72986
       },
+      "Description": "Scales the acceleration along the screen X and Y axes.",
       "Min": -5.0,
       "Max": 5.0,
       "Format": "{0:0.000} ×",
@@ -87,6 +90,7 @@
         "X": 219.55301,
         "Y": 1518.7299
       },
+      "Description": "Random variation of Twist per particle in degrees.",
       "Min": -180.0,
       "Max": 180.0,
       "Format": "{0:0.0}°"
@@ -97,7 +101,7 @@
         "X": 219.55301,
         "Y": 1168.7299
       },
-      "Description": "Add a random offset to the twist rotation. Use BiasAndGain to control the amount of random distribution",
+      "Description": "Random variation of Spin per particle in degrees. VariationGainAndBias shapes the distribution.",
       "Min": -180.0,
       "Max": 180.0,
       "Format": "{0:0.0}°"
@@ -123,7 +127,8 @@
       "Position": {
         "X": 219.55301,
         "Y": 1483.7299
-      }
+      },
+      "Description": "Amount of colorization relative to the strength of the force. 0 disables it."
     },
     {
       "InputId": "eddf467a-d96e-4639-aa09-b49dc1775c1b"/*Amount*/,
@@ -151,47 +156,54 @@
       "Position": {
         "X": 788.8622,
         "Y": 1484.7836
-      }
+      },
+      "Description": "Signed normal map whose RG channels define the acceleration."
     }
   ],
   "SymbolChildUis": [
     {
-      "ChildId": "2f648aaf-f16f-4526-9f89-90feb8c2a27c"/*Vector2Components*/,
+      "ChildId": "2f648aaf-f16f-4526-9f89-90feb8c2a27c",
+      "SymbolName": "Lib.numbers.vec2.Vector2Components",
       "Position": {
         "X": 219.55301,
         "Y": 1238.7299
       }
     },
     {
-      "ChildId": "3ec98dc2-3ab7-4042-ae97-3ff1634d2cc4"/*ComputeShaderStage*/,
+      "ChildId": "3ec98dc2-3ab7-4042-ae97-3ff1634d2cc4",
+      "SymbolName": "Types.Gfx.ComputeShaderStage",
       "Position": {
         "X": 1340.4359,
         "Y": 1275.1409
       }
     },
     {
-      "ChildId": "45b8156d-f863-4ba1-9d39-dafeef57a9f8"/*HasTimeChanged*/,
+      "ChildId": "45b8156d-f863-4ba1-9d39-dafeef57a9f8",
+      "SymbolName": "Lib.numbers.anim.time.HasTimeChanged",
       "Position": {
         "X": 1200.4359,
         "Y": 1590.141
       }
     },
     {
-      "ChildId": "52cc0aa2-45ed-4fc6-a0dd-0f45b116f21f"/*Execute*/,
+      "ChildId": "52cc0aa2-45ed-4fc6-a0dd-0f45b116f21f",
+      "SymbolName": "Lib.flow.Execute",
       "Position": {
         "X": 1340.4359,
         "Y": 1485.1409
       }
     },
     {
-      "ChildId": "588c11fa-81e5-4f8d-9dfa-f92a4b7205e6"/*_ExecuteParticleUpdate*/,
+      "ChildId": "588c11fa-81e5-4f8d-9dfa-f92a4b7205e6",
+      "SymbolName": "Lib.point._internal._ExecuteParticleUpdate",
       "Position": {
         "X": 1340.4359,
         "Y": 1555.141
       }
     },
     {
-      "ChildId": "73f20e66-9144-4268-9e72-ee0c1147ea71"/*VisibleGizmos*/,
+      "ChildId": "73f20e66-9144-4268-9e72-ee0c1147ea71",
+      "SymbolName": "Lib.render.gizmo.VisibleGizmos",
       "SectionId": "75119d3c-2dc3-472f-953f-2d1fbdc6131d",
       "Position": {
         "X": 894.8252,
@@ -199,14 +211,16 @@
       }
     },
     {
-      "ChildId": "8cd63694-9e67-4758-81e1-41554a934dc8"/*_TransformsCBuffer*/,
+      "ChildId": "8cd63694-9e67-4758-81e1-41554a934dc8",
+      "SymbolName": "Lib.render._dx11.api._TransformsCBuffer",
       "Position": {
         "X": 1200.4359,
         "Y": 1380.1409
       }
     },
     {
-      "ChildId": "9054203a-1fe9-4ce3-b1fd-d81d5c0dca30"/*Camera*/,
+      "ChildId": "9054203a-1fe9-4ce3-b1fd-d81d5c0dca30",
+      "SymbolName": "Lib.render.camera.Camera",
       "SectionId": "75119d3c-2dc3-472f-953f-2d1fbdc6131d",
       "Position": {
         "X": 894.8252,
@@ -214,7 +228,8 @@
       }
     },
     {
-      "ChildId": "95552486-1a94-4ad5-be83-2a6dff0be04e"/*Group*/,
+      "ChildId": "95552486-1a94-4ad5-be83-2a6dff0be04e",
+      "SymbolName": "Lib.render.transform.Group",
       "SectionId": "75119d3c-2dc3-472f-953f-2d1fbdc6131d",
       "Position": {
         "X": 894.8252,
@@ -222,14 +237,16 @@
       }
     },
     {
-      "ChildId": "959d8343-cdc1-4030-b61c-95ccb40345cd"/*CalcDispatchCount*/,
+      "ChildId": "959d8343-cdc1-4030-b61c-95ccb40345cd",
+      "SymbolName": "Lib.render._dx11.api.CalcDispatchCount",
       "Position": {
         "X": 1054.6705,
         "Y": 1308.5428
       }
     },
     {
-      "ChildId": "ac85cf99-4b73-4f00-aa21-2cb50449e649"/*Layer2d*/,
+      "ChildId": "ac85cf99-4b73-4f00-aa21-2cb50449e649",
+      "SymbolName": "Lib.render.basic.Layer2d",
       "SectionId": "75119d3c-2dc3-472f-953f-2d1fbdc6131d",
       "Position": {
         "X": 894.8252,
@@ -237,14 +254,16 @@
       }
     },
     {
-      "ChildId": "b9cfe6eb-d521-48ec-acbe-e78404ea7ffa"/*SrvFromTexture2d*/,
+      "ChildId": "b9cfe6eb-d521-48ec-acbe-e78404ea7ffa",
+      "SymbolName": "Lib.render._dx11.api.SrvFromTexture2d",
       "Position": {
         "X": 1200.4359,
         "Y": 1415.141
       }
     },
     {
-      "ChildId": "c95137eb-31d1-47bb-a8be-32b1993347bc"/*Displace*/,
+      "ChildId": "c95137eb-31d1-47bb-a8be-32b1993347bc",
+      "SymbolName": "Lib.image.fx.distort.Displace",
       "SectionId": "75119d3c-2dc3-472f-953f-2d1fbdc6131d",
       "Position": {
         "X": 894.8252,
@@ -252,7 +271,8 @@
       }
     },
     {
-      "ChildId": "cc4d654e-8b0c-4474-ba6c-ac0f5bb4cbd7"/*Multiply*/,
+      "ChildId": "cc4d654e-8b0c-4474-ba6c-ac0f5bb4cbd7",
+      "SymbolName": "Lib.numbers.float.basic.Multiply",
       "SectionId": "75119d3c-2dc3-472f-953f-2d1fbdc6131d",
       "Position": {
         "X": 754.8252,
@@ -260,7 +280,8 @@
       }
     },
     {
-      "ChildId": "d2cdb2b9-f2f6-4fb2-a7d9-78dd5c4f4f9a"/*Raster*/,
+      "ChildId": "d2cdb2b9-f2f6-4fb2-a7d9-78dd5c4f4f9a",
+      "SymbolName": "Lib.image.generate.pattern.Raster",
       "SectionId": "75119d3c-2dc3-472f-953f-2d1fbdc6131d",
       "Position": {
         "X": 894.8252,
@@ -268,35 +289,40 @@
       }
     },
     {
-      "ChildId": "d56e3780-f670-4398-b47b-6600a3bfcef2"/*Vector2Components*/,
+      "ChildId": "d56e3780-f670-4398-b47b-6600a3bfcef2",
+      "SymbolName": "Lib.numbers.vec2.Vector2Components",
       "Position": {
         "X": 219.55301,
         "Y": 923.72986
       }
     },
     {
-      "ChildId": "d7265407-2d65-49b6-9c16-f1e64694f258"/*Vector4Components*/,
+      "ChildId": "d7265407-2d65-49b6-9c16-f1e64694f258",
+      "SymbolName": "Lib.numbers.vec4.Vector4Components",
       "Position": {
         "X": 219.55301,
         "Y": 1343.7299
       }
     },
     {
-      "ChildId": "ef86cc7b-e9a8-4fb9-b8e8-237d6fb381cd"/*GetParticleComponents*/,
+      "ChildId": "ef86cc7b-e9a8-4fb9-b8e8-237d6fb381cd",
+      "SymbolName": "Lib.point._internal.GetParticleComponents",
       "Position": {
         "X": 784.41565,
         "Y": 1402.1929
       }
     },
     {
-      "ChildId": "efb4b5cc-7ff3-4786-b5cd-ba247c45a98a"/*FloatsToBuffer*/,
+      "ChildId": "efb4b5cc-7ff3-4786-b5cd-ba247c45a98a",
+      "SymbolName": "Lib.render._dx11.api.FloatsToBuffer",
       "Position": {
         "X": 359.553,
         "Y": 888.72986
       }
     },
     {
-      "ChildId": "fbe7c1c0-1ad5-45f8-bdd4-24988b2a0ba2"/*ComputeShader*/,
+      "ChildId": "fbe7c1c0-1ad5-45f8-bdd4-24988b2a0ba2",
+      "SymbolName": "Types.Gfx.ComputeShader",
       "Position": {
         "X": 914.67053,
         "Y": 1273.5427

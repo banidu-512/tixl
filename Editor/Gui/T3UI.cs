@@ -16,6 +16,7 @@ using T3.Editor.Gui.Windows.Output;
 using T3.Editor.UiModel;
 using T3.Editor.UiModel.Commands;
 using T3.Editor.UiModel.Helpers;
+using T3.IoServices.Midi;
 
 namespace T3.Editor.Gui;
 
@@ -51,6 +52,11 @@ public static partial class T3Ui
         else if (UserActions.Save.Triggered())
         {
             SaveInBackground(saveAll: false);
+        }
+        else if (UserActions.Exit.Triggered())
+        {
+            if (!IsCurrentlySaving)
+                ExitDialog.ShowNextFrame();
         }
         else if (UserActions.ToggleAllUiElements.Triggered())
         {

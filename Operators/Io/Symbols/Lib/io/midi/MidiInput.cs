@@ -2,13 +2,15 @@ using NAudio.Midi;
 using T3.IoServices;
 using T3.Core.Animation;
 using T3.Core.IO;
+using T3.Core.Operator.Interfaces;
 using T3.Core.Stats;
 using T3.Core.Utils;
+using T3.IoServices.Midi;
 
 namespace Lib.io.midi;
 
 [Guid("59a0458e-2f3a-4856-96cd-32936f783cc5")]
-public sealed class MidiInput : Instance<MidiInput>, MidiConnectionManager.IMidiConsumer, IStatusProvider
+public sealed class MidiInput : Instance<MidiInput>, MidiConnectionManager.IMidiConsumer, ICustomDropdownHolder, IStatusProvider
 {
     [Output(Guid = "01706780-D25B-4C30-A741-8B7B81E04D82")]
     public readonly Slot<float> Result = new();
@@ -56,17 +58,12 @@ public sealed class MidiInput : Instance<MidiInput>, MidiConnectionManager.IMidi
             _initialized = true;
         }
 
-        _trainedDeviceName = Device.GetValue(context);
-
-        if (MidiConnectionManager.TryGetMidiIn(_trainedDeviceName, out _))
+        if (_deviceCache.Update(Device.GetValue(context), forOutput: false))
         {
-            _warningMessage = null;
-            this.ClearErrorState();
-        }
-        else
-        {
-            _warningMessage = $"Midi device '{_trainedDeviceName}' is not captured.\nYou can try Windows » Settings » Midi » Rescan Devices.";
-            //this.LogWarningState(_warningMessage);
+            _trainedDeviceName = _deviceCache.ProductName;
+            _warningMessage = _deviceCache.MissingMessage;
+            if (_warningMessage == null)
+                this.ClearErrorState();
         }
 
         _trainedChannel = Channel.GetValue(context);
@@ -127,7 +124,11 @@ public sealed class MidiInput : Instance<MidiInput>, MidiConnectionManager.IMidi
                 {
                     // The teaching mode shouldn't override the connected nodes
                     if (!Device.HasInputConnections) {
-                        Device.SetTypedInputValue(_lastMessageDeviceName);
+                        // Prefer the alias so the taught op survives a device change
+                        var deviceNameToStore = MidiConnectionManager.TryGetAliasForProductName(_lastMessageDeviceName, out var alias)
+                                                    ? alias
+                                                    : _lastMessageDeviceName;
+                        Device.SetTypedInputValue(deviceNameToStore);
                         _trainedDeviceName = _lastMessageDeviceName;
                     }
 
@@ -265,7 +266,7 @@ public sealed class MidiInput : Instance<MidiInput>, MidiConnectionManager.IMidi
     /// </remarks>
     public void MessageReceivedHandler(object sender, MidiInMessageEventArgs msg)
     {
-        if (sender is not MidiIn midiIn || msg.MidiEvent == null)
+        if (sender is not MidiInputDevice midiIn || msg.MidiEvent == null)
             return;
 
         // Skip messages from devices that are being controlled by compatible MIDI devices
@@ -428,6 +429,35 @@ public sealed class MidiInput : Instance<MidiInput>, MidiConnectionManager.IMidi
         WasHit.DirtyFlag.Invalidate();
     }
 
+    string ICustomDropdownHolder.GetValueForInput(Guid inputId)
+    {
+        return Device.Value;
+    }
+
+    IEnumerable<string> ICustomDropdownHolder.GetOptionsForInput(Guid inputId)
+    {
+        if (inputId != Device.Id)
+        {
+            yield return "undefined";
+            yield break;
+        }
+
+        foreach (var alias in MidiConnectionManager.AliasNames)
+        {
+            yield return alias;
+        }
+
+        foreach (var device in MidiConnectionManager.MidiIns.Values)
+        {
+            yield return device.ProductName;
+        }
+    }
+
+    void ICustomDropdownHolder.HandleResultForInput(Guid inputId, string selected, bool isAListItem)
+    {
+        Device.SetTypedInputValue(selected);
+    }
+
     public IStatusProvider.StatusLevel GetStatusLevel()
     {
         return string.IsNullOrEmpty(_warningMessage) ? IStatusProvider.StatusLevel.Success : IStatusProvider.StatusLevel.Error;
@@ -460,13 +490,14 @@ public sealed class MidiInput : Instance<MidiInput>, MidiConnectionManager.IMidi
     private bool _oldTeachTrigger;
     private bool _teachingActive;
     private string _trainedDeviceName;
+    private MidiDeviceNameCache _deviceCache;
     private int _trainedChannel = -1;
     private int _trainedControllerId = -1;
     private MidiEventTypes _trainedEventType;
     private readonly List<MidiSignal> _lastMatchingSignals = new(10);
     // The most recent matching event's device name, captured for teach-mode write-back.
     // Stored as a string (rather than the NAudio MidiInCapabilities struct it used to be)
-    // so the simulated replay path can populate it without a real MidiIn instance.
+    // so the simulated replay path can populate it without a real MidiInputDevice instance.
     private string _lastMessageDeviceName;
 
     private float _currentControllerValue;

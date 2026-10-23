@@ -1,7 +1,7 @@
 {
   "FormatVersion": 3,
   "Id": "927a77d5-7bf0-477b-b288-4bb48d4980cd"/*ImageSequenceClip*/,
-  "Description": "Loads an image sequence from a folder and adds it as a time clip bar within the DopeView of the Timeline, similar to how video editing apps show clips.\nThese clips can be moved by drag and drop and arranged next to and on top of each other (classic NLE non-linear editing).\n\nWhen the time marker is running over / playing the time clip it is activated and rendered.\n\nTo load an Operator tree into the DopeView of the Timeline [TimeClip] can be used.\n[MidiClip] can be used to load linear MIDI information into the scene.",
+  "Description": "Plays the images of a folder as a sequence within a time clip in the timeline.\n\nLike other time clips, it is shown as a bar in the DopeSheet of the timeline and can be moved, trimmed and arranged next to and on top of other clips like in video editing software. The sequence is only rendered while the time is within the clip.\n\nAKA: sequence, frames, flipbook\n\nSee also: [TimeClip], [MidiClip], [LoadImage]",
   "InputUis": [
     {
       "InputId": "25215a7e-1e38-4370-8845-cbf422a7eb92"/*TriggerUpdate*/,
@@ -9,7 +9,7 @@
         "X": -834.8699,
         "Y": 13.593903
       },
-      "Description": "Forces update if clicked or activated via a bool"
+      "Description": "Rescans the folder for files."
     },
     {
       "InputId": "5c510853-f87d-4ebf-be0a-78d06d970be2"/*FrameRate*/,
@@ -17,7 +17,7 @@
         "X": -834.8699,
         "Y": -31.406097
       },
-      "Description": "Defines how many images per second are shown"
+      "Description": "Number of images shown per second."
     },
     {
       "InputId": "7c4fbfe3-2cf4-4e23-9b3e-961927f20935"/*Color*/,
@@ -25,7 +25,7 @@
         "X": -834.8699,
         "Y": 58.593903
       },
-      "Description": "Color value that tints / colors the image sequence",
+      "Description": "Tints the images of the sequence.",
       "Min": 0.0,
       "Max": 1.0,
       "ClampMin": true,
@@ -37,90 +37,102 @@
         "X": -834.8699,
         "Y": -121.4061
       },
-      "Description": "Defines the storage location of the image sequence.\n",
+      "Description": "Folder containing the images of the sequence.",
       "Usage": "DirectoryPath"
     }
   ],
   "SymbolChildUis": [
     {
-      "ChildId": "0ea364e4-e158-4d3e-8889-c84ebdf6e39d"/*TimeToString*/,
+      "ChildId": "0ea364e4-e158-4d3e-8889-c84ebdf6e39d",
+      "SymbolName": "Lib.string.datetime.TimeToString",
       "Position": {
         "X": -409.29373,
         "Y": 299.75244
       }
     },
     {
-      "ChildId": "160185d9-d0dd-4127-b3cd-9821be524e3c"/*FloatToString*/,
+      "ChildId": "160185d9-d0dd-4127-b3cd-9821be524e3c",
+      "SymbolName": "Lib.string.convert.FloatToString",
       "Position": {
         "X": -29.626038,
         "Y": 125.41168
       }
     },
     {
-      "ChildId": "1e11e1e6-db51-481b-b6b8-95d58523b7d9"/*CompareImages*/,
+      "ChildId": "1e11e1e6-db51-481b-b6b8-95d58523b7d9",
+      "SymbolName": "Lib.image.analyze.CompareImages",
       "Position": {
         "X": -172.70784,
         "Y": 494.66608
       }
     },
     {
-      "ChildId": "207b563b-3df8-4a68-8db3-fce1564ca5c5"/*_Time_old*/,
+      "ChildId": "207b563b-3df8-4a68-8db3-fce1564ca5c5",
+      "SymbolName": "Lib.numbers.anim._obsolete._Time_old",
       "Position": {
         "X": -550.45575,
         "Y": 64.02295
       }
     },
     {
-      "ChildId": "5491d337-5724-4f20-969e-7cdca220a446"/*PickStringFromList*/,
+      "ChildId": "5491d337-5724-4f20-969e-7cdca220a446",
+      "SymbolName": "Lib.string.list.PickStringFromList",
       "Position": {
         "X": 120.37396,
         "Y": 0.41168213
       }
     },
     {
-      "ChildId": "97e97bce-6dde-492c-8d18-73f45c6f2df1"/*FloatToInt*/,
+      "ChildId": "97e97bce-6dde-492c-8d18-73f45c6f2df1",
+      "SymbolName": "Lib.numbers.int.process.FloatToInt",
       "Position": {
         "X": -29.626038,
         "Y": 69.41168
       }
     },
     {
-      "ChildId": "a7141bee-87ed-4e99-bc5a-8be6a348fc6d"/*LoadImage*/,
+      "ChildId": "a7141bee-87ed-4e99-bc5a-8be6a348fc6d",
+      "SymbolName": "Lib.image.generate.load.LoadImage",
       "Position": {
         "X": 270.37396,
         "Y": 0.41168213
       }
     },
     {
-      "ChildId": "c9937e67-dc65-4f44-9b3e-fc2a160c704e"/*FilesInFolder*/,
+      "ChildId": "c9937e67-dc65-4f44-9b3e-fc2a160c704e",
+      "SymbolName": "Lib.io.file.FilesInFolder",
       "Position": {
         "X": -29.626038,
         "Y": 0.41168213
       }
     },
     {
-      "ChildId": "e6a06572-ace0-4406-b0a7-23a00715c2b6"/*Layer2d*/,
+      "ChildId": "e6a06572-ace0-4406-b0a7-23a00715c2b6",
+      "SymbolName": "Lib.render.basic.Layer2d",
       "Position": {
         "X": 420.37396,
         "Y": 0.41168213
       }
     },
     {
-      "ChildId": "eb5cba02-8c35-4869-9e37-a34cd5c5dc8a"/*Execute*/,
+      "ChildId": "eb5cba02-8c35-4869-9e37-a34cd5c5dc8a",
+      "SymbolName": "Lib.flow.Execute",
       "Position": {
         "X": 570.37396,
         "Y": 0.41168213
       }
     },
     {
-      "ChildId": "f3ba9356-53c5-4f40-b18d-f66bab7f219b"/*Text*/,
+      "ChildId": "f3ba9356-53c5-4f40-b18d-f66bab7f219b",
+      "SymbolName": "Lib.render.basic.Text",
       "Position": {
         "X": 120.37396,
         "Y": 149.41168
       }
     },
     {
-      "ChildId": "faba6557-4c87-4ff9-8b8e-c6905f2b4973"/*Multiply*/,
+      "ChildId": "faba6557-4c87-4ff9-8b8e-c6905f2b4973",
+      "SymbolName": "Lib.numbers.float.basic.Multiply",
       "Position": {
         "X": -179.62604,
         "Y": 43.411682

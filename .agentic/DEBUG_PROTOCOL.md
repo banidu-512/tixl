@@ -36,7 +36,7 @@ JSON lines over TCP on `127.0.0.1:<port>`. One request per line, one response pe
 
 ## Methods
 
-Read surface: `ping`, `getVersion`, `getStructureVersion`, `getMetrics`, `getContext`,
+Read surface: `ping`, `getVersion`, `getPaths`, `getStructureVersion`, `getMetrics`, `getContext`,
 `getLogTail` (`minLevel`, `maxCount`), `getGraphState`, `getOutput`, `screenshot` (`path`,
 optional `target`: `output` = the output window's texture, the default; `ui` = the **whole editor
 window as rendered** — windows, panels, canvases — copied from the back buffer on the next frame).
@@ -49,7 +49,9 @@ Control surface: `openProject` (`name`), `newProject`, `select` (`childId`), `se
 (`count`), `layoutSelection` (runs the G layout action on the current selection; returns `changed` and
 the grown `selectedIds`), `resetView`, `reload`, `undo`, `redo`, `setTime`, `setPlayback`, `shutdown`,
 `outputSetup` (`entity`: a setup entity's display name to select, e.g. `"Surface 1"`; `mode`: the
-strip's toolbar tab — `Board`, `Straight`, `Output`; either optional).
+strip's toolbar tab — `Board`, `Straight`, `Output`; either optional), `openWindow` (`name`: a window's
+type name such as `SettingsWindow`, `ParameterWindow`; optional `section` picks a settings category, e.g.
+`Midi`) — shows the window so a `screenshot` with `target: "ui"` can verify panel work without a mouse.
 It does what the outliner click and the tab click do, so Board ↔ space folds can be driven without a
 mouse. Every fold logs one `[fold] metrics …` line at Debug level (read it with `getLogTail`): the
 rectified surface's on-screen centre path as mean distance from the window centre, path length over
@@ -67,7 +69,12 @@ Parameter shapes are defined in `DebugServer.cs` — read the handler when unsur
   back in a `COMPILE_FAILED` detail). Built-in packages like `Lib` need an editor restart.
 - `setVSync` (`value`: bool, optional) switches the user's Use VSync setting and returns `useVSync`; without
   `value` it only reports. Restore the previous value after a measurement — the setting is saved.
-  `setTargetFrameRate` (`value`: fps, 0 = every refresh) works the same way for the Frame Rate setting.
+  `setTargetFrameRate` (`value`: fps, 0 = every refresh) works the same way for the Frame Rate setting, and
+  `setFrameLatency` (`value`: 1 or 2 frames in flight) for the Frame Latency setting.
+- `getFrameSamples` returns the Performance window's rolling window (400 frames, oldest first) as
+  `frameMs`, `cpuMs` and `presentMs` arrays plus `totalFrames` — the data of its CSV export. Use it to judge
+  frame pacing (doubled frames, mean against the refresh period) without a manual export; `totalFrames` lets
+  consecutive calls be stitched into longer recordings.
 - `stallMainThread` sleeps on the main thread to exercise the stall overlay (`StallWatchdog`).
   With an `estimateKey` it runs inside a `MainThreadActivity` scope, so the second run with the
   same key shows estimated progress. The overlay is presented by another thread, so neither

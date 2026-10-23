@@ -1,7 +1,7 @@
 {
   "FormatVersion": 3,
   "Id": "4af7bbd1-9231-4ef3-bb7a-1d643c7d16cf"/*SdfReflectionLinePoints*/,
-  "Description": "Moves points along their Z-axis until they hit an SDF surface.\n\nThis can be used for visualizing raymarching or simlurate rays being reflected from an SDF surface.",
+  "Description": "Shoots rays from points along their negative Z axis and reflects them on the surface of an SDF, outputting the ray paths as lines.\n\nEach input point produces a line of points followed by a separator, which can be drawn with [DrawLines].\n\nSee also: [RaymarchPoints], [RaymarchField]",
   "SymbolTags": "8",
   "InputUis": [
     {
@@ -9,7 +9,8 @@
       "Position": {
         "X": 477.1128,
         "Y": 1375.6528
-      }
+      },
+      "Description": "Number of reflections, clamped to 0..10."
     },
     {
       "InputId": "403f823d-043b-4009-b00f-e90aa154f30f"/*MinDistance*/,
@@ -17,6 +18,7 @@
         "X": 973.82806,
         "Y": 1474.262
       },
+      "Description": "Distance at which a ray counts as hitting the surface.",
       "Min": 0.0,
       "Scale": 0.01
     },
@@ -33,7 +35,8 @@
       "Position": {
         "X": 973.8281,
         "Y": 1826.3635
-      }
+      },
+      "Description": "Writes the travelled distance into F1 or F2."
     },
     {
       "InputId": "94c84de7-ac0c-48c1-9a45-f2d39ab6513f"/*MaxDistance*/,
@@ -41,6 +44,7 @@
         "X": 973.82806,
         "Y": 1579.262
       },
+      "Description": "Distance after which a ray stops.",
       "Scale": 0.01
     },
     {
@@ -49,6 +53,7 @@
         "X": 973.82806,
         "Y": 1509.262
       },
+      "Description": "Multiplies each step. Values below 1 reduce overshooting for fields with artifacts.",
       "Min": 0.0,
       "Max": 1.0,
       "Scale": 0.01,
@@ -61,6 +66,7 @@
         "X": 973.8282,
         "Y": 1544.262
       },
+      "Description": "Offset used to compute the surface normal for reflections.",
       "Scale": 0.01
     },
     {
@@ -68,7 +74,8 @@
       "Position": {
         "X": 833.8282,
         "Y": 1756.3635
-      }
+      },
+      "Description": "Maximum number of raymarching steps per ray, clamped to 1..100."
     },
     {
       "InputId": "c4e2297a-dd91-4162-8f2c-e968d8529158"/*Points*/,
@@ -83,103 +90,118 @@
       "Position": {
         "X": 973.8281,
         "Y": 1861.3635
-      }
+      },
+      "Description": "Writes the step or reflection index into F1 or F2."
     }
   ],
   "SymbolChildUis": [
     {
-      "ChildId": "09ddbb77-a801-4e45-b039-4bfcc701563f"/*GenerateShaderGraphCode*/,
+      "ChildId": "09ddbb77-a801-4e45-b039-4bfcc701563f",
+      "SymbolName": "Lib.field.render._.GenerateShaderGraphCode",
       "Position": {
         "X": 783.13354,
         "Y": 883.8391
       }
     },
     {
-      "ChildId": "175a5445-a109-488c-b84e-28743523d94d"/*IntsToBuffer*/,
+      "ChildId": "175a5445-a109-488c-b84e-28743523d94d",
+      "SymbolName": "Lib.numbers.int.process.IntsToBuffer",
       "Position": {
         "X": 1113.8281,
         "Y": 1721.3635
       }
     },
     {
-      "ChildId": "3794820b-4adb-450b-a599-ca74c548d3b6"/*ClampInt*/,
+      "ChildId": "3794820b-4adb-450b-a599-ca74c548d3b6",
+      "SymbolName": "Lib.numbers.int.process.ClampInt",
       "Position": {
         "X": 973.8282,
         "Y": 1756.3635
       }
     },
     {
-      "ChildId": "3a5b4295-684a-4366-99ce-a3e7ad466044"/*FloatsToBuffer*/,
+      "ChildId": "3a5b4295-684a-4366-99ce-a3e7ad466044",
+      "SymbolName": "Lib.render._dx11.api.FloatsToBuffer",
       "Position": {
         "X": 1113.8281,
         "Y": 1439.262
       }
     },
     {
-      "ChildId": "401c7778-814d-409a-a80d-7be59abd5c6b"/*ComputeShaderFromSource*/,
+      "ChildId": "401c7778-814d-409a-a80d-7be59abd5c6b",
+      "SymbolName": "Types.Gfx.ComputeShaderFromSource",
       "Position": {
         "X": 783.13354,
         "Y": 988.8391
       }
     },
     {
-      "ChildId": "4a98eb5d-3084-4cfb-99f4-22b76ca379b4"/*GetBufferComponents*/,
+      "ChildId": "4a98eb5d-3084-4cfb-99f4-22b76ca379b4",
+      "SymbolName": "Lib.render._dx11.buffer.GetBufferComponents",
       "Position": {
         "X": 617.11273,
         "Y": 1163.6362
       }
     },
     {
-      "ChildId": "56c44879-6613-4aab-8874-0278f100c6ab"/*AddInt*/,
+      "ChildId": "56c44879-6613-4aab-8874-0278f100c6ab",
+      "SymbolName": "Lib.numbers.int.basic.AddInt",
       "Position": {
         "X": 973.8281,
         "Y": 1232.0168
       }
     },
     {
-      "ChildId": "68ec7320-6637-4cbc-a084-7a70ba825ca1"/*ComputeShaderStage*/,
+      "ChildId": "68ec7320-6637-4cbc-a084-7a70ba825ca1",
+      "SymbolName": "Types.Gfx.ComputeShaderStage",
       "Position": {
         "X": 1405.8673,
         "Y": 996.5768
       }
     },
     {
-      "ChildId": "8acadba1-1afa-47cf-bf2d-5de9afd94fba"/*GetBufferComponents*/,
+      "ChildId": "8acadba1-1afa-47cf-bf2d-5de9afd94fba",
+      "SymbolName": "Lib.render._dx11.buffer.GetBufferComponents",
       "Position": {
         "X": 1113.8281,
         "Y": 1337.0168
       }
     },
     {
-      "ChildId": "9ceaf37c-b240-4d1b-acc4-917aea02716f"/*MultiplyInt*/,
+      "ChildId": "9ceaf37c-b240-4d1b-acc4-917aea02716f",
+      "SymbolName": "Lib.numbers.int.basic.MultiplyInt",
       "Position": {
         "X": 1113.8281,
         "Y": 1197.0168
       }
     },
     {
-      "ChildId": "9fa1d380-7cb8-4dbc-a6c4-1a52373e5f81"/*ExecuteBufferUpdate*/,
+      "ChildId": "9fa1d380-7cb8-4dbc-a6c4-1a52373e5f81",
+      "SymbolName": "Lib.render._dx11.fxsetup.ExecuteBufferUpdate",
       "Position": {
         "X": 1405.8673,
         "Y": 1276.5768
       }
     },
     {
-      "ChildId": "a604830d-791e-46a3-86ab-e092dcfdf51d"/*StructuredBufferWithViews*/,
+      "ChildId": "a604830d-791e-46a3-86ab-e092dcfdf51d",
+      "SymbolName": "Types.Gfx.StructuredBufferWithViews",
       "Position": {
         "X": 1113.8281,
         "Y": 1267.0168
       }
     },
     {
-      "ChildId": "c2f545bc-33cf-451a-a7ae-29ff73de1224"/*ClampInt*/,
+      "ChildId": "c2f545bc-33cf-451a-a7ae-29ff73de1224",
+      "SymbolName": "Lib.numbers.int.process.ClampInt",
       "Position": {
         "X": 617.11273,
         "Y": 1375.6528
       }
     },
     {
-      "ChildId": "d0897fdc-abdb-478e-9362-521e0af12781"/*CalcDispatchCount*/,
+      "ChildId": "d0897fdc-abdb-478e-9362-521e0af12781",
+      "SymbolName": "Lib.render._dx11.api.CalcDispatchCount",
       "Position": {
         "X": 923.13336,
         "Y": 1023.8391

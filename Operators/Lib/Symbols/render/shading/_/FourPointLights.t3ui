@@ -1,8 +1,8 @@
 {
   "FormatVersion": 3,
   "Id": "d062c1c2-a7d1-4d4d-a9b1-e0e96df02385"/*FourPointLights*/,
-  "Description": "A simple test setup",
-  "SymbolTags": "2",
+  "Description": "Internal helper. A test setup that adds four fixed [PointLight]s to the connected subgraph.",
+  "SymbolTags": "18",
   "InputUis": [
     {
       "InputId": "30d72726-f818-4dd4-b9e6-c4c5c3509ff0"/*Command*/,
@@ -21,28 +21,32 @@
   ],
   "SymbolChildUis": [
     {
-      "ChildId": "0feb220c-ff33-426d-93dc-655634fdbdc5"/*PointLight*/,
+      "ChildId": "0feb220c-ff33-426d-93dc-655634fdbdc5",
+      "SymbolName": "Lib.render.shading.PointLight",
       "Position": {
         "X": 7.3394494,
         "Y": 90.694626
       }
     },
     {
-      "ChildId": "3048c3f7-e6be-4711-b60d-0495050f5c01"/*PointLight*/,
+      "ChildId": "3048c3f7-e6be-4711-b60d-0495050f5c01",
+      "SymbolName": "Lib.render.shading.PointLight",
       "Position": {
         "X": 137.33945,
         "Y": 90.694626
       }
     },
     {
-      "ChildId": "b16f386f-22f8-47c8-9e77-0d5aeb3ac03d"/*PointLight*/,
+      "ChildId": "b16f386f-22f8-47c8-9e77-0d5aeb3ac03d",
+      "SymbolName": "Lib.render.shading.PointLight",
       "Position": {
         "X": 397.33948,
         "Y": 90.694626
       }
     },
     {
-      "ChildId": "b25d805b-9859-4c77-8f67-9fe7a7a1fbae"/*PointLight*/,
+      "ChildId": "b25d805b-9859-4c77-8f67-9fe7a7a1fbae",
+      "SymbolName": "Lib.render.shading.PointLight",
       "Position": {
         "X": 267.33948,
         "Y": 90.694626

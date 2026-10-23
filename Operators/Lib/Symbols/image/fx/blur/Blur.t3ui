@@ -1,7 +1,7 @@
 {
   "FormatVersion": 3,
   "Id": "946da16c-f536-4887-b764-af9468f22c0f"/*Blur*/,
-  "Description": "Blurs the incoming image\n\nUseful Ops for a PostFX Pipeline: [MotionBlur] [DepthOfField] [ChromaticAbberation] [Glow] [Grain] [Blur]",
+  "Description": "Blurs the incoming image.\n\nAKA: gaussian, soften, defocus\n\nSee also: [FastBlur], [DirectionalBlur], [BlurWithMask], [Bloom], [MotionBlur], [DepthOfField]",
   "SymbolTags": "1",
   "InputUis": [
     {
@@ -11,7 +11,7 @@
         "Y": 193.1156
       },
       "GroupTitle": "Advanced Settings",
-      "Description": "Offsets the brightness of the image"
+      "Description": "Added to the RGB of the result."
     },
     {
       "InputId": "3c8b43be-430f-4afe-8244-5282be49bfbc"/*Samples*/,
@@ -19,7 +19,7 @@
         "X": -308.4377,
         "Y": 148.1156
       },
-      "Description": "Defines the number of iterations with which the image is blurred. \n\nHigher values produce higher quality at the cost of computing speed.",
+      "Description": "Number of samples on each side per pass. Higher values are smoother but slower.",
       "Min": 0.0,
       "Max": 100.0,
       "ClampMin": true,
@@ -31,7 +31,7 @@
         "X": -308.4377,
         "Y": 103.11561
       },
-      "Description": "Defines the strength/radius of the blur",
+      "Description": "Blur radius in percent of the image size.",
       "AddPadding": "True",
       "Min": 0.0,
       "Max": 20.0
@@ -42,7 +42,7 @@
         "X": -308.4377,
         "Y": 328.1156
       },
-      "Description": "Defines what is displayed at the edge of the image or how it is repeated should it be cut off/offset over its borders.",
+      "Description": "Defines how pixels beyond the image border are sampled.",
       "AddPadding": "True"
     },
     {
@@ -60,7 +60,7 @@
         "X": -308.4377,
         "Y": 238.1156
       },
-      "Description": "Changes the opacity/gamma of the image"
+      "Description": "Multiplies the RGB of the result."
     },
     {
       "InputId": "e4e5e654-d570-4dea-ad16-f4eb1018ff2f"/*Resolution*/,
@@ -68,62 +68,70 @@
         "X": -308.4377,
         "Y": 283.1156
       },
-      "Description": "Overwrites/redefines the resolution of the incoming image",
+      "Description": "Overrides the output resolution.",
       "AddPadding": "True"
     }
   ],
   "SymbolChildUis": [
     {
-      "ChildId": "182b10f8-0d60-4d18-b442-75431f9beca4"/*Resources\lib\img\fx\Blur.hlsl*/,
+      "ChildId": "182b10f8-0d60-4d18-b442-75431f9beca4",
+      "SymbolName": "Lib.render._dx11.fxsetup._ImageFxShaderSetupStatic",
       "Position": {
         "X": 793.38324,
         "Y": 565.9022
       }
     },
     {
-      "ChildId": "24ba6f99-4bcd-4e84-b4cc-147f4cee2c63"/*WidthToHeight*/,
+      "ChildId": "24ba6f99-4bcd-4e84-b4cc-147f4cee2c63",
+      "SymbolName": "Types.Values.Value",
       "Position": {
         "X": -73.05734,
         "Y": 219.62434
       }
     },
     {
-      "ChildId": "3d331fa5-2020-432f-8fc4-40fa10c23cec"/*Resources\lib\img\fx\Blur.hlsl*/,
+      "ChildId": "3d331fa5-2020-432f-8fc4-40fa10c23cec",
+      "SymbolName": "Lib.render._dx11.fxsetup._ImageFxShaderSetupStatic",
       "Position": {
         "X": 526.80054,
         "Y": 535.7032
       }
     },
     {
-      "ChildId": "68b65d39-c6d1-4c23-8b5a-321640ed50ad"/*GetTextureSize*/,
+      "ChildId": "68b65d39-c6d1-4c23-8b5a-321640ed50ad",
+      "SymbolName": "Lib.render._dx11.api.GetTextureSize",
       "Position": {
         "X": -245.48831,
         "Y": -70.23182
       }
     },
     {
-      "ChildId": "8a1e1b10-b102-4fd3-945c-09da4385f356"/*Div*/,
+      "ChildId": "8a1e1b10-b102-4fd3-945c-09da4385f356",
+      "SymbolName": "Lib.numbers.float.basic.Div",
       "Position": {
         "X": 112.54825,
         "Y": -84.67817
       }
     },
     {
-      "ChildId": "a3bdc17e-c073-4df0-a204-b08df50ce0a4"/*Vector2Components*/,
+      "ChildId": "a3bdc17e-c073-4df0-a204-b08df50ce0a4",
+      "SymbolName": "Lib.numbers.vec2.Vector2Components",
       "Position": {
         "X": -53.872154,
         "Y": -75.83326
       }
     },
     {
-      "ChildId": "a663161b-a214-41a0-87d0-7c642e39e1f7"/*Value*/,
+      "ChildId": "a663161b-a214-41a0-87d0-7c642e39e1f7",
+      "SymbolName": "Types.Values.Value",
       "Position": {
         "X": -73.05734,
         "Y": 262.62433
       }
     },
     {
-      "ChildId": "dd5731e9-069c-410f-98ca-ef958c5b1ce8"/*Vertical*/,
+      "ChildId": "dd5731e9-069c-410f-98ca-ef958c5b1ce8",
+      "SymbolName": "Lib.numbers.vec2.Vector2Components",
       "Position": {
         "X": 161.46207,
         "Y": 405.48312

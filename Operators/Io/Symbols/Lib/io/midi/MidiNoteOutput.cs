@@ -2,6 +2,7 @@ using NAudio.Midi;
 using T3.IoServices;
 using T3.Core.Animation;
 using T3.Core.Utils;
+using T3.IoServices.Midi;
 
 namespace Lib.io.midi;
 
@@ -30,7 +31,8 @@ internal sealed class MidiNoteOutput : Instance<MidiNoteOutput>, MidiConnectionM
     {
         var triggerActive = TriggerSend.GetValue(context);
         var sendMode = SendMode.GetEnumValue<SendModes>(context);
-        var deviceName = Device.GetValue(context);
+        _deviceCache.Update(Device.GetValue(context), forOutput: true);
+        var deviceName = _deviceCache.ProductName;
         var foundDevice = false;
         var channel = ChannelNumber.GetValue(context).Clamp(1, 16);
         var noteIndex = NoteNumber.GetValue(context).Clamp(0, 127);
@@ -131,7 +133,7 @@ internal sealed class MidiNoteOutput : Instance<MidiNoteOutput>, MidiConnectionM
             }
                 
         }
-        _lastErrorMessage = !foundDevice ? $"Can't find MidiDevice {deviceName}" : null;
+        _lastErrorMessage = foundDevice ? null : _deviceCache.MissingMessage ?? _lastErrorMessage;
     }
         
     private double _lastNoteOnTime;
@@ -165,6 +167,15 @@ internal sealed class MidiNoteOutput : Instance<MidiNoteOutput>, MidiConnectionM
             yield break;
         }
             
+        foreach (var alias in MidiConnectionManager.AliasNames)
+            
+        {
+            
+            yield return alias;
+            
+        }
+
+            
         foreach (var device in MidiConnectionManager.MidiOutsWithDevices.Values)
         {
             yield return device.ProductName;
@@ -197,6 +208,7 @@ internal sealed class MidiNoteOutput : Instance<MidiNoteOutput>, MidiConnectionM
     public void OnSettingsChanged() {}
 
     private string _lastErrorMessage;
+    private MidiDeviceNameCache _deviceCache;
     #endregion
         
     [Input(Guid = "E1C1C77A-A6AF-4565-B345-F788BF268B2B")]

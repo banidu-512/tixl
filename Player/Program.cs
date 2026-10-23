@@ -7,6 +7,8 @@ using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Numerics;
+using System.Runtime;
+using System.Runtime.CompilerServices;
 using System.Text;
 using ManagedBass;
 using Newtonsoft.Json;
@@ -57,6 +59,9 @@ internal static partial class Program
         // Must run before any code that may trigger assembly resolution.
         T3.Core.Diagnostics.AssemblyLoadDiagnostics.Install();
 
+        // Background-only gen2 collections: a blocking one over a large heap would freeze rendering for many frames.
+        GCSettings.LatencyMode = GCLatencyMode.SustainedLowLatency;
+
         CoreUi.Instance = new MsForms.MsForms();
         var silkWindows = new SilkWindowProvider();
         BlockingWindow.Instance = silkWindows;
@@ -84,6 +89,8 @@ internal static partial class Program
                 BlockingWindow.Instance.ShowMessageBox(helpText, exportSettings.ApplicationTitle);
                 return;
             }
+
+            MidiAliasOverride.Apply(commandLine.MidiAliases);
 
             var lastUsedPath = Path.Combine(playerDataDirectory, "playerSettings.json");
             _startupOptions = PlayerStartupOptions.Resolve(exportSettings, commandLine, lastUsedPath);

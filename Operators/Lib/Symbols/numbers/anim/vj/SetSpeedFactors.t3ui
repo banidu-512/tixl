@@ -1,7 +1,7 @@
 {
   "FormatVersion": 3,
   "Id": "61dc8ba5-8aa6-4003-8d8c-8bce27f56a67"/*SetSpeedFactors*/,
-  "Description": "Speed factors are multiplied to most animation operators like [AnimValue] and [Counter].\n\nThis is an extremely powerful method to adjust the pace of visuals while staying beat synced.\n\nIn NormalizedRates mode...\n- ...0.5 means neutral (factor 1).\n- ...lower means slower: 1/2 1/4 1/8 1/16 frozen\n- ...larger means faster x2 x4 x8 x16 x32\n\nSpeedFactorA is applied to:\n[Counter]\n\nSpeedFactorB is applied to:\n[AnimValue]\n[AnimVec2]\n[AnimVec3]\n\nTo keep things flexible it supports Image and Commands types (but not crossing between them).",
+  "Description": "Sets speed factors for animation operators in the connected subgraph.\n\nThis adjusts the pace of visuals while staying beat-synced. SpeedFactorA is used by [Counter], SpeedFactorB by [AnimValue], [AnimVec2] and [AnimVec3] (see their AllowSpeedFactor parameter). Both Commands and Texture subgraphs are supported, but only one per instance.",
   "SymbolTags": "8",
   "InputUis": [
     {
@@ -17,7 +17,8 @@
       "Position": {
         "X": -100.99625,
         "Y": 141.14243
-      }
+      },
+      "Description": "- NormalizedRates: 0.5 is neutral (factor 1); lower values give 1/2, 1/4, 1/8, 1/16 down to frozen; higher values give ×2, ×4, ×8, ×16, ×32.\n- Factor: The value is used as a multiplier."
     },
     {
       "InputId": "3ba30914-444c-43a9-b936-87d5d98898cd"/*Texture*/,
@@ -51,14 +52,16 @@
   ],
   "SymbolChildUis": [
     {
-      "ChildId": "4f65db0d-bd6b-4564-9605-895c80baf11d"/*PickFloat*/,
+      "ChildId": "4f65db0d-bd6b-4564-9605-895c80baf11d",
+      "SymbolName": "Lib.numbers.float.logic.PickFloat",
       "Position": {
         "X": 310.18182,
         "Y": 4.337738
       }
     },
     {
-      "ChildId": "6aff5a3c-0d33-453c-ae5b-ca27e17f9663"/*Execute*/,
+      "ChildId": "6aff5a3c-0d33-453c-ae5b-ca27e17f9663",
+      "SymbolName": "Lib.flow.Execute",
       "Style": "Resizable",
       "Size": {
         "X": 77.22693,
@@ -70,42 +73,48 @@
       }
     },
     {
-      "ChildId": "836b32e0-5749-44aa-a1dc-27deeccc4073"/*SetFloatVar*/,
+      "ChildId": "836b32e0-5749-44aa-a1dc-27deeccc4073",
+      "SymbolName": "Lib.flow.context.SetFloatVar",
       "Position": {
         "X": 310.18182,
         "Y": 109.33774
       }
     },
     {
-      "ChildId": "945a41f1-b4ff-474c-8de5-ade6fda08d14"/*SetFloatVar*/,
+      "ChildId": "945a41f1-b4ff-474c-8de5-ade6fda08d14",
+      "SymbolName": "Lib.flow.context.SetFloatVar",
       "Position": {
         "X": 310.18182,
         "Y": 297.8856
       }
     },
     {
-      "ChildId": "95fee365-c63e-49a4-8214-a7db2baeab83"/*ExecuteTextureUpdate*/,
+      "ChildId": "95fee365-c63e-49a4-8214-a7db2baeab83",
+      "SymbolName": "Lib.render._dx11.fxsetup.ExecuteTextureUpdate",
       "Position": {
         "X": 778.0138,
         "Y": -9.438477
       }
     },
     {
-      "ChildId": "afa6fe54-9018-4451-9daf-fe560e12e718"/*ValueToRate*/,
+      "ChildId": "afa6fe54-9018-4451-9daf-fe560e12e718",
+      "SymbolName": "Lib.numbers.float.logic.ValueToRate",
       "Position": {
         "X": 170.18182,
         "Y": 4.337738
       }
     },
     {
-      "ChildId": "c09c785a-a8d0-4d55-8870-bf5822fa80f0"/*PickFloat*/,
+      "ChildId": "c09c785a-a8d0-4d55-8870-bf5822fa80f0",
+      "SymbolName": "Lib.numbers.float.logic.PickFloat",
       "Position": {
         "X": 310.18182,
         "Y": 192.88559
       }
     },
     {
-      "ChildId": "cbbabef4-d1d7-4b11-88f3-193e6f2e1f2b"/*ValueToRate*/,
+      "ChildId": "cbbabef4-d1d7-4b11-88f3-193e6f2e1f2b",
+      "SymbolName": "Lib.numbers.float.logic.ValueToRate",
       "Position": {
         "X": 170.18182,
         "Y": 192.88559
