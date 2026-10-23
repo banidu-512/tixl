@@ -22,6 +22,13 @@ public sealed class OutputDefinition
         public const string Format = "Format";
         public const string Projector = "Projector";
         public const string Display = "Display";
+
+        /// <summary>
+        /// A laser scanner — a pinhole projector for vector content. Carries a <see cref="ProjectorCamera"/>
+        /// (the scanner's pose and scan lens) and binds to a laser plug instead of presenting a canvas: its
+        /// content comes from a [LaserCamera] in the graph routed to this output via its OutputRef, not from slices.
+        /// </summary>
+        public const string Laser = "Laser";
     }
 
     /// <summary>
@@ -290,6 +297,13 @@ public sealed class OutputDefinition
     public Int2 ResolvedResolution = new(1920, 1080);
     public ProjectorCamera? Camera;
 
+    /// <summary>
+    /// Optimizer + safety settings for a laser output, applied by the laser output driver before streaming.
+    /// Null on laser outputs from older setups; consumers fall back to <see cref="LaserProcessingSettings.Default"/>
+    /// (uncalibrated — only the alignment rectangle streams).
+    /// </summary>
+    public LaserProcessingSettings? LaserProcessing;
+
     /// <summary>Pause presenting to this output without dropping its device binding (e.g. mute an NDI feed).</summary>
     public bool IsSending = true;
 
@@ -363,6 +377,12 @@ public sealed class OutputDefinition
             Camera.WriteToJson(writer);
         }
 
+        if (LaserProcessing != null)
+        {
+            writer.WritePropertyName("LaserProcessing");
+            LaserProcessing.WriteToJson(writer);
+        }
+
         if (BoardPlacement != null)
         {
             writer.WritePropertyName("BoardPlacement");
@@ -394,6 +414,9 @@ public sealed class OutputDefinition
 
         if (token["Camera"] is JObject cameraToken)
             output.Camera = ProjectorCamera.ReadFromJson(cameraToken);
+
+        if (token["LaserProcessing"] is JObject processingToken)
+            output.LaserProcessing = LaserProcessingSettings.ReadFromJson(processingToken);
 
         if (token["BoardPlacement"] is JObject placement)
             output.BoardPlacement = BoardPlacement.ReadFromJson(placement);

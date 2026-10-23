@@ -32,6 +32,9 @@ public sealed class MachineConfig
     /// <summary>Stream senders this machine offers as plugs, next to its displays.</summary>
     public List<StreamPlug> StreamPlugs = [];
 
+    /// <summary>Laser devices this machine can send to as plugs, next to its displays and streams.</summary>
+    public List<LaserPlug> LaserPlugs = [];
+
     public StreamPlug? FindStreamPlug(Guid plugId)
     {
         foreach (var stream in StreamPlugs)
@@ -43,11 +46,29 @@ public sealed class MachineConfig
         return null;
     }
 
+    public LaserPlug? FindLaserPlug(Guid plugId)
+    {
+        foreach (var laser in LaserPlugs)
+        {
+            if (laser.Id == plugId)
+                return laser;
+        }
+
+        return null;
+    }
+
     /// <summary>Removes a stream plug and every binding into it.</summary>
     public void RemoveStream(Guid plugId)
     {
         StreamPlugs.RemoveAll(s => s.Id == plugId);
         Bindings.RemoveAll(b => b.IsStream && b.PlugId == plugId);
+    }
+
+    /// <summary>Removes a laser plug and every binding into it.</summary>
+    public void RemoveLaser(Guid plugId)
+    {
+        LaserPlugs.RemoveAll(l => l.Id == plugId);
+        Bindings.RemoveAll(b => b.IsLaser && b.PlugId == plugId);
     }
 
     public PlugBinding? FindBinding(Guid outputId)
@@ -101,6 +122,16 @@ public sealed class MachineConfig
                 writer.WriteEndArray();
             }
 
+            if (LaserPlugs.Count > 0)
+            {
+                writer.WritePropertyName("Lasers");
+                writer.WriteStartArray();
+                foreach (var laser in LaserPlugs)
+                    laser.WriteToJson(writer);
+
+                writer.WriteEndArray();
+            }
+
             writer.WriteEndObject();
             writer.Flush();
         }
@@ -119,6 +150,7 @@ public sealed class MachineConfig
                        ActiveSetupName = token.ReadValueSafe("ActiveSetupName", string.Empty) ?? string.Empty,
                        Bindings = token.ReadListSafe("Bindings", PlugBinding.ReadFromJson),
                        StreamPlugs = token.ReadListSafe("Streams", StreamPlug.ReadFromJson),
+                       LaserPlugs = token.ReadListSafe("Lasers", LaserPlug.ReadFromJson),
                    };
     }
 
