@@ -1080,6 +1080,14 @@
       "url": "/operators/lib/laser/camera/LaserCamera/",
       "summary": "Renders a scene through its own camera lens and captures every point, line and mesh drawn inside it as 16-bit laser points."
     },
+    "Lib.laser.convert.LaserPointsToBuffer": {
+      "url": "/operators/lib/laser/convert/LaserPointsToBuffer/",
+      "summary": "Converts a laser point list into a GPU point buffer, bridging laser frames back into the graph."
+    },
+    "Lib.laser.convert.MeshToLaserPoints": {
+      "url": "/operators/lib/laser/convert/MeshToLaserPoints/",
+      "summary": "Converts a mesh into laser points as wireframe runs or vertex dots."
+    },
     "Lib.laser.input.PONKInput": {
       "url": "/operators/lib/laser/input/PONKInput/",
       "summary": "Receives laser frames from any PONK-compliant sender (e.g. MadMapper) over UDP and republishes them as 16-bit laser points."
@@ -4066,6 +4074,9 @@
     "LaserCamera": [
       "Lib.laser.camera.LaserCamera"
     ],
+    "LaserPointsToBuffer": [
+      "Lib.laser.convert.LaserPointsToBuffer"
+    ],
     "LastFrameDuration": [
       "Lib.numbers.anim.time.LastFrameDuration"
     ],
@@ -4173,6 +4184,9 @@
     ],
     "MeshProjectUV": [
       "Lib.mesh.modify.MeshProjectUV"
+    ],
+    "MeshToLaserPoints": [
+      "Lib.laser.convert.MeshToLaserPoints"
     ],
     "MeshVerticesToPoints": [
       "Lib.point.generate.MeshVerticesToPoints"
