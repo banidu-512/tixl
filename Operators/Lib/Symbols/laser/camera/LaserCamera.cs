@@ -327,9 +327,19 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
                         if (stride != Point.Stride)
                             continue;
 
-                        var elementCount = sizeInBytes / stride;
+                        // Bound the read to the drawn slice: reading the buffer's whole capacity
+                        // turns the zero-filled tail into phantom points at the world origin, which
+                        // line strips then connect to as spikes to the frame centre.
+                        var capacity = sizeInBytes / stride;
+                        var firstElement = Math.Max(0, entry.FirstElement);
+                        var elementCount = entry.ElementCount >= 0
+                                               ? Math.Min(entry.ElementCount, Math.Max(0, capacity - firstElement))
+                                               : capacity;
+                        if (elementCount <= 0)
+                            break;
+
                         var pair = GetCaptureAccess(stride, sizeInBytes);
-                        var points = pair.Read<Point>(entry.VertexBuffer, sizeInBytes, stride, elementCount);
+                        var points = pair.Read<Point>(entry.VertexBuffer, sizeInBytes, stride, elementCount, firstElement);
                         if (points is not { Length: > 0 })
                             break;
 
@@ -363,6 +373,14 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
                         var vertexCount = Math.Min(sizeInBytes / stride, MaxMeshVertices);
                         var indexDescription = entry.IndexBuffer.Description;
                         var faceCount = Math.Min(indexDescription.SizeInBytes / (3 * 4), MaxMeshFaces);
+
+                        // The dispatch knows its index count - faces beyond it are the buffer's
+                        // uninitialized tail and draw stray edges.
+                        if (entry.ElementCount >= 0)
+                            faceCount = Math.Min(faceCount, entry.ElementCount / 3);
+
+                        if (faceCount <= 0)
+                            break;
 
                         var vertexPair = GetCaptureAccess(stride, sizeInBytes);
                         var vertices = vertexPair.Read<PbrVertex>(entry.VertexBuffer, sizeInBytes, stride, vertexCount);

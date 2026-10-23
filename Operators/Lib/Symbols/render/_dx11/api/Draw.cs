@@ -75,7 +75,8 @@ internal sealed class Draw : Instance<Draw>, IRenderStatsProvider
                         _ => GeometryPrimitiveKind.Auto,
                     };
                 }
-                capture.Register(captureVertices.Buffer, captureIndices?.Buffer, kind, context.ObjectToWorld);
+                capture.Register(captureVertices.Buffer, captureIndices?.Buffer, kind, context.ObjectToWorld,
+                                 startVertexLocation, vertexCount);
             }
         }
     }

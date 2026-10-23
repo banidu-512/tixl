@@ -35,7 +35,8 @@ public sealed class GeometryCapture
 
     public IReadOnlyList<Entry> Entries => _entries;
 
-    public readonly record struct Entry(Buffer VertexBuffer, Buffer IndexBuffer, GeometryPrimitiveKind Kind, Matrix4x4 ObjectToWorld);
+    public readonly record struct Entry(Buffer VertexBuffer, Buffer IndexBuffer, GeometryPrimitiveKind Kind, Matrix4x4 ObjectToWorld,
+                                        int FirstElement, int ElementCount);
 
     public void BeginPass()
     {
@@ -50,13 +51,17 @@ public sealed class GeometryCapture
     }
 
     /// <summary>Registers a draw. The same buffer drawn repeatedly under the same transform is
-    /// registered once; under a different transform it is registered again.</summary>
-    public void Register(Buffer vertexBuffer, Buffer indexBuffer, GeometryPrimitiveKind kind, Matrix4x4 objectToWorld)
+    /// registered once; under a different transform it is registered again. <paramref name="firstElement"/>
+    /// and <paramref name="elementCount"/> bound the drawn slice so consumers don't read the buffer's
+    /// (usually larger, zero-filled) capacity as phantom geometry at the origin; a negative count
+    /// means the draw issued its count indirectly and the whole buffer has to be read.</summary>
+    public void Register(Buffer vertexBuffer, Buffer indexBuffer, GeometryPrimitiveKind kind, Matrix4x4 objectToWorld,
+                         int firstElement = 0, int elementCount = -1)
     {
         if (!IsActive || vertexBuffer == null || _entries.Count >= MaxEntries)
             return;
 
-        var entry = new Entry(vertexBuffer, indexBuffer, kind, objectToWorld);
+        var entry = new Entry(vertexBuffer, indexBuffer, kind, objectToWorld, firstElement, elementCount);
         if (!_seen.Add(entry))
             return;
 
