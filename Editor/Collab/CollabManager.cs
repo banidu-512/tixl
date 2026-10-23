@@ -6,9 +6,7 @@ using System.Threading.Tasks;
 using System.Net.Sockets;
 using Newtonsoft.Json.Linq;
 using T3.Editor.Gui.UiHelpers;
-using T3.Editor.UiModel;
 using T3.Editor.UiModel.Commands;
-using T3.Editor.UiModel.ProjectHandling;
 
 namespace T3.Editor.Collab;
 
@@ -571,7 +569,7 @@ internal sealed class CollabManager
 
             case "syncStart":
                 _syncBatch = 0;
-                Log.Debug("Collab: applying host composition snapshots...");
+                Log.Debug("Collab: replaying session history from host...");
                 break;
 
             case "syncOp" when State == SessionState.Connected:
@@ -1130,40 +1128,14 @@ internal sealed class CollabManager
 
     private void SendSyncLog(CollabPeerConnection peer)
     {
-        // State sync (roadmap 5.1): instead of replaying the raw op log — which only converges when
-        // both sides started from identical projects — send full snapshots of every composition the
-        // session touched, plus the host's current composition. apply_snapshot replaces the client's
-        // copy of those compositions with the host's state.
-        var compositionIds = new List<Guid>();
+        SendJson(peer, new { t = "syncStart", count = _sessionLog.Count });
         foreach (var op in _sessionLog)
         {
-            if (CollabProtocol.TryGetGuid(op, "c", out var compositionId)
-                && compositionId != Guid.Empty
-                && !compositionIds.Contains(compositionId))
-            {
-                compositionIds.Add(compositionId);
-            }
-        }
-
-        var focused = ProjectView.Focused;
-        var currentCompositionId = focused?.InstView?.Symbol.Id ?? Guid.Empty;
-        if (currentCompositionId != Guid.Empty && !compositionIds.Contains(currentCompositionId))
-            compositionIds.Insert(0, currentCompositionId);
-
-        var snapshotCount = 0;
-        SendJson(peer, new { t = "syncStart", count = compositionIds.Count });
-        foreach (var compositionId in compositionIds)
-        {
-            if (!SymbolUiRegistry.TryGetSymbolUi(compositionId, out var compositionUi))
-                continue;
-
-            var snapshotOp = CollabCommandWire.BuildSnapshotOp(compositionUi);
-            SendJson(peer, new { t = "syncOp", op = snapshotOp });
-            snapshotCount++;
+            SendJson(peer, new { t = "syncOp", op });
         }
 
         SendJson(peer, new { t = "syncEnd" });
-        Log.Info($"Collab: sent {snapshotCount} composition snapshot(s) to {peer}");
+        Log.Info($"Collab: sent session history ({_sessionLog.Count} ops) to {peer}");
     }
 
     private bool RateAllow(CollabPeerConnection peer)
