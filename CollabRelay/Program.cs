@@ -31,9 +31,6 @@ internal static class Program
     private const int DefaultPort = 44710;
     private const int MaxMembersPerRoom = 16;
     private const int MaxFrameSize = 4 * 1024 * 1024;
-    private const int HandshakeTimeoutMs = 10_000;
-    private const int IdleTimeoutMs = 90_000;
-    private const int WriteTimeoutMs = 10_000;
     private const byte BroadcastSlot = 0xFF;
 
     private static readonly ConcurrentDictionary<string, Room> Rooms = new(StringComparer.OrdinalIgnoreCase);
@@ -82,9 +79,7 @@ internal static class Program
         var slot = (byte)0;
         try
         {
-            // A connection that opens and then says nothing must not hold a task and a socket forever.
-            using var handshake = new CancellationTokenSource(HandshakeTimeoutMs);
-            var line = await ReadLineAsync(client.GetStream(), handshake.Token);
+            var line = await ReadLineAsync(client.GetStream(), CancellationToken.None);
             var request = ParseRequest(line);
             if (request == null)
             {
@@ -134,9 +129,9 @@ internal static class Program
             TouchActivity();
             await RouteFramesAsync(client, room, slot, role == "host");
         }
-        catch (Exception e) when (e is IOException or SocketException or ObjectDisposedException or OperationCanceledException)
+        catch (Exception e) when (e is IOException or SocketException or ObjectDisposedException)
         {
-            // Normal disconnect path (including a handshake or read that timed out).
+            // Normal disconnect path.
         }
         catch (Exception e)
         {
@@ -217,33 +212,28 @@ internal static class Program
         var stream = client.GetStream();
         var lengthBuffer = new byte[4];
 
-        // A peer that stops sending mid-frame is gone; without a read deadline its socket would
-        // stay open (and its room slot occupied) until the process ends.
-        using var idle = new CancellationTokenSource();
-        var token = idle.Token;
-
         while (true)
         {
-            idle.CancelAfter(IdleTimeoutMs);
-
             // On the host connection, a frame may be interleaved with control lines; a length
             // prefix can never start with '{', so read the discriminator byte first.
             if (isHost)
             {
-                if (!await TryReadExactAsync(stream, lengthBuffer.AsMemory(0, 1), token))
+                var first = stream.ReadByte();
+                if (first < 0)
                     return;
 
-                if (lengthBuffer[0] == (byte)'{')
+                if (first == '{')
                 {
                     // Control lines are only ever sent TO the host; the host never sends them.
                     // Drain and ignore (join announcements for already-known slots).
                     continue;
                 }
 
-                if (!await TryReadExactAsync(stream, lengthBuffer.AsMemory(1), token))
+                lengthBuffer[0] = (byte)first;
+                if (!await TryReadExactAsync(stream, lengthBuffer.AsMemory(1)))
                     return;
             }
-            else if (!await TryReadExactAsync(stream, lengthBuffer, token))
+            else if (!await TryReadExactAsync(stream, lengthBuffer))
             {
                 return;
             }
@@ -256,7 +246,7 @@ internal static class Program
             }
 
             var frame = new byte[length];
-            if (!await TryReadExactAsync(stream, frame, token))
+            if (!await TryReadExactAsync(stream, frame))
                 return;
 
             TouchActivity();
@@ -275,33 +265,13 @@ internal static class Program
                 {
                     foreach (var member in room.MembersSnapshot())
                     {
-                        if (!member.Value.Connected)
-                            continue;
-
-                        // One member that stopped reading (suspended laptop, dead Wi-Fi) must not
-                        // stall the broadcast for everyone else - drop it and let it rejoin.
-                        try
-                        {
+                        if (member.Value.Connected)
                             await WriteFrameAsync(member.Value, payloadLength, payload);
-                        }
-                        catch (Exception e) when (e is IOException or SocketException or ObjectDisposedException or OperationCanceledException)
-                        {
-                            Console.WriteLine($"slot {member.Key} stalled ({e.GetType().Name}), dropping");
-                            member.Value.Close();
-                        }
                     }
                 }
                 else if (room.TryGetMember(targetSlot, out var target) && target.Connected)
                 {
-                    try
-                    {
-                        await WriteFrameAsync(target, payloadLength, payload);
-                    }
-                    catch (Exception e) when (e is IOException or SocketException or ObjectDisposedException or OperationCanceledException)
-                    {
-                        Console.WriteLine($"slot {targetSlot} stalled ({e.GetType().Name}), dropping");
-                        target.Close();
-                    }
+                    await WriteFrameAsync(target, payloadLength, payload);
                 }
             }
             else
@@ -309,49 +279,37 @@ internal static class Program
                 // Member -> host: retag with the slot so the host can demultiplex.
                 var owner = room.Owner;
                 if (owner is { Connected: true })
-                {
-                    try
-                    {
-                        await WriteTaggedFrameAsync(owner, slot, length, frame);
-                    }
-                    catch (Exception e) when (e is IOException or SocketException or ObjectDisposedException or OperationCanceledException)
-                    {
-                        Console.WriteLine($"host write failed ({e.GetType().Name}), ending member connection");
-                        return;
-                    }
-                }
+                    await WriteTaggedFrameAsync(owner, slot, length, frame);
             }
         }
     }
 
     private static async Task WriteFrameAsync(TcpClient target, int length, byte[] frameWithType)
     {
-        using var timeout = new CancellationTokenSource(WriteTimeoutMs);
         var prefix = new byte[4];
         BinaryPrimitives.WriteInt32LittleEndian(prefix, length);
         var stream = target.GetStream();
-        await stream.WriteAsync(prefix, timeout.Token);
-        await stream.WriteAsync(frameWithType.AsMemory(0, length), timeout.Token);
+        await stream.WriteAsync(prefix);
+        await stream.WriteAsync(frameWithType.AsMemory(0, length));
     }
 
     private static async Task WriteTaggedFrameAsync(TcpClient owner, byte slot, int length, byte[] frameWithType)
     {
-        using var timeout = new CancellationTokenSource(WriteTimeoutMs);
         // [length + 1][slot][original frame bytes]
         var prefix = new byte[5];
         BinaryPrimitives.WriteInt32LittleEndian(prefix, length + 1);
         prefix[4] = slot;
         var stream = owner.GetStream();
-        await stream.WriteAsync(prefix, timeout.Token);
-        await stream.WriteAsync(frameWithType, timeout.Token);
+        await stream.WriteAsync(prefix);
+        await stream.WriteAsync(frameWithType);
     }
 
-    private static async Task<bool> TryReadExactAsync(NetworkStream stream, Memory<byte> buffer, CancellationToken token)
+    private static async Task<bool> TryReadExactAsync(NetworkStream stream, Memory<byte> buffer)
     {
         var offset = 0;
         while (offset < buffer.Length)
         {
-            var read = await stream.ReadAsync(buffer[offset..], token);
+            var read = await stream.ReadAsync(buffer[offset..]);
             if (read <= 0)
                 return false;
 
