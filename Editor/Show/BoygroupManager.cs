@@ -874,7 +874,7 @@ internal sealed class BoygroupManager
                                  bars = playback.TimeInBars,
                                  speed = playback.PlaybackSpeed,
                                  bpm = playback.Bpm,
-                                 at = DateTime.UtcNow.TimeOfDay.TotalMilliseconds,
+                                 at = Environment.TickCount64,
                              });
     }
 
@@ -889,8 +889,7 @@ internal sealed class BoygroupManager
         if (playback == null)
             return;
 
-        var wallMs = DateTime.UtcNow.TimeOfDay.TotalMilliseconds;
-        _lastSyncWallMs = (long)wallMs;
+        _lastSyncWallMs = Environment.TickCount64;
         _lastSyncBars = json["bars"]?.Value<double>() ?? 0;
         _lastSyncSpeed = json["speed"]?.Value<double>() ?? 0;
         _lastSyncBpm = json["bpm"]?.Value<double>() ?? 120;
@@ -912,7 +911,8 @@ internal sealed class BoygroupManager
         if (playback == null || _lastSyncWallMs < 0)
             return;
 
-        var elapsedSecs = (DateTime.UtcNow.TimeOfDay.TotalMilliseconds - _lastSyncWallMs) / 1000.0;
+        // Monotonic host clock: TimeOfDay would wrap at midnight and throw the time cursor away.
+        var elapsedSecs = (Environment.TickCount64 - _lastSyncWallMs) / 1000.0;
         playback.TimeInBars = _lastSyncBars + _lastSyncSpeed * elapsedSecs * _lastSyncBpm / 240.0;
     }
 
