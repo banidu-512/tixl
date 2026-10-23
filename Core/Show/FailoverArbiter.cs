@@ -244,6 +244,11 @@ public static class FailoverArbiter
 
     private static void Start()
     {
+        // Cross-platform notes: the multicast group loops back on Windows, macOS and Linux, so a
+        // master/backup pair works on one machine. On multi-homed machines membership with
+        // IPAddress.Any follows the default interface, which is the common show setup (single LAN
+        // NIC). If a machine routes the show network over a secondary NIC, join/send on that
+        // adapter's address instead.
         _role = NodeRole.Probing;
         _lastStateChangeTicks = Environment.TickCount64;
         _peers.Clear();
