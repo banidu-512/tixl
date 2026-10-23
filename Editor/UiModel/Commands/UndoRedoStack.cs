@@ -63,6 +63,10 @@ public static class UndoRedoStack
 
     internal static void Undo()
     {
+        // While a collab session is running, undo is session-wide and host-authoritative.
+        if (T3.Editor.Collab.CollabManager.Instance.TryRouteGlobalUndo())
+            return;
+
         if (CanUndo)
         {
             var command = UndoStack.Pop();
@@ -75,6 +79,9 @@ public static class UndoRedoStack
 
     internal static void Redo()
     {
+        if (T3.Editor.Collab.CollabManager.Instance.TryRouteGlobalRedo())
+            return;
+
         if (CanRedo)
         {
             var command = RedoStack.Pop();

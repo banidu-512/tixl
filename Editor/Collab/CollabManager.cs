@@ -305,6 +305,15 @@ internal sealed class CollabManager
         _localPresence = new PresencePacket();
         _password = "";
         RoomCode = "";
+        _undoStack.Clear();
+        _redoStack.Clear();
+        _activeLocks.Clear();
+        UndoNotice = "";
+
+        // The local undo stack only contains this machine's edits; after a session it no longer
+        // matches the shared graph state, so replaying it would corrupt the project.
+        T3.Editor.UiModel.Commands.UndoRedoStack.Clear();
+
         State = SessionState.Off;
         StatusText = "Collaboration is off";
         Log.Info("Collab: session ended");
@@ -424,6 +433,7 @@ internal sealed class CollabManager
             _roster.Remove(peer.AssignedId);
             _rosterUserIds.Remove(peer.AssignedId);
             _latestPresenceByPeer.Remove(peer.AssignedId);
+            DropLocksOwnedBy(peer.AssignedId);
 
             if (State == SessionState.Hosting)
             {
@@ -535,6 +545,22 @@ internal sealed class CollabManager
 
             case "op" when State == SessionState.Connected:
                 HandleOp(peer, json);
+                break;
+
+            case "undoRequest" when State == SessionState.Hosting:
+                PerformGlobalUndo();
+                break;
+
+            case "redoRequest" when State == SessionState.Hosting:
+                PerformGlobalRedo();
+                break;
+
+            case "lock" when IsSessionActive:
+                HandleLock(peer, json, true);
+                break;
+
+            case "unlock" when IsSessionActive:
+                HandleLock(peer, json, false);
                 break;
 
             case "requestSync" when State == SessionState.Hosting:
@@ -785,6 +811,7 @@ internal sealed class CollabManager
             return;
 
         AppendToLog(op);
+        RecordForUndo(op);
 
         var envelope = new JObject
                            {
@@ -820,6 +847,7 @@ internal sealed class CollabManager
         // consume host-ordered ops.
         CollabCommandWire.ApplyOp(op);
         AppendToLog(op);
+        RecordForUndo(op);
 
         if (State == SessionState.Hosting)
         {
@@ -834,6 +862,268 @@ internal sealed class CollabManager
             _sessionLog.RemoveAt(0);
 
         _sessionLog.Add(op);
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Session-wide undo/redo (host-authoritative)
+    // ---------------------------------------------------------------------------------------
+
+    /// <summary>Undoable ops in live order. The host owns the truth; clients just send requests.</summary>
+    private readonly List<JObject> _undoStack = [];
+    private readonly List<JObject> _redoStack = [];
+
+    /// <summary>Last transient undo/redo notice for the settings panel.</summary>
+    public string UndoNotice { get; private set; } = "";
+
+    /// <summary>
+    /// Routes a local undo gesture into the session: hosting performs the global undo, connected
+    /// clients ask the host. Returns false when no session is running (classic local undo).
+    /// </summary>
+    public bool TryRouteGlobalUndo()
+    {
+        if (State == SessionState.Off)
+            return false;
+
+        if (State == SessionState.Hosting)
+        {
+            PerformGlobalUndo();
+            return true;
+        }
+
+        if (State == SessionState.Connected && _transport is CollabClientTransport client)
+        {
+            SendJson(client.HostPeer, new { t = "undoRequest" });
+            return true;
+        }
+
+        return true; // mid-handshake: swallow the gesture
+    }
+
+    public bool TryRouteGlobalRedo()
+    {
+        if (State == SessionState.Off)
+            return false;
+
+        if (State == SessionState.Hosting)
+        {
+            PerformGlobalRedo();
+            return true;
+        }
+
+        if (State == SessionState.Connected && _transport is CollabClientTransport client)
+        {
+            SendJson(client.HostPeer, new { t = "redoRequest" });
+            return true;
+        }
+
+        return true;
+    }
+
+    private void RecordForUndo(JObject op)
+    {
+        if (State != SessionState.Hosting)
+            return;
+
+        _undoStack.Add(op);
+        _redoStack.Clear();
+
+        // Cap memory; the replay log keeps its own bound.
+        if (_undoStack.Count > MaxSessionLogEntries)
+            _undoStack.RemoveAt(0);
+    }
+
+    private void PerformGlobalUndo()
+    {
+        UndoNotice = "";
+        if (State != SessionState.Hosting)
+            return;
+
+        while (_undoStack.Count > 0)
+        {
+            var op = _undoStack[^1];
+            var inverse = CollabCommandWire.InvertOp(op);
+            if (inverse == null)
+            {
+                UndoNotice = "The last edit can't be undone remotely and was skipped";
+                Log.Debug($"Collab: op type '{CollabProtocol.GetString(op, "type")}' is not invertible");
+                _undoStack.RemoveAt(_undoStack.Count - 1);
+                _redoStack.Clear(); // Can't keep a consistent redo chain past a skipped op.
+                continue;
+            }
+
+            _undoStack.RemoveAt(_undoStack.Count - 1);
+            CollabCommandWire.ApplyOp(inverse);
+            AppendToLog(inverse);
+            _redoStack.Add(op);
+            BroadcastSystemMessage(new JObject { ["t"] = "op", ["op"] = inverse }, except: null);
+            Log.Debug($"Collab: global undo of '{CollabProtocol.GetString(op, "type")}'");
+            return;
+        }
+
+        UndoNotice = "Nothing left to undo";
+    }
+
+    private void PerformGlobalRedo()
+    {
+        UndoNotice = "";
+        if (State != SessionState.Hosting)
+            return;
+
+        if (_redoStack.Count == 0)
+        {
+            UndoNotice = "Nothing to redo";
+            return;
+        }
+
+        var op = _redoStack[^1];
+        _redoStack.RemoveAt(_redoStack.Count - 1);
+        CollabCommandWire.ApplyOp(op);
+        AppendToLog(op);
+        _undoStack.Add(op);
+        BroadcastSystemMessage(new JObject { ["t"] = "op", ["op"] = op }, except: null);
+        Log.Debug($"Collab: global redo of '{CollabProtocol.GetString(op, "type")}'");
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Parameter locks (soft mutexes)
+    // ---------------------------------------------------------------------------------------
+
+    public readonly record struct LockKey(Guid CompositionId, Guid ChildId, Guid InputId);
+
+    /// <summary>Active input locks: which participant session id holds which parameter.</summary>
+    private readonly Dictionary<LockKey, int> _activeLocks = [];
+
+    public void AcquireInputLock(Guid compositionId, Guid childId, Guid inputId)
+    {
+        if (!IsSessionActive)
+            return;
+
+        var key = new LockKey(compositionId, childId, inputId);
+        _activeLocks[key] = MyPeerId;
+        BroadcastSystemMessage(new
+                                   {
+                                       t = "lock",
+                                       c = compositionId,
+                                       ch = childId,
+                                       i = inputId,
+                                       id = MyPeerId,
+                                   }, except: null);
+    }
+
+    public void ReleaseInputLock(Guid compositionId, Guid childId, Guid inputId)
+    {
+        if (!IsSessionActive)
+            return;
+
+        var key = new LockKey(compositionId, childId, inputId);
+        if (!_activeLocks.TryGetValue(key, out var owner) || owner != MyPeerId)
+        {
+            // Someone else took over (e.g. after our reconnect) — don't release their lock.
+            return;
+        }
+
+        _activeLocks.Remove(key);
+        BroadcastSystemMessage(new
+                                   {
+                                       t = "unlock",
+                                       c = compositionId,
+                                       ch = childId,
+                                       i = inputId,
+                                       id = MyPeerId,
+                                   }, except: null);
+    }
+
+    public bool IsInputLockedByOther(Guid compositionId, Guid childId, Guid inputId)
+    {
+        return _activeLocks.TryGetValue(new LockKey(compositionId, childId, inputId), out var owner)
+               && owner != MyPeerId;
+    }
+
+    public sealed class InputLockInfo
+    {
+        public Guid ChildId;
+        public int PeerId;
+        public string HolderName = "";
+        public Vector4 Color;
+    }
+
+    /// <summary>Locks inside the given composition, for the graph badge overlay.</summary>
+    public IEnumerable<InputLockInfo> GetInputLocksForComposition(Guid compositionId)
+    {
+        foreach (var (key, peerId) in _activeLocks)
+        {
+            if (key.CompositionId != compositionId || peerId == MyPeerId)
+                continue;
+
+            var userId = _rosterUserIds.TryGetValue(peerId, out var id) ? id : Guid.Empty;
+            if (userId == Guid.Empty)
+                continue;
+
+            yield return new InputLockInfo
+                             {
+                                 ChildId = key.ChildId,
+                                 PeerId = peerId,
+                                 HolderName = _roster.TryGetValue(peerId, out var name) ? name : "peer",
+                                 Color = CollabColors.FromId(userId),
+                             };
+        }
+    }
+
+    private void HandleLock(CollabPeerConnection peer, JObject json, bool acquire)
+    {
+        if (!peer.IsAuthenticated || !RateAllow(peer))
+            return;
+
+        if (!CollabProtocol.TryGetGuid(json, "c", out var compositionId)
+            || !CollabProtocol.TryGetGuid(json, "ch", out var childId)
+            || !CollabProtocol.TryGetGuid(json, "i", out var inputId))
+            return;
+
+        var key = new LockKey(compositionId, childId, inputId);
+        var ownerPeerId = acquire ? peer.AssignedId : json["id"]?.Value<int>() ?? peer.AssignedId;
+
+        if (acquire)
+        {
+            _activeLocks[key] = ownerPeerId;
+        }
+        else
+        {
+            // Only the holder (or the host on their behalf) may clear a lock.
+            if (_activeLocks.TryGetValue(key, out var currentOwner) && currentOwner == ownerPeerId)
+                _activeLocks.Remove(key);
+        }
+
+        if (State == SessionState.Hosting)
+        {
+            var envelope = (JObject)json.DeepClone();
+            _transport?.BroadcastJson(Peers, envelope, except: peer);
+        }
+    }
+
+    private void DropLocksOwnedBy(int peerId)
+    {
+        var released = new List<LockKey>();
+        foreach (var (key, owner) in _activeLocks)
+        {
+            if (owner == peerId)
+                released.Add(key);
+        }
+
+        foreach (var key in released)
+        {
+            _activeLocks.Remove(key);
+            if (State == SessionState.Hosting)
+            {
+                BroadcastSystemMessage(new
+                                           {
+                                               t = "unlock",
+                                               c = key.CompositionId,
+                                               ch = key.ChildId,
+                                               i = key.InputId,
+                                               id = peerId,
+                                           }, except: null);
+            }
+        }
     }
 
     private void SendSyncLog(CollabPeerConnection peer)

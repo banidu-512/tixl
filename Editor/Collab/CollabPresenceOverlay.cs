@@ -28,6 +28,7 @@ internal static class CollabPresenceOverlay
 
         SampleLocalPresence(manager, projectView, canvas, compositionId);
         DrawRemotePresence(manager, projectView, canvas, compositionId, drawList);
+        DrawLockBadges(manager, projectView, canvas, compositionId, drawList);
     }
 
     // ---------------------------------------------------------------------------------------
@@ -120,4 +121,38 @@ internal static class CollabPresenceOverlay
 
     private static readonly Vector2 HighlightPadding = new(4, 4);
     private const float SelectionOutlineThickness = 2.5f;
+
+    /// <summary>
+    /// Marks nodes whose parameters another participant is currently editing (soft lock). The chip
+    /// shows the holder's color and name so everyone sees who is working on what at a glance.
+    /// </summary>
+    private static void DrawLockBadges(CollabManager manager, ProjectView projectView, ScalableCanvas canvas, Guid compositionId, ImDrawListPtr drawList)
+    {
+        if (projectView.InstView == null)
+            return;
+
+        var symbolUi = projectView.InstView.Symbol.GetSymbolUi();
+        if (symbolUi == null)
+            return;
+
+        foreach (var lockInfo in manager.GetInputLocksForComposition(compositionId))
+        {
+            if (!symbolUi.ChildUis.TryGetValue(lockInfo.ChildId, out var childUi))
+                continue;
+
+            var topLeft = canvas.TransformPositionFloat(childUi.PosOnCanvas);
+            var topRight = canvas.TransformPositionFloat(childUi.PosOnCanvas + new Vector2(childUi.Size.X, 0));
+            var color = CollabColors.ToUint(lockInfo.Color);
+
+            drawList.AddRect(topLeft - HighlightPadding, canvas.TransformPositionFloat(childUi.PosOnCanvas + childUi.Size) + HighlightPadding,
+                             color, 6f, 0, 1.2f);
+
+            var label = $"{lockInfo.HolderName} editing";
+            var labelSize = ImGui.CalcTextSize(label);
+            var labelPos = new Vector2(topRight.X - labelSize.X - 10, topLeft.Y - labelSize.Y - 10);
+            drawList.AddRectFilled(labelPos - new Vector2(4, 2), labelPos + labelSize + new Vector2(4, 2), 0xD20E0E12, 4);
+            drawList.AddRect(labelPos - new Vector2(4, 2), labelPos + labelSize + new Vector2(4, 2), color, 4, 0, 1f);
+            drawList.AddText(labelPos, color, label);
+        }
+    }
 }

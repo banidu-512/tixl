@@ -339,9 +339,18 @@ internal sealed partial class SettingsWindow
                                   How it works:
                                   - Everyone opens the same project. Participants who join late receive all edits made during the session.
                                   - Graph edits are synchronized: adding and deleting operators, connections, parameter changes, renames and moving nodes.
-                                  - Undo histories stay local by design. Only use Ctrl+Z for edits you made yourself.
-                                  - For sessions over the internet, host on a machine with an open/forwarded port or use a VPN like Tailscale.
+                                  - Undo/Redo are session-wide while connected: Ctrl+Z reverts the last edit of ANY participant (the host keeps the shared history).
+                                  - Parameters someone is editing are soft-locked: they appear disabled with a "(locked)" marker until released.
+                                  - For sessions over the internet, host on a machine with an open/forwarded port, use a VPN like Tailscale, or host via a relay room.
                                   """);
+
+        if (!string.IsNullOrEmpty(manager.UndoNotice))
+        {
+            FormInputs.AddVerticalSpace();
+            ImGui.PushStyleColor(ImGuiCol.Text, UiColors.StatusWarning.Rgba);
+            ImGui.TextUnformatted(manager.UndoNotice);
+            ImGui.PopStyleColor();
+        }
     }
 
     // ---------------------------------------------------------------------------------------
