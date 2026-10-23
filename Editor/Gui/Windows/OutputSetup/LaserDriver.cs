@@ -1,0 +1,235 @@
+#nullable enable
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Linq;
+using T3.Core.DataTypes;
+using T3.Core.Operator;
+using T3.Core.Operator.Interfaces;
+using T3.Core.Operator.Slots;
+using T3.Core.Output;
+using T3.Core.Output.Rendering;
+using T3.Editor.UiModel.ProjectHandling;
+
+namespace T3.Editor.Gui.Windows.OutputSetup;
+
+/// <summary>
+/// Streams the setup's laser outputs to their bound devices — the output-setup counterpart of
+/// UpdatePresentation, and the replacement for the former graph-side output operators
+/// ([EtherDreamOutput]/[PONKOutput]). Every pump interval each laser output's routed camera is
+/// evaluated (or peeked when the camera already ran this frame), run through the output's
+/// processing pipeline (optimizer + safety), and handed to the <see cref="LaserOutputStream"/>
+/// of the laser plug the output is bound to on this machine.
+///
+/// Runs on the render thread, whatever view the editor shows — leaving the graph view must never
+/// stop the show. The <see cref="LaserDriverEnabled"/> kill-switch silences the whole driver for
+/// profiling.
+/// </summary>
+internal static class LaserDriver
+{
+    /// <summary>
+    /// Pumps every laser output: camera frame in, pipeline through, device stream fed. Called from
+    /// the frame loop (both the normal path and the minimized keep-alive path).
+    /// </summary>
+    public static void Update()
+    {
+        // The root instance, not the focused view: the setup's cameras live at the home level, and
+        // navigating into a child composition must never stop the show from streaming.
+        var composition = ProjectView.Focused?.RootInstance;
+        var setup = ActiveSetup.Current;
+        var machine = ActiveSetup.Machine;
+        if (composition == null || setup == null || machine == null)
+        {
+            DisposeAllStreams();
+            return;
+        }
+
+        var now = Stopwatch.GetTimestamp();
+        if (now - _lastPump < EffectivePumpInterval)
+            return;
+
+        _lastPump = now;
+        _driverFrameTimestamp = now;
+        var pullStart = now;
+        OutputContentResolver.PrepareContext(default);
+        var context = OutputContentResolver.Context;
+
+        var livePlugIds = new HashSet<Guid>();
+        foreach (var output in setup.Outputs)
+        {
+            if (output.Kind != OutputDefinition.Kinds.Laser)
+                continue;
+
+            var binding = machine.FindBinding(output.Id);
+            if (binding is not { IsLaser: true })
+                continue;
+
+            var plug = machine.FindLaserPlug(binding.PlugId);
+            if (plug == null)
+                continue;
+
+            livePlugIds.Add(plug.Id);
+
+            // Two outputs on one plug are legal (a preview rig): the stream is per plug, and the
+            // later output's frame simply wins — same as two output ops addressing one device did.
+            if (!_streams.TryGetValue(plug.Id, out var stream))
+            {
+                var created = LaserOutputStream.Create(plug);
+                if (created == null)
+                    continue;
+
+                _streams[plug.Id] = created;
+                stream = created;
+            }
+
+            if (!output.IsSending)
+                continue;
+
+            var frame = ComputeFrame(output, context);
+            if (frame is { Length: > 0 })
+                stream.SubmitFrame(frame);
+        }
+
+        // A stream whose plug (or its binding, or the output) vanished stops its threads — the
+        // same lifetime the operator's Dispose had, just driven by the machine config instead of
+        // the graph.
+        foreach (var deadPlugId in _streams.Keys.Where(id => !livePlugIds.Contains(id)).ToList())
+        {
+            _streams[deadPlugId].Dispose();
+            _streams.Remove(deadPlugId);
+        }
+
+        // The pump runs on the render thread and shares the frame budget with everything else.
+        // A pull that came in expensive (heavy scene re-evaluation, GPU readback backlog) means
+        // the next one would likely blow the 16ms budget too — back off for a few pump intervals.
+        // The streams loop their last frame meanwhile, so the DAC never starves.
+        var pullCost = Stopwatch.GetTimestamp() - pullStart;
+        _pumpBackoff = pullCost > ExpensivePullThreshold ? Math.Min(_pumpBackoff + 1, 3) : 0;
+    }
+
+    /// <summary>
+    /// The frame this output streams right now: the pipeline result of the camera routed to it
+    /// by OutputRef — or, while uncalibrated, the alignment rectangle (input ignored). Empty when
+    /// no camera is routed and safety is calibrated. Backs the Board card and parameter previews;
+    /// when the driver pumped this interval the cached frame is returned without recomputing, so
+    /// however many cards show it, the camera evaluates at most once per frame.
+    /// </summary>
+    public static LaserPoint[] GetFrame(OutputDefinition output)
+    {
+        var now = Stopwatch.GetTimestamp();
+        // Time-based, not frame-based: the setup view can be drawn while the frame counter is
+        // frozen (background window, paused project) — a frame-index key would cache the first
+        // (possibly empty) frame forever and the preview would never come alive.
+        if (!_frameCache.TryGetValue(output.Id, out var cached) || now - cached.Timestamp > RefreshInterval)
+            _frameCache[output.Id] = cached = (now, ComputeFrame(output, null));
+
+        return cached.Points;
+    }
+
+    /// <summary>The live status of the stream serving this output — connection, buffer, watchdog.</summary>
+    public static bool TryGetStreamStatus(Guid outputId, out string message, out IStatusProvider.StatusLevel level)
+    {
+        message = string.Empty;
+        level = IStatusProvider.StatusLevel.Undefined;
+
+        var machine = ActiveSetup.Machine;
+        if (machine == null)
+            return false;
+
+        var binding = machine.FindBinding(outputId);
+        if (binding is not { IsLaser: true })
+            return false;
+
+        if (!_streams.TryGetValue(binding.PlugId, out var stream))
+            return false;
+
+        message = stream.StatusMessage;
+        level = stream.StatusLevel;
+        return true;
+    }
+
+    /// <summary>
+    /// The camera's frame through the output's pipeline. With a context supplied (the driver's
+    /// pump) the routed camera is evaluated into it; with null (a preview outside the pump
+    /// interval) a fresh context is prepared so time-animated content keeps moving.
+    /// </summary>
+    private static LaserPoint[] ComputeFrame(OutputDefinition output, EvaluationContext? pumpContext)
+    {
+        StructuredList? list = null;
+        foreach (var camera in LaserContent.Cameras)
+        {
+            if (camera is not Instance instance || LaserContent.OutputRefOf(instance) != output.Id)
+                continue;
+
+            if (pumpContext != null || DriverRanThisFrame)
+            {
+                // The driver's pump evaluated this camera already this interval — read its slot
+                // instead of pulling again, or the scene (and its GPU readbacks) runs twice.
+                list = LaserContent.PeekPoints(instance);
+            }
+            else
+            {
+                // The shared evaluation context, reset for this pull: in setup mode with no
+                // video composite rendering, nobody else prepares it, and a stale context freezes
+                // time-animated content (the camera's roll animator, oscillators).
+                OutputContentResolver.PrepareContext(default);
+                list = ((ILaserContentSupplier)instance).GetLaserPoints(OutputContentResolver.Context);
+            }
+
+            break;
+        }
+
+        LaserPoint[]? input = null;
+        var count = 0;
+        if (list is StructuredList<LaserPoint> typed && typed.TypedElements != null && typed.NumElements > 0)
+        {
+            input = typed.TypedElements;
+            count = typed.NumElements;
+        }
+
+        if (!_pipelineSessions.TryGetValue(output.Id, out var session))
+            _pipelineSessions[output.Id] = session = new LaserPipeline.Session();
+
+        var settings = output.LaserProcessing ?? LaserProcessingSettings.Default;
+        return session.Apply(settings, input, count, out _);
+    }
+
+    /// <summary>Pump rate for the streams. 30 Hz is ILDA-show fps; the streams loop the last
+    /// frame in between so the device is fed at scan rate regardless.</summary>
+    private static readonly long PumpInterval = Stopwatch.Frequency / 30;
+
+    /// <summary>Pulls costlier than this (in stopwatch ticks ≈ 8ms) stretch the next interval.</summary>
+    private static readonly long ExpensivePullThreshold = Stopwatch.Frequency * 8 / 1000;
+
+    private static int _pumpBackoff;
+
+    private static long EffectivePumpInterval => PumpInterval * (1 + _pumpBackoff);
+
+    private static long _lastPump;
+    private static long _driverFrameTimestamp;
+
+    /// <summary>True while the driver pumped recently — the cameras' slots are fresh, so previews can read them without pulling.</summary>
+    private static bool DriverRanThisFrame => Stopwatch.GetTimestamp() - _driverFrameTimestamp < PumpInterval * 3;
+
+    /// <summary>Device streams per laser plug id; created lazily, disposed when the plug's binding goes away.</summary>
+    private static readonly Dictionary<Guid, LaserOutputStream> _streams = [];
+
+    /// <summary>Pipeline scratch per output; render-thread only, like everything that reads it.</summary>
+    private static readonly Dictionary<Guid, LaserPipeline.Session> _pipelineSessions = [];
+
+    /// <summary>The last computed frame per output, refreshed at <see cref="RefreshInterval"/>.</summary>
+    private static readonly Dictionary<Guid, (long Timestamp, LaserPoint[] Points)> _frameCache = [];
+
+    private static readonly long RefreshInterval = Stopwatch.Frequency / 20; // 20 Hz
+
+    private static void DisposeAllStreams()
+    {
+        if (_streams.Count == 0)
+            return;
+
+        foreach (var stream in _streams.Values)
+            stream.Dispose();
+
+        _streams.Clear();
+    }
+}

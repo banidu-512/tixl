@@ -35,6 +35,7 @@ internal sealed class SetupFlowOutliner
     public SetupFlowOutliner()
     {
         _requestAddPlugMenu = _ => _addPlugMenuRequested = true;
+        _requestAddOutputMenu = _ => _addOutputMenuRequested = true;
         _drawDisplayTooltip = DrawDisplayTooltip;
         _drawSendParentTooltip = DrawSendParentTooltip;
     }
@@ -217,7 +218,7 @@ internal sealed class SetupFlowOutliner
         maxY = MathF.Max(maxY, ImGui.GetCursorScreenPos().Y);
 
         BeginColumn(origin.X + 2 * columnWidth + gap * 0.5f, origin.Y, columnWidth - gap);
-        DrawColumnHeader("OUTPUTS", "##addOutput", selection, SetupActions.AddOutput, SetupEntityKinds.Output);
+        DrawColumnHeader("OUTPUTS", "##addOutput", selection, _requestAddOutputMenu, SetupEntityKinds.Output);
         DrawOutputs(selection, setup, machineConfig);
         maxY = MathF.Max(maxY, ImGui.GetCursorScreenPos().Y);
 
@@ -308,6 +309,21 @@ internal sealed class SetupFlowOutliner
             var binding = machineConfig.FindBinding(output.Id);
             if (binding != null)
                 _connections.Add(new Connection(SetupEntityKinds.Output, output.Id, SetupEntityKinds.Plug, Plugs.BoundPlugId(binding)));
+        }
+
+        // Laser cameras are content routed by their OutputRef op input (not by slices): draw the
+        // link from the input value, so it shows for cameras the graph has never evaluated.
+        var cameras = LaserContent.Cameras;
+        for (var i = 0; i < cameras.Count; i++)
+        {
+            if (cameras[i] is not Instance camera)
+                continue;
+
+            var outputRef = LaserContent.OutputRefOf(camera);
+            if (outputRef == Guid.Empty || setup.FindOutput(outputRef)?.Kind != OutputDefinition.Kinds.Laser)
+                continue;
+
+            _connections.Add(new Connection(SetupEntityKinds.ContentSource, camera.SymbolChildId, SetupEntityKinds.Output, outputRef));
         }
     }
 
@@ -525,14 +541,34 @@ internal sealed class SetupFlowOutliner
                     DrawPatchItem(selection, setup, output, output.Patches[p]);
             }
         }
+
+        if (_addOutputMenuRequested)
+        {
+            ImGui.OpenPopup(AddOutputMenuId);
+            _addOutputMenuRequested = false;
+        }
+
+        if (SetupPopup.Begin(AddOutputMenuId))
+        {
+            if (CustomComponents.DrawMenuItem(110, "Projector"))
+                SetupActions.AddOutput(selection);
+
+            if (CustomComponents.DrawMenuItem(111, "Laser"))
+                SetupActions.AddLaserOutput(selection);
+
+            CustomComponents.TooltipForLastItem("A laser scanner: bind it to an EtherDream or PONK plug and aim it with its scanner camera.",
+                                                "Set a [LaserCamera]'s OutputRef to this output; its camera drives the projection and the bound plug names the device.");
+
+            SetupPopup.End();
+        }
     }
 
     /// <summary>
-    /// This machine's plugs — the attached displays and its stream senders — as an inventory: every plug is
-    /// listed, the bound ones read normal (their connection says which output), the free ones recede. A
-    /// display an output is bound to but that isn't attached right now is listed too, so its connection has
+    /// This machine's plugs — the attached displays, its stream senders and its laser devices — as an inventory:
+    /// every plug is listed, the bound ones read normal (their connection says which output), the free ones recede.
+    /// A display an output is bound to but that isn't attached right now is listed too, so its connection has
     /// somewhere to land. Plug items aren't selectable; they take an output by drop and offer their menu.
-    /// The column's "+" adds a stream sender of any kind whose package is loaded.
+    /// The column's "+" adds a stream sender of any kind whose package is loaded, or a laser device.
     /// </summary>
     private void DrawLocalBindings(SetupEntitySelection selection, Setup setup, MachineConfig machineConfig)
     {
@@ -555,7 +591,7 @@ internal sealed class SetupFlowOutliner
 
         foreach (var binding in machineConfig.Bindings)
         {
-            if (binding.IsStream || binding.DisplayIndex < screens.Count || setup.FindOutput(binding.OutputId) == null)
+            if (binding.IsStream || binding.IsLaser || binding.DisplayIndex < screens.Count || setup.FindOutput(binding.OutputId) == null)
                 continue;
 
             var args = new OutlinerItem.Args
@@ -585,6 +621,26 @@ internal sealed class SetupFlowOutliner
             DrawItem(selection, setup, ref args);
         }
 
+        for (var i = 0; i < machineConfig.LaserPlugs.Count; i++)
+        {
+            var laser = machineConfig.LaserPlugs[i];
+            var args = new OutlinerItem.Args
+                           {
+                               Kind = SetupEntityKinds.Plug,
+                               Id = laser.Id,
+                               Name = laser.Name,
+                               Status = laser.Kind switch
+                                        {
+                                            LaserPlug.Kinds.Ponk => $"PONK · {laser.Address}:{(laser.Port > 0 ? laser.Port : 5583)}",
+                                            LaserPlug.Kinds.Citp => laser.Port > 0 ? $"CITP · {laser.Address}:{laser.Port}" : $"CITP · discovery",
+                                            _ => $"EtherDream · {laser.Address}",
+                                        },
+                               LeadingIcon = Icon.ConnectedOutput,
+                               IsMuted = !IsPlugBound(setup, machineConfig, laser.Id),
+                           };
+            DrawItem(selection, setup, ref args);
+        }
+
         if (_addPlugMenuRequested)
         {
             ImGui.OpenPopup(AddPlugMenuId);
@@ -606,6 +662,34 @@ internal sealed class SetupFlowOutliner
                     OutlinerItem.BeginRename(selection, SetupEntityKinds.Plug, stream.Id, stream.Name);
                 }
             }
+
+            CustomComponents.MenuGroupHeader("Add laser device");
+            if (CustomComponents.DrawMenuItem(101, "EtherDream DAC"))
+            {
+                var laser = Plugs.AddLaser(machineConfig, LaserPlug.Kinds.EtherDream);
+                OutlinerItem.BeginRename(selection, SetupEntityKinds.Plug, laser.Id, laser.Name);
+            }
+
+            CustomComponents.TooltipForLastItem("An Ether Dream DAC on the LAN — the bound laser output's frame streams to it directly.",
+                                                "Select the plug to set its DAC address and device settings.");
+
+            if (CustomComponents.DrawMenuItem(102, "PONK endpoint"))
+            {
+                var laser = Plugs.AddLaser(machineConfig, LaserPlug.Kinds.Ponk);
+                OutlinerItem.BeginRename(selection, SetupEntityKinds.Plug, laser.Id, laser.Name);
+            }
+
+            CustomComponents.TooltipForLastItem("A PONK receiver (e.g. MadMapper) — the bound laser output's frame streams to it directly.",
+                                                "Defaults to the 239.255.10.24:5583 multicast group; select the plug for a unicast host and device settings.");
+
+            if (CustomComponents.DrawMenuItem(103, "CITP capture"))
+            {
+                var laser = Plugs.AddLaser(machineConfig, LaserPlug.Kinds.Citp);
+                OutlinerItem.BeginRename(selection, SetupEntityKinds.Plug, laser.Id, laser.Name);
+            }
+
+            CustomComponents.TooltipForLastItem("A CITP laser feed consumer (e.g. a media server's laser module) — the bound laser output's frame streams to it directly.",
+                                                "Leave the port 0 for PLoc multicast discovery, or set a host and port for a direct capture connection.");
 
             SetupPopup.End();
         }
@@ -721,8 +805,36 @@ internal sealed class SetupFlowOutliner
         if (drawnCount == 0)
         {
             ImGui.Indent(8 * T3Ui.UiScaleFactor);
-            CustomComponents.StylizedText("no SendToOutput ops in this composition", Fonts.FontSmall, UiColors.TextMuted.Fade(0.6f));
+            CustomComponents.StylizedText("no SendToOutput or LaserCamera ops in this composition", Fonts.FontSmall, UiColors.TextMuted.Fade(0.6f));
             ImGui.Unindent(8 * T3Ui.UiScaleFactor);
+        }
+
+        DrawLaserCameras(selection, setup);
+    }
+
+    /// <summary>
+    /// Laser cameras are laser content: listed under the texture sends, routed by dropping one onto
+    /// a laser output (that writes the camera's OutputRef). A camera nothing references reads muted,
+    /// like an unrouted send.
+    /// </summary>
+    private void DrawLaserCameras(SetupEntitySelection selection, Setup setup)
+    {
+        var cameras = LaserContent.Cameras;
+        for (var i = 0; i < cameras.Count; i++)
+        {
+            if (cameras[i] is not Instance instance || !ContentSourceSync.IsInScope(instance))
+                continue;
+
+            var outputRef = LaserContent.OutputRefOf(instance);
+            var args = new OutlinerItem.Args
+                           {
+                               Kind = SetupEntityKinds.ContentSource,
+                               Id = instance.SymbolChildId,
+                               Name = ContentSourceSync.SendName(instance),
+                               Status = "laser",
+                               IsMuted = outputRef == Guid.Empty || setup.FindOutput(outputRef) == null,
+                           };
+            DrawItem(selection, setup, ref args);
         }
     }
 
@@ -956,11 +1068,13 @@ internal sealed class SetupFlowOutliner
     private static readonly List<(int Width, int Height, string Label)> _resolutionLabels = [];
 
     private const string AddPlugMenuId = "##addPlugMenu";
+    private const string AddOutputMenuId = "##addOutputMenu";
     private Action? _onLeave;
     private const string AddBoardItemMenuId = "##addBoardItemMenu";
     private const string HelpDocId = "OutputSetup";
     private const string HelpWikiUrl = "https://github.com/tixl3d/tixl/wiki/help.OutputSetup";
     private bool _addPlugMenuRequested;
+    private bool _addOutputMenuRequested;
 
     // The display whose row is being drawn, read by the tooltip; a field rather than a captured lambda, which
     // would allocate a closure for every plug row every frame.
@@ -971,6 +1085,7 @@ internal sealed class SetupFlowOutliner
     private Instance? _tooltipSendParent;
     private readonly Action _drawSendParentTooltip;
     private readonly Action<SetupEntitySelection> _requestAddPlugMenu;
+    private readonly Action<SetupEntitySelection> _requestAddOutputMenu;
 
     // The column the items currently draw into (screen x + width); 0 width = whole window.
     private float _columnMinX;

@@ -3,6 +3,7 @@ using T3.Editor.SystemUi;
 using ImGuiNET;
 using T3.Core.DataTypes;
 using T3.Core.Operator;
+using T3.Core.Operator.Interfaces;
 using T3.Core.Operator.Slots;
 using T3.Core.Output;
 using T3.Core.Output.Rendering;
@@ -541,6 +542,12 @@ internal static class SetupParameterView
         if (output == null)
             return;
 
+        if (output.Kind == OutputDefinition.Kinds.Laser)
+        {
+            DrawLaserOutputCard(setup, machineConfig, output);
+            return;
+        }
+
         var send = output.IsSending;
         if (FormInputs.AddCheckBox("Send", ref send, "Pause presenting without dropping the display binding."))
             SetupUndo.RunUndoable("Toggle send", setup, () => output.IsSending = send);
@@ -571,6 +578,491 @@ internal static class SetupParameterView
 
         DrawPixelMapRows(setup, output);
         DrawPatchTable(setup, output, Guid.Empty);
+    }
+
+    /// <summary>
+    /// A laser output carries the show: the scanner camera that aims it and the processing pipeline
+    /// (optimization + safety — managed here rather than in graph ops). The device itself — address,
+    /// port, device settings — lives on the laser plug it is bound to; select the plug in LOCAL
+    /// BINDINGS to edit it. Consumed by [LaserCamera]: setting its OutputRef to this output projects
+    /// through the scanner camera, and the output's driver streams the resulting frame to the bound plug.
+    /// </summary>
+    private static void DrawLaserOutputCard(Setup setup, MachineConfig machineConfig, OutputDefinition output)
+    {
+        var binding = machineConfig.FindBinding(output.Id);
+        var boundTo = binding == null
+                          ? "unbound — drop this output on a laser plug"
+                          : $"{Plugs.BindingLabel(machineConfig, binding)} (edit the plug under Local Bindings)";
+        FormInputs.ApplyIndent();
+        CustomComponents.StylizedText(boundTo, Fonts.FontSmall, UiColors.TextMuted);
+
+        // The streamed frame, live — the same drawing the Board card shows, where the output is edited.
+        FormInputs.DrawInputLabel("Laser frame");
+        var previewHeight = 140f * T3Ui.UiScaleFactor;
+        var previewMin = ImGui.GetCursorScreenPos();
+        var previewMax = new Vector2(previewMin.X + MathF.Max(ImGui.GetContentRegionAvail().X, previewHeight), previewMin.Y + previewHeight);
+        var previewDl = ImGui.GetWindowDrawList();
+        previewDl.AddRectFilled(previewMin, previewMax, UiColors.BackgroundPopup.Fade(0.6f));
+        LaserOutputPreview.DrawFrame(previewDl, previewMin, previewMax, LaserOutputPreview.GetFrame(output));
+        ImGui.SetCursorScreenPos(new Vector2(previewMin.X, previewMax.Y + 4f * T3Ui.UiScaleFactor));
+        ImGui.Dummy(Vector2.Zero);
+
+        DrawLaserScannerCamera(setup, output);
+        DrawLaserProcessing(setup, output);
+
+        FormInputs.ApplyIndent();
+        CustomComponents.StylizedText("Set a [LaserCamera]'s OutputRef to this output - it projects through the scanner camera above, "
+                                      + "and while the master laser is on, the frame streams to the plug bound below.",
+                                      Fonts.FontSmall, UiColors.TextMuted);
+    }
+
+    /// <summary>
+    /// A laser plug's own card: the endpoint (address, port, network interface) and the device settings
+    /// (scan rate, brightness ceiling, channel order, protocol identity) live HERE, at the plug in local
+    /// bindings — the output bound here carries the show (camera, pipeline), never the device address.
+    /// </summary>
+    private static void DrawLaserPlugCard(MachineConfig machineConfig, LaserPlug plug, OutputDefinition? boundOutput)
+    {
+        // One control for the endpoint: type an address, or open the chevron to pick a discovered
+        // device (Ether Dream DACs announce themselves by UDP broadcast).
+        if (plug.Kind == LaserPlug.Kinds.EtherDream)
+            LaserPlugDiscovery.EnsureEtherDreamDiscovery();
+
+        FormInputs.DrawInputLabel("Address");
+        if (_laserAddressPlug != plug.Id)
+        {
+            _laserAddressPlug = plug.Id;
+            _laserAddressBuffer = plug.Address;
+        }
+
+        var addressArrow = DrawEditableComboField("##laserAddress", ref _laserAddressBuffer, 64,
+                                                  plug.Kind == LaserPlug.Kinds.EtherDream ? $"##laserAddressPick{plug.Id:N}" : null);
+        if (addressArrow)
+            Plugs.UpdateLaser(machineConfig, plug.Id, null, _laserAddressBuffer.Trim(), null);
+
+        CustomComponents.TooltipForLastItem(plug.Kind switch
+                                                {
+                                                    LaserPlug.Kinds.Ponk => "The PONK host: the 239.255.10.24 multicast group, or a receiver's unicast IP.",
+                                                    LaserPlug.Kinds.Citp => "The CITP capture host (used with a Port above 0; 0 keeps PLoc multicast discovery).",
+                                                    _ => "The Ether Dream DAC's IP address on the LAN — type it, or pick a discovered device from the chevron.",
+                                                });
+
+        if (plug.Kind == LaserPlug.Kinds.EtherDream && ImGui.BeginPopup($"##laserAddressPick{plug.Id:N}"))
+        {
+            var dacs = LaserPlugDiscovery.EtherDreamDacs;
+            var connected = LaserPlugDiscovery.ConnectedDevice;
+
+            if (dacs.Count == 0 && connected == null)
+                CustomComponents.StylizedText("discovering…", Fonts.FontSmall, UiColors.TextMuted);
+
+            foreach (var dac in dacs)
+            {
+                if (ImGui.Selectable($"{dac.Name} ({dac.Ip})") && dac.Ip != plug.Address)
+                {
+                    _laserAddressBuffer = dac.Ip;
+                    Plugs.UpdateLaser(machineConfig, plug.Id, null, dac.Ip, null);
+                    ImGui.CloseCurrentPopup();
+                }
+            }
+
+            // A DAC being streamed to stops its discovery broadcasts — offer what an output op
+            // is connected to, so the picker works during a show too.
+            if (connected is { } device && dacs.All(d => !string.Equals(d.Ip, device.Ip, StringComparison.OrdinalIgnoreCase)))
+            {
+                if (ImGui.Selectable($"● connected: {device.Name} ({device.Ip})") && device.Ip != plug.Address)
+                {
+                    _laserAddressBuffer = device.Ip;
+                    Plugs.UpdateLaser(machineConfig, plug.Id, null, device.Ip, null);
+                    ImGui.CloseCurrentPopup();
+                }
+            }
+
+            CustomComponents.StylizedText("DACs stop broadcasting while a show streams to them — the connected device is listed above.",
+                                          Fonts.FontSmall, UiColors.TextMuted);
+            ImGui.EndPopup();
+        }
+
+        // Ether Dream DACs listen on the protocol-fixed port, so editing would be a no-op — shown read-only
+        // at its effective value; PONK and CITP endpoints are configurable.
+        if (plug.Kind == LaserPlug.Kinds.EtherDream)
+        {
+            Span<int> port = [plug.Port > 0 ? plug.Port : 7765];
+            DrawIntsRow("Port", port, "The Ether Dream protocol port is fixed at 7765.", readOnly: true);
+        }
+        else
+        {
+            Span<int> port = [plug.Port];
+            var portState = DrawIntsRow("Port", port, "Remote port; 0 = the protocol's default (PONK 5583, CITP discovery).");
+            if ((portState & InputEditStateFlags.Modified) != 0)
+                Plugs.UpdateLaser(machineConfig, plug.Id, null, null, port[0]);
+        }
+
+        FormInputs.DrawInputLabel("Interface");
+        if (_laserTextKey != plug.Id + ":if")
+        {
+            _laserTextKey = plug.Id + ":if";
+            _laserTextBuffer = plug.LocalAddress;
+        }
+
+        var interfaceArrow = DrawEditableComboField("##laserLocal", ref _laserTextBuffer, 40,
+                                                    $"##laserInterfacePick{plug.Id:N}");
+        if (interfaceArrow)
+        {
+            plug.LocalAddress = _laserTextBuffer.Trim();
+            OutputSetupHandling.SaveActive();
+        }
+
+        CustomComponents.TooltipForLastItem("Network interface packets leave on (this machine's NIC IP); empty = any. Type it, or pick from the chevron.");
+
+        if (ImGui.BeginPopup($"##laserInterfacePick{plug.Id:N}"))
+        {
+            foreach (var nic in LaserPlugDiscovery.InterfaceAddresses)
+            {
+                if (ImGui.Selectable($"{nic.Name}: {nic.Ip}") && nic.Ip != plug.LocalAddress)
+                {
+                    _laserTextBuffer = nic.Ip;
+                    plug.LocalAddress = nic.Ip;
+                    OutputSetupHandling.SaveActive();
+                    ImGui.CloseCurrentPopup();
+                }
+            }
+
+            ImGui.EndPopup();
+        }
+
+        DrawLaserDeviceSettings(machineConfig, plug);
+
+        FormInputs.ApplyIndent();
+        var boundLabel = boundOutput == null ? "nothing bound" : $"streaming for {boundOutput.Name}";
+        CustomComponents.StylizedText($"{plug.Kind} · {boundLabel}", Fonts.FontSmall, UiColors.TextMuted);
+
+        // Live device status from the driver streaming this plug's output — connection, buffer,
+        // playback, e-stop — colored by severity, full text (incl. the pipeline suffix) on hover.
+        if (boundOutput != null)
+        {
+            FormInputs.ApplyIndent();
+            if (LaserDriver.TryGetStreamStatus(boundOutput.Id, out var opStatus, out var opLevel))
+            {
+                var statusColor = opLevel switch
+                                      {
+                                          IStatusProvider.StatusLevel.Success => UiColors.StatusOkay,
+                                          IStatusProvider.StatusLevel.Warning or IStatusProvider.StatusLevel.Error => UiColors.StatusAttention,
+                                          _ => UiColors.TextMuted,
+                                      };
+                CustomComponents.StylizedText($"● {opStatus}", Fonts.FontSmall, statusColor);
+                CustomComponents.TooltipForLastItem("Live status of the driver streaming to this plug's device.");
+            }
+            else
+            {
+                CustomComponents.StylizedText("● not streaming — no laser stream for this plug yet (is the master laser on?)", Fonts.FontSmall, UiColors.TextMuted);
+            }
+        }
+    }
+
+    /// <summary>
+    /// An editable combo: an input line with a chevron button at its right that opens popupId (the
+    /// device/NIC list drawn by the caller). Typing commits on deactivate; returns true then, with
+    /// the buffer holding the committed text.
+    /// </summary>
+    private static bool DrawEditableComboField(string fieldId, ref string buffer, uint maxLength, string? popupId)
+    {
+        var scale = T3Ui.UiScaleFactor;
+        var gap = 4 * scale;
+        var arrowWidth = popupId != null ? ImGui.GetFrameHeight() : 0f;
+        ImGui.SetNextItemWidth(ImGui.GetContentRegionAvail().X - arrowWidth - gap);
+        ImGui.InputText(fieldId, ref buffer, maxLength);
+        var committed = ImGui.IsItemDeactivatedAfterEdit();
+
+        if (popupId == null)
+            return committed;
+
+        ImGui.SameLine(0, gap);
+        // IconButton pushes the icon's id internally — two chevrons on one card (address +
+        // interface) would collide, so scope it under the unique popup id.
+        ImGui.PushID(popupId);
+        var chevronClicked = CustomComponents.IconButton(Icon.ChevronDown, Vector2.Zero);
+        ImGui.PopID();
+        if (chevronClicked)
+            ImGui.OpenPopup(popupId);
+
+        return committed;
+    }
+
+    /// <summary>Device settings of the plug — machine state, saved on change like the address.</summary>
+    private static void DrawLaserDeviceSettings(MachineConfig machineConfig, LaserPlug plug)
+    {
+        FormInputs.AddSectionSubHeader("Device");
+
+        if (plug.Kind == LaserPlug.Kinds.EtherDream)
+        {
+            var device = plug.EtherDreamSettings;
+            Span<int> scanRate = [device.ScanRate];
+            var scanState = DrawIntsRow("Scan rate (pps)", scanRate,
+                                        "Points per second requested from the DAC; 0 = the output op's own input. Stream more points per second than this or the DAC buffer drains and playback halts.",
+                                        readOnly: false);
+            if ((scanState & InputEditStateFlags.Modified) != 0)
+            {
+                device.ScanRate = Math.Clamp(scanRate[0], 0, 100000);
+                OutputSetupHandling.SaveActive();
+            }
+
+            DrawLaserCeilingAndSwap(machineConfig, plug, ref device.MaxBrightness, ref device.SwapColorChannels);
+        }
+        else if (plug.Kind == LaserPlug.Kinds.Ponk)
+        {
+            var device = plug.PonkSettings;
+
+            var multicast = device.UseMulticast;
+            if (FormInputs.AddCheckBox("Multicast", ref multicast, "Send to the multicast group (how MadMapper discovers PONK senders); off sends unicast."))
+            {
+                device.UseMulticast = multicast;
+                OutputSetupHandling.SaveActive();
+            }
+
+            FormInputs.DrawInputLabel("Sender name");
+            if (_laserTextKey != plug.Id + ":sender")
+            {
+                _laserTextKey = plug.Id + ":sender";
+                _laserTextBuffer = device.SenderName;
+            }
+
+            if (ImGui.InputText("##laserSender", ref _laserTextBuffer, 32))
+            {
+                // committed on deactivate
+            }
+
+            if (ImGui.IsItemDeactivatedAfterEdit())
+            {
+                device.SenderName = _laserTextBuffer.Trim();
+                OutputSetupHandling.SaveActive();
+            }
+
+            Span<float> maxSpeed = [device.MaxScanSpeed];
+            var speedState = DrawFloatsRow("Scan speed (x)", maxSpeed, "Sent as MAXSPEED path metadata - the requested scanner-speed multiplier. 1.0 = neutral.");
+            if ((speedState & InputEditStateFlags.Modified) != 0)
+            {
+                device.MaxScanSpeed = MathF.Max(0.01f, maxSpeed[0]);
+                OutputSetupHandling.SaveActive();
+            }
+
+            DrawLaserCeilingAndSwap(machineConfig, plug, ref device.MaxBrightness, ref device.SwapColorChannels);
+        }
+        else if (plug.Kind == LaserPlug.Kinds.Citp)
+        {
+            var device = plug.CitpSettings;
+
+            FormInputs.DrawInputLabel("Feed name");
+            if (_laserTextKey != plug.Id + ":feed")
+            {
+                _laserTextKey = plug.Id + ":feed";
+                _laserTextBuffer = device.FeedName;
+            }
+
+            if (ImGui.InputText("##laserFeed", ref _laserTextBuffer, 32))
+            {
+                // committed on deactivate
+            }
+
+            if (ImGui.IsItemDeactivatedAfterEdit())
+            {
+                device.FeedName = _laserTextBuffer.Trim();
+                OutputSetupHandling.SaveActive();
+            }
+
+            Span<int> sourceKey = [(int)device.SourceKey];
+            var keyState = DrawIntsRow("Source key", sourceKey, "CITP sender key; 0 = generate one at random per session.");
+            if ((keyState & InputEditStateFlags.Modified) != 0)
+            {
+                device.SourceKey = (uint)Math.Clamp(sourceKey[0], 0, int.MaxValue);
+                OutputSetupHandling.SaveActive();
+            }
+
+            DrawLaserCeilingAndSwap(machineConfig, plug, ref device.MaxBrightness, ref device.SwapColorChannels);
+        }
+    }
+
+    /// <summary>The two device settings every laser protocol shares: the final brightness ceiling
+    /// applied at encode (the non-bypassable audit) and the RGB/BGR channel order.</summary>
+    private static void DrawLaserCeilingAndSwap(MachineConfig machineConfig, LaserPlug plug, ref float maxBrightness, ref bool swap)
+    {
+        Span<float> ceiling = [maxBrightness];
+        var ceilingState = DrawFloatsRow("Brightness ceiling", ceiling, "Final intensity ceiling (0..1) applied to every point right before streaming - runs inside the device, so no upstream bug can exceed it.");
+        if ((ceilingState & InputEditStateFlags.Modified) != 0)
+        {
+            maxBrightness = Math.Clamp(ceiling[0], 0f, 1f);
+            OutputSetupHandling.SaveActive();
+        }
+
+        var swapChannels = swap;
+        if (FormInputs.AddCheckBox("Swap color channels", ref swapChannels, "Some projectors expect the color channels as BGR - swaps R and B when on."))
+        {
+            swap = swapChannels;
+            OutputSetupHandling.SaveActive();
+        }
+    }
+
+    /// <summary>The scanner camera: how the laser frame is projected. Manual look-at until a
+    /// calibration solve fills pose and lens; consumed by [LaserCamera] through this output's OutputRef.</summary>
+    private static void DrawLaserScannerCamera(Setup setup, OutputDefinition output)
+    {
+        FormInputs.AddSectionSubHeader("Scanner Camera");
+        var cam = output.Camera ??= new OutputDefinition.ProjectorCamera();
+
+        Span<float> position = [cam.ManualPosition.X, cam.ManualPosition.Y, cam.ManualPosition.Z];
+        var positionState = DrawFloatsRow("Position (m)", position, "Where the scanner sits, in stage metres (X right, Y up, Z towards the viewer).");
+        BeginFieldUndo(setup, positionState);
+        if ((positionState & InputEditStateFlags.Modified) != 0)
+            cam.ManualPosition = new Vector3(position[0], position[1], position[2]);
+
+        CommitFieldUndo(setup, "Aim laser", positionState);
+
+        Span<float> target = [cam.ManualTarget.X, cam.ManualTarget.Y, cam.ManualTarget.Z];
+        var targetState = DrawFloatsRow("Target (m)", target, "The stage point the beam centre hits.");
+        BeginFieldUndo(setup, targetState);
+        if ((targetState & InputEditStateFlags.Modified) != 0)
+            cam.ManualTarget = new Vector3(target[0], target[1], target[2]);
+
+        CommitFieldUndo(setup, "Aim laser", targetState);
+
+        Span<float> fov = [cam.ManualFovYDegrees];
+        var fovState = DrawFloatsRow("Scan angle (°)", fov,
+                                     "The scanner's full optical scan angle - the aperture the ILDA field covers. ±20° galvos read 40°.",
+                                     speed: 0.1f, format: "{0:0.0}");
+        BeginFieldUndo(setup, fovState);
+        if ((fovState & InputEditStateFlags.Modified) != 0)
+            cam.ManualFovYDegrees = Math.Clamp(fov[0], 1f, 179f);
+
+        CommitFieldUndo(setup, "Aim laser", fovState);
+
+        FormInputs.ApplyIndent();
+        if (cam.Pose != null && cam.Lens != null)
+        {
+            CustomComponents.StylizedText($"Calibration solve active (residual {cam.ResidualPx:0.##} px) - it overrides the manual aim.",
+                                          Fonts.FontSmall, UiColors.StatusOkay);
+        }
+        else
+        {
+            CustomComponents.StylizedText("Manual aim - [LaserCamera] with this output as OutputRef projects through this camera.",
+                                          Fonts.FontSmall, UiColors.TextMuted);
+        }
+    }
+
+    /// <summary>
+    /// The setup-driven pipeline: optimization and safety for this laser output, applied by the output
+    /// operator before streaming. Safety starts uncalibrated - only the alignment rectangle streams -
+    /// and the app-bar laser button stays orange until every laser output is calibrated.
+    /// </summary>
+    private static void DrawLaserProcessing(Setup setup, OutputDefinition output)
+    {
+        var processing = output.LaserProcessing ??= new LaserProcessingSettings();
+        var optimizer = processing.Optimizer;
+        var safety = processing.Safety;
+
+        FormInputs.AddSectionSubHeader("Optimization");
+
+        var enableOptimization = optimizer.EnableOptimization;
+        if (FormInputs.AddCheckBox("Reorder path", ref enableOptimization,
+                                   "Greedy nearest-neighbour tour over the lit segments (reversing segments when closer). Off keeps the drawn order; blanking and corner dwelling always apply."))
+        {
+            SetupUndo.RunUndoable("Toggle laser optimization", setup, () => optimizer.EnableOptimization = enableOptimization);
+        }
+
+        Span<float> jump = [optimizer.MaxJumpDistance];
+        var jumpState = DrawFloatsRow("Max jump (units)", jump, "ILDA units per blanked-jump segment; the blank count between shapes scales with jump length.");
+        BeginFieldUndo(setup, jumpState);
+        if ((jumpState & InputEditStateFlags.Modified) != 0)
+            optimizer.MaxJumpDistance = MathF.Max(1f, jump[0]);
+        CommitFieldUndo(setup, "Laser optimization", jumpState);
+
+        Span<int> blanking = [optimizer.BlankingDelayPoints];
+        var blankingState = DrawIntsRow("Blanking points", blanking, "Maximum blanked points inserted before a shape start (0..100).");
+        BeginFieldUndo(setup, blankingState);
+        if ((blankingState & InputEditStateFlags.Modified) != 0)
+            optimizer.BlankingDelayPoints = Math.Clamp(blanking[0], 0, 100);
+        CommitFieldUndo(setup, "Laser optimization", blankingState);
+
+        Span<float> corner = [optimizer.CornerAngleThreshold];
+        var cornerState = DrawFloatsRow("Corner angle (°)", corner, "Corners sharper than this get dwell anchors.");
+        BeginFieldUndo(setup, cornerState);
+        if ((cornerState & InputEditStateFlags.Modified) != 0)
+            optimizer.CornerAngleThreshold = MathF.Max(0f, corner[0]);
+        CommitFieldUndo(setup, "Laser optimization", cornerState);
+
+        Span<int> anchors = [optimizer.CornerAnchorCount];
+        var anchorsState = DrawIntsRow("Corner anchors", anchors, "Repeated points at a corner (1..10) - brighter, steadier corners.");
+        BeginFieldUndo(setup, anchorsState);
+        if ((anchorsState & InputEditStateFlags.Modified) != 0)
+            optimizer.CornerAnchorCount = Math.Clamp(anchors[0], 1, 10);
+        CommitFieldUndo(setup, "Laser optimization", anchorsState);
+
+        FormInputs.AddSectionSubHeader("Safety");
+
+        var calibrated = safety.Calibrated;
+        if (FormInputs.AddCheckBox("Calibrated", ref calibrated,
+                                   "While off, upstream content is ignored and only the alignment rectangle below streams - aim it, then switch on for content. The app-bar laser button stays orange until every laser output is calibrated."))
+        {
+            SetupUndo.RunUndoable("Toggle laser calibration", setup, () => safety.Calibrated = calibrated);
+        }
+
+        if (!calibrated)
+        {
+            Span<float> setupRect =
+            [
+                safety.SetupCenterX, safety.SetupCenterY, safety.SetupWidth, safety.SetupHeight,
+            ];
+            var rectState = DrawFloatsRow("Setup rect (cx, cy, w, h)", setupRect,
+                                          "The alignment rectangle in normalized field units: center -1..1, width/height 0..1. Start tiny at center and extend step by step.",
+                                          speed: 0.001f, format: "{0:0.000}");
+            BeginFieldUndo(setup, rectState);
+            if ((rectState & InputEditStateFlags.Modified) != 0)
+            {
+                safety.SetupCenterX = Math.Clamp(setupRect[0], -1f, 1f);
+                safety.SetupCenterY = Math.Clamp(setupRect[1], -1f, 1f);
+                safety.SetupWidth = Math.Clamp(setupRect[2], 0.01f, 1f);
+                safety.SetupHeight = Math.Clamp(setupRect[3], 0.01f, 1f);
+            }
+
+            CommitFieldUndo(setup, "Aim setup rectangle", rectState);
+        }
+
+        var beamEnable = safety.BeamEnable;
+        if (FormInputs.AddCheckBox("Beam enable", ref beamEnable, "Master beam switch for this output; off blanks every point but keeps the geometry."))
+        {
+            SetupUndo.RunUndoable("Toggle laser beam", setup, () => safety.BeamEnable = beamEnable);
+        }
+
+        Span<float> zone =
+        [
+            safety.SafeZoneCenterX, safety.SafeZoneCenterY, safety.SafeZoneWidth, safety.SafeZoneHeight,
+        ];
+        var zoneState = DrawFloatsRow("Safe zone (cx, cy, w, h)", zone,
+                                      "The region the beam may enter, in ILDA units (full field 65534 wide). Points outside are clamped in.");
+        BeginFieldUndo(setup, zoneState);
+        if ((zoneState & InputEditStateFlags.Modified) != 0)
+        {
+            safety.SafeZoneCenterX = zone[0];
+            safety.SafeZoneCenterY = zone[1];
+            safety.SafeZoneWidth = MathF.Max(0f, zone[2]);
+            safety.SafeZoneHeight = MathF.Max(0f, zone[3]);
+        }
+
+        CommitFieldUndo(setup, "Laser safe zone", zoneState);
+
+        Span<float> limits =
+        [
+            safety.MaxStepPerPoint, safety.MaxStaticPoints, safety.MaxBrightness,
+        ];
+        var limitsState = DrawFloatsRow("Jump / dwell / bright", limits,
+                                        "Max jump per point (ILDA units, subdivided), max points dwelling in one place before blanking, and the show-level brightness ceiling (the plug's device ceiling stays the final audit).");
+        BeginFieldUndo(setup, limitsState);
+        if ((limitsState & InputEditStateFlags.Modified) != 0)
+        {
+            safety.MaxStepPerPoint = MathF.Max(1f, limits[0]);
+            safety.MaxStaticPoints = Math.Clamp((int)limits[1], 1, 100000);
+            safety.MaxBrightness = Math.Clamp(limits[2], 0f, 1f);
+        }
+
+        CommitFieldUndo(setup, "Laser safety limits", limitsState);
     }
 
     /// <summary>
@@ -880,6 +1372,13 @@ internal static class SetupParameterView
             DrawIntsRow("Resolution (px)", mode, "The display's current mode (read-only).", readOnly: true);
             FormInputs.ApplyIndent();
             CustomComponents.StylizedText(boundLabel, Fonts.FontSmall, UiColors.TextMuted);
+            return;
+        }
+
+        var laser = machineConfig.FindLaserPlug(id);
+        if (laser != null)
+        {
+            DrawLaserPlugCard(machineConfig, laser, boundOutput);
             return;
         }
 
@@ -1628,4 +2127,12 @@ internal static class SetupParameterView
     private static SetupEntityKinds _renameTargetKind;
     private static string _renameBuffer = string.Empty;
     private static bool _renameFieldActive;
+
+    // Laser-plug address editing: the buffer reloads when a different plug's field is drawn.
+    private static Guid _laserAddressPlug;
+    private static string _laserAddressBuffer = string.Empty;
+
+    // Laser-plug text rows (interface, PONK sender, CITP feed): one buffer keyed by plug + purpose.
+    private static string? _laserTextKey;
+    private static string _laserTextBuffer = string.Empty;
 }

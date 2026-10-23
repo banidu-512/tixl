@@ -213,6 +213,16 @@ internal sealed partial class SetupOutputView
             DrawBoardCard(setup, selection, dl, SetupEntityKinds.Output, output.Id, min, max,
                           output.Name, BoardMeta(output.Id), srv, true);
 
+            // A laser output has no canvas composite; its card shows what streams instead — the laser
+            // frame after the output's pipeline, drawn onto the ILDA scan field.
+            if (output.Kind == OutputDefinition.Kinds.Laser)
+            {
+                var frameMin = _boardProjection.CanvasToScreen(new Vector2(min.X, max.Y));
+                var frameMax = _boardProjection.CanvasToScreen(new Vector2(max.X, min.Y));
+                SetupStrokes.SnapRect(ref frameMin, ref frameMax);
+                LaserOutputPreview.DrawFrame(dl, frameMin, frameMax, LaserOutputPreview.GetFrame(output), _boardLayerFade);
+            }
+
             // The pixel map over the card's composite, as on the output canvas, so patches are placed against it here too.
             var pixelMap = setup.FindReferenceImage(output.ReferenceImageId);
             if (pixelMap != null && output.ReferenceOpacity > 0f && TryGetReferenceSrv(pixelMap) is { IsDisposed: false } mapSrv)

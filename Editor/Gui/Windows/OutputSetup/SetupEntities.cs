@@ -243,6 +243,12 @@ internal static class SetupEntities
                     return true;
             }
 
+            foreach (var laser in machineConfig.LaserPlugs)
+            {
+                if (Matches(setup, SetupEntityKinds.Plug, laser.Id, name, out kind, out id))
+                    return true;
+            }
+
             var screens = EditorUi.Instance.AllScreens;
             for (var i = 0; i < screens.Count; i++)
             {

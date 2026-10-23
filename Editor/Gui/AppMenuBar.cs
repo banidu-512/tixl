@@ -59,6 +59,8 @@ internal static class AppMenuBar
 
             DrawMainMenu();
 
+            LaserMasterButton.Draw();
+
             ImGui.PopStyleColor();
             ImGui.PopStyleVar(3);
 

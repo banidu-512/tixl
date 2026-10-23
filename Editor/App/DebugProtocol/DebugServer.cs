@@ -215,6 +215,27 @@ internal static class DebugServer
                 context.SendOk(new JObject());
                 break;
 
+            case "setLaserMaster":
+                var laserMasterEnabled = request.Value<bool?>("enabled");
+                if (laserMasterEnabled.HasValue)
+                {
+                    T3.Core.DataTypes.LaserMasterEnable.Enabled = laserMasterEnabled.Value;
+                    Log.Debug($"DebugServer: laser master enable -> {(laserMasterEnabled.Value ? "ON" : "OFF")}");
+                }
+                context.SendOk(new JObject { ["enabled"] = T3.Core.DataTypes.LaserMasterEnable.Enabled });
+                break;
+
+            case "setLaserDriver":
+                // Profiling kill-switch: pumps the laser output streams per frame when on
+                var laserDriverEnabled = request.Value<bool?>("enabled");
+                if (laserDriverEnabled.HasValue)
+                {
+                    T3.Core.Output.LaserDriverEnabled.Enabled = laserDriverEnabled.Value;
+                    Log.Debug($"DebugServer: laser output driver -> {(laserDriverEnabled.Value ? "ON" : "OFF")}");
+                }
+                context.SendOk(new JObject { ["enabled"] = T3.Core.Output.LaserDriverEnabled.Enabled });
+                break;
+
             case "setAgentState":
             {
                 var state = request["state"]?.Value<string>() ?? "";

@@ -47,6 +47,11 @@ internal static class OutputPresentation
             if (binding == null)
                 continue;
 
+            // A laser binding presents nothing here: its frame streams from the laser driver
+            // (LaserDriver), not from a composite.
+            if (binding.IsLaser)
+                continue;
+
             var startTimestamp = Stopwatch.GetTimestamp();
             if (binding.IsStream)
             {
