@@ -297,6 +297,10 @@ internal static class CollabCommandWire
                     ApplyRestoreChildren(op);
                     break;
 
+                case "apply_snapshot":
+                    ApplySnapshot(op);
+                    break;
+
                 default:
                     Log.Debug($"Collab: ignoring unknown op type '{type}'");
                     break;
@@ -306,6 +310,92 @@ internal static class CollabCommandWire
         {
             Log.Warning($"Collab: failed to apply op '{CollabProtocol.GetString(op, "type")}': {e.Message}");
         }
+    }
+
+    /// <summary>
+    /// Captures the complete state of a composition (children with values, names, sections,
+    /// time-clip settings, plus all connections) as one apply_snapshot wire op. Sent to late
+    /// joiners so their copy converges to the host's state without requiring identical project
+    /// bases.
+    /// </summary>
+    public static JObject BuildSnapshotOp(SymbolUi compositionUi)
+    {
+        var compositionSymbol = compositionUi.Symbol;
+        var items = new JArray();
+        foreach (var childUi in compositionUi.ChildUis.Values)
+        {
+            items.Add(ChildRestoreToJson(CaptureChildRestoreData(compositionSymbol, childUi)));
+        }
+
+        return new JObject
+                   {
+                       ["type"] = "apply_snapshot",
+                       ["c"] = compositionSymbol.Id,
+                       ["items"] = items,
+                   };
+    }
+
+    /// <summary>Live capture of one child's state — the snapshot counterpart of the delete command's payload.</summary>
+    private static CollabChildRestoreData CaptureChildRestoreData(Symbol compositionSymbol, SymbolUi.Child childUi)
+    {
+        var child = childUi.SymbolChild;
+        var inputValues = new Dictionary<Guid, InputValue>();
+        foreach (var (inputId, input) in child.Inputs)
+        {
+            if (input.IsDefault)
+                continue;
+
+            inputValues[inputId] = input.Value.Clone();
+        }
+
+        var timeClips = new Dictionary<Guid, TimeClip>();
+        foreach (var (outputId, output) in child.Outputs)
+        {
+            if (output.OutputData is TimeClip timeClip)
+                timeClips[outputId] = timeClip.Clone();
+        }
+
+        var removedConnections = new List<(Symbol.Connection Connection, int MultiInputIndex)>();
+        foreach (var connection in compositionSymbol.Connections)
+        {
+            if (connection.SourceParentOrChildId != childUi.Id && connection.TargetParentOrChildId != childUi.Id)
+                continue;
+
+            removedConnections.Add((connection, compositionSymbol.GetMultiInputIndexFor(connection)));
+        }
+
+        return new CollabChildRestoreData
+                   {
+                       SymbolId = child.Symbol.Id,
+                       ChildId = childUi.Id,
+                       Name = child.Name,
+                       PosOnCanvas = childUi.PosOnCanvas,
+                       Size = childUi.Size,
+                       SectionId = childUi.SectionId,
+                       InputValues = inputValues,
+                       TimeClips = timeClips,
+                       Connections = removedConnections,
+                   };
+    }
+
+    /// <summary>
+    /// Replaces the local state of one composition with the snapshot's. Used for late joiners:
+    /// their local edits to that composition are intentionally replaced by the host's state.
+    /// </summary>
+    private static void ApplySnapshot(JObject op)
+    {
+        if (!TryGetComposition(op, out var compositionUi) || op["items"] is not JArray items)
+            return;
+
+        var allChildren = compositionUi.ChildUis.Values.ToList();
+        if (allChildren.Count > 0)
+        {
+            var clearCommand = new DeleteSymbolChildrenCommand(compositionUi, allChildren);
+            clearCommand.Do();
+        }
+
+        RestoreChildrenCore(compositionUi, items);
+        Log.Debug($"Collab: applied snapshot to composition {compositionUi.Symbol.Id} ({items.Count} children)");
     }
 
     /// <summary>
@@ -586,6 +676,12 @@ internal static class CollabCommandWire
         if (!TryGetComposition(op, out var compositionUi) || op["items"] is not JArray items)
             return;
 
+        RestoreChildrenCore(compositionUi, items);
+    }
+
+    /// <summary>Shared body of restore_children and apply_snapshot.</summary>
+    private static void RestoreChildrenCore(SymbolUi compositionUi, JArray items)
+    {
         // Connections are re-added after all children exist, since restored children may wire to
         // each other.
         var pendingConnections = new List<(Symbol.Connection Connection, int MultiInputIndex)>();
