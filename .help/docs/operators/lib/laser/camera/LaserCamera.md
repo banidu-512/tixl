@@ -22,7 +22,7 @@ LaserCamera combines the functionality of a regular Camera op with geometry capt
 
 **Laser Output:**
 - Projects captured geometry into laser coordinate system
-- Converts to 16-bit ILDA format (0..32767)
+- Converts to 16-bit ILDA format (-32767..32767)
 - Supports individual colors per point/line/edge
 - Handles perspective projection from camera view
 - Compatible with EtherDream, PONK, and other laser outputs
@@ -73,7 +73,7 @@ LaserCamera
 - **Projection quality:** Maintains perspective correction for accurate laser projection
 - **Performance:** Scene capture and rendering happen simultaneously in one pass
 - **Compatibility:** Works with existing patches using standard Camera ops
-- **Safety:** Includes MaxDotDwellPoints (64) limit to stay within laser output capabilities
+- **Safety:** DotDwellPoints is clamped to 64 lit repeats to stay within laser output capabilities
 
 **See also:** [PONKInput](../input/PONKInput.md) and the laser outputs in the [Output Setup](../../../../using/OutputSetup.md)
 
