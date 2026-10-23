@@ -42,8 +42,10 @@ public sealed class GeometryCapture
 
     public static void MarkExcludedFromCapture(Buffer buffer)
     {
+        // GetValue is the idempotent add: the same buffer is uploaded (and marked) every frame,
+        // and CWT.Add would throw on the repeat.
         if (buffer != null)
-            ExcludedSources.Add(buffer, null);
+            ExcludedSources.GetValue(buffer, _ => null);
     }
 
     public static bool IsExcludedFromCapture(Buffer buffer)
