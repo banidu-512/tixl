@@ -117,6 +117,9 @@ internal sealed class LaserPointsToBuffer : Instance<LaserPointsToBuffer>
             }
 
             ResourceManager.Device.ImmediateContext.UpdateSubresource(_points, _buffer);
+            // Laser-frame data drawn back into a scene is a preview - mark the buffer so a
+            // LaserCamera capturing that scene never captures its own output (feedback echo).
+            T3.Core.Rendering.GeometryCapture.MarkExcludedFromCapture(_buffer);
             return true;
         }
         catch (Exception e)

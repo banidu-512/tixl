@@ -57,7 +57,10 @@ internal sealed class Draw : Instance<Draw>, IRenderStatsProvider
         if (capture is { IsActive: true })
         {
             var captureVertices = CaptureVertices.GetValue(context);
-            if (captureVertices?.Buffer != null)
+            if (captureVertices?.Buffer != null
+                // Laser-frame previews (LaserPointsToBuffer output drawn back into the scene)
+                // are excluded - capturing them echoes the frame into itself.
+                && !GeometryCapture.IsExcludedFromCapture(captureVertices.Buffer))
             {
                 var captureIndices = CaptureIndices.GetValue(context);
                 GeometryPrimitiveKind kind;

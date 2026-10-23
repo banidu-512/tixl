@@ -31,6 +31,26 @@ public sealed class GeometryCapture
     /// <summary>Bounded scratch - a scene with more unique draws per frame is truncated.</summary>
     public const int MaxEntries = 256;
 
+    /// <summary>
+    /// Buffers that must never be captured - laser-frame data drawn back into the scene as a
+    /// preview (LaserPointsToBuffer output feeding a draw op inside the captured subtree).
+    /// Capturing them turns the camera's own output into an input and the frame echoes itself
+    /// every frame. Static and source-based: the preview draw may evaluate outside the capture
+    /// pass that would have received the exclusion.
+    /// </summary>
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Buffer, object> ExcludedSources = new();
+
+    public static void MarkExcludedFromCapture(Buffer buffer)
+    {
+        if (buffer != null)
+            ExcludedSources.Add(buffer, null);
+    }
+
+    public static bool IsExcludedFromCapture(Buffer buffer)
+    {
+        return buffer != null && ExcludedSources.TryGetValue(buffer, out _);
+    }
+
     public bool IsActive { get; private set; }
 
     public IReadOnlyList<Entry> Entries => _entries;
