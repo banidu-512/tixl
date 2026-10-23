@@ -439,8 +439,8 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
     /// Point content: every projected point becomes an isolated dot - blanked jump to
     /// it, then a dwell run with the beam on. Without the blank the scanner would draw
     /// a lit line from the previous dot straight to this one.
-    /// The per-point Scale authored by the ops upstream of DrawPoints is honored: sized
-    /// points are drawn as small perspective-corrected circles, unsized points as dwell dots.
+    /// The per-point Scale (a multiplier - see DotRadiusBase) sizes the dot: scaled-up
+    /// points draw as small circles for brightness, unsized points as dwell dots.
     /// </summary>
     private int AppendDots(Point[] points, Matrix4x4 combined, int dotDwell, int count, out int dotsEmitted)
     {
@@ -457,7 +457,11 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
                 continue;
 
             var scale = p.Scale.X;
-            var radius = (float.IsNaN(scale) || float.IsInfinity(scale) ? 0f : scale) * SizeToLaser(viewZ);
+            // Point Scale is a multiplier (1 = normal size), not a world-space radius - feeding it
+            // straight into the perspective conversion turned every default-sized dot into a
+            // third-of-the-field circle.
+            var radius = (float.IsNaN(scale) || float.IsInfinity(scale) ? 0f : scale) * DotRadiusBase;
+            radius = Math.Clamp(radius, 0f, DotRadiusMax);
             var isCircle = radius >= 2f;
             var worstCase = 1 + (isCircle ? circleSegments + 1 : dotDwell);
 
@@ -538,8 +542,12 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
                 continue; // zero-length joint = strip break, nothing to draw
 
             var zMid = (az + bz) * 0.5f;
-            var half = (a.Scale.X + b.Scale.X) * 0.5f * SizeToLaser(zMid);
-            var isRectangle = half >= 1f && float.IsFinite(half);
+            // Same multiplier semantics as the dot radius: Scale.X scales a small base width,
+            // it is not a world-space size (default-sized lines drew as field-wide rectangles).
+            var scaleAvg = (a.Scale.X + b.Scale.X) * 0.5f;
+            var half = (float.IsNaN(scaleAvg) || float.IsInfinity(scaleAvg) ? 0f : scaleAvg) * LineHalfWidthBase;
+            half = Math.Clamp(half, 0f, LineHalfWidthMax);
+            var isRectangle = half >= 1f;
 
             // A galvo needs several samples to trace a straight run - one lit point
             // pair per stroke smears into endpoint dashes at scan rates above ~200Hz.
@@ -718,7 +726,13 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
 
     /// <summary>Perspective factor that converts a world-space size at the projected
     /// point's depth into ILDA units - same shrink-with-distance as the screen render.</summary>
-    private static float SizeToLaser(float viewZ) => viewZ > 0.001f ? 32767f / viewZ : 0f;
+    // Dot and line sizing: Point.Scale is authored as a multiplier (1 = normal size), so these
+    // base sizes in laser units define what "normal" means on the scanner - a small bright dot
+    // and a thin stroke. The clamps bound the damage of extreme scale values.
+    private const float DotRadiusBase = 100f;      // ≈ 2 px at 1080p-equivalent framing
+    private const float DotRadiusMax = 1200f;
+    private const float LineHalfWidthBase = 40f;
+    private const float LineHalfWidthMax = 600f;
 
     private static void ToColor(Vector3 colorRgb, float brightness, out int r, out int g, out int b)
     {
