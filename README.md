@@ -34,6 +34,9 @@ Synced edits: adding/deleting operators, connections, parameter value changes, r
 
 ## Boygrouping & Show Failover (experimental)
 
+Cross-platform by design: collab, boygrouping and failover use plain sockets (no Windows-only APIs), deployed files transfer byte-exact with the server's timestamps restored, and path handling is case-sensitive on Linux/macOS and case-insensitive on Windows.
+
+
 **Boygrouping** (Settings → Boygrouping) distributes a show to render nodes, vvvv-style: one TiXL instance is the server, others join as clients (LAN discovery or direct address, multiple named groups per server). **Deploy & Sync** pushes changed project files (hash-diffed, chunked, verified), the Output Setup, and the live graph state to every client, which restarts and rejoins automatically. The server drives playback; clients follow the master clock. In the **Output Setup**, each output gets a "Render on machine" assignment so you configure per node what it renders — the client's own display/stream bindings stay local (`outputs.machine.json` is never deployed).
 
 **Show Failover** (Settings → Failover) keeps a redundant pair streaming: two machines run the same composition, the ACTIVE one sends Artnet/sACN/streams, the Standby renders silently and takes over automatically within `timeout × heartbeat` (default ~1.5 s) when the master dies. Heartbeats are multicast (master + backup can be rehearsed on one PC); higher configured priority wins, preemption on master return is optional, and role changes include a brief mutual mute so both sides never stream at once.
