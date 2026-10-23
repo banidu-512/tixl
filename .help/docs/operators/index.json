@@ -1076,6 +1076,14 @@
       "url": "/operators/lib/io/websocket/WebSocketServer/",
       "summary": "Creates a WebSocket server to enable real-time, two-way communication with web clients."
     },
+    "Lib.laser.camera.LaserCamera": {
+      "url": "/operators/lib/laser/camera/LaserCamera/",
+      "summary": "Renders a scene through its own camera lens and captures every point, line and mesh drawn inside it as 16-bit laser points."
+    },
+    "Lib.laser.input.PONKInput": {
+      "url": "/operators/lib/laser/input/PONKInput/",
+      "summary": "Receives laser frames from any PONK-compliant sender (e.g. MadMapper) over UDP and republishes them as 16-bit laser points."
+    },
     "Lib.mesh.draw.DrawMesh": {
       "url": "/operators/lib/mesh/draw/DrawMesh/",
       "summary": "Uses PBR rendering to draw incoming geometry and meshnodes according to the desired settings."
@@ -4055,6 +4063,9 @@
     "KochKaleidoskope": [
       "Lib.image.fx.distort.KochKaleidoskope"
     ],
+    "LaserCamera": [
+      "Lib.laser.camera.LaserCamera"
+    ],
     "LastFrameDuration": [
       "Lib.numbers.anim.time.LastFrameDuration"
     ],
@@ -4318,6 +4329,9 @@
     ],
     "OscillateVec3": [
       "Lib.numbers.anim.animators.OscillateVec3"
+    ],
+    "PONKInput": [
+      "Lib.laser.input.PONKInput"
     ],
     "PadVec2Range": [
       "Lib.numbers.vec2.PadVec2Range"
