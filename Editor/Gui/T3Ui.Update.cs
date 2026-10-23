@@ -1,4 +1,4 @@
-﻿using ImGuiNET;
+using ImGuiNET;
 using T3.Core.Animation;
 using T3.Core.Audio;
 using T3.Core.Audio.Graph;
@@ -34,6 +34,16 @@ public static partial class T3Ui
         Profiling.KeepFrameData();
         App.DebugProtocol.DebugServer.ProcessMainThreadQueue();
         Collab.CollabManager.Instance.Update();
+        T3.Core.Show.FailoverArbiter.ApplyConfig(new T3.Core.Show.FailoverConfig
+                                             {
+                                                 Enabled = UserSettings.Config.FailoverEnabled,
+                                                 ShowId = UserSettings.Config.FailoverShowId,
+                                                 Priority = UserSettings.Config.FailoverPriority,
+                                                 HeartbeatMs = UserSettings.Config.FailoverHeartbeatMs,
+                                                 TimeoutFactor = UserSettings.Config.FailoverTimeoutFactor,
+                                                 Preempt = UserSettings.Config.FailoverPreempt,
+                                             });
+        Show.BoygroupManager.Instance.Update();
         //ImGui.PushStyleColor(ImGuiCol.Text, UiColors.Text.Rgba);
         DragAndDropHandling.Update();
         MagGraph.Ui.DropHandling.DrawDragIndicator();

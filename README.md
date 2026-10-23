@@ -32,6 +32,12 @@ This branch adds live multi-user editing of a shared graph. Sessions are configu
 
 Synced edits: adding/deleting operators, connections, parameter value changes, renames and node moves. Participants see each other's cursors, selection outlines and "editing" lock badges in the graph. Parameters someone is editing are soft-locked and appear disabled for everyone else until released. **Undo/Redo are session-wide while connected**: Ctrl+Z reverts the last edit of any participant — the host keeps the shared history, and late joiners receive the replay including undo operations. On join, clients receive full snapshots of every composition the session has touched (their local state in those compositions is replaced by the host's), so a matching project is still required but manual re-editing of missed changes is not.
 
+## Boygrouping & Show Failover (experimental)
+
+**Boygrouping** (Settings → Boygrouping) distributes a show to render nodes, vvvv-style: one TiXL instance is the server, others join as clients (LAN discovery or direct address, multiple named groups per server). **Deploy & Sync** pushes changed project files (hash-diffed, chunked, verified), the Output Setup, and the live graph state to every client, which restarts and rejoins automatically. The server drives playback; clients follow the master clock. In the **Output Setup**, each output gets a "Render on machine" assignment so you configure per node what it renders — the client's own display/stream bindings stay local (`outputs.machine.json` is never deployed).
+
+**Show Failover** (Settings → Failover) keeps a redundant pair streaming: two machines run the same composition, the ACTIVE one sends Artnet/sACN/streams, the Standby renders silently and takes over automatically within `timeout × heartbeat` (default ~1.5 s) when the master dies. Heartbeats are multicast (master + backup can be rehearsed on one PC); higher configured priority wins, preemption on master return is optional, and role changes include a brief mutual mute so both sides never stream at once.
+
 ## Get Help
 To get started read the [documentation](https://github.com/tixl3d/tixl/wiki) or watch [tutorial videos](https://www.youtube.com/watch?v=eH2E02U6P5Q&list=PLj-rnPROvbn3LigXGRSDvmLtgTwmNHcQs&index=4).
 
