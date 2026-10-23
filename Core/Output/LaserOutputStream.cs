@@ -438,10 +438,12 @@ public sealed class LaserOutputStream : IDisposable
                 if (_isPlaying)
                     recoverEscalation = 0;
 
-                // Master off: settled blanking - keep scanning a zero-color copy of the last
-                // frame so the beam is off while the scanners stay settled. Letting the buffer
-                // run dry would leave the projector holding whatever point it received last.
-                if (!LaserMasterEnable.Enabled)
+                // Master off: settled blanking. The blanked copy of the last frame must keep
+                // being STREAMED - the DAC loops whatever its buffer holds, so skipping the
+                // send would leave the last lit frame burning on the wall. The pick below
+                // ignores queued frames while the master is off and zeroes the geometry.
+                var masterOff = !LaserMasterEnable.Enabled;
+                if (masterOff)
                 {
                     _pointQueue.Clear();
                     if (_lastFrame is { Length: > 0 } && !_masterBlankApplied)
@@ -449,13 +451,11 @@ public sealed class LaserOutputStream : IDisposable
                         _lastFrame = BlankFrame(_lastFrame, ref _blankFrameScratch);
                         _masterBlankApplied = true;
                     }
-
-                    try { await Task.Delay(15, token); }
-                    catch (OperationCanceledException) { return; }
-                    continue;
                 }
-
-                _masterBlankApplied = false;
+                else
+                {
+                    _masterBlankApplied = false;
+                }
 
                 // Pick the frame to stream: fresh frames first, otherwise loop the last one
                 // so the buffer stays fed between the driver's ~30 Hz submissions. Looping
@@ -463,7 +463,7 @@ public sealed class LaserOutputStream : IDisposable
                 if (_sendFrame == null || _sendOffset >= _sendFrame.Length)
                 {
                     LaserPoint[]? frame = null;
-                    if (_pointQueue.TryDequeue(out var points) && points.Length > 0)
+                    if (!masterOff && _pointQueue.TryDequeue(out var points) && points.Length > 0)
                     {
                         frame = points;
                         // Every fresh frame leads beam-off: the approach to its first point is
@@ -473,7 +473,11 @@ public sealed class LaserOutputStream : IDisposable
                     }
                     else if (_lastFrame is { Length: > 0 })
                     {
-                        if (WatchdogElapsed(_lastEnqueueTimestamp))
+                        if (masterOff)
+                        {
+                            frame = _lastFrame;
+                        }
+                        else if (WatchdogElapsed(_lastEnqueueTimestamp))
                         {
                             if (!_watchdogBlanked)
                             {
@@ -513,10 +517,20 @@ public sealed class LaserOutputStream : IDisposable
                     _sendOffset = 0;
                 }
 
+                // The DAC's real capacity can exceed the library's default (1799) - grow the
+                // estimate from observed fullness so the chunk sizing never throttles early.
+                if (_bufferFullness > capacity)
+                    capacity = _bufferFullness;
+
+                var room = capacity - _bufferFullness;
+
                 // In-place playback recovery: after a halt the engine sits idle while the buffer
                 // stays full. Prepare() discards the stuck queue; the chunk sends then re-run the
-                // library's own p→d→b session and playback resumes.
+                // library's own p→d→b session and playback resumes. Gated on a FULL buffer: while
+                // there is room, our own chunk sends re-prepare on the fly, and a recovery here
+                // would fight the streaming and reset playback every couple of seconds.
                 if (!_isPlaying
+                    && room < MinChunkPoints
                     && DateTime.UtcNow - _lastPlayingUtc > TimeSpan.FromMilliseconds(PlaybackStallDelayMs)
                     && DateTime.UtcNow - lastRecoverUtc > TimeSpan.FromMilliseconds(RebeginMinIntervalMs))
                 {
@@ -558,7 +572,6 @@ public sealed class LaserOutputStream : IDisposable
 
                 // Chunked streaming: push exactly as many points as the DAC reports room for,
                 // in one data command each - the socket lock is held only for milliseconds.
-                var room = capacity - _bufferFullness;
                 if (room < MinChunkPoints)
                 {
                     PollDac(dac, ref lastPingUtc, ref pingFailures);
@@ -1056,10 +1069,12 @@ public sealed class LaserOutputStream : IDisposable
 
             while (!token.IsCancellationRequested && !_disposed)
             {
-                // Master off: settled blanking - keep sending a zero-color copy of the last
-                // frame so the beam is off while the geometry keeps scanning; a silent sender
-                // leaves receivers blanking on their own timeout with the scanners parked.
-                if (!LaserMasterEnable.Enabled)
+                // Master off: settled blanking. The blanked copy of the last frame must keep
+                // being SENT - receivers render whatever arrived last, so going silent leaves
+                // the last lit frame up until their own timeout blanks it. The pick below
+                // ignores queued frames while the master is off and zeroes the geometry.
+                var masterOff = !LaserMasterEnable.Enabled;
+                if (masterOff)
                 {
                     _pointQueue.Clear();
                     if (_lastFrame is { Length: > 0 } && !_masterBlankApplied)
@@ -1067,33 +1082,38 @@ public sealed class LaserOutputStream : IDisposable
                         _lastFrame = BlankFrameCopy(_lastFrame);
                         _masterBlankApplied = true;
                     }
-
-                    try { await Task.Delay(15, token); }
-                    catch (OperationCanceledException) { return; }
-                    continue;
+                }
+                else
+                {
+                    _masterBlankApplied = false;
                 }
 
-                _masterBlankApplied = false;
-
                 LaserPoint[]? frame = null;
-                if (_pointQueue.TryDequeue(out var points) && points.Length > 0)
+                if (!masterOff && _pointQueue.TryDequeue(out var points) && points.Length > 0)
                 {
                     frame = points;
                 }
                 else if (_lastFrame is { Length: > 0 })
                 {
-                    // Frame watchdog: a stalled driver must not leave the last lit frame frozen
-                    // on the receiver. Once the grace period expires, keep looping the geometry
-                    // but with the beam blanked.
-                    var watchdogBlank = WatchdogElapsed(_lastEnqueueTimestamp);
-                    if (watchdogBlank && !_watchdogBlanked)
+                    if (masterOff)
                     {
-                        _watchdogBlanked = true;
-                        Log.Warning("PONK stream: frame watchdog - no new frames, blanking output");
-                        SetStatus("Frame watchdog - no new frames, output blanked", IStatusProvider.StatusLevel.Warning);
+                        frame = _lastFrame;
                     }
+                    else
+                    {
+                        // Frame watchdog: a stalled driver must not leave the last lit frame frozen
+                        // on the receiver. Once the grace period expires, keep looping the geometry
+                        // but with the beam blanked.
+                        var watchdogBlank = WatchdogElapsed(_lastEnqueueTimestamp);
+                        if (watchdogBlank && !_watchdogBlanked)
+                        {
+                            _watchdogBlanked = true;
+                            Log.Warning("PONK stream: frame watchdog - no new frames, blanking output");
+                            SetStatus("Frame watchdog - no new frames, output blanked", IStatusProvider.StatusLevel.Warning);
+                        }
 
-                    frame = watchdogBlank ? BlankFrameCopy(_lastFrame) : _lastFrame;
+                        frame = watchdogBlank ? BlankFrameCopy(_lastFrame) : _lastFrame;
+                    }
                 }
 
                 if (frame == null)
