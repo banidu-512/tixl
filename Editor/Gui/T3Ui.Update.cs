@@ -33,6 +33,7 @@ public static partial class T3Ui
     {
         Profiling.KeepFrameData();
         App.DebugProtocol.DebugServer.ProcessMainThreadQueue();
+        Collab.CollabManager.Instance.Update();
         //ImGui.PushStyleColor(ImGuiCol.Text, UiColors.Text.Rgba);
         DragAndDropHandling.Update();
         MagGraph.Ui.DropHandling.DrawDragIndicator();

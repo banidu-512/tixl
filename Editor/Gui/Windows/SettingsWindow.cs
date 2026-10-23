@@ -30,6 +30,7 @@ internal sealed partial class SettingsWindow : Window
         Interface,
         Theme,
         Projects,
+        Collaboration,
         Audio,
         Midi,
         SpaceMouse,
@@ -316,6 +317,11 @@ internal sealed partial class SettingsWindow : Window
                     FormInputs.AddVerticalSpace();
 
                     ColorThemeEditor.DrawEditor();
+                    break;
+
+                case Categories.Collaboration:
+                    FormInputs.AddVerticalSpace();
+                    DrawCollabPanel(ref changed);
                     break;
 
                 case Categories.Projects:
@@ -631,6 +637,7 @@ internal sealed partial class SettingsWindow : Window
                                                                         Categories.Interface  => "User Interface",
                                                                         Categories.Theme      => "Color Theme",
                                                                         Categories.Projects   => "Project specific settings",
+                                                                        Categories.Collaboration => "Collaboration",
                                                                         Categories.Audio      => "Audio System",
                                                                         Categories.Midi       => "Midi & OSC",
                                                                         Categories.SpaceMouse => "Space Mouse",
