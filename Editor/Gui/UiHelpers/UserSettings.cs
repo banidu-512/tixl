@@ -215,6 +215,23 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public string CollabDiscordUserName = "";
         public string CollabDiscordUserAvatar = "";
 
+        // Boygrouping (show distribution to render nodes)
+        public string BoygroupClientName = "";
+        public int BoygroupPort = 44720;
+        public bool BoygroupAutoJoin = true;
+        public bool BoygroupDeployMirror = false;
+        public List<string> BoygroupGroups = ["Main"];
+        public string BoygroupLastServer = "";
+        public string BoygroupLastGroup = "";
+
+        // Show failover (active/standby output arbitration)
+        public bool FailoverEnabled = false;
+        public string FailoverShowId = "tixl-show";
+        public int FailoverPriority = 100;
+        public int FailoverHeartbeatMs = 500;
+        public int FailoverTimeoutFactor = 3;
+        public bool FailoverPreempt = true;
+
         public float GizmoSize = 100;
 
 

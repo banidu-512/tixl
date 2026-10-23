@@ -464,6 +464,23 @@ internal static class SetupParameterView
         if (FormInputs.AddCheckBox("Send", ref send, "Pause presenting without dropping the display binding."))
             SetupUndo.RunUndoable("Toggle send", setup, () => output.IsSending = send);
 
+        // Show distribution: which boygroup node presents this output. Empty = every machine (the
+        // classic behavior), so single-machine setups need none of this.
+        var labels = new List<string> { "(all machines)", Environment.MachineName };
+        foreach (var client in Show.BoygroupManager.Instance.Clients)
+        {
+            if (!string.IsNullOrEmpty(client.Name) && !labels.Contains(client.Name))
+                labels.Add(client.Name);
+        }
+
+        var selectedLabel = string.IsNullOrEmpty(output.MachineName) ? labels[0] : output.MachineName;
+        if (FormInputs.AddDropdown(ref selectedLabel, labels, "Render on machine",
+                                   "In a boygrouped show only the chosen node presents this output. '(all machines)' keeps the default behavior."))
+        {
+            var value = labels.IndexOf(selectedLabel) > 0 ? selectedLabel : string.Empty;
+            SetupUndo.RunUndoable("Assign output machine", setup, () => output.MachineName = value);
+        }
+
         // The canvas every route onto this output is measured in, and what its content is asked to render at:
         // an unset resolution upstream (a RenderTarget at 0×0) resolves to this, so it is the one place the
         // pixel size of a projector or a stream is decided.

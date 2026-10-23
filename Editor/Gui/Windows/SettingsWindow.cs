@@ -31,6 +31,8 @@ internal sealed partial class SettingsWindow : Window
         Theme,
         Projects,
         Collaboration,
+        Boygrouping,
+        Failover,
         Audio,
         Midi,
         SpaceMouse,
@@ -318,6 +320,16 @@ internal sealed partial class SettingsWindow : Window
                     DrawCollabPanel(ref changed);
                     break;
 
+                case Categories.Boygrouping:
+                    FormInputs.AddVerticalSpace();
+                    DrawBoygroupPanel(ref changed);
+                    break;
+
+                case Categories.Failover:
+                    FormInputs.AddVerticalSpace();
+                    DrawFailoverPanel(ref changed);
+                    break;
+
                 case Categories.Projects:
                 {
                     CustomComponents
@@ -602,6 +614,8 @@ internal sealed partial class SettingsWindow : Window
                                                                         Categories.Theme      => "Color Theme",
                                                                         Categories.Projects   => "Project specific settings",
                                                                         Categories.Collaboration => "Collaboration",
+                                                                        Categories.Boygrouping => "Boygrouping",
+                                                                        Categories.Failover   => "Show Failover",
                                                                         Categories.Audio      => "Audio System",
                                                                         Categories.Midi       => "Midi",
                                                                         Categories.SpaceMouse => "Space Mouse",
