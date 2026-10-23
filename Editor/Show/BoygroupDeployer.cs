@@ -20,6 +20,18 @@ internal static class BoygroupDeployer
     private static readonly string[] ExcludedDirectories = [".temp", ".git", "backup", "Backups"];
     private static readonly string[] ExcludedFiles = ["outputs.machine.json", "userSettings.json"];
 
+    /// <summary>
+    /// Path comparison for inventories: Windows filesystems are case-insensitive, Linux/macOS are
+    /// case-sensitive. Deployed files are written with the server's exact casing, so ordinal
+    /// comparison stays consistent on every platform (a client whose pre-existing file only differs
+    /// by casing gets it re-sent once and normalized).
+    /// </summary>
+    public static StringComparer PathComparer { get; } =
+        OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+
+    private static bool SamePathPrefix(string fullPath, string root) =>
+        fullPath.StartsWith(root, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+
     public sealed class InventoryEntry
     {
         public string RelativePath = "";
@@ -30,7 +42,7 @@ internal static class BoygroupDeployer
     /// <summary>relPath → (size, mtime). Fast compare, same quick-check model as rsync.</summary>
     public static Dictionary<string, InventoryEntry> BuildInventory(string projectFolder)
     {
-        var inventory = new Dictionary<string, InventoryEntry>(StringComparer.OrdinalIgnoreCase);
+        var inventory = new Dictionary<string, InventoryEntry>(PathComparer);
         if (string.IsNullOrEmpty(projectFolder) || !Directory.Exists(projectFolder))
             return inventory;
 
@@ -65,7 +77,7 @@ internal static class BoygroupDeployer
         while (stack.Count > 0)
         {
             var directory = stack.Pop();
-            var directoryName = Path.GetFileName(directory.TrimEnd(Path.DirectorySeparatorChar));
+            var directoryName = Path.GetFileName(directory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
             if (directory != projectFolder &&
                 (ExcludedDirectories.Contains(directoryName, StringComparer.OrdinalIgnoreCase) || directoryName is "obj" or "bin"))
                 continue;
@@ -80,6 +92,18 @@ internal static class BoygroupDeployer
 
             foreach (var subDirectory in Directory.EnumerateDirectories(directory))
             {
+                // Skip symlinked directories (reparse points): Unix projects can symlink into the
+                // parent tree, which would loop the walk forever.
+                try
+                {
+                    if (File.GetAttributes(subDirectory).HasFlag(FileAttributes.ReparsePoint))
+                        continue;
+                }
+                catch (IOException)
+                {
+                    continue;
+                }
+
                 stack.Push(subDirectory);
             }
         }
@@ -106,7 +130,7 @@ internal static class BoygroupDeployer
 
     public static Dictionary<string, InventoryEntry> ParseInventory(JObject message)
     {
-        var inventory = new Dictionary<string, InventoryEntry>(StringComparer.OrdinalIgnoreCase);
+        var inventory = new Dictionary<string, InventoryEntry>(PathComparer);
         if (message["files"] is not JObject files)
             return inventory;
 
@@ -163,6 +187,7 @@ internal static class BoygroupDeployer
     {
         public readonly string RelativePath;
         public readonly long TotalBytes;
+        public readonly long LastWriteTicks;
         public long BytesSent;
         public bool Completed;
         public string? Error;
@@ -170,12 +195,16 @@ internal static class BoygroupDeployer
         private FileStream? _fileStream;
         private byte[] _buffer = new byte[ChunkSize];
         private SHA256 _sha = SHA256.Create();
-        private readonly long _expectedSize;        public FileSender(string projectFolder, string relativePath)
+
+        public FileSender(string projectFolder, string relativePath)
         {
             RelativePath = relativePath;
             var fullPath = SafeProjectPath(projectFolder, relativePath);
-            _expectedSize = new FileInfo(fullPath).Length;
-            TotalBytes = _expectedSize;
+            var info = new FileInfo(fullPath);
+            TotalBytes = info.Length;
+            // Shipped with the transfer so the client restores it: the inventory diff compares
+            // timestamps, and without this every deploy would re-send every file forever.
+            LastWriteTicks = info.LastWriteTimeUtc.Ticks;
             _fileStream = File.OpenRead(fullPath);
         }
 
@@ -198,6 +227,7 @@ internal static class BoygroupDeployer
                                ["t"] = "fileEnd",
                                ["path"] = RelativePath,
                                ["hash"] = hash,
+                               ["m"] = LastWriteTicks,
                            };
             }
 
@@ -294,6 +324,13 @@ internal static class BoygroupDeployer
                 }
 
                 File.Move(_tempPath!, fullPath);
+
+                // Restore the server's write time so the next inventory diff sees the file as equal
+                // (SetLastWriteTimeUtc is supported on all platforms).
+                var masterTicks = message["m"]?.Value<long>() ?? 0;
+                if (masterTicks != 0)
+                    File.SetLastWriteTimeUtc(fullPath, new DateTime(masterTicks, DateTimeKind.Utc));
+
                 return null;
             }
             catch (Exception e)
@@ -343,7 +380,7 @@ internal static class BoygroupDeployer
         var cleaned = relativePath.Replace('\\', '/');
         var root = Path.GetFullPath(projectFolder);
         var fullPath = Path.GetFullPath(Path.Combine(root, cleaned));
-        if (!fullPath.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+        if (!SamePathPrefix(fullPath, root))
             throw new IOException($"Refusing path outside project: {relativePath}");
 
         return fullPath;
