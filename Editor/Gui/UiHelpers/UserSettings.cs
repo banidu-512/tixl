@@ -11,7 +11,6 @@ using T3.Editor.Gui.Windows.RenderExport;
 using T3.Editor.Gui.Windows.TimeLine;
 
 using T3.Editor.Gui.Windows.OutputSetup;
-using T3.Editor.Collab;
 
 namespace T3.Editor.Gui.UiHelpers;
 
@@ -92,6 +91,18 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public bool EnableUsbProjectDetection = true;
         public bool ReopenLastProjectOnStartup = true;
 
+        /// <summary>Projects switched away from stay loaded for a quick return; older ones are unloaded.</summary>
+        public int KeepLoadedProjectCount = 3;
+
+        /// <summary>
+        /// Share of the GPU memory budget the driver grants TiXL. Above it, render targets nothing shows are
+        /// released; below it, nothing is, so a show that fits never pays for a rebuild.
+        /// </summary>
+        public int GpuMemoryLimitPercent = 90;
+
+        /// <summary>0 keeps them for as long as their project is loaded, which avoids rebuild hitches.</summary>
+        public int ReleaseUnusedRenderTargetsAfterSeconds = 0;
+
         /// <summary>Folder of the project that was open when the editor closed; empty if it closed in the project hub.</summary>
         public string LastOpenProjectFolder = string.Empty;
 
@@ -139,13 +150,11 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         /** Frames the loop may run ahead of the display: 1 for the lowest input latency, 2 to absorb late frames. */
         public int FrameLatency = 1;
 
-        /** Windows' implementation of mirroring a display is extremely slow and can
-        * take up to 50% of the GPU time. Enabling this work around will copy the Main window
-        * SwapChain buffer into a texture that is used for the 2nd viewer window.
-        */
-        public bool MirrorUiOnSecondView = false;
-
         public bool EnableKeyboardShortCuts = true;
+
+        /** Whether a connected game controller drives operators like [Gamepad] or the editor (its camera). */
+        [JsonConverter(typeof(StringEnumConverter))]
+        public InputDeviceUsages GamepadUsage = InputDeviceUsages.Operators;
 
         public GraphStyles GraphStyle = GraphStyles.Magnetic;
 
@@ -166,6 +175,9 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
 
         /// <summary>Opacity of a surface's content previewed over its photo — on the traced quad and on its Board card.</summary>
         public float OutputSetupContentPreviewOpacity = 0.65f;
+
+        /// <summary>Opacity of an output's picture carried back through a corner pin onto a surface's Board card.</summary>
+        public float OutputSetupProjectionPreviewOpacity = 0f;
 
         /// <summary>Whether the output setup's rect fields read in pixels of what they sit on, or as ratios of it.
         /// The values are stored as ratios either way; this is only how they are shown and typed.</summary>
@@ -223,103 +235,25 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public bool EnableAutoBackup = true;
         public bool MinimalBackup = true;
 
-        // Networking (shared by collaboration, boygrouping and failover)
-        /// <summary>Adapter name to bind sessions, discovery and failover heartbeats to.
-        /// Empty = automatic (all interfaces).</summary>
-        public string NetworkInterface = "";
-
-        // Collaboration
-        /// <summary>Master switch: when off, no session is hosted or joined and nothing is discovered.</summary>
-        public bool CollabEnabled = true;
-
-        /// <summary>Persistent participant id; also seeds the per-user accent color.</summary>
-        public string CollabUserId = "";
-
-        /// <summary>The cursor color this user picked, as 0xRRGGBB. 0 uses the color derived from the user id.</summary>
-        public int CollabCursorColor = 0;
-
-        public int CollabPort = CollabProtocol.DefaultTcpPort;
-        public bool CollabLanDiscovery = true;
+        /// <summary>Shared password for boygroup and failover handshakes. Edited in the Boygrouping settings tab.</summary>
         public string CollabPassword = "";
-
-        /// <summary>host:port of the last joined collab session — auto-rejoined on launch, which is
-        /// what brings a client back after a project download restarted the editor.</summary>
-        public string CollabLastSessionHost = "";
-
-        /// <summary>Relay address ("host:port") for online sessions, persisted so hosting and joining
-        /// use the same relay. Empty means a relay on this machine.</summary>
-        public string CollabRelayAddress = "";
-
-        /// <summary>Relay address of the last joined relay session, for auto-rejoin after a restart.</summary>
-        public string CollabLastRelayHost = "";
-
-        /// <summary>Room code of the last joined relay session, for auto-rejoin after a restart.</summary>
-        public string CollabLastRelayRoom = "";
-
-        /// <summary>
-        /// Comma-separated STUN/TURN URLs for the peer-to-peer data path of relay sessions. Empty
-        /// uses a public STUN server; peers that cannot connect fall back to the relay automatically.
-        /// </summary>
-        public string CollabWebRtcIceServers = "";
-
-        /// <summary>When false, relay sessions stay on the relay even if a direct path is possible.</summary>
-        public bool CollabWebRtcEnabled = true;
-
-        /// <summary>Whether a hosting member streams its rendered preview to the participants.</summary>
-        public bool CollabSharePreview = true;
-
-        /// <summary>
-        /// The project hosted when starting a session. Empty shares the focused project; a name opens
-        /// (and focuses) that project first, so a host can share a project without switching to it.
-        /// </summary>
-        public string CollabShareProject = "";
-
-        public string CollabDiscordClientId = "";
-        public string CollabDiscordClientSecret = "";
-        public string CollabDiscordUserId = "";
-        public string CollabDiscordUserName = "";
-        public string CollabDiscordUserAvatar = "";
 
         // Boygrouping (show distribution to render nodes)
         public string BoygroupClientName = "";
-
-        /// <summary>Whether boygrouping starts with the editor (and stays available for discovery).</summary>
-        public bool BoygroupEnabled = false;
-
-        /// <summary>Master shares its show; Slave waits to be added by a master on the network.</summary>
-        public Show.BoygroupRole BoygroupRole = Show.BoygroupRole.Master;
-
         public int BoygroupPort = 44720;
-
-        /// <summary>
-        /// Render nodes a master has added, by node name. Remembered so a restart reconnects them as
-        /// soon as they are discovered instead of starting with an empty show.
-        /// </summary>
-        public List<string> BoygroupAddedNodes = [];
-
-        /// <summary>Per-node presentation delay in milliseconds, set by the master (positive = later).</summary>
-        public Dictionary<string, int> BoygroupNodeDelays = [];
-
-        /// <summary>The master a slave last joined, by advertised name. A slave reconnects to it as
-        /// soon as it reappears on the network.</summary>
-        public string BoygroupMasterName = "";
+        public bool BoygroupAutoJoin = true;
+        public bool BoygroupDeployMirror = false;
+        public List<string> BoygroupGroups = ["Main"];
+        public string BoygroupLastServer = "";
+        public string BoygroupLastGroup = "";
 
         // Show failover (active/standby output arbitration)
         public bool FailoverEnabled = false;
         public string FailoverShowId = "tixl-show";
         public int FailoverPriority = 100;
-        public int FailoverHeartbeatMs = 100;
+        public int FailoverHeartbeatMs = 500;
         public int FailoverTimeoutFactor = 3;
         public bool FailoverPreempt = true;
-
-        /// <summary>How long this node may go without rendering a frame before it steps down as broken.</summary>
-        public int FailoverStallMs = 300;
-
-        /// <summary>Fence the outputs when the standby stops acknowledging: no two masters on a partition.</summary>
-        public bool FailoverFencing = true;
-
-        /// <summary>Lets the other TiXL clients of a collab, boygroup or failover session open this machine's cameras.</summary>
-        public bool ShareCamerasInSessions = true;
 
         public float GizmoSize = 100;
 
@@ -337,9 +271,21 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public float TimeRasterDensity = 1f;
 
         // Space mouse
-        public float SpaceMouseRotationSpeedFactor = 1f;
-        public float SpaceMouseMoveSpeedFactor = 1f;
-        public float SpaceMouseDamping = 0.5f;
+        public float SpaceMouseRotationSpeedFactor = 0.3f;
+        public float SpaceMouseMoveSpeedFactor = 0.2f;
+        public float SpaceMouseDamping = 0.95f;
+
+        /** Whether the SpaceMouse flies the camera (Editor) or drives operators like [SpaceMouse]. */
+        [JsonConverter(typeof(StringEnumConverter))]
+        public InputDeviceUsages SpaceMouseUsage = InputDeviceUsages.Editor;
+
+        // Game controller camera
+        /** Seconds the camera takes to follow the sticks; longer is calmer, e.g. for live demos. */
+        public float GamepadCameraSmoothing = 0.4f;
+
+        public float GamepadCameraMoveSpeed = 1f;
+        public float GamepadCameraLookSpeed = 1f;
+        public bool GamepadCameraInvertLook;
 
         // Migration-only: these load from existing userSettings.json to preserve
         // the user's last render path counters. Not written back.
@@ -414,6 +360,14 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
     {
         Legacy,
         Magnetic,
+    }
+
+    /** Who an input device drives; Editor means the camera of the output. Stored by name. */
+    public enum InputDeviceUsages
+    {
+        Operators,
+        Editor,
+        Off,
     }
 
     internal static bool IsUserNameDefined()

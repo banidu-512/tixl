@@ -4,7 +4,6 @@ using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json.Linq;
-using T3.Core.Utils;
 using T3.Editor.Collab;
 
 namespace T3.Editor.Show;
@@ -17,67 +16,32 @@ namespace T3.Editor.Show;
 /// </summary>
 internal abstract class BoygroupTransport : CollabTransport
 {
-    /// <summary>
-    /// Grace before a silent peer is declared gone. Both sides exchange heartbeats at 1 Hz, so a
-    /// four second silence is a real outage; waiting for the 10 s collaboration default would let
-    /// a slave keep dead-reckoning a show that no longer exists.
-    /// </summary>
-    public const int PeerTimeoutMs = 4000;
 }
 
 /// <summary>The show master: accepts clients and announces groups via LAN discovery.</summary>
 internal sealed class BoygroupServerTransport : BoygroupTransport
 {
-    /// <summary>Each accepted connection costs a frame buffer; a LAN peer must not be able to exhaust them.</summary>
-    private const int MaxClients = 64;
-
-    public override IReadOnlyList<CollabPeerConnection> Peers => _peerSnapshot;
+    public override IReadOnlyList<CollabPeerConnection> Peers => _peers;
 
     private readonly List<CollabPeerConnection> _peers = [];
-
-    /** Copy of _peers republished on every change, so UI and network readers never see the mutable list. */
-    private volatile CollabPeerConnection[] _peerSnapshot = [];
-
     private readonly TcpListener _listener;
     private readonly CancellationTokenSource _cancellation = new();
     private int _nextPeerId = 1;
 
     public LanDiscoveryResponder DiscoveryResponder { get; }
 
-    public BoygroupServerTransport(int tcpPort, string[] groups, string? interfaceName = null)
+    public BoygroupServerTransport(int tcpPort, string[] groups)
     {
-        // Pinned adapter (Settings → Boygrouping → Network); empty keeps the all-interface bind.
-        var bindAddress = LanInterfaces.ResolveAddress(interfaceName) ?? IPAddress.Any;
-        _listener = new TcpListener(bindAddress, tcpPort);
+        _listener = new TcpListener(IPAddress.Any, tcpPort);
         _listener.Start();
-        try
-        {
-            DiscoveryResponder = new LanDiscoveryResponder(tcpPort + LanDiscoveryResponder.DiscoveryPortOffset,
-                                                           () => new JObject
-                                                                     {
-                                                                         ["boygroup"] = true,
-                                                                         ["role"] = "master",
-                                                                         ["name"] = BoygroupManager.LocalNodeName,
-                                                                         ["server"] = Environment.MachineName,
-                                                                         ["port"] = tcpPort,
-                                                                         ["groups"] = new JArray(groups),
-                                                                     });
-        }
-        catch
-        {
-            // Release the listener, or a retry cannot bind the port again in this process.
-            try
-            {
-                _listener.Stop();
-            }
-            catch
-            {
-                // Listener already stopped.
-            }
-
-            throw;
-        }
-
+        DiscoveryResponder = new LanDiscoveryResponder(tcpPort + LanDiscoveryResponder.DiscoveryPortOffset,
+                                                       () => new JObject
+                                                                 {
+                                                                     ["boygroup"] = true,
+                                                                     ["server"] = Environment.MachineName,
+                                                                     ["port"] = tcpPort,
+                                                                     ["groups"] = new JArray(groups),
+                                                                 });
         _ = Task.Run(() => AcceptLoopAsync(_cancellation.Token));
         Log.Info($"Boygroup: server listening on port {tcpPort}");
     }
@@ -92,7 +56,6 @@ internal sealed class BoygroupServerTransport : BoygroupTransport
         lock (_peers)
         {
             _peers.Remove(peer);
-            _peerSnapshot = _peers.ToArray();
         }
     }
 
@@ -115,34 +78,11 @@ internal sealed class BoygroupServerTransport : BoygroupTransport
                 continue;
             }
 
-            if (_peerSnapshot.Count(p => !p.SessionClosed) >= MaxClients)
-            {
-                Log.Warning("Boygroup: refused connection, client limit reached");
-                client.Close();
-                continue;
-            }
-
             client.NoDelay = true;
-            CollabPeerConnection peer;
-            try
-            {
-                peer = new CollabPeerConnection(client, Interlocked.Increment(ref _nextPeerId))
-                           {
-                               TimeoutMs = PeerTimeoutMs,
-                           };
-            }
-            catch (Exception e) when (e is SocketException or ObjectDisposedException or InvalidOperationException)
-            {
-                // The client reset between accept and setup. One bad connection must not end
-                // the accept loop and leave the show master unreachable.
-                client.Close();
-                continue;
-            }
-
+            var peer = new CollabPeerConnection(client, Interlocked.Increment(ref _nextPeerId));
             lock (_peers)
             {
                 _peers.Add(peer);
-                _peerSnapshot = _peers.ToArray();
             }
 
             _ = Task.Run(() => ReadLoop(peer), CancellationToken.None);
@@ -159,7 +99,6 @@ internal sealed class BoygroupServerTransport : BoygroupTransport
                 peer.Close();
 
             _peers.Clear();
-            _peerSnapshot = [];
         }
 
         try
@@ -184,37 +123,26 @@ internal sealed class BoygroupClientTransport : BoygroupTransport
     public CollabPeerConnection ServerPeer => _serverPeer;
 
     private readonly CollabPeerConnection _serverPeer;
-
-    /** Cached so the per-frame Peers access does not allocate a one-element array every time. */
-    private readonly IReadOnlyList<CollabPeerConnection> _peerList;
     private readonly TcpClient _client;
     private readonly CancellationTokenSource _cancellation = new();
 
     private BoygroupClientTransport(TcpClient client)
     {
         _client = client;
-        // TcpClient overload: bounds UI-thread writes with a send timeout, like the collab client.
-        _serverPeer = new CollabPeerConnection(client, 0)
-                          {
-                              TimeoutMs = PeerTimeoutMs,
-                          };
-        _peerList = [_serverPeer];
+        _serverPeer = new CollabPeerConnection(client.GetStream(), 0, null);
     }
 
     public static BoygroupClientTransport Connect(IPEndPoint endPoint)
     {
-        var client = CollabProtocol.ConnectWithTimeout(endPoint);
+        var client = new TcpClient();
+        client.Connect(endPoint);
         client.NoDelay = true;
-        return new BoygroupClientTransport(client);
+        var transport = new BoygroupClientTransport(client);
+        _ = Task.Run(() => transport.ReadLoop(transport._serverPeer), CancellationToken.None);
+        return transport;
     }
 
-    /// <summary>
-    /// Starts the reader. Call it after subscribing to <see cref="CollabTransport.PeerDisconnected"/>,
-    /// or a link that dies during the connect hand-off reports nothing and the session hangs.
-    /// </summary>
-    public void StartReading() => _ = Task.Run(() => ReadLoop(_serverPeer), CancellationToken.None);
-
-    public override IReadOnlyList<CollabPeerConnection> Peers => _peerList;
+    public override IReadOnlyList<CollabPeerConnection> Peers => [_serverPeer];
 
     public override void SendToPeer(CollabPeerConnection peer, CollabProtocol.FrameType type, ReadOnlySpan<byte> payload)
     {
