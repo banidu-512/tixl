@@ -46,6 +46,7 @@ public sealed class LaserOutputStream : IDisposable
                        {
                            LaserPlug.Kinds.EtherDream => new LaserOutputStream(new EtherDreamStream(plug)),
                            LaserPlug.Kinds.Ponk => new LaserOutputStream(new PonkStream(plug)),
+                           LaserPlug.Kinds.Citp => new LaserOutputStream(new CitpStream(plug)),
                            _ => null,
                        };
         }
@@ -1265,6 +1266,768 @@ public sealed class LaserOutputStream : IDisposable
         private int _consecutiveErrors;
         private long _lastEnqueueTimestamp;
         private volatile bool _watchdogBlanked;
+    }
+    #endregion
+
+    #region CITP stream - Capture/Depence laser feed over CITP/CAEX (lifted from the former [CITPLaser] operator)
+
+    /// <summary>
+    /// Feeds a CITP laser consumer (e.g. Depence/Capture show previz): a TCP control connection
+    /// (PINF handshake, LaserFeedList, receiver-driven feed start/stop and fps) plus CAEX
+    /// LaserFeedFrame datagrams to the 224.0.0.180:4809 multicast group. The receiver is found by
+    /// PLoc multicast discovery unless host and port are both set on the plug (direct connect).
+    /// Points travel as 12-bit unsigned XY + RGB565; the conversion from ILDA 16-bit applies the
+    /// plug's brightness ceiling and channel order as the final audit, like every transport here.
+    /// </summary>
+    private sealed class CitpStream : IStream
+    {
+        private const uint CitpCookie = 0x43495450; // "CITP"
+        private const uint PinFCookie = 0x50494E46; // "PINF"
+        private const uint PLocCookie = 0x504C6F63; // "PLoc"
+        private const uint PnamCookie = 0x504E616D; // "PNam"
+        private const uint PtypCookie = 0x50547970; // "PTyp"
+        private const uint CaexCookie = 0x43414558; // "CAEX"
+
+        private enum CaexContentType : uint
+        {
+            GetLaserFeedList = 0x00030100,
+            LaserFeedList = 0x00030101,
+            LaserFeedControl = 0x00030102,
+            LaserFeedFrame = 0x00030200,
+            EnterShow = 0x00020100,
+        }
+
+        // Verified working with Capture: 224.0.0.180:4809
+        private static readonly IPAddress MulticastAddress = IPAddress.Parse("224.0.0.180");
+        private const int MulticastPort = 4809;
+        private const int DefaultCapturePort = 51245;
+
+        /// <summary>A LaserFeedFrame travels as a single UDP datagram, capped to stay inside the IPv4
+        /// datagram limit (~65,507 bytes ≈ 13,000 points) — a larger feed would fail every send with
+        /// WSAEMSGSIZE and overflow the ushort point count.</summary>
+        private const int MaxPointsPerDatagram = 12000;
+
+        private const int MaxQueuedFrames = 5;
+
+        public CitpStream(LaserPlug plug)
+        {
+            var device = plug.CitpSettings;
+            _feedName = string.IsNullOrWhiteSpace(device.FeedName) ? "Laser Feed" : device.FeedName.Trim();
+            _sourceKey = device.SourceKey != 0 ? device.SourceKey : (uint)Random.Shared.Next();
+            _maxBrightness = Math.Clamp(device.MaxBrightness, 0f, 1f);
+            _swapColorChannels = device.SwapColorChannels;
+            _directHost = plug.Address ?? string.Empty;
+            _directPort = plug.Port > 0 ? plug.Port : 0;
+            _localAddress = plug.LocalAddress ?? string.Empty;
+
+            StartConnection();
+        }
+
+        private readonly string _feedName;
+        private readonly uint _sourceKey;
+        private readonly float _maxBrightness;
+        private readonly bool _swapColorChannels;
+        private readonly string _directHost;
+        private readonly int _directPort;
+        private readonly string _localAddress;
+
+        private readonly object _connectionLock = new();
+        private readonly ConcurrentQueue<LaserPoint[]> _frameQueue = new();
+
+        private CancellationTokenSource? _cts;
+        private UdpClient? _multicastListener;
+        private TcpClient? _tcpClient;
+        private NetworkStream? _tcpStream;
+        private int _connectInProgress;
+
+        private volatile bool _disposed;
+        private volatile bool _feedActive;
+        private volatile int _requiredFps;
+        private uint _frameSequenceNo;
+        private int _captureTcpPort; // staged before StartConnection; 0 = PLoc discovery
+        private string _captureIp = string.Empty;
+
+        private string _statusMessage = "Disconnected";
+        private IStatusProvider.StatusLevel _statusLevel = IStatusProvider.StatusLevel.Notice;
+
+        public bool IsConnected
+        {
+            get
+            {
+                lock (_connectionLock)
+                    return _tcpClient is { Connected: true };
+            }
+        }
+
+        public IStatusProvider.StatusLevel StatusLevel => _statusLevel;
+        public string StatusMessage => _statusMessage;
+
+        public void SubmitFrame(LaserPoint[] frame)
+        {
+            if (_disposed || !IsConnected || !_feedActive)
+                return;
+
+            var copy = CopyForQueue(frame, _frameQueue, MaxQueuedFrames);
+            if (copy == null)
+                return;
+
+            _frameQueue.Enqueue(copy);
+        }
+
+        private void SetStatus(string message, IStatusProvider.StatusLevel level)
+        {
+            _statusMessage = message;
+            _statusLevel = level;
+        }
+
+        private void StartConnection()
+        {
+            if (_disposed)
+                return;
+
+            var localIp = IPAddress.Any;
+            if (!string.IsNullOrWhiteSpace(_localAddress) && IPAddress.TryParse(_localAddress, out var parsed))
+                localIp = parsed;
+
+            // Host AND port on the plug = direct connect; anything else keeps PLoc discovery.
+            _captureIp = _directHost;
+            _captureTcpPort = string.IsNullOrWhiteSpace(_directHost) || _directPort <= 0 ? 0 : _directPort;
+
+            var cts = new CancellationTokenSource();
+            _cts = cts;
+            _feedActive = false;
+            _requiredFps = 0;
+
+            if (_captureTcpPort > 0)
+            {
+                SetStatus($"Connecting to {_captureIp}:{_captureTcpPort}", IStatusProvider.StatusLevel.Notice);
+                // TcpClient.Connect blocks for seconds when unreachable - never on the caller's thread.
+                _ = Task.Run(ConnectToCapture);
+            }
+            else
+            {
+                // Join the CITP discovery multicast group. Bind 0.0.0.0: membership in the group
+                // (joined per interface below) is what filters by network, not the bind address.
+                try
+                {
+                    _multicastListener = new UdpClient(AddressFamily.InterNetwork);
+                    _multicastListener.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+                    _multicastListener.Client.Bind(new IPEndPoint(IPAddress.Any, MulticastPort));
+                    try
+                    {
+                        _multicastListener.JoinMulticastGroup(MulticastAddress, localIp);
+                    }
+                    catch (SocketException)
+                    {
+                        // Some adapters don't support joining with a specific interface
+                        _multicastListener.JoinMulticastGroup(MulticastAddress);
+                    }
+
+                    _multicastListener.Client.ReceiveTimeout = 5000;
+                    SetStatus($"Listening for Capture on {MulticastAddress}:{MulticastPort}", IStatusProvider.StatusLevel.Notice);
+
+                    var token = cts.Token;
+                    var listener = _multicastListener;
+                    var thread = new Thread(() => UdpReceiveLoop(token, listener))
+                                     {
+                                         IsBackground = true,
+                                         Name = "CITP_UDP_Discovery",
+                                     };
+                    thread.Start();
+                }
+                catch (Exception ex)
+                {
+                    SetStatus($"CITP discovery failed to start: {ex.Message}", IStatusProvider.StatusLevel.Error);
+                }
+            }
+        }
+
+        #region Discovery (PINF/PLoc multicast)
+        private void UdpReceiveLoop(CancellationToken token, UdpClient listener)
+        {
+            var remoteEndPoint = new IPEndPoint(IPAddress.Any, 0);
+            while (!token.IsCancellationRequested)
+            {
+                try
+                {
+                    var bytes = listener.Receive(ref remoteEndPoint);
+                    if (token.IsCancellationRequested || IsConnected)
+                        continue;
+
+                    if (bytes.Length < 16)
+                        continue;
+
+                    if (ReadBigEndianUint(bytes, 0) != CitpCookie)
+                        continue;
+
+                    var remoteIp = remoteEndPoint.Address;
+                    if (remoteIp.IsIPv4MappedToIPv6)
+                        remoteIp = remoteIp.MapToIPv4();
+
+                    // With a local interface selected, prefer discovery packets from its subnet.
+                    if (!IPAddress.TryParse(_localAddress, out var selectedLocal) || IPAddress.IsLoopback(remoteIp) ||
+                        selectedLocal.GetAddressBytes().Length != 4 || remoteIp.GetAddressBytes().Length != 4 ||
+                        selectedLocal.GetAddressBytes()[0] == remoteIp.GetAddressBytes()[0])
+                    {
+                        int pInfOffset = -1;
+                        int pLocOffset = -1;
+                        for (var i = 12; i <= Math.Min(bytes.Length - 4, 24); i += 4)
+                        {
+                            var val = ReadBigEndianUint(bytes, i);
+                            if (val == PinFCookie)
+                                pInfOffset = i;
+                            if (val == PLocCookie)
+                                pLocOffset = i;
+                        }
+
+                        if (pInfOffset != -1)
+                        {
+                            for (var i = pInfOffset + 4; i <= bytes.Length - 8; i++)
+                            {
+                                if (ReadBigEndianUint(bytes, i) == PLocCookie)
+                                {
+                                    TryConnect(remoteIp, i, bytes);
+                                    break;
+                                }
+                            }
+                        }
+                        else if (pLocOffset != -1)
+                        {
+                            TryConnect(remoteIp, pLocOffset, bytes);
+                        }
+                    }
+                }
+                catch (SocketException ex)
+                {
+                    if (ex.SocketErrorCode == SocketError.TimedOut)
+                    {
+                        // No PLoc within the timeout: fall back to a direct localhost Capture.
+                        if (!IsConnected && !token.IsCancellationRequested && _captureTcpPort == 0)
+                        {
+                            _captureIp = "127.0.0.1";
+                            _captureTcpPort = DefaultCapturePort;
+                            ConnectToCapture();
+                        }
+
+                        continue;
+                    }
+
+                    break;
+                }
+                catch (ObjectDisposedException)
+                {
+                    break;
+                }
+                catch
+                {
+                    if (!token.IsCancellationRequested)
+                        Thread.Sleep(100);
+                }
+            }
+        }
+
+        private void TryConnect(IPAddress address, int cookieIndex, byte[] buffer)
+        {
+            if (cookieIndex + 5 >= buffer.Length)
+                return;
+
+            // Little-endian per CITP spec
+            var tcpPort = (ushort)(buffer[cookieIndex + 4] | (buffer[cookieIndex + 5] << 8));
+            if (tcpPort == 0)
+                return;
+
+            lock (_connectionLock)
+            {
+                if (_tcpClient is { Connected: true })
+                    return;
+
+                _captureIp = address.ToString();
+                _captureTcpPort = tcpPort;
+            }
+
+            ConnectToCapture();
+        }
+        #endregion
+
+        #region TCP control connection
+        private void ConnectToCapture()
+        {
+            string targetIp;
+            int targetPort;
+            lock (_connectionLock)
+            {
+                targetIp = _captureIp;
+                targetPort = _captureTcpPort;
+            }
+
+            if (string.IsNullOrEmpty(targetIp) || targetPort == 0)
+                return;
+            if (!IPAddress.TryParse(targetIp, out var ip))
+                return;
+
+            // Discovery and reconnects can reach this at the same moment - only one
+            // attempt may run, or both teardown+reconnect interleave.
+            if (Interlocked.Exchange(ref _connectInProgress, 1) == 1)
+                return;
+
+            try
+            {
+                ConnectToCaptureInner(ip, targetPort);
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _connectInProgress, 0);
+            }
+        }
+
+        private void ConnectToCaptureInner(IPAddress ip, int targetPort)
+        {
+            try
+            {
+                StopTcpConnection();
+
+                var tcpClient = new TcpClient();
+                tcpClient.Connect(ip, targetPort);
+                var tcpStream = tcpClient.GetStream();
+
+                lock (_connectionLock)
+                {
+                    if (_cts == null || _cts.IsCancellationRequested)
+                    {
+                        tcpStream.Close();
+                        tcpClient.Close();
+                        return;
+                    }
+
+                    _tcpClient = tcpClient;
+                    _tcpStream = tcpStream;
+
+                    SetStatus($"Connected to Capture at {ip}:{targetPort}", IStatusProvider.StatusLevel.Success);
+
+                    var token = _cts.Token;
+                    var client = tcpClient;
+                    var stream = tcpStream;
+                    new Thread(() => TcpReceiveLoop(token, client, stream))
+                        {
+                            IsBackground = true,
+                            Name = "CITP_TCP_Receiver",
+                        }
+                        .Start();
+                    new Thread(SendLoop)
+                        {
+                            IsBackground = true,
+                            Name = "CITP_UDP_Sender",
+                        }
+                        .Start();
+                }
+
+                // Handshake first
+                SendPeerName();
+                SendPeerType();
+                SendLaserFeedList();
+            }
+            catch (Exception ex)
+            {
+                SetStatus($"Discovery: {ip}:{targetPort} refused connection ({ex.Message})", IStatusProvider.StatusLevel.Notice);
+                StopTcpConnection();
+            }
+        }
+
+        private void StopTcpConnection()
+        {
+            // Join-free teardown: the loops hold local references and exit the moment their
+            // socket is closed / token cancelled; joining here could stall for seconds on a
+            // wedged socket.
+            lock (_connectionLock)
+            {
+                try { _tcpStream?.Close(); } catch { /* ignore */ }
+                _tcpStream = null;
+
+                try { _tcpClient?.Close(); } catch { /* ignore */ }
+                _tcpClient = null;
+
+                _feedActive = false;
+                _requiredFps = 0;
+                _frameQueue.Clear();
+
+                if (_cts is { IsCancellationRequested: false })
+                    SetStatus($"Listening for Capture on {MulticastAddress}:{MulticastPort}", IStatusProvider.StatusLevel.Notice);
+            }
+        }
+
+        private void TcpReceiveLoop(CancellationToken token, TcpClient client, NetworkStream stream)
+        {
+            var buffer = new byte[4096];
+            while (!token.IsCancellationRequested && client.Connected)
+            {
+                try
+                {
+                    var bytesRead = stream.Read(buffer, 0, buffer.Length);
+                    if (bytesRead == 0)
+                    {
+                        StopTcpConnection();
+                        break;
+                    }
+
+                    if (bytesRead < 24)
+                        continue; // 20-byte CITP header + 4-byte layer content type minimum
+
+                    if (ReadBigEndianUint(buffer, 0) != CitpCookie)
+                        continue;
+
+                    var contentType = ReadBigEndianUint(buffer, 16); // offset 16 in the 20-byte CITP header
+                    if (contentType != CaexCookie)
+                        continue;
+
+                    var caexType = ReadLittleEndianUint(buffer, 20); // CAEX ContentCode at offset 20
+                    switch ((CaexContentType)caexType)
+                    {
+                        case CaexContentType.GetLaserFeedList:
+                            SendLaserFeedList();
+                            break;
+                        case CaexContentType.LaserFeedControl:
+                            HandleLaserFeedControl(buffer, bytesRead);
+                            break;
+                        case CaexContentType.EnterShow:
+                            SendEnterShow();
+                            break;
+                    }
+                }
+                catch (Exception ex) when (ex is IOException or ObjectDisposedException)
+                {
+                    StopTcpConnection();
+                    break;
+                }
+                catch
+                {
+                    if (!token.IsCancellationRequested)
+                        StopTcpConnection();
+                    break;
+                }
+            }
+        }
+        #endregion
+
+        #region CAEX message handlers
+        private void SendEnterShow()
+        {
+            NetworkStream? stream;
+            lock (_connectionLock) stream = _tcpStream;
+            if (stream == null)
+                return;
+
+            try
+            {
+                using var ms = new MemoryStream();
+                using var writer = new BinaryWriter(ms);
+
+                WriteCitpHeader(writer, CaexCookie);
+                writer.Write((uint)CaexContentType.EnterShow);
+
+                // Show name, UCS-2 LE, null-terminated
+                writer.Write(Encoding.Unicode.GetBytes("TiXL\0"));
+
+                SendTcpMessage(stream, ms);
+            }
+            catch (Exception ex)
+            {
+                SetStatus($"CITP send failed: {ex.Message}", IStatusProvider.StatusLevel.Warning);
+            }
+        }
+
+        private void SendPeerName()
+        {
+            NetworkStream? stream;
+            lock (_connectionLock) stream = _tcpStream;
+            if (stream == null)
+                return;
+
+            try
+            {
+                using var ms = new MemoryStream();
+                using var writer = new BinaryWriter(ms);
+
+                WriteCitpHeader(writer, PinFCookie);
+                WriteCookieBytes(writer, PnamCookie);
+                writer.Write(Encoding.ASCII.GetBytes("TiXL CITP Laser\0"));
+
+                SendTcpMessage(stream, ms);
+            }
+            catch (Exception ex)
+            {
+                SetStatus($"CITP send failed: {ex.Message}", IStatusProvider.StatusLevel.Warning);
+            }
+        }
+
+        private void SendPeerType()
+        {
+            NetworkStream? stream;
+            lock (_connectionLock) stream = _tcpStream;
+            if (stream == null)
+                return;
+
+            try
+            {
+                using var ms = new MemoryStream();
+                using var writer = new BinaryWriter(ms);
+
+                WriteCitpHeader(writer, PinFCookie);
+                WriteCookieBytes(writer, PtypCookie);
+                writer.Write(Encoding.ASCII.GetBytes("Laser\0"));
+
+                SendTcpMessage(stream, ms);
+            }
+            catch (Exception ex)
+            {
+                SetStatus($"CITP send failed: {ex.Message}", IStatusProvider.StatusLevel.Warning);
+            }
+        }
+
+        private void SendLaserFeedList()
+        {
+            NetworkStream? stream;
+            lock (_connectionLock) stream = _tcpStream;
+            if (stream == null)
+                return;
+
+            try
+            {
+                using var ms = new MemoryStream();
+                using var writer = new BinaryWriter(ms);
+
+                // CAEX header: 20 (CITP) + 4 (ContentCode) = 24 bytes
+                WriteCitpHeader(writer, CaexCookie);
+                writer.Write((uint)CaexContentType.LaserFeedList);
+
+                // LaserFeedList body: source key + feed count (1 byte) + feed names (UCS-2 LE)
+                writer.Write(_sourceKey);
+                writer.Write((byte)1);
+
+                writer.Write(Encoding.Unicode.GetBytes($"{_feedName} 0\0"));
+
+                SendTcpMessage(stream, ms);
+            }
+            catch (Exception ex)
+            {
+                SetStatus($"CITP send failed: {ex.Message}", IStatusProvider.StatusLevel.Warning);
+            }
+        }
+
+        /// <summary>The capture tells us to start/stop sending frames: FeedIndex (1) + FrameRate (1)
+        /// after the 24-byte CAEX header. FrameRate 0 stops the feed.</summary>
+        private void HandleLaserFeedControl(byte[] buffer, int length)
+        {
+            if (length < 26)
+                return;
+
+            var feedIndex = buffer[24];
+            var frameRate = buffer[25];
+
+            _requiredFps = frameRate;
+            _feedActive = frameRate != 0;
+
+            SetStatus($"Feed {feedIndex} {(frameRate != 0 ? $"active at {frameRate} fps" : "stopped")}",
+                      IStatusProvider.StatusLevel.Success);
+        }
+
+        private static void SendTcpMessage(NetworkStream stream, MemoryStream ms)
+        {
+            var data = ms.ToArray();
+            var length = (uint)data.Length;
+            // Patch MessageSize into the CITP header (bytes 8-11, little-endian)
+            data[8] = (byte)length;
+            data[9] = (byte)(length >> 8);
+            data[10] = (byte)(length >> 16);
+            data[11] = (byte)(length >> 24);
+
+            // The TCP receive thread and any handshake triggered on connect share this stream.
+            lock (stream)
+                stream.Write(data, 0, data.Length);
+        }
+        #endregion
+
+        #region Frame sending
+        private void SendLoop()
+        {
+            var token = _cts?.Token ?? default;
+            using var udpSender = new UdpClient();
+            var target = new IPEndPoint(MulticastAddress, MulticastPort);
+
+            while (!token.IsCancellationRequested && !_disposed)
+            {
+                // Master kill: transmit NOTHING while disabled - receivers time out to blank.
+                if (!LaserMasterEnable.Enabled)
+                {
+                    _frameQueue.Clear();
+                    Thread.Sleep(15);
+                    continue;
+                }
+
+                if (_feedActive && _frameQueue.TryDequeue(out var frame))
+                {
+                    try
+                    {
+                        SendLaserFeedFrame(udpSender, frame, target);
+                    }
+                    catch (Exception ex)
+                    {
+                        SetStatus($"CITP frame send failed: {ex.Message}", IStatusProvider.StatusLevel.Warning);
+                    }
+                }
+                else
+                {
+                    Thread.Sleep(1);
+                }
+            }
+        }
+
+        private void SendLaserFeedFrame(UdpClient udpSender, LaserPoint[] points, IPEndPoint target)
+        {
+            if (points.Length == 0)
+                return;
+
+            var pointCount = Math.Min(points.Length, MaxPointsPerDatagram);
+
+            try
+            {
+                using var ms = new MemoryStream();
+                using var writer = new BinaryWriter(ms);
+
+                // CAEX header: 20 (CITP) + 4 (ContentCode) = 24 bytes
+                WriteCitpHeader(writer, CaexCookie);
+                writer.Write((uint)CaexContentType.LaserFeedFrame);
+
+                // LaserFeedFrame body: sourceKey + feedIndex + frameSequence + pointCount
+                writer.Write(_sourceKey);
+                writer.Write((byte)0);
+                writer.Write(_frameSequenceNo++);
+                writer.Write((ushort)pointCount);
+
+                for (var i = 0; i < pointCount; i++)
+                {
+                    var cp = ConvertLaserPoint(points[i]);
+                    writer.Write(cp.XLowByte);
+                    writer.Write(cp.YLowByte);
+                    writer.Write(cp.XyHighNibbles);
+                    writer.Write(cp.Color);
+                }
+
+                var data = ms.ToArray();
+                var length = (uint)data.Length;
+                data[8] = (byte)length;
+                data[9] = (byte)(length >> 8);
+                data[10] = (byte)(length >> 16);
+                data[11] = (byte)(length >> 24);
+
+                udpSender.Send(data, data.Length, target);
+            }
+            catch (Exception ex)
+            {
+                SetStatus($"CITP frame send failed: {ex.Message}", IStatusProvider.StatusLevel.Warning);
+            }
+        }
+
+        private struct CitpLaserPoint
+        {
+            public byte XLowByte;
+            public byte YLowByte;
+            public byte XyHighNibbles;
+            public ushort Color;
+        }
+
+        /// <summary>Converts a TiXL LaserPoint (ILDA-style 16-bit signed X/Y, 16-bit R/G/B) to a
+        /// CITP/CAEX laser point: 12-bit unsigned X/Y in 0..4095 and RGB565 color. The brightness
+        /// ceiling and channel order from the plug are applied here as the final audit.</summary>
+        private CitpLaserPoint ConvertLaserPoint(LaserPoint p)
+        {
+            // ILDA 16-bit signed -> [-1, 1] -> 12-bit unsigned (0..4095)
+            var xNorm = Math.Clamp(p.X / 32767f, -1f, 1f);
+            var yNorm = Math.Clamp(p.Y / 32767f, -1f, 1f);
+            var x = Math.Clamp((int)((xNorm + 1f) * 0.5f * 4095f), 0, 4095);
+            var y = Math.Clamp((int)((yNorm + 1f) * 0.5f * 4095f), 0, 4095);
+
+            // 16-bit intensities, ceiling applied, shifted to 8-bit for RGB565 packing.
+            var r = (byte)Math.Clamp((int)MathF.Round(Math.Max(_swapColorChannels ? p.B : p.R, 0) * _maxBrightness) >> 8, 0, 255);
+            var g = (byte)Math.Clamp((int)MathF.Round(Math.Max(p.G, 0) * _maxBrightness) >> 8, 0, 255);
+            var b = (byte)Math.Clamp((int)MathF.Round(Math.Max(_swapColorChannels ? p.R : p.B, 0) * _maxBrightness) >> 8, 0, 255);
+
+            // RGB565: R[15:11] = top 5 of R, G[10:5] = top 6 of G, B[4:0] = top 5 of B
+            var color = (ushort)(((r & 0xF8) << 8) | ((g & 0xFC) << 5) | ((b & 0xF8) >> 3));
+
+            return new CitpLaserPoint
+                       {
+                           XLowByte = (byte)(x & 0xFF),
+                           YLowByte = (byte)(y & 0xFF),
+                           XyHighNibbles = (byte)(((x >> 8) & 0x0F) | (((y >> 8) & 0x0F) << 4)),
+                           Color = color,
+                       };
+        }
+        #endregion
+
+        #region Helpers - CITP is little-endian ("All fields use little endian byte order" per spec); cookies are ASCII
+        private static void WriteCitpHeader(BinaryWriter writer, uint contentType)
+        {
+            // CITP header: 20 bytes total
+            WriteCookieBytes(writer, CitpCookie);   // bytes 0-3: "CITP"
+            writer.Write((byte)1);                  // byte 4: VersionMajor
+            writer.Write((byte)0);                  // byte 5: VersionMinor
+            writer.Write((ushort)0);                // bytes 6-7: RequestIndex
+            writer.Write((uint)0);                  // bytes 8-11: MessageSize placeholder
+            writer.Write((ushort)1);                // bytes 12-13: MessagePartCount
+            writer.Write((ushort)0);                // bytes 14-15: MessagePart
+            WriteCookieBytes(writer, contentType);  // bytes 16-19: ContentType
+        }
+
+        private static void WriteCookieBytes(BinaryWriter writer, uint cookie)
+        {
+            writer.Write((byte)((cookie >> 24) & 0xFF));
+            writer.Write((byte)((cookie >> 16) & 0xFF));
+            writer.Write((byte)((cookie >> 8) & 0xFF));
+            writer.Write((byte)(cookie & 0xFF));
+        }
+
+        private static uint ReadLittleEndianUint(byte[] buffer, int offset)
+        {
+            return buffer[offset]
+                   | ((uint)buffer[offset + 1] << 8)
+                   | ((uint)buffer[offset + 2] << 16)
+                   | ((uint)buffer[offset + 3] << 24);
+        }
+
+        private static uint ReadBigEndianUint(byte[] buffer, int offset)
+        {
+            return ((uint)buffer[offset] << 24)
+                   | ((uint)buffer[offset + 1] << 16)
+                   | ((uint)buffer[offset + 2] << 8)
+                   | buffer[offset + 3];
+        }
+        #endregion
+
+        public void Dispose()
+        {
+            if (_disposed)
+                return;
+
+            _disposed = true;
+            var cts = _cts;
+            cts?.Cancel();
+
+            lock (_connectionLock)
+            {
+                try { _multicastListener?.Close(); } catch { /* ignore */ }
+                _multicastListener = null;
+
+                try { _tcpStream?.Close(); } catch { /* ignore */ }
+                _tcpStream = null;
+
+                try { _tcpClient?.Close(); } catch { /* ignore */ }
+                _tcpClient = null;
+
+                _frameQueue.Clear();
+            }
+
+            SetStatus("Disconnected", IStatusProvider.StatusLevel.Notice);
+        }
     }
     #endregion
 }
