@@ -52,7 +52,7 @@ internal sealed class _MeshBufferComponents : Instance<_MeshBufferComponents>, I
         Vertices.Value = mesh.VertexBuffer;
         Indices.Value = mesh.IndicesBuffer;
         ChunkDefs.Value = mesh.ChunkDefsBuffer;
-            
+
         Vertices.DirtyFlag.Clear();
         Indices.DirtyFlag.Clear();
         ChunkDefs.DirtyFlag.Clear();

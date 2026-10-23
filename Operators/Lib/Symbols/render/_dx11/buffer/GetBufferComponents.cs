@@ -59,11 +59,6 @@ internal sealed class GetBufferComponents : Instance<GetBufferComponents>
                 {
                     Length.Value = ShaderResourceView.Value.Description.Buffer.ElementCount;
                     Stride.Value = bufferWithViews.Buffer.Description.StructureByteStride;
-                    // Buffer.DirtyFlag.Clear();
-                    // ShaderResourceView.DirtyFlag.Clear();
-                    // UnorderedAccessView.DirtyFlag.Clear();
-                    // Length.DirtyFlag.Clear();
-                    // Stride.DirtyFlag.Clear();
                 }
                 catch (Exception e)
                 {

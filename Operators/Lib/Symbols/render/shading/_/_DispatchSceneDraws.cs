@@ -127,6 +127,13 @@ internal sealed class _DispatchSceneDraws : Instance<_DispatchSceneDraws>
             vsStage.SetShaderResources(0, _shaderResourceViews.Length, _shaderResourceViews);
             psStage.SetShaderResources(0, _shaderResourceViews.Length, _shaderResourceViews);
 
+            // While a geometry capture pass is active (e.g. the laser camera rendering its scene),
+            // register the mesh about to be drawn with its combined transform.
+            context.GeometryCapture?.Register(dispatch.MeshBuffers.VertexBuffer.Buffer,
+                                              dispatch.MeshBuffers.IndicesBuffer.Buffer,
+                                              GeometryPrimitiveKind.Mesh,
+                                              m);
+
             // Log.Debug($"Dispatching draw for {dispatch.VertexCount} vertices...");
             ResourceManager.Device.ImmediateContext.Draw(dispatch.VertexCount, dispatch.VertexStartIndex);
         }
