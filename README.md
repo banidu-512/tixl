@@ -30,7 +30,7 @@ This branch adds live multi-user editing of a shared graph. Sessions are configu
 - **Online**: either a direct address (open port or VPN such as Tailscale), or a room on a relay via the included `CollabRelay` server project (`dotnet run --project CollabRelay` — the host shares the generated room code, joiners enter it; no port forwarding needed).
 - **Identity**: local nickname, or Discord login (OAuth2, configured with a client id/secret from the Discord Developer Portal).
 
-Synced edits: adding/deleting operators, connections, parameter value changes, renames and node moves. Participants see each other's cursors and selection outlines in the graph. Late joiners receive a replay of the session's edit history, so everyone should open the same project before joining. Undo histories stay local on purpose — remote commands are applied directly and never enter your undo stack.
+Synced edits: adding/deleting operators, connections, parameter value changes, renames and node moves. Participants see each other's cursors, selection outlines and "editing" lock badges in the graph. Parameters someone is editing are soft-locked and appear disabled for everyone else until released. **Undo/Redo are session-wide while connected**: Ctrl+Z reverts the last edit of any participant — the host keeps the shared history, and late joiners receive the replay including undo operations. Late joiners should still open the same project before joining.
 
 ## Get Help
 To get started read the [documentation](https://github.com/tixl3d/tixl/wiki) or watch [tutorial videos](https://www.youtube.com/watch?v=eH2E02U6P5Q&list=PLj-rnPROvbn3LigXGRSDvmLtgTwmNHcQs&index=4).

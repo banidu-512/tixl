@@ -1,4 +1,4 @@
-﻿using T3.Core.Operator;
+using T3.Core.Operator;
 
 namespace T3.Editor.UiModel.Commands.Graph;
 
@@ -43,4 +43,5 @@ public sealed class ChangeSymbolChildNameCommand : ICommand
     // Read access for the collab wire encoder; does not participate in undo semantics.
     internal Guid ChildIdForCollab => _symbolChildId;
     internal Guid ParentSymbolIdForCollab => _parentSymbolId;
+    internal string OriginalNameForCollab => _originalName ?? string.Empty;
 }

@@ -1,4 +1,4 @@
-﻿using T3.Core.Animation;
+using T3.Core.Animation;
 using T3.Core.Operator;
 using T3.Core.Operator.Slots;
 
@@ -167,4 +167,5 @@ public sealed class ChangeInputValueCommand : ICommand
     internal Guid InputIdForCollab => _inputId;
     internal InputValue NewValueForCollab => _newValue;
     internal bool WasAnimatedForCollab => _wasAnimated;
+    internal InputValue OriginalValueForCollab => OriginalValue;
 }
