@@ -54,6 +54,11 @@ internal static class SetupParameterView
         FormInputs.AddVerticalSpace(5);
         DrawHeader(setup, kind, id);
 
+        // Entity cards can be far taller than the panel (a laser output: frame preview + scanner
+        // camera + optimization + safety) and the parameter window deliberately has no scrollbar,
+        // so the card body scrolls here. Header stays fixed.
+        ImGui.BeginChild("##setupEntityCard", Vector2.Zero, ImGuiChildFlags.None);
+
         switch (kind)
         {
             case SetupEntityKinds.Surface:
@@ -589,10 +594,6 @@ internal static class SetupParameterView
     /// </summary>
     private static void DrawLaserOutputCard(Setup setup, MachineConfig machineConfig, OutputDefinition output)
     {
-        // The card is far taller than the parameter panel (frame preview + scanner camera +
-        // optimization + safety) and the panel deliberately has no scrollbar - scroll here.
-        ImGui.BeginChild("##laserOutputCard", Vector2.Zero, ImGuiChildFlags.None, ImGuiWindowFlags.None);
-
         var binding = machineConfig.FindBinding(output.Id);
         var boundTo = binding == null
                           ? "unbound — drop this output on a laser plug"
@@ -618,8 +619,6 @@ internal static class SetupParameterView
         CustomComponents.StylizedText("Set a [LaserCamera]'s OutputRef to this output - it projects through the scanner camera above, "
                                       + "and while the master laser is on, the frame streams to the plug bound below.",
                                       Fonts.FontSmall, UiColors.TextMuted);
-
-        ImGui.EndChild();
     }
 
     /// <summary>
