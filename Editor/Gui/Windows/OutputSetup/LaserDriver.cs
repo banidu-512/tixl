@@ -49,7 +49,6 @@ internal static class LaserDriver
             return;
 
         _lastPump = now;
-        _driverFrameTimestamp = now;
         var pullStart = now;
         OutputContentResolver.PrepareContext(default);
         var context = OutputContentResolver.Context;
@@ -86,6 +85,7 @@ internal static class LaserDriver
                 continue;
 
             var frame = ComputeFrame(output, context);
+            _frameCache[output.Id] = (Stopwatch.GetTimestamp(), frame);
             if (frame is { Length: > 0 })
             {
                 // The stream re-applies the safety stage at the door - pass the output's current
@@ -115,19 +115,18 @@ internal static class LaserDriver
     /// <summary>
     /// The frame this output streams right now: the pipeline result of the camera routed to it
     /// by OutputRef — or, while uncalibrated, the alignment rectangle (input ignored). Empty when
-    /// no camera is routed and safety is calibrated. Backs the Board card and parameter previews;
-    /// when the driver pumped this interval the cached frame is returned without recomputing, so
-    /// however many cards show it, the camera evaluates at most once per frame.
+    /// no camera is routed and safety is calibrated. Backs the Board card and parameter previews:
+    /// the pump refreshes the cache every interval with the frame it just submitted, so previews
+    /// show the streamed truth without ever re-evaluating the camera. Only when the driver is not
+    /// pumping (kill-switch off) does the preview compute on demand.
     /// </summary>
     public static LaserPoint[] GetFrame(OutputDefinition output)
     {
         var now = Stopwatch.GetTimestamp();
-        // Time-based, not frame-based: the setup view can be drawn while the frame counter is
-        // frozen (background window, paused project) — a frame-index key would cache the first
-        // (possibly empty) frame forever and the preview would never come alive.
-        if (!_frameCache.TryGetValue(output.Id, out var cached) || now - cached.Timestamp > RefreshInterval)
-            _frameCache[output.Id] = cached = (now, ComputeFrame(output, null));
+        if (_frameCache.TryGetValue(output.Id, out var cached) && now - cached.Timestamp < PreviewStaleAfter)
+            return cached.Points;
 
+        _frameCache[output.Id] = cached = (now, ComputeFrame(output, null));
         return cached.Points;
     }
 
@@ -155,8 +154,10 @@ internal static class LaserDriver
 
     /// <summary>
     /// The camera's frame through the output's pipeline. With a context supplied (the driver's
-    /// pump) the routed camera is evaluated into it; with null (a preview outside the pump
-    /// interval) a fresh context is prepared so time-animated content keeps moving.
+    /// pump) the routed camera is evaluated into it; with null (a preview outside the pump -
+    /// driver kill-switch off) a fresh context is prepared so time-animated content keeps
+    /// moving. One evaluation per camera per pump interval: two outputs routed to the same
+    /// camera must not run the scene (and its GPU readbacks) twice.
     /// </summary>
     private static LaserPoint[] ComputeFrame(OutputDefinition output, EvaluationContext? pumpContext)
     {
@@ -166,19 +167,29 @@ internal static class LaserDriver
             if (camera is not Instance instance || LaserContent.OutputRefOf(instance) != output.Id)
                 continue;
 
-            if (pumpContext != null || DriverRanThisFrame)
+            var pullTimestamp = Stopwatch.GetTimestamp();
+            if (_cameraPulls.TryGetValue(instance.SymbolChildId, out var pulled)
+                && pullTimestamp - pulled.Pump < EffectivePumpInterval)
             {
-                // The driver's pump evaluated this camera already this interval — read its slot
-                // instead of pulling again, or the scene (and its GPU readbacks) runs twice.
-                list = LaserContent.PeekPoints(instance);
+                // Already evaluated within this pump interval - another output shares the camera.
+                list = pulled.List;
             }
             else
             {
-                // The shared evaluation context, reset for this pull: in setup mode with no
-                // video composite rendering, nobody else prepares it, and a stale context freezes
-                // time-animated content (the camera's roll animator, oscillators).
-                OutputContentResolver.PrepareContext(default);
-                list = ((ILaserContentSupplier)instance).GetLaserPoints(OutputContentResolver.Context);
+                if (pumpContext == null)
+                {
+                    // The shared evaluation context, reset for this pull: in setup mode with no
+                    // video composite rendering, nobody else prepares it, and a stale context freezes
+                    // time-animated content (the camera's roll animator, oscillators).
+                    OutputContentResolver.PrepareContext(default);
+                    list = ((ILaserContentSupplier)instance).GetLaserPoints(OutputContentResolver.Context);
+                }
+                else
+                {
+                    list = ((ILaserContentSupplier)instance).GetLaserPoints(pumpContext);
+                }
+
+                _cameraPulls[instance.SymbolChildId] = (pullTimestamp, list);
             }
 
             break;
@@ -211,10 +222,6 @@ internal static class LaserDriver
     private static long EffectivePumpInterval => PumpInterval * (1 + _pumpBackoff);
 
     private static long _lastPump;
-    private static long _driverFrameTimestamp;
-
-    /// <summary>True while the driver pumped recently — the cameras' slots are fresh, so previews can read them without pulling.</summary>
-    private static bool DriverRanThisFrame => Stopwatch.GetTimestamp() - _driverFrameTimestamp < PumpInterval * 3;
 
     /// <summary>Device streams per laser plug id; created lazily, disposed when the plug's binding goes away.</summary>
     private static readonly Dictionary<Guid, LaserOutputStream> _streams = [];
@@ -222,10 +229,14 @@ internal static class LaserDriver
     /// <summary>Pipeline scratch per output; render-thread only, like everything that reads it.</summary>
     private static readonly Dictionary<Guid, LaserPipeline.Session> _pipelineSessions = [];
 
-    /// <summary>The last computed frame per output, refreshed at <see cref="RefreshInterval"/>.</summary>
+    /// <summary>The frame the pump just computed and submitted per output - what the previews show.</summary>
     private static readonly Dictionary<Guid, (long Timestamp, LaserPoint[] Points)> _frameCache = [];
 
-    private static readonly long RefreshInterval = Stopwatch.Frequency / 20; // 20 Hz
+    /// <summary>How long a pump-cached frame backs the previews before an on-demand pull (only while the driver is off).</summary>
+    private static readonly long PreviewStaleAfter = Stopwatch.Frequency / 4; // 250 ms
+
+    /// <summary>One camera evaluation per pump interval, keyed by symbol-child id - shared by outputs routed to the same camera.</summary>
+    private static readonly Dictionary<Guid, (long Pump, StructuredList? List)> _cameraPulls = [];
 
     private static void DisposeAllStreams()
     {

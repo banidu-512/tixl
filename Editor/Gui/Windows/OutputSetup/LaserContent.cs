@@ -49,21 +49,6 @@ internal static class LaserContent
     }
 
     /// <summary>
-    /// The camera's last computed frame WITHOUT evaluating — for consumers that know the camera
-    /// ran this frame already (the output-op driver), so the scene isn't walked twice per frame.
-    /// </summary>
-    public static StructuredList? PeekPoints(Instance camera)
-    {
-        foreach (var output in camera.Outputs)
-        {
-            if (output.ValueType == typeof(StructuredList) && output is Slot<StructuredList> typed)
-                return typed.Value;
-        }
-
-        return null;
-    }
-
-    /// <summary>
     /// Routes a camera to a laser output (or nowhere, with an empty id) — the one routing write
     /// that lands on an op input (the camera's OutputRef) rather than on setup data. Undoable
     /// like every graph edit.
