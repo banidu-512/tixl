@@ -1016,7 +1016,7 @@ internal static class SetupParameterView
                 safety.SetupCenterX, safety.SetupCenterY, safety.SetupWidth, safety.SetupHeight,
             ];
             var rectState = DrawFloatsRow("Setup rect (cx, cy, w, h)", setupRect,
-                                          "The alignment rectangle in normalized field units: center -1..1, width/height 0..1. Start tiny at center and extend step by step.",
+                                          "The alignment rectangle in normalized field units: center -1..1, width/height 0..1 where 1 = the full scanner field. Start tiny at center and extend step by step until the rectangle fills the projection, then switch Calibrated on.",
                                           speed: 0.001f, format: "{0:0.000}");
             BeginFieldUndo(setup, rectState);
             if ((rectState & InputEditStateFlags.Modified) != 0)

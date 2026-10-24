@@ -132,7 +132,9 @@ public sealed class LaserProcessingSettings
         /// <summary>Show-level intensity ceiling (0..1); the plug's device ceiling stays the final audit.</summary>
         public float MaxBrightness = 1f;
 
-        /// <summary>Manual alignment rectangle, in normalized field units (-1..1 center, 0..1 half-extents).</summary>
+        /// <summary>Manual alignment rectangle, in normalized field units: center -1..1, width/height
+        /// 0..1 where 1.0 spans the full scanner field (-32767..32767). Starts tiny; the user extends
+        /// it step by step before switching Calibrated on.</summary>
         public float SetupCenterX;
         public float SetupCenterY;
         public float SetupWidth = 0.04f;

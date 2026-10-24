@@ -35,8 +35,11 @@ public static class LaserPipeline
                 const float field = 32767f;
                 var cx = (int)(Math.Clamp(settings.Safety.SetupCenterX, -1f, 1f) * field);
                 var cy = (int)(Math.Clamp(settings.Safety.SetupCenterY, -1f, 1f) * field);
-                var hw = (int)(Math.Clamp(settings.Safety.SetupWidth * 0.5f, 0.005f, 1f) * field);
-                var hh = (int)(Math.Clamp(settings.Safety.SetupHeight * 0.5f, 0.005f, 1f) * field);
+                // Normalized field units: width/height 1.0 = the full field (-32767..32767), so the
+                // alignment rectangle can actually reach fullscreen. The old half-field mapping
+                // (w * 0.5) capped it at half the scanner range with the UI clamped at 1.0.
+                var hw = (int)(Math.Clamp(settings.Safety.SetupWidth, 0.005f, 1f) * field);
+                var hh = (int)(Math.Clamp(settings.Safety.SetupHeight, 0.005f, 1f) * field);
                 status = settings.Safety.DescribeSetup();
                 return BuildSetupRectangle(cx, cy, hw, hh);
             }
