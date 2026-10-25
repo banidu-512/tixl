@@ -131,7 +131,8 @@ internal sealed class CollabManager
         return name.Length <= 48 ? name : name[..48];
     }
 
-    public void StartHost(int tcpPort, string password, bool enableLanDiscovery, string? projectName = null)
+    public void StartHost(int tcpPort, string password, bool enableLanDiscovery, string? projectName = null,
+                          string? interfaceName = null)
     {
         if (IsSessionActive)
             Leave();
@@ -158,7 +159,8 @@ internal sealed class CollabManager
                                                                ["project"] = projectName
                                                                              ?? ProjectView.Focused?.OpenedProject.Package.DisplayName
                                                                              ?? "",
-                                                           });
+                                                           },
+                                                 interfaceName ?? UserSettings.Config.NetworkInterface);
             _transport.PeerDisconnected += OnPeerDisconnectedTransport;
             State = SessionState.Hosting;
             StatusText = $"Hosting on port {tcpPort}";
@@ -1569,7 +1571,7 @@ internal sealed class CollabManager
     {
         _discoveryScanner ??= new LanDiscoveryScanner();
         _discovered.Clear();
-        _discoveryScanner.Start(DefaultDiscoveryPort);
+        _discoveryScanner.Start(DefaultDiscoveryPort, UserSettings.Config.NetworkInterface);
     }
 
     public void StopDiscovery()
@@ -1605,7 +1607,7 @@ internal sealed class CollabManager
         if (Environment.TickCount64 - _lastHubScanTicks > 1000)
         {
             _lastHubScanTicks = Environment.TickCount64;
-            _hubScanner.Start(DefaultDiscoveryPort); // re-probe; Start restarts its loop cleanly
+            _hubScanner.Start(DefaultDiscoveryPort, UserSettings.Config.NetworkInterface); // re-probe; Start restarts its loop cleanly
         }
 
         RefreshDiscoveredFrom(_hubScanner);

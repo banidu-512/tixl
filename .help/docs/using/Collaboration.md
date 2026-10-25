@@ -11,6 +11,7 @@ Sessions are configured in **Settings → Collaboration**. The feature is experi
 - **Projects window**: running LAN sessions are listed next to the projects, and a project's context menu offers **Host Collaboration Session**.
 - **Password**: a session can be password protected. Authentication is a PBKDF2/HMAC challenge-response; the password itself never crosses the network.
 - **Identity**: a local display name, or a Discord login (OAuth2, using a client id and secret from the Discord Developer Portal).
+- **Network**: the **Interface** dropdown pins hosting, LAN discovery and presence to one adapter. Keep **Automatic** unless the machine also has Wi-Fi, VPN or Hyper-V adapters and the show runs on a specific Ethernet port.
 
 On join a client downloads the host's project if it doesn't have it, restarts into it and rejoins automatically.
 

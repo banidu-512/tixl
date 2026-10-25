@@ -208,6 +208,11 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public bool EnableAutoBackup = true;
         public bool MinimalBackup = true;
 
+        // Networking (shared by collaboration, boygrouping and failover)
+        /// <summary>Adapter name to bind sessions, discovery and failover heartbeats to.
+        /// Empty = automatic (all interfaces).</summary>
+        public string NetworkInterface = "";
+
         // Collaboration
         /// <summary>Persistent participant id; also seeds the per-user accent color.</summary>
         public string CollabUserId = "";

@@ -4,6 +4,7 @@ using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json.Linq;
+using T3.Core.Utils;
 using T3.Editor.Collab;
 
 namespace T3.Editor.Show;
@@ -37,9 +38,11 @@ internal sealed class BoygroupServerTransport : BoygroupTransport
 
     public LanDiscoveryResponder DiscoveryResponder { get; }
 
-    public BoygroupServerTransport(int tcpPort, string[] groups)
+    public BoygroupServerTransport(int tcpPort, string[] groups, string? interfaceName = null)
     {
-        _listener = new TcpListener(IPAddress.Any, tcpPort);
+        // Pinned adapter (Settings → Boygrouping → Network); empty keeps the all-interface bind.
+        var bindAddress = LanInterfaces.ResolveAddress(interfaceName) ?? IPAddress.Any;
+        _listener = new TcpListener(bindAddress, tcpPort);
         _listener.Start();
         try
         {

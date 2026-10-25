@@ -47,6 +47,10 @@ internal sealed partial class SettingsWindow
 
         FormInputs.AddVerticalSpace();
 
+        DrawNetworkInterface(ref changed);
+
+        FormInputs.AddVerticalSpace();
+
         FormInputs.AddSectionSubHeader("Session");
         FormInputs.AddVerticalSpace();
 
