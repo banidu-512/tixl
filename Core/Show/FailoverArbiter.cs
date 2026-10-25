@@ -308,9 +308,12 @@ public static class FailoverArbiter
                     }
                 }
 
-                if (_heartbeatSockets.Count == 0)
+                // Supplementary default-route socket: on Linux a specific-IP bind never receives
+                // multicast looped back from a local sender (verified), which would break the
+                // one-PC master/backup rehearsal. The Any bind still does. Duplicates are
+                // harmless — peers are deduped by node id.
+                try
                 {
-                    // Every per-interface bind failed; last resort is the old default-route socket.
                     var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
                     socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
                     socket.Bind(new IPEndPoint(IPAddress.Any, FailoverPort));
@@ -318,6 +321,10 @@ public static class FailoverArbiter
                     socket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.AddMembership,
                                            new MulticastOption(GroupAddress, IPAddress.Any));
                     _heartbeatSockets.Add(socket);
+                }
+                catch (Exception e)
+                {
+                    Log.Warning($"Failover: could not bind default-route heartbeat socket: {e.Message}");
                 }
             }
         }
