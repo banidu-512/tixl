@@ -116,50 +116,55 @@ internal sealed partial class SettingsWindow
         FormInputs.AddSectionSubHeader("Render nodes");
         FormInputs.AddVerticalSpace();
 
+        OutputSetupHandling.TryGetActiveSetup(out var setup, out _);
         var nodes = manager.DiscoveredServers;
-        if (nodes.Count == 0)
-        {
+        var clients = manager.Clients;
+        if (nodes.Count == 0 && clients.Count == 0)
             ImGui.TextDisabled("Looking for other TiXL instances on this network...");
-        }
-        else
+
+        // Connected nodes stop announcing themselves, so they are listed first - otherwise a node
+        // would disappear from this list right after being added.
+        foreach (var client in clients)
         {
-            foreach (var node in nodes)
+            ImGui.PushID("client" + client.Address + client.Name);
+            FormInputs.SetCursorToParameterEdit();
+            ImGui.TextUnformatted($"{client.Name}  ({client.Address})");
+            ImGui.SameLine();
+            ImGui.PushStyleColor(ImGuiCol.Text, (client.IsDeployed ? UiColors.StatusActivated : UiColors.StatusWarning).Rgba);
+            ImGui.TextUnformatted(client.StatusText);
+            ImGui.PopStyleColor();
+            ImGui.PopID();
+
+            if (client.MachineConfig?.Bindings.Count > 0)
             {
-                ImGui.PushID(node.Address + node.Port);
-                var connected = IsConnected(manager, node.Name);
-                FormInputs.SetCursorToParameterEdit();
-
-                if (connected)
-                {
-                    ImGui.PushStyleColor(ImGuiCol.Text, UiColors.StatusActivated.Rgba);
-                    ImGui.TextUnformatted($"{node.Name}  ({node.Address})");
-                    ImGui.PopStyleColor();
-                    ImGui.SameLine();
-                    ImGui.TextDisabled("added");
-                }
-                else
-                {
-                    ImGui.TextUnformatted($"{node.Name}  ({node.Address})");
-                    if (!node.IsMaster)
-                    {
-                        ImGui.SameLine();
-                        if (ImGui.SmallButton("Add"))
-                            manager.InviteClient(node);
-                        CustomComponents.TooltipForLastItem("Ask this instance to render the show on this machine.");
-                    }
-                    else
-                    {
-                        ImGui.SameLine();
-                        ImGui.TextDisabled("master");
-                    }
-                }
-
-                ImGui.PopID();
+                FormInputs.ApplyIndent();
+                CustomComponents.StylizedText(BoygroupManager.DescribeBindings(client.MachineConfig, setup),
+                                              Fonts.FontSmall, UiColors.TextMuted);
             }
         }
 
-        FormInputs.AddVerticalSpace();
-        DrawConnectedClients(manager);
+        foreach (var node in nodes)
+        {
+            if (IsConnected(manager, node))
+                continue;
+
+            ImGui.PushID(node.Address + node.Port);
+            FormInputs.SetCursorToParameterEdit();
+            ImGui.TextUnformatted($"{node.Name}  ({node.Address})");
+            ImGui.SameLine();
+            if (!node.IsMaster)
+            {
+                if (ImGui.SmallButton("Add"))
+                    manager.InviteClient(node);
+                CustomComponents.TooltipForLastItem("Ask this instance to render the show on this machine.");
+            }
+            else
+            {
+                ImGui.TextDisabled("master");
+            }
+
+            ImGui.PopID();
+        }
 
         FormInputs.AddVerticalSpace();
         FormInputs.AddSectionSubHeader("Show control");
@@ -194,42 +199,15 @@ internal sealed partial class SettingsWindow
         }
     }
 
-    private static bool IsConnected(BoygroupManager manager, string name)
+    private static bool IsConnected(BoygroupManager manager, BoygroupManager.DiscoveredServer node)
     {
         foreach (var client in manager.Clients)
         {
-            if (string.Equals(client.Name, name, StringComparison.OrdinalIgnoreCase))
+            if (client.Address == node.Address || string.Equals(client.Name, node.Name, StringComparison.OrdinalIgnoreCase))
                 return true;
         }
 
         return false;
-    }
-
-    private static void DrawConnectedClients(BoygroupManager manager)
-    {
-        if (manager.Clients.Count == 0)
-            return;
-
-        OutputSetupHandling.TryGetActiveSetup(out var setup, out _);
-        ImGui.TextUnformatted("Added render nodes:");
-        foreach (var client in manager.Clients)
-        {
-            var statusColor = client.IsDeployed ? UiColors.StatusActivated : UiColors.StatusWarning;
-            ImGui.Bullet();
-            ImGui.TextUnformatted($"{client.Name}  ({client.Address})");
-
-            ImGui.SameLine();
-            ImGui.PushStyleColor(ImGuiCol.Text, statusColor.Rgba);
-            ImGui.TextUnformatted(client.StatusText);
-            ImGui.PopStyleColor();
-
-            if (client.MachineConfig?.Bindings.Count > 0)
-            {
-                FormInputs.ApplyIndent();
-                CustomComponents.StylizedText(BoygroupManager.DescribeBindings(client.MachineConfig, setup),
-                                              Fonts.FontSmall, UiColors.TextMuted);
-            }
-        }
     }
 
     // ---------------------------------------------------------------------------------------
