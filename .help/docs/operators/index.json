@@ -92,6 +92,10 @@
       "url": "/operators/lib/field/generate/sdf/Image2dSDF/",
       "summary": "Uses the grayscale information of a texture as (signed) distance data."
     },
+    "Lib.field.generate.sdf.MeshToSDF": {
+      "url": "/operators/lib/field/generate/sdf/MeshToSDF/",
+      "summary": "Bakes a signed distance field volume from a triangle mesh."
+    },
     "Lib.field.generate.sdf.OctahedronSDF": {
       "url": "/operators/lib/field/generate/sdf/OctahedronSDF/",
       "summary": "Generates a octahedron distande field."
@@ -830,7 +834,7 @@
     },
     "Lib.io.dmx.PointsToDmxLights": {
       "url": "/operators/lib/io/dmx/PointsToDmxLights/",
-      "summary": "Converts 3D points into DMX channel values for lighting fixtures. Supports position, rotation (pan/tilt), color, and custom features."
+      "summary": "Converts 3D points into DMX channel values for lighting fixtures. Supports position, rotation (pan/tilt), color and custom features, with universe packing options for multi-universe rigs."
     },
     "Lib.io.dmx.SacnInput": {
       "url": "/operators/lib/io/dmx/SacnInput/",
@@ -1075,6 +1079,22 @@
     "Lib.io.websocket.WebSocketServer": {
       "url": "/operators/lib/io/websocket/WebSocketServer/",
       "summary": "Creates a WebSocket server to enable real-time, two-way communication with web clients."
+    },
+    "Lib.laser.camera.LaserCamera": {
+      "url": "/operators/lib/laser/camera/LaserCamera/",
+      "summary": "Renders a scene through its own camera lens and captures every point, line and mesh drawn inside it as 16-bit laser points."
+    },
+    "Lib.laser.convert.LaserPointsToBuffer": {
+      "url": "/operators/lib/laser/convert/LaserPointsToBuffer/",
+      "summary": "Converts a laser point list into a GPU point buffer, bridging laser frames back into the graph."
+    },
+    "Lib.laser.convert.MeshToLaserPoints": {
+      "url": "/operators/lib/laser/convert/MeshToLaserPoints/",
+      "summary": "Converts a mesh into laser points as wireframe runs or vertex dots."
+    },
+    "Lib.laser.input.PONKInput": {
+      "url": "/operators/lib/laser/input/PONKInput/",
+      "summary": "Receives laser frames from any PONK-compliant sender (e.g. MadMapper) over UDP and republishes them as 16-bit laser points."
     },
     "Lib.mesh.draw.DrawMesh": {
       "url": "/operators/lib/mesh/draw/DrawMesh/",
@@ -4055,6 +4075,12 @@
     "KochKaleidoskope": [
       "Lib.image.fx.distort.KochKaleidoskope"
     ],
+    "LaserCamera": [
+      "Lib.laser.camera.LaserCamera"
+    ],
+    "LaserPointsToBuffer": [
+      "Lib.laser.convert.LaserPointsToBuffer"
+    ],
     "LastFrameDuration": [
       "Lib.numbers.anim.time.LastFrameDuration"
     ],
@@ -4162,6 +4188,12 @@
     ],
     "MeshProjectUV": [
       "Lib.mesh.modify.MeshProjectUV"
+    ],
+    "MeshToLaserPoints": [
+      "Lib.laser.convert.MeshToLaserPoints"
+    ],
+    "MeshToSDF": [
+      "Lib.field.generate.sdf.MeshToSDF"
     ],
     "MeshVerticesToPoints": [
       "Lib.point.generate.MeshVerticesToPoints"
@@ -4318,6 +4350,9 @@
     ],
     "OscillateVec3": [
       "Lib.numbers.anim.animators.OscillateVec3"
+    ],
+    "PONKInput": [
+      "Lib.laser.input.PONKInput"
     ],
     "PadVec2Range": [
       "Lib.numbers.vec2.PadVec2Range"

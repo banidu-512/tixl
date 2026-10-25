@@ -7,6 +7,7 @@
 - [Lib.flow](flow/README.md)
 - [Lib.image](image/README.md)
 - [Lib.io](io/README.md)
+- [Lib.laser](laser/README.md)
 - [Lib.mesh](mesh/README.md)
 - [Lib.numbers](numbers/README.md)
 - [Lib.particle](particle/README.md)

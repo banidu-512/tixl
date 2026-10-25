@@ -49,6 +49,7 @@ Reference and how-tos for the day-to-day work: the UI, the graph, connecting inp
 
 - [TiXL for VJ and live performances](LivePerformances.md)
 - [Output Setup](OutputSetup.md) — projection mapping, multi-display and Spout / NDI outputs.
+- [Laser operators](LaserOperators.md) — laser cameras, PONK input and streaming to EtherDream / PONK / CITP scanners.
 - [Using backups](Backups.md)
 - [Sharing example projects](SharingExampleProjects.md)
 - [FAQ](FAQ.md)
