@@ -41,7 +41,6 @@ internal static class ProjectsPanel
             // 0. Live collaboration sessions — join straight from the hub.
             DrawCollabSessions();
 
-            FormInputs.AddSectionHeader("Local projects");
             foreach (var package in EditableSymbolProject.AllProjects)
             {
                 DrawProjectItem(window, package);
@@ -80,9 +79,8 @@ internal static class ProjectsPanel
 
     /// <summary>
     /// Live collaboration sessions in the hub: your own session while hosting/connected, plus
-    /// every session announced on the LAN. Clicking a session joins it (password-protected
-    /// sessions ask for the PIN first) and opens the project it belongs to when that project
-    /// exists locally.
+    /// every session announced on the LAN. Clicking a session joins it and opens the project it
+    /// belongs to (when that project exists locally).
     /// </summary>
     private static void DrawCollabSessions()
     {
@@ -91,12 +89,10 @@ internal static class ProjectsPanel
 
         var hasOwnSession = collab.State != CollabManager.SessionState.Off;
         if (!hasOwnSession && collab.DiscoveredSessions.Count == 0)
-        {
-            DrawJoinPinPopup(null);
             return;
-        }
 
-        FormInputs.AddSectionHeader("Online projects");
+        ImGui.Separator();
+        FormInputs.AddSectionHeader("Online sessions");
 
         if (hasOwnSession)
         {
@@ -107,32 +103,19 @@ internal static class ProjectsPanel
         foreach (var session in collab.DiscoveredSessions)
         {
             ImGui.PushID($"collab-{session.Address}:{session.Port}");
-            var title = string.IsNullOrEmpty(session.Name) ? $"{session.Address}:{session.Port}" : session.Name;
-            var subtitle = session.PasswordProtected ? $"{session.Address}:{session.Port}  (password protected)"
-                                                     : $"{session.Address}:{session.Port}";
-            var clicked = DrawSessionRow(title,
-                                         subtitle,
+            var clicked = DrawSessionRow(session.Name,
+                                         $"{session.Address}:{session.Port}",
                                          session.Project is { Length: > 0 } p ? p : null,
                                          null,
                                          null,
                                          isActive: false,
-                                         locked: false);
+                                         locked: session.PasswordProtected);
             if (clicked)
             {
-                if (session.PasswordProtected)
-                {
-                    _pinSession = session; // ask first, join after confirm
-                    ImGui.OpenPopup("##join-pin");
-                }
-                else
-                {
-                    JoinSession(session, UserSettings.Config.CollabPassword ?? "");
-                }
+                JoinSession(session);
             }
             ImGui.PopID();
         }
-
-        DrawJoinPinPopup(null);
 
         if (collab.State == CollabManager.SessionState.Connecting)
         {
@@ -143,53 +126,6 @@ internal static class ProjectsPanel
         {
             ImGui.TextColored(UiColors.StatusWarning, collab.ErrorText);
         }
-    }
-
-    private static CollabManager.DiscoveredSession? _pinSession;
-    private static string _pinInput = "";
-
-    /// <summary>Modal asking for a session PIN; confirming joins the pending session.</summary>
-    private static void DrawJoinPinPopup(string? _)
-    {
-        var size = new Vector2(320, 130) * T3Ui.UiScaleFactor;
-        ImGui.SetNextWindowSize(size, ImGuiCond.Always);
-        if (!ImGui.BeginPopupModal("Join session##join-pin"))
-            return;
-
-        var name = _pinSession == null ? "" : (string.IsNullOrEmpty(_pinSession.Name) ? $"{_pinSession.Address}" : _pinSession.Name);
-        ImGui.Text($"'{name}' is password protected.");
-        ImGui.TextDisabled("Enter the session PIN to join.");
-
-        ImGui.SetNextItemWidth(-1);
-        ImGui.InputTextWithHint("##pin", "PIN", ref _pinInput, 64, ImGuiInputTextFlags.Password | ImGuiInputTextFlags.EnterReturnsTrue);
-
-        var joinRequested = false;
-        if (ImGui.IsItemFocused() && ImGui.IsKeyPressed(ImGuiKey.Enter))
-            joinRequested = true;
-
-        ImGui.Dummy(new Vector2(4, 8) * T3Ui.UiScaleFactor);
-        if (ImGui.Button("Cancel##join-pin"))
-        {
-            _pinSession = null;
-            ImGui.CloseCurrentPopup();
-        }
-
-        ImGui.SameLine();
-        ImGui.SetKeyboardFocusHere(-1);
-        if (ImGui.Button("Join##join-pin") || joinRequested)
-        {
-            var session = _pinSession;
-            _pinSession = null;
-            ImGui.CloseCurrentPopup();
-            if (session != null)
-            {
-                UserSettings.Config.CollabPassword = _pinInput;
-                UserSettings.Save();
-                JoinSession(session, _pinInput);
-            }
-        }
-
-        ImGui.EndPopup();
     }
 
     /// <summary>Draws one session row. Returns true when clicked.</summary>
@@ -238,10 +174,10 @@ internal static class ProjectsPanel
     }
 
     /// <summary>Joins a discovered session and opens the project it belongs to when available.</summary>
-    private static void JoinSession(CollabManager.DiscoveredSession session, string password)
+    private static void JoinSession(CollabManager.DiscoveredSession session)
     {
         var collab = CollabManager.Instance;
-        collab.JoinDirect(session.Address, session.Port, password);
+        collab.JoinDirect(session.Address, session.Port, UserSettings.Config.CollabPassword ?? "");
 
         if (!string.IsNullOrEmpty(session.Project))
         {
