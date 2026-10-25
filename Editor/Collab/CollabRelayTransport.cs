@@ -120,13 +120,8 @@ internal sealed class CollabRelayHostTransport : CollabTransport
         _relayStream = relayClient.GetStream();
         AssignedRoomCode = assignedRoomCode;
         _keepAliveTimer = new Timer(_ => SendKeepAlive(), null, KeepAliveIntervalMs, KeepAliveIntervalMs);
+        _ = Task.Run(() => ReadRelayLoopAsync(_cancellation.Token));
     }
-
-    /// <summary>
-    /// Starts reading relay traffic. Must run after <see cref="CollabTransport.PeerDisconnected"/> is
-    /// wired, or a link that dies during the connect hand-off reports nothing.
-    /// </summary>
-    public void StartReading() => _ = Task.Run(() => ReadRelayLoopAsync(_cancellation.Token));
 
     /// <summary>Connects to the relay and registers as a room owner. Throws with a readable message on failure.</summary>
     public static async Task<CollabRelayHostTransport> ConnectAsync(string relayHost, int relayPort, string roomCode, CancellationToken cancellation)
@@ -466,6 +461,7 @@ internal sealed class CollabRelayClientTransport : CollabTransport
                 throw new Exception(string.IsNullOrEmpty(detail) ? "could not join room" : detail);
 
             var transport = new CollabRelayClientTransport(client);
+            transport.StartReadLoop();
             return transport;
         }
         catch
@@ -480,11 +476,8 @@ internal sealed class CollabRelayClientTransport : CollabTransport
         peer.Write(type, payload);
     }
 
-    /// <summary>
-    /// The relay stream carries plain framed traffic once joined — the standard read loop. Start it
-    /// only after PeerDisconnected is wired, so an immediately dying link is reported.
-    /// </summary>
-    public void StartReading() => _ = Task.Run(() => ReadLoop(_hostPeer));
+    /// <summary>The relay stream carries plain framed traffic once joined — reuse the standard read loop.</summary>
+    internal void StartReadLoop() => _ = Task.Run(() => ReadLoop(_hostPeer));
 
     /// <summary>No UDP pinhole through the relay — presence rides the reliable channel.</summary>
     public void SendPresence(ReadOnlySpan<byte> payload)
@@ -493,8 +486,6 @@ internal sealed class CollabRelayClientTransport : CollabTransport
     }
 
     public override IReadOnlyList<CollabPeerConnection> Peers => _hostPeer == null ? [] : [_hostPeer];
-
-    public override CollabPeerConnection? HostLink => _hostPeer;
 
     public override void Dispose()
     {
