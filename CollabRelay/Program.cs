@@ -173,18 +173,8 @@ internal static class Program
         }
         finally
         {
-            if (room != null)
-            {
-                // A departing member keeps its slot until its "left" line has been queued on the
-                // host's serialized write gate. Freeing the slot first would let a newcomer take
-                // it and announce itself before the stale "left", and the host would drop the
-                // newcomer when that line arrived. Holding the entry (not the room gate) for the
-                // duration keeps joins and routing moving while preserving the order.
-                if (role == "join" && IsRoomMember(room, slot, client))
-                    await NotifyMemberLeftAsync(room, slot);
-
-                RemoveClient(room, client, role == "host", slot);
-            }
+            if (room != null && RemoveClient(room, client, role == "host", slot))
+                await NotifyMemberLeftAsync(room, slot);
 
             client.Close();
         }
@@ -254,15 +244,6 @@ internal static class Program
     {
         var cleaned = new string((code ?? "").Where(char.IsLetterOrDigit).Take(12).ToArray());
         return cleaned.Length == 0 ? GenerateRoomCode() : cleaned.ToUpperInvariant();
-    }
-
-    /// <summary>True while this connection still owns the slot; checked before the left announcement.</summary>
-    private static bool IsRoomMember(Room room, byte slot, TcpClient client)
-    {
-        lock (room.Gate)
-        {
-            return room.Members.TryGetValue(slot, out var member) && member == client;
-        }
     }
 
     /// <summary>Returns true when a member left (as opposed to the host).</summary>
@@ -394,11 +375,7 @@ internal static class Program
                     }
                     catch (Exception e) when (e is IOException or SocketException or ObjectDisposedException or OperationCanceledException)
                     {
-                        // A frame write that failed (or timed out) may have left part of a frame
-                        // on the host stream; the host's framing cannot recover from that, so
-                        // the host link has to be re-established instead of silently desynced.
-                        Console.WriteLine($"host write failed ({e.GetType().Name}), closing the host link");
-                        owner.Close();
+                        Console.WriteLine($"host write failed ({e.GetType().Name}), ending member connection");
                         return;
                     }
                 }
@@ -504,28 +481,12 @@ internal static class Program
 
     private static async Task WriteLineAsync(TcpClient client, string line)
     {
-        var gate = WriteGateOf(client);
         using var timeout = new CancellationTokenSource(WriteTimeoutMs);
-        try
-        {
-            await gate.WaitAsync(timeout.Token);
-        }
-        catch (OperationCanceledException)
-        {
-            // No bytes were written while waiting for the gate.
-            return;
-        }
-
+        var gate = WriteGateOf(client);
+        await gate.WaitAsync(timeout.Token);
         try
         {
             await WriteRawLineAsync(client, line, timeout.Token);
-        }
-        catch (Exception e) when (e is OperationCanceledException or IOException or SocketException)
-        {
-            // A line write cancelled or failed mid-way leaves a partial line; every later line
-            // would be appended to it and be unparseable, so the stream cannot be used any more.
-            client.Close();
-            throw;
         }
         finally
         {
