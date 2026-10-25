@@ -55,6 +55,7 @@ public sealed class EvaluationContext
         StringVariables.Clear();
             
         PbrContextSettings.SetDefaultToContext(this);
+        GeometryCapture = null;
     }
 
     /// <summary>
@@ -175,4 +176,10 @@ public sealed class EvaluationContext
 
     public LegacyParticleSystem LegacyParticleSystem;
     public ParticleSystem ParticleSystem;
+
+    /// <summary>
+    /// Set while a consumer (e.g. the laser camera) captures the geometry drawn inside its subtree.
+    /// Null when no capture pass is active, so draw ops can register through it with a cheap null check.
+    /// </summary>
+    public GeometryCapture GeometryCapture;
 }
