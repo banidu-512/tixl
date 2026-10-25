@@ -564,7 +564,7 @@ internal sealed class CollabManager
                 Leave();
                 break;
 
-            case "op" when State == SessionState.Connected:
+            case "op" when IsSessionActive:
                 HandleOp(peer, json);
                 break;
 
