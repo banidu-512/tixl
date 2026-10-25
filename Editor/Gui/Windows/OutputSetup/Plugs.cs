@@ -113,22 +113,11 @@ internal static class Plugs
         if (isLaserOutput != isLaserPlug)
             return;
 
-        _outputsToRelease.Clear();
-
         // A laser plug takes several outputs - two scanners driven by one show, a preview rig - and
         // the laser driver fans the same frame out to each. Canvas plugs stay single-bound: two
         // canvases through one sender would fight over it.
         if (!isLaserPlug)
-        {
-            foreach (var existing in machineConfig.Bindings)
-            {
-                if (existing.OutputId != outputId && BoundPlugId(existing) == plugId)
-                    _outputsToRelease.Add((existing.OutputId, plugId));
-            }
-        }
-
-        foreach (var (releasedOutputId, releasedPlugId) in _outputsToRelease)
-            machineConfig.Unbind(releasedOutputId, releasedPlugId);
+            RemoveBindingsToPlug(machineConfig, plugId, exceptOutputId: outputId);
 
         if (TryGetDisplayIndex(plugId, out var displayIndex))
             BindOutputToDisplay(machineConfig, outputId, displayIndex);
@@ -148,8 +137,15 @@ internal static class Plugs
     /// <summary>Drops one of an output's bindings, keeping the others (a laser output's other devices).</summary>
     public static void UnbindOutput(MachineConfig machineConfig, Guid outputId, Guid plugId)
     {
-        machineConfig.Unbind(outputId, plugId);
+        // Display bindings store no PlugId - it is derived from the display index - so matching the
+        // stored id directly would silently keep the binding on screen after an "Unbind".
+        RemoveBindingsToPlug(machineConfig, plugId, outputId);
         OutputSetupHandling.SaveActive();
+    }
+
+    private static void RemoveBindingsToPlug(MachineConfig machineConfig, Guid plugId, Guid? exceptOutputId = null)
+    {
+        machineConfig.Bindings.RemoveAll(b => b.OutputId != exceptOutputId && BoundPlugId(b) == plugId);
     }
     #endregion
 
@@ -347,5 +343,4 @@ internal static class Plugs
     #endregion
 
     private static readonly List<string> _displayLabels = [];
-    private static readonly List<(Guid OutputId, Guid PlugId)> _outputsToRelease = [];
 }
