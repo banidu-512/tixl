@@ -26,7 +26,7 @@ internal sealed class GraphWindow : Windows.Window
     #region Window implementation --------------------
     public GraphWindow()
     {
-        Config.Title = GetUnusedInstanceTitle(LayoutHandling.GraphPrefix, GraphWindowInstances);
+        Config.Title = LayoutHandling.GraphPrefix + _instanceNumber;
         Config.Visible = true;
 
         AllowMultipleInstances = true;
@@ -34,6 +34,7 @@ internal sealed class GraphWindow : Windows.Window
         Config.Visible = true;
         WindowFlags = ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse;
 
+        _instanceNumber++;
         GraphWindowInstances.Add(this);
     }
 
@@ -41,15 +42,10 @@ internal sealed class GraphWindow : Windows.Window
     // regular panels' Panel Background.
     protected override T3.Core.DataTypes.Vector.Color? InnerBackgroundColor => UiColors.EditorBackground;
 
+    private readonly int _instanceNumber;
+
     internal override IReadOnlyList<Gui.Windows.Window> GetInstances() => GraphWindowInstances;
     internal static readonly List<GraphWindow> GraphWindowInstances = [];
-
-    /** Arrow key navigation and other graph shortcuts need the canvas focused, not just the window around it. */
-    internal override void RequestWindowFocus()
-    {
-        base.RequestWindowFocus();
-        _focusOnNextFrame = true;
-    }
 
     public void SetWindowToNormal()
     {
@@ -78,23 +74,11 @@ internal sealed class GraphWindow : Windows.Window
             return false;
         }
 
-        ProjectView?.SaveSession();
-
-        // Programmatic opens (debug server, skills, missing operators) set up their own view and are not
-        // where the user left off.
-        var isUserOpen = tryRestoreViewArea && project.Package.OverrideHomeGuid == Guid.Empty;
-        ProjectSession? session = null;
-        if (isUserOpen)
-        {
-            ProjectSession.TryLoad(project.Package, out session);
-            LastOpenProject.Remember(project.Package);
-        }
-
         ProjectView = UserSettings.Config.GraphStyle == UserSettings.GraphStyles.Magnetic
                           ? MagGraphView.CreateWithComponents(project)
                           : Legacy.GraphView.CreateWithComponents(project);
 
-        ProjectView.SetAsFocused(session);
+        ProjectView.SetAsFocused();
         // ProjectView = MagGraphCanvas.CreateWithComponents(project);
         // ProjectView = Legacy.GraphCanvas.CreateWithComponents(project);
         ProjectView.OnCompositionChanged += CompositionChangedHandler;
@@ -103,14 +87,7 @@ internal sealed class GraphWindow : Windows.Window
         var rootSymbolChildId = rootInstance.SymbolChildId;
         var rootPath = rootInstance.InstancePath;
         var startPath = rootPath;
-        if (session != null
-            && ProjectSession.TryParsePath(session.CompositionPath, out var sessionPath)
-            && sessionPath[0] == rootSymbolChildId
-            && ProjectView.Structure.GetInstanceFromIdPath(sessionPath) != null)
-        {
-            startPath = sessionPath;
-        }
-        else if (project.Package.OverrideHomeGuid == Guid.Empty)
+        if (project.Package.OverrideHomeGuid == Guid.Empty)
         {
             var opId = UserSettings.GetLastOpenOpForWindow(Config.Title);
             if (opId != Guid.Empty && opId != rootSymbolChildId)
@@ -130,22 +107,15 @@ internal sealed class GraphWindow : Windows.Window
             return false;
         }
 
-        if (session != null)
-        {
-            ProjectView.RestoreSelectionAndHistory(session);
-            ProjectView.RestoreFocusMode(session);
-        }
-
         _focusOnNextFrame = true;
 
-        // Opening a project also frames whatever the Output View shows, unless the user's session was
-        // restored. Programmatic opens pass tryRestoreViewArea: false because they set the view themselves.
-        if (tryRestoreViewArea && session == null)
+        // Opening a project also frames whatever the Output View shows. Programmatic opens pass
+        // tryRestoreViewArea: false because they set the view themselves.
+        if (tryRestoreViewArea)
         {
             OutputWindow.RequestShowInGraphOnProjectOpen();
         }
 
-        OpenedProject.MarkShownAndUnloadStale(project);
         return true;
     }
 
@@ -204,8 +174,7 @@ internal sealed class GraphWindow : Windows.Window
 
         var windowContentHeight = (int)ImGui.GetWindowHeight();
 
-        var showsEmbeddedTimeline = UserSettings.Config.ShowTimeline && !WindowManager.TimelineWindow.IsDetached;
-        if (showsEmbeddedTimeline)
+        if (UserSettings.Config.ShowTimeline)
         {
             ProjectView.TimeLineCanvas.FoldingHeight.DrawSplit(ProjectView, out windowContentHeight);
         }
@@ -251,7 +220,7 @@ internal sealed class GraphWindow : Windows.Window
 
         ProjectView.CheckDisposal();
 
-        if (showsEmbeddedTimeline)
+        if (UserSettings.Config.ShowTimeline)
         {
             const int splitterWidth = 3;
             var availableRestHeight = ImGui.GetContentRegionAvail().Y;
@@ -278,7 +247,7 @@ internal sealed class GraphWindow : Windows.Window
         }
 
         if (UserSettings.Config.ShowMiniMap && GraphCanvas != null)
-            UiElements.DrawMiniMap(ProjectView.InstView, GraphCanvas.Canvas, GraphToolCluster.OccupiedHeight);
+            UiElements.DrawMiniMap(ProjectView.InstView, GraphCanvas.Canvas);
     }
 
     private void DrawGraphContent(ImDrawListPtr drawList)
@@ -305,10 +274,7 @@ internal sealed class GraphWindow : Windows.Window
             if (ProjectView == null)
                 return;
 
-            if (!WindowManager.TimelineWindow.IsDetached)
-                TimelineToolbar.DrawAsGraphOverlay(ProjectView);
-
-            GraphToolCluster.Draw(ProjectView);
+            TimelineToolbar.Draw(ProjectView);
         }
 
         // Draw content
@@ -330,16 +296,6 @@ internal sealed class GraphWindow : Windows.Window
                 if (!LayoutHandling.FocusMode)
                     CustomComponents.DrawWindowFocusFrame();
 
-                // Without any focused window keyboard shortcuts would go nowhere, so the graph takes the focus back
-                if (ProjectView == ProjectView.Focused
-                    && !ImGui.IsWindowFocused(ImGuiFocusedFlags.AnyWindow)
-                    && !T3Ui.IsAnyPopupOpen
-                    && !ImGui.IsAnyItemActive()
-                    && !ImGui.IsAnyMouseDown())
-                {
-                    ImGui.SetWindowFocus();
-                }
-
                 if (ImGui.IsWindowFocused())
                 {
                     ProjectView?.SetAsFocused();
@@ -354,6 +310,9 @@ internal sealed class GraphWindow : Windows.Window
             }
         }
         drawList.ChannelsMerge();
+
+        if (ProjectView != null && GraphCanvas != null)
+            Collab.CollabPresenceOverlay.Draw(ProjectView, GraphCanvas, drawList);
 
         // if (ProjectView?.InstView != null)
         //     _editDescriptionDialog.Draw(ProjectView.InstView.Symbol);

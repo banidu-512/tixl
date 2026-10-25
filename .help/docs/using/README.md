@@ -14,10 +14,8 @@ Reference and how-tos for the day-to-day work: the UI, the graph, connecting inp
 
 ## Working with graphs
 
-- [Procedural geometry](ProceduralGeometry.md) — bevel, displace, fracture and extrude
-  meshes and text on the CPU. *Experimental.*
 - [Character animation](CharacterAnimation.md) — play glTF animation clips, blend and
-  retarget poses, rig procedural geometry to skeletons. *Experimental.*
+  retarget poses, rig procedural geometry to skeletons.
 
 *Still to write:*
 

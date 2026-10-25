@@ -6,7 +6,6 @@ using T3.Core.Operator.Slots;
 using T3.Core.Utils;
 using T3.Editor.Gui.Input;
 using T3.Editor.Gui.Interaction;
-using T3.Editor.Gui.Interaction.Keyboard;
 using T3.Editor.Gui.Interaction.Variations;
 using T3.Editor.Gui.Interaction.Variations.Model;
 using T3.Editor.Gui.Styling;
@@ -214,8 +213,6 @@ internal sealed class SnapshotControlView
     {
         if (!ImGui.IsWindowFocused(ImGuiFocusedFlags.RootAndChildWindows))
             return;
-
-        KeyActionHandling.ClaimArrowKeys();
 
         var drawList = ImGui.GetWindowDrawList();
         var min = ImGui.GetWindowPos();
@@ -928,8 +925,18 @@ internal sealed class SnapshotControlView
             if (snapshot != null)
                 InputArea.DimHighlightOverride = !_modificationCheck.IsInputModified(childKey, inputSlot.Id);
 
+            var lockedByPeer = Collab.CollabManager.Instance.IsInputLockedByOther(compositionSymbolUi.Symbol.Id,
+                                                                                  symbolChildUi.Id,
+                                                                                  inputSlot.Input.Id);
+            if (lockedByPeer)
+                ImGui.BeginDisabled();
+
             var editState = inputUi.DrawParameterEdit(inputSlot, compositionSymbolUi, symbolChildUi,
                 hideNonEssentials: false, skipIfDefault: false);
+
+            if (lockedByPeer)
+                ImGui.EndDisabled();
+
             InputArea.DimHighlightOverride = null;
 
             var valueMin = ImGui.GetItemRectMin();

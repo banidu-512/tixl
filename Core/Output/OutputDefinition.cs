@@ -9,6 +9,23 @@ using T3.Serialization;
 
 namespace T3.Core.Output;
 
+/// <summary>How a laser output maps the incoming frame's extent onto the aimed zone (the setup rect).</summary>
+public enum LaserFrameMappingMode
+{
+    /// <summary>The frame is the scanner field - positions pass through untouched.</summary>
+    Off = 0,
+
+    /// <summary>The frame's actual extent fills the rect on both axes (aspect may distort).</summary>
+    Stretch = 1,
+
+    /// <summary>The frame's actual extent is scaled into the rect with its aspect preserved, centered.</summary>
+    Fit = 2,
+
+    /// <summary>The frame's actual extent fills the rect completely with its aspect preserved
+    /// (the larger scale wins); overflow beyond the scanner field is clamped away.</summary>
+    Crop = 3,
+}
+
 /// <summary>
 /// "What am I rendering for?" — a named canvas with optional device binding (per machine,
 /// stored separately) and optional calibrated camera. Covers the always-present Default,
@@ -22,6 +39,13 @@ public sealed class OutputDefinition
         public const string Format = "Format";
         public const string Projector = "Projector";
         public const string Display = "Display";
+
+        /// <summary>
+        /// A laser scanner — a pinhole projector for vector content. Carries a <see cref="ProjectorCamera"/>
+        /// (the scanner's pose and scan lens) and binds to a laser plug instead of presenting a canvas: its
+        /// content comes from a [LaserCamera] in the graph routed to this output via its OutputRef, not from slices.
+        /// </summary>
+        public const string Laser = "Laser";
     }
 
     /// <summary>
@@ -43,32 +67,6 @@ public sealed class OutputDefinition
         public System.Numerics.Vector3 ManualTarget = System.Numerics.Vector3.Zero;
         public float ManualFovYDegrees = 45;
 
-        /// <summary>Where the lens axis passes through the picture, in NDC (−1..1 from its centre to its edges); the editor
-        /// shows it as lens shift, the picture's offset from the axis. One surface can't tell it, so a solve from a single
-        /// plane takes it as given.</summary>
-        public System.Numerics.Vector2 LensAxis;
-
-        /// <summary>The surface the last single-plane solve was made from; empty when solved otherwise or not at all.</summary>
-        public Guid SolvedFromSurfaceId;
-
-        /// <summary>Whether the last solve took its zoom from <see cref="ManualFovYDegrees"/> because the surface was seen
-        /// too squarely to measure it.</summary>
-        public bool IsZoomEntered;
-
-        /// <summary>Metres from the lens to the wall the picture is measured on: what the editor's side view shows the
-        /// picture's edges at, entered from a tape measure or set by a solve. Changes neither zoom nor lens shift.</summary>
-        public float ThrowDistance = DefaultThrowDistance;
-
-        public const float DefaultThrowDistance = 2f;
-
-        /// <summary>Vertical field of view in degrees at the zoom's wide (X) and tele (Y) end; equal for a fixed lens.
-        /// <see cref="ManualFovYDegrees"/> is where the zoom currently sits.</summary>
-        public System.Numerics.Vector2 ZoomRangeDegrees = new(45, 45);
-
-        /// <summary>The projector model the lens values were taken from, as the editor's preset list names it; empty when
-        /// they were entered or measured. Only a label: the values themselves are stored above.</summary>
-        public string ModelName = string.Empty;
-
         public void WriteToJson(JsonTextWriter writer)
         {
             writer.WriteStartObject();
@@ -87,17 +85,6 @@ public sealed class OutputDefinition
             writer.WriteVector3("ManualPosition", ManualPosition);
             writer.WriteVector3("ManualTarget", ManualTarget);
             writer.WriteValue("ManualFovY", ManualFovYDegrees);
-            writer.WriteVector2("LensAxis", LensAxis);
-            if (SolvedFromSurfaceId != Guid.Empty)
-                writer.WriteObject("SolvedFromSurface", SolvedFromSurfaceId);
-
-            if (IsZoomEntered)
-                writer.WriteValue("IsZoomEntered", true);
-
-            writer.WriteValue("ThrowDistance", ThrowDistance);
-            writer.WriteVector2("ZoomRange", ZoomRangeDegrees);
-            if (!string.IsNullOrEmpty(ModelName))
-                writer.WriteString("Model", ModelName);
 
             writer.WritePropertyName("CalibrationPoints");
             writer.WriteStartArray();
@@ -121,11 +108,6 @@ public sealed class OutputDefinition
                                  ManualPosition = OutputJson.ReadVector3(token["ManualPosition"], new System.Numerics.Vector3(0, 1, 3)),
                                  ManualTarget = OutputJson.ReadVector3(token["ManualTarget"]),
                                  ManualFovYDegrees = token.ReadValueSafe("ManualFovY", 45f),
-                                 LensAxis = OutputJson.ReadVector2(token["LensAxis"]),
-                                 SolvedFromSurfaceId = OutputJson.ReadGuid(token["SolvedFromSurface"]),
-                                 IsZoomEntered = token.ReadValueSafe("IsZoomEntered", false),
-                                 ThrowDistance = token.ReadValueSafe("ThrowDistance", DefaultThrowDistance),
-                                 ModelName = token.ReadValueSafe("Model", string.Empty) ?? string.Empty,
                              };
 
             if (token["Position"] != null && token["Orientation"] != null)
@@ -133,11 +115,6 @@ public sealed class OutputDefinition
                 camera.Pose = new Pose(OutputJson.ReadVector3(token["Position"]),
                                        OutputJson.ReadQuaternion(token["Orientation"]));
             }
-
-            // Setups saved before projectors had a zoom range keep their single zoom as a fixed lens.
-            camera.ZoomRangeDegrees = token["ZoomRange"] != null
-                                          ? OutputJson.ReadVector2(token["ZoomRange"])
-                                          : new System.Numerics.Vector2(camera.ManualFovYDegrees, camera.ManualFovYDegrees);
 
             if (token["FieldOfViewY"] != null)
             {
@@ -174,7 +151,7 @@ public sealed class OutputDefinition
     {
         public Guid Id = Guid.NewGuid();
 
-        /// <summary>Empty = labelled by position ("Patch N"), which only an output's implicit patch relies on: patches get a name when created.</summary>
+        /// <summary>Empty = labelled by position ("Patch N"), so the default reads right after reordering.</summary>
         public string Name = string.Empty;
 
         /// <summary>The slice shown here; <see cref="Guid.Empty"/> while nothing is routed yet.</summary>
@@ -205,12 +182,6 @@ public sealed class OutputDefinition
         /// <summary>A fitted patch's size as a share of the largest rectangle of its aspect that fits the canvas:
         /// 1 touches the canvas edges, 0.5 is half as wide and half as tall.</summary>
         public float Scale = 1f;
-
-        /// <summary>Multiplies this patch's picture, alpha included: the layer's tint and opacity.</summary>
-        public Vector4 LayerColor = Vector4.One;
-
-        /// <summary>How this patch combines with the layers under it.</summary>
-        public LayerBlendModes BlendMode;
 
         public bool IsFitted => ScaleMode == PatchScaleModes.Fit;
 
@@ -289,12 +260,6 @@ public sealed class OutputDefinition
                 writer.WriteValue("Scale", Scale);
             }
 
-            if (LayerColor != Vector4.One)
-                writer.WriteVector4("LayerColor", LayerColor);
-
-            if (BlendMode != LayerBlendModes.Normal)
-                writer.WriteString("Blend", BlendMode.ToString());
-
             writer.WriteEndObject();
         }
 
@@ -312,10 +277,6 @@ public sealed class OutputDefinition
                                            : PatchScaleModes.Stretch,
                            AspectRatio = OutputJson.ReadVector2(token["AspectRatio"], new Vector2(16, 9)),
                            Scale = token.ReadValueSafe("Scale", 1f),
-                           LayerColor = OutputJson.ReadVector4(token["LayerColor"], Vector4.One),
-                           BlendMode = Enum.TryParse<LayerBlendModes>(token.ReadValueSafe("Blend", string.Empty), out var blend)
-                                           ? blend
-                                           : LayerBlendModes.Normal,
                        };
         }
     }
@@ -343,17 +304,6 @@ public sealed class OutputDefinition
     }
 
     /// <summary>Whether this canvas takes its size from the plug it is bound to.</summary>
-    public Patch? FindPatch(Guid patchId)
-    {
-        foreach (var patch in Patches)
-        {
-            if (patch.Id == patchId)
-                return patch;
-        }
-
-        return null;
-    }
-
     public bool FollowsPlug => CanvasResolution.Width <= 0 || CanvasResolution.Height <= 0;
 
     /// <summary>
@@ -364,18 +314,32 @@ public sealed class OutputDefinition
     public Int2 ResolvedResolution = new(1920, 1080);
     public ProjectorCamera? Camera;
 
+    /// <summary>
+    /// Optimizer + safety settings for a laser output, applied by the laser output driver before streaming.
+    /// Null on laser outputs from older setups; consumers fall back to <see cref="LaserProcessingSettings.Default"/>
+    /// (uncalibrated — only the alignment rectangle streams).
+    /// </summary>
+    public LaserProcessingSettings? LaserProcessing;
+
+    /// <summary>
+    /// How the incoming laser frame lands in the aimed zone (the setup rect): <see cref="LaserFrameMappingMode.Fit"/>
+    /// rescales the frame's actual extent into the rect with its aspect preserved, <see cref="LaserFrameMappingMode.Stretch"/>
+    /// fills both axes (may distort), Off streams the frame as the scanner field itself.
+    /// </summary>
+    public LaserFrameMappingMode FrameMapping = LaserFrameMappingMode.Fit;
+
     /// <summary>Pause presenting to this output without dropping its device binding (e.g. mute an NDI feed).</summary>
     public bool IsSending = true;
 
-    /// <summary>Canvas regions on the direct pipe. Where they draw among the surfaces is <see cref="LayerOrder"/>'s.</summary>
-    public List<Patch> Patches = [];
-
     /// <summary>
-    /// The composite order of what lands on this canvas, back to front: patch ids and the ids of the surfaces
-    /// mapped here. Empty until layers are reordered; ids missing from it (and every layer of an older setup) keep
-    /// the order from before layers could be ordered, patches under surfaces. See <see cref="OutputLayers"/>.
+    /// Which boygroup node presents this output (empty = every machine, the classic single-machine
+    /// behavior). Part of the shared Setup, so the show master assigns outputs to render nodes and
+    /// deployment carries the assignment to every client. See OutputPresentation's per-frame gate.
     /// </summary>
-    public List<Guid> LayerOrder = [];
+    public string MachineName = string.Empty;
+
+    /// <summary>Canvas regions on the direct pipe, composited in list order underneath the surfaces mapped here.</summary>
+    public List<Patch> Patches = [];
 
     /// <summary>Its card's place on the Board; null until the Board seeded one.</summary>
     public BoardPlacement? BoardPlacement;
@@ -428,6 +392,11 @@ public sealed class OutputDefinition
         writer.WriteString("Kind", Kind);
         writer.WriteInt2("CanvasResolution", CanvasResolution);
         writer.WriteValue("Send", IsSending);
+        if (Kind == Kinds.Laser)
+            writer.WriteValue("FrameMapping", (int)FrameMapping);
+        if (!string.IsNullOrEmpty(MachineName))
+            writer.WriteString("Machine", MachineName);
+
         if (Patches.Count > 0)
         {
             writer.WritePropertyName("Patches");
@@ -438,20 +407,16 @@ public sealed class OutputDefinition
             writer.WriteEndArray();
         }
 
-        if (LayerOrder.Count > 0)
-        {
-            writer.WritePropertyName("LayerOrder");
-            writer.WriteStartArray();
-            foreach (var id in LayerOrder)
-                writer.WriteValue(id.ToString());
-
-            writer.WriteEndArray();
-        }
-
         if (Camera != null)
         {
             writer.WritePropertyName("Camera");
             Camera.WriteToJson(writer);
+        }
+
+        if (LaserProcessing != null)
+        {
+            writer.WritePropertyName("LaserProcessing");
+            LaserProcessing.WriteToJson(writer);
         }
 
         if (BoardPlacement != null)
@@ -478,23 +443,18 @@ public sealed class OutputDefinition
                              Kind = token.ReadValueSafe("Kind", Kinds.Display) ?? Kinds.Display,
                              CanvasResolution = ClampResolution(OutputJson.ReadInt2(token["CanvasResolution"], new Int2(1920, 1080))),
                              IsSending = token.ReadValueSafe("Send", true),
+                             FrameMapping = (LaserFrameMappingMode)Math.Clamp(token.ReadValueSafe("FrameMapping", (int)LaserFrameMappingMode.Fit), 0, 3),
+                             MachineName = token.ReadValueSafe("Machine", string.Empty) ?? string.Empty,
                              Patches = token.ReadListSafe("Patches", Patch.ReadFromJson),
                              ReferenceImageId = OutputJson.ReadGuid(token["ReferenceImage"]),
                              ReferenceOpacity = Math.Clamp(token.ReadValueSafe("ReferenceOpacity", 0.5f), 0f, 1f),
                          };
 
-        if (token["LayerOrder"] is JArray layerOrder)
-        {
-            foreach (var idToken in layerOrder)
-            {
-                var id = OutputJson.ReadGuid(idToken);
-                if (id != Guid.Empty)
-                    output.LayerOrder.Add(id);
-            }
-        }
-
         if (token["Camera"] is JObject cameraToken)
             output.Camera = ProjectorCamera.ReadFromJson(cameraToken);
+
+        if (token["LaserProcessing"] is JObject processingToken)
+            output.LaserProcessing = LaserProcessingSettings.ReadFromJson(processingToken);
 
         if (token["BoardPlacement"] is JObject placement)
             output.BoardPlacement = BoardPlacement.ReadFromJson(placement);
