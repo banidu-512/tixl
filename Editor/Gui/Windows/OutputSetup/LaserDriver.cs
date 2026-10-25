@@ -59,39 +59,45 @@ internal static class LaserDriver
             if (output.Kind != OutputDefinition.Kinds.Laser)
                 continue;
 
-            var binding = machine.FindBinding(output.Id);
-            if (binding is not { IsLaser: true })
-                continue;
-
-            var plug = machine.FindLaserPlug(binding.PlugId);
-            if (plug == null)
-                continue;
-
-            livePlugIds.Add(plug.Id);
-
-            // Two outputs on one plug are legal (a preview rig): the stream is per plug, and the
-            // later output's frame simply wins — same as two output ops addressing one device did.
-            if (!_streams.TryGetValue(plug.Id, out var stream))
+            // One warm stream per bound plug - created even while the output is muted so the
+            // connection stays up. A laser output may bind several plugs: the same frame fans
+            // out to each device (two scanners, one show).
+            LaserPoint[]? frame = null;
+            var frameComputed = false;
+            foreach (var binding in machine.FindLaserBindings(output.Id))
             {
-                var created = LaserOutputStream.Create(plug);
-                if (created == null)
+                var plug = machine.FindLaserPlug(binding.PlugId);
+                if (plug == null)
                     continue;
 
-                _streams[plug.Id] = created;
-                stream = created;
-            }
+                livePlugIds.Add(plug.Id);
+                if (!_streams.TryGetValue(plug.Id, out var stream))
+                {
+                    var created = LaserOutputStream.Create(plug);
+                    if (created == null)
+                        continue;
 
-            if (!output.IsSending)
-                continue;
+                    _streams[plug.Id] = created;
+                    stream = created;
+                }
 
-            var frame = ComputeFrame(output, context);
-            _frameCache[output.Id] = (Stopwatch.GetTimestamp(), frame);
-            if (frame is { Length: > 0 })
-            {
-                // The stream re-applies the safety stage at the door - pass the output's current
-                // config so edited limits take effect on the next frame without recreating the stream.
-                var processing = output.LaserProcessing ?? LaserProcessingSettings.Default;
-                stream.SubmitFrame(frame, processing.Safety.ToConfig());
+                if (!output.IsSending)
+                    continue;
+
+                if (!frameComputed)
+                {
+                    frame = ComputeFrame(output, context);
+                    _frameCache[output.Id] = (Stopwatch.GetTimestamp(), frame);
+                    frameComputed = true;
+                }
+
+                if (frame is { Length: > 0 })
+                {
+                    // The stream re-applies the safety stage at the door - pass the output's current
+                    // config so edited limits take effect on the next frame without recreating the stream.
+                    var processing = output.LaserProcessing ?? LaserProcessingSettings.Default;
+                    stream.SubmitFrame(frame, processing.Safety.ToConfig());
+                }
             }
         }
 
@@ -161,6 +167,16 @@ internal static class LaserDriver
     /// </summary>
     private static LaserPoint[] ComputeFrame(OutputDefinition output, EvaluationContext? pumpContext)
     {
+        // Test screen: the alignment rectangle with the output's name, regardless of the Calibrated
+        // gate - it is the aiming aid used BEFORE calibration. The stream door still applies the
+        // safety config, so the safe zone clamps it like anything else.
+        if (_testScreenOutputs.Contains(output.Id))
+        {
+            var testSettings = output.LaserProcessing ?? LaserProcessingSettings.Default;
+            LaserPipeline.RectFromSafety(testSettings.Safety, out var cx, out var cy, out var hw, out var hh);
+            return LaserTestFrame.Build(output.Name, cx, cy, hw, hh);
+        }
+
         StructuredList? list = null;
         foreach (var camera in LaserContent.Cameras)
         {
@@ -237,6 +253,19 @@ internal static class LaserDriver
 
     /// <summary>One camera evaluation per pump interval, keyed by symbol-child id - shared by outputs routed to the same camera.</summary>
     private static readonly Dictionary<Guid, (long Pump, StructuredList? List)> _cameraPulls = [];
+
+    /// <summary>Outputs currently streaming the test screen (rectangle + output name); transient show state, never saved.</summary>
+    private static readonly HashSet<Guid> _testScreenOutputs = [];
+
+    public static bool IsTestScreen(Guid outputId) => _testScreenOutputs.Contains(outputId);
+
+    public static void SetTestScreen(Guid outputId, bool on)
+    {
+        if (on)
+            _testScreenOutputs.Add(outputId);
+        else
+            _testScreenOutputs.Remove(outputId);
+    }
 
     private static void DisposeAllStreams()
     {

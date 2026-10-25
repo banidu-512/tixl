@@ -594,10 +594,18 @@ internal static class SetupParameterView
     /// </summary>
     private static void DrawLaserOutputCard(Setup setup, MachineConfig machineConfig, OutputDefinition output)
     {
-        var binding = machineConfig.FindBinding(output.Id);
-        var boundTo = binding == null
-                          ? "unbound — drop this output on a laser plug"
-                          : $"{Plugs.BindingLabel(machineConfig, binding)} (edit the plug under Local Bindings)";
+        // A laser output may bind several plugs - the same frame fans out to each device.
+        var boundPlugNames = new List<string>();
+        foreach (var binding in machineConfig.FindLaserBindings(output.Id))
+        {
+            var plug = machineConfig.FindLaserPlug(binding.PlugId);
+            if (plug != null)
+                boundPlugNames.Add(plug.Name);
+        }
+
+        var boundTo = boundPlugNames.Count == 0
+                          ? "unbound - drop this output on a laser plug (it can bind several)"
+                          : $"→ {string.Join(", ", boundPlugNames)} (edit a plug under Local Bindings)";
         FormInputs.ApplyIndent();
         CustomComponents.StylizedText(boundTo, Fonts.FontSmall, UiColors.TextMuted);
 
@@ -804,12 +812,19 @@ internal static class SetupParameterView
             Span<int> scanRate = [device.ScanRate];
             var scanState = DrawIntsRow("Scan rate (pps)", scanRate,
                                         "Points per second requested from the DAC; 0 = the output op's own input. Stream more points per second than this or the DAC buffer drains and playback halts.",
-                                        readOnly: false);
+                                        readOnly: false, reserveRight: 22);
             if ((scanState & InputEditStateFlags.Modified) != 0)
             {
                 device.ScanRate = Math.Clamp(scanRate[0], 0, 100000);
                 OutputSetupHandling.SaveActive();
             }
+
+            DrawRowReset("ResetScanRate", "scan rate",
+                         () =>
+                             {
+                                 device.ScanRate = 30000;
+                                 OutputSetupHandling.SaveActive();
+                             }, null);
 
             DrawLaserCeilingAndSwap(machineConfig, plug, ref device.MaxBrightness, ref device.SwapColorChannels);
         }
@@ -823,6 +838,13 @@ internal static class SetupParameterView
                 device.UseMulticast = multicast;
                 OutputSetupHandling.SaveActive();
             }
+
+            DrawRowReset("ResetMulticast", "multicast",
+                         () =>
+                             {
+                                 device.UseMulticast = true;
+                                 OutputSetupHandling.SaveActive();
+                             }, null);
 
             FormInputs.DrawInputLabel("Sender name");
             if (_laserTextKey != plug.Id + ":sender")
@@ -842,13 +864,28 @@ internal static class SetupParameterView
                 OutputSetupHandling.SaveActive();
             }
 
+            ImGui.SameLine(0, 4 * T3Ui.UiScaleFactor);
+            ImGui.PushID("ResetSenderName");
+            if (CustomComponents.IconButton(Icon.Reset, Vector2.Zero))
+            {
+                device.SenderName = "TiXL";
+                _laserTextBuffer = device.SenderName;
+                OutputSetupHandling.SaveActive();
+            }
+
+            ImGui.PopID();
+            CustomComponents.TooltipForLastItem("Reset sender name", "Restores the default value.");
+
             Span<float> maxSpeed = [device.MaxScanSpeed];
-            var speedState = DrawFloatsRow("Scan speed (x)", maxSpeed, "Sent as MAXSPEED path metadata - the requested scanner-speed multiplier. 1.0 = neutral.");
+            var speedState = DrawFloatsRow("Scan speed (x)", maxSpeed, "Sent as MAXSPEED path metadata - the requested scanner-speed multiplier. 1.0 = neutral.",
+                                           reserveRight: 22);
             if ((speedState & InputEditStateFlags.Modified) != 0)
             {
                 device.MaxScanSpeed = MathF.Max(0.01f, maxSpeed[0]);
                 OutputSetupHandling.SaveActive();
             }
+
+            DrawRowReset("ResetScanSpeed", "scan speed", () => device.MaxScanSpeed = 1f, null);
 
             DrawLaserCeilingAndSwap(machineConfig, plug, ref device.MaxBrightness, ref device.SwapColorChannels);
         }
@@ -874,13 +911,28 @@ internal static class SetupParameterView
                 OutputSetupHandling.SaveActive();
             }
 
+            ImGui.SameLine(0, 4 * T3Ui.UiScaleFactor);
+            ImGui.PushID("ResetFeedName");
+            if (CustomComponents.IconButton(Icon.Reset, Vector2.Zero))
+            {
+                device.FeedName = "Laser Feed";
+                _laserTextBuffer = device.FeedName;
+                OutputSetupHandling.SaveActive();
+            }
+
+            ImGui.PopID();
+            CustomComponents.TooltipForLastItem("Reset feed name", "Restores the default value.");
+
             Span<int> sourceKey = [(int)device.SourceKey];
-            var keyState = DrawIntsRow("Source key", sourceKey, "CITP sender key; 0 = generate one at random per session.");
+            var keyState = DrawIntsRow("Source key", sourceKey, "CITP sender key; 0 = generate one at random per session.",
+                                       reserveRight: 22);
             if ((keyState & InputEditStateFlags.Modified) != 0)
             {
                 device.SourceKey = (uint)Math.Clamp(sourceKey[0], 0, int.MaxValue);
                 OutputSetupHandling.SaveActive();
             }
+
+            DrawRowReset("ResetSourceKey", "source key", () => device.SourceKey = 0, null);
 
             DrawLaserCeilingAndSwap(machineConfig, plug, ref device.MaxBrightness, ref device.SwapColorChannels);
         }
@@ -891,10 +943,21 @@ internal static class SetupParameterView
     private static void DrawLaserCeilingAndSwap(MachineConfig machineConfig, LaserPlug plug, ref float maxBrightness, ref bool swap)
     {
         Span<float> ceiling = [maxBrightness];
-        var ceilingState = DrawFloatsRow("Brightness ceiling", ceiling, "Final intensity ceiling (0..1) applied to every point right before streaming - runs inside the device, so no upstream bug can exceed it.");
+        var ceilingState = DrawFloatsRow("Brightness ceiling", ceiling, "Final intensity ceiling (0..1) applied to every point right before streaming - runs inside the device, so no upstream bug can exceed it.",
+                                         reserveRight: 22);
         if ((ceilingState & InputEditStateFlags.Modified) != 0)
         {
             maxBrightness = Math.Clamp(ceiling[0], 0f, 1f);
+            OutputSetupHandling.SaveActive();
+        }
+
+        // The resets flag through DrawRowReset and apply here: the values are ref parameters,
+        // which lambdas must not capture.
+        var ceilingReset = false;
+        DrawRowReset("ResetCeiling", "brightness ceiling", () => ceilingReset = true, null);
+        if (ceilingReset)
+        {
+            maxBrightness = 1f;
             OutputSetupHandling.SaveActive();
         }
 
@@ -902,6 +965,14 @@ internal static class SetupParameterView
         if (FormInputs.AddCheckBox("Swap color channels", ref swapChannels, "Some projectors expect the color channels as BGR - swaps R and B when on."))
         {
             swap = swapChannels;
+            OutputSetupHandling.SaveActive();
+        }
+
+        var swapReset = false;
+        DrawRowReset("ResetSwapChannels", "color channels", () => swapReset = true, null);
+        if (swapReset)
+        {
+            swap = false;
             OutputSetupHandling.SaveActive();
         }
     }
@@ -914,30 +985,37 @@ internal static class SetupParameterView
         var cam = output.Camera ??= new OutputDefinition.ProjectorCamera();
 
         Span<float> position = [cam.ManualPosition.X, cam.ManualPosition.Y, cam.ManualPosition.Z];
-        var positionState = DrawFloatsRow("Position (m)", position, "Where the scanner sits, in stage metres (X right, Y up, Z towards the viewer).");
+        var positionState = DrawFloatsRow("Position (m)", position, "Where the scanner sits, in stage metres (X right, Y up, Z towards the viewer).",
+                                          reserveRight: 22);
         BeginFieldUndo(setup, positionState);
         if ((positionState & InputEditStateFlags.Modified) != 0)
             cam.ManualPosition = new Vector3(position[0], position[1], position[2]);
 
         CommitFieldUndo(setup, "Aim laser", positionState);
+        DrawRowReset("ResetScannerPosition", "scanner position",
+                     () => cam.ManualPosition = new System.Numerics.Vector3(0, 1, 3), setup);
 
         Span<float> target = [cam.ManualTarget.X, cam.ManualTarget.Y, cam.ManualTarget.Z];
-        var targetState = DrawFloatsRow("Target (m)", target, "The stage point the beam centre hits.");
+        var targetState = DrawFloatsRow("Target (m)", target, "The stage point the beam centre hits.",
+                                        reserveRight: 22);
         BeginFieldUndo(setup, targetState);
         if ((targetState & InputEditStateFlags.Modified) != 0)
             cam.ManualTarget = new Vector3(target[0], target[1], target[2]);
 
         CommitFieldUndo(setup, "Aim laser", targetState);
+        DrawRowReset("ResetScannerTarget", "scanner target",
+                     () => cam.ManualTarget = System.Numerics.Vector3.Zero, setup);
 
         Span<float> fov = [cam.ManualFovYDegrees];
         var fovState = DrawFloatsRow("Scan angle (°)", fov,
                                      "The scanner's full optical scan angle - the aperture the ILDA field covers. ±20° galvos read 40°.",
-                                     speed: 0.1f, format: "{0:0.0}");
+                                     speed: 0.1f, format: "{0:0.0}", reserveRight: 22);
         BeginFieldUndo(setup, fovState);
         if ((fovState & InputEditStateFlags.Modified) != 0)
             cam.ManualFovYDegrees = Math.Clamp(fov[0], 1f, 179f);
 
         CommitFieldUndo(setup, "Aim laser", fovState);
+        DrawRowReset("ResetScannerFov", "scan angle", () => cam.ManualFovYDegrees = 45, setup);
 
         FormInputs.ApplyIndent();
         if (cam.Pose != null && cam.Lens != null)
@@ -972,33 +1050,43 @@ internal static class SetupParameterView
             SetupUndo.RunUndoable("Toggle laser optimization", setup, () => optimizer.EnableOptimization = enableOptimization);
         }
 
+        DrawRowReset("ResetReorderPath", "reorder path", () => optimizer.EnableOptimization = true, setup);
+
         Span<float> jump = [optimizer.MaxJumpDistance];
-        var jumpState = DrawFloatsRow("Max jump (units)", jump, "ILDA units per blanked-jump segment; the blank count between shapes scales with jump length.");
+        var jumpState = DrawFloatsRow("Max jump (units)", jump, "ILDA units per blanked-jump segment; the blank count between shapes scales with jump length.",
+                                      reserveRight: 22);
         BeginFieldUndo(setup, jumpState);
         if ((jumpState & InputEditStateFlags.Modified) != 0)
             optimizer.MaxJumpDistance = MathF.Max(1f, jump[0]);
         CommitFieldUndo(setup, "Laser optimization", jumpState);
+        DrawRowReset("ResetMaxJump", "max jump", () => optimizer.MaxJumpDistance = 5000f, setup);
 
         Span<int> blanking = [optimizer.BlankingDelayPoints];
-        var blankingState = DrawIntsRow("Blanking points", blanking, "Maximum blanked points inserted before a shape start (0..100).");
+        var blankingState = DrawIntsRow("Blanking points", blanking, "Maximum blanked points inserted before a shape start (0..100).",
+                                        reserveRight: 22);
         BeginFieldUndo(setup, blankingState);
         if ((blankingState & InputEditStateFlags.Modified) != 0)
             optimizer.BlankingDelayPoints = Math.Clamp(blanking[0], 0, 100);
         CommitFieldUndo(setup, "Laser optimization", blankingState);
+        DrawRowReset("ResetBlanking", "blanking points", () => optimizer.BlankingDelayPoints = 5, setup);
 
         Span<float> corner = [optimizer.CornerAngleThreshold];
-        var cornerState = DrawFloatsRow("Corner angle (°)", corner, "Corners sharper than this get dwell anchors.");
+        var cornerState = DrawFloatsRow("Corner angle (°)", corner, "Corners sharper than this get dwell anchors.",
+                                        reserveRight: 22);
         BeginFieldUndo(setup, cornerState);
         if ((cornerState & InputEditStateFlags.Modified) != 0)
             optimizer.CornerAngleThreshold = MathF.Max(0f, corner[0]);
         CommitFieldUndo(setup, "Laser optimization", cornerState);
+        DrawRowReset("ResetCornerAngle", "corner angle", () => optimizer.CornerAngleThreshold = 30f, setup);
 
         Span<int> anchors = [optimizer.CornerAnchorCount];
-        var anchorsState = DrawIntsRow("Corner anchors", anchors, "Repeated points at a corner (1..10) - brighter, steadier corners.");
+        var anchorsState = DrawIntsRow("Corner anchors", anchors, "Repeated points at a corner (1..10) - brighter, steadier corners.",
+                                       reserveRight: 22);
         BeginFieldUndo(setup, anchorsState);
         if ((anchorsState & InputEditStateFlags.Modified) != 0)
             optimizer.CornerAnchorCount = Math.Clamp(anchors[0], 1, 10);
         CommitFieldUndo(setup, "Laser optimization", anchorsState);
+        DrawRowReset("ResetCornerAnchors", "corner anchors", () => optimizer.CornerAnchorCount = 3, setup);
 
         FormInputs.AddSectionSubHeader("Safety");
 
@@ -1009,6 +1097,16 @@ internal static class SetupParameterView
             SetupUndo.RunUndoable("Toggle laser calibration", setup, () => safety.Calibrated = calibrated);
         }
 
+        // Test screen: the aiming aid that works BEFORE calibration - rectangle + output name, so
+        // the projector on the wall can be told apart from its siblings. Transient show state.
+        FormInputs.ApplyIndent();
+        var testScreen = LaserDriver.IsTestScreen(output.Id);
+        if (FormInputs.AddCheckBox("Test screen", ref testScreen,
+                                   "Streams the alignment rectangle with this output's name scanned inside it - regardless of Calibrated - so you can tell which projector is which. The frame preview shows it too. Master enable still gates the beam."))
+        {
+            LaserDriver.SetTestScreen(output.Id, testScreen);
+        }
+
         if (!calibrated)
         {
             Span<float> setupRect =
@@ -1017,7 +1115,7 @@ internal static class SetupParameterView
             ];
             var rectState = DrawFloatsRow("Setup rect (cx, cy, w, h)", setupRect,
                                           "The alignment rectangle in normalized field units: center -1..1, width/height 0..1 where 1 = the full scanner field. Start tiny at center and extend step by step until the rectangle fills the projection, then switch Calibrated on.",
-                                          speed: 0.001f, format: "{0:0.000}");
+                                          speed: 0.001f, format: "{0:0.000}", reserveRight: 22);
             BeginFieldUndo(setup, rectState);
             if ((rectState & InputEditStateFlags.Modified) != 0)
             {
@@ -1028,6 +1126,14 @@ internal static class SetupParameterView
             }
 
             CommitFieldUndo(setup, "Aim setup rectangle", rectState);
+            DrawRowReset("ResetSetupRect", "setup rectangle",
+                         () =>
+                             {
+                                 safety.SetupCenterX = 0f;
+                                 safety.SetupCenterY = 0f;
+                                 safety.SetupWidth = 0.04f;
+                                 safety.SetupHeight = 0.04f;
+                             }, setup);
         }
 
         var beamEnable = safety.BeamEnable;
@@ -1041,7 +1147,8 @@ internal static class SetupParameterView
             safety.SafeZoneCenterX, safety.SafeZoneCenterY, safety.SafeZoneWidth, safety.SafeZoneHeight,
         ];
         var zoneState = DrawFloatsRow("Safe zone (cx, cy, w, h)", zone,
-                                      "The region the beam may enter, in ILDA units (full field 65534 wide). Points outside are clamped in.");
+                                      "The region the beam may enter, in ILDA units (full field 65534 wide). Points outside are clamped in.",
+                                      reserveRight: 22);
         BeginFieldUndo(setup, zoneState);
         if ((zoneState & InputEditStateFlags.Modified) != 0)
         {
@@ -1052,13 +1159,22 @@ internal static class SetupParameterView
         }
 
         CommitFieldUndo(setup, "Laser safe zone", zoneState);
+        DrawRowReset("ResetSafeZone", "safe zone",
+                     () =>
+                         {
+                             safety.SafeZoneCenterX = 0f;
+                             safety.SafeZoneCenterY = 0f;
+                             safety.SafeZoneWidth = 65534f;
+                             safety.SafeZoneHeight = 65534f;
+                         }, setup);
 
         Span<float> limits =
         [
             safety.MaxStepPerPoint, safety.MaxStaticPoints, safety.MaxBrightness,
         ];
         var limitsState = DrawFloatsRow("Jump / dwell / bright", limits,
-                                        "Max jump per point (ILDA units, subdivided), max points dwelling in one place before blanking, and the show-level brightness ceiling (the plug's device ceiling stays the final audit).");
+                                        "Max jump per point (ILDA units, subdivided), max points dwelling in one place before blanking, and the show-level brightness ceiling (the plug's device ceiling stays the final audit).",
+                                        reserveRight: 22);
         BeginFieldUndo(setup, limitsState);
         if ((limitsState & InputEditStateFlags.Modified) != 0)
         {
@@ -1068,6 +1184,13 @@ internal static class SetupParameterView
         }
 
         CommitFieldUndo(setup, "Laser safety limits", limitsState);
+        DrawRowReset("ResetSafetyLimits", "safety limits",
+                     () =>
+                         {
+                             safety.MaxStepPerPoint = 4000f;
+                             safety.MaxStaticPoints = 64;
+                             safety.MaxBrightness = 1f;
+                         }, setup);
     }
 
     /// <summary>
@@ -1910,9 +2033,10 @@ internal static class SetupParameterView
     }
 
     /// <summary>Integer counterpart of <see cref="DrawFloatsRow"/>.</summary>
-    private static InputEditStateFlags DrawIntsRow(string label, Span<int> values, string? tooltip = null, bool readOnly = false)
+    private static InputEditStateFlags DrawIntsRow(string label, Span<int> values, string? tooltip = null, bool readOnly = false,
+                                                   float reserveRight = 0)
     {
-        var size = BeginValuesRow(label, tooltip, values.Length, readOnly, 0, out var gap);
+        var size = BeginValuesRow(label, tooltip, values.Length, readOnly, reserveRight, out var gap);
         var result = InputEditStateFlags.Nothing;
         for (var i = 0; i < values.Length; i++)
         {
@@ -1987,6 +2111,26 @@ internal static class SetupParameterView
 
         SetupUndo.CommitGesture(setup, name, _fieldEditOldJson);
         _fieldEditOldJson = null;
+    }
+
+    /// <summary>
+    /// A reset-to-default button appended to the row just drawn (give the row reserveRight: 22 so the
+    /// icon fits). Undoable on setup cards; machine-side rows (plugs) apply and save immediately.
+    /// </summary>
+    private static void DrawRowReset(string rowId, string what, Action reset, Setup? undoSetup)
+    {
+        ImGui.SameLine(0, 4 * T3Ui.UiScaleFactor);
+        ImGui.PushID(rowId);
+        var clicked = CustomComponents.IconButton(Icon.Reset, Vector2.Zero);
+        ImGui.PopID();
+        CustomComponents.TooltipForLastItem($"Reset {what}", "Restores the default value.");
+        if (!clicked)
+            return;
+
+        if (undoSetup != null)
+            SetupUndo.RunUndoable($"Reset {what}", undoSetup, reset);
+        else
+            reset();
     }
 
     /// <summary>

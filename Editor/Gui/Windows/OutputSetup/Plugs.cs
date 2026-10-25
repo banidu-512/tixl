@@ -90,20 +90,22 @@ internal static class Plugs
         return null;
     }
 
-    /// <summary>Binds an output to a plug (display or stream), replacing any earlier binding, and saves.</summary>
+    /// <summary>Binds an output to a plug (display, stream or laser), and saves. A plug presents one
+    /// output: binding a new one lets go of the old, or a display would be fought over and a stream
+    /// would carry two canvases through one sender, alternating frame by frame. Per-plug only - a
+    /// multi-bound laser output keeps its other devices. Laser outputs may bind several plugs (the
+    /// same frame to two scanners).</summary>
     public static void BindOutput(MachineConfig machineConfig, Guid outputId, Guid plugId)
     {
-        // A plug presents one output. Binding a new one lets go of the old, or a display would be fought over
-        // and a stream would carry two canvases through one sender, alternating frame by frame.
         _outputsToRelease.Clear();
         foreach (var existing in machineConfig.Bindings)
         {
             if (existing.OutputId != outputId && BoundPlugId(existing) == plugId)
-                _outputsToRelease.Add(existing.OutputId);
+                _outputsToRelease.Add((existing.OutputId, plugId));
         }
 
-        foreach (var releasedOutputId in _outputsToRelease)
-            machineConfig.Unbind(releasedOutputId);
+        foreach (var (releasedOutputId, releasedPlugId) in _outputsToRelease)
+            machineConfig.Unbind(releasedOutputId, releasedPlugId);
 
         if (TryGetDisplayIndex(plugId, out var displayIndex))
             BindOutputToDisplay(machineConfig, outputId, displayIndex);
@@ -117,6 +119,13 @@ internal static class Plugs
     public static void UnbindOutput(MachineConfig machineConfig, Guid outputId)
     {
         machineConfig.Unbind(outputId);
+        OutputSetupHandling.SaveActive();
+    }
+
+    /// <summary>Drops one of an output's bindings, keeping the others (a laser output's other devices).</summary>
+    public static void UnbindOutput(MachineConfig machineConfig, Guid outputId, Guid plugId)
+    {
+        machineConfig.Unbind(outputId, plugId);
         OutputSetupHandling.SaveActive();
     }
     #endregion
@@ -315,5 +324,5 @@ internal static class Plugs
     #endregion
 
     private static readonly List<string> _displayLabels = [];
-    private static readonly List<Guid> _outputsToRelease = [];
+    private static readonly List<(Guid OutputId, Guid PlugId)> _outputsToRelease = [];
 }

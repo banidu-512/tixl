@@ -150,7 +150,8 @@ internal static class SetupEntityContextMenu
                     var boundOutput = setup.FindOutput(binding.OutputId);
                     if (boundOutput != null && CustomComponents.DrawMenuItem(15, $"Unbind {boundOutput.Name}"))
                     {
-                        Plugs.UnbindOutput(plugMachineConfig, boundOutput.Id);
+                        // Per-plug: a multi-bound laser output keeps its other devices.
+                        Plugs.UnbindOutput(plugMachineConfig, boundOutput.Id, id);
                         break;
                     }
                 }
