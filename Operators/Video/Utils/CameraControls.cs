@@ -1,411 +1,250 @@
 #nullable enable
-using System.Runtime.InteropServices;
-using DirectShowLib;
-
 namespace Lib.io.video;
 
 /// <summary>
-/// The standard capture-device controls a camera may expose — pan/tilt/zoom for PTZ and gimbal cameras,
-/// focus/iris/exposure for optics, and the processing controls (brightness, contrast, ...) for regular
-/// webcams. One surface, two backends: V4L2 controls on Linux, DirectShow's IAMCameraControl /
-/// IAMVideoProcAmp on Windows. This is the cross-platform replacement for the old DirectShow settings
-/// dialog that went away with the FFmpeg capture port.
+/// The data-driven camera-control model shared by all platform backends: one
+/// <see cref="CameraControlDescriptor"/> per control (kind, range, default, auto link, menu items), one
+/// <see cref="ICameraControlBackend"/> per OS, and a <see cref="CameraControlBackendRegistry"/> that
+/// dispatches by platform. This replaces the old fixed <c>CameraControl</c> enum surface (whose hardcoded
+/// V4L2 CIDs and per-call COM binds answered only "is control X supported") with what the device actually
+/// reports — the cross-platform replacement for the DirectShow capture-filter dialog that went away with
+/// the FFmpeg capture port.
 /// </summary>
-public enum CameraControl
+public enum CameraControlKind
 {
-    Pan,
-    Tilt,
-    Roll,
-    Zoom,
-    Focus,
-    Iris,
-    Exposure,
-    Brightness,
-    Contrast,
-    Saturation,
-    Hue,
-    Gamma,
-    Sharpness,
-    WhiteBalance,
-    BacklightCompensation,
-    Gain,
-}
+    /// <summary>A plain integer control with a device-reported (or convention-estimated) range.</summary>
+    Integer,
 
-/// <summary>The device-reported (or convention-estimated) range of a control, in device units.</summary>
-public readonly record struct CameraControlRange(int Minimum, int Maximum, int Step, int Default)
-{
-    public bool Contains(int value) => value >= Minimum && value <= Maximum;
-}
+    /// <summary>A 0..1 toggle — V4L2 BOOLEAN; DirectShow controls whose reported range is exactly 0..1.</summary>
+    Boolean,
 
-public static class CameraControls
-{
+    /// <summary>A named-item menu (V4L2 type 3); <see cref="CameraControlItem.Value"/> is the query index.</summary>
+    Menu,
+
     /// <summary>
-    /// Whether the device supports the control, and its range. Ranges are device-reported where the driver
-    /// implements the query; devices that don't (e.g. the DJI Pocket 3 implements pan/tilt/zoom but not the
-    /// query) fall back to the ranges the UVC class conventions define, flagged as estimated.
-    /// Results are cached per device — call <see cref="InvalidateCache"/> when devices change.
+    /// An integer-valued menu (V4L2 type 9); <see cref="CameraControlItem.Value"/> is the driver's own
+    /// integer (the QUERYMENU union value), never a position — the menu items may be non-contiguous.
     /// </summary>
-    public static bool IsSupported(int deviceIndex, CameraControl control, out CameraControlRange range)
+    IntegerMenu,
+
+    /// <summary>An action trigger (V4L2 BUTTON, type 4) — applies on trigger, no readable value.</summary>
+    Button,
+    // V4L2 types with no representation here are skipped during enumeration: 5 INTEGER64, 6 CTRL_CLASS
+    // (the class markers 0x00980001/0x009A0001), 7 STRING, 8 BITMASK and every compound type (>= 0x0100)
+    // (videodev2.h:1841-1849).
+}
+
+/// <summary>
+/// Device-reported control state flags (V4L2 queryctrl flags; the DirectShow counterpart of the dialog
+/// graying a slider). <see cref="EstimatedRange"/> marks a range that came from UVC class conventions
+/// rather than the device.
+/// </summary>
+[Flags]
+public enum CameraControlStates
+{
+    None = 0,
+
+    /// <summary>Device reports read-only (V4L2 READ_ONLY) — the UI shows the value, no writes.</summary>
+    ReadOnly = 1,
+
+    /// <summary>V4L2 WRITE_ONLY — trigger-style, no readable value.</summary>
+    WriteOnly = 2,
+
+    /// <summary>V4L2 INACTIVE: a linked auto control is engaged (the DirectShow dialog grays the slider).</summary>
+    Inactive = 4,
+
+    /// <summary>V4L2 VOLATILE: the value changes out-of-band; never cache reads.</summary>
+    Volatile = 8,
+
+    /// <summary>V4L2 GRABBED: the control's resource is busy.</summary>
+    Grabbed = 16,
+
+    /// <summary>The range came from UVC conventions, not the device (the old "estimated" note).</summary>
+    EstimatedRange = 32,
+}
+
+/// <summary>One menu item: the value a control is SET to (the query index for V4L2 MENU, the driver's own
+/// integer for INTEGER_MENU) plus its display label.</summary>
+public readonly record struct CameraControlItem(int Value, string Label);
+
+/// <summary>
+/// One control as the device reports it. Everything is immutable value data: backends produce descriptors,
+/// the op and the control worker consume them. The canonical <see cref="Name"/> is what
+/// <see cref="CameraControlCatalog.Find"/> and <see cref="AutoControlName"/> match on (ordinal
+/// case-insensitive) — never a raw driver label.
+/// </summary>
+public sealed record CameraControlDescriptor
+{
+    /// <summary>Canonical, UI-facing name ("White Balance Temperature") from the shared vocabulary
+    /// in <see cref="CameraControlNames"/>.</summary>
+    public required string Name { get; init; }
+
+    public required CameraControlKind Kind { get; init; }
+
+    public int Minimum { get; init; }
+    public int Maximum { get; init; }
+    public int Step { get; init; }
+    public int DefaultValue { get; init; }
+
+    /// <summary>Device-units = physical * Scale — for float-based APIs (macOS zoom is exposed as 1.0 = 1x,
+    /// reported as 100 with Scale = 100 to match the UVC convention).</summary>
+    public float Scale { get; init; } = 1f;
+
+    public CameraControlStates States { get; init; } = CameraControlStates.None;
+
+    /// <summary>Menu items; may be empty even for Menu controls (uvcvideo returns no items for some menus) —
+    /// the surface then shows raw values.</summary>
+    public CameraControlItem[] Items { get; init; } = [];
+
+    /// <summary>Canonical name of the paired auto control, "" = none (the normalized auto controls themselves
+    /// are the auto side and carry no link — they are driven as ordinary Boolean/Menu controls).</summary>
+    public string AutoControlName { get; init; } = "";
+
+    /// <summary>Backend-internal identity ("v4l2:0x0098091A", "dshow:VideoProcAmp.WhiteBalance",
+    /// "avf:videoZoomFactor") — how a backend maps a descriptor back onto its driver object.</summary>
+    public required string BackendId { get; init; }
+
+    /// <summary>Last observed value, filled by the control worker's read pass (not by enumeration);
+    /// null = unread or not readable (write-only).</summary>
+    public int? CurrentValue { get; init; }
+
+    /// <summary>Last observed auto state of the control (or of its linked auto partner, for controls
+    /// WITH an <see cref="AutoControlName"/>) — filled by the worker's read pass.</summary>
+    public bool CurrentIsAuto { get; init; }
+}
+
+/// <summary>Everything one device reported in a single enumeration sweep — an immutable snapshot the op
+/// reads while the worker may already be building the next one.</summary>
+public sealed record CameraControlCatalog(
+    WebcamWithIndex Device,
+    DateTime CapturedAt,
+    IReadOnlyList<CameraControlDescriptor> Controls)
+{
+    /// <summary>Ordinal case-insensitive match on the canonical descriptor name — never on raw driver labels.</summary>
+    public CameraControlDescriptor? Find(string name)
     {
-        var key = (deviceIndex, control);
-        lock (_cacheLock)
+        foreach (var control in Controls)
         {
-            if (_cache.TryGetValue(key, out var cached))
+            if (string.Equals(control.Name, name, StringComparison.OrdinalIgnoreCase))
+                return control;
+        }
+
+        return null;
+    }
+}
+
+/// <summary>
+/// The canonical control-name vocabulary shared by every backend — the DirectShow property names are the
+/// base, plus the Linux-only normalized auto controls (V4L2 has explicit auto controls where DirectShow has
+/// Auto/Manual flags; "White Balance, Automatic" normalizes to <see cref="WhiteBalanceAuto"/> etc.).
+/// The fixed Pan/Tilt/Zoom/Focus/Exposure/Brightness inputs of [VideoDeviceInput] address these names.
+/// </summary>
+internal static class CameraControlNames
+{
+    public const string Pan = "Pan";
+    public const string Tilt = "Tilt";
+    public const string Roll = "Roll";
+    public const string Zoom = "Zoom";
+    public const string Focus = "Focus";
+    public const string Iris = "Iris";
+    public const string Exposure = "Exposure";
+    public const string Brightness = "Brightness";
+    public const string Contrast = "Contrast";
+    public const string Hue = "Hue";
+    public const string Saturation = "Saturation";
+    public const string Sharpness = "Sharpness";
+    public const string Gamma = "Gamma";
+    public const string WhiteBalance = "WhiteBalance";
+    public const string BacklightCompensation = "BacklightCompensation";
+    public const string Gain = "Gain";
+    public const string ColorEnable = "ColorEnable";
+    public const string PowerLineFrequency = "PowerLineFrequency";
+
+    // Linux-only normalized auto controls (first-class catalog entries, addressable via ControlName).
+    public const string WhiteBalanceAuto = "WhiteBalanceAuto";
+    public const string FocusAuto = "FocusAuto";
+    public const string ExposureAuto = "ExposureAuto";
+    public const string ExposureAutoPriority = "ExposureAutoPriority";
+}
+
+/// <summary>
+/// One per-OS control backend. All methods run on the control worker's thread only — never on the
+/// evaluation thread. Device handles (cached fd / COM filter) live inside the backend and are dropped
+/// through <see cref="InvalidateHandles"/> when a device may have been replaced at the same index.
+/// </summary>
+internal interface ICameraControlBackend
+{
+    /// <summary>One-shot sweep of everything the device exposes. Returns null when the device could not be
+    /// opened or has no controls.</summary>
+    CameraControlCatalog? EnumerateCatalog(WebcamWithIndex device);
+
+    /// <summary>Current value and auto state of one control. isAuto reports the control's linked auto
+    /// partner's state (DirectShow: the Get flags out-parameter; Linux: the partner control's value).</summary>
+    bool TryGetValue(WebcamWithIndex device, CameraControlDescriptor control, out int value, out bool isAuto);
+
+    /// <summary>
+    /// Writes a value. SHARED APPLY RULE: the write always lands as Manual — when the descriptor carries an
+    /// <see cref="CameraControlDescriptor.AutoControlName"/>, the backend disengages that auto first
+    /// (DirectShow implicitly via Set(prop, value, Manual); Linux via an explicit partner write; macOS via
+    /// the mode set). Without it, a write against an auto-grayed (INACTIVE) control silently no-ops.
+    /// </summary>
+    bool TrySetValue(WebcamWithIndex device, CameraControlDescriptor control, int value);
+
+    /// <summary>Engages/leaves the control's auto mode (DirectShow flag write, V4L2 partner control write,
+    /// AVFoundation mode set).</summary>
+    bool TrySetAuto(WebcamWithIndex device, CameraControlDescriptor control, bool auto);
+
+    /// <summary>Drops any cached per-device handle (fd / COM filter) so the next job re-opens the device —
+    /// called when a camera may have been replaced at the same index. The device name is informational;
+    /// identity is the index.</summary>
+    void InvalidateHandles(WebcamWithIndex device);
+}
+
+/// <summary>
+/// Platform dispatch for control backends: each per-OS backend file registers itself from its
+/// [ModuleInitializer] — <c>CameraControlBackendRegistry.Register(OperatingSystem.IsLinux,
+/// () => new V4L2CameraControls())</c> — and <see cref="Create"/> returns the first backend whose platform
+/// check passes. Until a platform registers anything (and on platforms without a backend) Create returns
+/// null and every caller must degrade to honest "device controls are not available" messaging; a backend
+/// whose native library is missing can simply not register.
+/// </summary>
+internal static class CameraControlBackendRegistry
+{
+    private static readonly object _lock = new();
+    private static readonly List<(Func<bool> PlatformCheck, Func<ICameraControlBackend> CreateBackend)> _entries = [];
+
+    /// <summary>Called by each per-OS backend file from its [ModuleInitializer]. Registration order is
+    /// registration sequence order; platform checks are expected to be mutually exclusive anyway.</summary>
+    public static void Register(Func<bool> platformCheck, Func<ICameraControlBackend> createBackend)
+    {
+        lock (_lock)
+        {
+            _entries.Add((platformCheck, createBackend));
+        }
+    }
+
+    /// <summary>The first registered backend whose platformCheck() is true, or null when none is — every
+    /// caller must handle null as "this platform has no control backend".</summary>
+    public static ICameraControlBackend? Create()
+    {
+        lock (_lock)
+        {
+            foreach (var (platformCheck, createBackend) in _entries)
             {
-                range = cached ?? default;
-                return cached.HasValue;
+                try
+                {
+                    if (platformCheck())
+                        return createBackend();
+                }
+                catch (Exception e)
+                {
+                    // A backend that cannot even construct (missing native library) must not take the op
+                    // down — the next registration, or the null "no backend" path, handles it.
+                    Log.Debug("Camera control backend failed to initialize: " + e.Message);
+                }
             }
         }
 
-        var supported = OperatingSystem.IsWindows()
-                            ? IsSupportedWindows(deviceIndex, control, out range)
-                            : IsSupportedLinux(deviceIndex, control, out range, out _);
-
-        lock (_cacheLock)
-        {
-            _cache[key] = supported ? range : null;
-        }
-
-        return supported;
+        return null;
     }
-
-    public static bool TryGetValue(int deviceIndex, CameraControl control, out int value)
-    {
-        value = 0;
-        if (OperatingSystem.IsWindows())
-            return TryGetValueWindows(deviceIndex, control, out value);
-
-        return TryOperateLinux(deviceIndex, control, query: false, ref value);
-    }
-
-    public static bool TrySetValue(int deviceIndex, CameraControl control, int value)
-    {
-        if (OperatingSystem.IsWindows())
-            return TrySetValueWindows(deviceIndex, control, value);
-
-        var dummy = value;
-        return TryOperateLinux(deviceIndex, control, query: false, ref dummy, writeValue: value);
-    }
-
-    /// <summary>True when the range came from UVC class conventions rather than a device query.</summary>
-    public static bool IsRangeEstimated(int deviceIndex, CameraControl control)
-    {
-        return !OperatingSystem.IsWindows()
-               && IsSupportedLinux(deviceIndex, control, out _, out var estimated)
-               && estimated;
-    }
-
-    public static void InvalidateCache()
-    {
-        lock (_cacheLock)
-        {
-            _cache.Clear();
-        }
-    }
-
-    public static string GetName(CameraControl control) => control.ToString();
-
-    // ---------------------------------------------------------------- Linux (V4L2)
-
-    // ioctl request numbers via the kernel's _IOWR('V', nr, struct) macro — computed, not hand-hexed (a
-    // hand-converted constant cost an afternoon: 0x27 is 39, not 27).
-    private static ulong Iowr(byte number, uint structSize)
-        => (3UL << 30) | ((ulong)structSize << 16) | (0x56UL << 8) | number;
-
-    private static readonly ulong VidIocQueryCtrl = Iowr(36, 64); // struct v4l2_queryctrl
-    private static readonly ulong VidIocGCtrl = Iowr(27, 8);      // struct v4l2_control
-    private static readonly ulong VidIocSCtrl = Iowr(28, 8);
-    private const int O_RDWR = 2;
-
-    // V4L2_CID_* — user class (0x00980900 = BASE) and camera class (0x009A0900 = CAMERA_CLASS_BASE).
-    private static readonly Dictionary<CameraControl, uint> _v4l2Ids = new()
-                                                                          {
-                                                                              [CameraControl.Pan] = 0x009A0908,
-                                                                              [CameraControl.Tilt] = 0x009A0909,
-                                                                              [CameraControl.Roll] = 0x009A0912,
-                                                                              [CameraControl.Zoom] = 0x009A090D,
-                                                                              [CameraControl.Focus] = 0x009A090A,
-                                                                              [CameraControl.Iris] = 0x009A0910,
-                                                                              [CameraControl.Exposure] = 0x009A0901,
-                                                                              [CameraControl.Brightness] = 0x00980900,
-                                                                              [CameraControl.Contrast] = 0x00980901,
-                                                                              [CameraControl.Saturation] = 0x00980902,
-                                                                              [CameraControl.Hue] = 0x00980903,
-                                                                              [CameraControl.Gamma] = 0x00980908,
-                                                                              [CameraControl.Sharpness] = 0x00980911,
-                                                                              [CameraControl.WhiteBalance] = 0x00980910,
-                                                                              [CameraControl.BacklightCompensation] = 0x00980912,
-                                                                              [CameraControl.Gain] = 0x0098090B,
-                                                                          };
-
-    [StructLayout(LayoutKind.Sequential, Pack = 1)]
-    private struct V4L2QueryCtrl
-    {
-        public uint Id;
-        public uint Type;
-
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
-        public string Name;
-
-        public int Minimum;
-        public int Maximum;
-        public int Step;
-        public int DefaultValue;
-        public uint Flags;
-        public uint Reserved0;
-        public uint Reserved1;
-    }
-
-    [StructLayout(LayoutKind.Sequential, Pack = 1)]
-    private struct V4L2Control
-    {
-        public uint Id;
-        public int Value;
-    }
-
-    [DllImport("libc", SetLastError = true)]
-    private static extern int open(string path, int flags);
-
-    [DllImport("libc", SetLastError = true)]
-    private static extern int close(int fd);
-
-    [DllImport("libc", SetLastError = true)]
-    private static extern int ioctl(int fd, ulong request, ref V4L2QueryCtrl arg);
-
-    [DllImport("libc", SetLastError = true)]
-    private static extern int ioctl(int fd, ulong request, ref V4L2Control arg);
-
-    private static bool IsSupportedLinux(int deviceIndex, CameraControl control, out CameraControlRange range, out bool estimated)
-    {
-        range = default;
-        estimated = false;
-
-        if (!_v4l2Ids.TryGetValue(control, out var id))
-            return false;
-
-        var query = new V4L2QueryCtrl { Id = id };
-        var fd = OpenDevice(deviceIndex);
-        if (fd < 0)
-            return false;
-
-        try
-        {
-            if (ioctl(fd, VidIocQueryCtrl, ref query) == 0 && query.Minimum != query.Maximum)
-            {
-                range = new CameraControlRange(query.Minimum, query.Maximum, Math.Max(query.Step, 1), query.DefaultValue);
-                return true;
-            }
-
-            // The device doesn't report ranges (some UVC implementations). Fall back to the UVC class
-            // conventions if the control at least reads back — that's what makes the DJI usable.
-            var probeValue = 0;
-            if (TryOperateLinux(deviceIndex, control, query: false, ref probeValue))
-            {
-                range = GetConventionalRange(control);
-                estimated = true;
-                return true;
-            }
-
-            return false;
-        }
-        finally
-        {
-            close(fd);
-        }
-    }
-
-    private static bool TryOperateLinux(int deviceIndex, CameraControl control, bool query, ref int value, int writeValue = 0)
-    {
-        if (!_v4l2Ids.TryGetValue(control, out var id))
-            return false;
-
-        var fd = OpenDevice(deviceIndex);
-        if (fd < 0)
-            return false;
-
-        try
-        {
-            var controlStruct = new V4L2Control { Id = id, Value = writeValue };
-            var request = query ? VidIocGCtrl : VidIocSCtrl;
-            if (ioctl(fd, request, ref controlStruct) != 0)
-                return false;
-
-            value = controlStruct.Value;
-            return true;
-        }
-        finally
-        {
-            close(fd);
-        }
-    }
-
-    private static int OpenDevice(int deviceIndex)
-    {
-        // The capture stream opens the same node through FFmpeg; V4L2 controls work through any additional
-        // file handle and apply to the device as a whole.
-        return open($"/dev/video{deviceIndex}", O_RDWR);
-    }
-
-    private static CameraControlRange GetConventionalRange(CameraControl control)
-    {
-        // UVC class conventions for devices that accept a control but don't report its range.
-        return control switch
-               {
-                   CameraControl.Pan => new CameraControlRange(-11520, 11520, 64, 0),    // 1/64 degree
-                   CameraControl.Tilt => new CameraControlRange(-11520, 11520, 64, 0),
-                   CameraControl.Roll => new CameraControlRange(-11520, 11520, 64, 0),
-                   CameraControl.Zoom => new CameraControlRange(100, 400, 1, 100),        // 100 = 1x
-                   CameraControl.Focus => new CameraControlRange(0, 255, 1, 80),
-                   CameraControl.Iris => new CameraControlRange(0, 10, 1, 5),
-                   CameraControl.Exposure => new CameraControlRange(1, 5000, 1, 166),     // 0.1 ms
-                   CameraControl.Brightness => new CameraControlRange(0, 255, 1, 128),
-                   CameraControl.Contrast => new CameraControlRange(0, 255, 1, 128),
-                   CameraControl.Saturation => new CameraControlRange(0, 255, 1, 64),
-                   CameraControl.Hue => new CameraControlRange(-180, 180, 1, 0),
-                   CameraControl.Gamma => new CameraControlRange(0, 255, 1, 128),
-                   CameraControl.Sharpness => new CameraControlRange(0, 255, 1, 128),
-                   CameraControl.WhiteBalance => new CameraControlRange(2500, 6500, 1, 4600), // kelvin
-                   CameraControl.BacklightCompensation => new CameraControlRange(0, 2, 1, 0),
-                   CameraControl.Gain => new CameraControlRange(0, 128, 1, 32),
-                   _ => new CameraControlRange(0, 255, 1, 128),
-               };
-    }
-
-    // ---------------------------------------------------------------- Windows (DirectShow)
-
-    private static bool IsSupportedWindows(int deviceIndex, CameraControl control, out CameraControlRange range)
-    {
-        range = default;
-        var filter = BindToDevice(deviceIndex);
-        if (filter == null)
-            return false;
-
-        try
-        {
-            if (TryMapToCameraControlProperty(control, out var cameraProperty))
-            {
-                var cameraControl = (IAMCameraControl)filter;
-                cameraControl.GetRange(cameraProperty, out var min, out var max, out var step, out var defaultValue, out _);
-                range = new CameraControlRange(min, max, Math.Max(step, 1), defaultValue);
-                return true;
-            }
-
-            if (TryMapToVideoProcAmpProperty(control, out var procAmpProperty))
-            {
-                var procAmp = (IAMVideoProcAmp)filter;
-                procAmp.GetRange(procAmpProperty, out var min, out var max, out var step, out var defaultValue, out _);
-                range = new CameraControlRange(min, max, Math.Max(step, 1), defaultValue);
-                return true;
-            }
-
-            return false;
-        }
-        catch
-        {
-            return false; // E_PROP_ID_UNSUPPORTED, device gone, etc.
-        }
-        finally
-        {
-            Marshal.ReleaseComObject(filter);
-        }
-    }
-
-    private static bool TryGetValueWindows(int deviceIndex, CameraControl control, out int value)
-    {
-        value = 0;
-        var filter = BindToDevice(deviceIndex);
-        if (filter == null)
-            return false;
-
-        try
-        {
-            if (TryMapToCameraControlProperty(control, out var cameraProperty))
-                return ((IAMCameraControl)filter).Get(cameraProperty, out value, out _) == 0;
-
-            if (TryMapToVideoProcAmpProperty(control, out var procAmpProperty))
-                return ((IAMVideoProcAmp)filter).Get(procAmpProperty, out value, out _) == 0;
-
-            return false;
-        }
-        catch
-        {
-            return false;
-        }
-        finally
-        {
-            Marshal.ReleaseComObject(filter);
-        }
-    }
-
-    private static bool TrySetValueWindows(int deviceIndex, CameraControl control, int value)
-    {
-        var filter = BindToDevice(deviceIndex);
-        if (filter == null)
-            return false;
-
-        try
-        {
-            if (TryMapToCameraControlProperty(control, out var cameraProperty))
-                return ((IAMCameraControl)filter).Set(cameraProperty, value, CameraControlFlags.Manual) == 0;
-
-            if (TryMapToVideoProcAmpProperty(control, out var procAmpProperty))
-                return ((IAMVideoProcAmp)filter).Set(procAmpProperty, value, VideoProcAmpFlags.Manual) == 0;
-
-            return false;
-        }
-        catch
-        {
-            return false;
-        }
-        finally
-        {
-            Marshal.ReleaseComObject(filter);
-        }
-    }
-
-    private static object? BindToDevice(int deviceIndex)
-    {
-        var devices = DsDevice.GetDevicesOfCat(FilterCategory.VideoInputDevice);
-        if (deviceIndex < 0 || deviceIndex >= devices.Length)
-            return null;
-
-        var filterGuid = typeof(IBaseFilter).GUID;
-        devices[deviceIndex].Mon.BindToObject(null!, null!, ref filterGuid, out var filter);
-        return filter;
-    }
-
-    private static bool TryMapToCameraControlProperty(CameraControl control, out CameraControlProperty property)
-    {
-        switch (control)
-        {
-            case CameraControl.Pan: property = CameraControlProperty.Pan; return true;
-            case CameraControl.Tilt: property = CameraControlProperty.Tilt; return true;
-            case CameraControl.Roll: property = CameraControlProperty.Roll; return true;
-            case CameraControl.Zoom: property = CameraControlProperty.Zoom; return true;
-            case CameraControl.Exposure: property = CameraControlProperty.Exposure; return true;
-            case CameraControl.Iris: property = CameraControlProperty.Iris; return true;
-            case CameraControl.Focus: property = CameraControlProperty.Focus; return true;
-            default: property = default; return false;
-        }
-    }
-
-    private static bool TryMapToVideoProcAmpProperty(CameraControl control, out VideoProcAmpProperty property)
-    {
-        switch (control)
-        {
-            case CameraControl.Brightness: property = VideoProcAmpProperty.Brightness; return true;
-            case CameraControl.Contrast: property = VideoProcAmpProperty.Contrast; return true;
-            case CameraControl.Hue: property = VideoProcAmpProperty.Hue; return true;
-            case CameraControl.Saturation: property = VideoProcAmpProperty.Saturation; return true;
-            case CameraControl.Sharpness: property = VideoProcAmpProperty.Sharpness; return true;
-            case CameraControl.Gamma: property = VideoProcAmpProperty.Gamma; return true;
-            case CameraControl.WhiteBalance: property = VideoProcAmpProperty.WhiteBalance; return true;
-            case CameraControl.BacklightCompensation: property = VideoProcAmpProperty.BacklightCompensation; return true;
-            case CameraControl.Gain: property = VideoProcAmpProperty.Gain; return true;
-            default: property = default; return false;
-        }
-    }
-
-    private static readonly object _cacheLock = new();
-    private static readonly Dictionary<(int DeviceIndex, CameraControl Control), CameraControlRange?> _cache = new();
 }

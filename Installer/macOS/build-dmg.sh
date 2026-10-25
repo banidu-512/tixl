@@ -172,6 +172,8 @@ cat > "$contents/Info.plist" <<PLIST
     <string>TiXL keeps your projects in your Documents folder.</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>TiXL can react to sound from a microphone or line input.</string>
+    <key>NSCameraUsageDescription</key>
+    <string>TiXL can capture live video from a webcam or capture card.</string>
 </dict>
 </plist>
 PLIST

@@ -9,9 +9,9 @@ namespace Lib.io.video;
 
 /// <summary>
 /// Captures a webcam or capture card into a texture. Devices are opened through FFmpeg — DirectShow on
-/// Windows, V4L2 on Linux — with software decode, mirroring <see cref="VideoStreamInput"/>. This replaces
-/// the OpenCV/DirectShowLib capture, which crashed in OpenCV's native initialization and could not run on
-/// Linux at all.
+/// Windows, V4L2 on Linux, AVFoundation on macOS — with software decode, mirroring
+/// <see cref="VideoStreamInput"/>. This replaces the OpenCV/DirectShowLib capture, which crashed in OpenCV's
+/// native initialization and could not run on Linux at all.
 /// </summary>
 [Guid("cd5a182e-254b-4e65-820b-ff754122614c")]
 public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolder, IStatusProvider
@@ -26,6 +26,11 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
     [Output(Guid = "A1B2C3D4-5678-90EF-1234-567890ABCDEF", DirtyFlagTrigger = DirtyFlagTrigger.Animated)]
     public new readonly Slot<string> Status = new();
 
+    /// <summary>Everything the camera reports as controls — kind, range, step, default, current value and
+    /// auto/inactive state. Built by the control worker at refresh; not status-classified.</summary>
+    [Output(Guid = "60e8db59-6f3a-4891-9232-3ff40c338432", DirtyFlagTrigger = DirtyFlagTrigger.Animated)]
+    public readonly Slot<string> ControlsCatalog = new();
+
     [Output(Guid = "868D5FFE-032C-4522-B56B-D96B30841DB7", DirtyFlagTrigger = DirtyFlagTrigger.Animated)]
     public readonly Slot<int> UpdateCount = new();
 
@@ -39,9 +44,28 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
     [Input(Guid = "3022DE8A-5D88-4A37-9799-780F2A838A6E")]
     public readonly InputSlot<float> ApplyRotationData = new();
 
+    /// <summary>Trigger that sends the ControlName/ControlValue/ControlAuto triple to the camera; self-clears.</summary>
+    [Input(Guid = "723a1471-c002-44a5-9b9e-f325d716671f")]
+    public readonly InputSlot<bool> ApplyControl = new();
+
     /// <summary>Brightness in device units; applied to the camera when the value changes.</summary>
     [Input(Guid = "D7A2F851-4C93-46B8-8E71-3B95C6E2D740")]
     public readonly InputSlot<float> Brightness = new();
+
+    /// <summary>Strict two-way switch for the generic control surface: true engages the selected control's
+    /// auto mode (ControlValue is ignored); false, the default, applies ControlValue as a manual value —
+    /// which disengages the auto mode on every backend. There is deliberately no "leave auto untouched".</summary>
+    [Input(Guid = "145615c4-c65b-49e9-abb5-78338579e7a3")]
+    public readonly InputSlot<bool> ControlAuto = new();
+
+    /// <summary>The device control to drive, chosen from everything the camera reports (see ControlsCatalog).</summary>
+    [Input(Guid = "694ce2cc-cbdc-49d2-a591-6ac0d5fa16bd")]
+    public readonly InputSlot<string> ControlName = new();
+
+    /// <summary>Value in device units for the selected control; for menu controls, the selected item's
+    /// CameraControlItem.Value (query index for MENU, the driver's own integer for integer menus).</summary>
+    [Input(Guid = "06c894a8-fe69-4cf6-bf54-b9c155b8f035")]
+    public readonly InputSlot<float> ControlValue = new();
 
     [Input(Guid = "11F7432D-31F1-44B9-8F75-B1569B314B13")]
     public readonly InputSlot<int> CustomFps = new();
@@ -105,6 +129,11 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
     private int _storeDeviceIndex = -1;
     private int _width;
 
+    // Owns ALL camera-control I/O on its own thread; created lazily on first use (no thread until the
+    // first enqueue) and disposed with the op. Only touched from the evaluation thread.
+    private CameraControlWorker? _controlWorker;
+    private string _lastSeenControlMessage = "";
+
     // The most recent frame as packed RGBA, shared between the capture thread and the render thread.
     private byte[]? _sharedRgba;
     private int _sharedWidth;
@@ -122,18 +151,19 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
     {
         _basicConfigs =
             [
-                (Pan, CameraControl.Pan),
-                (Tilt, CameraControl.Tilt),
-                (Zoom, CameraControl.Zoom),
-                (Focus, CameraControl.Focus),
-                (Exposure, CameraControl.Exposure),
-                (Brightness, CameraControl.Brightness),
+                (Pan, CameraControlNames.Pan),
+                (Tilt, CameraControlNames.Tilt),
+                (Zoom, CameraControlNames.Zoom),
+                (Focus, CameraControlNames.Focus),
+                (Exposure, CameraControlNames.Exposure),
+                (Brightness, CameraControlNames.Brightness),
             ];
 
         Texture.UpdateAction = Update;
         UpdateCount.UpdateAction = Update;
         Resolution.UpdateAction = Update;
         Status.UpdateAction = Update;
+        ControlsCatalog.UpdateAction = Update;
     }
 
     public IStatusProvider.StatusLevel GetStatusLevel()
@@ -151,6 +181,27 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
     private void SetStatus(string message)
     {
         _lastStatusMessage = message;
+    }
+
+    // An empty device list is generic on Windows/Linux but usually means the macOS privacy gate: without
+    // camera access, AVFoundation hides every device from the process, which reads like a missing camera.
+    private static string GetNoDevicesStatusMessage()
+    {
+        if (OperatingSystem.IsMacOS() && MacCameraPermission.TryGetVideoAuthorizationStatus(out var status))
+        {
+            switch (status)
+            {
+                case MacCameraPermission.AuthorizationStatus.Denied:
+                case MacCameraPermission.AuthorizationStatus.Restricted:
+                    return "Error: No capture devices found — macOS camera access is denied. "
+                         + "Allow the editor under System Settings → Privacy & Security → Camera, then trigger Reconnect.";
+                case MacCameraPermission.AuthorizationStatus.NotDetermined:
+                    return "Error: No capture devices found — macOS camera permission has not been granted yet. "
+                         + "Allow the editor under System Settings → Privacy & Security → Camera, then trigger Reconnect.";
+            }
+        }
+
+        return "Error: No capture devices found.";
     }
 
     private void Update(EvaluationContext context)
@@ -171,16 +222,34 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
             // The device scan is cached once per session; a reconnect is also the chance to pick up a
             // camera that was plugged in after startup.
             WebcamScan.Invalidate();
-            CameraControls.InvalidateCache();
             WebcamScan.Scan();
+
+            // A camera replaced at the same index (routine on Linux, where /dev/videoN is reused) would
+            // otherwise leave the control worker holding a dead fd/filter — drop the cached handles and
+            // re-enumerate what the (possibly new) camera exposes.
+            if (WebcamScan.TryGetIndexForName(deviceName, out var reconnectedIndex))
+            {
+                // The name matched a device, so it is non-null here.
+                var worker = GetOrCreateControlWorker();
+                var device = new WebcamWithIndex(deviceName!, reconnectedIndex);
+                worker.InvalidateHandles(device);
+                worker.EnqueueRefresh(device);
+            }
         }
+
+        // Read once, consumed in either branch below — the trigger always self-clears.
+        var applyControlTriggered = ApplyControl.GetValue(context);
 
         if (!WebcamScan.TryGetIndexForName(deviceName, out var selectedDeviceIndex))
         {
             SetStatus(WebcamScan.Devices.Count > 0
                           ? $"Error: Camera '{deviceName}' not found."
-                          : "Error: No capture devices found.");
+                          : GetNoDevicesStatusMessage());
             StopCaptureThread();
+
+            // Consume the trigger; the status above already explains the situation.
+            if (applyControlTriggered)
+                ApplyControl.SetTypedInputValue(false);
         }
         else
         {
@@ -190,14 +259,27 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
                 // (Tracked separately from _storeDeviceIndex, which only moves when capture actually
                 // starts — the re-apply must also work while the capture is idle.)
                 var hadPreviousDevice = _lastSeenDeviceIndex != -1;
+                var previousDeviceIndex = _lastSeenDeviceIndex;
                 _lastSeenDeviceIndex = selectedDeviceIndex;
                 for (var i = 0; i < _lastAppliedConfigValues.Length; i++)
                     _lastAppliedConfigValues[i] = float.NaN;
                 if (hadPreviousDevice)
                     _forceConfigApply = true;
+
+                // Refresh the control catalog for the new device — also on the first sighting after
+                // start — and drop the worker's cached handles for both devices: a camera replaced at
+                // the same index must not be driven through a stale handle. The force-applied values
+                // (below) are deferred by the worker until this refresh's snapshot arrives. The name
+                // matched the device above, so it is non-null here.
+                var worker = GetOrCreateControlWorker();
+                if (hadPreviousDevice)
+                    worker.InvalidateHandles(new WebcamWithIndex(deviceName!, previousDeviceIndex));
+                var selectedDevice = new WebcamWithIndex(deviceName!, selectedDeviceIndex);
+                worker.InvalidateHandles(selectedDevice);
+                worker.EnqueueRefresh(selectedDevice);
             }
 
-            ApplyBasicConfigs(context, selectedDeviceIndex);
+            ApplyBasicConfigs(context, deviceName!, selectedDeviceIndex);
 
             var deviceIsActive = Active.GetValue(context);
             var deactivateWhenNotShowing = DeactivateWhenNotShowing.GetValue(context);
@@ -220,6 +302,12 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
             else
             {
                 StopCaptureThread();
+            }
+
+            if (applyControlTriggered)
+            {
+                ApplyControl.SetTypedInputValue(false);
+                EnqueueGenericControlApply(context, deviceName!, selectedDeviceIndex);
             }
         }
 
@@ -259,6 +347,24 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
             Resolution.Value = new Int2(frameWidth, frameHeight);
         }
 
+        // Control-worker publications: a new control status message is copied into the op status once
+        // (the capture loop keeps overwriting with "Running", like the old synchronous applies did), and
+        // the catalog text feeds the ControlsCatalog output. No slot is ever written from the worker
+        // thread — these are volatile reads of the worker's publications.
+        if (_controlWorker != null)
+        {
+            var controlMessage = _controlWorker.LastControlMessage;
+            if (controlMessage.Length > 0 && controlMessage != _lastSeenControlMessage)
+            {
+                _lastSeenControlMessage = controlMessage;
+                SetStatus(controlMessage);
+            }
+
+            var catalogText = _controlWorker.CatalogText;
+            if (ControlsCatalog.Value != catalogText)
+                ControlsCatalog.Value = catalogText;
+        }
+
         Status.Value = _lastStatusMessage;
     }
 
@@ -271,7 +377,8 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
     // the last value sent to the device (NaN = not sent yet), so unchanged inputs never touch the camera —
     // including at graph load, until a value is actually edited or patched. All entries are independent, so
     // several settings can be configured at once. Initialized in the constructor (references inputs).
-    private readonly (InputSlot<float> Input, CameraControl Control)[] _basicConfigs = null!;
+    // Controls are addressed by canonical name (see CameraControlNames) instead of the old enum.
+    private readonly (InputSlot<float> Input, string ControlName)[] _basicConfigs = null!;
 
     private readonly float[] _lastAppliedConfigValues =
         [float.NaN, float.NaN, float.NaN, float.NaN, float.NaN, float.NaN];
@@ -281,7 +388,7 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
     private bool _forceConfigApply;
     private int _lastSeenDeviceIndex = -1;
 
-    private void ApplyBasicConfigs(EvaluationContext context, int deviceIndex)
+    private void ApplyBasicConfigs(EvaluationContext context, string deviceName, int deviceIndex)
     {
         var forceApply = _forceConfigApply;
         _forceConfigApply = false;
@@ -305,29 +412,39 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
             if (value == last)
                 continue;
 
-            var control = _basicConfigs[i].Control;
-            if (CameraControls.IsSupported(deviceIndex, control, out var range))
-            {
-                var requestedValue = (int)MathF.Round(value);
-                if (CameraControls.TrySetValue(deviceIndex, control, requestedValue))
-                {
-                    var actualValue = CameraControls.TryGetValue(deviceIndex, control, out var readBack) ? readBack : requestedValue;
-                    var clampedNote = actualValue != requestedValue ? $" (device clamped to {actualValue})" : "";
-                    var rangeNote = CameraControls.IsRangeEstimated(deviceIndex, control) ? " — device did not report a range" : "";
-                    SetStatus($"{control} set to {requestedValue}{clampedNote}. Range {range.Minimum}..{range.Maximum}, step {range.Step}{rangeNote}.");
-                }
-                else
-                {
-                    SetStatus($"Warning: Failed to set {control} to {requestedValue}.");
-                }
-            }
-            else
-            {
-                SetStatus($"Warning: Camera does not support {control}.");
-            }
-
+            // The apply itself runs on the control worker: the value lands as Manual (disengaging the
+            // control's linked auto mode), with read-back and status text picked up a later evaluation —
+            // success text, clamp notes and unsupported warnings no longer land in the same frame as the
+            // edit. A changed value is enqueued even for a control the device lacks; the unsupported
+            // warning comes from the worker's name resolution instead of a synchronous support gate. An
+            // animated input coalesces into one pending apply instead of one device write per frame.
+            var requestedValue = (int)MathF.Round(value);
+            GetOrCreateControlWorker().EnqueueApply(new WebcamWithIndex(deviceName, deviceIndex),
+                                                    _basicConfigs[i].ControlName, requestedValue, auto: null);
             _lastAppliedConfigValues[i] = value;
         }
+    }
+
+    private CameraControlWorker GetOrCreateControlWorker()
+        => _controlWorker ??= new CameraControlWorker();
+
+    // The generic control surface: apply whatever control the user picked from the catalog. Runs on the
+    // eval thread only up to the enqueue — the device I/O happens on the worker.
+    private void EnqueueGenericControlApply(EvaluationContext context, string deviceName, int deviceIndex)
+    {
+        var controlName = ControlName.GetValue(context);
+        if (string.IsNullOrWhiteSpace(controlName))
+        {
+            SetStatus("Warning: Pick a control name (ControlName dropdown, see ControlsCatalog) before applying.");
+            return;
+        }
+
+        var auto = ControlAuto.GetValue(context);
+        var value = (int)MathF.Round(ControlValue.GetValue(context));
+        // Strict two-way switch: engaging auto ignores the value; otherwise the value lands as Manual,
+        // which disengages the control's auto mode on every backend.
+        GetOrCreateControlWorker().EnqueueApply(new WebcamWithIndex(deviceName, deviceIndex), controlName,
+                                                auto ? null : value, auto);
     }
 
     private bool IsActiveInGraph() => true;
@@ -421,6 +538,9 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
                 // rejection — say so, or the retry loop reads like a mystery.
                 if (error != null && (error.Contains("-16") || error.Contains("busy", StringComparison.OrdinalIgnoreCase)))
                     error += " — the camera is in use by another capture op or application.";
+                else if (OperatingSystem.IsMacOS() && !MacCameraPermission.IsGrantedOrUnknown())
+                    error = "macOS camera access is not granted — allow the editor under "
+                          + "System Settings → Privacy & Security → Camera, then trigger Reconnect.";
 
                 SetStatus($"Error: Failed to open camera '{device.Name}'. {error}");
                 // The retry loop can run for a long time (device unplugged); log only state changes.
@@ -533,7 +653,9 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
             }
 
             // V4L2 cameras commonly offer their higher resolutions only as MJPEG; YUYV is bandwidth-limited.
-            if (!OperatingSystem.IsWindows())
+            // (dshow negotiates sizes itself, and avfoundation either negotiates or hard-fails the open —
+            // neither wants the extra rawvideo attempt; the default open below handles both.)
+            if (OperatingSystem.IsLinux())
             {
                 var mjpegOptions = BuildDemuxerOptions(settings, includeFormatSettings: true)!;
                 mjpegOptions["input_format"] = "mjpeg";
@@ -549,7 +671,7 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
 
         // Device-default format — when a custom size was requested it is resized in software instead.
         return VideoDecoderSession.TryOpen(url, VideoPlaybackOptimization.FastSeeking, out error,
-                                           BuildDemuxerOptions(settings, includeFormatSettings: false), inputFormat,
+                                           BuildDefaultDemuxerOptions(), inputFormat,
                                            lowLatency: true);
     }
 
@@ -559,6 +681,17 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
         {
             inputFormat = "dshow";
             return $"video={device.Name}";
+        }
+
+        if (OperatingSystem.IsMacOS())
+        {
+            // avfoundation's URL is "[[VIDEO]:[AUDIO]]" — each field a device NAME or index; a bare name
+            // selects the video input by prefix match against the device's localizedName. The name beats
+            // the index here: without camera permission the device list is empty, which silently
+            // re-numbers indices — and an out-of-range index can even fall into FFmpeg's screen-capture
+            // range instead of failing the open.
+            inputFormat = "avfoundation";
+            return device.Name;
         }
 
         inputFormat = "v4l2";
@@ -577,8 +710,27 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
             options["video_size"] = $"{width}x{height}";
         if (settings.CustomFps > 0)
             options["framerate"] = settings.CustomFps.ToString();
+        else if (OperatingSystem.IsMacOS())
+            options["framerate"] = DefaultMacFramerate;
 
         return options.Count > 0 ? options : null;
+    }
+
+    private const string DefaultMacFramerate = "30";
+
+    /// <summary>
+    /// Options for the device-default open. On macOS a fully default open cannot work: avfoundation's
+    /// built-in framerate default is ntsc (29.97), which most 30 fps webcams reject with "Selected
+    /// framerate ... is not supported" — that demuxer hard-fails instead of negotiating (ffmpeg's
+    /// avfoundation quirk), so the open needs an explicit framerate. 30 is the sensible webcam default;
+    /// the pixel format stays at its default (yuv420p, auto-overridden by the demuxer if the device
+    /// cannot deliver it).
+    /// </summary>
+    private static Dictionary<string, string>? BuildDefaultDemuxerOptions()
+    {
+        return OperatingSystem.IsMacOS()
+                   ? new Dictionary<string, string> { ["framerate"] = DefaultMacFramerate }
+                   : null;
     }
 
     #region Frame transforms (replaces the OpenCV flip/resize/warp pipeline)
@@ -756,6 +908,8 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
             return;
 
         StopCaptureThread();
+        _controlWorker?.Dispose();
+        _controlWorker = null;
         T3.Graphics.Compat.GraphicsUtilities.Dispose(ref _gpuTexture);
 
         lock (_lockObject)
@@ -817,11 +971,31 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
     #endregion
 
     #region Dropdown UI
-    string ICustomDropdownHolder.GetValueForInput(Guid inputId)
+    string? ICustomDropdownHolder.GetValueForInput(Guid inputId)
     {
         if (inputId == InputDeviceName.Id) return InputDeviceName.Value;
         if (inputId == CustomResolution.Id) return $"{CustomResolution.Value.X}x{CustomResolution.Value.Y}";
         if (inputId == CustomFps.Id) return CustomFps.Value.ToString();
+        if (inputId == ControlName.Id) return ControlName.Value;
+        if (inputId == ControlValue.Id)
+        {
+            // Menu-kind controls display their selected item as "value — label"; anything else the raw value.
+            var control = FindSelectedControl();
+            if (control is { Kind: CameraControlKind.Menu or CameraControlKind.IntegerMenu })
+            {
+                var value = (int)ControlValue.Value;
+                foreach (var item in control.Items)
+                {
+                    if (item.Value != value)
+                        continue;
+
+                    return item.Label.Length > 0 ? $"{item.Value} — {item.Label}" : item.Value.ToString();
+                }
+            }
+
+            return ((int)ControlValue.Value).ToString();
+        }
+
         return string.Empty;
     }
 
@@ -856,6 +1030,30 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
             if (!WebcamScan.GetCapabilities(deviceName).Any())
                 yield return "30";
         }
+        else if (inputId == ControlName.Id)
+        {
+            // One flat list of the device's controls in catalog order — the dropdown idiom has no grouping.
+            var catalog = _controlWorker?.CurrentCatalog;
+            if (catalog == null || catalog.Controls.Count == 0)
+            {
+                yield return "No controls found";
+                yield break;
+            }
+
+            foreach (var control in catalog.Controls)
+                yield return control.Name;
+        }
+        else if (inputId == ControlValue.Id)
+        {
+            // Second dropdown: the selected control's menu items as "value — label" strings. For non-menu
+            // controls it offers nothing and the typed value is used as-is.
+            var control = FindSelectedControl();
+            if (control == null || (control.Kind != CameraControlKind.Menu && control.Kind != CameraControlKind.IntegerMenu))
+                yield break;
+
+            foreach (var item in control.Items)
+                yield return item.Label.Length > 0 ? $"{item.Value} — {item.Label}" : item.Value.ToString();
+        }
     }
 
     void ICustomDropdownHolder.HandleResultForInput(Guid inputId, string? selected, bool isAListItem)
@@ -889,7 +1087,23 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
                 CustomFps.SetTypedInputValue((int)fps);
             }
         }
+        else if (inputId == ControlName.Id)
+        {
+            if (!string.IsNullOrEmpty(selected) && selected != "No controls found")
+                ControlName.SetTypedInputValue(selected);
+        }
+        else if (inputId == ControlValue.Id)
+        {
+            // Options carry the item's Value, never a position ("12 — 50 Hz" → 12).
+            var separatorIndex = selected?.IndexOf(" — ", StringComparison.Ordinal) ?? -1;
+            var valueText = separatorIndex >= 0 ? selected![..separatorIndex] : selected;
+            if (int.TryParse(valueText, out var itemValue))
+                ControlValue.SetTypedInputValue(itemValue);
+        }
     }
+
+    private CameraControlDescriptor? FindSelectedControl()
+        => _controlWorker?.CurrentCatalog?.Find(ControlName.Value);
     #endregion
 
 }

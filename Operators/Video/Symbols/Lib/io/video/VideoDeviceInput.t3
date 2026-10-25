@@ -86,6 +86,22 @@
     {
       "Id": "f5b900ec-ee17-123e-9972-cdd0580c104e"/*InputDeviceName*/,
       "DefaultValue": ""
+    },
+    {
+      "Id": "694ce2cc-cbdc-49d2-a591-6ac0d5fa16bd"/*ControlName*/,
+      "DefaultValue": ""
+    },
+    {
+      "Id": "06c894a8-fe69-4cf6-bf54-b9c155b8f035"/*ControlValue*/,
+      "DefaultValue": 0.0
+    },
+    {
+      "Id": "145615c4-c65b-49e9-abb5-78338579e7a3"/*ControlAuto*/,
+      "DefaultValue": false
+    },
+    {
+      "Id": "723a1471-c002-44a5-9b9e-f325d716671f"/*ApplyControl*/,
+      "DefaultValue": false
     }
   ],
   "Children": [],

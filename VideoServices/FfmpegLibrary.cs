@@ -205,6 +205,33 @@ public static class FfmpegLibrary
                                  };
     }
 
+    /// <summary>
+    /// Routes FFmpeg's log output into <paramref name="collect"/> while <paramref name="action"/> runs, then
+    /// restores the standard logging configuration. Needed for the one log-scraping case in the codebase —
+    /// avfoundation's <c>list_devices</c> device enumeration, which "prints" its device list through av_log
+    /// at Info level: Sdcb's log level gate drops those messages before the writer sees them, so the floor
+    /// has to be lowered for the duration. The writer and level are process-global and LogWriter is
+    /// write-only (it cannot be saved/restored from outside), so only this class may open that window —
+    /// keep <paramref name="action"/> short, other threads' FFmpeg messages land in the collector too.
+    /// </summary>
+    public static void WithLogCapture(Action<string> collect, Action action)
+    {
+        FFmpegLogger.LogLevel = SdcbLogLevel.Info;
+        FFmpegLogger.LogWriter = (level, message) =>
+                                 {
+                                     if (level <= SdcbLogLevel.Info && message != null)
+                                         collect(message);
+                                 };
+        try
+        {
+            action();
+        }
+        finally
+        {
+            ConfigureLogging();
+        }
+    }
+
     // The FFmpeg libraries live next to this assembly, which is not on the OS library search path inside the
     // editor's custom operator load context. So a library's inter-dependencies (avcodec → avutil/swresample)
     // won't resolve by name. Pre-load each by full path, dependencies first, so dependencies are already in

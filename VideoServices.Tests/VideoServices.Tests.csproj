@@ -31,4 +31,21 @@
     <ProjectReference Include="..\VideoServices\VideoServices.csproj" />
   </ItemGroup>
 
+  <!-- CameraControlsV4L2LiveTests exercises the Video operator package's camera-control backend on real
+       hardware. The backend types are internal to that package and the package project is not referenced
+       here, so its sources are compiled straight into the test assembly. This adds NO dependencies —
+       the V4L2 path P/Invokes only libc, and T3.Core.Logging already arrives transitively via
+       VideoServices. The WebcamWithIndex stand-in in the test file pairs with these entries. -->
+  <ItemGroup>
+    <Compile Include="..\Operators\Video\Utils\CameraControls.cs" />
+    <Compile Include="..\Operators\Video\Utils\CameraControlsV4L2.cs" />
+  </ItemGroup>
+
+  <!-- Mirrors the operator package's project-level global using (Operators/Video/Video.csproj:44):
+       the backend files call Log.Debug without a using directive. Not a dependency — T3.Core.Logging
+       already arrives transitively via VideoServices. -->
+  <ItemGroup>
+    <Using Include="T3.Core.Logging" />
+  </ItemGroup>
+
 </Project>
