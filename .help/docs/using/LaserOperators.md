@@ -35,6 +35,15 @@ and the optimization pipeline (path reorder, blanking, corner anchors) are edite
 on the output: [Laser optimization](laser/LaserOptimizer.md),
 [Laser safety](laser/Laser%20Safety.md).
 
+## Platforms
+
+The whole laser stack follows TiXL onto Windows, macOS and Linux. Scene capture
+reads GPU buffers through TiXL's graphics layer, so it works on both the D3D11
+and the Vulkan backend, and the three transports (EtherDream TCP, PONK and CITP
+multicast/UDP) are plain sockets — no platform-specific code is involved. The
+laser master button, test screen and all Output Setup editing are identical on
+every platform; only the graphics backend differs under the hood.
+
 ## Background
 
 - [Laser data model](laser/Laser%20Data%20Model.md) — how laser points flow
