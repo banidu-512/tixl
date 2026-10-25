@@ -29,6 +29,11 @@ public sealed record FailoverConfig
     public int TimeoutFactor = 3;
     public bool Preempt = true;
 
+    /// <summary>TCP port of the collaboration session the active node hosts for its standbys.
+    /// The editor pushes the collab settings' port; the default mirrors CollabProtocol.DefaultTcpPort
+    /// (Core cannot reference the editor protocol).</summary>
+    public int CollabPort = 44700;
+
     /// <summary>Adapter to send and receive heartbeats on. Empty = every usable interface.</summary>
     public string NetworkInterfaceName = "";
 
@@ -40,6 +45,7 @@ public sealed record FailoverConfig
                                              HeartbeatMs = HeartbeatMs,
                                              TimeoutFactor = TimeoutFactor,
                                              Preempt = Preempt,
+                                             CollabPort = CollabPort,
                                              NetworkInterfaceName = NetworkInterfaceName,
                                          };
 
@@ -52,6 +58,7 @@ public sealed record FailoverConfig
                && HeartbeatMs == other.HeartbeatMs
                && TimeoutFactor == other.TimeoutFactor
                && Preempt == other.Preempt
+               && CollabPort == other.CollabPort
                && string.Equals(NetworkInterfaceName, other.NetworkInterfaceName, StringComparison.OrdinalIgnoreCase);
     }
 }
@@ -114,6 +121,11 @@ public static class FailoverArbiter
         public bool AdvertisesActive;
         public long LastHeardTicks;
         public string NodeId = "";
+
+        /// <summary>Source address of the peer's heartbeats plus the collab port it advertises,
+        /// so a standby knows where to follow the active master.</summary>
+        public string Address = "";
+        public int CollabPort;
     }
 
     private static readonly Dictionary<string, PeerInfo> _peers = new(); // key: node id
@@ -142,6 +154,47 @@ public static class FailoverArbiter
         {
             lock (Gate)
                 return _config.Enabled;
+        }
+    }
+
+    public static NodeRole Role
+    {
+        get
+        {
+            lock (Gate)
+                return _role;
+        }
+    }
+
+    /// <summary>
+    /// Where the best live active peer advertises its collaboration session — the source address
+    /// of its heartbeats plus the collab port from the payload — or null while none is heard.
+    /// The editor's failover link dials this so the standby follows the active master.
+    /// </summary>
+    public static (string Address, int Port)? ActivePeerEndpoint
+    {
+        get
+        {
+            lock (Gate)
+            {
+                var now = Environment.TickCount64;
+                var timeout = TimeoutMs;
+                PeerInfo? bestActive = null;
+                foreach (var peer in _peers.Values)
+                {
+                    if (now - peer.LastHeardTicks > timeout)
+                        continue;
+
+                    if (peer.AdvertisesActive
+                        && (bestActive == null || Beats(peer.Priority, peer.NodeId, bestActive.Priority, bestActive.NodeId)))
+                        bestActive = peer;
+                }
+
+                if (bestActive == null || bestActive.Address.Length == 0 || bestActive.CollabPort <= 0)
+                    return null;
+
+                return (bestActive.Address, bestActive.CollabPort);
+            }
         }
     }
 
@@ -189,7 +242,8 @@ public static class FailoverArbiter
                     return "No peers seen";
 
                 var age = bestActive != null ? now - bestActive.LastHeardTicks : -1;
-                return $"{alive} peer(s); active peer: {(bestActive != null ? $"priority {bestActive.Priority}, heard {age} ms ago" : "none")}";
+                var where = bestActive != null && bestActive.Address.Length > 0 ? $" at {bestActive.Address}," : "";
+                return $"{alive} peer(s); active peer: {(bestActive != null ? $"priority {bestActive.Priority},{where} heard {age} ms ago" : "none")}";
             }
         }
     }
@@ -436,12 +490,14 @@ public static class FailoverArbiter
         Socket[] sockets;
         string showId;
         int priority;
+        int collabPort;
         bool advertiseActive;
         lock (Gate)
         {
             sockets = _heartbeatSockets.ToArray();
             showId = _config.ShowId;
             priority = _config.Priority;
+            collabPort = _config.CollabPort;
             // A contested node is muted but has claimed the role: it must advertise that claim, or
             // the current active keeps streaming through the handover until it hears the new active.
             advertiseActive = _role is NodeRole.Active or NodeRole.Contested;
@@ -456,6 +512,7 @@ public static class FailoverArbiter
                                                                                  id = NodeId,
                                                                                  prio = priority,
                                                                                  active = advertiseActive,
+                                                                                 port = collabPort,
                                                                              }));
 
         // One copy per interface: heartbeats are ~100 bytes, and peers that only share one NIC
@@ -498,6 +555,8 @@ public static class FailoverArbiter
                 if (heartbeat == null || string.IsNullOrEmpty(heartbeat.Show) || string.IsNullOrEmpty(heartbeat.Id))
                     continue;
 
+                var senderAddress = (remote as IPEndPoint)?.Address.ToString() ?? "";
+
                 lock (Gate)
                 {
                     if (heartbeat.Show != _config.ShowId)
@@ -520,6 +579,8 @@ public static class FailoverArbiter
                     peer.AdvertisesActive = heartbeat.Active;
                     peer.NodeId = heartbeat.Id;
                     peer.LastHeardTicks = Environment.TickCount64;
+                    peer.Address = senderAddress;
+                    peer.CollabPort = heartbeat.Port;
                 }
             }
             catch
@@ -535,6 +596,7 @@ public static class FailoverArbiter
         public string? Id { get; set; }
         public int Prio { get; set; }
         public bool Active { get; set; }
+        public int Port { get; set; }
     }
 
     /// <summary>Does (priority, id) win the election against the other side? Deterministic from both sides.</summary>

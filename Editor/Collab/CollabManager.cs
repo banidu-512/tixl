@@ -602,6 +602,11 @@ internal sealed class CollabManager
 
     private void TryAutoRejoin()
     {
+        // While failover is enabled the failover link owns session membership (a promoted backup
+        // hosts, a standby follows the active master); a stale persisted host would fight it.
+        if (T3.Core.Show.FailoverArbiter.IsEnabled)
+            return;
+
         var host = UserSettings.Config.CollabLastSessionHost;
         if (string.IsNullOrEmpty(host))
             return;
