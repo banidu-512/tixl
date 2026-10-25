@@ -135,6 +135,15 @@ namespace Lib.io.dmx
                 return;
             }
 
+            // Show failover: while this machine is Standby the failover arbiter suppresses all
+            // network output; frames stop being enqueued so the sender thread goes silent within
+            // one frame, and streaming resumes on the next frame after promotion.
+            if (T3.Core.Show.FailoverArbiter.IsOutputSuppressed)
+            {
+                SetStatus("Standby — the failover active node is streaming.", IStatusProvider.StatusLevel.Notice);
+                return;
+            }
+
             lock (_connectionLock)
             {
                 if (!_connected)
