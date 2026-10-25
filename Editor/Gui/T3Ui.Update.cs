@@ -146,6 +146,9 @@ public static partial class T3Ui
         // welcome window is closed (see the IsVisible guard below).
         CheckForVersionWelcome();
 
+        // Once the layout is up, load the project configured in Settings → Startup.
+        App.Startup.StartupProjectLoader.CheckOncePerLaunch();
+
         if (IsWindowLayoutComplete() && _versionWelcomeChecked && !WindowManager.WelcomeWindow.IsVisible)
         {
             if (!UserSettings.IsUserNameDefined())
@@ -211,7 +214,9 @@ public static partial class T3Ui
         if (isNewVersion)
             AutoBackup.PreUpgradeSnapshot.CreateForExistingProjects();
 
-        if (UserSettings.Config.ShowWelcomeOnStartup || isNewVersion)
+        // An OS-autostarted launch is a show machine booting — don't pop the welcome over the
+        // startup project; just record the version as seen.
+        if (!Program.StartedByOsAutostart && (UserSettings.Config.ShowWelcomeOnStartup || isNewVersion))
             WindowManager.WelcomeWindow.Open();
         else
             VersionMarker.MarkCurrentVersionSeen();
