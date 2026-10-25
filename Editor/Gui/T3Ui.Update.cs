@@ -35,6 +35,8 @@ public static partial class T3Ui
     {
         Profiling.KeepFrameData();
         App.DebugProtocol.DebugServer.ProcessMainThreadQueue();
+        Collab.CollabManager.Instance.Update();
+        // Reused instance: this runs every frame, and the arbiter only copies what actually changed.
         _failoverConfig.Enabled = UserSettings.Config.FailoverEnabled;
         _failoverConfig.ShowId = UserSettings.Config.FailoverShowId;
         _failoverConfig.Priority = UserSettings.Config.FailoverPriority;
@@ -42,6 +44,7 @@ public static partial class T3Ui
         _failoverConfig.TimeoutFactor = UserSettings.Config.FailoverTimeoutFactor;
         _failoverConfig.Preempt = UserSettings.Config.FailoverPreempt;
         T3.Core.Show.FailoverArbiter.ApplyConfig(_failoverConfig);
+        Show.BoygroupManager.Instance.Update();
         //ImGui.PushStyleColor(ImGuiCol.Text, UiColors.Text.Rgba);
         DragAndDropHandling.Update();
         MagGraph.Ui.DropHandling.DrawDragIndicator();

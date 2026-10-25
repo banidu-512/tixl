@@ -37,6 +37,14 @@ internal static class OutputPresentation
         }
 
         OutputStreaming.BeginFrame();
+
+        // Show failover: a Standby machine keeps rendering its local display windows but suppresses
+        // every stream-bound (network) output. Disposing the senders matters — NDI/Spout senders
+        // would otherwise keep re-sending their last frame from their own loops.
+        var failoverSuppressed = T3.Core.Show.FailoverArbiter.IsOutputSuppressed;
+        if (failoverSuppressed)
+            OutputStreaming.DisposeAll();
+
         foreach (var output in setup.Outputs)
         {
             // Send=false pauses presenting this output without dropping its binding.
@@ -51,6 +59,11 @@ internal static class OutputPresentation
             if (output.Kind == OutputDefinition.Kinds.Laser || HasLaserBinding(machineConfig, output.Id))
                 continue;
 
+            // Show distribution: an output assigned to a specific boygroup node is presented only
+            // there. Empty assignment keeps the classic every-machine behavior.
+            if (!string.IsNullOrEmpty(output.MachineName) && output.MachineName != Show.BoygroupManager.LocalNodeName)
+                continue;
+
             var binding = machineConfig.FindBinding(output.Id);
             if (binding == null)
                 continue;
@@ -63,6 +76,9 @@ internal static class OutputPresentation
             var startTimestamp = Stopwatch.GetTimestamp();
             if (binding.IsStream)
             {
+                if (failoverSuppressed)
+                    continue;
+
                 OutputStreaming.Send(machineConfig, output, binding);
             }
             else

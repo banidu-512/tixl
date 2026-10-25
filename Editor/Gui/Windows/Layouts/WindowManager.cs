@@ -66,6 +66,7 @@ internal static partial class WindowManager
     internal static readonly UtilitiesWindow UtilitiesWindow = new();
     internal static readonly SnixlWindow SnixlWindow = new();
     internal static readonly GuidedFeatureTestsWindow GuidedFeatureTestsWindow = new();
+    internal static readonly CollabWindow CollabWindow = new();
 
     /// <summary>The version-welcome window matching the running build — only the "alpha" suffix gets the import/testing variant.</summary>
     internal static readonly WelcomeWindowBase WelcomeWindow = RuntimeAssemblies.IsAlpha
@@ -101,6 +102,7 @@ internal static partial class WindowManager
                 SettingsWindow, // item shown in TiXL menu
                 ProjectSettingsWindow, // item shown in TiXL menu
                 WelcomeWindow, // opened from Help → Welcome / the version-welcome trigger
+                CollabWindow, // item shown in Window menu
             ];
 
 
