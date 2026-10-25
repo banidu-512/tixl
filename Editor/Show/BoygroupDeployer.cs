@@ -29,9 +29,6 @@ internal static class BoygroupDeployer
     public static StringComparer PathComparer { get; } =
         OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
 
-    private static bool SamePathPrefix(string fullPath, string root) =>
-        fullPath.StartsWith(root, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
-
     public sealed class InventoryEntry
     {
         public string RelativePath = "";
@@ -387,13 +384,43 @@ internal static class BoygroupDeployer
     /// <summary>Resolves a wire-supplied relative path inside the project folder, rejecting escapes.</summary>
     public static string SafeProjectPath(string projectFolder, string relativePath)
     {
-        var cleaned = relativePath.Replace('\\', '/');
+        var cleaned = (relativePath ?? "").Replace('\\', '/');
+        if (cleaned.Length == 0 || Path.IsPathRooted(cleaned))
+            throw new IOException($"Refusing path outside project: '{relativePath}'");
+
         var root = Path.GetFullPath(projectFolder);
         var fullPath = Path.GetFullPath(Path.Combine(root, cleaned));
-        if (!SamePathPrefix(fullPath, root))
+
+        // Compare against the root *including* its separator. A plain prefix check lets a sibling
+        // directory whose name starts with the root's name ("proj-evil" next to "proj") pass as
+        // inside the project, which is exactly what an absolute or climbing path can name.
+        var prefix = root.EndsWith(Path.DirectorySeparatorChar) ? root : root + Path.DirectorySeparatorChar;
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        if (!fullPath.StartsWith(prefix, comparison))
             throw new IOException($"Refusing path outside project: {relativePath}");
 
+        RejectSymlinkedAncestors(fullPath, prefix, comparison);
         return fullPath;
+    }
+
+    /// <summary>
+    /// Rejects a path that runs through an existing directory symlink. GetFullPath resolves "."
+    /// and ".." textually but never follows links, so a link inside the project folder would
+    /// otherwise redirect a write outside it. The project root itself may be a link.
+    /// </summary>
+    private static void RejectSymlinkedAncestors(string fullPath, string rootWithSeparator, StringComparison comparison)
+    {
+        var directory = Path.GetDirectoryName(fullPath);
+        while (!string.IsNullOrEmpty(directory)
+               && directory.Length > rootWithSeparator.Length
+               && directory.StartsWith(rootWithSeparator, comparison))
+        {
+            if (Directory.Exists(directory)
+                && (File.GetAttributes(directory) & FileAttributes.ReparsePoint) != 0)
+                throw new IOException($"Refusing path through a linked directory: {directory}");
+
+            directory = Path.GetDirectoryName(directory);
+        }
     }
 
     private static string SafeRelativePath(JObject message)
