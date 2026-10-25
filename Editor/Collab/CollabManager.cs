@@ -426,6 +426,12 @@ internal sealed class CollabManager
             return;
 
         DrainInboundQueue();
+
+        // A message handler can also end the session (auth failure, host bye) — the transport
+        // is gone at that point, so the remaining steps must not run.
+        if (State == SessionState.Off)
+            return;
+
         SendHeartbeatsAndPrune();
         SendLocalPresence();
         RefreshDiscoveredSessions();
@@ -490,11 +496,10 @@ internal sealed class CollabManager
 
     private void DrainInboundQueue()
     {
-        if (_transport == null)
-            return;
-
         var processed = 0;
-        while (processed < MaxInboundPerFrame && _transport.Inbound.TryDequeue(out var message))
+        // A message handler may end the session (auth failure, host bye), nulling the transport
+        // mid-loop — the null-conditional keeps the loop condition safe on the next iteration.
+        while (processed < MaxInboundPerFrame && _transport?.Inbound.TryDequeue(out var message) == true)
         {
             processed++;
             if (message.Peer.SessionClosed && message.IsPresence)
