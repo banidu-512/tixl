@@ -158,18 +158,22 @@ internal sealed class BoygroupClientTransport : BoygroupTransport
     private BoygroupClientTransport(TcpClient client)
     {
         _client = client;
-        _serverPeer = new CollabPeerConnection(client.GetStream(), 0, null);
+        // TcpClient overload: bounds UI-thread writes with a send timeout, like the collab client.
+        _serverPeer = new CollabPeerConnection(client, 0);
     }
 
     public static BoygroupClientTransport Connect(IPEndPoint endPoint)
     {
-        var client = new TcpClient();
-        client.Connect(endPoint);
+        var client = CollabProtocol.ConnectWithTimeout(endPoint);
         client.NoDelay = true;
-        var transport = new BoygroupClientTransport(client);
-        _ = Task.Run(() => transport.ReadLoop(transport._serverPeer), CancellationToken.None);
-        return transport;
+        return new BoygroupClientTransport(client);
     }
+
+    /// <summary>
+    /// Starts the reader. Call it after subscribing to <see cref="CollabTransport.PeerDisconnected"/>,
+    /// or a link that dies during the connect hand-off reports nothing and the session hangs.
+    /// </summary>
+    public void StartReading() => _ = Task.Run(() => ReadLoop(_serverPeer), CancellationToken.None);
 
     public override IReadOnlyList<CollabPeerConnection> Peers => [_serverPeer];
 

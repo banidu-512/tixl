@@ -136,11 +136,14 @@ internal sealed class BoygroupManager
             if (address == null)
                 throw new ArgumentException($"'{host}' is not a valid address");
 
-            _transport = BoygroupClientTransport.Connect(new IPEndPoint(address, port));
-            _transport.PeerDisconnected += OnPeerDisconnected;
+            var transport = BoygroupClientTransport.Connect(new IPEndPoint(address, port));
+            _transport = transport;
+            transport.PeerDisconnected += OnPeerDisconnected;
             State = BoygroupState.Client;
             StatusText = $"Joining '{group}' on {host}:{port}...";
-            SendJson(((_transport as BoygroupClientTransport)!).ServerPeer,
+            // Subscribe first, then start reading: a link that dies right now must report.
+            transport.StartReading();
+            SendJson(transport.ServerPeer,
                      new
                      {
                          t = "hello",
@@ -174,6 +177,12 @@ internal sealed class BoygroupManager
 
         _clients.Clear();
         _fileReceiver.Cancel();
+        while (_pendingDisconnects.TryDequeue(out _))
+        {
+            // Drop events from the dead session: replaying them into the next one would end it
+            // immediately (the collab manager drains its queue for the same reason).
+        }
+
         _password = "";
         GroupName = "";
         RestartPending = false;
