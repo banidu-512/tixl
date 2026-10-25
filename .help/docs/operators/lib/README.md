@@ -11,11 +11,9 @@
 - [Lib.mesh](mesh/README.md)
 - [Lib.numbers](numbers/README.md)
 - [Lib.particle](particle/README.md)
-- [Lib.physics](physics/README.md)
 - [Lib.point](point/README.md)
 - [Lib.render](render/README.md)
 - [Lib.string](string/README.md)
-- [Lib.volume](volume/README.md)
 
 ---
 
