@@ -85,17 +85,27 @@ internal static class Plugs
     /// <summary>Binds an output to a plug (display or stream), replacing any earlier binding, and saves.</summary>
     public static void BindOutput(MachineConfig machineConfig, Guid outputId, Guid plugId)
     {
-        // A plug presents one output. Binding a new one lets go of the old, or a display would be fought over
-        // and a stream would carry two canvases through one sender, alternating frame by frame.
-        _outputsToRelease.Clear();
-        foreach (var existing in machineConfig.Bindings)
-        {
-            if (existing.OutputId != outputId && BoundPlugId(existing) == plugId)
-                _outputsToRelease.Add(existing.OutputId);
-        }
+        // The kinds on either side must agree. A display or stream plug never carries a laser output
+        // (a laser output has no canvas - presenting one would throw its input full-screen on that
+        // display), and a laser plug never carries a canvas output. Every binding path funnels
+        // through here, so the rule lives here as well as in the drop matrix.
+        if (!OutputSetupHandling.TryGetActiveSetup(out var setup, out _))
+            return;
 
-        foreach (var releasedOutputId in _outputsToRelease)
-            machineConfig.Unbind(releasedOutputId);
+        var output = setup.FindOutput(outputId);
+        if (output == null)
+            return;
+
+        var isLaserOutput = output.Kind == OutputDefinition.Kinds.Laser;
+        var isLaserPlug = machineConfig.FindLaserPlug(plugId) != null;
+        if (isLaserOutput != isLaserPlug)
+            return;
+
+        // A laser plug takes several outputs - two scanners driven by one show, a preview rig - and
+        // the laser driver fans the same frame out to each. Canvas plugs stay single-bound: two
+        // canvases through one sender would fight over it.
+        if (!isLaserPlug)
+            RemoveBindingsToPlug(machineConfig, plugId, exceptOutputId: outputId);
 
         if (TryGetDisplayIndex(plugId, out var displayIndex))
             BindOutputToDisplay(machineConfig, outputId, displayIndex);
@@ -108,6 +118,20 @@ internal static class Plugs
     {
         machineConfig.Unbind(outputId);
         OutputSetupHandling.SaveActive();
+    }
+
+    /// <summary>Drops one of an output's bindings, keeping the others (a laser output's other devices).</summary>
+    public static void UnbindOutput(MachineConfig machineConfig, Guid outputId, Guid plugId)
+    {
+        // Display bindings store no PlugId - it is derived from the display index - so matching the
+        // stored id directly would silently keep the binding on screen after an "Unbind".
+        RemoveBindingsToPlug(machineConfig, plugId, outputId);
+        OutputSetupHandling.SaveActive();
+    }
+
+    private static void RemoveBindingsToPlug(MachineConfig machineConfig, Guid plugId, Guid? exceptOutputId = null)
+    {
+        machineConfig.Bindings.RemoveAll(b => b.OutputId != exceptOutputId && BoundPlugId(b) == plugId);
     }
     #endregion
 
@@ -222,5 +246,4 @@ internal static class Plugs
     #endregion
 
     private static readonly List<string> _displayLabels = [];
-    private static readonly List<Guid> _outputsToRelease = [];
 }
