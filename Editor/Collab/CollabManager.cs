@@ -1,11 +1,15 @@
 #nullable enable
 using System.Collections.Concurrent;
+using System.IO;
 using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Net.Sockets;
 using Newtonsoft.Json.Linq;
+using T3.Core.Model;
 using T3.Editor.Gui.UiHelpers;
+using T3.Editor.Gui.Window;
+using T3.Editor.Show;
 using T3.Editor.UiModel;
 using T3.Editor.UiModel.Commands;
 using T3.Editor.UiModel.ProjectHandling;
@@ -48,6 +52,9 @@ internal sealed class CollabManager
     /// <summary>Peers currently in the session (UI thread only).</summary>
     public IReadOnlyList<CollabPeerConnection> Peers => _transport?.Peers ?? [];
 
+    /// <summary>The link back to the session host on client transports, direct or relay.</summary>
+    private CollabPeerConnection? HostLink => _transport?.HostLink;
+
     public IReadOnlyList<DiscoveredSession> DiscoveredSessions => _discovered;
 
     private CollabUserIdentity _localIdentity = new();
@@ -70,6 +77,15 @@ internal sealed class CollabManager
     private readonly Dictionary<int, int> _opsReceivedThisSecond = new();
 
     private PresencePacket _localPresence = new();
+
+    /// <summary>
+    /// Completions of background connects, applied on the UI thread so a Leave() that races them
+    /// wins instead of being overwritten by a session nobody asked for.
+    /// </summary>
+    private readonly ConcurrentQueue<Action> _uiThreadActions = new();
+
+    /// <summary>Bumped by every session start and Leave; stale asynchronous completions check it.</summary>
+    private volatile int _sessionGeneration;
 
     // ---------------------------------------------------------------------------------------
     // Lifecycle
@@ -115,17 +131,21 @@ internal sealed class CollabManager
         return name.Length <= 48 ? name : name[..48];
     }
 
-    public void StartHost(int tcpPort, string password, bool enableLanDiscovery)
+    public void StartHost(int tcpPort, string password, bool enableLanDiscovery, string? projectName = null)
     {
         if (IsSessionActive)
             Leave();
 
+        ++_sessionGeneration;
         ErrorText = "";
         try
         {
             _password = password ?? "";
             _sessionLog.Clear();
             var hostName = TruncateName(_localIdentity.DisplayName);
+            _sessionProjectName = projectName
+                                  ?? ProjectView.Focused?.OpenedProject.Package.DisplayName
+                                  ?? "";
             _transport = new CollabHostTransport(tcpPort,
                                                  enableLanDiscovery,
                                                  () => new JObject
@@ -135,6 +155,9 @@ internal sealed class CollabManager
                                                                ["host"] = Environment.MachineName,
                                                                ["port"] = tcpPort,
                                                                ["pwd"] = !string.IsNullOrEmpty(_password),
+                                                               ["project"] = projectName
+                                                                             ?? ProjectView.Focused?.OpenedProject.Package.DisplayName
+                                                                             ?? "",
                                                            });
             _transport.PeerDisconnected += OnPeerDisconnectedTransport;
             State = SessionState.Hosting;
@@ -163,29 +186,44 @@ internal sealed class CollabManager
         State = SessionState.Connecting;
         StatusText = $"Registering room at {relayHost}:{relayPort}...";
 
+        var generation = ++_sessionGeneration;
+        var password = UserSettings.Config.CollabPassword ?? "";
         _ = Task.Run(async () =>
                 {
                     try
                     {
-                        _password = UserSettings.Config.CollabPassword ?? "";
-                        _sessionLog.Clear();
-                        var hostName = TruncateName(_localIdentity.DisplayName);
                         var transport = await CollabRelayHostTransport.ConnectAsync(relayHost, relayPort, "", CancellationToken.None);
-                        transport.PeerDisconnected += OnPeerDisconnectedTransport;
-                        _transport = transport;
-                        RoomCode = transport.AssignedRoomCode;
-                        State = SessionState.Hosting;
-                        StatusText = $"Hosting via relay, room {RoomCode}";
-                        Log.Info($"Collab: hosting via relay {relayHost}:{relayPort}, room {RoomCode}");
+                        _uiThreadActions.Enqueue(() => CompleteRelayHostConnect(transport, generation, password, relayHost, relayPort));
                     }
                     catch (Exception e)
                     {
-                        ErrorText = $"Relay hosting failed: {e.Message}";
-                        StatusText = "Failed to host";
-                        State = SessionState.Off;
-                        Log.Warning($"Collab: relay hosting failed: {e.Message}");
+                        ReportRelayFailure(generation, "Relay hosting failed", "Failed to host", e);
                     }
                 });
+    }
+
+    /// <summary>
+    /// UI thread: adopts a relay host link. The connect runs on a pool thread, so the user may have
+    /// left (or started another session) while it was in flight; a stale completion is discarded
+    /// and its room registration released instead of resurrecting the session.
+    /// </summary>
+    private void CompleteRelayHostConnect(CollabRelayHostTransport transport, int generation, string password, string relayHost, int relayPort)
+    {
+        if (generation != _sessionGeneration)
+        {
+            transport.Dispose();
+            return;
+        }
+
+        _password = password;
+        _sessionLog.Clear();
+        transport.PeerDisconnected += OnPeerDisconnectedTransport;
+        transport.StartReading();
+        _transport = transport;
+        RoomCode = transport.AssignedRoomCode;
+        State = SessionState.Hosting;
+        StatusText = $"Hosting via relay, room {RoomCode}";
+        Log.Info($"Collab: hosting via relay {relayHost}:{relayPort}, room {RoomCode}");
     }
 
     /// <summary>Joins a relay-hosted room by code.</summary>
@@ -204,33 +242,61 @@ internal sealed class CollabManager
         State = SessionState.Connecting;
         StatusText = $"Joining room {roomCode} via {relayHost}:{relayPort}...";
 
+        var generation = ++_sessionGeneration;
+        var passwordToUse = password ?? "";
         _ = Task.Run(async () =>
                 {
                     try
                     {
-                        _password = password ?? "";
-                        _sessionLog.Clear();
                         var transport = await CollabRelayClientTransport.ConnectAsync(relayHost, relayPort, roomCode, CancellationToken.None);
-                        _transport = transport;
-                        _transport.PeerDisconnected += OnPeerDisconnectedTransport;
-                        SendJson(transport.HostPeer, new
-                                                         {
-                                                             t = "hello",
-                                                             proto = CollabProtocol.ProtocolVersion,
-                                                             name = _localIdentity.DisplayName,
-                                                             userId = _localIdentity.UserId,
-                                                         });
-                        State = SessionState.Connecting;
-                        StatusText = "Connected to relay, waiting for host...";
+                        _uiThreadActions.Enqueue(() => CompleteRelayClientConnect(transport, generation, passwordToUse));
                     }
                     catch (Exception e)
                     {
-                        ErrorText = $"Relay join failed: {e.Message}";
-                        StatusText = "Connection failed";
-                        State = SessionState.Off;
-                        Log.Warning($"Collab: relay join failed: {e.Message}");
+                        ReportRelayFailure(generation, "Relay join failed", "Connection failed", e);
                     }
                 });
+    }
+
+    /// <summary>UI thread: adopts a joined relay link, unless that join was abandoned meanwhile.</summary>
+    private void CompleteRelayClientConnect(CollabRelayClientTransport transport, int generation, string password)
+    {
+        if (generation != _sessionGeneration)
+        {
+            transport.Dispose();
+            return;
+        }
+
+        _password = password;
+        _sessionLog.Clear();
+        _transport = transport;
+        transport.PeerDisconnected += OnPeerDisconnectedTransport;
+        transport.StartReading();
+        SendJson(transport.HostPeer, new
+                                         {
+                                             t = "hello",
+                                             proto = CollabProtocol.ProtocolVersion,
+                                             name = _localIdentity.DisplayName,
+                                             userId = _localIdentity.UserId,
+                                         });
+        State = SessionState.Connecting;
+        StatusText = "Connected to relay, waiting for host...";
+    }
+
+    /// <summary>UI thread: surfaces an asynchronous relay failure only for the session that asked.</summary>
+    private void ReportRelayFailure(int generation, string errorPrefix, string statusText, Exception exception)
+    {
+        var message = exception.Message;
+        _uiThreadActions.Enqueue(() =>
+                                     {
+                                         if (generation != _sessionGeneration)
+                                             return;
+
+                                         ErrorText = $"{errorPrefix}: {message}";
+                                         StatusText = statusText;
+                                         State = SessionState.Off;
+                                         Log.Warning($"Collab: {errorPrefix.ToLowerInvariant()}: {message}");
+                                     });
     }
 
     public void JoinDirect(string hostAddress, int tcpPort, string password)
@@ -238,7 +304,9 @@ internal sealed class CollabManager
         if (IsSessionActive)
             Leave();
 
+        ++_sessionGeneration;
         ErrorText = "";
+        _joinedHost = $"{hostAddress}:{tcpPort}";
         State = SessionState.Connecting;
         StatusText = $"Connecting to {hostAddress}:{tcpPort}...";
 
@@ -252,11 +320,6 @@ internal sealed class CollabManager
 
             _password = password ?? "";
             _sessionLog.Clear();
-            _localAwaitedAuth = new PendingHandshake
-                                    {
-                                        Salt = null,
-                                        Nonce = null,
-                                    };
             var transport = new CollabClientTransport(new IPEndPoint(address, tcpPort));
             _transport = transport;
             _transport.PeerDisconnected += OnPeerDisconnectedTransport;
@@ -295,6 +358,9 @@ internal sealed class CollabManager
 
     public void Leave()
     {
+        // Anything still connecting becomes stale; its completion is discarded.
+        ++_sessionGeneration;
+
         if (_transport != null)
         {
             _transport.PeerDisconnected -= OnPeerDisconnectedTransport;
@@ -304,6 +370,18 @@ internal sealed class CollabManager
 
         _sessionLog.Clear();
         _opsReceivedThisSecond.Clear();
+        _pendingAuth.Clear();
+        _chatLog.Clear();
+        foreach (var upload in _projectUploads.Values)
+            upload.Sender?.Dispose();
+
+        _projectUploads.Clear();
+        _projectDownload?.Cancel();
+        _projectDownload = null;
+        _hostProjectName = "";
+        _sessionProjectName = "";
+        UserSettings.Config.CollabLastSessionHost = "";
+        UserSettings.Save();
         while (_pendingDisconnects.TryDequeue(out _))
         {
             // Drop disconnect events from the dead session; replaying them into a future
@@ -415,6 +493,41 @@ internal sealed class CollabManager
 
     public void Update()
     {
+        // Apply background connect results first: they may install or (when stale) release a
+        // transport, and everything below depends on the current session state.
+        while (_uiThreadActions.TryDequeue(out var uiThreadAction))
+        {
+            try
+            {
+                uiThreadAction();
+            }
+            catch (Exception e)
+            {
+                Log.Warning($"Collab: applying a session update failed: {e.Message}");
+            }
+        }
+
+        // Auto-rejoin shortly after launch (e.g. after a project download restarted us).
+        if (State == SessionState.Off)
+        {
+            if (_rejoinCheckTicks == 0)
+            {
+                _rejoinCheckTicks = Environment.TickCount64 + 8000;
+            }
+            else if (Environment.TickCount64 > _rejoinCheckTicks && !_rejoinAttempted)
+            {
+                _rejoinAttempted = true;
+                TryAutoRejoin();
+            }
+        }
+
+        if (_restartAtTicks > 0 && Environment.TickCount64 > _restartAtTicks)
+        {
+            _restartAtTicks = 0;
+            EditorRestart.TryRestart();
+            return;
+        }
+
         if (State == SessionState.Off)
             return;
 
@@ -432,9 +545,27 @@ internal sealed class CollabManager
         if (State == SessionState.Off)
             return;
 
+        PumpProjectUploads();
         SendHeartbeatsAndPrune();
         SendLocalPresence();
         RefreshDiscoveredSessions();
+    }
+
+    private long _rejoinCheckTicks;
+    private bool _rejoinAttempted;
+
+    private void TryAutoRejoin()
+    {
+        var host = UserSettings.Config.CollabLastSessionHost;
+        if (string.IsNullOrEmpty(host))
+            return;
+
+        var separator = host.LastIndexOf(':');
+        if (separator <= 0 || !int.TryParse(host[(separator + 1)..], out var port))
+            return;
+
+        Log.Info($"Collab: auto-rejoining last session {host}");
+        JoinDirect(host[..separator], port, UserSettings.Config.CollabPassword ?? "");
     }
 
     private void ProcessPendingDisconnects()
@@ -452,7 +583,9 @@ internal sealed class CollabManager
             _roster.Remove(peer.AssignedId);
             _rosterUserIds.Remove(peer.AssignedId);
             _latestPresenceByPeer.Remove(peer.AssignedId);
+            _pendingAuth.Remove(peer);
             DropLocksOwnedBy(peer.AssignedId);
+            DropProjectUpload(peer);
 
             if (State == SessionState.Hosting)
             {
@@ -541,13 +674,24 @@ internal sealed class CollabManager
     private void HandleJson(CollabPeerConnection peer, JObject json)
     {
         var type = CollabProtocol.GetString(json, "t");
+
+        // Only the handshake may arrive before a peer authenticated. Everything else either
+        // mutates the shared graph, locks parameters or streams project files, and a
+        // password-protected host must not let a connection that never passed the challenge
+        // do any of those.
+        if (!peer.IsAuthenticated && type is not ("hello" or "auth" or "welcome" or "authOk" or "authFail"))
+        {
+            Log.Debug($"Collab: ignoring '{type}' from unauthenticated {peer}");
+            return;
+        }
+
         switch (type)
         {
             case "hello" when State == SessionState.Hosting:
                 HandleHostHello(peer, json);
                 break;
 
-            case "welcome":
+            case "welcome" when State == SessionState.Connecting:
                 HandleClientWelcome(json);
                 break;
 
@@ -555,11 +699,11 @@ internal sealed class CollabManager
                 HandleHostAuth(peer, json);
                 break;
 
-            case "authOk":
+            case "authOk" when State == SessionState.Connecting:
                 HandleClientAuthOk(peer, json);
                 break;
 
-            case "authFail":
+            case "authFail" when State == SessionState.Connecting:
                 ErrorText = "Rejected by host: " + CollabProtocol.GetString(json, "reason", "authentication failed");
                 Leave();
                 break;
@@ -588,7 +732,7 @@ internal sealed class CollabManager
                 SendSyncLog(peer);
                 break;
 
-            case "syncStart":
+            case "syncStart" when State == SessionState.Connected:
                 _syncBatch = 0;
                 Log.Debug("Collab: applying host composition snapshots...");
                 break;
@@ -602,11 +746,11 @@ internal sealed class CollabManager
 
                 break;
 
-            case "syncEnd":
+            case "syncEnd" when State == SessionState.Connected:
                 Log.Info($"Collab: replay complete ({_syncBatch} ops)");
                 break;
 
-            case "peerJoined":
+            case "peerJoined" when State == SessionState.Connected:
             {
                 var name = CollabProtocol.GetString(json, "name", "?");
                 if (CollabProtocol.TryGetInt(json, "id", out var joinedId))
@@ -617,21 +761,50 @@ internal sealed class CollabManager
                 }
 
                 Log.Info($"Collab: {name} joined");
+                AppendChat(null, $"{name} joined");
                 StatusText = State == SessionState.Hosting
                                  ? $"Hosting{(!string.IsNullOrEmpty(RoomCode) ? $" (room {RoomCode})" : "")}, {_roster.Count} participant(s)"
                                  : StatusText;
                 break;
             }
 
-            case "peerLeft":
+            case "peerLeft" when State == SessionState.Connected:
             {
                 var name = CollabProtocol.GetString(json, "name", "?");
                 if (CollabProtocol.TryGetInt(json, "id", out var leftId))
                     _roster.Remove(leftId);
 
                 Log.Info($"Collab: {name} left");
+                AppendChat(null, $"{name} left");
                 break;
             }
+
+            case "chat" when IsSessionActive:
+            {
+                // Hosts relay chat to everyone else; both sides show it in the session chat log.
+                var text = CollabProtocol.GetString(json, "text");
+                if (string.IsNullOrEmpty(text))
+                    break;
+
+                var sender = CollabProtocol.GetString(json, "name", "?");
+                AppendChat(sender, text);
+                if (State == SessionState.Hosting)
+                    BroadcastSystemMessage(json, except: peer);
+                break;
+            }
+
+            case "requestProject" when State == SessionState.Hosting:
+                HandleRequestProject(peer, json);
+                break;
+
+            case "projectBegin":
+            case "fileBegin":
+            case "fileChunk":
+            case "fileEnd":
+            case "projectDone":
+            case "projectFail":
+                HandleProjectDownload(peer, json);
+                break;
 
             case "notice":
                 Log.Debug($"Collab host: {CollabProtocol.GetString(json, "msg")}");
@@ -655,7 +828,12 @@ internal sealed class CollabManager
         public byte[]? Nonce;
     }
 
-    private PendingHandshake? _localAwaitedAuth;
+    /// <summary>
+    /// Challenge per peer. A single shared challenge made simultaneous joins clobber each other:
+    /// the second hello overwrote the first nonce, so the first participant's correct answer was
+    /// rejected, and completing one handshake discarded every other peer's pending challenge.
+    /// </summary>
+    private readonly Dictionary<CollabPeerConnection, PendingHandshake> _pendingAuth = new();
 
     private void HandleHostHello(CollabPeerConnection peer, JObject json)
     {
@@ -671,7 +849,7 @@ internal sealed class CollabManager
 
         var salt = CollabAuth.CreateSalt();
         var nonce = CollabAuth.CreateNonce();
-        _localAwaitedAuth = new PendingHandshake { Salt = salt, Nonce = nonce };
+        _pendingAuth[peer] = new PendingHandshake { Salt = salt, Nonce = nonce };
         SendJson(peer, new
                            {
                                t = "welcome",
@@ -684,8 +862,7 @@ internal sealed class CollabManager
 
     private void HandleHostAuth(CollabPeerConnection peer, JObject json)
     {
-        var pending = _localAwaitedAuth;
-        if (pending?.Salt == null || pending.Nonce == null)
+        if (!_pendingAuth.TryGetValue(peer, out var pending) || pending.Salt == null || pending.Nonce == null)
         {
             RejectPeer(peer, "no challenge pending");
             return;
@@ -712,7 +889,7 @@ internal sealed class CollabManager
     private void CompleteHostAuth(CollabPeerConnection peer)
     {
         peer.IsAuthenticated = true;
-        _localAwaitedAuth = null;
+        _pendingAuth.Remove(peer);
         _roster[peer.AssignedId] = peer.Name;
         _rosterUserIds[peer.AssignedId] = peer.UserId;
 
@@ -739,6 +916,7 @@ internal sealed class CollabManager
                                hostUserId = _localIdentity.UserId,
                                peers = peersPayload,
                                logCount = _sessionLog.Count,
+                               project = _sessionProjectName,
                            });
 
         BroadcastSystemMessage(new
@@ -756,6 +934,7 @@ internal sealed class CollabManager
     private void RejectPeer(CollabPeerConnection peer, string reason)
     {
         Log.Info($"Collab: rejected peer {peer}: {reason}");
+        _pendingAuth.Remove(peer);
         SendJson(peer, new { t = "authFail", reason });
         peer.SessionClosed = true;
         peer.Close();
@@ -763,7 +942,7 @@ internal sealed class CollabManager
 
     private void HandleClientWelcome(JObject json)
     {
-        if (State != SessionState.Connecting || _transport is not CollabClientTransport client)
+        if (State != SessionState.Connecting || HostLink is not { } host)
             return;
 
         var passwordRequired = json["pwd"]?.Value<bool>() ?? false;
@@ -780,7 +959,7 @@ internal sealed class CollabManager
 
         var key = CollabAuth.DeriveKey(_password, salt);
         var mac = CollabAuth.ComputeMac(key, nonce);
-        SendJson(client.HostPeer, new { t = "auth", mac = CollabAuth.ToHexString(mac) });
+        SendJson(host, new { t = "auth", mac = CollabAuth.ToHexString(mac) });
     }
 
     private void HandleClientAuthOk(CollabPeerConnection peer, JObject json)
@@ -815,6 +994,86 @@ internal sealed class CollabManager
         State = SessionState.Connected;
         StatusText = $"Connected as {_localIdentity.DisplayName}";
         SendJson(peer, new { t = "requestSync" });
+
+        // Remember the session so a restart (e.g. after a project download) can rejoin, then make
+        // sure the host's project is open locally — download it when this machine doesn't have it.
+        UserSettings.Config.CollabLastSessionHost = _joinedHost;
+        UserSettings.Save();
+        _hostProjectName = CollabProtocol.GetString(json, "project");
+        EnsureHostProjectAvailable();
+    }
+
+    /// <summary>host:port of the session this client dialed into (persisted for auto-rejoin).</summary>
+    private string _joinedHost = "";
+
+    private string _sessionProjectName = "";
+    private string _hostProjectName = "";
+
+    /// <summary>
+    /// Opens the host's project locally, or asks the host to stream it over when it doesn't exist
+    /// here. Once the files have landed the editor restarts and auto-rejoins; from then on the
+    /// session only syncs deltas.
+    /// </summary>
+    private void EnsureHostProjectAvailable()
+    {
+        // Only direct sessions: the persisted auto-rejoin target (`_joinedHost`) is a host:port, so
+        // a relay joiner that restarted for a download could not rejoin by room code.
+        if (string.IsNullOrEmpty(_hostProjectName) || _transport is not CollabClientTransport { HostPeer: { } host })
+            return;
+
+        if (TryOpenProjectByName(_hostProjectName))
+            return;
+
+        Log.Info($"Collab: requesting project '{_hostProjectName}' from host");
+        StatusText = $"Downloading project '{ShortProjectName(_hostProjectName)}' from host...";
+        SendJson(host, new { t = "requestProject", project = _hostProjectName });
+    }
+
+    internal static string ShortProjectName(string displayName)
+    {
+        // Created projects get a "<name> (<namespace>)" display name.
+        var paren = displayName.IndexOf(" (", StringComparison.Ordinal);
+        return paren > 0 ? displayName[..paren] : displayName;
+    }
+
+    /// <summary>Opens a local project by display name (short form accepted) into the visible graph window.</summary>
+    internal static bool TryOpenProjectByName(string name)
+    {
+        foreach (var p in SymbolPackage.AllPackages)
+        {
+            if (p is not EditorSymbolPackage editorPackage
+                || !(string.Equals(editorPackage.DisplayName, name, StringComparison.OrdinalIgnoreCase)
+                     || editorPackage.DisplayName.StartsWith(name + " (", StringComparison.OrdinalIgnoreCase)))
+                continue;
+
+            if (!OpenedProject.TryCreate(editorPackage, out var openedProject, out var failureLog)
+                || openedProject == null)
+            {
+                Log.Warning($"Collab: could not open project '{name}': {failureLog}");
+                return false;
+            }
+
+            GraphWindow? graphWindow = null;
+            foreach (var window in GraphWindow.GraphWindowInstances)
+            {
+                if (!window.Config.Visible)
+                    continue;
+
+                graphWindow = window;
+                break;
+            }
+
+            graphWindow ??= GraphWindow.GraphWindowInstances.Count > 0 ? GraphWindow.GraphWindowInstances[0] : null;
+            if (graphWindow == null || !graphWindow.TrySetToProject(openedProject, tryRestoreViewArea: false))
+            {
+                Log.Warning($"Collab: could not open project '{name}' in a graph window");
+                return false;
+            }
+
+            return true;
+        }
+
+        return false;
     }
 
     // ---------------------------------------------------------------------------------------
@@ -844,9 +1103,9 @@ internal sealed class CollabManager
         {
             BroadcastSystemMessage(envelope, except: null);
         }
-        else if (State == SessionState.Connected && _transport is CollabClientTransport client)
+        else if (State == SessionState.Connected && HostLink is { } host)
         {
-            SendJson(client.HostPeer, envelope);
+            SendJson(host, envelope);
         }
     }
 
@@ -911,9 +1170,9 @@ internal sealed class CollabManager
             return true;
         }
 
-        if (State == SessionState.Connected && _transport is CollabClientTransport client)
+        if (State == SessionState.Connected && HostLink is { } host)
         {
-            SendJson(client.HostPeer, new { t = "undoRequest" });
+            SendJson(host, new { t = "undoRequest" });
             return true;
         }
 
@@ -931,9 +1190,9 @@ internal sealed class CollabManager
             return true;
         }
 
-        if (State == SessionState.Connected && _transport is CollabClientTransport client)
+        if (State == SessionState.Connected && HostLink is { } host)
         {
-            SendJson(client.HostPeer, new { t = "redoRequest" });
+            SendJson(host, new { t = "redoRequest" });
             return true;
         }
 
@@ -1101,8 +1360,15 @@ internal sealed class CollabManager
             return;
 
         var key = new LockKey(compositionId, childId, inputId);
-        var ownerPeerId = acquire ? peer.AssignedId : json["id"]?.Value<int>() ?? peer.AssignedId;
 
+        // On a host the sender owns the lock; an "id" in its message is only a claim. On a client
+        // the message was relayed by the host and the transport peer is always the host (id 0),
+        // so the id field is the owner the host recorded.
+        var ownerPeerId = peer.AssignedId;
+        if (State == SessionState.Connected && CollabProtocol.TryGetInt(json, "id", out var relayedOwnerId))
+            ownerPeerId = relayedOwnerId;
+
+        var relay = true;
         if (acquire)
         {
             _activeLocks[key] = ownerPeerId;
@@ -1112,11 +1378,14 @@ internal sealed class CollabManager
             // Only the holder (or the host on their behalf) may clear a lock.
             if (_activeLocks.TryGetValue(key, out var currentOwner) && currentOwner == ownerPeerId)
                 _activeLocks.Remove(key);
+            else
+                relay = false;
         }
 
-        if (State == SessionState.Hosting)
+        if (State == SessionState.Hosting && relay)
         {
             var envelope = (JObject)json.DeepClone();
+            envelope["id"] = ownerPeerId;
             _transport?.BroadcastJson(Peers, envelope, except: peer);
         }
     }
@@ -1310,13 +1579,50 @@ internal sealed class CollabManager
 
     private static int DefaultDiscoveryPort => UserSettings.Config.CollabPort + LanDiscoveryResponder.DiscoveryPortOffset;
 
+    private LanDiscoveryScanner? _hubScanner;
+    private long _lastHubScanTicks;
+
+    /// <summary>
+    /// Hub-facing discovery refresh: keeps scanning while no session is active so the project
+    /// list can show live sessions. During a session the collab update loop refreshes instead,
+    /// and the hub scanner shuts down.
+    /// </summary>
+    public void RefreshDiscoveryFromHub()
+    {
+        if (State != SessionState.Off)
+        {
+            if (_hubScanner != null)
+            {
+                _hubScanner.Stop();
+                _hubScanner.Dispose();
+                _hubScanner = null;
+            }
+
+            return;
+        }
+
+        _hubScanner ??= new LanDiscoveryScanner();
+        if (Environment.TickCount64 - _lastHubScanTicks > 1000)
+        {
+            _lastHubScanTicks = Environment.TickCount64;
+            _hubScanner.Start(DefaultDiscoveryPort); // re-probe; Start restarts its loop cleanly
+        }
+
+        RefreshDiscoveredFrom(_hubScanner);
+    }
+
     private void RefreshDiscoveredSessions()
     {
         if (_discoveryScanner == null)
             return;
 
+        RefreshDiscoveredFrom(_discoveryScanner);
+    }
+
+    private void RefreshDiscoveredFrom(LanDiscoveryScanner scanner)
+    {
         var cutoff = DateTime.UtcNow - TimeSpan.FromSeconds(3);
-        while (_discoveryScanner.Results.TryDequeue(out var result))
+        while (scanner.Results.TryDequeue(out var result))
         {
             var announcement = result.Announcement;
             var session = new DiscoveredSession
@@ -1326,6 +1632,7 @@ internal sealed class CollabManager
                                   Address = result.Source.Address.ToString(),
                                   Port = announcement["port"]?.Value<int>() ?? CollabProtocol.DefaultTcpPort,
                                   PasswordProtected = announcement["pwd"]?.Value<bool>() ?? false,
+                                  Project = CollabProtocol.GetString(announcement, "project", ""),
                               };
 
             if (_discovered.Any(d => d.Address == session.Address && d.Port == session.Port))
@@ -1354,8 +1661,319 @@ internal sealed class CollabManager
         public string Address = "";
         public int Port;
         public bool PasswordProtected;
+        public string Project = "";
         public DateTime Seen = DateTime.UtcNow;
 
         public override string ToString() => $"{Name}  ({Address}:{Port})";
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Session chat
+    // ---------------------------------------------------------------------------------------
+
+    /// <summary>One line of the session chat; system lines (join/left) carry a null name.</summary>
+    public sealed class ChatEntry
+    {
+        public DateTime Time = DateTime.Now;
+        public string? Name;
+        public string Text = "";
+    }
+
+    private readonly List<ChatEntry> _chatLog = [];
+    private const int MaxChatEntries = 200;
+
+    /// <summary>Session chat history, newest last. UI thread only (handlers run on it).</summary>
+    public IReadOnlyList<ChatEntry> ChatLog => _chatLog;
+
+    private void AppendChat(string? name, string text)
+    {
+        _chatLog.Add(new ChatEntry { Name = name, Text = text });
+        if (_chatLog.Count > MaxChatEntries)
+            _chatLog.RemoveRange(0, _chatLog.Count - MaxChatEntries);
+    }
+
+    /// <summary>Sends a chat line to the session (to the host as a client, to everyone as host).</summary>
+    public void SendChat(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text) || !IsSessionActive)
+            return;
+
+        var message = new
+                          {
+                              t = "chat",
+                              name = _localIdentity.DisplayName,
+                              text,
+                          };
+        if (State == SessionState.Hosting)
+        {
+            AppendChat(_localIdentity.DisplayName, text);
+            BroadcastSystemMessage(message, except: null);
+        }
+        else if (HostLink is { } host)
+        {
+            _transport?.SendJson(host, message);
+            AppendChat(_localIdentity.DisplayName, text);
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Project download on join (host streams the whole project folder, client restarts into it)
+    // ---------------------------------------------------------------------------------------
+
+    private sealed class ProjectUpload
+    {
+        public required CollabPeerConnection Peer;
+        public required string ProjectFolder;
+        public required string ProjectName;
+        public required Queue<string> PendingFiles;
+        public BoygroupDeployer.FileSender? Sender;
+        public int TotalFiles;
+        public int DoneFiles;
+        public bool HeaderSent;
+    }
+
+    private readonly Dictionary<CollabPeerConnection, ProjectUpload> _projectUploads = new();
+
+    private void HandleRequestProject(CollabPeerConnection peer, JObject json)
+    {
+        var projectName = CollabProtocol.GetString(json, "project");
+        var folder = FindProjectFolder(projectName);
+        if (folder == null)
+        {
+            SendJson(peer, new { t = "projectFail", reason = $"host does not have project '{projectName}'" });
+            return;
+        }
+
+        // A repeated request replaces the running transfer; its open file handle must go with it.
+        DropProjectUpload(peer);
+
+        var inventory = BoygroupDeployer.BuildInventory(folder);
+        _projectUploads[peer] = new ProjectUpload
+                                    {
+                                        Peer = peer,
+                                        ProjectFolder = folder,
+                                        ProjectName = ShortProjectName(projectName),
+                                        PendingFiles = new Queue<string>(inventory.Keys),
+                                        TotalFiles = inventory.Count,
+                                    };
+        Log.Info($"Collab: sending project '{projectName}' ({inventory.Count} files) to {peer.Name}");
+    }
+
+    /// <summary>Ends a pending upload for one peer and releases the file it had open.</summary>
+    private void DropProjectUpload(CollabPeerConnection peer)
+    {
+        if (!_projectUploads.Remove(peer, out var upload))
+            return;
+
+        upload.Sender?.Dispose();
+    }
+
+    private static string? FindProjectFolder(string displayName)
+    {
+        foreach (var p in SymbolPackage.AllPackages)
+        {
+            if (p is EditableSymbolProject project
+                && (string.Equals(project.DisplayName, displayName, StringComparison.OrdinalIgnoreCase)
+                    || project.DisplayName.StartsWith(displayName + " (", StringComparison.OrdinalIgnoreCase)))
+            {
+                return project.CsProjectFile.Directory;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>Feeds pending project files into the connection, bounded per frame like the boygroup deploy.</summary>
+    private void PumpProjectUploads()
+    {
+        if (_projectUploads.Count == 0)
+            return;
+
+        var budget = 32;
+        List<CollabPeerConnection>? finished = null;
+        foreach (var upload in _projectUploads.Values)
+        {
+            while (budget > 0)
+            {
+                if (!upload.HeaderSent)
+                {
+                    upload.HeaderSent = true;
+                    SendJson(upload.Peer, new { t = "projectBegin", project = upload.ProjectName, files = upload.TotalFiles });
+                    budget--;
+                    continue;
+                }
+
+                if (upload.Sender == null)
+                {
+                    if (upload.PendingFiles.Count == 0)
+                    {
+                        SendJson(upload.Peer, new { t = "projectDone", project = upload.ProjectName });
+                        (finished ??= []).Add(upload.Peer);
+                        break;
+                    }
+
+                    var next = upload.PendingFiles.Dequeue();
+                    BoygroupDeployer.FileSender sender;
+                    try
+                    {
+                        sender = new BoygroupDeployer.FileSender(upload.ProjectFolder, next);
+                    }
+                    catch (Exception e)
+                    {
+                        // The file vanished or became unreadable after the inventory was taken.
+                        Log.Warning($"Collab: cannot send {next} to {upload.Peer}: {e.Message}");
+                        upload.DoneFiles++;
+                        continue;
+                    }
+
+                    SendJson(upload.Peer, new { t = "fileBegin", path = next });
+                    upload.Sender = sender;
+                    budget--;
+                    continue;
+                }
+
+                JObject? message;
+                try
+                {
+                    message = upload.Sender.NextMessage();
+                }
+                catch (Exception e)
+                {
+                    // A read error must not escape into the frame loop mid-transfer.
+                    Log.Warning($"Collab: cannot read {upload.Sender.RelativePath} for {upload.Peer}: {e.Message}");
+                    upload.Sender.Dispose();
+                    upload.Sender = null;
+                    upload.DoneFiles++;
+                    continue;
+                }
+
+                if (message == null)
+                {
+                    upload.Sender.Dispose();
+                    upload.Sender = null;
+                    upload.DoneFiles++;
+                    continue;
+                }
+
+                SendJson(upload.Peer, message);
+                budget--;
+            }
+        }
+
+        if (finished != null)
+        {
+            foreach (var peer in finished)
+                _projectUploads.Remove(peer);
+        }
+    }
+
+    private BoygroupDeployer.FileReceiver? _projectDownload;
+    private string _projectDownloadFolder = "";
+    private long _restartAtTicks;
+
+    private void HandleProjectDownload(CollabPeerConnection peer, JObject json)
+    {
+        // Only the host streams a project; a peer sending transfer frames must never create
+        // directories or write files here (the path checks below are the second line of defense).
+        if (State != SessionState.Connected || !ReferenceEquals(peer, HostLink))
+            return;
+
+        try
+        {
+            HandleProjectDownloadMessage(json);
+        }
+        catch (Exception e)
+        {
+            // Malformed base64, an unsafe path or an unwritable folder must fail this transfer,
+            // not the render loop that drains the inbound queue.
+            Log.Warning($"Collab: project download failed: {e.Message}");
+            StatusText = "Project download failed";
+            _projectDownload?.Cancel();
+            _projectDownload = null;
+        }
+    }
+
+    private void HandleProjectDownloadMessage(JObject json)
+    {
+        var type = CollabProtocol.GetString(json, "t");
+        switch (type)
+        {
+            case "projectBegin":
+            {
+                var name = SafeProjectFolderName(CollabProtocol.GetString(json, "project"));
+                if (name == null)
+                    throw new IOException($"host offered a project with an unusable folder name");
+                if (UserSettings.Config.ProjectDirectories.Count == 0)
+                    throw new IOException("no project directory is configured");
+
+                _projectDownload?.Cancel();
+                _projectDownloadFolder = Path.Combine(UserSettings.Config.ProjectDirectories[0], name);
+                Directory.CreateDirectory(_projectDownloadFolder);
+                _projectDownload = new BoygroupDeployer.FileReceiver();
+                Log.Info($"Collab: receiving project '{name}' ({json["files"]?.Value<int>() ?? 0} files) into {_projectDownloadFolder}");
+                break;
+            }
+
+            case "fileBegin":
+                _projectDownload?.Begin(_projectDownloadFolder, json);
+                break;
+
+            case "fileChunk":
+                _projectDownload?.Chunk(json);
+                break;
+
+            case "fileEnd":
+            {
+                var error = _projectDownload?.Finish(json);
+                if (error != null)
+                {
+                    Log.Warning($"Collab: project download failed: {error}");
+                    StatusText = "Project download failed";
+                    _projectDownload?.Cancel();
+                    _projectDownload = null;
+                }
+
+                break;
+            }
+
+            case "projectDone":
+            {
+                var name = CollabProtocol.GetString(json, "project");
+                _projectDownload?.Cancel();
+                _projectDownload = null;
+                StatusText = $"Project '{name}' downloaded — restarting to load it...";
+                Log.Info($"Collab: project '{name}' downloaded; restarting to load it (session will rejoin automatically)");
+                _restartAtTicks = Environment.TickCount64 + 1500;
+                break;
+            }
+
+            case "projectFail":
+                _projectDownload?.Cancel();
+                _projectDownload = null;
+                ErrorText = CollabProtocol.GetString(json, "reason");
+                StatusText = "Project download failed";
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Validates the host-supplied project name, which becomes one folder below the local project
+    /// directory. A rooted path or a ".." segment would put the downloaded files anywhere this
+    /// machine can write.
+    /// </summary>
+    private static string? SafeProjectFolderName(string name)
+    {
+        name = (name ?? "").Trim();
+        if (name.Length == 0 || name is "." or ".." || name.Contains(".."))
+            return null;
+
+        if (name.Contains('/') || name.Contains('\\') || name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 || Path.IsPathRooted(name))
+            return null;
+
+        // Windows would silently strip these (and resolve to a sibling target).
+        if (OperatingSystem.IsWindows() && (name[^1] == '.' || name[^1] == ' '))
+            return null;
+
+        return name;
     }
 }
