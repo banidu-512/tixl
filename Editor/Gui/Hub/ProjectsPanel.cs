@@ -119,7 +119,7 @@ internal static class ProjectsPanel
                 if (session.PasswordProtected)
                 {
                     _pinSession = session; // ask first, join after confirm
-                    ImGui.OpenPopup("##join-pin");
+                    ImGui.OpenPopup(JoinPinPopupId);
                 }
                 else
                 {
@@ -144,13 +144,15 @@ internal static class ProjectsPanel
 
     private static CollabManager.DiscoveredSession? _pinSession;
     private static string _pinInput = "";
+    private const string JoinPinPopupId = "Join session";
 
     /// <summary>Modal asking for a session PIN; confirming joins the pending session.</summary>
     private static void DrawJoinPinPopup(string? _)
     {
         var size = new Vector2(320, 130) * T3Ui.UiScaleFactor;
         ImGui.SetNextWindowSize(size, ImGuiCond.Always);
-        if (!ImGui.BeginPopupModal("Join session##join-pin"))
+        // The id here must match the OpenPopup call exactly, or the modal never opens.
+        if (!ImGui.BeginPopupModal(JoinPinPopupId))
             return;
 
         var name = _pinSession == null ? "" : (string.IsNullOrEmpty(_pinSession.Name) ? $"{_pinSession.Address}" : _pinSession.Name);
@@ -234,58 +236,10 @@ internal static class ProjectsPanel
         return clicked;
     }
 
-    /// <summary>Joins a discovered session and opens the project it belongs to when available.</summary>
+    /// <summary>Joins a discovered session; the manager opens or downloads the host project.</summary>
     private static void JoinSession(CollabManager.DiscoveredSession session, string password)
     {
-        var collab = CollabManager.Instance;
-        collab.JoinDirect(session.Address, session.Port, password);
-
-        if (!string.IsNullOrEmpty(session.Project))
-        {
-            TryOpenProjectByName(session.Project);
-        }
-    }
-
-    /// <summary>Opens a local project by display name (short form accepted) into the visible graph window.</summary>
-    private static bool TryOpenProjectByName(string name)
-    {
-        foreach (var p in SymbolPackage.AllPackages)
-        {
-            // Created projects get a "<name> (<namespace>)" display name - accept the short form too.
-            if (p is not EditorSymbolPackage editorPackage
-                || !(string.Equals(editorPackage.DisplayName, name, StringComparison.OrdinalIgnoreCase)
-                     || editorPackage.DisplayName.StartsWith(name + " (", StringComparison.OrdinalIgnoreCase)))
-                continue;
-
-            if (!OpenedProject.TryCreate(editorPackage, out var openedProject, out var failureLog)
-                || openedProject == null)
-            {
-                Log.Warning($"Could not open collab project '{name}': {failureLog}");
-                return false;
-            }
-
-            GraphWindow? graphWindow = null;
-            foreach (var window in GraphWindow.GraphWindowInstances)
-            {
-                if (!window.Config.Visible)
-                    continue;
-
-                graphWindow = window;
-                break;
-            }
-
-            graphWindow ??= GraphWindow.GraphWindowInstances.Count > 0 ? GraphWindow.GraphWindowInstances[0] : null;
-            if (graphWindow == null || !graphWindow.TrySetToProject(openedProject, tryRestoreViewArea: false))
-            {
-                Log.Warning($"Could not open collab project '{name}' in a graph window");
-                return false;
-            }
-
-            return true;
-        }
-
-        Log.Info($"Collab session project '{name}' does not exist locally — staying in the current project.");
-        return false;
+        CollabManager.Instance.JoinDirect(session.Address, session.Port, password);
     }
 
     private static void DrawProjectTools()

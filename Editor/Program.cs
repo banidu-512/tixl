@@ -131,6 +131,17 @@ internal static class Program
         // Before anything starts dotnet: operator compilation and the SDK check call it by name.
         AddDotnetToPathOnMac();
 
+        // Crash-restart supervision: a --watchdog launch is the supervisor itself — it runs the
+        // restart loop (spawning the real editor as a child) and never gets here.
+        if (App.Startup.CrashWatchdog.TryRunWatchdogMode(args))
+            return;
+
+        // Minimal early settings read (no save-on-quit registration): when crash restart is
+        // enabled, hand over to the supervisor before any splash screen or window appears.
+        _ = new UserSettings(saveOnQuit: false);
+        if (App.Startup.CrashWatchdog.TryHandOffToWatchdog(args))
+            return;
+
         // Before anything awaits: continuations started on this thread come back to it, as under WinForms.
         MainThreadSynchronizationContext.Install();
 
@@ -244,6 +255,11 @@ internal static class Program
         {
             UserSettings.Config.ProjectDirectories.Add(FileLocations.DefaultProjectFolder);
         }
+
+        // Keep the login autostart entry pointing at this build while it is enabled — the path
+        // moves with every checkout/update otherwise.
+        if (UserSettings.Config.AutostartWithSystem && !App.Startup.OsAutostart.TrySetEnabled(true, out var autostartError))
+            Log.Warning($"Could not update the autostart entry: {autostartError}");
 
         // Run after UserSettings is initialized — the crash-recovery dialog needs
         // ProjectDirectories to locate per-project backups under .temp/Backup/.
@@ -382,9 +398,12 @@ internal static class Program
     /// <summary>Set via <c>--no-splash</c> — skips showing the splash screen (e.g. for protocol-driven sessions).</summary>
     internal static bool SkipSplash { get; private set; }
 
+    /// <summary>Set via <c>--autostart</c>: this launch came from the OS login entry, not a manual start.</summary>
+    internal static bool StartedByOsAutostart { get; private set; }
+
     /// <summary>
     /// Honors <c>--window=&lt;w&gt;x&lt;h&gt;</c> (or <c>--window &lt;w&gt;x&lt;h&gt;</c>) for a predictable
-    /// non-maximized window, and <c>--no-splash</c>.
+    /// non-maximized window, <c>--no-splash</c>, and <c>--autostart</c>.
     /// </summary>
     private static void ApplyWindowArgs(string[] args)
     {
@@ -395,6 +414,12 @@ internal static class Program
             if (arg.Equals("--no-splash", StringComparison.OrdinalIgnoreCase))
             {
                 SkipSplash = true;
+                continue;
+            }
+
+            if (arg.Equals(App.Startup.OsAutostart.ArgMarker, StringComparison.OrdinalIgnoreCase))
+            {
+                StartedByOsAutostart = true;
                 continue;
             }
 

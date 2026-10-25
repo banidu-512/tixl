@@ -1,11 +1,15 @@
 #nullable enable
 using System.Collections.Concurrent;
+using System.IO;
 using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Net.Sockets;
 using Newtonsoft.Json.Linq;
+using T3.Core.Model;
 using T3.Editor.Gui.UiHelpers;
+using T3.Editor.Gui.Window;
+using T3.Editor.Show;
 using T3.Editor.UiModel;
 using T3.Editor.UiModel.Commands;
 using T3.Editor.UiModel.ProjectHandling;
@@ -126,6 +130,9 @@ internal sealed class CollabManager
             _password = password ?? "";
             _sessionLog.Clear();
             var hostName = TruncateName(_localIdentity.DisplayName);
+            _sessionProjectName = projectName
+                                  ?? ProjectView.Focused?.OpenedProject.Package.DisplayName
+                                  ?? "";
             _transport = new CollabHostTransport(tcpPort,
                                                  enableLanDiscovery,
                                                  () => new JObject
@@ -242,6 +249,7 @@ internal sealed class CollabManager
             Leave();
 
         ErrorText = "";
+        _joinedHost = $"{hostAddress}:{tcpPort}";
         State = SessionState.Connecting;
         StatusText = $"Connecting to {hostAddress}:{tcpPort}...";
 
@@ -308,6 +316,13 @@ internal sealed class CollabManager
         _sessionLog.Clear();
         _opsReceivedThisSecond.Clear();
         _chatLog.Clear();
+        _projectUploads.Clear();
+        _projectDownload?.Cancel();
+        _projectDownload = null;
+        _hostProjectName = "";
+        _sessionProjectName = "";
+        UserSettings.Config.CollabLastSessionHost = "";
+        UserSettings.Save();
         while (_pendingDisconnects.TryDequeue(out _))
         {
             // Drop disconnect events from the dead session; replaying them into a future
@@ -419,6 +434,27 @@ internal sealed class CollabManager
 
     public void Update()
     {
+        // Auto-rejoin shortly after launch (e.g. after a project download restarted us).
+        if (State == SessionState.Off)
+        {
+            if (_rejoinCheckTicks == 0)
+            {
+                _rejoinCheckTicks = Environment.TickCount64 + 8000;
+            }
+            else if (Environment.TickCount64 > _rejoinCheckTicks && !_rejoinAttempted)
+            {
+                _rejoinAttempted = true;
+                TryAutoRejoin();
+            }
+        }
+
+        if (_restartAtTicks > 0 && Environment.TickCount64 > _restartAtTicks)
+        {
+            _restartAtTicks = 0;
+            EditorRestart.TryRestart();
+            return;
+        }
+
         if (State == SessionState.Off)
             return;
 
@@ -436,9 +472,27 @@ internal sealed class CollabManager
         if (State == SessionState.Off)
             return;
 
+        PumpProjectUploads();
         SendHeartbeatsAndPrune();
         SendLocalPresence();
         RefreshDiscoveredSessions();
+    }
+
+    private long _rejoinCheckTicks;
+    private bool _rejoinAttempted;
+
+    private void TryAutoRejoin()
+    {
+        var host = UserSettings.Config.CollabLastSessionHost;
+        if (string.IsNullOrEmpty(host))
+            return;
+
+        var separator = host.LastIndexOf(':');
+        if (separator <= 0 || !int.TryParse(host[(separator + 1)..], out var port))
+            return;
+
+        Log.Info($"Collab: auto-rejoining last session {host}");
+        JoinDirect(host[..separator], port, UserSettings.Config.CollabPassword ?? "");
     }
 
     private void ProcessPendingDisconnects()
@@ -653,6 +707,19 @@ internal sealed class CollabManager
                 break;
             }
 
+            case "requestProject" when State == SessionState.Hosting:
+                HandleRequestProject(peer, json);
+                break;
+
+            case "projectBegin":
+            case "fileBegin":
+            case "fileChunk":
+            case "fileEnd":
+            case "projectDone":
+            case "projectFail":
+                HandleProjectDownload(peer, json);
+                break;
+
             case "notice":
                 Log.Debug($"Collab host: {CollabProtocol.GetString(json, "msg")}");
                 break;
@@ -759,6 +826,7 @@ internal sealed class CollabManager
                                hostUserId = _localIdentity.UserId,
                                peers = peersPayload,
                                logCount = _sessionLog.Count,
+                               project = _sessionProjectName,
                            });
 
         BroadcastSystemMessage(new
@@ -835,6 +903,84 @@ internal sealed class CollabManager
         State = SessionState.Connected;
         StatusText = $"Connected as {_localIdentity.DisplayName}";
         SendJson(peer, new { t = "requestSync" });
+
+        // Remember the session so a restart (e.g. after a project download) can rejoin, then make
+        // sure the host's project is open locally — download it when this machine doesn't have it.
+        UserSettings.Config.CollabLastSessionHost = _joinedHost;
+        UserSettings.Save();
+        _hostProjectName = CollabProtocol.GetString(json, "project");
+        EnsureHostProjectAvailable();
+    }
+
+    /// <summary>host:port of the session this client dialed into (persisted for auto-rejoin).</summary>
+    private string _joinedHost = "";
+
+    private string _sessionProjectName = "";
+    private string _hostProjectName = "";
+
+    /// <summary>
+    /// Opens the host's project locally, or asks the host to stream it over when it doesn't exist
+    /// here. Once the files have landed the editor restarts and auto-rejoins; from then on the
+    /// session only syncs deltas.
+    /// </summary>
+    private void EnsureHostProjectAvailable()
+    {
+        if (string.IsNullOrEmpty(_hostProjectName) || _transport is not CollabClientTransport { HostPeer: { } host })
+            return;
+
+        if (TryOpenProjectByName(_hostProjectName))
+            return;
+
+        Log.Info($"Collab: requesting project '{_hostProjectName}' from host");
+        StatusText = $"Downloading project '{ShortProjectName(_hostProjectName)}' from host...";
+        SendJson(host, new { t = "requestProject", project = _hostProjectName });
+    }
+
+    internal static string ShortProjectName(string displayName)
+    {
+        // Created projects get a "<name> (<namespace>)" display name.
+        var paren = displayName.IndexOf(" (", StringComparison.Ordinal);
+        return paren > 0 ? displayName[..paren] : displayName;
+    }
+
+    /// <summary>Opens a local project by display name (short form accepted) into the visible graph window.</summary>
+    internal static bool TryOpenProjectByName(string name)
+    {
+        foreach (var p in SymbolPackage.AllPackages)
+        {
+            if (p is not EditorSymbolPackage editorPackage
+                || !(string.Equals(editorPackage.DisplayName, name, StringComparison.OrdinalIgnoreCase)
+                     || editorPackage.DisplayName.StartsWith(name + " (", StringComparison.OrdinalIgnoreCase)))
+                continue;
+
+            if (!OpenedProject.TryCreate(editorPackage, out var openedProject, out var failureLog)
+                || openedProject == null)
+            {
+                Log.Warning($"Collab: could not open project '{name}': {failureLog}");
+                return false;
+            }
+
+            GraphWindow? graphWindow = null;
+            foreach (var window in GraphWindow.GraphWindowInstances)
+            {
+                if (!window.Config.Visible)
+                    continue;
+
+                graphWindow = window;
+                break;
+            }
+
+            graphWindow ??= GraphWindow.GraphWindowInstances.Count > 0 ? GraphWindow.GraphWindowInstances[0] : null;
+            if (graphWindow == null || !graphWindow.TrySetToProject(openedProject, tryRestoreViewArea: false))
+            {
+                Log.Warning($"Collab: could not open project '{name}' in a graph window");
+                return false;
+            }
+
+            return true;
+        }
+
+        return false;
     }
 
     // ---------------------------------------------------------------------------------------
@@ -1464,6 +1610,176 @@ internal sealed class CollabManager
         {
             _transport.SendJson(host, message);
             AppendChat(_localIdentity.DisplayName, text);
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Project download on join (host streams the whole project folder, client restarts into it)
+    // ---------------------------------------------------------------------------------------
+
+    private sealed class ProjectUpload
+    {
+        public required CollabPeerConnection Peer;
+        public required string ProjectFolder;
+        public required string ProjectName;
+        public required Queue<string> PendingFiles;
+        public BoygroupDeployer.FileSender? Sender;
+        public int TotalFiles;
+        public int DoneFiles;
+        public bool HeaderSent;
+    }
+
+    private readonly Dictionary<CollabPeerConnection, ProjectUpload> _projectUploads = new();
+
+    private void HandleRequestProject(CollabPeerConnection peer, JObject json)
+    {
+        var projectName = CollabProtocol.GetString(json, "project");
+        var folder = FindProjectFolder(projectName);
+        if (folder == null)
+        {
+            SendJson(peer, new { t = "projectFail", reason = $"host does not have project '{projectName}'" });
+            return;
+        }
+
+        var inventory = BoygroupDeployer.BuildInventory(folder);
+        _projectUploads[peer] = new ProjectUpload
+                                    {
+                                        Peer = peer,
+                                        ProjectFolder = folder,
+                                        ProjectName = ShortProjectName(projectName),
+                                        PendingFiles = new Queue<string>(inventory.Keys),
+                                        TotalFiles = inventory.Count,
+                                    };
+        Log.Info($"Collab: sending project '{projectName}' ({inventory.Count} files) to {peer.Name}");
+    }
+
+    private static string? FindProjectFolder(string displayName)
+    {
+        foreach (var p in SymbolPackage.AllPackages)
+        {
+            if (p is EditableSymbolProject project
+                && (string.Equals(project.DisplayName, displayName, StringComparison.OrdinalIgnoreCase)
+                    || project.DisplayName.StartsWith(displayName + " (", StringComparison.OrdinalIgnoreCase)))
+            {
+                return project.CsProjectFile.Directory;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>Feeds pending project files into the connection, bounded per frame like the boygroup deploy.</summary>
+    private void PumpProjectUploads()
+    {
+        if (_projectUploads.Count == 0)
+            return;
+
+        var budget = 32;
+        List<CollabPeerConnection>? finished = null;
+        foreach (var upload in _projectUploads.Values)
+        {
+            while (budget > 0)
+            {
+                if (!upload.HeaderSent)
+                {
+                    upload.HeaderSent = true;
+                    SendJson(upload.Peer, new { t = "projectBegin", project = upload.ProjectName, files = upload.TotalFiles });
+                    budget--;
+                    continue;
+                }
+
+                if (upload.Sender == null)
+                {
+                    if (upload.PendingFiles.Count == 0)
+                    {
+                        SendJson(upload.Peer, new { t = "projectDone", project = upload.ProjectName });
+                        (finished ??= []).Add(upload.Peer);
+                        break;
+                    }
+
+                    var next = upload.PendingFiles.Dequeue();
+                    SendJson(upload.Peer, new { t = "fileBegin", path = next });
+                    upload.Sender = new BoygroupDeployer.FileSender(upload.ProjectFolder, next);
+                    budget--;
+                    continue;
+                }
+
+                var message = upload.Sender.NextMessage();
+                if (message == null)
+                {
+                    upload.Sender.Dispose();
+                    upload.Sender = null;
+                    upload.DoneFiles++;
+                    continue;
+                }
+
+                SendJson(upload.Peer, message);
+                budget--;
+            }
+        }
+
+        if (finished != null)
+        {
+            foreach (var peer in finished)
+                _projectUploads.Remove(peer);
+        }
+    }
+
+    private BoygroupDeployer.FileReceiver? _projectDownload;
+    private string _projectDownloadFolder = "";
+    private long _restartAtTicks;
+
+    private void HandleProjectDownload(CollabPeerConnection peer, JObject json)
+    {
+        var type = CollabProtocol.GetString(json, "t");
+        switch (type)
+        {
+            case "projectBegin":
+            {
+                var name = CollabProtocol.GetString(json, "project");
+                _projectDownloadFolder = Path.Combine(UserSettings.Config.ProjectDirectories[0], name);
+                Directory.CreateDirectory(_projectDownloadFolder);
+                _projectDownload = new BoygroupDeployer.FileReceiver();
+                Log.Info($"Collab: receiving project '{name}' ({json["files"]?.Value<int>() ?? 0} files) into {_projectDownloadFolder}");
+                break;
+            }
+
+            case "fileBegin":
+                _projectDownload?.Begin(_projectDownloadFolder, json);
+                break;
+
+            case "fileChunk":
+                _projectDownload?.Chunk(json);
+                break;
+
+            case "fileEnd":
+            {
+                var error = _projectDownload?.Finish(json);
+                if (error != null)
+                {
+                    Log.Warning($"Collab: project download failed: {error}");
+                    StatusText = "Project download failed";
+                    _projectDownload?.Cancel();
+                    _projectDownload = null;
+                }
+
+                break;
+            }
+
+            case "projectDone":
+            {
+                var name = CollabProtocol.GetString(json, "project");
+                _projectDownload = null;
+                StatusText = $"Project '{name}' downloaded — restarting to load it...";
+                Log.Info($"Collab: project '{name}' downloaded; restarting to load it (session will rejoin automatically)");
+                _restartAtTicks = Environment.TickCount64 + 1500;
+                break;
+            }
+
+            case "projectFail":
+                ErrorText = CollabProtocol.GetString(json, "reason");
+                StatusText = "Project download failed";
+                break;
         }
     }
 }

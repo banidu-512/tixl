@@ -30,6 +30,7 @@ internal sealed partial class SettingsWindow : Window
         Interface,
         Theme,
         Projects,
+        Startup,
         Collaboration,
         Failover,
         Audio,
@@ -318,6 +319,11 @@ internal sealed partial class SettingsWindow : Window
                     FormInputs.AddVerticalSpace();
 
                     ColorThemeEditor.DrawEditor();
+                    break;
+
+                case Categories.Startup:
+                    FormInputs.AddVerticalSpace();
+                    DrawStartupPanel(ref changed);
                     break;
 
                 case Categories.Collaboration:
@@ -643,6 +649,7 @@ internal sealed partial class SettingsWindow : Window
                                                                         Categories.Interface  => "User Interface",
                                                                         Categories.Theme      => "Color Theme",
                                                                         Categories.Projects   => "Project specific settings",
+                                                                        Categories.Startup    => "Startup and Recovery",
                                                                         Categories.Collaboration => "Collaboration",
                                                                         Categories.Failover   => "Show Failover",
                                                                         Categories.Audio      => "Audio System",
