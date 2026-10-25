@@ -209,30 +209,39 @@ internal static class CollabProtocol
         if (!json.TryGetValue(property, out var token))
             return false;
 
-        switch (token.Type)
+        try
         {
-            case JTokenType.Integer:
+            switch (token.Type)
             {
-                var number = token.Value<long>();
-                if (number is < int.MinValue or > int.MaxValue)
-                    return false;
+                case JTokenType.Integer:
+                {
+                    var number = token.Value<long>();
+                    if (number is < int.MinValue or > int.MaxValue)
+                        return false;
 
-                value = (int)number;
-                return true;
-            }
-            case JTokenType.Float:
-            {
-                var number = token.Value<double>();
-                if (double.IsNaN(number) || double.IsInfinity(number) || number < int.MinValue || number > int.MaxValue)
-                    return false;
+                    value = (int)number;
+                    return true;
+                }
+                case JTokenType.Float:
+                {
+                    var number = token.Value<double>();
+                    if (double.IsNaN(number) || double.IsInfinity(number) || number < int.MinValue || number > int.MaxValue)
+                        return false;
 
-                value = (int)number;
-                return true;
+                    value = (int)number;
+                    return true;
+                }
+                case JTokenType.String:
+                    return int.TryParse(token.Value<string>(), out value);
+                default:
+                    return false;
             }
-            case JTokenType.String:
-                return int.TryParse(token.Value<string>(), out value);
-            default:
-                return false;
+        }
+        catch (Exception e) when (e is OverflowException or InvalidCastException or FormatException)
+        {
+            // A JSON integer beyond long (Newtonsoft stores it as BigInteger) is still just a miss.
+            value = 0;
+            return false;
         }
     }
 }

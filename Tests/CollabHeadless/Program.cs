@@ -148,6 +148,9 @@ internal static class Program
         Check(!CollabProtocol.TryGetInt(weird, "n", out _), "array accepted as int");
         Check(CollabProtocol.GetString(weird, "s") == "42", "numeric string failed");
 
+        var huge = JObject.Parse("""{"n":999999999999999999999999999}""");
+        Check(!CollabProtocol.TryGetInt(huge, "n", out _), "integer beyond long accepted");
+
         // JSON never starts with '{' collides with relay control lines — assert the discriminator.
         var objStart = Encoding.UTF8.GetBytes("{\"t\":\"x\"}");
         Check(objStart[0] == (byte)'{', "JSON frames must start with '{' (relay control-line convention)");
