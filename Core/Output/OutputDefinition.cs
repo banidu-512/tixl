@@ -331,13 +331,6 @@ public sealed class OutputDefinition
     /// <summary>Pause presenting to this output without dropping its device binding (e.g. mute an NDI feed).</summary>
     public bool IsSending = true;
 
-    /// <summary>
-    /// Which boygroup node presents this output (empty = every machine, the classic single-machine
-    /// behavior). Part of the shared Setup, so the show master assigns outputs to render nodes and
-    /// deployment carries the assignment to every client. See OutputPresentation's per-frame gate.
-    /// </summary>
-    public string MachineName = string.Empty;
-
     /// <summary>Canvas regions on the direct pipe, composited in list order underneath the surfaces mapped here.</summary>
     public List<Patch> Patches = [];
 
@@ -394,8 +387,6 @@ public sealed class OutputDefinition
         writer.WriteValue("Send", IsSending);
         if (Kind == Kinds.Laser)
             writer.WriteValue("FrameMapping", (int)FrameMapping);
-        if (!string.IsNullOrEmpty(MachineName))
-            writer.WriteString("Machine", MachineName);
 
         if (Patches.Count > 0)
         {
@@ -444,7 +435,6 @@ public sealed class OutputDefinition
                              CanvasResolution = ClampResolution(OutputJson.ReadInt2(token["CanvasResolution"], new Int2(1920, 1080))),
                              IsSending = token.ReadValueSafe("Send", true),
                              FrameMapping = (LaserFrameMappingMode)Math.Clamp(token.ReadValueSafe("FrameMapping", (int)LaserFrameMappingMode.Fit), 0, 3),
-                             MachineName = token.ReadValueSafe("Machine", string.Empty) ?? string.Empty,
                              Patches = token.ReadListSafe("Patches", Patch.ReadFromJson),
                              ReferenceImageId = OutputJson.ReadGuid(token["ReferenceImage"]),
                              ReferenceOpacity = Math.Clamp(token.ReadValueSafe("ReferenceOpacity", 0.5f), 0f, 1f),

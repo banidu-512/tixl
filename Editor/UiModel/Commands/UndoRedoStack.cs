@@ -40,10 +40,11 @@ public static class UndoRedoStack
 
     public static void Add(ICommand command)
     {
-        // Broadcasts the edit to the collab session when one is active. Remote edits never pass
-        // through here (they call command.Do() directly), so there is no echo loop. The manager
-        // early-outs on a state check when no session is running.
+        // Broadcasts the edit to the collab session and to boygroup clients when one of them is active.
+        // Remote edits never pass through here (they call command.Do() directly), so there is no echo
+        // loop. Both managers early-out on a state check when no session is running.
         T3.Editor.Collab.CollabManager.Instance.OnLocalCommandAdded(command);
+        T3.Editor.Show.BoygroupManager.Instance.OnLocalCommandAdded(command);
 
         if (command.IsUndoable)
         {

@@ -24,7 +24,12 @@ internal static class StartupProjectLoader
 
         _checked = true;
 
-        var folder = UserSettings.Config.StartupProjectFolder;
+        // A `--project` launch (a boygroup client restarting into the just-deployed project) wins over
+        // the configured startup project; it is the reason this launch happened.
+        var folder = Program.ProjectFolderArgument;
+        if (string.IsNullOrWhiteSpace(folder))
+            folder = UserSettings.Config.StartupProjectFolder;
+
         if (string.IsNullOrWhiteSpace(folder))
             return;
 

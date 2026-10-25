@@ -401,13 +401,18 @@ internal static class Program
     /// <summary>Set via <c>--autostart</c>: this launch came from the OS login entry, not a manual start.</summary>
     internal static bool StartedByOsAutostart { get; private set; }
 
+    /// <summary>Set via <c>--project &lt;folder&gt;</c>: open this project after startup (used by a boygroup
+    /// client restarting into the project the master just deployed, so the deployed layout applies).</summary>
+    internal static string? ProjectFolderArgument { get; private set; }
+
     /// <summary>
     /// Honors <c>--window=&lt;w&gt;x&lt;h&gt;</c> (or <c>--window &lt;w&gt;x&lt;h&gt;</c>) for a predictable
-    /// non-maximized window, <c>--no-splash</c>, and <c>--autostart</c>.
+    /// non-maximized window, <c>--no-splash</c>, <c>--autostart</c>, and <c>--project &lt;folder&gt;</c>.
     /// </summary>
     private static void ApplyWindowArgs(string[] args)
     {
         const string windowFlag = "--window";
+        const string projectFlag = "--project";
         for (var i = 0; i < args.Length; i++)
         {
             var arg = args[i];
@@ -420,6 +425,18 @@ internal static class Program
             if (arg.Equals(App.Startup.OsAutostart.ArgMarker, StringComparison.OrdinalIgnoreCase))
             {
                 StartedByOsAutostart = true;
+                continue;
+            }
+
+            if (arg.StartsWith(projectFlag + "=", StringComparison.OrdinalIgnoreCase))
+            {
+                ProjectFolderArgument = arg[(projectFlag.Length + 1)..];
+                continue;
+            }
+
+            if (arg.Equals(projectFlag, StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+            {
+                ProjectFolderArgument = args[i + 1];
                 continue;
             }
 

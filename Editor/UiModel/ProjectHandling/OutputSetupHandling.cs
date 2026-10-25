@@ -83,6 +83,10 @@ internal static class OutputSetupHandling
 
         // A setup edit (re-routing, a new slice, a moved patch) changes what the cards show, so they render once more.
         T3.Core.Output.Rendering.OutputPreviewRefresh.InvalidateAll();
+
+        // A boygroup server forwards setup edits to its render nodes as they are saved.
+        T3.Editor.Show.BoygroupManager.Instance.OnSetupSaved();
+
         if (!TryGetFocusedEntry(out var entry, out var setupsFolder))
             return;
 
@@ -93,6 +97,66 @@ internal static class OutputSetupHandling
         entry.MachineConfig.ActiveSetupName = entry.Setup.Name;
         entry.MachineConfig.TrySaveToFile(Path.Combine(setupsFolder, MachineConfig.FileName));
     }
+
+    /// <summary>
+    /// Forgets a project's cached setup after its setup files changed on disk — a boygroup deploy,
+    /// an external edit. Without <paramref name="projectFolder"/> the focused project is used. Only
+    /// the presented project's release/notify happens here; another project reloads when focused.
+    /// </summary>
+    public static void OnSetupFilesChanged(string? projectFolder = null)
+    {
+        var folder = projectFolder;
+        if (string.IsNullOrEmpty(folder))
+            folder = ProjectView.Focused?.OpenedProject.Package.Folder;
+
+        if (!string.IsNullOrEmpty(folder))
+            _entriesByProjectFolder.Remove(folder);
+
+        if (string.IsNullOrEmpty(folder) || IsFocusedProject(folder))
+        {
+            OutputPresentation.ReleaseAll();
+            StructureVersion++;
+            ActiveSetup.NotifyChanged();
+        }
+    }
+
+    /// <summary>
+    /// Loads a setup file into a specific project and makes it that project's active setup. Used by
+    /// boygroup deploy so a received setup lands in the master's project even while another project
+    /// is focused.
+    /// </summary>
+    public static bool TryApplySetupFile(string projectFolder, string setupName)
+    {
+        var setupsFolder = SetupFiles.FolderIn(projectFolder);
+        if (!Setup.TryLoadFromFile(SetupFilePath(setupsFolder, setupName), out var setup, out _))
+            return false;
+
+        var entry = GetOrLoadEntry(projectFolder);
+        entry.Setup = setup;
+        entry.IsSaved = true;
+
+        Directory.CreateDirectory(setupsFolder);
+        entry.MachineConfig.ActiveSetupName = setupName;
+        entry.MachineConfig.TrySaveToFile(Path.Combine(setupsFolder, MachineConfig.FileName));
+
+        if (IsFocusedProject(projectFolder))
+        {
+            OutputPresentation.ReleaseAll();
+            StructureVersion++;
+            ActiveSetup.NotifyChanged();
+        }
+
+        return true;
+    }
+
+    private static bool IsFocusedProject(string projectFolder)
+    {
+        var focused = ProjectView.Focused?.OpenedProject.Package.Folder;
+        return focused != null && string.Equals(focused, projectFolder, PathComparison);
+    }
+
+    private static StringComparison PathComparison =>
+        OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
 
     /// <summary>Setup names available for the focused project: its .meta/Setups/*.setup.json files, or the unsaved default.</summary>
     public static void GetAvailableSetupNames(List<string> names)

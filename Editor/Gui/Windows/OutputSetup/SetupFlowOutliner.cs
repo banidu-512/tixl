@@ -11,6 +11,7 @@ using T3.Editor.Gui.Input;
 using T3.Editor.Gui.InputUi.ListInputs;
 using T3.Editor.Gui.Styling;
 using T3.Editor.Gui.UiHelpers;
+using T3.Editor.Show;
 using T3.Editor.UiModel;
 using T3.Editor.UiModel.Commands;
 using T3.Editor.UiModel.Commands.Graph;
@@ -185,7 +186,8 @@ internal sealed class SetupFlowOutliner
     private void DrawColumns(Setup setup, MachineConfig machineConfig, SetupEntitySelection selection)
     {
         var scale = T3Ui.UiScaleFactor;
-        ImGui.BeginChild("##outlinerBody", Vector2.Zero, ImGuiChildFlags.None, ImGuiWindowFlags.NoBackground);
+        ImGui.BeginChild("##outlinerBody", Vector2.Zero, ImGuiChildFlags.None,
+                         ImGuiWindowFlags.NoBackground | ImGuiWindowFlags.AlwaysVerticalScrollbar);
 
         // Right-drag pans the list, as it does in the parameter popup. The item menus already ignore a right
         // release that came from a drag, so the two gestures don't fight over the button.
@@ -224,7 +226,7 @@ internal sealed class SetupFlowOutliner
 
         BeginColumn(origin.X + 3 * columnWidth + gap * 0.5f, origin.Y, columnWidth - gap);
         DrawColumnHeader("LOCAL BINDINGS", "##addPlug", selection, _requestAddPlugMenu, SetupEntityKinds.Plug);
-        DrawLocalBindings(selection, setup, machineConfig);
+        DrawLocalBindings(selection, setup, machineConfig, columnWidth - gap);
         maxY = MathF.Max(maxY, ImGui.GetCursorScreenPos().Y);
 
         // Reference images and props are Board cards, not flow items: they are added from the Board's own menu.
@@ -580,7 +582,7 @@ internal sealed class SetupFlowOutliner
     /// somewhere to land. Plug items aren't selectable; they take an output by drop and offer their menu.
     /// The column's "+" adds a stream sender of any kind whose package is loaded, or a laser device.
     /// </summary>
-    private void DrawLocalBindings(SetupEntitySelection selection, Setup setup, MachineConfig machineConfig)
+    private void DrawLocalBindings(SetupEntitySelection selection, Setup setup, MachineConfig machineConfig, float columnWidth)
     {
         var screens = EditorUi.Instance.AllScreens;
         for (var i = 0; i < screens.Count; i++)
@@ -702,6 +704,35 @@ internal sealed class SetupFlowOutliner
                                                 "Leave the port 0 for PLoc multicast discovery, or set a host and port for a direct capture connection.");
 
             SetupPopup.End();
+        }
+
+        DrawClientBindings(setup, columnWidth);
+    }
+
+    /// <summary>
+    /// Where the connected render nodes present their outputs. Shown on the master only: each client
+    /// reports its machine config over the boygroup session, and this is the column where bindings live.
+    /// </summary>
+    private static void DrawClientBindings(Setup setup, float columnWidth)
+    {
+        var manager = BoygroupManager.Instance;
+        if (manager.State != BoygroupManager.BoygroupState.Server || manager.Clients.Count == 0)
+            return;
+
+        FormInputs.AddVerticalSpace(12);
+        ImGui.TextDisabled("CLIENT BINDINGS");
+
+        var scale = T3Ui.UiScaleFactor;
+        foreach (var client in manager.Clients)
+        {
+            if (!client.Peer.IsAuthenticated)
+                continue;
+
+            ImGui.TextUnformatted(client.Name);
+            ImGui.PushTextWrapPos(ImGui.GetCursorPosX() + MathF.Max(columnWidth, 60 * scale));
+            CustomComponents.StylizedText(BoygroupManager.DescribeBindings(client.MachineConfig, setup),
+                                          Fonts.FontSmall, UiColors.TextMuted);
+            ImGui.PopTextWrapPos();
         }
     }
 

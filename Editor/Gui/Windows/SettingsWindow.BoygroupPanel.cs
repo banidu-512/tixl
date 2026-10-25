@@ -5,14 +5,15 @@ using T3.Editor.Gui.Input;
 using T3.Editor.Gui.Styling;
 using T3.Editor.Gui.UiHelpers;
 using T3.Editor.Show;
+using T3.Editor.UiModel.ProjectHandling;
 
 namespace T3.Editor.Gui.Windows;
 
 /// <summary>
-/// The "Boygrouping" panel of the settings window: a server instance deploys project files and
-/// live graph/output state to render nodes, drives playback, and each client presents only the
-/// outputs assigned to it. The node name configured here is what the per-output
-/// "Render on machine" assignment refers to.
+/// The "Boygrouping" panel: enable this instance, choose Master or Slave, and — on a master — add the
+/// TiXL instances found on the network. There is no address, password or scan step: enabled instances
+/// announce themselves, and adding one invites it to connect. Deployment shares the master's output
+/// setups; each slave presents the outputs bound in its own Local Bindings.
 /// </summary>
 internal sealed partial class SettingsWindow
 {
@@ -21,7 +22,7 @@ internal sealed partial class SettingsWindow
         var manager = BoygroupManager.Instance;
         var config = UserSettings.Config;
 
-        FormInputs.AddSectionSubHeader("Identity");
+        FormInputs.AddSectionSubHeader("Boygrouping");
         FormInputs.AddVerticalSpace();
 
         changed |= FormInputs.AddStringInput("Node name",
@@ -29,282 +30,238 @@ internal sealed partial class SettingsWindow
                                              null,
                                              null,
                                              """
-                                             This machine's name in a boygroup group. Defaults to the OS machine name.
-                                             Output Setup assignments reference this name.
+                                             This machine's name on the network and in the master's client list.
+                                             Defaults to the OS machine name.
                                              """);
 
-        changed |= FormInputs.AddInt("Port",
-                                     ref config.BoygroupPort,
-                                     1024, 65535, 1,
-                                     "TCP port for boygroup sessions. Must match between server and clients.",
-                                     44720);
-
-        changed |= FormInputs.AddStringInput("Password",
-                                             ref config.CollabPassword,
-                                             null,
-                                             null,
-                                             "Optional. Required on the server and all clients of a group. Strongly recommended: deploying writes project files on clients.");
-
         FormInputs.AddVerticalSpace();
-
         DrawNetworkInterface(ref changed);
-
         FormInputs.AddVerticalSpace();
 
-        FormInputs.AddSectionSubHeader("Session");
-        FormInputs.AddVerticalSpace();
-
-        if (manager.State == BoygroupManager.BoygroupState.Off)
+        var enabled = config.BoygroupEnabled;
+        if (FormInputs.AddCheckBox("Enable",
+                                   ref enabled,
+                                   """
+                                   Makes this instance visible to the other TiXL instances on the network.
+                                   A master can then add it as a render node.
+                                   """,
+                                   false))
         {
-            _boygroupGroup ??= UserSettings.Config.BoygroupGroups.FirstOrDefault() ?? "Main";
-            if (string.IsNullOrWhiteSpace(_boygroupServer))
-                _boygroupServer = string.IsNullOrWhiteSpace(config.BoygroupLastServer) ? "127.0.0.1" : config.BoygroupLastServer;
-
-            if (CustomComponents.DrawCtaButton("Start Server", Icon.None, UiColors.ForegroundFull, UiColors.StatusActivated, Color.Transparent))
-            {
-                manager.StartServer(config.BoygroupPort, config.CollabPassword, _boygroupGroup);
-            }
-
-            CustomComponents.TooltipForLastItem("This machine becomes the boygroup server: it deploys files and live state to clients and drives playback.");
-
-            FormInputs.AddVerticalSpace();
-            ImGui.TextUnformatted("Join a group:");
-            ImGui.PushID("##boygroupgroup");
-            if (ImGui.InputText("Group", ref _boygroupGroup, 64, ImGuiInputTextFlags.EnterReturnsTrue))
-            {
-                JoinBoygroupSession(manager, config);
-            }
-
-            if (ImGui.InputText("Server", ref _boygroupServer, 64, ImGuiInputTextFlags.EnterReturnsTrue))
-            {
-                JoinBoygroupSession(manager, config);
-            }
-
-            ImGui.PopID();
-            ImGui.SameLine();
-            if (ImGui.Button("Join"))
-            {
-                JoinBoygroupSession(manager, config);
-            }
-
-            CustomComponents.TooltipForLastItem("Address of the boygroup server. Clients on the same network also appear below via discovery.");
-
-            DrawDiscoveredServers(manager, ref changed);
-        }
-        else
-        {
-            DrawSession(manager);
-        }
-
-        if (!string.IsNullOrEmpty(manager.ErrorText))
-        {
-            FormInputs.AddVerticalSpace();
-            ImGui.PushStyleColor(ImGuiCol.Text, UiColors.StatusWarning.Rgba);
-            ImGui.TextWrapped(manager.ErrorText);
-            ImGui.PopStyleColor();
-        }
-
-        FormInputs.AddVerticalSpace();
-
-        FormInputs.AddSectionSubHeader("Groups (multiboygrouping)");
-        CustomComponents.HelpText("""
-                                  A server can host several groups (e.g. 'Wall', 'Floor'). Clients join one group each;
-                                  deploy and playback controls act per group.
-                                  """);
-        FormInputs.AddVerticalSpace();
-
-        var groups = config.BoygroupGroups;
-        var removeIndex = -1;
-        for (var index = 0; index < groups.Count; index++)
-        {
-            ImGui.PushID(index);
-            var group = groups[index];
-            if (ImGui.InputText("##group", ref group, 64))
-                groups[index] = group;
-
-            ImGui.SameLine();
-            if (ImGui.SmallButton("Remove") && groups.Count > 1)
-                removeIndex = index;
-
-            ImGui.PopID();
-        }
-
-        if (removeIndex >= 0)
-        {
-            groups.RemoveAt(removeIndex);
+            config.BoygroupEnabled = enabled;
             changed = true;
+            manager.SetEnabled(enabled);
         }
 
-        if (ImGui.SmallButton("Add group"))
+        if (!config.BoygroupEnabled)
         {
-            groups.Add($"Group {groups.Count + 1}");
-            changed = true;
-        }
-
-        FormInputs.AddVerticalSpace();
-
-        FormInputs.AddSectionSubHeader("Deployment");
-        changed |= FormInputs.AddCheckBox("Mirror project folder",
-                                          ref config.BoygroupDeployMirror,
-                                          """
-                                          When deploying, also delete files on clients that the server's project does not
-                                          have. Off by default: extra client-side files are only reported, never removed.
-                                          """,
-                                          false);
-
-        changed |= FormInputs.AddCheckBox("Auto-join after restart",
-                                          ref config.BoygroupAutoJoin,
-                                          """
-                                          Clients remember their server and group and rejoin automatically on launch —
-                                          used after a deployment restarts the client to apply new files.
-                                          """,
-                                          true);
-    }
-
-    private static string? _boygroupGroup;
-    private static string _boygroupServer = "";
-
-    private static void JoinBoygroupSession(BoygroupManager manager, UserSettings.ConfigData config)
-    {
-        var address = string.IsNullOrWhiteSpace(_boygroupServer) ? "127.0.0.1" : _boygroupServer.Trim();
-        var group = string.IsNullOrWhiteSpace(_boygroupGroup) ? "Main" : _boygroupGroup;
-        _boygroupServer = address;
-        _boygroupGroup = group;
-        UserSettings.Config.BoygroupLastServer = address;
-        UserSettings.Config.BoygroupLastGroup = group;
-        UserSettings.Save();
-        manager.JoinServer(address, config.BoygroupPort, group, config.CollabPassword ?? "");
-    }
-
-    private static void DrawSession(BoygroupManager manager)
-    {
-        ImGui.PushStyleColor(ImGuiCol.Text, UiColors.StatusActivated.Rgba);
-        ImGui.TextUnformatted(manager.StatusText);
-        ImGui.PopStyleColor();
-
-        FormInputs.AddVerticalSpace();
-
-        if (manager.State == BoygroupManager.BoygroupState.Server)
-        {
-            DrawClients(manager);
-
-            FormInputs.AddVerticalSpace();
-            FormInputs.AddSectionSubHeader("Playback control");
-            FormInputs.AddVerticalSpace();
-
-            if (ImGui.Button("Play all"))
-                manager.SendPlayControl(true);
-
-            ImGui.SameLine();
-            if (ImGui.Button("Pause all"))
-                manager.SendPlayControl(false);
-
-            ImGui.SameLine();
-            if (ImGui.Button("Sync time now"))
-                manager.SendTimeSyncNow();
-
-            ImGui.SameLine();
-            ImGui.TextDisabled(manager.TimeFollowSummary);
-
-            FormInputs.AddVerticalSpace();
-        }
-        else
-        {
-            ImGui.Bullet();
-            ImGui.TextUnformatted($"Group: {manager.GroupName}");
-            ImGui.Bullet();
-            ImGui.TextUnformatted(manager.TimeFollowSummary);
-            ImGui.Bullet();
-            ImGui.TextUnformatted(manager.DeploySummary);
-        }
-
-        FormInputs.AddVerticalSpace();
-        if (ImGui.Button("Deploy & Sync"))
-            manager.DeployAndSync();
-
-        ImGui.SameLine();
-        if (ImGui.Button("Leave"))
-            manager.Leave();
-
-        if (manager.State == BoygroupManager.BoygroupState.Client && manager.RestartPending)
-        {
-            FormInputs.AddVerticalSpace();
-            ImGui.PushStyleColor(ImGuiCol.Text, UiColors.StatusActivated.Rgba);
-            ImGui.TextUnformatted("Deployment finished — restart to apply new files...");
-            ImGui.PopStyleColor();
-        }
-    }
-
-    private static void DrawClients(BoygroupManager manager)
-    {
-        var clients = manager.Clients;
-        if (clients.Count == 0)
-        {
-            ImGui.TextDisabled("No clients connected. Start TiXL on the render nodes and join this server.");
+            DrawBoygroupStatus(manager);
+            DrawBoygroupError(manager);
             return;
         }
 
-        ImGui.TextUnformatted("Clients:");
-        foreach (var client in clients)
+        var role = config.BoygroupRole;
+        if (FormInputs.AddEnumDropdown(ref role, "Role",
+                                       """
+                                       Master shares its output setup and show state and drives playback.
+                                       Slave renders what a master sends and keeps its own display bindings.
+                                       """))
+        {
+            config.BoygroupRole = role;
+            changed = true;
+            manager.ApplyRole();
+        }
+
+        FormInputs.AddVerticalSpace();
+        DrawBoygroupStatus(manager);
+        FormInputs.AddVerticalSpace();
+
+        if (config.BoygroupRole == BoygroupRole.Master)
+            DrawMasterSection(manager);
+        else
+            DrawSlaveSection(manager);
+
+        DrawBoygroupError(manager);
+    }
+
+    private static void DrawBoygroupStatus(BoygroupManager manager)
+    {
+        if (manager.State == BoygroupManager.BoygroupState.Off)
+            return;
+
+        ImGui.PushStyleColor(ImGuiCol.Text,
+                             manager.State == BoygroupManager.BoygroupState.WaitingForMaster
+                                 ? UiColors.StatusWarning.Rgba
+                                 : UiColors.StatusActivated.Rgba);
+        ImGui.TextWrapped(manager.StatusText);
+        ImGui.PopStyleColor();
+    }
+
+    private static void DrawBoygroupError(BoygroupManager manager)
+    {
+        if (string.IsNullOrEmpty(manager.ErrorText))
+            return;
+
+        FormInputs.AddVerticalSpace();
+        ImGui.PushStyleColor(ImGuiCol.Text, UiColors.StatusWarning.Rgba);
+        ImGui.TextWrapped(manager.ErrorText);
+        ImGui.PopStyleColor();
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Master
+    // ---------------------------------------------------------------------------------------
+
+    private static void DrawMasterSection(BoygroupManager manager)
+    {
+        FormInputs.AddSectionSubHeader("Render nodes");
+        FormInputs.AddVerticalSpace();
+
+        var nodes = manager.DiscoveredServers;
+        if (nodes.Count == 0)
+        {
+            ImGui.TextDisabled("Looking for other TiXL instances on this network...");
+        }
+        else
+        {
+            foreach (var node in nodes)
+            {
+                ImGui.PushID(node.Address + node.Port);
+                var connected = IsConnected(manager, node.Name);
+                FormInputs.SetCursorToParameterEdit();
+
+                if (connected)
+                {
+                    ImGui.PushStyleColor(ImGuiCol.Text, UiColors.StatusActivated.Rgba);
+                    ImGui.TextUnformatted($"{node.Name}  ({node.Address})");
+                    ImGui.PopStyleColor();
+                    ImGui.SameLine();
+                    ImGui.TextDisabled("added");
+                }
+                else
+                {
+                    ImGui.TextUnformatted($"{node.Name}  ({node.Address})");
+                    if (!node.IsMaster)
+                    {
+                        ImGui.SameLine();
+                        if (ImGui.SmallButton("Add"))
+                            manager.InviteClient(node);
+                        CustomComponents.TooltipForLastItem("Ask this instance to render the show on this machine.");
+                    }
+                    else
+                    {
+                        ImGui.SameLine();
+                        ImGui.TextDisabled("master");
+                    }
+                }
+
+                ImGui.PopID();
+            }
+        }
+
+        FormInputs.AddVerticalSpace();
+        DrawConnectedClients(manager);
+
+        FormInputs.AddVerticalSpace();
+        FormInputs.AddSectionSubHeader("Show control");
+        FormInputs.AddVerticalSpace();
+
+        FormInputs.SetCursorToParameterEdit();
+        if (ImGui.Button("Play all"))
+            manager.SendPlayControl(true);
+
+        ImGui.SameLine();
+        if (ImGui.Button("Pause all"))
+            manager.SendPlayControl(false);
+
+        ImGui.SameLine();
+        if (ImGui.Button("Sync time now"))
+            manager.SendTimeSyncNow();
+
+        ImGui.SameLine();
+        ImGui.TextDisabled(manager.TimeFollowSummary);
+
+        FormInputs.AddVerticalSpace();
+
+        FormInputs.SetCursorToParameterEdit();
+        if (ImGui.Button("Deploy & Sync"))
+            manager.DeployAndSync();
+        CustomComponents.TooltipForLastItem("Send the master's output setups to the added render nodes. Project files are not transferred.");
+
+        if (!string.IsNullOrEmpty(manager.DeploySummary))
+        {
+            ImGui.SameLine();
+            ImGui.TextDisabled(manager.DeploySummary);
+        }
+    }
+
+    private static bool IsConnected(BoygroupManager manager, string name)
+    {
+        foreach (var client in manager.Clients)
+        {
+            if (string.Equals(client.Name, name, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static void DrawConnectedClients(BoygroupManager manager)
+    {
+        if (manager.Clients.Count == 0)
+            return;
+
+        OutputSetupHandling.TryGetActiveSetup(out var setup, out _);
+        ImGui.TextUnformatted("Added render nodes:");
+        foreach (var client in manager.Clients)
         {
             var statusColor = client.IsDeployed ? UiColors.StatusActivated : UiColors.StatusWarning;
-            ImGui.PushStyleColor(ImGuiCol.Text, UiColors.Text.Rgba);
             ImGui.Bullet();
-            ImGui.TextUnformatted($"{client.Name}  ({client.Address})  group: {client.Group}");
-            ImGui.PopStyleColor();
+            ImGui.TextUnformatted($"{client.Name}  ({client.Address})");
 
             ImGui.SameLine();
             ImGui.PushStyleColor(ImGuiCol.Text, statusColor.Rgba);
             ImGui.TextUnformatted(client.StatusText);
             ImGui.PopStyleColor();
+
+            if (client.MachineConfig?.Bindings.Count > 0)
+            {
+                FormInputs.ApplyIndent();
+                CustomComponents.StylizedText(BoygroupManager.DescribeBindings(client.MachineConfig, setup),
+                                              Fonts.FontSmall, UiColors.TextMuted);
+            }
         }
     }
 
-    private static bool _boygroupDiscoveryActive;
-    private static DateTime _boygroupDiscoveryUntil;
+    // ---------------------------------------------------------------------------------------
+    // Slave
+    // ---------------------------------------------------------------------------------------
 
-    private static void DrawDiscoveredServers(BoygroupManager manager, ref bool changed)
+    private static void DrawSlaveSection(BoygroupManager manager)
     {
+        if (manager.State == BoygroupManager.BoygroupState.WaitingForMaster)
+        {
+            CustomComponents.HelpText("""
+                                      This instance is visible on the network. Add it from the render-node list on a
+                                      master (Settings → Boygrouping → Master) to start receiving that show.
+                                      """);
+            return;
+        }
+
+        if (manager.State != BoygroupManager.BoygroupState.Client)
+            return;
+
+        ImGui.Bullet();
+        ImGui.TextUnformatted($"Group: {manager.GroupName}");
+        ImGui.Bullet();
+        ImGui.TextUnformatted(manager.TimeFollowSummary);
+        ImGui.Bullet();
+        ImGui.TextUnformatted(manager.DeploySummary);
+
         FormInputs.AddVerticalSpace();
-        ImGui.TextUnformatted("Servers on this network:");
-        ImGui.SameLine();
-
-        if (!_boygroupDiscoveryActive)
-        {
-            if (ImGui.SmallButton("Scan"))
-            {
-                manager.StartDiscovery();
-                _boygroupDiscoveryActive = true;
-                _boygroupDiscoveryUntil = DateTime.UtcNow + TimeSpan.FromSeconds(6);
-            }
-        }
-        else
-        {
-            ImGui.TextDisabled("scanning...");
-        }
-
-        manager.DrainDiscovery();
-
-        if (_boygroupDiscoveryActive && DateTime.UtcNow > _boygroupDiscoveryUntil)
-        {
-            manager.StopDiscovery();
-            _boygroupDiscoveryActive = false;
-        }
-
-        foreach (var server in manager.DiscoveredServers)
-        {
-            ImGui.Bullet();
-            ImGui.TextUnformatted($"{server.ServerName}  ({server.Address}:{server.Port})  groups: {string.Join(", ", server.Groups)}");
-
-            ImGui.SameLine();
-            ImGui.PushID(server.Address + server.Port);
-            if (ImGui.SmallButton("Join"))
-            {
-                manager.JoinServer(server.Address, server.Port, _boygroupGroup ?? server.Groups.FirstOrDefault() ?? "Main",
-                                   UserSettings.Config.CollabPassword);
-            }
-
-            ImGui.PopID();
-        }
+        CustomComponents.HelpText("""
+                                  The master's output setups are applied here automatically. Which output reaches
+                                  which display, stream or laser is set in Output Setup → Local Bindings on this
+                                  machine and never overwritten by the master.
+                                  """);
     }
 }

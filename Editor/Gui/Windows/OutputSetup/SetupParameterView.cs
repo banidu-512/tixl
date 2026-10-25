@@ -57,7 +57,8 @@ internal static partial class SetupParameterView
         // Entity cards can be far taller than the panel (a laser output: frame preview + scanner
         // camera + optimization + safety) and the parameter window deliberately has no scrollbar,
         // so the card body scrolls here. Header stays fixed.
-        ImGui.BeginChild("##setupEntityCard", Vector2.Zero, ImGuiChildFlags.None);
+        ImGui.BeginChild("##setupEntityCard", Vector2.Zero, ImGuiChildFlags.None,
+                         ImGuiWindowFlags.AlwaysVerticalScrollbar);
 
         switch (kind)
         {
@@ -563,23 +564,6 @@ internal static partial class SetupParameterView
             return;
         }
 
-        // Show distribution: which boygroup node presents this output. Empty = every machine (the
-        // classic behavior), so single-machine setups need none of this.
-        var labels = new List<string> { "(all machines)", Environment.MachineName };
-        foreach (var client in Show.BoygroupManager.Instance.Clients)
-        {
-            if (!string.IsNullOrEmpty(client.Name) && !labels.Contains(client.Name))
-                labels.Add(client.Name);
-        }
-
-        var selectedLabel = string.IsNullOrEmpty(output.MachineName) ? labels[0] : output.MachineName;
-        if (FormInputs.AddDropdown(ref selectedLabel, labels, "Render on machine",
-                                   "In a boygrouped show only the chosen node presents this output. '(all machines)' keeps the default behavior."))
-        {
-            var value = labels.IndexOf(selectedLabel) > 0 ? selectedLabel : string.Empty;
-            SetupUndo.RunUndoable("Assign output machine", setup, () => output.MachineName = value);
-        }
-
         // The canvas every route onto this output is measured in, and what its content is asked to render at:
         // an unset resolution upstream (a RenderTarget at 0×0) resolves to this, so it is the one place the
         // pixel size of a projector or a stream is decided.
@@ -633,10 +617,12 @@ internal static partial class SetupParameterView
         CustomComponents.StylizedText(boundTo, Fonts.FontSmall, UiColors.TextMuted);
 
         // The streamed frame, live — the same drawing the Board card shows, where the output is edited.
+        // A square frame reads like the scanner field and stays next to its label instead of stretching
+        // across a wide parameter panel.
         FormInputs.DrawInputLabel("Laser frame");
         var previewHeight = 140f * T3Ui.UiScaleFactor;
         var previewMin = ImGui.GetCursorScreenPos();
-        var previewMax = new Vector2(previewMin.X + MathF.Max(ImGui.GetContentRegionAvail().X, previewHeight), previewMin.Y + previewHeight);
+        var previewMax = new Vector2(previewMin.X + previewHeight, previewMin.Y + previewHeight);
         var previewDl = ImGui.GetWindowDrawList();
         previewDl.AddRectFilled(previewMin, previewMax, UiColors.BackgroundPopup.Fade(0.6f));
         LaserOutputPreview.DrawFrame(previewDl, previewMin, previewMax, LaserOutputPreview.GetFrame(output));

@@ -59,11 +59,8 @@ internal static class OutputPresentation
             if (output.Kind == OutputDefinition.Kinds.Laser || HasLaserBinding(machineConfig, output.Id))
                 continue;
 
-            // Show distribution: an output assigned to a specific boygroup node is presented only
-            // there. Empty assignment keeps the classic every-machine behavior.
-            if (!string.IsNullOrEmpty(output.MachineName) && output.MachineName != Show.BoygroupManager.LocalNodeName)
-                continue;
-
+            // Each machine presents what its own Local Bindings connect: the setup is shared, but which
+            // output goes to which display or stream is machine state (outputs.machine.json).
             var binding = machineConfig.FindBinding(output.Id);
             if (binding == null)
                 continue;

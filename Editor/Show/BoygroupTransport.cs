@@ -50,6 +50,8 @@ internal sealed class BoygroupServerTransport : BoygroupTransport
                                                            () => new JObject
                                                                      {
                                                                          ["boygroup"] = true,
+                                                                         ["role"] = "master",
+                                                                         ["name"] = BoygroupManager.LocalNodeName,
                                                                          ["server"] = Environment.MachineName,
                                                                          ["port"] = tcpPort,
                                                                          ["groups"] = new JArray(groups),

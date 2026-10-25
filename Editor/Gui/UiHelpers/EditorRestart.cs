@@ -11,9 +11,11 @@ internal static class EditorRestart
 {
     /// <summary>
     /// Spawns a fresh editor process and exits this one through the regular application exit path.
-    /// Returns false if the new instance could not be started; the current instance keeps running then.
+    /// <paramref name="projectFolder"/> opens that project on the new instance instead of the one this
+    /// process was launched with. Returns false if the new instance could not be started; the current
+    /// instance keeps running then.
     /// </summary>
-    public static bool TryRestart()
+    public static bool TryRestart(string? projectFolder = null)
     {
         var exePath = Environment.ProcessPath;
         if (string.IsNullOrEmpty(exePath))
@@ -26,6 +28,9 @@ internal static class EditorRestart
         {
             // Collect the carried-over flags first (drop stale wait flags from earlier restarts,
             // then wait for this process so the new instance doesn't race our save-on-quit).
+            // A --project flag is carried unless the caller names a replacement; otherwise a restart
+            // of an instance started into a project would silently fall back to the hub.
+            var replaceProject = !string.IsNullOrWhiteSpace(projectFolder);
             var carryArgs = new List<string>();
             var args = Environment.GetCommandLineArgs();
             for (var i = 1; i < args.Length; i++)
@@ -33,7 +38,22 @@ internal static class EditorRestart
                 if (args[i].StartsWith("--wait-for-exit=", StringComparison.Ordinal))
                     continue;
 
+                if (replaceProject && args[i].Equals("--project", StringComparison.OrdinalIgnoreCase))
+                {
+                    i++; // also skip its separate value
+                    continue;
+                }
+
+                if (replaceProject && args[i].StartsWith("--project=", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
                 carryArgs.Add(args[i]);
+            }
+
+            if (replaceProject)
+            {
+                carryArgs.Add("--project");
+                carryArgs.Add(projectFolder!);
             }
 
             carryArgs.Add($"--wait-for-exit={Environment.ProcessId}");
