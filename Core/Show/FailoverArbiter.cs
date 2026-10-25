@@ -423,10 +423,10 @@ public static class FailoverArbiter
 
     private sealed class Heartbeat
     {
-        public string? Show;
-        public string? Id;
-        public int Prio;
-        public bool Active;
+        public string? Show { get; set; }
+        public string? Id { get; set; }
+        public int Prio { get; set; }
+        public bool Active { get; set; }
     }
 
     /// <summary>Does (priority, id) win the election against the other side? Deterministic from both sides.</summary>
