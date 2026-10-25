@@ -1120,12 +1120,12 @@ internal static class SetupParameterView
                                           Fonts.FontSmall, UiColors.TextMuted);
         }
 
-        // How the incoming frame lands in the aimed zone: the frame's actual extent is rescaled
-        // into the setup rect, so the aimed area is what fills (a camera framing that leaves the
-        // field half-empty stops wasting half the scanners).
+        // How the camera frame lands in the aimed zone. The frame is the scanner field itself (the
+        // camera's picture), so this is a fixed transform of that field - content keeps its size
+        // while it animates.
         var frameMapping = output.FrameMapping;
         if (FormInputs.AddEnumDropdown(ref frameMapping, "Frame mapping",
-                                       "How the incoming laser frame lands in the aimed zone (the setup rectangle): Fit rescales the frame's extent into the rect with its aspect preserved; Stretch fills both axes and may distort; Crop fills the rect completely with the aspect kept and cuts what falls outside the scanner field; Off streams the frame as the scanner field itself. Applies in calibrated mode.",
+                                       "How the camera frame lands in the aimed zone (the setup rectangle). The frame is the scanner field, so sizes stay as the camera framed them: Fit keeps the aspect and fits the field into the rect (a 1.0 x 1.0 rect is a pass-through); Stretch fills both axes and may distort; Crop keeps the aspect, fills the rect and blanks what falls outside the aimed zone; Off streams the field as-is. Applies in calibrated mode.",
                                        LaserFrameMappingMode.Fit,
                                        m => m switch
                                                {

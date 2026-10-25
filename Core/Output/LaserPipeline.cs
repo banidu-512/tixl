@@ -70,65 +70,56 @@ public static class LaserPipeline
     }
 
     /// <summary>
-    /// Maps the incoming frame's actual extent onto the output's aimed zone (the setup rect):
-    /// the frame's lit bounding box is rescaled so the content fills the zone - with
-    /// <see cref="LaserFrameMappingMode.Stretch"/> both axes fill independently (aspect may
-    /// distort), with <see cref="LaserFrameMappingMode.Fit"/> the aspect is preserved and the
-    /// content is centered. Returns a new array - the input is the camera's live backing list
-    /// and must not be mutated. Degenerate frames pass through untouched.
+    /// Maps the camera frame onto the output's aimed zone (the setup rect). A [LaserCamera] is a
+    /// camera: its frame IS the scanner field (-32767..32767), so this is a fixed transform of that
+    /// field - never a fit of whatever happens to be lit this frame. Fitting the lit bounding box
+    /// would rescale the picture as it animates (a rotating object would pulse in size) and would
+    /// make the frame's framing depend on the content. With
+    /// <see cref="LaserFrameMappingMode.Stretch"/> both axes fill independently (aspect may distort),
+    /// with <see cref="LaserFrameMappingMode.Fit"/> the aspect is preserved (letterboxed in the zone),
+    /// with <see cref="LaserFrameMappingMode.Crop"/> the aspect is preserved, the zone is filled and
+    /// what falls outside it is blanked. Returns a new array - the input is the camera's live backing
+    /// list and must not be mutated.
     /// </summary>
     public static LaserPoint[]? MapFrameIntoZone(LaserPoint[]? input, int count, LaserProcessingSettings.SafetySettings safety, LaserFrameMappingMode mode)
     {
-        if (mode == LaserFrameMappingMode.Off || input == null || count <= 1)
-            return input;
-
-        var minX = int.MaxValue;
-        var maxX = int.MinValue;
-        var minY = int.MaxValue;
-        var maxY = int.MinValue;
-        for (var i = 0; i < count; i++)
-        {
-            var x = input[i].X;
-            var y = input[i].Y;
-            if (x < minX) minX = x;
-            if (x > maxX) maxX = x;
-            if (y < minY) minY = y;
-            if (y > maxY) maxY = y;
-        }
-
-        // A flat frame (a line, a single point) has nothing to rescale - pass through.
-        if (maxX - minX < 4 || maxY - minY < 4)
+        if (mode == LaserFrameMappingMode.Off || input == null || count <= 0)
             return input;
 
         RectFromSafety(safety, out var cx, out var cy, out var halfW, out var halfH);
 
         const float field = 32767f;
-        var bboxCenterX = (minX + maxX) * 0.5f / field;
-        var bboxCenterY = (minY + maxY) * 0.5f / field;
-        var bboxHalfW = (maxX - minX) * 0.5f / field;
-        var bboxHalfH = (maxY - minY) * 0.5f / field;
-
-        var targetHalfW = halfW / field;
-        var targetHalfH = halfH / field;
-        var scaleX = targetHalfW / MathF.Max(bboxHalfW, 0.0001f);
-        var scaleY = targetHalfH / MathF.Max(bboxHalfH, 0.0001f);
-        if (mode == LaserFrameMappingMode.Fit || mode == LaserFrameMappingMode.Crop)
+        float scaleX, scaleY;
+        var crop = false;
+        switch (mode)
         {
-            // Fit contains the frame in the rect; Crop covers it (overflow clamps at the field).
-            var scale = mode == LaserFrameMappingMode.Fit ? MathF.Min(scaleX, scaleY) : MathF.Max(scaleX, scaleY);
-            scaleX = scale;
-            scaleY = scale;
+            case LaserFrameMappingMode.Stretch:
+                scaleX = halfW / field;
+                scaleY = halfH / field;
+                break;
+
+            case LaserFrameMappingMode.Crop:
+                // Fills the zone on its longer axis; the shorter one overflows and gets cut below.
+                scaleX = scaleY = MathF.Max(halfW, halfH) / field;
+                crop = true;
+                break;
+
+            default: // Fit
+                scaleX = scaleY = MathF.Min(halfW, halfH) / field;
+                break;
         }
 
         var mapped = new LaserPoint[count];
         for (var i = 0; i < count; i++)
         {
             var p = input[i];
-            var nx = Math.Clamp((p.X / field - bboxCenterX) * scaleX + cx / field, -1f, 1f);
-            var ny = Math.Clamp((p.Y / field - bboxCenterY) * scaleY + cy / field, -1f, 1f);
-            p.X = Math.Clamp((int)(nx * field), -32767, 32767);
-            p.Y = Math.Clamp((int)(ny * field), -32767, 32767);
-            mapped[i] = p;
+            var x = Math.Clamp((int)MathF.Round(cx + p.X * scaleX), -32767, 32767);
+            var y = Math.Clamp((int)MathF.Round(cy + p.Y * scaleY), -32767, 32767);
+
+            var insideZone = !crop || (MathF.Abs(x - cx) <= halfW && MathF.Abs(y - cy) <= halfH);
+            mapped[i] = insideZone
+                            ? new LaserPoint(x, y, p.R, p.G, p.B, p.I)
+                            : LaserPoint.CreateBlanked(x, y);
         }
 
         return mapped;
