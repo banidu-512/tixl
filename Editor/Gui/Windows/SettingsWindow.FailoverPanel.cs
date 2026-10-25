@@ -62,6 +62,9 @@ internal sealed partial class SettingsWindow
                                           true);
 
         FormInputs.AddVerticalSpace();
+        DrawNetworkInterface(ref changed);
+
+        FormInputs.AddVerticalSpace();
         FormInputs.AddSectionSubHeader("Status");
         FormInputs.AddVerticalSpace();
 

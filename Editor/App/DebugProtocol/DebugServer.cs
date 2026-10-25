@@ -762,6 +762,7 @@ internal static class DebugServer
                                                               HeartbeatMs = UserSettings.Config.FailoverHeartbeatMs,
                                                               TimeoutFactor = UserSettings.Config.FailoverTimeoutFactor,
                                                               Preempt = UserSettings.Config.FailoverPreempt,
+                                                              NetworkInterfaceName = UserSettings.Config.NetworkInterface,
                                                           });
                 break;
             }
@@ -769,7 +770,11 @@ internal static class DebugServer
             case "disable":
                 UserSettings.Config.FailoverEnabled = false;
                 UserSettings.Save();
-                Core.Show.FailoverArbiter.ApplyConfig(new Core.Show.FailoverConfig { Enabled = false });
+                Core.Show.FailoverArbiter.ApplyConfig(new Core.Show.FailoverConfig
+                                                          {
+                                                              Enabled = false,
+                                                              NetworkInterfaceName = UserSettings.Config.NetworkInterface,
+                                                          });
                 break;
 
             case "status":

@@ -107,7 +107,9 @@ internal sealed class BoygroupManager
         {
             _password = password ?? "";
             GroupName = group;
-            _transport = new BoygroupServerTransport(port, UserSettings.Config.BoygroupGroups.ToArray());
+            _transport = new BoygroupServerTransport(port,
+                                                     UserSettings.Config.BoygroupGroups.ToArray(),
+                                                     UserSettings.Config.NetworkInterface);
             _transport.PeerDisconnected += OnPeerDisconnected;
             State = BoygroupState.Server;
             StatusText = $"Serving group '{group}' on port {port}";
@@ -973,7 +975,8 @@ internal sealed class BoygroupManager
     {
         _discoveryScanner ??= new LanDiscoveryScanner();
         _discoveredServers.Clear();
-        _discoveryScanner.Start(UserSettings.Config.BoygroupPort + LanDiscoveryResponder.DiscoveryPortOffset);
+        _discoveryScanner.Start(UserSettings.Config.BoygroupPort + LanDiscoveryResponder.DiscoveryPortOffset,
+                                UserSettings.Config.NetworkInterface);
     }
 
     public void StopDiscovery()

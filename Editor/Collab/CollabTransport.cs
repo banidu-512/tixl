@@ -8,6 +8,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using T3.Core.Utils;
 using T3.Editor.Gui.Interaction;
 
 namespace T3.Editor.Collab;
@@ -311,15 +312,18 @@ internal sealed class CollabHostTransport : CollabTransport
         }
     }
 
-    public CollabHostTransport(int tcpPort, bool enableLanDiscovery, Func<JObject> announcementFactory)
+    public CollabHostTransport(int tcpPort, bool enableLanDiscovery, Func<JObject> announcementFactory, string? interfaceName = null)
     {
-        _listener = new TcpListener(IPAddress.Any, tcpPort);
+        // A pinned adapter must receive the session; everything else keeps the previous
+        // all-interface bind. Clients discover the host by the address they reach it on.
+        var bindAddress = LanInterfaces.ResolveAddress(interfaceName) ?? IPAddress.Any;
+        _listener = new TcpListener(bindAddress, tcpPort);
         _listener.Start();
 
         UdpClient? udp = null;
         try
         {
-            udp = new UdpClient(tcpPort);
+            udp = new UdpClient(new IPEndPoint(bindAddress, tcpPort));
             udp.Client.EnableBroadcast = false;
 
             if (enableLanDiscovery)
@@ -348,7 +352,7 @@ internal sealed class CollabHostTransport : CollabTransport
 
         _ = Task.Run(() => AcceptLoopAsync(_cancellation.Token));
         _ = Task.Run(() => UdpLoopAsync(_cancellation.Token));
-        Log.Info($"Collab: hosting on port {tcpPort}");
+        Log.Info($"Collab: hosting on {bindAddress}:{tcpPort}");
     }
 
     public override void SendToPeer(CollabPeerConnection peer, CollabProtocol.FrameType type, ReadOnlySpan<byte> payload)
@@ -694,22 +698,27 @@ internal sealed class LanDiscoveryScanner : IDisposable
     private CancellationTokenSource? _cancellation;
     private Task? _loopTask;
 
-    public void Start(int discoveryPort)
+    /// <summary>
+    /// Starts probing. An optional adapter name pins both the source address and the broadcast
+    /// target to that interface; empty keeps the OS default route on all interfaces.
+    /// </summary>
+    public void Start(int discoveryPort, string? interfaceName = null)
     {
         Stop();
+        var lanInterface = LanInterfaces.Find(interfaceName);
         var cancellation = new CancellationTokenSource();
-        var udp = new UdpClient();
+        var udp = new UdpClient(new IPEndPoint(lanInterface?.Address ?? IPAddress.Any, 0));
         udp.Client.EnableBroadcast = true;
-        udp.Client.Bind(new IPEndPoint(IPAddress.Any, 0));
+        var broadcast = lanInterface?.BroadcastAddress ?? IPAddress.Broadcast;
         _cancellation = cancellation;
         _udp = udp;
 
         // The loop owns its socket and token directly: fields are swapped and nulled by Stop()
         // from the UI thread, and a loop that read them would race with its own teardown.
-        _loopTask = Task.Run(() => LoopAsync(discoveryPort, udp, cancellation.Token));
+        _loopTask = Task.Run(() => LoopAsync(discoveryPort, broadcast, udp, cancellation.Token));
     }
 
-    private async Task LoopAsync(int discoveryPort, UdpClient udp, CancellationToken cancellation)
+    private async Task LoopAsync(int discoveryPort, IPAddress broadcast, UdpClient udp, CancellationToken cancellation)
     {
         var probe = Encoding.UTF8.GetBytes(LanDiscoveryResponder.ProbePayload);
         var interval = TimeSpan.FromMilliseconds(700);
@@ -717,7 +726,7 @@ internal sealed class LanDiscoveryScanner : IDisposable
         {
             try
             {
-                await udp.SendAsync(probe, probe.Length, new IPEndPoint(IPAddress.Broadcast, discoveryPort));
+                await udp.SendAsync(probe, probe.Length, new IPEndPoint(broadcast, discoveryPort));
 
                 using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
                 timeout.CancelAfter(interval);

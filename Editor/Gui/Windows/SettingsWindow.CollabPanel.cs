@@ -65,6 +65,8 @@ internal sealed partial class SettingsWindow
                                    "Empty = anyone on the network can join. Recommended when hosting on shared networks.");
 
         FormInputs.AddVerticalSpace();
+        DrawNetworkInterface(ref changed);
+        FormInputs.AddVerticalSpace();
 
         if (manager.IsSessionActive)
         {
@@ -204,7 +206,8 @@ internal sealed partial class SettingsWindow
             if (ImGui.SmallButton("Scan"))
             {
                 _discovered.Clear();
-                _discoveryScanner.Start(config.CollabPort + LanDiscoveryResponder.DiscoveryPortOffset);
+                _discoveryScanner.Start(config.CollabPort + LanDiscoveryResponder.DiscoveryPortOffset,
+                                        config.NetworkInterface);
                 _discoveryScannerActive = true;
                 _discoveryScanUntil = DateTime.UtcNow + TimeSpan.FromSeconds(6);
             }

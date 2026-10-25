@@ -11,6 +11,7 @@ using System.Net.Sockets;
 using System.Text;
 using Newtonsoft.Json;
 using T3.Core.Logging;
+using T3.Core.Utils;
 
 namespace T3.Core.Show;
 
@@ -28,6 +29,9 @@ public sealed record FailoverConfig
     public int TimeoutFactor = 3;
     public bool Preempt = true;
 
+    /// <summary>Adapter to send and receive heartbeats on. Empty = every usable interface.</summary>
+    public string NetworkInterfaceName = "";
+
     public FailoverConfig Copy() => new()
                                          {
                                              Enabled = Enabled,
@@ -36,6 +40,7 @@ public sealed record FailoverConfig
                                              HeartbeatMs = HeartbeatMs,
                                              TimeoutFactor = TimeoutFactor,
                                              Preempt = Preempt,
+                                             NetworkInterfaceName = NetworkInterfaceName,
                                          };
 
     public bool ConfigEquals(FailoverConfig? other)
@@ -46,7 +51,8 @@ public sealed record FailoverConfig
                && Priority == other.Priority
                && HeartbeatMs == other.HeartbeatMs
                && TimeoutFactor == other.TimeoutFactor
-               && Preempt == other.Preempt;
+               && Preempt == other.Preempt
+               && string.Equals(NetworkInterfaceName, other.NetworkInterfaceName, StringComparison.OrdinalIgnoreCase);
     }
 }
 
@@ -263,25 +269,44 @@ public static class FailoverArbiter
             // Join the heartbeat group on every real interface, not just the OS default route:
             // multi-homed machines (WSL/Hyper-V/VPN adapters) otherwise never hear peers on the
             // show NIC. Loopback keeps one-PC master/backup rehearsal working via MulticastLoopback.
-            var interfaces = new List<IPAddress>();
-            try
-            {
-                foreach (var networkInterface in NetworkInterface.GetAllNetworkInterfaces())
-                {
-                    if (networkInterface.OperationalStatus != OperationalStatus.Up
-                        || networkInterface.NetworkInterfaceType is NetworkInterfaceType.Loopback or NetworkInterfaceType.Tunnel
-                        || !networkInterface.SupportsMulticast)
-                        continue;
+            // An explicitly selected adapter restricts heartbeats to that NIC instead.
+            var pinnedInterface = string.IsNullOrWhiteSpace(_config.NetworkInterfaceName)
+                                      ? null
+                                      : LanInterfaces.Find(_config.NetworkInterfaceName);
 
-                    var ipv4 = networkInterface.GetIPProperties().UnicastAddresses
-                                          .FirstOrDefault(a => a.Address.AddressFamily == AddressFamily.InterNetwork)?.Address;
-                    if (ipv4 != null)
-                        interfaces.Add(ipv4);
-                }
-            }
-            catch (Exception e)
+            if (pinnedInterface != null && !pinnedInterface.SupportsMulticast)
             {
-                Log.Warning($"Failover: interface enumeration failed ({e.Message}); using default route");
+                Log.Warning($"Failover: adapter '{pinnedInterface.Name}' has no multicast support; using all interfaces");
+                pinnedInterface = null;
+            }
+
+            var interfaces = new List<IPAddress>();
+            if (pinnedInterface != null)
+            {
+                interfaces.Add(pinnedInterface.Address);
+                RecordEvent($"Heartbeat interface {pinnedInterface.Name} ({pinnedInterface.Address})");
+            }
+            else
+            {
+                try
+                {
+                    foreach (var networkInterface in NetworkInterface.GetAllNetworkInterfaces())
+                    {
+                        if (networkInterface.OperationalStatus != OperationalStatus.Up
+                            || networkInterface.NetworkInterfaceType is NetworkInterfaceType.Loopback or NetworkInterfaceType.Tunnel
+                            || !networkInterface.SupportsMulticast)
+                            continue;
+
+                        var ipv4 = networkInterface.GetIPProperties().UnicastAddresses
+                                              .FirstOrDefault(a => a.Address.AddressFamily == AddressFamily.InterNetwork)?.Address;
+                        if (ipv4 != null)
+                            interfaces.Add(ipv4);
+                    }
+                }
+                catch (Exception e)
+                {
+                    Log.Warning($"Failover: interface enumeration failed ({e.Message}); using default route");
+                }
             }
 
             if (interfaces.Count == 0)
@@ -311,20 +336,24 @@ public static class FailoverArbiter
                 // Supplementary default-route socket: on Linux a specific-IP bind never receives
                 // multicast looped back from a local sender (verified), which would break the
                 // one-PC master/backup rehearsal. The Any bind still does. Duplicates are
-                // harmless — peers are deduped by node id.
-                try
+                // harmless — peers are deduped by node id. Skip it when the user pinned an
+                // adapter, or heartbeats from other NICs would leak into the pair.
+                if (pinnedInterface == null)
                 {
-                    var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
-                    socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
-                    socket.Bind(new IPEndPoint(IPAddress.Any, FailoverPort));
-                    socket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.MulticastLoopback, true);
-                    socket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.AddMembership,
-                                           new MulticastOption(GroupAddress, IPAddress.Any));
-                    _heartbeatSockets.Add(socket);
-                }
-                catch (Exception e)
-                {
-                    Log.Warning($"Failover: could not bind default-route heartbeat socket: {e.Message}");
+                    try
+                    {
+                        var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+                        socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+                        socket.Bind(new IPEndPoint(IPAddress.Any, FailoverPort));
+                        socket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.MulticastLoopback, true);
+                        socket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.AddMembership,
+                                               new MulticastOption(GroupAddress, IPAddress.Any));
+                        _heartbeatSockets.Add(socket);
+                    }
+                    catch (Exception e)
+                    {
+                        Log.Warning($"Failover: could not bind default-route heartbeat socket: {e.Message}");
+                    }
                 }
             }
         }

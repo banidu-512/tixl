@@ -12,6 +12,7 @@ using System.Net.Sockets;
 using System.Text;
 using Newtonsoft.Json.Linq;
 using T3.Core.Show;
+using T3.Core.Utils;
 using T3.Editor.Collab;
 using T3.Editor.Show;
 
@@ -33,6 +34,7 @@ internal static class Program
         Run("auth.mac", TestAuth);
         Run("heartbeat.answers-not-answered", TestHeartbeatAnswersAreNotAnswered);
         Run("collab.host-port-release", TestHostPortReleasedOnFailure);
+        Run("network.interface-bind", TestPinnedInterfaceBind);
         Run("deploy.inventory", TestDeployInventoryDiff);
         Run("deploy.transfer", TestDeployFileTransfer);
         Run("deploy.pathsafety", TestDeployPathSafety);
@@ -252,6 +254,32 @@ internal static class Program
         }
 
         using var restarted = new CollabHostTransport(port, enableLanDiscovery: false, () => new JObject());
+    }
+
+    /// <summary>
+    /// A pinned adapter must be the address the session actually binds to; a missing adapter falls
+    /// back to all interfaces instead of failing to host.
+    /// </summary>
+    private static void TestPinnedInterfaceBind()
+    {
+        var interfaces = LanInterfaces.GetUsable();
+        Check(LanInterfaces.ResolveAddress("no-such-adapter") == null, "missing adapter resolved to an address");
+        if (interfaces.Count == 0)
+        {
+            Console.WriteLine("      (no usable IPv4 adapter — bind check skipped)");
+            return;
+        }
+
+        var lanInterface = interfaces[0];
+        Check(LanInterfaces.ResolveAddress(lanInterface.Name)?.Equals(lanInterface.Address) == true,
+              "adapter name did not resolve back to its address");
+
+        var port = FreeTcpPort();
+        using var host = new CollabHostTransport(port, enableLanDiscovery: false, () => new JObject(), lanInterface.Name);
+        using var client = new TcpClient();
+        var connect = client.ConnectAsync(lanInterface.Address, port);
+        Check(connect.Wait(TimeSpan.FromSeconds(3)) && client.Connected,
+              $"could not connect to pinned adapter {lanInterface.Address}:{port}");
     }
 
     // ---------------------------------------------------------------------------------------
