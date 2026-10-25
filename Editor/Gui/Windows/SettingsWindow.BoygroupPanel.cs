@@ -122,76 +122,7 @@ internal sealed partial class SettingsWindow
         if (nodes.Count == 0 && clients.Count == 0)
             ImGui.TextDisabled("Looking for other TiXL instances on this network...");
 
-        // Connected nodes stop announcing themselves, so they are listed first - otherwise a node
-        // would disappear from this list right after being added. Snapshot: Remove mutates the list.
-        foreach (var client in clients.ToArray())
-        {
-            ImGui.PushID("client" + client.Address + client.Name);
-            FormInputs.SetCursorToParameterEdit();
-            ImGui.TextUnformatted($"{client.Name}  ({client.Address})");
-            ImGui.SameLine();
-            ImGui.PushStyleColor(ImGuiCol.Text, (client.IsDeployed ? UiColors.StatusActivated : UiColors.StatusWarning).Rgba);
-            ImGui.TextUnformatted(client.StatusText);
-            ImGui.PopStyleColor();
-
-            ImGui.SameLine();
-            if (ImGui.SmallButton("Remove"))
-                manager.RemoveClient(client);
-            CustomComponents.TooltipForLastItem("Disconnect this render node and remove it from the saved list.");
-
-            var diagnostics = DescribeClientDiagnostics(client);
-            if (!string.IsNullOrEmpty(diagnostics))
-            {
-                FormInputs.ApplyIndent();
-                CustomComponents.StylizedText(diagnostics, Fonts.FontSmall, UiColors.TextMuted);
-            }
-
-            FormInputs.ApplyIndent();
-            DrawDelayControls(manager, client);
-
-            if (client.MachineConfig?.Bindings.Count > 0)
-            {
-                FormInputs.ApplyIndent();
-                CustomComponents.StylizedText(BoygroupManager.DescribeBindings(client.MachineConfig, setup),
-                                              Fonts.FontSmall, UiColors.TextMuted);
-            }
-
-            ImGui.PopID();
-        }
-
-        foreach (var node in nodes)
-        {
-            if (IsConnected(manager, node))
-                continue;
-
-            ImGui.PushID(node.Address + node.Port);
-            FormInputs.SetCursorToParameterEdit();
-            ImGui.TextUnformatted($"{node.Name}  ({node.Address})");
-            ImGui.SameLine();
-            if (!node.IsMaster)
-            {
-                var saved = BoygroupManager.RememberedNodes.Any(n => string.Equals(n, node.Name, StringComparison.OrdinalIgnoreCase));
-                if (ImGui.SmallButton(saved ? "Reconnect" : "Add"))
-                    manager.InviteClient(node);
-                CustomComponents.TooltipForLastItem(saved
-                                                        ? "Saved render node — asks it to connect again."
-                                                        : "Ask this instance to render the show on this machine.");
-
-                if (saved)
-                {
-                    ImGui.SameLine();
-                    if (ImGui.SmallButton("Forget"))
-                        BoygroupManager.ForgetNode(node.Name);
-                    CustomComponents.TooltipForLastItem("Stop reconnecting this node after a restart.");
-                }
-            }
-            else
-            {
-                ImGui.TextDisabled("master");
-            }
-
-            ImGui.PopID();
-        }
+        DrawRenderNodeTable(manager, setup);
 
         // Saved nodes that are neither connected nor visible right now; without this they could only
         // be removed during the short time they are discovered.
@@ -250,47 +181,147 @@ internal sealed partial class SettingsWindow
         }
     }
 
+    /// <summary>
+    /// One row per render node: connected nodes first (they stop announcing themselves, so without
+    /// this a node would drop out of the list right after being added), then the instances that are
+    /// visible but not connected. Columns line the numbers up; row borders separate the nodes.
+    /// </summary>
+    private static void DrawRenderNodeTable(BoygroupManager manager, T3.Core.Output.Setup? setup)
+    {
+        var clients = manager.Clients;
+        var available = manager.DiscoveredServers.Where(n => !IsConnected(manager, n)).ToArray();
+        if (clients.Count == 0 && available.Length == 0)
+            return;
+
+        const ImGuiTableFlags flags = ImGuiTableFlags.BordersOuter | ImGuiTableFlags.BordersInnerH
+                                      | ImGuiTableFlags.RowBg | ImGuiTableFlags.SizingStretchProp
+                                      | ImGuiTableFlags.NoSavedSettings;
+
+        if (!ImGui.BeginTable("renderNodes", 7, flags))
+            return;
+
+        ImGui.TableSetupColumn("Render node", ImGuiTableColumnFlags.WidthStretch, 1.4f);
+        ImGui.TableSetupColumn("Status", ImGuiTableColumnFlags.WidthFixed, 74);
+        ImGui.TableSetupColumn("RTT", ImGuiTableColumnFlags.WidthFixed, 52);
+        ImGui.TableSetupColumn("Sync", ImGuiTableColumnFlags.WidthFixed, 58);
+        ImGui.TableSetupColumn("FPS", ImGuiTableColumnFlags.WidthFixed, 36);
+        ImGui.TableSetupColumn("Delay", ImGuiTableColumnFlags.WidthFixed, 186);
+        ImGui.TableSetupColumn("", ImGuiTableColumnFlags.WidthFixed, 64);
+        ImGui.TableHeadersRow();
+
+        // Snapshot: Remove mutates the client list.
+        foreach (var client in clients.ToArray())
+        {
+            ImGui.PushID("client" + client.Address + client.Name);
+            ImGui.TableNextRow();
+
+            ImGui.TableSetColumnIndex(0);
+            ImGui.TextUnformatted($"{client.Name}  ({client.Address})");
+            CustomComponents.StylizedText(DescribeClientDetails(client), Fonts.FontSmall, UiColors.TextMuted);
+            if (client.MachineConfig?.Bindings.Count > 0)
+            {
+                CustomComponents.StylizedText(BoygroupManager.DescribeBindings(client.MachineConfig, setup),
+                                              Fonts.FontSmall, UiColors.TextMuted);
+            }
+
+            ImGui.TableSetColumnIndex(1);
+            ImGui.PushStyleColor(ImGuiCol.Text, (client.IsDeployed ? UiColors.StatusActivated : UiColors.StatusWarning).Rgba);
+            ImGui.TextUnformatted(client.StatusText);
+            ImGui.PopStyleColor();
+
+            ImGui.TableSetColumnIndex(2);
+            ImGui.TextDisabled(client.RttMs >= 0 ? $"{client.RttMs:0} ms" : "—");
+
+            ImGui.TableSetColumnIndex(3);
+            ImGui.TextDisabled(client.SyncErrorMs > -0.5 ? $"{client.SyncErrorMs:+0.0;-0.0;0} ms" : "—");
+            CustomComponents.TooltipForLastItem("Drift the client measured when it applied the last timeline anchors.");
+
+            ImGui.TableSetColumnIndex(4);
+            ImGui.TextDisabled(client.ClientFps > 0 ? $"{client.ClientFps:0}" : "—");
+
+            ImGui.TableSetColumnIndex(5);
+            DrawDelayButtons(manager, client);
+
+            ImGui.TableSetColumnIndex(6);
+            if (ImGui.SmallButton("Remove"))
+                manager.RemoveClient(client);
+            CustomComponents.TooltipForLastItem("Disconnect this render node and remove it from the saved list.");
+            ImGui.PopID();
+        }
+
+        foreach (var node in available)
+        {
+            ImGui.PushID(node.Address + node.Port);
+            ImGui.TableNextRow();
+
+            ImGui.TableSetColumnIndex(0);
+            ImGui.TextUnformatted($"{node.Name}  ({node.Address})");
+            var saved = BoygroupManager.RememberedNodes.Any(n => string.Equals(n, node.Name, StringComparison.OrdinalIgnoreCase));
+            if (saved && !node.IsMaster)
+                CustomComponents.StylizedText("Saved — reconnects automatically", Fonts.FontSmall, UiColors.TextMuted);
+
+            ImGui.TableSetColumnIndex(1);
+            ImGui.TextDisabled(node.IsMaster ? "master" : "available");
+
+            for (var column = 2; column <= 5; column++)
+            {
+                ImGui.TableSetColumnIndex(column);
+                ImGui.TextDisabled("—");
+            }
+
+            ImGui.TableSetColumnIndex(6);
+            if (!node.IsMaster)
+            {
+                if (ImGui.SmallButton(saved ? "Reconnect" : "Add"))
+                    manager.InviteClient(node);
+                CustomComponents.TooltipForLastItem(saved
+                                                        ? "Saved render node — asks it to connect again."
+                                                        : "Ask this instance to render the show on this machine.");
+
+                if (saved && ImGui.SmallButton("Forget"))
+                    BoygroupManager.ForgetNode(node.Name);
+                CustomComponents.TooltipForLastItem("Stop reconnecting this node after a restart.");
+            }
+
+            ImGui.PopID();
+        }
+
+        ImGui.EndTable();
+    }
+
     /// <summary>Per-node presentation delay. Positive runs the node later, which is how projector or
     /// capture latency differences between machines are lined up.</summary>
-    private static void DrawDelayControls(BoygroupManager manager, BoygroupManager.ClientInfo client)
+    private static void DrawDelayButtons(BoygroupManager manager, BoygroupManager.ClientInfo client)
     {
-        ImGui.PushID("delay" + client.Name);
-        CustomComponents.StylizedText($"Delay {client.DelayMs:+0;-0;0} ms", Fonts.FontSmall,
-                                      client.DelayMs == 0 ? UiColors.TextMuted : UiColors.StatusActivated);
-        ImGui.SameLine();
-
         if (ImGui.SmallButton("-10"))
             manager.SetClientDelay(client, client.DelayMs - 10);
 
-        ImGui.SameLine();
+        ImGui.SameLine(0, 2);
+        if (ImGui.SmallButton("-1"))
+            manager.SetClientDelay(client, client.DelayMs - 1);
+
+        ImGui.SameLine(0, 6);
+        CustomComponents.StylizedText($"{client.DelayMs:+0;-0;0} ms", Fonts.FontSmall,
+                                      client.DelayMs == 0 ? UiColors.TextMuted : UiColors.StatusActivated);
+
+        ImGui.SameLine(0, 6);
+        if (ImGui.SmallButton("+1"))
+            manager.SetClientDelay(client, client.DelayMs + 1);
+
+        ImGui.SameLine(0, 2);
         if (ImGui.SmallButton("+10"))
             manager.SetClientDelay(client, client.DelayMs + 10);
 
-        if (client.DelayMs != 0)
-        {
-            ImGui.SameLine();
-            if (ImGui.SmallButton("Reset"))
-                manager.SetClientDelay(client, 0);
-        }
-
-        CustomComponents.TooltipForLastItem($"Shift this node's presentation in time (up to ±{BoygroupManager.MaxSyncDelayMs} ms). "
-                                            + "Positive values render later, negative values earlier; the master re-syncs the node immediately.");
-        ImGui.PopID();
+        CustomComponents.TooltipForLastItem($"Shifts this node in time by up to ±{BoygroupManager.MaxSyncDelayMs} ms. "
+                                            + "The master re-syncs the node immediately and remembers the value.");
     }
 
-    private static string DescribeClientDiagnostics(BoygroupManager.ClientInfo client)
+    private static string DescribeClientDetails(BoygroupManager.ClientInfo client)
     {
         var parts = new List<string>();
-        if (client.RttMs >= 0)
-            parts.Add($"RTT {client.RttMs:0} ms");
-
         parts.Add($"clock {client.ClockOffsetMs:+0.0;-0.0;0} ms");
-        if (client.SyncErrorMs > -0.5)
-            parts.Add($"sync {client.SyncErrorMs:+0.0;-0.0;0} ms");
         if (client.SyncAgeMs >= 0)
             parts.Add(client.SyncAgeMs < 1000 ? $"synced {client.SyncAgeMs:0} ms ago" : $"synced {client.SyncAgeMs / 1000:0} s ago");
-        if (client.ClientFps > 0)
-            parts.Add($"{client.ClientFps:0} fps");
         if (!string.IsNullOrEmpty(client.ClientVersion))
             parts.Add($"v{client.ClientVersion}");
 
