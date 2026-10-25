@@ -22,6 +22,7 @@ using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.CompilerServices;
 using System.Text;
 
 namespace T3.CollabRelay;
@@ -31,9 +32,18 @@ internal static class Program
     private const int DefaultPort = 44710;
     private const int MaxMembersPerRoom = 16;
     private const int MaxFrameSize = 4 * 1024 * 1024;
+    private const int HandshakeTimeoutMs = 10_000;
+    private const int IdleTimeoutMs = 90_000;
+    private const int WriteTimeoutMs = 10_000;
     private const byte BroadcastSlot = 0xFF;
 
     private static readonly ConcurrentDictionary<string, Room> Rooms = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// One writer at a time per socket. The host socket is written by every member's routing task
+    /// plus join announcements; unserialized, two frames interleave and corrupt the host's stream.
+    /// </summary>
+    private static readonly ConditionalWeakTable<TcpClient, SemaphoreSlim> WriteGates = new();
 
     private static long _lastActivityTicks = Environment.TickCount64;
 
@@ -79,7 +89,9 @@ internal static class Program
         var slot = (byte)0;
         try
         {
-            var line = await ReadLineAsync(client.GetStream(), CancellationToken.None);
+            // A connection that opens and then says nothing must not hold a task and a socket forever.
+            using var handshake = new CancellationTokenSource(HandshakeTimeoutMs);
+            var line = await ReadLineAsync(client.GetStream(), handshake.Token);
             var request = ParseRequest(line);
             if (request == null)
             {
@@ -93,24 +105,46 @@ internal static class Program
 
             if (role == "host")
             {
-                room = CreateRoom(roomCode);
-                await WriteLineAsync(client, $"{{\"ok\":true,\"room\":\"{room.Code}\"}}");
+                // The reply must reach the host before any member announcement: the socket's write
+                // gate is held from claiming the room until the reply is written.
+                var gate = WriteGateOf(client);
+                await gate.WaitAsync();
+                try
+                {
+                    room = CreateRoom(roomCode, client);
+                    await WriteRawLineAsync(client, $"{{\"ok\":true,\"room\":\"{room.Code}\"}}");
+                }
+                finally
+                {
+                    gate.Release();
+                }
+
                 Console.WriteLine($"room {room.Code} registered");
-                room.Owner = client;
             }
             else if (role == "join")
             {
-                var joined = TryJoinRoom(roomCode, client, out room, out slot);
-                if (!joined)
+                // Likewise a member is routable as soon as it is in the room; hold its write gate
+                // so no host frame overtakes the join reply.
+                var gate = WriteGateOf(client);
+                await gate.WaitAsync();
+                try
                 {
-                    var reason = room == null ? "room not found" : "room full";
-                    room = null;
-                    await WriteLineAsync(client, $"{{\"ok\":false,\"error\":\"{reason}\"}}");
-                    client.Close();
-                    return;
-                }
+                    var joined = TryJoinRoom(roomCode, client, out room, out slot);
+                    if (!joined)
+                    {
+                        var reason = room == null ? "room not found" : "room full";
+                        room = null;
+                        await WriteRawLineAsync(client, $"{{\"ok\":false,\"error\":\"{reason}\"}}");
+                        client.Close();
+                        return;
+                    }
 
-                await WriteLineAsync(client, $"{{\"ok\":true,\"room\":\"{room!.Code}\",\"slot\":{slot}}}");
+                    await WriteRawLineAsync(client, $"{{\"ok\":true,\"room\":\"{room!.Code}\",\"slot\":{slot}}}");
+                }
+                finally
+                {
+                    gate.Release();
+                }
 
                 // Tell the host about the new member before any of its frames arrive.
                 var owner = room.Owner;
@@ -129,9 +163,9 @@ internal static class Program
             TouchActivity();
             await RouteFramesAsync(client, room, slot, role == "host");
         }
-        catch (Exception e) when (e is IOException or SocketException or ObjectDisposedException)
+        catch (Exception e) when (e is IOException or SocketException or ObjectDisposedException or OperationCanceledException)
         {
-            // Normal disconnect path.
+            // Normal disconnect path (including a handshake or read that timed out).
         }
         catch (Exception e)
         {
@@ -140,20 +174,56 @@ internal static class Program
         finally
         {
             if (room != null)
+            {
+                // A departing member keeps its slot until its "left" line has been queued on the
+                // host's serialized write gate. Freeing the slot first would let a newcomer take
+                // it and announce itself before the stale "left", and the host would drop the
+                // newcomer when that line arrived. Holding the entry (not the room gate) for the
+                // duration keeps joins and routing moving while preserving the order.
+                if (role == "join" && IsRoomMember(room, slot, client))
+                    await NotifyMemberLeftAsync(room, slot);
+
                 RemoveClient(room, client, role == "host", slot);
+            }
 
             client.Close();
         }
     }
 
-    private static Room CreateRoom(string requestedCode)
+    /// <summary>Tells the host a member is gone so it drops the slot instead of waiting for a timeout.</summary>
+    private static async Task NotifyMemberLeftAsync(Room room, byte slot)
+    {
+        var owner = room.Owner;
+        if (owner is not { Connected: true })
+            return;
+
+        try
+        {
+            await WriteLineAsync(owner, $"{{\"t\":\"left\",\"slot\":{slot}}}");
+        }
+        catch (Exception e) when (e is IOException or SocketException or ObjectDisposedException or OperationCanceledException)
+        {
+            // The host link is failing too; its own connection task cleans up.
+        }
+    }
+
+    private static Room CreateRoom(string requestedCode, TcpClient owner)
     {
         var code = SanitizeCode(requestedCode);
         while (true)
         {
             var room = Rooms.GetOrAdd(code, _ => new Room(code));
-            if (room.Owner == null)
-                return room;
+
+            // Claimed under the room's gate: two hosts asking for the same code must not both own it,
+            // and a room whose host just left (and was removed) must not be revived.
+            lock (room.Gate)
+            {
+                if (room.Owner == null && Rooms.TryGetValue(code, out var current) && current == room)
+                {
+                    room.Owner = owner;
+                    return room;
+                }
+            }
 
             // Code collision with a live room — mint a fresh one for the new host.
             code = GenerateRoomCode();
@@ -186,20 +256,33 @@ internal static class Program
         return cleaned.Length == 0 ? GenerateRoomCode() : cleaned.ToUpperInvariant();
     }
 
-    private static void RemoveClient(Room room, TcpClient client, bool isOwner, byte slot)
+    /// <summary>True while this connection still owns the slot; checked before the left announcement.</summary>
+    private static bool IsRoomMember(Room room, byte slot, TcpClient client)
     {
         lock (room.Gate)
         {
-            if (isOwner && room.Owner == client)
+            return room.Members.TryGetValue(slot, out var member) && member == client;
+        }
+    }
+
+    /// <summary>Returns true when a member left (as opposed to the host).</summary>
+    private static bool RemoveClient(Room room, TcpClient client, bool isOwner, byte slot)
+    {
+        lock (room.Gate)
+        {
+            if (isOwner)
             {
-                room.Owner = null;
-                Console.WriteLine($"room {room.Code} closed (host left)");
-                Rooms.TryRemove(room.Code, out _);
+                if (room.Owner == client)
+                {
+                    room.Owner = null;
+                    Console.WriteLine($"room {room.Code} closed (host left)");
+                    Rooms.TryRemove(room.Code, out _);
+                }
+
+                return false;
             }
-            else
-            {
-                room.Members.Remove(slot);
-            }
+
+            return room.Members.TryGetValue(slot, out var member) && member == client && room.Members.Remove(slot);
         }
     }
 
@@ -212,28 +295,33 @@ internal static class Program
         var stream = client.GetStream();
         var lengthBuffer = new byte[4];
 
+        // A peer that stops sending mid-frame is gone; without a read deadline its socket would
+        // stay open (and its room slot occupied) until the process ends.
+        using var idle = new CancellationTokenSource();
+        var token = idle.Token;
+
         while (true)
         {
+            idle.CancelAfter(IdleTimeoutMs);
+
             // On the host connection, a frame may be interleaved with control lines; a length
             // prefix can never start with '{', so read the discriminator byte first.
             if (isHost)
             {
-                var first = stream.ReadByte();
-                if (first < 0)
+                if (!await TryReadExactAsync(stream, lengthBuffer.AsMemory(0, 1), token))
                     return;
 
-                if (first == '{')
+                if (lengthBuffer[0] == (byte)'{')
                 {
                     // Control lines are only ever sent TO the host; the host never sends them.
                     // Drain and ignore (join announcements for already-known slots).
                     continue;
                 }
 
-                lengthBuffer[0] = (byte)first;
-                if (!await TryReadExactAsync(stream, lengthBuffer.AsMemory(1)))
+                if (!await TryReadExactAsync(stream, lengthBuffer.AsMemory(1), token))
                     return;
             }
-            else if (!await TryReadExactAsync(stream, lengthBuffer))
+            else if (!await TryReadExactAsync(stream, lengthBuffer, token))
             {
                 return;
             }
@@ -246,7 +334,7 @@ internal static class Program
             }
 
             var frame = new byte[length];
-            if (!await TryReadExactAsync(stream, frame))
+            if (!await TryReadExactAsync(stream, frame, token))
                 return;
 
             TouchActivity();
@@ -265,13 +353,33 @@ internal static class Program
                 {
                     foreach (var member in room.MembersSnapshot())
                     {
-                        if (member.Value.Connected)
+                        if (!member.Value.Connected)
+                            continue;
+
+                        // One member that stopped reading (suspended laptop, dead Wi-Fi) must not
+                        // stall the broadcast for everyone else - drop it and let it rejoin.
+                        try
+                        {
                             await WriteFrameAsync(member.Value, payloadLength, payload);
+                        }
+                        catch (Exception e) when (e is IOException or SocketException or ObjectDisposedException or OperationCanceledException)
+                        {
+                            Console.WriteLine($"slot {member.Key} stalled ({e.GetType().Name}), dropping");
+                            member.Value.Close();
+                        }
                     }
                 }
                 else if (room.TryGetMember(targetSlot, out var target) && target.Connected)
                 {
-                    await WriteFrameAsync(target, payloadLength, payload);
+                    try
+                    {
+                        await WriteFrameAsync(target, payloadLength, payload);
+                    }
+                    catch (Exception e) when (e is IOException or SocketException or ObjectDisposedException or OperationCanceledException)
+                    {
+                        Console.WriteLine($"slot {targetSlot} stalled ({e.GetType().Name}), dropping");
+                        target.Close();
+                    }
                 }
             }
             else
@@ -279,37 +387,73 @@ internal static class Program
                 // Member -> host: retag with the slot so the host can demultiplex.
                 var owner = room.Owner;
                 if (owner is { Connected: true })
-                    await WriteTaggedFrameAsync(owner, slot, length, frame);
+                {
+                    try
+                    {
+                        await WriteTaggedFrameAsync(owner, slot, length, frame);
+                    }
+                    catch (Exception e) when (e is IOException or SocketException or ObjectDisposedException or OperationCanceledException)
+                    {
+                        // A frame write that failed (or timed out) may have left part of a frame
+                        // on the host stream; the host's framing cannot recover from that, so
+                        // the host link has to be re-established instead of silently desynced.
+                        Console.WriteLine($"host write failed ({e.GetType().Name}), closing the host link");
+                        owner.Close();
+                        return;
+                    }
+                }
             }
         }
     }
 
     private static async Task WriteFrameAsync(TcpClient target, int length, byte[] frameWithType)
     {
+        using var timeout = new CancellationTokenSource(WriteTimeoutMs);
         var prefix = new byte[4];
         BinaryPrimitives.WriteInt32LittleEndian(prefix, length);
-        var stream = target.GetStream();
-        await stream.WriteAsync(prefix);
-        await stream.WriteAsync(frameWithType.AsMemory(0, length));
+        var gate = WriteGateOf(target);
+        await gate.WaitAsync(timeout.Token);
+        try
+        {
+            var stream = target.GetStream();
+            await stream.WriteAsync(prefix, timeout.Token);
+            await stream.WriteAsync(frameWithType.AsMemory(0, length), timeout.Token);
+        }
+        finally
+        {
+            gate.Release();
+        }
     }
 
     private static async Task WriteTaggedFrameAsync(TcpClient owner, byte slot, int length, byte[] frameWithType)
     {
+        using var timeout = new CancellationTokenSource(WriteTimeoutMs);
         // [length + 1][slot][original frame bytes]
         var prefix = new byte[5];
         BinaryPrimitives.WriteInt32LittleEndian(prefix, length + 1);
         prefix[4] = slot;
-        var stream = owner.GetStream();
-        await stream.WriteAsync(prefix);
-        await stream.WriteAsync(frameWithType);
+        var gate = WriteGateOf(owner);
+        await gate.WaitAsync(timeout.Token);
+        try
+        {
+            var stream = owner.GetStream();
+            await stream.WriteAsync(prefix, timeout.Token);
+            await stream.WriteAsync(frameWithType, timeout.Token);
+        }
+        finally
+        {
+            gate.Release();
+        }
     }
 
-    private static async Task<bool> TryReadExactAsync(NetworkStream stream, Memory<byte> buffer)
+    private static SemaphoreSlim WriteGateOf(TcpClient client) => WriteGates.GetValue(client, _ => new SemaphoreSlim(1, 1));
+
+    private static async Task<bool> TryReadExactAsync(NetworkStream stream, Memory<byte> buffer, CancellationToken token)
     {
         var offset = 0;
         while (offset < buffer.Length)
         {
-            var read = await stream.ReadAsync(buffer[offset..]);
+            var read = await stream.ReadAsync(buffer[offset..], token);
             if (read <= 0)
                 return false;
 
@@ -360,8 +504,40 @@ internal static class Program
 
     private static async Task WriteLineAsync(TcpClient client, string line)
     {
+        var gate = WriteGateOf(client);
+        using var timeout = new CancellationTokenSource(WriteTimeoutMs);
+        try
+        {
+            await gate.WaitAsync(timeout.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            // No bytes were written while waiting for the gate.
+            return;
+        }
+
+        try
+        {
+            await WriteRawLineAsync(client, line, timeout.Token);
+        }
+        catch (Exception e) when (e is OperationCanceledException or IOException or SocketException)
+        {
+            // A line write cancelled or failed mid-way leaves a partial line; every later line
+            // would be appended to it and be unparseable, so the stream cannot be used any more.
+            client.Close();
+            throw;
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    /// <summary>Writes a control line; the caller holds the socket's write gate.</summary>
+    private static async Task WriteRawLineAsync(TcpClient client, string line, CancellationToken cancellation = default)
+    {
         var bytes = Encoding.UTF8.GetBytes(line + "\n");
-        await client.GetStream().WriteAsync(bytes);
+        await client.GetStream().WriteAsync(bytes, cancellation);
     }
 
     private static (string role, string room)? ParseRequest(string line)
@@ -418,14 +594,20 @@ internal static class Program
 
         public int MemberCount => Members.Count;
 
+        /// <summary>Next free slot in 1..254; the caller holds <see cref="Gate"/> and has checked capacity.</summary>
         public byte AllocateSlot()
         {
-            var slot = _nextSlot;
-            _nextSlot = (byte)((_nextSlot + 1) % 0xFF);
-            if (_nextSlot == 0)
-                _nextSlot = 1;
+            // Slots wrap after 254 joins; skip ones a long-lived member still holds.
+            while (true)
+            {
+                var slot = _nextSlot;
+                _nextSlot = (byte)((_nextSlot + 1) % 0xFF);
+                if (_nextSlot == 0)
+                    _nextSlot = 1;
 
-            return slot;
+                if (!Members.ContainsKey(slot))
+                    return slot;
+            }
         }
 
         public bool TryGetMember(byte slot, out TcpClient member)
