@@ -250,7 +250,17 @@ internal sealed class BoygroupManager
         }
 
         ProcessPendingDisconnects();
+
+        // Disconnects and inbound messages can both end the session (server loss, restart
+        // request), disposing the transport — the remaining steps must not run against it.
+        if (State == BoygroupState.Off)
+            return;
+
         DrainInbound();
+
+        if (State == BoygroupState.Off)
+            return;
+
         PumpDeploy();
         SendHeartbeats();
         SendTimeSync();
@@ -262,11 +272,10 @@ internal sealed class BoygroupManager
 
     private void DrainInbound()
     {
-        if (_transport == null)
-            return;
-
         var processed = 0;
-        while (processed < MaxInboundPerFrame && _transport.Inbound.TryDequeue(out var message))
+        // A message handler may end the session (server loss, restart), nulling the transport
+        // mid-loop — the null-conditional keeps the loop condition safe on the next iteration.
+        while (processed < MaxInboundPerFrame && _transport?.Inbound.TryDequeue(out var message) == true)
         {
             processed++;
             if (message.IsPresence || message.Json == null)
