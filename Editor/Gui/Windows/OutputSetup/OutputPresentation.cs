@@ -43,12 +43,20 @@ internal static class OutputPresentation
             if (!output.IsSending)
                 continue;
 
+            // A laser output presents nothing here, whatever its bindings say: it has no canvas
+            // composite - its frame is vector content streamed by the laser driver (LaserDriver).
+            // Checked on the output and not just on the binding, so a stale display binding on a
+            // laser output (configs from older builds, hand-edited files) can never throw the input
+            // full-screen onto a wall - in any binding order.
+            if (output.Kind == OutputDefinition.Kinds.Laser || HasLaserBinding(machineConfig, output.Id))
+                continue;
+
             var binding = machineConfig.FindBinding(output.Id);
             if (binding == null)
                 continue;
 
-            // A laser binding presents nothing here: its frame streams from the laser driver
-            // (LaserDriver), not from a composite.
+            // A laser binding on a canvas output presents nothing either: that frame streams from
+            // the laser driver.
             if (binding.IsLaser)
                 continue;
 
@@ -69,6 +77,19 @@ internal static class OutputPresentation
 
         OutputStreaming.EndFrame();
         OutputWindowHandling.EndFrame();
+    }
+
+    /// <summary>Whether any binding of this output goes to a laser plug. A laser target is never a
+    /// canvas to present - checked per output so binding order can't change the answer.</summary>
+    private static bool HasLaserBinding(MachineConfig machineConfig, Guid outputId)
+    {
+        foreach (var binding in machineConfig.Bindings)
+        {
+            if (binding.OutputId == outputId && binding.IsLaser)
+                return true;
+        }
+
+        return false;
     }
 
     /// <summary>Why the stream plug's sender refused its last frame, if it did (e.g. an unsupported format).</summary>

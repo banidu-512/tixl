@@ -97,6 +97,22 @@ internal static class Plugs
     /// same frame to two scanners).</summary>
     public static void BindOutput(MachineConfig machineConfig, Guid outputId, Guid plugId)
     {
+        // The kinds on either side must agree. A display or stream plug never carries a laser output
+        // (a laser output has no canvas - presenting one would throw its input full-screen on that
+        // display), and a laser plug never carries a canvas output. Every binding path funnels
+        // through here, so the rule lives here as well as in the drop matrix.
+        if (!OutputSetupHandling.TryGetActiveSetup(out var setup, out _))
+            return;
+
+        var output = setup.FindOutput(outputId);
+        if (output == null)
+            return;
+
+        var isLaserOutput = output.Kind == OutputDefinition.Kinds.Laser;
+        var isLaserPlug = machineConfig.FindLaserPlug(plugId) != null;
+        if (isLaserOutput != isLaserPlug)
+            return;
+
         _outputsToRelease.Clear();
         foreach (var existing in machineConfig.Bindings)
         {

@@ -71,6 +71,29 @@ public sealed class MachineConfig
         Bindings.RemoveAll(b => b.IsLaser && b.PlugId == plugId);
     }
 
+    /// <summary>
+    /// Drops bindings whose device kind disagrees with the kind of the output they name: a display or
+    /// stream binding on a laser output (which would present the input full-screen on that display -
+    /// a laser output has no canvas, its frame is vector content streamed by the laser driver), and a
+    /// laser binding on a canvas output. Configs written by older builds can carry such a pair; the
+    /// presentation pass skips them, but removing them keeps the board and the status honest.
+    /// Returns the number of bindings removed.
+    /// </summary>
+    public int RemoveKindMismatchedBindings(IEnumerable<OutputDefinition> outputs)
+    {
+        var laserOutputIds = new HashSet<Guid>();
+        var canvasOutputIds = new HashSet<Guid>();
+        foreach (var output in outputs)
+        {
+            if (output.Kind == OutputDefinition.Kinds.Laser)
+                laserOutputIds.Add(output.Id);
+            else
+                canvasOutputIds.Add(output.Id);
+        }
+
+        return Bindings.RemoveAll(b => b.IsLaser ? canvasOutputIds.Contains(b.OutputId) : laserOutputIds.Contains(b.OutputId));
+    }
+
     public PlugBinding? FindBinding(Guid outputId)
     {
         foreach (var binding in Bindings)
