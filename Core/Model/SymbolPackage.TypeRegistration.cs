@@ -64,7 +64,9 @@ public partial class SymbolPackage
                          if (jsonToken.Type == JTokenType.Float || jsonToken.Type == JTokenType.Integer)
                              return jsonToken.Value<float>();
 
-                         return 0;
+                         // Must be a float: SetValueFromJson casts the boxed result to T, and a boxed
+                         // int would throw InvalidCastException for every float input.
+                         return 0f;
                      });
         RegisterType(typeof(int), "int",
                      InputDefaultValueCreator<int>,
@@ -77,7 +79,7 @@ public partial class SymbolPackage
         RegisterType(typeof(double), "double",
                      InputDefaultValueCreator<double>,
                      (writer, obj) => writer.WriteValue((double)obj),
-                     jsonToken => jsonToken?.Value<double>()??0);
+                     jsonToken => jsonToken?.Value<double>()??0d);
 
         RegisterType(typeof(string), "string",
                      () => new InputValue<string>(string.Empty),
