@@ -451,6 +451,11 @@ public static class FailoverArbiter
             var timeout = TimeoutMs;
             var config = _config;
 
+            // Peers that stopped sending can never win an election again. Without this the table
+            // grows for the life of the process: every restarted node mints a new id, and any LAN
+            // sender can add entries at will.
+            PruneStalePeers(now, timeout);
+
             PeerInfo? bestActive = null;
             PeerInfo? bestPeer = null;
             foreach (var peer in _peers.Values)
@@ -558,6 +563,25 @@ public static class FailoverArbiter
             }
         }
     }
+
+    /// <summary>Drops peers unheard for many timeouts; a returning node re-announces itself. Caller holds Gate.</summary>
+    private static void PruneStalePeers(long now, int timeout)
+    {
+        if (_peers.Count == 0)
+            return;
+
+        _stalePeerIds.Clear();
+        foreach (var (id, peer) in _peers)
+        {
+            if (now - peer.LastHeardTicks > 10L * timeout)
+                _stalePeerIds.Add(id);
+        }
+
+        foreach (var id in _stalePeerIds)
+            _peers.Remove(id);
+    }
+
+    private static readonly List<string> _stalePeerIds = [];
 
     private static void Transition(NodeRole newRole, string reason)
     {
