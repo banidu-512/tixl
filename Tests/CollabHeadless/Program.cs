@@ -142,6 +142,12 @@ internal static class Program
         Check(!CollabProtocol.TryDecodeJson("not json"u8.ToArray(), out _), "garbage accepted");
         Check(!CollabProtocol.TryDecodeJson("{\"noType\":1}"u8.ToArray(), out _), "message without t accepted");
 
+        // Malformed field types are a dropped value, not an exception that kills the frame loop.
+        var weird = JObject.Parse("""{"g":{"x":1},"n":[1],"s":42}""");
+        Check(!CollabProtocol.TryGetGuid(weird, "g", out _), "object accepted as guid");
+        Check(!CollabProtocol.TryGetInt(weird, "n", out _), "array accepted as int");
+        Check(CollabProtocol.GetString(weird, "s") == "42", "numeric string failed");
+
         // JSON never starts with '{' collides with relay control lines — assert the discriminator.
         var objStart = Encoding.UTF8.GetBytes("{\"t\":\"x\"}");
         Check(objStart[0] == (byte)'{', "JSON frames must start with '{' (relay control-line convention)");
