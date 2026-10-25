@@ -133,6 +133,17 @@ internal static class Program
         // instance's save-on-quit writes otherwise.
         WaitForPredecessorArg(args);
 
+        // Crash-restart supervision: a --watchdog launch is the supervisor itself — it runs the
+        // restart loop (spawning the real editor as a child) and never gets here.
+        if (App.Startup.CrashWatchdog.TryRunWatchdogMode(args))
+            return;
+
+        // Minimal early settings read (no save-on-quit registration): when crash restart is
+        // enabled, hand over to the supervisor before any splash screen or window appears.
+        _ = new UserSettings(saveOnQuit: false);
+        if (App.Startup.CrashWatchdog.TryHandOffToWatchdog(args))
+            return;
+
         // Before anything starts dotnet: operator compilation and the SDK check call it by name.
         AddDotnetToPathOnMac();
 
@@ -419,9 +430,13 @@ internal static class Program
     /// <summary>Set via <c>--autostart</c>: this launch came from the OS login entry, not a manual start.</summary>
     internal static bool StartedByOsAutostart { get; private set; }
 
+    /// <summary>Set via <c>--autostart</c>: this launch came from the OS login entry, not a manual start.</summary>
+    internal static bool StartedByOsAutostart { get; private set; }
+
     /// <summary>
     /// Honors <c>--window=&lt;w&gt;x&lt;h&gt;</c> (or <c>--window &lt;w&gt;x&lt;h&gt;</c>) for a predictable
-    /// non-maximized window, <c>--no-splash</c>, and <c>--autostart</c>.
+    /// non-maximized window, <c>--no-splash</c>, <c>--no-reopen</c> and <c>--autostart</c>.
+    /// </summary>
     /// </summary>
     private static void ApplyWindowArgs(string[] args)
     {
@@ -432,6 +447,12 @@ internal static class Program
             if (arg.Equals("--no-splash", StringComparison.OrdinalIgnoreCase))
             {
                 SkipSplash = true;
+                continue;
+            }
+
+            if (arg.Equals(App.Startup.OsAutostart.ArgMarker, StringComparison.OrdinalIgnoreCase))
+            {
+                StartedByOsAutostart = true;
                 continue;
             }
 

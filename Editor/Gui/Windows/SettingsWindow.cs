@@ -31,7 +31,6 @@ internal sealed partial class SettingsWindow : Window
         Theme,
         Projects,
         Startup,
-        Failover,
         Audio,
         Midi,
         InputDevices,
@@ -368,11 +367,6 @@ internal sealed partial class SettingsWindow : Window
                 case Categories.Startup:
                     FormInputs.AddVerticalSpace();
                     DrawStartupPanel(ref changed);
-                    break;
-
-                case Categories.Failover:
-                    FormInputs.AddVerticalSpace();
-                    DrawFailoverPanel(ref changed);
                     break;
 
                 case Categories.Projects:
@@ -895,7 +889,6 @@ internal sealed partial class SettingsWindow : Window
                                                                         Categories.Theme      => "Color Theme",
                                                                         Categories.Projects   => "Project specific settings",
                                                                         Categories.Startup    => "Startup and Recovery",
-                                                                        Categories.Failover   => "Show Failover",
                                                                         Categories.Audio      => "Audio System",
                                                                         Categories.Midi       => "Midi & OSC",
                                                                         Categories.InputDevices => "Input Devices",
