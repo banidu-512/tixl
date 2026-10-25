@@ -1,5 +1,4 @@
 using T3.Graphics.Compat;
-using T3.Core.Animation;
 using T3.Core.Utils;
 
 namespace Lib.io.dmx
@@ -57,73 +56,12 @@ namespace Lib.io.dmx
 
         // Cached forward axis – may be overridden by TestMode.
         private Vec3 _cachedForwardAxis = Vec3.UnitZ;
-
-        // Frame on which the channel data was last computed. Operators can be evaluated more than
-        // once per rendered frame; the readback and conversion are only worth doing once.
-        private int _lastUpdatedFrame = -1;
-
-        /** Set when the visualization points changed and the GPU copy is stale. */
-        private bool _visualizationDirty;
-
-        /** Warnings are logged once per occurrence instead of every frame. */
-        [Flags]
-        private enum Warnings
-        {
-            NoPoints = 1,
-            ReferenceMismatch = 2,
-            NoFixtureChannels = 4,
-            ChannelOverflow = 8,
-            UpdateFailed = 16,
-        }
-
-        private Warnings _loggedWarnings;
-        private Warnings _warningsThisFrame;
         #endregion
 
         #region Constructor
         public PointsToDmxLights()
         {
-            Result.UpdateAction = UpdateResult;
-            VisualizeLights.UpdateAction = UpdateVisualizeLights;
-        }
-
-        protected override void Dispose(bool isDisposing)
-        {
-            if (isDisposing)
-            {
-                _pointsBufferReader.Dispose();
-                _referencePointsBufferReader.Dispose();
-                if (_visualizeBuffer != null)
-                {
-                    _visualizeBuffer.Srv?.Dispose();
-                    _visualizeBuffer.Uav?.Dispose();
-                    _visualizeBuffer.Buffer?.Dispose();
-                    _visualizeBuffer = null;
-                }
-            }
-
-            base.Dispose(isDisposing);
-        }
-        #endregion
-
-        #region Warning throttle
-        private readonly Dictionary<string, long> _warningTicks = new();
-
-        /// <summary>
-        /// Warnings come from per-fixture code that runs every frame; the same message is logged at most once
-        /// per interval so a misconfiguration cannot flood the log.
-        /// </summary>
-        private void WarnThrottled(string message, object _ = null)
-        {
-            var now = System.Diagnostics.Stopwatch.GetTimestamp();
-            if (_warningTicks.TryGetValue(message, out var last) && now - last < System.Diagnostics.Stopwatch.Frequency * 10)
-                return;
-
-            if (_warningTicks.Count > 32)
-                _warningTicks.Clear();
-
-            _warningTicks[message] = now;
-            Log.Warning(message, this);
+            Result.UpdateAction = Update;
         }
         #endregion
 
@@ -294,86 +232,17 @@ namespace Lib.io.dmx
         #endregion
 
         #region Main Update Method
-        private void UpdateResult(EvaluationContext context) => EnsureUpdated(context, false);
-
-        private void UpdateVisualizeLights(EvaluationContext context) => EnsureUpdated(context, true);
-
-        private void EnsureUpdated(EvaluationContext context, bool needsVisualization)
-        {
-            // The graph can evaluate an operator more than once per rendered frame (e.g. an output
-            // window and the composition's output chain). The readback and the per-fixture
-            // conversion only depend on this frame's inputs, so do them once and reuse the result.
-            if (_lastUpdatedFrame != Playback.FrameCount)
-            {
-                _lastUpdatedFrame = Playback.FrameCount;
-                RecomputeGuarded(context);
-            }
-
-            if (!needsVisualization)
-                return;
-
-            if (_visualizationPoints.Length == 0)
-            {
-                VisualizeLights.Value = null;
-                return;
-            }
-
-            if (_visualizationDirty)
-            {
-                UpdateVisualizationBuffer();
-                _visualizationDirty = false;
-            }
-
-            VisualizeLights.Value = _visualizeBuffer;
-        }
-
-        /** A failing conversion must degrade to "no output", not take down the frame loop. */
-        private void RecomputeGuarded(EvaluationContext context)
-        {
-            _warningsThisFrame = 0;
-            try
-            {
-                Recompute(context);
-            }
-            catch (Exception e)
-            {
-                if (ShouldLogOnce(Warnings.UpdateFailed))
-                {
-                    Log.Warning("Failed to compute DMX channels: " + e.Message, this);
-                }
-
-                _resultItems.Clear();
-                Result.Value = _resultItems;
-                _visualizationPoints = Array.Empty<Point>();
-            }
-
-            // A warning that did not recur this frame may be logged again the next time it happens.
-            _loggedWarnings &= _warningsThisFrame;
-        }
-
-        private bool ShouldLogOnce(Warnings warning)
-        {
-            _warningsThisFrame |= warning;
-            if ((_loggedWarnings & warning) != 0)
-                return false;
-
-            _loggedWarnings |= warning;
-            return true;
-        }
-
-        private void Recompute(EvaluationContext context)
+        private void Update(EvaluationContext context)
         {
             var pointBuffer = EffectedPoints.GetValue(context);
             var referencePointBuffer = ReferencePoints.GetValue(context);
 
             if (pointBuffer == null || pointBuffer.Buffer == null || pointBuffer.Srv == null)
             {
-                if (ShouldLogOnce(Warnings.NoPoints))
-                {
-                    Log.Warning("EffectedPoints buffer is not connected or invalid.", this);
-                }
-
-                ClearOutput();
+                Log.Warning("EffectedPoints buffer is not connected or invalid.", this);
+                Result.Value?.Clear();
+                VisualizeLights.Value = null;
+                _lastPanTiltPerFixture.Clear();
                 return;
             }
 
@@ -400,7 +269,7 @@ namespace Lib.io.dmx
             }
 
             // Process when we actually have points
-            if (_points.Length > 0)
+            if (_points != null && _points.Length > 0)
             {
                 if (_visualizationPoints.Length != _points.Length)
                     _visualizationPoints = new Point[_points.Length];
@@ -408,27 +277,17 @@ namespace Lib.io.dmx
                 ApplyTestMode(context);
 
                 UpdateChannelData(context, _points);
-                Result.Value = _resultItems;
-                _visualizationDirty = true;
+                Result.Value = new List<int>(_resultItems);
+
+                UpdateVisualizationBuffer();
+                VisualizeLights.Value = _visualizeBuffer;
             }
             else
             {
-                _resultItems.Clear();
-                Result.Value = _resultItems;
-                _visualizationPoints = Array.Empty<Point>();
+                Result.Value?.Clear();
+                VisualizeLights.Value = null;
                 _lastPanTiltPerFixture.Clear();
             }
-        }
-
-        /** Drops the readback so a reconnected input never re-emits points from before the disconnect. */
-        private void ClearOutput()
-        {
-            _points = Array.Empty<Point>();
-            _referencePoints = Array.Empty<Point>();
-            _resultItems.Clear();
-            Result.Value = _resultItems;
-            _visualizationPoints = Array.Empty<Point>();
-            _lastPanTiltPerFixture.Clear();
         }
         #endregion
 
@@ -521,13 +380,9 @@ namespace Lib.io.dmx
                 fixtureCount = _referencePoints.Length;
                 if (fixtureCount == 0 || effectedPointsCount % fixtureCount != 0)
                 {
-                    if (ShouldLogOnce(Warnings.ReferenceMismatch))
-                    {
-                        Log.Warning(
-                            $"Effected points count ({effectedPointsCount}) is not a multiple of reference points count ({fixtureCount}). " +
-                            "Falling back to 1‑to‑1 mapping.", this);
-                    }
-
+                    Log.Warning(
+                        $"Effected points count ({effectedPointsCount}) is not a multiple of reference points count ({fixtureCount}). " +
+                        "Falling back to 1‑to‑1 mapping.", this);
                     fixtureCount = effectedPointsCount;
                     pixelsPerFixture = 1;
                     useReferencePoints = false;
@@ -556,11 +411,7 @@ namespace Lib.io.dmx
 
             if (fixtureChannelSize <= 0)
             {
-                if (effectedPointsCount > 0 && ShouldLogOnce(Warnings.NoFixtureChannels))
-                {
-                    Log.Warning("FixtureChannelSize is 0 or less, no DMX output generated.", this);
-                }
-
+                if (effectedPointsCount > 0) Log.Warning("FixtureChannelSize is 0 or less, no DMX output generated.", this);
                 return;
             }
 
@@ -569,19 +420,28 @@ namespace Lib.io.dmx
             for (int i = 0; i < fixtureChannelSize; i++)
                 _pointChannelValues.Add(0);
 
-            // A batch is FixturesPerUniverse fixtures packed back to back; it may span several universes.
+            // Track universe state for fixtures per universe limiting
             int currentChannelOffset = 0; // Offset in DMX channels (not absolute channel number)
             int fixturesInCurrentBatch = 0;
+            int channelsBeforeLastFixture = 0; // Track position before adding fixture for FillUniverse
 
             // Process each fixture
             for (int fixtureIdx = 0; fixtureIdx < fixtureCount; fixtureIdx++)
             {
                 bool logThisFixture = debugToLog && fixtureIdx == 0;
 
-                // The next batch starts at channel 1 of a fresh universe.
+                // Check if we need to start a new batch based on fixtures per universe
                 if (fixturesPerUniverse > 0 && fixturesInCurrentBatch >= fixturesPerUniverse)
                 {
-                    PadToUniverseBoundary(ref currentChannelOffset);
+                    // Pad to universe boundary for clean batch separation
+                    int currentUniverse = (currentChannelOffset / UniverseSize);
+                    int nextUniverseStart = (currentUniverse + 1) * UniverseSize;
+                    int paddingNeeded = nextUniverseStart - currentChannelOffset;
+
+                    for (int p = 0; p < paddingNeeded; p++)
+                        _resultItems.Add(0);
+
+                    currentChannelOffset = nextUniverseStart;
                     fixturesInCurrentBatch = 0;
                 }
 
@@ -591,9 +451,7 @@ namespace Lib.io.dmx
                     int currentUniverseStart = (currentChannelOffset / UniverseSize) * UniverseSize;
                     int spaceLeftInUniverse = UniverseSize - (currentChannelOffset - currentUniverseStart);
 
-                    // A fixture larger than a universe cannot fit anywhere; padding from the start of a fresh
-                    // universe would only add a blank one in front of it.
-                    if (fixtureChannelSize > spaceLeftInUniverse && spaceLeftInUniverse < UniverseSize)
+                    if (fixtureChannelSize > spaceLeftInUniverse)
                     {
                         // Pad to next universe
                         int paddingNeeded = spaceLeftInUniverse;
@@ -608,6 +466,9 @@ namespace Lib.io.dmx
                 for (int i = 0; i < fixtureChannelSize; i++)
                     _pointChannelValues[i] = 0;
 
+                // Store position before adding this fixture for FillUniverse tracking
+                channelsBeforeLastFixture = currentChannelOffset;
+
                 // Get point data for this fixture (cycle through available points)
                 int pointIdx = fixtureIdx % Math.Max(1, effectedPointsCount);
                 int firstPixelIdx = pointIdx * Math.Min(pixelsPerFixture, Math.Max(1, effectedPointsCount - pointIdx));
@@ -616,7 +477,8 @@ namespace Lib.io.dmx
                     ? _referencePoints[fixtureIdx]
                     : transformPoint;
 
-                if (logThisFixture)
+                bool logBoundaryFixture = debugToLog && (fixtureIdx == 789 || fixtureIdx == 790 || fixtureIdx == 791);
+                if (logThisFixture || logBoundaryFixture)
                 {
                     Log.Debug($"--- Fixture {fixtureIdx} Debug --- PointIdx: {pointIdx}, Color: ({transformPoint.Color.X:F2}, {transformPoint.Color.Y:F2}, {transformPoint.Color.Z:F2}), Offset: {currentChannelOffset}", this);
                 }
@@ -630,6 +492,7 @@ namespace Lib.io.dmx
                                                                   fixtureIdx,
                                                                   logThisFixture,
                                                                   out finalVisPos);
+
                 // Store visualisation data
                 for (int p = 0; p < pixelsPerFixture; ++p)
                 {
@@ -644,7 +507,7 @@ namespace Lib.io.dmx
                 }
 
                 // Handle color, features, and custom variables
-                HandleColorAndFeatures(context, points, transformPoint, firstPixelIdx, pixelsPerFixture, fixtureChannelSize);
+                HandleColorAndFeatures(context, points, transformPoint, firstPixelIdx, pixelsPerFixture);
                 HandleCustomVariables(context);
 
                 // Append fixture's DMX channel list
@@ -653,29 +516,44 @@ namespace Lib.io.dmx
                 // Update tracking
                 currentChannelOffset += fixtureChannelSize;
                 fixturesInCurrentBatch++;
+
+                // FillUniverse: If we just crossed a universe boundary, fill the completed universe
+                if (fillUniverse && fixtureChannelSize > 0)
+                {
+                    int universeBefore = channelsBeforeLastFixture / UniverseSize;
+                    int universeAfter = currentChannelOffset / UniverseSize;
+
+                    if (universeAfter > universeBefore)
+                    {
+                        // We crossed one or more universe boundaries
+                        for (int u = universeBefore; u < universeAfter; u++)
+                        {
+                            int universeEnd = (u + 1) * UniverseSize;
+                            if (currentChannelOffset < universeEnd)
+                            {
+                                // Fill to end of this universe
+                                int paddingNeeded = universeEnd - currentChannelOffset;
+                                for (int p = 0; p < paddingNeeded; p++)
+                                    _resultItems.Add(0);
+
+                                currentChannelOffset = universeEnd;
+                            }
+                        }
+                    }
+                }
             }
 
-            // Complete the last universe; earlier batches already end on a boundary.
-            if (fillUniverse)
+            // Final universe fill (only if not using fixtures per universe batching)
+            if (fillUniverse && fixturesPerUniverse == 0)
             {
-                PadToUniverseBoundary(ref currentChannelOffset);
+                int remainder = _resultItems.Count % UniverseSize;
+                if (remainder != 0)
+                {
+                    int toAdd = UniverseSize - remainder;
+                    for (int i = 0; i < toAdd; i++)
+                        _resultItems.Add(0);
+                }
             }
-        }
-
-        /** Appends zeros up to the next 512-channel boundary; does nothing when already on one. */
-        private void PadToUniverseBoundary(ref int channelOffset)
-        {
-            var remainder = channelOffset % UniverseSize;
-            if (remainder == 0)
-                return;
-
-            var padding = UniverseSize - remainder;
-            for (var i = 0; i < padding; i++)
-            {
-                _resultItems.Add(0);
-            }
-
-            channelOffset += padding;
         }
         #endregion
 
@@ -735,7 +613,7 @@ namespace Lib.io.dmx
 
             if (Math.Abs(range.Y - range.X) < 1e-4f)
             {
-                WarnThrottled("PositionDistanceRange min and max are too close – will output 0.", this);
+                Log.Warning("PositionDistanceRange min and max are too close – will output 0.", this);
                 SetDmxValue(0f, channel, fineChannel, range.X, range.Y, shouldLog, "Position");
                 return point.Position;
             }
@@ -825,7 +703,7 @@ namespace Lib.io.dmx
                 Quat refRot = referencePoint.Orientation;
                 if (float.IsNaN(refRot.X) || float.IsNaN(refRot.Y) || float.IsNaN(refRot.Z) || float.IsNaN(refRot.W))
                 {
-                    if (shouldLog) WarnThrottled("Reference rotation is invalid. Using Identity.", this);
+                    if (shouldLog) Log.Warning("Reference rotation is invalid. Using Identity.", this);
                     refRot = Quat.Identity;
                 }
 
@@ -974,13 +852,13 @@ namespace Lib.io.dmx
         {
             if (pan == AxisModes.Disabled && tilt == AxisModes.Disabled)
             {
-                WarnThrottled("Both Pan and Tilt axes are disabled – rotation will be ignored.", this);
+                Log.Warning("Both Pan and Tilt axes are disabled – rotation will be ignored.", this);
                 return false;
             }
 
             if (pan != AxisModes.Disabled && pan == tilt)
             {
-                WarnThrottled($"Pan and Tilt axes cannot be identical ({pan}). Skipping rotation.", this);
+                Log.Warning($"Pan and Tilt axes cannot be identical ({pan}). Skipping rotation.", this);
                 return false;
             }
 
@@ -989,7 +867,7 @@ namespace Lib.io.dmx
             if (panVec != Vec3.Zero && tiltVec != Vec3.Zero &&
                 Vec3.Cross(panVec, tiltVec).LengthSquared() < 1e-6f)
             {
-                WarnThrottled($"Pan ({pan}) and Tilt ({tilt}) axes are collinear – rotation undefined.", this);
+                Log.Warning($"Pan ({pan}) and Tilt ({tilt}) axes are collinear – rotation undefined.", this);
                 return false;
             }
             return true;
@@ -1002,7 +880,7 @@ namespace Lib.io.dmx
             if (float.IsNaN(reference.X) || float.IsNaN(reference.Y) ||
                 float.IsNaN(reference.Z) || float.IsNaN(reference.W))
             {
-                WarnThrottled("Reference rotation is invalid (NaN components). Falling back to absolute rotation.", this);
+                Log.Warning("Reference rotation is invalid (NaN components). Falling back to absolute rotation.", this);
                 return current;
             }
 
@@ -1090,7 +968,7 @@ namespace Lib.io.dmx
             Vec3 localForward = Vec3.Normalize(Vec3.Cross(tiltVec, panVec));
             if (localForward.LengthSquared() < 1e-6f)
             {
-                WarnThrottled("Pan and Tilt axes are collinear – cannot form a proper coordinate system.", this);
+                Log.Error("Pan and Tilt axes are collinear – cannot form a proper coordinate system.", this);
                 return (rawPan, rawTilt);
             }
 
@@ -1152,7 +1030,7 @@ namespace Lib.io.dmx
         {
             if (panRangeDegrees.X >= panRangeDegrees.Y)
             {
-                WarnThrottled("Pan range min must be < max.", this);
+                Log.Warning("Pan range min must be < max.", this);
                 SetDmxValue(0f, panChannel, panFineChannel, 0f, 1f, shouldLog, "Pan");
                 return 0f;
             }
@@ -1190,7 +1068,7 @@ namespace Lib.io.dmx
         {
             if (tiltRangeDegrees.X >= tiltRangeDegrees.Y)
             {
-                WarnThrottled("Tilt range min must be < max.", this);
+                Log.Warning("Tilt range min must be < max.", this);
                 SetDmxValue(0f, tiltChannel, tiltFineChannel, 0f, 1f, shouldLog, "Tilt");
                 return 0f;
             }
@@ -1225,8 +1103,7 @@ namespace Lib.io.dmx
                                             Point[] points,
                                             Point transformPoint,
                                             int firstPixelIdx,
-                                            int pixelsPerFixture,
-                                            int fixtureChannelSize)
+                                            int pixelsPerFixture)
         {
             bool getColor = GetColor.GetValue(context);
             bool getF1 = GetF1.GetValue(context);
@@ -1276,127 +1153,67 @@ namespace Lib.io.dmx
             }
             else if (hasAnyPerPixelAttributes && DebugToLog.GetValue(context))
             {
-                WarnThrottled("Per-pixel attributes are enabled, but all associated DMX channels are 0 or less. No per-pixel output will be generated.", this);
+                Log.Warning("Per-pixel attributes are enabled, but all associated DMX channels are 0 or less. No per-pixel output will be generated.", this);
             }
 
-            // Reference-point mode can map many pixels onto one fixture. If the fixture's channel
-            // block is too small to hold a channel stride per pixel (e.g. 30 pixels on a 3-channel
-            // moving head), collapse the group into a single averaged value instead of writing
-            // per-pixel channels that would land outside the fixture's channel block.
-            bool canWritePerPixel = pixelsPerFixture <= 1
-                                    || pixelChannelStride == 0
-                                    || overallMaxPerPixelChannel + (pixelsPerFixture - 1) * pixelChannelStride <= fixtureChannelSize;
-
-            void WriteGroupValue(int baseChannel, float normalizedValue, bool is16BitChannel, string debugName)
+            for (int pix = 0; pix < pixelsPerFixture; ++pix)
             {
-                if (baseChannel <= 0) return;
-                SetDmxValue(normalizedValue, baseChannel, is16BitChannel ? baseChannel + 1 : 0, 0f, 1f, false, debugName);
-            }
+                Point pt = points[firstPixelIdx + pix];
 
-            if (!canWritePerPixel)
-            {
-                int groupEnd = Math.Min(points.Length, firstPixelIdx + pixelsPerFixture);
-                int groupCount = Math.Max(1, groupEnd - firstPixelIdx);
-
-                if (getColor && (redChBase > 0 || greenChBase > 0 || blueChBase > 0 || whiteChBase > 0 || alphaChBase > 0))
+                void WriteSinglePixelDmxValue(int baseChannel, float normalizedValue, bool is16BitChannel, string debugName)
                 {
-                    float r = 0f, g = 0f, b = 0f, a = 0f;
-                    for (int i = firstPixelIdx; i < groupEnd; i++)
+                    if (baseChannel <= 0) return;
+                    if (pixelChannelStride == 0) return;
+
+                    int relativeOffsetFromOverallMin = baseChannel - overallMinPerPixelChannel;
+                    int actualDmxCoarseChannel = overallMinPerPixelChannel + (pix * pixelChannelStride) + relativeOffsetFromOverallMin;
+
+                    int actualDmxFineChannel = is16BitChannel ? actualDmxCoarseChannel + 1 : 0;
+
+                    SetDmxValue(normalizedValue,
+                                actualDmxCoarseChannel,
+                                actualDmxFineChannel,
+                                0f, 1f,
+                                false,
+                                $"Pixel{pix}-{debugName}");
+                }
+
+                if (getColor)
+                {
+                    if (redChBase > 0 || greenChBase > 0 || blueChBase > 0 || whiteChBase > 0 || alphaChBase > 0)
                     {
-                        Vector4 c = points[i].Color;
-                        r += float.IsNaN(c.X) ? 0f : Math.Clamp(c.X, 0f, 1f);
-                        g += float.IsNaN(c.Y) ? 0f : Math.Clamp(c.Y, 0f, 1f);
-                        b += float.IsNaN(c.Z) ? 0f : Math.Clamp(c.Z, 0f, 1f);
-                        a += float.IsNaN(c.W) ? 1f : Math.Clamp(c.W, 0f, 1f);
+                        float r = float.IsNaN(pt.Color.X) ? 0f : Math.Clamp(pt.Color.X, 0f, 1f);
+                        float g = float.IsNaN(pt.Color.Y) ? 0f : Math.Clamp(pt.Color.Y, 0f, 1f);
+                        float b = float.IsNaN(pt.Color.Z) ? 0f : Math.Clamp(pt.Color.Z, 0f, 1f);
+                        float a = float.IsNaN(pt.Color.W) ? 1f : Math.Clamp(pt.Color.W, 0f, 1f);
+
+                        if (useCmy) { r = 1f - r; g = 1f - g; b = 1f - b; }
+
+                        WriteSinglePixelDmxValue(redChBase, r, is16BitColor, "Red");
+                        if (greenChBase > 0) WriteSinglePixelDmxValue(greenChBase, g, is16BitColor, "Green");
+                        if (blueChBase > 0) WriteSinglePixelDmxValue(blueChBase, b, is16BitColor, "Blue");
+                        if (whiteChBase > 0)
+                        {
+                            float w = Math.Min(r, Math.Min(g, b));
+                            WriteSinglePixelDmxValue(whiteChBase, w, is16BitColor, "White");
+                        }
+                        if (alphaChBase > 0)
+                        {
+                            WriteSinglePixelDmxValue(alphaChBase, a, is16BitColor, "Alpha");
+                        }
                     }
-
-                    r /= groupCount; g /= groupCount; b /= groupCount; a /= groupCount;
-                    if (useCmy) { r = 1f - r; g = 1f - g; b = 1f - b; }
-
-                    WriteGroupValue(redChBase, r, is16BitColor, "Red");
-                    if (greenChBase > 0) WriteGroupValue(greenChBase, g, is16BitColor, "Green");
-                    if (blueChBase > 0) WriteGroupValue(blueChBase, b, is16BitColor, "Blue");
-                    if (whiteChBase > 0) WriteGroupValue(whiteChBase, Math.Min(r, Math.Min(g, b)), is16BitColor, "White");
-                    if (alphaChBase > 0) WriteGroupValue(alphaChBase, a, is16BitColor, "Alpha");
                 }
 
                 if (getF1 && f1ByPixel && f1ChBase > 0)
                 {
-                    float f1 = 0f;
-                    for (int i = firstPixelIdx; i < groupEnd; i++)
-                        f1 += float.IsNaN(points[i].F1) ? 0f : Math.Clamp(points[i].F1, 0f, 1f);
-                    WriteGroupValue(f1ChBase, f1 / groupCount, false, "F1");
+                    float f1 = float.IsNaN(pt.F1) ? 0f : Math.Clamp(pt.F1, 0f, 1f);
+                    WriteSinglePixelDmxValue(f1ChBase, f1, false, "F1");
                 }
 
                 if (getF2 && f2ByPixel && f2ChBase > 0)
                 {
-                    float f2 = 0f;
-                    for (int i = firstPixelIdx; i < groupEnd; i++)
-                        f2 += float.IsNaN(points[i].F2) ? 0f : Math.Clamp(points[i].F2, 0f, 1f);
-                    WriteGroupValue(f2ChBase, f2 / groupCount, false, "F2");
-                }
-            }
-            else
-            {
-                for (int pix = 0; pix < pixelsPerFixture; ++pix)
-                {
-                    Point pt = points[firstPixelIdx + pix];
-
-                    void WriteSinglePixelDmxValue(int baseChannel, float normalizedValue, bool is16BitChannel, string debugName)
-                    {
-                        if (baseChannel <= 0) return;
-                        if (pixelChannelStride == 0) return;
-
-                        int relativeOffsetFromOverallMin = baseChannel - overallMinPerPixelChannel;
-                        int actualDmxCoarseChannel = overallMinPerPixelChannel + (pix * pixelChannelStride) + relativeOffsetFromOverallMin;
-
-                        int actualDmxFineChannel = is16BitChannel ? actualDmxCoarseChannel + 1 : 0;
-
-                        SetDmxValue(normalizedValue,
-                                    actualDmxCoarseChannel,
-                                    actualDmxFineChannel,
-                                    0f, 1f,
-                                    false,
-                                    debugName);
-                    }
-
-                    if (getColor)
-                    {
-                        if (redChBase > 0 || greenChBase > 0 || blueChBase > 0 || whiteChBase > 0 || alphaChBase > 0)
-                        {
-                            float r = float.IsNaN(pt.Color.X) ? 0f : Math.Clamp(pt.Color.X, 0f, 1f);
-                            float g = float.IsNaN(pt.Color.Y) ? 0f : Math.Clamp(pt.Color.Y, 0f, 1f);
-                            float b = float.IsNaN(pt.Color.Z) ? 0f : Math.Clamp(pt.Color.Z, 0f, 1f);
-                            float a = float.IsNaN(pt.Color.W) ? 1f : Math.Clamp(pt.Color.W, 0f, 1f);
-
-                            if (useCmy) { r = 1f - r; g = 1f - g; b = 1f - b; }
-
-                            WriteSinglePixelDmxValue(redChBase, r, is16BitColor, "Red");
-                            if (greenChBase > 0) WriteSinglePixelDmxValue(greenChBase, g, is16BitColor, "Green");
-                            if (blueChBase > 0) WriteSinglePixelDmxValue(blueChBase, b, is16BitColor, "Blue");
-                            if (whiteChBase > 0)
-                            {
-                                float w = Math.Min(r, Math.Min(g, b));
-                                WriteSinglePixelDmxValue(whiteChBase, w, is16BitColor, "White");
-                            }
-                            if (alphaChBase > 0)
-                            {
-                                WriteSinglePixelDmxValue(alphaChBase, a, is16BitColor, "Alpha");
-                            }
-                        }
-                    }
-
-                    if (getF1 && f1ByPixel && f1ChBase > 0)
-                    {
-                        float f1 = float.IsNaN(pt.F1) ? 0f : Math.Clamp(pt.F1, 0f, 1f);
-                        WriteSinglePixelDmxValue(f1ChBase, f1, false, "F1");
-                    }
-
-                    if (getF2 && f2ByPixel && f2ChBase > 0)
-                    {
-                        float f2 = float.IsNaN(pt.F2) ? 0f : Math.Clamp(pt.F2, 0f, 1f);
-                        WriteSinglePixelDmxValue(f2ChBase, f2, false, "F2");
-                    }
+                    float f2 = float.IsNaN(pt.F2) ? 0f : Math.Clamp(pt.F2, 0f, 1f);
+                    WriteSinglePixelDmxValue(f2ChBase, f2, false, "F2");
                 }
             }
 
@@ -1438,18 +1255,40 @@ namespace Lib.io.dmx
                 return;
             }
 
-            // Missing values default to the middle of the DMX range; surplus values are ignored.
-            const int defaultValue = 128;
-            if (shouldLog && (values == null || values.Count != channels.Count))
+            // Create working copy of channels to avoid modifying the original
+            var workingChannels = new List<int>(channels);
+            
+            // Auto-resize values list to match channels size
+            var workingValues = new List<int>();
+            if (values != null)
             {
-                Log.Debug($"CustomVariableValues has {values?.Count ?? 0} entries for {channels.Count} channels; using {defaultValue} for missing values", this);
+                workingValues = new List<int>(values);
+            }
+            
+            // Ensure values list size matches channels size
+            if (workingValues.Count < workingChannels.Count)
+            {
+                // Extend values with default DMX value (128)
+                int valuesToAdd = workingChannels.Count - workingValues.Count;
+                for (int i = 0; i < valuesToAdd; i++)
+                {
+                    workingValues.Add(128); // Default DMX value (middle of 0-255 range)
+                }
+                if (shouldLog) Log.Debug($"Auto-resized CustomVariableValues: extended from {values?.Count ?? 0} to {workingValues.Count} elements with default value 128", this);
+            }
+            else if (workingValues.Count > workingChannels.Count)
+            {
+                // Trim excess values to match channels size
+                int excessCount = workingValues.Count - workingChannels.Count;
+                workingValues.RemoveRange(workingChannels.Count, excessCount);
+                if (shouldLog) Log.Debug($"Auto-trimmed CustomVariableValues: reduced from {values.Count} to {workingValues.Count} elements to match channels size", this);
             }
 
             // Process each channel-value pair
-            for (int i = 0; i < channels.Count; i++)
+            for (int i = 0; i < workingChannels.Count; i++)
             {
-                int channel = channels[i];
-                int value = values != null && i < values.Count ? values[i] : defaultValue;
+                int channel = workingChannels[i];
+                int value = workingValues[i];
 
                 // Validate channel number
                 if (channel <= 0)
@@ -1462,7 +1301,7 @@ namespace Lib.io.dmx
                 int clampedValue = Math.Clamp(value, 0, (int)customVarNormalizedMax);
 
                 // Set the DMX value
-                SetDmxValue(clampedValue, channel, 0, 0f, customVarNormalizedMax, shouldLog, shouldLog ? $"CustomVar[{i}]" : string.Empty);
+                SetDmxValue(clampedValue, channel, 0, 0f, customVarNormalizedMax, shouldLog, $"CustomVar[{i}]");
             }
         }
         #endregion
@@ -1481,10 +1320,6 @@ namespace Lib.io.dmx
                 if (shouldLog) Log.Debug($"Skipping DMX write for {name}: Coarse Channel is 0 or less.", this);
                 return;
             }
-
-            // A NaN input (NaN point position or orientation) would cast to an arbitrary integer.
-            if (float.IsNaN(value))
-                value = inMin;
 
             int listCoarseIndex = coarseChannel - 1;
 
@@ -1525,12 +1360,8 @@ namespace Lib.io.dmx
                 return;
             if (index >= _pointChannelValues.Count)
             {
-                if (ShouldLogOnce(Warnings.ChannelOverflow))
-                {
-                    Log.Warning($"DMX channel list index {index + 1} out of range (list size {_pointChannelValues.Count}). " +
-                                $"Increase 'Fixture Channel Size' if you are using high channel numbers or 16-bit channels for multiple pixels.", this);
-                }
-
+                Log.Warning($"DMX channel list index {index + 1} out of range (list size {_pointChannelValues.Count}). " +
+                            $"Increase 'Fixture Channel Size' if you are using high channel numbers or 16-bit channels for multiple pixels.", this);
                 return;
             }
             _pointChannelValues[index] = value;
