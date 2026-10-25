@@ -358,6 +358,22 @@ public sealed class LaserOutputStream : IDisposable
                         return;
                     }
 
+                    // A DAC whose point buffer comes back nearly full while idle is wedged: a
+                    // previous session was killed mid-write and the firmware kept the stale data,
+                    // rejecting new sessions until it is power-cycled. Say so instead of looping
+                    // connect/stall/recycle silently.
+                    try
+                    {
+                        var helloStatus = dac.Ping().DacStatus;
+                        if (helloStatus.BufferFullness > 1700 && helloStatus.PlayBackState != PlayBackEngineState.Playing)
+                        {
+                            Log.Warning($"EtherDream stream: DAC at {ipAddress} reports its buffer full ({helloStatus.BufferFullness}) while idle - "
+                                        + "a previous session was interrupted mid-write. Power-cycle the DAC to clear it.");
+                            SetStatus("DAC wedged (buffer full, idle) - power-cycle the DAC", IStatusProvider.StatusLevel.Error);
+                        }
+                    }
+                    catch { /* the normal send path reports connection failures */ }
+
                     dac.StatusUpdated += HandleStatusUpdate;
                     dac.DeviceConnected += () => HandleConnectionStateChanged(true);
                     dac.DeviceDisconnected += () => HandleConnectionStateChanged(false);

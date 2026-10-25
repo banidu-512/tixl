@@ -297,6 +297,27 @@ internal static class DebugServer
                 HandleGetGraphState(request, context);
                 break;
 
+            case "getLaserStatus":
+            {
+                if (!OutputSetupHandling.TryGetActiveSetup(out var laserSetup, out var laserMachine))
+                {
+                    context.SendError("NO_SETUP", "No active output setup");
+                    break;
+                }
+
+                var outputs = new JArray();
+                foreach (var diag in T3.Editor.Gui.Windows.OutputSetup.LaserDriver.GetDiagnostics(laserSetup, laserMachine))
+                    outputs.Add(JObject.FromObject(diag));
+
+                context.SendOk(new JObject
+                                   {
+                                       ["masterEnabled"] = T3.Core.DataTypes.LaserMasterEnable.Enabled,
+                                       ["driverEnabled"] = T3.Core.Output.LaserDriverEnabled.Enabled,
+                                       ["outputs"] = outputs,
+                                   });
+                break;
+            }
+
             case "getMetrics":
                 HandleGetMetrics(context);
                 break;

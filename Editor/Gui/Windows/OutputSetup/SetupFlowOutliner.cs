@@ -306,9 +306,19 @@ internal sealed class SetupFlowOutliner
                     _connections.Add(new Connection(SetupEntityKinds.Slice, patch.SliceId, SetupEntityKinds.Patch, patch.Id));
             }
 
-            var binding = machineConfig.FindBinding(output.Id);
-            if (binding != null)
-                _connections.Add(new Connection(SetupEntityKinds.Output, output.Id, SetupEntityKinds.Plug, Plugs.BoundPlugId(binding)));
+            // A laser output may bind several plugs - one edge per binding, so fan-out reads as
+            // connected everywhere; other kinds stay single-bound.
+            if (output.Kind == OutputDefinition.Kinds.Laser)
+            {
+                foreach (var laserBinding in machineConfig.FindLaserBindings(output.Id))
+                    _connections.Add(new Connection(SetupEntityKinds.Output, output.Id, SetupEntityKinds.Plug, laserBinding.PlugId));
+            }
+            else
+            {
+                var binding = machineConfig.FindBinding(output.Id);
+                if (binding != null)
+                    _connections.Add(new Connection(SetupEntityKinds.Output, output.Id, SetupEntityKinds.Plug, Plugs.BoundPlugId(binding)));
+            }
         }
 
         // Laser cameras are content routed by their OutputRef op input (not by slices): draw the

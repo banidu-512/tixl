@@ -267,6 +267,45 @@ internal static class LaserDriver
             _testScreenOutputs.Remove(outputId);
     }
 
+    /// <summary>Live per-output state for the debug protocol: what the pump is doing, what the
+    /// streams report, and how big the last frame was - the remote view of the show.</summary>
+    public static IEnumerable<object> GetDiagnostics(Setup setup, MachineConfig machine)
+    {
+        foreach (var output in setup.Outputs)
+        {
+            if (output.Kind != OutputDefinition.Kinds.Laser)
+                continue;
+
+            var bindings = new List<object>();
+            foreach (var binding in machine.FindLaserBindings(output.Id))
+            {
+                var plug = machine.FindLaserPlug(binding.PlugId);
+                if (plug == null)
+                    continue;
+
+                var hasStatus = _streams.TryGetValue(plug.Id, out var stream);
+                bindings.Add(new
+                                 {
+                                     plug = plug.Name,
+                                     kind = plug.Kind,
+                                     connected = hasStatus && stream.IsConnected,
+                                     status = hasStatus ? stream.StatusMessage : "no stream",
+                                 });
+            }
+
+            _frameCache.TryGetValue(output.Id, out var cached);
+            yield return new
+                             {
+                                 name = output.Name,
+                                 sending = output.IsSending,
+                                 testScreen = _testScreenOutputs.Contains(output.Id),
+                                 calibrated = output.LaserProcessing?.Safety.Calibrated ?? false,
+                                 framePoints = cached.Points?.Length ?? 0,
+                                 bindings,
+                             };
+        }
+    }
+
     private static void DisposeAllStreams()
     {
         if (_streams.Count == 0)
