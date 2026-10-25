@@ -12,11 +12,14 @@ using System.Threading.Tasks;
 using ImGuiNET;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
-using T3.Editor.Gui.Interaction.Timing;
 using T3.Core.Animation;
 using T3.Core.Settings;
 using T3.Core.Stats;
+using T3.Core.Show;
+using T3.Editor.Collab;
+using T3.Editor.Show;
 using T3.Editor.Gui.Windows;
+using T3.Editor.Gui;
 using T3.Editor.Gui.Windows.Analyze;
 using T3.Editor.Gui.Windows.Layouts;
 using T3.Core.Logging;
@@ -55,7 +58,7 @@ namespace T3.Editor.App.DebugProtocol;
 /// </summary>
 internal static class DebugServer
 {
-    public const int ProtocolVersion = 2;
+    public const int ProtocolVersion = 1;
 
     public static bool IsRunning => _listener != null;
     public static int Port { get; private set; }
@@ -146,8 +149,6 @@ internal static class DebugServer
             pump.Context.SendOk(new JObject());
         }
 
-        PullProbeSlot();
-
         while (_requestQueue.TryDequeue(out var request))
         {
             HandleRequestLine(request.Client, request.Line);
@@ -194,14 +195,7 @@ internal static class DebugServer
             return;
         }
 
-        // Checked before the try below: Value<string>() throws on a non-string token.
-        if (request["method"] is not JValue { Type: JTokenType.String } methodToken)
-        {
-            new RequestContext(client, request["id"], null).SendError("INVALID_REQUEST", "'method' must be a string");
-            return;
-        }
-
-        var method = methodToken.Value<string>();
+        var method = request["method"]?.Value<string>();
         if (method != "setAgentState" && method != "ping" && AgentState == "ready")
             AgentState = "busy";
 
@@ -224,6 +218,27 @@ internal static class DebugServer
                 context.SendOk(new JObject());
                 break;
 
+            case "setLaserMaster":
+                var laserMasterEnabled = request.Value<bool?>("enabled");
+                if (laserMasterEnabled.HasValue)
+                {
+                    T3.Core.DataTypes.LaserMasterEnable.Enabled = laserMasterEnabled.Value;
+                    Log.Debug($"DebugServer: laser master enable -> {(laserMasterEnabled.Value ? "ON" : "OFF")}");
+                }
+                context.SendOk(new JObject { ["enabled"] = T3.Core.DataTypes.LaserMasterEnable.Enabled });
+                break;
+
+            case "setLaserDriver":
+                // Profiling kill-switch: pumps the laser output streams per frame when on
+                var laserDriverEnabled = request.Value<bool?>("enabled");
+                if (laserDriverEnabled.HasValue)
+                {
+                    T3.Core.Output.LaserDriverEnabled.Enabled = laserDriverEnabled.Value;
+                    Log.Debug($"DebugServer: laser output driver -> {(laserDriverEnabled.Value ? "ON" : "OFF")}");
+                }
+                context.SendOk(new JObject { ["enabled"] = T3.Core.Output.LaserDriverEnabled.Enabled });
+                break;
+
             case "setAgentState":
             {
                 var state = request["state"]?.Value<string>() ?? "";
@@ -244,7 +259,6 @@ internal static class DebugServer
                                    {
                                        ["protocolVersion"] = ProtocolVersion,
                                        ["editorVersion"] = Assembly.GetExecutingAssembly().GetName().Version?.ToString(),
-                                       ["methods"] = new JArray(_supportedMethods),
                                    });
                 break;
 
@@ -286,24 +300,88 @@ internal static class DebugServer
                 HandleGetGraphState(request, context);
                 break;
 
+            case "getLaserStatus":
+            {
+                if (!OutputSetupHandling.TryGetActiveSetup(out var laserSetup, out var laserMachine))
+                {
+                    context.SendError("NO_SETUP", "No active output setup");
+                    break;
+                }
+
+                var outputs = new JArray();
+                foreach (var diag in T3.Editor.Gui.Windows.OutputSetup.LaserDriver.GetDiagnostics(laserSetup, laserMachine))
+                    outputs.Add(JObject.FromObject(diag));
+
+                context.SendOk(new JObject
+                                   {
+                                       ["masterEnabled"] = T3.Core.DataTypes.LaserMasterEnable.Enabled,
+                                       ["driverEnabled"] = T3.Core.Output.LaserDriverEnabled.Enabled,
+                                       ["outputs"] = outputs,
+                                   });
+                break;
+            }
+
+            case "getLaserFrame":
+            {
+                // Dumps the pipeline frame of a laser output (name in "output", default first
+                // laser output): x/y/i samples for scope-level diagnosis. "maxPoints" caps the
+                // sample count, "litOnly" skips blanked samples.
+                if (!OutputSetupHandling.TryGetActiveSetup(out var frameSetup, out _))
+                {
+                    context.SendError("NO_SETUP", "No active output setup");
+                    break;
+                }
+
+                var wantedName = request["output"]?.ToString();
+                T3.Core.Output.OutputDefinition? wanted = null;
+                foreach (T3.Core.Output.OutputDefinition o in frameSetup.Outputs)
+                {
+                    if (o.Kind != T3.Core.Output.OutputDefinition.Kinds.Laser)
+                        continue;
+                    if (wanted == null || o.Name == wantedName)
+                        wanted = o;
+                }
+
+                if (wanted == null)
+                {
+                    context.SendError("NO_LASER_OUTPUT", "No laser output in the active setup");
+                    break;
+                }
+
+                var maxPointsToken = request["maxPoints"];
+                var maxPoints = maxPointsToken is { Type: Newtonsoft.Json.Linq.JTokenType.Integer } ? maxPointsToken.Value<int>() : 600;
+                var litOnlyToken = request["litOnly"];
+                var litOnly = litOnlyToken is { Type: Newtonsoft.Json.Linq.JTokenType.Boolean } && litOnlyToken.Value<bool>();
+                var rawToken = request["raw"];
+                var raw = rawToken is { Type: Newtonsoft.Json.Linq.JTokenType.Boolean } && rawToken.Value<bool>();
+                var points = raw ? T3.Editor.Gui.Windows.OutputSetup.LaserDriver.GetRawFrame(wanted) : T3.Editor.Gui.Windows.OutputSetup.LaserDriver.GetFrame(wanted);
+                var arr = new Newtonsoft.Json.Linq.JArray();
+                var sent = 0;
+                for (var i = 0; i < points.Length && sent < maxPoints; i++)
+                {
+                    var p = points[i];
+                    if (litOnly && p.I == 0)
+                        continue;
+                    arr.Add(new Newtonsoft.Json.Linq.JArray { p.X, p.Y, p.I });
+                    sent++;
+                }
+
+                context.SendOk(new JObject
+                                   {
+                                       ["output"] = wanted.Name,
+                                       ["totalPoints"] = points.Length,
+                                       ["returned"] = sent,
+                                       ["points"] = arr,
+                                   });
+                break;
+            }
+
             case "getMetrics":
                 HandleGetMetrics(context);
                 break;
 
-            case "probePull":
-                HandleProbePull(request, context);
-                break;
-
-            case "getUpdateStats":
-                HandleGetUpdateStats(context);
-                break;
-
             case "getShaderErrors":
                 HandleGetShaderErrors(request, context);
-                break;
-
-            case "getFrameSamples":
-                HandleGetFrameSamples(context);
                 break;
 
             case "screenshot":
@@ -366,82 +444,15 @@ internal static class DebugServer
                 HandleNewProject(request, context);
                 break;
 
+            case "save":            {
+                // Synchronous on purpose: the reply confirms the files are on disk.
+                T3Ui.Save(saveAll: true);
+                context.SendOk(new JObject { ["saved"] = true });
+                break;
+            }
+
             case "addOp":
                 HandleAddOp(request, context);
-                break;
-
-            case "getAudioInputs":
-            {
-                var devices = new JArray();
-                foreach (var device in T3.Core.Audio.Input.AudioInput.InputDevices)
-                    devices.Add(new JObject { ["name"] = device.Name, ["isLoopback"] = device.IsLoopback });
-
-                context.SendOk(new JObject
-                                   {
-                                       ["devices"] = devices,
-                                       ["active"] = T3.Core.Audio.Input.AudioInput.ActiveInputDeviceName,
-                                       ["level"] = T3.Core.Audio.Input.AudioInput.DecayingAudioLevel,
-                                   });
-                break;
-            }
-
-            case "setAudioInput":
-            {
-                // An empty device name goes back to analysing the project's own audio.
-                var deviceName = request["device"]?.Value<string>() ?? string.Empty;
-                var deviceExists = deviceName.Length == 0;
-                foreach (var device in T3.Core.Audio.Input.AudioInput.InputDevices)
-                {
-                    if (device.Name != deviceName)
-                        continue;
-
-                    deviceExists = true;
-                    break;
-                }
-
-                if (!deviceExists)
-                {
-                    context.SendError("NOT_FOUND", $"No audio input device named '{deviceName}' (see getAudioInputs)");
-                    break;
-                }
-
-                var settings = PlaybackUtils.FindCompositionSettings(out _);
-                settings.Playback.AudioInputDeviceName = deviceName;
-                settings.Playback.AudioSource = deviceName.Length > 0
-                                                    ? CompositionSettings.AudioSources.ExternalDevice
-                                                    : CompositionSettings.AudioSources.ProjectSoundTrack;
-                context.SendOk(new JObject { ["audioSource"] = settings.Playback.AudioSource.ToString() });
-                break;
-            }
-
-            case "startAudioRecording":
-                context.SendOk(new JObject { ["path"] = T3.Core.Audio.Input.AudioInput.BeginRecording() });
-                break;
-
-            case "stopAudioRecording":
-                context.SendOk(new JObject { ["path"] = T3.Core.Audio.Input.AudioInput.EndRecording() });
-                break;
-
-            case "startRender":
-                HandleStartRender(request, context);
-                break;
-
-            case "getRenderStatus":
-                context.SendOk(new JObject
-                                   {
-                                       ["state"] = RenderProcess.State.ToString(),
-                                       ["isExporting"] = RenderProcess.IsExporting,
-                                       ["progress"] = RenderProcess.Progress,
-                                       ["frameIndex"] = RenderProcess.CapturedFrameCount,
-                                       ["message"] = RenderProcess.LastHelpString,
-                                   });
-                break;
-
-            case "cancelRender":
-                if (RenderProcess.IsExporting)
-                    RenderProcess.Cancel();
-
-                context.SendOk(new JObject { ["message"] = RenderProcess.LastHelpString });
                 break;
 
             case "connect":
@@ -475,20 +486,7 @@ internal static class DebugServer
                 }
 
                 var bypassed = request["bypassed"]?.Value<bool>() ?? true;
-                if (bypassChild.IsBypassed != bypassed)
-                {
-                    var bypassCommand = new ChangeInstanceBypassedCommand(bypassChild, bypassed);
-                    bypassCommand.Do();
-
-                    if (bypassChild.IsBypassed != bypassed)
-                    {
-                        context.SendError("BYPASS_NOT_APPLIED", $"Could not change bypass for [{bypassChild.Symbol.Name}].");
-                        break;
-                    }
-
-                    UndoRedoStack.Add(bypassCommand);
-                }
-
+                UndoRedoStack.AddAndExecute(new ChangeInstanceBypassedCommand(bypassChild, bypassed));
                 context.SendOk(new JObject { ["bypassed"] = bypassChild.IsBypassed });
                 break;
             }
@@ -563,14 +561,6 @@ internal static class DebugServer
                 break;
             }
 
-            case "releaseGpuResources":
-            {
-                // What "Free GPU Memory" does; it runs at the start of the next frame, so pump one before measuring.
-                App.GpuResourceReleasing.RequestReleaseAll();
-                context.SendOk(new JObject());
-                break;
-            }
-
             case "setTargetFrameRate":
             {
                 // 0 renders every refresh; without a value it only reports.
@@ -579,17 +569,6 @@ internal static class DebugServer
                     UserSettings.Config.TargetFrameRate = Math.Max(0, value.Value);
 
                 context.SendOk(new JObject { ["targetFrameRate"] = UserSettings.Config.TargetFrameRate });
-                break;
-            }
-
-            case "setFrameLatency":
-            {
-                // 1 or 2 frames in flight; without a value it only reports.
-                var value = request["value"]?.Value<int>();
-                if (value != null)
-                    UserSettings.Config.FrameLatency = Math.Clamp(value.Value, 1, 2);
-
-                context.SendOk(new JObject { ["frameLatency"] = UserSettings.Config.FrameLatency });
                 break;
             }
 
@@ -610,27 +589,6 @@ internal static class DebugServer
                 }
 
                 context.SendOk(new JObject { ["changed"] = changed, ["selectedIds"] = selectedIds });
-                break;
-            }
-
-            case "deleteSelection":
-            {
-                var view = ProjectView.Focused;
-                if (view?.GraphView is not MagGraphView magGraphView)
-                {
-                    context.SendError("NO_COMPOSITION", "No graph view focused");
-                    break;
-                }
-
-                var keepConnections = request["disconnect"]?.Value<bool>() != true;
-                var deleted = magGraphView.DeleteSelection(keepConnections);
-                var selectedIds = new JArray();
-                foreach (var selectable in view.NodeSelection.Selection)
-                {
-                    selectedIds.Add(selectable.Id.ToString());
-                }
-
-                context.SendOk(new JObject { ["deleted"] = deleted, ["selectedIds"] = selectedIds });
                 break;
             }
 
@@ -674,6 +632,18 @@ internal static class DebugServer
                 break;
             }
 
+            case "collab":
+                HandleCollabControl(request, context);
+                break;
+
+            case "boygroup":
+                HandleBoygroupControl(request, context);
+                break;
+
+            case "failover":
+                HandleFailoverControl(request, context);
+                break;
+
             case null:
                 context.SendError("MISSING_METHOD", "Request has no 'method' field");
                 break;
@@ -682,6 +652,141 @@ internal static class DebugServer
                 context.SendError("UNKNOWN_METHOD", $"Unknown method '{method}'");
                 break;
         }
+    }
+
+    /// <summary>Drives the collab session for external agents: op = host | join | leave | status.</summary>
+    private static void HandleCollabControl(JObject request, RequestContext context)
+    {
+        var collab = CollabManager.Instance;
+        switch (request["op"]?.Value<string>())
+        {
+            case "host":
+                collab.StartHost(request["port"]?.Value<int>() ?? 44700,
+                                 request["password"]?.Value<string>() ?? "",
+                                 request["lan"]?.Value<bool>() ?? true);
+                break;
+
+            case "join":
+                collab.JoinDirect(request["host"]?.Value<string>() ?? "127.0.0.1",
+                                  request["port"]?.Value<int>() ?? 44700,
+                                  request["password"]?.Value<string>() ?? "");
+                break;
+
+            case "leave":
+                collab.Leave();
+                break;
+
+            case "chat":
+                collab.SendChat(request["text"]?.Value<string>() ?? "");
+                break;
+
+            case "status":
+                break;
+
+            default:
+                context.SendError("INVALID_PARAM", "collab requires op = host | join | leave | status");
+                return;
+        }
+
+        context.SendOk(new JObject
+                           {
+                               ["state"] = collab.State.ToString(),
+                               ["status"] = collab.StatusText,
+                               ["error"] = collab.ErrorText,
+                               ["peers"] = collab.Peers.Count,
+                               ["chatLines"] = collab.ChatLog.Count,
+                           });
+    }
+
+    /// <summary>Drives boygrouping for external agents: op = server | join | leave | status.</summary>
+    private static void HandleBoygroupControl(JObject request, RequestContext context)
+    {
+        var boygroup = Show.BoygroupManager.Instance;
+        switch (request["op"]?.Value<string>())
+        {
+            case "server":
+                boygroup.StartServer(request["port"]?.Value<int>() ?? 44720,
+                                     request["password"]?.Value<string>() ?? "",
+                                     request["group"]?.Value<string>() ?? "Main");
+                break;
+
+            case "join":
+                boygroup.JoinServer(request["host"]?.Value<string>() ?? "127.0.0.1",
+                                    request["port"]?.Value<int>() ?? 44720,
+                                    request["group"]?.Value<string>() ?? "Main",
+                                    request["password"]?.Value<string>() ?? "");
+                break;
+
+            case "leave":
+                boygroup.Leave();
+                break;
+
+            case "status":
+                break;
+
+            default:
+                context.SendError("INVALID_PARAM", "boygroup requires op = server | join | leave | status");
+                return;
+        }
+
+        context.SendOk(new JObject
+                           {
+                               ["state"] = boygroup.State.ToString(),
+                               ["status"] = boygroup.StatusText,
+                               ["error"] = boygroup.ErrorText,
+                               ["group"] = boygroup.GroupName,
+                           });
+    }
+
+    /// <summary>Drives the failover arbiter for external agents: op = enable | disable | status.</summary>
+    private static void HandleFailoverControl(JObject request, RequestContext context)
+    {
+        switch (request["op"]?.Value<string>())
+        {
+            case "enable":
+            {
+                // The update loop pushes UserSettings into the arbiter every frame, so enabling
+                // has to go through the persisted settings or it is overwritten immediately.
+                UserSettings.Config.FailoverEnabled = true;
+                UserSettings.Config.FailoverShowId = request["showId"]?.Value<string>() ?? UserSettings.Config.FailoverShowId;
+                UserSettings.Config.FailoverPriority = request["priority"]?.Value<int>() ?? UserSettings.Config.FailoverPriority;
+                UserSettings.Config.FailoverHeartbeatMs = request["heartbeatMs"]?.Value<int>() ?? UserSettings.Config.FailoverHeartbeatMs;
+                UserSettings.Config.FailoverTimeoutFactor = request["timeoutFactor"]?.Value<int>() ?? UserSettings.Config.FailoverTimeoutFactor;
+                UserSettings.Config.FailoverPreempt = request["preempt"]?.Value<bool>() ?? UserSettings.Config.FailoverPreempt;
+                UserSettings.Save();
+                Core.Show.FailoverArbiter.ApplyConfig(new Core.Show.FailoverConfig
+                                                          {
+                                                              Enabled = true,
+                                                              ShowId = UserSettings.Config.FailoverShowId,
+                                                              Priority = UserSettings.Config.FailoverPriority,
+                                                              HeartbeatMs = UserSettings.Config.FailoverHeartbeatMs,
+                                                              TimeoutFactor = UserSettings.Config.FailoverTimeoutFactor,
+                                                              Preempt = UserSettings.Config.FailoverPreempt,
+                                                          });
+                break;
+            }
+
+            case "disable":
+                UserSettings.Config.FailoverEnabled = false;
+                UserSettings.Save();
+                Core.Show.FailoverArbiter.ApplyConfig(new Core.Show.FailoverConfig { Enabled = false });
+                break;
+
+            case "status":
+                break;
+
+            default:
+                context.SendError("INVALID_PARAM", "failover requires op = enable | disable | status");
+                return;
+        }
+
+        context.SendOk(new JObject
+                           {
+                               ["role"] = Core.Show.FailoverArbiter.RoleText,
+                               ["suppressed"] = Core.Show.FailoverArbiter.IsOutputSuppressed,
+                               ["peer"] = Core.Show.FailoverArbiter.PeerSummary,
+                               ["takeovers"] = Core.Show.FailoverArbiter.TakeoverCount,
+                           });
     }
 
     private static void HandleGetLogTail(JObject request, RequestContext context)
@@ -715,11 +820,8 @@ internal static class DebugServer
     private static void HandleSelect(JObject request, RequestContext context, ProjectView view)
     {
         var ids = new List<Guid>();
-        if (!TryReadOptionalGuid(request, "childId", context, out var singleId))
-            return;
-
-        if (singleId.HasValue)
-            ids.Add(singleId.Value);
+        if (Guid.TryParse(request["childId"]?.Value<string>(), out var singleId))
+            ids.Add(singleId);
 
         if (request["childIds"] is JArray idArray)
         {
@@ -1229,144 +1331,6 @@ internal static class DebugServer
         context.SendOk(new JObject { ["count"] = list.Count, ["failures"] = list });
     }
 
-    /// <summary>
-    /// How many output slots below the focused composition ran their update in the previous frame, in total and per
-    /// symbol. Answers "how much of this graph re-evaluates although nothing changed" without a profiler. Instances
-    /// are not created on the way, so ops that never evaluated are not counted.
-    /// </summary>
-    private static void HandleGetUpdateStats(RequestContext context)
-    {
-        var composition = ProjectView.Focused?.CompositionInstance;
-        if (composition == null)
-        {
-            context.SendError("NO_COMPOSITION", "No composition is focused");
-            return;
-        }
-
-        var totals = new UpdateStats();
-        var bySymbol = new Dictionary<string, UpdateStats>();
-        CollectUpdateStats(composition, totals, bySymbol);
-
-        var symbols = new JObject();
-        foreach (var (name, stats) in bySymbol.OrderByDescending(pair => pair.Value.Updates))
-        {
-            symbols[name] = new JObject
-                                {
-                                    ["instances"] = stats.Instances,
-                                    ["outputsUpdated"] = stats.OutputsUpdated,
-                                    ["updates"] = stats.Updates,
-                                };
-        }
-
-        context.SendOk(new JObject
-                           {
-                               ["instances"] = totals.Instances,
-                               ["outputs"] = totals.Outputs,
-                               ["outputsUpdated"] = totals.OutputsUpdated,
-                               ["updates"] = totals.Updates,
-                               ["bySymbol"] = symbols,
-                           });
-    }
-
-    private static void CollectUpdateStats(Instance parent, UpdateStats totals, Dictionary<string, UpdateStats> bySymbol)
-    {
-        foreach (var child in parent.Symbol.Children.Values)
-        {
-            if (!parent.Children.TryGetChildInstance(child.Id, out var instance, allowCreate: false))
-                continue;
-
-            if (!bySymbol.TryGetValue(instance.Symbol.Name, out var symbolStats))
-            {
-                symbolStats = new UpdateStats();
-                bySymbol[instance.Symbol.Name] = symbolStats;
-            }
-
-            totals.Instances++;
-            symbolStats.Instances++;
-            foreach (var output in instance.Outputs)
-            {
-                totals.Outputs++;
-                // Requests are handled at the start of a frame, so "0 frames since" means the previous frame.
-                if (output.DirtyFlag.FramesSinceLastUpdate != 0)
-                    continue;
-
-                var updates = output.DirtyFlag.NumUpdatesWithinFrame;
-                totals.OutputsUpdated++;
-                totals.Updates += updates;
-                symbolStats.OutputsUpdated++;
-                symbolStats.Updates += updates;
-            }
-
-            CollectUpdateStats(instance, totals, bySymbol);
-        }
-    }
-
-    private static EvaluationContext? _probePullContext;
-
-    /// <summary>
-    /// Starts pulling an output of the focused composition at <c>pullResolution</c> on every frame, the way a second
-    /// view at another size would, until called without <c>childId</c>. Stopping returns the texture sizes the
-    /// pulls produced, so a test can check that the second view always got its own size.
-    /// </summary>
-    private static void HandleProbePull(JObject request, RequestContext context)
-    {
-        if (!Guid.TryParse(request["childId"]?.Value<string>(), out var childId))
-        {
-            var sizes = new JArray();
-            foreach (var size in _probePullSizes)
-            {
-                sizes.Add(new JArray(size.Width, size.Height));
-            }
-
-            _probePullSlot = null;
-            _probePullSizes.Clear();
-            context.SendOk(new JObject { ["sizes"] = sizes });
-            return;
-        }
-
-        Instance? instance = null;
-        ProjectView.Focused?.CompositionInstance?.Children.TryGetChildInstance(childId, out instance);
-        if (instance == null || instance.Outputs.Count == 0)
-        {
-            context.SendError("NOT_FOUND", $"No instance with outputs for {childId} in the focused composition");
-            return;
-        }
-
-        _probePullContext ??= new EvaluationContext();
-        var pullResolution = request["pullResolution"];
-        _probePullContext.RequestedResolution = new T3.Core.DataTypes.Vector.Int2(pullResolution?["X"]?.Value<int>() ?? 256,
-                                                                                  pullResolution?["Y"]?.Value<int>() ?? 256);
-        _probePullSlot = instance.Outputs[0];
-        _probePullSizes.Clear();
-        context.SendOk(new JObject { ["outputType"] = _probePullSlot.ValueType.Name });
-    }
-
-    private static void PullProbeSlot()
-    {
-        if (_probePullSlot == null || _probePullContext == null)
-            return;
-
-        _probePullContext.NotifyPullResolution();
-        DirtyFlag.GlobalInvalidationTick++;
-        _probePullSlot.InvalidateGraph();
-        _probePullSlot.Update(_probePullContext);
-        if (_probePullSlot is Slot<T3.Core.DataTypes.Texture2D> { Value: { IsDisposed: false } texture } && _probePullSizes.Count < 256)
-        {
-            _probePullSizes.Add(new T3.Core.DataTypes.Vector.Int2(texture.Description.Width, texture.Description.Height));
-        }
-    }
-
-    private static ISlot? _probePullSlot;
-    private static readonly List<T3.Core.DataTypes.Vector.Int2> _probePullSizes = new();
-
-    private sealed class UpdateStats
-    {
-        public int Instances;
-        public int Outputs;
-        public int OutputsUpdated;
-        public int Updates;
-    }
-
     private static void HandleGetMetrics(RequestContext context)
     {
         var io = ImGui.GetIO();
@@ -1399,35 +1363,8 @@ internal static class DebugServer
         context.SendOk(result);
     }
 
-    /// <summary>The Performance window's rolling frame, CPU and present durations (oldest first), the data of its CSV export.</summary>
-    private static void HandleGetFrameSamples(RequestContext context)
-    {
-        var frames = PerformanceMetrics.FrameDuration.AsOrderedSpan(new float[PerformanceMetrics.WindowSize]);
-        var cpus = PerformanceMetrics.CpuFrameDuration.AsOrderedSpan(new float[PerformanceMetrics.WindowSize]);
-        var presents = PerformanceMetrics.PresentDuration.AsOrderedSpan(new float[PerformanceMetrics.WindowSize]);
-        context.SendOk(new JObject
-                           {
-                               ["totalFrames"] = PerformanceMetrics.TotalFrameCount,
-                               ["frameMs"] = new JArray(frames.ToArray().Select(v => Math.Round(v, 2))),
-                               ["cpuMs"] = new JArray(cpus.ToArray().Select(v => Math.Round(v, 2))),
-                               ["presentMs"] = new JArray(presents.ToArray().Select(v => Math.Round(v, 2))),
-                           });
-    }
-
     private static JToken TryGetGpuMemoryInfo()
     {
-        // Vulkan reports its heap budget itself; D3D11 answers zeros and is asked through DXGI below.
-        var report = Program.Device?.Backend.QueryMemory() ?? default;
-        if (report.BudgetBytes > 0 || report.ResourceBytes > 0)
-        {
-            return new JObject
-                       {
-                           ["currentUsageMb"] = Math.Round(report.UsedBytes / (1024.0 * 1024.0), 1),
-                           ["budgetMb"] = Math.Round(report.BudgetBytes / (1024.0 * 1024.0), 1),
-                           ["resourceMb"] = Math.Round(report.ResourceBytes / (1024.0 * 1024.0), 1),
-                       };
-        }
-
         try
         {
             if (_gpuAdapter == null)
@@ -1462,7 +1399,6 @@ internal static class DebugServer
         }
 
         var format = path.EndsWith(".jpg", StringComparison.OrdinalIgnoreCase)
-                     || path.EndsWith(".jpeg", StringComparison.OrdinalIgnoreCase)
                          ? ScreenshotWriter.FileFormats.Jpg
                          : ScreenshotWriter.FileFormats.Png;
 
@@ -1472,7 +1408,7 @@ internal static class DebugServer
         var target = request["target"]?.Value<string>() ?? "output";
         if (target == "ui")
         {
-            var queuedUi = ProgramWindows.TryRequestUiCapture(uiTexture =>
+            ProgramWindows.RequestUiCapture(uiTexture =>
                                             {
                                                 var startedUi = ScreenshotWriter.StartSavingToFile(uiTexture, path, format, opaque: true,
                                                                                                    onComplete: filename =>
@@ -1489,9 +1425,6 @@ internal static class DebugServer
                                                     context.SendError("SCREENSHOT_BUSY", "Screenshot queue rejected the request");
                                                 }
                                             });
-            if (!queuedUi)
-                context.SendError("SCREENSHOT_BUSY", "A ui capture is already pending - wait for its reply");
-
             return;
         }
 
@@ -1789,13 +1722,9 @@ internal static class DebugServer
     {
         Instance? instance = null;
         var view = ProjectView.Focused;
-        if (!TryReadOptionalGuid(request, "childId", context, out var childId)
-            || !TryReadOptionalGuid(request, "outputId", context, out var outputId))
-            return;
-
-        if (childId.HasValue)
+        if (Guid.TryParse(request["childId"]?.Value<string>(), out var childId))
         {
-            view?.CompositionInstance?.Children.TryGetChildInstance(childId.Value, out instance);
+            view?.CompositionInstance?.Children.TryGetChildInstance(childId, out instance);
         }
         else
         {
@@ -1811,11 +1740,11 @@ internal static class DebugServer
         // Output by guid, by name, or the first one
         ISlot? slot = null;
         var outputName = request["outputName"]?.Value<string>();
-        if (outputId.HasValue)
+        if (Guid.TryParse(request["outputId"]?.Value<string>(), out var outputId))
         {
             foreach (var candidate in instance.Outputs)
             {
-                if (candidate.Id == outputId.Value)
+                if (candidate.Id == outputId)
                 {
                     slot = candidate;
                     break;
@@ -1862,22 +1791,11 @@ internal static class DebugServer
             // defeats InvalidateGraph's once-per-tick visited guard, so the walk reaches
             // upstream inputs changed since the last frame (ForceInvalidate alone only
             // dirties this slot; a consumer would keep its cached input values).
-            // With a pullResolution the probe acts as one more view at that size, through a context that lives
-            // as long as a view's would; without it, a throwaway context as before.
-            var pullContext = new EvaluationContext();
-            if (request["pullResolution"] is JObject pullResolution)
-            {
-                _probePullContext ??= new EvaluationContext();
-                pullContext = _probePullContext;
-                pullContext.RequestedResolution = new T3.Core.DataTypes.Vector.Int2(pullResolution["X"]?.Value<int>() ?? 0, pullResolution["Y"]?.Value<int>() ?? 0);
-                pullContext.NotifyPullResolution();
-            }
-
             DirtyFlag.GlobalInvalidationTick++;
             slot.InvalidateGraph();
             slot.DirtyFlag.ForceInvalidate();
             var wasDirty = slot.DirtyFlag.IsDirty;
-            slot.Update(pullContext);
+            slot.Update(new EvaluationContext());
             Log.Debug($"debug-server: pulled {instance.Symbol.Name}.{slot.ValueType.Name} dirtyBefore={wasDirty} dirtyAfter={slot.DirtyFlag.IsDirty}");
         }
 
@@ -2178,6 +2096,24 @@ internal static class DebugServer
             return;
         }
 
+        // Creating over an existing project re-scaffolds its folder out from under the loaded assembly,
+        // which crashes the frame loop when the open home symbol disappears. Refuse instead - agents
+        // driving this over the protocol should openProject the existing one.
+        var projectShortName = name.Split('.').Last();
+        if (Directory.Exists(Path.Combine(UserSettings.Config.ProjectDirectories[0], projectShortName)))
+        {
+            context.SendError("PROJECT_EXISTS", $"A project folder named '{projectShortName}' already exists - open it instead of creating it");
+            return;
+        }
+        foreach (var loaded in EditableSymbolProject.AllProjects)
+        {
+            if (string.Equals(loaded.CsProjectFile.Name, projectShortName, StringComparison.OrdinalIgnoreCase))
+            {
+                context.SendError("PROJECT_EXISTS", $"A project named '{projectShortName}' is already loaded - open it instead of creating it");
+                return;
+            }
+        }
+
         // Scaffolds files and compiles - blocks the frame loop for the duration.
         if (!ProjectSetup.TryCreateProject(name, shareResources: true, out var newProject, out var failureLog))
         {
@@ -2222,48 +2158,6 @@ internal static class DebugServer
 
         symbol = focused;
         return true;
-    }
-
-    private static void HandleStartRender(JObject request, RequestContext context)
-    {
-        var path = request["path"]?.Value<string>();
-        if (string.IsNullOrEmpty(path) || !Path.IsPathRooted(path))
-        {
-            context.SendError("BAD_PATH", "startRender needs an absolute 'path'");
-            return;
-        }
-
-        var startSecs = request["startSecs"]?.Value<float>() ?? 0f;
-        var durationSecs = request["durationSecs"]?.Value<float>() ?? 0f;
-        if (durationSecs <= 0)
-        {
-            context.SendError("BAD_DURATION", "startRender needs a positive 'durationSecs'");
-            return;
-        }
-
-        var settings = RenderSettings.Current.Clone();
-        settings.RenderMode = RenderSettings.RenderModes.Video;
-        settings.TimeRange = RenderSettings.TimeRanges.Custom;
-        settings.TimeReference = RenderSettings.TimeReferences.Seconds;
-        settings.StartInBars = startSecs;
-        settings.EndInBars = startSecs + durationSecs;
-        settings.FrameRate = request["fps"]?.Value<float>() ?? 60f;
-        settings.ExportAudio = request["exportAudio"]?.Value<bool>() ?? true;
-        settings.AutoIncrementVersionNumber = false;
-        if (Enum.TryParse<T3.Core.Video.VideoExportCodec>(request["codec"]?.Value<string>(), true, out var codec))
-            settings.VideoCodec = codec;
-
-        if (!RenderProcess.TryStartVideoExport(settings, path))
-        {
-            context.SendError("RENDER_NOT_READY", $"Render state is {RenderProcess.State}: pin an operator with a Texture2D output and keep the output window open");
-            return;
-        }
-
-        context.SendOk(new JObject
-                           {
-                               ["path"] = path,
-                               ["frameCount"] = RenderTiming.ComputeFrameCount(settings),
-                           });
     }
 
     private static void HandleAddOp(JObject request, RequestContext context)
@@ -2315,12 +2209,6 @@ internal static class DebugServer
             return;
         }
 
-        if (!SymbolRegistry.TryGetSymbol(symbolIdToAdd, out _))
-        {
-            context.SendError("NOT_FOUND", $"No symbol with id {symbolIdToAdd}");
-            return;
-        }
-
         // Scripts that pass no position used to pile every op onto the origin, on top of
         // whatever the previous probe left there. Without coordinates, start a fresh row
         // below the lowest existing op instead.
@@ -2339,27 +2227,6 @@ internal static class DebugServer
                                ["childId"] = command.AddedChildId.ToString(),
                                ["symbolId"] = symbolIdToAdd.ToString(),
                            });
-    }
-
-    /// <summary>
-    /// Reads an id that may be omitted. A present but malformed id is an error rather than "absent", so a typo
-    /// can't silently fall back to a default target.
-    /// </summary>
-    private static bool TryReadOptionalGuid(JObject request, string key, RequestContext context, out Guid? id)
-    {
-        id = null;
-        var text = request[key]?.Value<string>();
-        if (text == null)
-            return true;
-
-        if (!Guid.TryParse(text, out var parsed))
-        {
-            context.SendError("INVALID_PARAM", $"{key} '{text}' is not a Guid");
-            return false;
-        }
-
-        id = parsed;
-        return true;
     }
 
     /// <summary>Left edge of the graph, one row's height below its lowest op.</summary>
@@ -2543,6 +2410,30 @@ internal static class DebugServer
         }
 
         outputWindow.Pinning.PinInstance(instance, view);
+
+        // Optionally select which output of the pinned instance to display (e.g. "DebugTexture").
+        var outputName = request["outputName"]?.Value<string>();
+        if (!string.IsNullOrEmpty(outputName))
+        {
+            Guid outputId = Guid.Empty;
+            foreach (var definition in instance.Symbol.OutputDefinitions)
+            {
+                if (string.Equals(definition.Name, outputName, StringComparison.OrdinalIgnoreCase))
+                {
+                    outputId = definition.Id;
+                    break;
+                }
+            }
+
+            if (outputId == Guid.Empty)
+            {
+                context.SendError("UNKNOWN_OUTPUT", $"[{instance.Symbol.Name}] has no output named '{outputName}'");
+                return;
+            }
+
+            outputWindow.Pinning.SelectOutput(outputId);
+        }
+
         context.SendOk(new JObject());
     }
 
@@ -2691,24 +2582,6 @@ internal static class DebugServer
     }
 
     private const int RecentMessageCapacity = 8;
-
-    /// <summary>
-    /// Every method <see cref="ExecuteMethod"/> handles, reported by getVersion so clients can test for a command
-    /// instead of inferring support from <see cref="ProtocolVersion"/>. Keep in sync with the switch.
-    /// </summary>
-    private static readonly string[] _supportedMethods =
-        [
-            "ping", "setAgentState", "getVersion", "getPaths", "shutdown", "getStructureVersion", "getLogTail",
-            "getContext", "getGraphState", "getMetrics", "probePull", "getUpdateStats", "getShaderErrors",
-            "getFrameSamples", "screenshot", "screenshotWindow", "openProject", "openWindow", "select",
-            "getGraphView", "setGraphView", "focusGraphView", "setInput", "getOutput", "pumpFrames",
-            "newProject", "addOp", "getAudioInputs", "setAudioInput", "startAudioRecording",
-            "stopAudioRecording", "startRender", "getRenderStatus", "cancelRender", "connect", "deleteOp",
-            "pin", "setBypass", "outputSetup", "resetView", "reload", "stallMainThread", "setVSync",
-            "releaseGpuResources", "setTargetFrameRate", "setFrameLatency", "layoutSelection",
-            "deleteSelection", "undo", "redo", "setTime", "setPlayback"
-        ];
-
     private static readonly List<string> _recentMessages = new(RecentMessageCapacity);
     private static readonly List<PendingPump> _pendingPumps = new();
     private static TcpListener? _listener;
