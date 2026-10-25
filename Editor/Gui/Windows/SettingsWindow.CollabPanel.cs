@@ -109,13 +109,20 @@ internal sealed partial class SettingsWindow
 
         FormInputs.AddVerticalSpace();
 
-        DrawSecretInput("Relay server", ref _relayAddress, "Address of a TiXLCollabRelay server, e.g. relay.example.com:44710. Hosts and joiners must use the same relay.");
+        changed |= FormInputs.AddStringInput("Relay server",
+                                             ref config.CollabRelayAddress,
+                                             "relay.example.com:44710",
+                                             null,
+                                             """
+                                             Address of a TiXLCollabRelay server, e.g. relay.example.com:44710.
+                                             Hosts and joiners must use the same relay. Empty uses 127.0.0.1:44710.
+                                             """);
 
         FormInputs.SetCursorToParameterEdit();
         ImGui.PushID("##collabrelayhost");
         if (ImGui.Button("Host via relay"))
         {
-            ParseRelayAddress(_relayAddress, out var host, out var port);
+            ParseRelayAddress(config.CollabRelayAddress, out var host, out var port);
             manager.StartHostViaRelay(host, port, CollabManager.ConfiguredShareProject);
         }
 
@@ -154,7 +161,7 @@ internal sealed partial class SettingsWindow
         ImGui.SetNextItemWidth(FormInputs.GetAvailableInputSize(null, false, true).X);
         if (ImGui.InputText("##collabRoomCode", ref _roomCode, 12, ImGuiInputTextFlags.EnterReturnsTrue))
         {
-            ParseRelayAddress(_relayAddress, out var host, out var port);
+            ParseRelayAddress(config.CollabRelayAddress, out var host, out var port);
             manager.JoinViaRelay(host, port, _roomCode, config.CollabPassword);
         }
 
@@ -162,18 +169,45 @@ internal sealed partial class SettingsWindow
         ImGui.SameLine();
         if (ImGui.Button("Join via relay"))
         {
-            ParseRelayAddress(_relayAddress, out var host, out var port);
+            ParseRelayAddress(config.CollabRelayAddress, out var host, out var port);
             manager.JoinViaRelay(host, port, _roomCode, config.CollabPassword);
         }
 
         CustomComponents.TooltipForLastItem("Join a relay-hosted session with the room code the host shared.");
+
+        ImGui.SameLine();
+        if (ImGui.Button("Paste invite & join"))
+        {
+            if (TryParseInvite(ImGui.GetClipboardText(), out var relayAddress, out var roomCode))
+            {
+                if (!string.IsNullOrEmpty(relayAddress))
+                {
+                    config.CollabRelayAddress = relayAddress;
+                    changed = true;
+                }
+
+                _roomCode = roomCode;
+                _inviteMessage = "";
+                ParseRelayAddress(config.CollabRelayAddress, out var host, out var port);
+                manager.JoinViaRelay(host, port, roomCode, config.CollabPassword);
+            }
+            else
+            {
+                _inviteMessage = "The clipboard does not contain a TiXL collab invite.";
+            }
+        }
+
+        CustomComponents.TooltipForLastItem("Reads the relay address and room code from a copied invite, then joins.");
+
+        if (!string.IsNullOrEmpty(_inviteMessage))
+            ImGui.TextDisabled(_inviteMessage);
 
         DrawDiscoveredSessions(manager);
     }
 
     private static string _joinAddress = "";
     private static string _roomCode = "";
-    private static string _relayAddress = "";
+    private static string _inviteMessage = "";
 
     private const string CurrentProjectLabel = "Current project";
     private static readonly List<string> _shareProjectChoices = [];
@@ -232,6 +266,37 @@ internal sealed partial class SettingsWindow
             port = parsed;
             host = host[..separator];
         }
+    }
+
+    /// <summary>The configured relay, or the local default when the field is empty.</summary>
+    private static string RelayAddressOrDefault()
+    {
+        var relay = UserSettings.Config.CollabRelayAddress;
+        return string.IsNullOrWhiteSpace(relay) ? $"127.0.0.1:{CollabProtocol.DefaultRelayPort}" : relay.Trim();
+    }
+
+    /// <summary>One clipboard string carrying both things a joiner needs.</summary>
+    private static string BuildInvite(string roomCode) =>
+        $"TiXL collab invite\nRelay: {RelayAddressOrDefault()}\nRoom: {roomCode}";
+
+    /// <summary>Reads an invite copied by <see cref="BuildInvite"/>; the relay line is optional.</summary>
+    private static bool TryParseInvite(string? text, out string relay, out string room)
+    {
+        relay = "";
+        room = "";
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+
+        foreach (var line in text.Split('\n'))
+        {
+            var trimmed = line.Trim();
+            if (trimmed.StartsWith("Relay:", StringComparison.OrdinalIgnoreCase))
+                relay = trimmed[6..].Trim();
+            else if (trimmed.StartsWith("Room:", StringComparison.OrdinalIgnoreCase))
+                room = trimmed[5..].Trim();
+        }
+
+        return !string.IsNullOrEmpty(room);
     }
 
     private static void ParseJoinAddress(string text, int defaultPort, out string host, out int port)
@@ -347,6 +412,11 @@ internal sealed partial class SettingsWindow
             ImGui.TextUnformatted(manager.RoomCode);
             if (ImGui.IsItemHovered())
                 ImGui.SetTooltip("Share this code with the people you want to collaborate with.");
+
+            ImGui.SameLine();
+            if (ImGui.SmallButton("Copy invite"))
+                ImGui.SetClipboardText(BuildInvite(manager.RoomCode));
+            CustomComponents.TooltipForLastItem("Copies the relay address and room code as a single invite. The other person can use \"Paste invite & join\".");
         }
 
         if (!string.IsNullOrEmpty(manager.SharedProjectName))

@@ -677,6 +677,20 @@ internal static class DebugServer
                                   request["password"]?.Value<string>() ?? "");
                 break;
 
+            // Online sessions: register/join a room on a relay.
+            case "hostRelay":
+                collab.StartHostViaRelay(request["relay"]?.Value<string>() ?? "127.0.0.1",
+                                         request["relayPort"]?.Value<int>() ?? CollabProtocol.DefaultRelayPort,
+                                         request["project"]?.Value<string>() ?? CollabManager.ConfiguredShareProject);
+                break;
+
+            case "joinRelay":
+                collab.JoinViaRelay(request["relay"]?.Value<string>() ?? "127.0.0.1",
+                                    request["relayPort"]?.Value<int>() ?? CollabProtocol.DefaultRelayPort,
+                                    request["room"]?.Value<string>() ?? "",
+                                    request["password"]?.Value<string>() ?? "");
+                break;
+
             case "leave":
                 collab.Leave();
                 break;
@@ -689,7 +703,7 @@ internal static class DebugServer
                 break;
 
             default:
-                context.SendError("INVALID_PARAM", "collab requires op = host | join | leave | status");
+                context.SendError("INVALID_PARAM", "collab requires op = host | join | hostRelay | joinRelay | leave | status");
                 return;
         }
 
@@ -698,6 +712,7 @@ internal static class DebugServer
                                ["state"] = collab.State.ToString(),
                                ["status"] = collab.StatusText,
                                ["error"] = collab.ErrorText,
+                               ["roomCode"] = collab.RoomCode,
                                ["peers"] = collab.Peers.Count,
                                ["chatLines"] = collab.ChatLog.Count,
                                ["project"] = collab.SharedProjectName,
