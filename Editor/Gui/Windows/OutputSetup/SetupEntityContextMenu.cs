@@ -4,7 +4,6 @@ using T3.Core.Output;
 using T3.Editor.Gui.Styling;
 using T3.Editor.UiModel.ProjectHandling;
 using T3.Editor.UiModel.Selection;
-using T3.Editor.Show;
 
 namespace T3.Editor.Gui.Windows.OutputSetup;
 
@@ -45,26 +44,9 @@ internal static class SetupEntityContextMenu
         // The common verbs are their own group. Whether the kind drew any rows is read off the cursor rather
         // than reported back from a dozen switch branches — a menu row is the only thing here that advances it.
         var beforeKindItems = ImGui.GetCursorPosY();
-        DrawKindMenuItems(selection, setup, kind, id, multi);
-
-        ImGui.EndDisabled();
-        CustomComponents.MenuItemsDisabled = false;
-
-        // Takes the place of the per-item rows of the same name, acting on every selected item that has inputs.
-        if (multi && SetupActions.CanClearInputs(selection))
-        {
-            if (CustomComponents.DrawMenuItem(14, "Clear Inputs", isEnabled: SetupActions.SelectionHasInputs(setup, selection)))
-                SetupActions.ClearSelectionInputs(setup, selection);
-
-            CustomComponents.TooltipForLastItem("Disconnects whatever feeds the selected outputs, patches and surfaces.",
-                                                "The items themselves stay; only the routes into them are removed.");
-        }
-
+        DrawKindMenuItems(selection, setup, kind, id);
         if (ImGui.GetCursorPosY() > beforeKindItems)
             CustomComponents.SeparatorLine();
-
-        CustomComponents.MenuItemsDisabled = multi;
-        ImGui.BeginDisabled(multi);
 
         if (SetupActions.CanDuplicate(kind) && CustomComponents.DrawMenuItem(5, "Duplicate"))
             SetupActions.DuplicateEntity(selection, setup, kind, id);
@@ -83,58 +65,6 @@ internal static class SetupEntityContextMenu
             CustomComponents.TooltipForLastItem("Lays the selected surfaces out side by side in the order their walls run around the floor plan.",
                                                 "Board layout only — nothing in the stage or the routing moves.");
 
-        WallpaperLayout.CollectWalls(setup, selection, kind, id, _wallpaperWalls);
-        if (_wallpaperWalls.Count == 0 && kind == SetupEntityKinds.ContentSource && !EditorUiContent.IsEditorUi(id)
-            && setup.FindSourceByChildId(id) is { } shownSource)
-        {
-            // A wallpaper already spread over its walls re-cuts from its own item, without re-selecting them.
-            WallpaperLayout.CollectWallsShowing(setup, shownSource, _wallpaperWalls);
-            if (_wallpaperWalls.Count > 1)
-            {
-                if (CustomComponents.DrawMenuItem(24, "Update Wallpaper Layout"))
-                    WallpaperLayout.Create(selection, setup, _wallpaperWalls, shownSource);
-
-                CustomComponents.TooltipForLastItem("Re-cuts this content over the walls showing it, after a wall was resized, lifted or reordered.",
-                                                    "Keeps every route; only the slices and the resolution change.");
-            }
-
-            _wallpaperWalls.Clear();
-        }
-
-        if (_wallpaperWalls.Count > 0)
-        {
-            var recutSource = WallpaperLayout.FindSelectedSource(setup, selection, kind, id);
-            var label = recutSource == null ? "Create Wallpaper Layout" : $"Create Wallpaper Layout on {recutSource.Name}";
-            if (CustomComponents.DrawMenuItem(24, label))
-                WallpaperLayout.Create(selection, setup, _wallpaperWalls, recutSource);
-
-            CustomComponents.TooltipForLastItem("Shows one strip of content across these walls, in the order they stand around the room.",
-                                                recutSource == null
-                                                    ? "Adds a SendToOutput sized to the walls' pixel density and gives each wall its slice of it."
-                                                    : "Re-cuts the selected content into one slice per wall and sets its resolution.");
-        }
-
-        // Outside the disabled block as well: re-cutting selected content means a multi-selection.
-        if (kind == SetupEntityKinds.Surface && setup.FindSurface(id) is { } regionParent)
-        {
-            RegionSlices.CollectRegions(setup, regionParent, _regions);
-            if (_regions.Count > 0)
-            {
-                var selectedSource = WallpaperLayout.FindSelectedSource(setup, selection, kind, id);
-                var regionSource = selectedSource ?? RegionSlices.FindShownSource(setup, _regions);
-                var label = selectedSource != null ? $"Create Slices from Regions on {selectedSource.Name}"
-                            : regionSource != null ? "Update Slices from Regions"
-                            : "Create Slices from Regions";
-                if (CustomComponents.DrawMenuItem(27, label))
-                    RegionSlices.Create(selection, setup, regionParent, _regions, regionSource);
-
-                CustomComponents.TooltipForLastItem("Shows one picture across this surface's regions, each cut from where the region sits on the surface.",
-                                                    regionSource == null
-                                                        ? "Adds a SendToOutput sized to the surface and gives each region its slice of it."
-                                                        : "Re-cuts the content into one slice per region and sets its resolution; existing routes are kept.");
-            }
-        }
-
         // Deleting is the one action that reads the selection rather than the item, so it is offered even
         // from an item that isn't itself deletable.
         if (multi)
@@ -143,29 +73,9 @@ internal static class SetupEntityContextMenu
             if (deletable > 0 && CustomComponents.DrawMenuItem(2, $"Delete {deletable}"))
                 SetupActions.DeleteSelection(selection, setup);
         }
-        else if (SetupActions.CanDeleteDirectly(kind, id))
+        else if (SetupActions.CanDeleteDirectly(kind) && CustomComponents.DrawMenuItem(2, "Delete"))
         {
-            if (CustomComponents.DrawMenuItem(2, "Delete"))
-                SetupActions.DeleteEntity(setup, kind, id);
-        }
-        else if (kind == SetupEntityKinds.ContentSource && ContentSourceSync.HasSendOp(id))
-        {
-            if (CustomComponents.DrawMenuItem(2, "Delete"))
-                ContentSourceSync.DeleteSendOp(setup, id);
-
-            CustomComponents.TooltipForLastItem("Deletes the SendToOutput op from the graph, with its slices and routes.");
-        }
-        else if (kind == SetupEntityKinds.ContentSource && ContentSourceSync.IsSendOpMissing(id))
-        {
-            if (CustomComponents.DrawMenuItem(22, "Create SendToOutput"))
-                ContentSourceSync.CreateSendOpForMissingSource(setup, id);
-
-            CustomComponents.TooltipForLastItem("Adds a new SendToOutput op to the open graph, which keeps these slices and routes. Connect its texture input afterwards.");
-
-            if (CustomComponents.DrawMenuItem(2, "Remove"))
-                ContentSourceSync.RemoveMissingSource(setup, id);
-
-            CustomComponents.TooltipForLastItem("This project has no SendToOutput op for this content. Removes its slices and routes from the setup.");
+            SetupActions.DeleteEntity(setup, kind, id);
         }
 
         CustomComponents.MenuItemsFlushLeft = false;
@@ -180,7 +90,7 @@ internal static class SetupEntityContextMenu
     }
 
     /// <summary>The kind-specific entries, one case per kind, side by side.</summary>
-    private static void DrawKindMenuItems(SetupEntitySelection selection, Setup setup, SetupEntityKinds kind, Guid id, bool multi)
+    private static void DrawKindMenuItems(SetupEntitySelection selection, Setup setup, SetupEntityKinds kind, Guid id)
     {
         switch (kind)
         {
@@ -193,17 +103,16 @@ internal static class SetupEntityContextMenu
                     SetupOutputView.PendingPlanDrawId = plan.Id;
 
                 CustomComponents.TooltipForLastItem("Continue the run from its last corner on the Board: each click plants a corner and raises a wall.");
-
-                if (CustomComponents.DrawMenuItem(28, "Move Origin Here"))
-                {
-                    var point = SetupOutputView.PlanMenuPointInPlan;
-                    SetupUndo.RunUndoable("Move origin", setup, () => StageOrigin.Move(setup, point, Vector2.UnitY));
-                }
                 break;
 
             case SetupEntityKinds.Output:
                 var output = setup.FindOutput(id);
                 if (output == null)
+                    break;
+
+                // A laser output has no canvas: it streams vector content from a [LaserCamera], so
+                // patches, splits and content rotation would only create routes nothing consumes.
+                if (output.Kind == OutputDefinition.Kinds.Laser)
                     break;
 
                 if (CustomComponents.DrawMenuItem(7, "Add Patch"))
@@ -215,14 +124,11 @@ internal static class SetupEntityContextMenu
                 if (CustomComponents.DrawMenuItem(11, "Split into 4×4"))
                     SetupActions.SplitOutput(selection, setup, output, 4, 4);
 
-                if (!multi)
-                {
-                    if (CustomComponents.DrawMenuItem(14, "Clear Inputs", isEnabled: SetupActions.OutputHasInputs(setup, output)))
-                        SetupActions.ClearOutputInputs(setup, output);
+                if (CustomComponents.DrawMenuItem(14, "Clear Inputs", isEnabled: SetupActions.OutputHasInputs(setup, output)))
+                    SetupActions.ClearOutputInputs(setup, output);
 
-                    CustomComponents.TooltipForLastItem("Disconnects the surfaces and content feeding this output directly.",
-                                                        "Its patches stay, along with whatever feeds them.");
-                }
+                CustomComponents.TooltipForLastItem("Disconnects every surface and patch from this output.",
+                                                    "The surfaces and their content stay; only the routes into this canvas are removed.");
 
                 // Content fed straight to the output rides a folded-away patch; turning it is the common case of
                 // a display mounted on its side, so it is offered here rather than making the patch explicit first.
@@ -238,7 +144,7 @@ internal static class SetupEntityContextMenu
 
             case SetupEntityKinds.Plug:
                 // A render node's display belongs to that machine; only its binding is offered here.
-                if (Show.BoygroupManager.Instance.TryGetRemoteDisplayPlug(id, out var remoteClient, out var remoteDisplayIndex))
+                if (T3.Editor.Show.BoygroupManager.Instance.TryGetRemoteDisplayPlug(id, out var remoteClient, out var remoteDisplayIndex))
                 {
                     var remoteConfig = remoteClient.MachineConfig;
                     var remoteBound = remoteConfig == null
@@ -247,7 +153,7 @@ internal static class SetupEntityContextMenu
                     if (remoteBound != null
                         && CustomComponents.DrawMenuItem(15, $"Unbind {remoteBound.Name}"))
                     {
-                        Show.BoygroupManager.Instance.UnbindRemoteOutput(remoteClient, remoteBound.Id, remoteDisplayIndex);
+                        T3.Editor.Show.BoygroupManager.Instance.UnbindRemoteOutput(remoteClient, remoteBound.Id, remoteDisplayIndex);
                     }
 
                     break;
@@ -263,15 +169,19 @@ internal static class SetupEntityContextMenu
                         continue;
 
                     var boundOutput = setup.FindOutput(binding.OutputId);
-                    if (boundOutput != null && CustomComponents.DrawMenuItem(15, $"Unbind {SetupLabels.OutputLabel(boundOutput)}"))
+                    if (boundOutput != null && CustomComponents.DrawMenuItem(15, $"Unbind {boundOutput.Name}"))
                     {
-                        Plugs.UnbindOutput(plugMachineConfig, boundOutput.Id);
+                        // Per-plug: a multi-bound laser output keeps its other devices.
+                        Plugs.UnbindOutput(plugMachineConfig, boundOutput.Id, id);
                         break;
                     }
                 }
 
                 if (plugMachineConfig.FindStreamPlug(id) != null && CustomComponents.DrawMenuItem(16, "Remove stream"))
                     Plugs.RemoveStream(plugMachineConfig, id);
+
+                if (plugMachineConfig.FindLaserPlug(id) != null && CustomComponents.DrawMenuItem(19, "Remove laser"))
+                    Plugs.RemoveLaser(plugMachineConfig, id);
 
                 // Which display is which, and how they are arranged, is the OS's to answer — TiXL only lists
                 // what it finds. The row's tooltip shows the arrangement; this is where it is changed.
@@ -297,29 +207,20 @@ internal static class SetupEntityContextMenu
                 CustomComponents.TooltipForLastItem("Turns the patch a quarter clockwise around its centre, shape and picture together.",
                                                     "For a display or LED panel on its side. The Rotation row in its parameters sets it directly.");
 
-                // A fitted patch takes its place from its aspect and scale, so it has no dragged corners to drop.
-                if (setup.FindPatch(id, out var fillOwner) is { IsFitted: false } fillPatch && fillOwner != null
-                    && !SetupRelations.CoversFullCanvas(fillPatch)
-                    && CustomComponents.DrawMenuItem(25, $"Fill {SetupLabels.OutputLabel(fillOwner)}"))
-                {
-                    SetupActions.FillOutputWithPatch(selection, setup, fillOwner, fillPatch);
-                }
-
                 if (CustomComponents.DrawMenuItem(12, "Use on Surface"))
                     SetupActions.PromotePatchToSurface(selection, setup, id);
 
                 CustomComponents.TooltipForLastItem("Turns this patch into a surface with a corner pin.",
                                                     "The quad stays exactly where it is; the surface adds real size, raster and straightening.");
 
-                if (!multi && setup.FindPatch(id, out _) is { } fedPatch)
+                if (setup.FindPatch(id, out _) is { } fedPatch
+                    && CustomComponents.DrawMenuItem(14, "Clear Inputs", isEnabled: fedPatch.SliceId != Guid.Empty))
                 {
-                    if (CustomComponents.DrawMenuItem(14, "Clear Inputs", isEnabled: SetupActions.PatchHasInputs(setup, fedPatch)))
-                        SetupActions.ClearPatchInput(setup, fedPatch);
-
-                    CustomComponents.TooltipForLastItem("Disconnects the content or surfaces feeding this patch.",
-                                                        "The patch keeps its place on the canvas, ready to be fed again.");
+                    SetupActions.ClearPatchInput(setup, fedPatch);
                 }
 
+                CustomComponents.TooltipForLastItem("Disconnects the content feeding this patch.",
+                                                    "The patch keeps its place on the canvas, ready to be fed again.");
                 break;
 
             case SetupEntityKinds.ReferenceImage:
@@ -385,9 +286,7 @@ internal static class SetupEntityContextMenu
                 }
 
                 // The menu route to what a drop on a patch does: the surface takes the patch's place on its output.
-                // Applied after the loops: a drop on a fed patch removes it from the list being walked.
                 var patchOrdinal = 0;
-                var patchIdToPinTo = Guid.Empty;
                 foreach (var patchOutput in setup.Outputs)
                 {
                     foreach (var patch in patchOutput.Patches)
@@ -398,15 +297,13 @@ internal static class SetupEntityContextMenu
                         if (patchOrdinal == 0)
                             CustomComponents.DrawMenuGroupLabel("Pin to Patch");
 
-                        if (CustomComponents.DrawMenuItem(300 + patchOrdinal, $"{SetupLabels.PatchLabel(patchOutput, patch)} on {SetupLabels.OutputLabel(patchOutput)}"))
-                            patchIdToPinTo = patch.Id;
+                        var patchId = patch.Id;
+                        if (CustomComponents.DrawMenuItem(300 + patchOrdinal, $"{SetupLabels.PatchLabel(patchOutput, patch)} on {patchOutput.Name}"))
+                            SetupRouting.ApplyDrop(setup, SetupEntityKinds.Surface, surface.Id, SetupEntityKinds.Patch, patchId);
 
                         patchOrdinal++;
                     }
                 }
-
-                if (patchIdToPinTo != Guid.Empty)
-                    SetupRouting.ApplyDrop(setup, SetupEntityKinds.Surface, surface.Id, SetupEntityKinds.Patch, patchIdToPinTo);
 
                 if (surface.Kind == Surface.Kinds.Physical && setup.FindFloorPlanOf(surface.Id, out _) == null)
                 {
@@ -424,7 +321,7 @@ internal static class SetupEntityContextMenu
                 if (surface.SliceId != Guid.Empty && CustomComponents.DrawMenuItem(9, "Adjust aspect to slice"))
                     SurfaceMetrics.MatchSurfaceToSliceAspect(setup, surface);
 
-                if (!multi && CustomComponents.DrawMenuItem(6, "Clear content inputs"))
+                if (CustomComponents.DrawMenuItem(6, "Clear content inputs"))
                     SetupActions.ClearContentInputs(surface.Id);
 
                 if (SetupActions.HasOwnPin(surface) && CustomComponents.DrawMenuItem(17, "Follow parent's pin"))
@@ -438,8 +335,6 @@ internal static class SetupEntityContextMenu
     }
 
     private static readonly Action _drawMenuItemsCached = DrawMenuItemsForCurrent;
-    private static readonly List<Surface> _wallpaperWalls = [];
-    private static readonly List<Surface> _regions = [];
     private static SetupEntitySelection? _menuSelection;
     private static Setup? _menuSetup;
     private static SetupEntityKinds _menuKind;
