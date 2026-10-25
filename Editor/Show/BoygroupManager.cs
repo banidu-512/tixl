@@ -613,6 +613,9 @@ internal sealed class BoygroupManager
             return;
 
         var projectFolder = GetProjectFolder();
+        if (string.IsNullOrEmpty(projectFolder))
+            return; // Nothing to deploy from; the deploy was already reported as failed on request.
+
         foreach (var client in _clients)
         {
             if (client.PendingFiles == null)
