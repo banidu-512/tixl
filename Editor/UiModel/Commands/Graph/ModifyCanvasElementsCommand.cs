@@ -1,4 +1,4 @@
-#nullable enable
+﻿#nullable enable
 using T3.Editor.UiModel.Selection;
 
 namespace T3.Editor.UiModel.Commands.Graph;
