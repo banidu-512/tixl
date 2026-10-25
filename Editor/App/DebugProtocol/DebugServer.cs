@@ -813,6 +813,10 @@ internal static class DebugServer
                 boygroup.SendPlayControl(false);
                 break;
 
+            case "stop":
+                boygroup.StopAll();
+                break;
+
             case "syncTime":
                 boygroup.SendTimeSyncNow();
                 break;

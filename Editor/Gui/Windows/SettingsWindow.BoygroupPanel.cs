@@ -161,6 +161,13 @@ internal sealed partial class SettingsWindow
             manager.SendPlayControl(false);
 
         ImGui.SameLine();
+        if (ImGui.Button("Stop all"))
+            manager.StopAll();
+        CustomComponents.TooltipForLastItem(UserSettings.Config.ResetTimeAfterPlayback
+                                                ? "Stops the master and all render nodes and returns to the bar playback started from (master timeline setting)."
+                                                : "Stops the master and all render nodes at the current bar (master timeline setting).");
+
+        ImGui.SameLine();
         if (ImGui.Button("Sync time now"))
             manager.SendTimeSyncNow();
 
