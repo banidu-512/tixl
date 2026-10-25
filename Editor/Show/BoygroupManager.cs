@@ -123,6 +123,7 @@ internal sealed class BoygroupManager
     private long _nextTimeSyncTicks;
     private long _nextPingTicks;
     private long _sessionStartedTicks;
+    private long _waitingSinceTicks;
     private long _fpsWindowTicks;
     private int _fpsFrames;
     private double _editorFps = -1;
@@ -199,6 +200,7 @@ internal sealed class BoygroupManager
             StartNodeResponder();
             StartDiscovery();
             State = BoygroupState.WaitingForMaster;
+            _waitingSinceTicks = Environment.TickCount64;
             StatusText = "Slave — waiting for a master to add this instance";
             Log.Info("Boygroup: slave enabled, waiting for a master");
         }
@@ -292,6 +294,7 @@ internal sealed class BoygroupManager
         _serverProjectFolder = "";
         _lastBindingsSent = ""; // the master needs this machine's bindings
         DeploySummary = "";
+        _waitingSinceTicks = 0;
         ResetClockSync();
 
         try
@@ -385,6 +388,7 @@ internal sealed class BoygroupManager
             StartNodeResponder();
             StartDiscovery();
             State = BoygroupState.WaitingForMaster;
+            _waitingSinceTicks = Environment.TickCount64;
             StatusText = "Master disconnected — waiting to be added again";
         }
         catch (SocketException e)
@@ -988,12 +992,15 @@ internal sealed class BoygroupManager
         DrainDiscovery();
         var remembered = UserSettings.Config.BoygroupMasterName;
         var now = Environment.TickCount64;
+
+        // A renamed master would otherwise be filtered out forever by a stale remembered name.
+        var acceptAny = string.IsNullOrEmpty(remembered) || now - _waitingSinceTicks > 10_000;
         foreach (var node in _discoveredServers)
         {
             if (!node.IsMaster || now - node.LastInviteTicks < 5_000)
                 continue;
 
-            if (!string.IsNullOrEmpty(remembered) && !string.Equals(node.Name, remembered, StringComparison.OrdinalIgnoreCase))
+            if (!acceptAny && !string.Equals(node.Name, remembered, StringComparison.OrdinalIgnoreCase))
                 continue;
 
             node.LastInviteTicks = now;
@@ -1666,11 +1673,13 @@ internal sealed class BoygroupManager
 
         var localUtc = masterUtc - _clockOffsetTicks;
         var deltaSecs = (localUtc - DateTime.UtcNow.Ticks) / (double)TimeSpan.TicksPerSecond;
+        _anchorLocalStopwatch = Stopwatch.GetTimestamp() + deltaSecs * Stopwatch.Frequency;
 
-        // Presentation delay set by the master: a positive value switches to the anchor later, so
-        // this node runs that many milliseconds behind the master's timeline.
-        _anchorLocalStopwatch = Stopwatch.GetTimestamp() + (deltaSecs + _syncDelayMs / 1000.0) * Stopwatch.Frequency;
-        _anchorBars = json["bars"]?.Value<double>() ?? 0;
+        // Presentation delay set by the master is applied to the timeline value, not to the switch
+        // instant: every node still locks on at the same lead, while a delayed node shows what the
+        // master showed that many milliseconds earlier. The offset keeps its meaning while paused.
+        var delayBars = _syncDelayMs / 1000.0 * (json["bpm"]?.Value<double>() ?? 120) / 240.0;
+        _anchorBars = (json["bars"]?.Value<double>() ?? 0) - delayBars;
         _anchorSpeed = json["speed"]?.Value<double>() ?? 0;
         _anchorBpm = json["bpm"]?.Value<double>() ?? 120;
         _hasAnchor = true;
@@ -1718,15 +1727,18 @@ internal sealed class BoygroupManager
     /// <summary>Milliseconds the timeline had to be corrected to match the new anchor; -1 when unknown.</summary>
     private double MeasureAnchorCorrection(double nowTicks, double targetBars)
     {
-        if (_lastSyncStopwatch < 0)
+        if (_lastSyncStopwatch < 0 || _anchorBpm <= 0)
             return -1;
 
-        var barsPerSec = Math.Abs(_anchorSpeed) * _anchorBpm / 240.0;
-        if (barsPerSec < 1e-9 || Math.Abs(_lastSyncSpeed - _anchorSpeed) > 1e-9 || Math.Abs(_lastSyncBpm - _anchorBpm) > 1e-6)
-            return -1; // Paused or just resumed: there is no trajectory to compare against.
+        if (Math.Abs(_lastSyncSpeed - _anchorSpeed) > 1e-9 || Math.Abs(_lastSyncBpm - _anchorBpm) > 1e-6)
+            return -1; // Paused, resumed or changed tempo: the two trajectories are not comparable.
 
+        var barsPerSec = Math.Abs(_anchorSpeed) * _anchorBpm / 240.0;
+
+        // A paused node still has a phase; convert the bar offset at 1x so it reads in milliseconds too.
+        var msPerBar = barsPerSec > 1e-9 ? 1000.0 / barsPerSec : 240.0 / _anchorBpm * 1000.0;
         var predictedBars = _lastSyncBars + _lastSyncSpeed * ((nowTicks - _lastSyncStopwatch) / Stopwatch.Frequency) * _lastSyncBpm / 240.0;
-        return (targetBars - predictedBars) / barsPerSec * 1000.0;
+        return (targetBars - predictedBars) * msPerBar;
     }
 
     private double _lastSyncStopwatch = -1;
