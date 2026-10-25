@@ -44,6 +44,26 @@ multicast/UDP) are plain sockets — no platform-specific code is involved. The
 laser master button, test screen and all Output Setup editing are identical on
 every platform; only the graphics backend differs under the hood.
 
+## Robustness
+
+The laser stack is built so a show keeps running and the editor never dies on it:
+
+* **The driver pump cannot take the editor down.** It runs inside the frame loop
+  but every stage is isolated — a throwing camera evaluation (broken project
+  graph) costs that interval's frame and logs a throttled warning, nothing else.
+* **Streams own their threads.** Connection/send loops run on background tasks
+  with bounded waits, backoff ladders and in-place recovery; the editor never
+  blocks on a device, and every teardown happens off-thread.
+* **Watchdogs everywhere.** A 1 s frame watchdog blanks the beam when fresh
+  frames stop; the EtherDream transport detects a wedged DAC (stale full buffer)
+  and says so instead of silently retrying; CITP re-announces its feed and
+  rebuilds dead sessions; PONKInput restarts a dead listener thread on its own.
+* **Settled blanking.** Master off never leaves a lit frame on the wall — the
+  last geometry keeps scanning with zeroed colors, so scanners stay settled.
+* **Thread-safe by construction.** The camera registry publishes immutable
+  snapshots, discovery listeners isolate failing subscribers, and the driver's
+  state is safe to read from the debug server while the pump writes.
+
 ## Background
 
 - [Laser data model](laser/Laser%20Data%20Model.md) — how laser points flow

@@ -1,82 +1,70 @@
-# Laser Operator Preparation Guide
+# Adding a laser operator
 
-This guide provides a checklist for preparing and adding laser operators to the TiXL repository. It covers the required file layout, UI conventions, GUID handling, and documentation steps.
+Checklist for adding a graph-side laser operator to the Lib package. The output side
+(transports, safety, optimization) is **not** operator territory - it lives in the
+[Output Setup](../OutputSetup.md); only content-side nodes (cameras, converters,
+receivers) are operators.
 
----
+## 1. Symbol source files
 
-## 1. Add Symbol Source Files
+Place the implementation, definition and UI description under the laser namespace:
 
-- Place the operator implementation **C#** file (`*.cs`), the definition file (`*.t3`), and the UI description file (`*.t3ui`) under `Operators/Lib/Symbols/laser/<category>/`.
-- Accepted categories are `camera`, `input`, `output`, `optimize`, `safety`, and `convert`.
-- Example:
-  ```
-  Operators/Lib/Symbols/laser/input/MyNewInput.cs
-  Operators/Lib/Symbols/laser/input/MyNewInput.t3
-  Operators/Lib/Symbols/laser/input/MyNewInput.t3ui
-  ```
+```
+Operators/Lib/Symbols/laser/<category>/MyOp.cs
+Operators/Lib/Symbols/laser/<category>/MyOp.t3
+Operators/Lib/Symbols/laser/<category>/MyOp.t3ui
+```
 
----
+Existing categories: `camera` (scene-to-frame), `input` (protocol receivers),
+`convert` (laser <-> graph buffers). Keep the namespace `Lib.laser.<category>` - the
+LASER master button keys on it to decide whether to show itself.
 
-## 2. Update GUIDs
+## 2. Identities
 
-- Every operator class must have a unique `[Guid]` attribute. When adding a new operator, generate a fresh GUID for the class **and** for each input / output slot that declares a GUID.
-- Generate fresh identifiers for every new operator to avoid duplicate GUIDs.
+Generate fresh GUIDs for the operator class and for every input/output slot that
+declares one. GUIDs are forever: two symbols sharing an id corrupt projects.
 
----
+## 3. UI layout
 
-## 3. Flatten UI Layout
+Keep the parameter panel flat (no `GroupTitle` headings) and give every input a
+`Description` - it doubles as the tooltip and the documentation source. The `.t3ui`
+entries must match the code's input GUIDs exactly; missing entries fall back to code
+defaults.
 
-- The user prefers a *flat* UI (no `GroupTitle` headings). Remove any `GroupTitle` entries from `.t3ui` files.
-- Ensure each input has a `Description` key – outputs ignore `Description` per the parser, but they are still useful for documentation.
-- Refer to the **laser-operator-ui-flat-layout** memory for the exact change set.
+## 4. Defaults
 
----
+`InputSlot<T>` has no `DefaultValue` property - provide defaults via the `.t3` JSON,
+constructor defaults, or guards in `Update`.
 
-## 4. Set Default Values Correctly
+## 5. Documentation
 
-- `InputSlot<T>` does **not** have a `DefaultValue` property. Provide defaults via the `.t3` JSON `DefaultValue`, via constructor parameters, or guard logic in `Update`.
-- See the **InputSlot no DefaultValue gotcha** for details.
+Add the operator reference page under `.help/docs/operators/lib/laser/<category>/`
+(overview, inputs & outputs, quirks, example) and register it in
+`.help/docs/operators/index.json` so `[OpName]` autolinks resolve. Link the new page
+from the relevant pages in `.help/docs/using/laser/`.
 
----
+## 6. Robustness rules
 
-## 5. Custom Dropdowns (when needed)
+Laser operators run inside the output pump's evaluation - they must never assume a
+kind caller:
 
-- For IP address fields or other enumerations, implement `ICustomDropdownHolder` in the C# class and add `"Usage": "CustomDropdown"` in the corresponding `.t3ui`.
-- This mechanism is described in **TiXL custom dropdown mechanism**.
+* catch and log around network I/O and GPU readbacks; degrade to an empty frame,
+  never throw into the evaluation,
+* listener threads are background threads with a single catch-all loop (see
+  [PONKInput](PONKInput.md) for the pattern: join-free teardown via socket close,
+  dead-thread auto-recovery),
+* register with `LaserContentRegistry` on construction and unregister on dispose -
+  the registry is thread-safe and snapshot-read.
 
----
+## 7. Verify
 
-## 6. Documentation
+* `dotnet build Operators/Lib/Lib.csproj` after Core API changes - the editor loads
+  the package dll and a stale one crashes at first use,
+* `dotnet test Core.Tests` - the laser protocol and safety tests must stay green on
+  Windows and Linux,
+* launch the editor and place the op in a scratch project before committing.
 
-- Add a new wiki page for the operator (or update an existing one) with the following sections:
-  - Overview
-  - Inputs & Outputs (including types and defaults)
-  - Known quirks / limitations
-  - Example usage
-- Link this preparation guide from the operator's wiki page.
+## 8. Commit
 
----
-
-## 7. Verify Build & Tests
-
-- Run `dotnet build` to ensure the solution compiles after adding the operator.
-- Execute `dotnet test Core.Tests` to confirm that existing tests still pass.
-
----
-
-## 8. Commit & Push
-
-- Commit the changes with a clear message, e.g., `feat: add MyNewLaserOperator and update docs`.
-- Push to the `feature/laser-operators` branch and create a PR targeting `main`.
-
----
-
-## References
-
-- laser-operators-uncrashable
-- laser-operator-ui-flat-layout
-- laser-ops-implementation-branch
-- laser-core-etherdream-library-quirks
-- ponk-output-operator-architecture
-- ponk-input-operator-architecture
-- tiXL-custom-dropdown-mechanism
+Use the repo's `op:` scope, e.g. `op: [MyOp] converts ...` - see `git log` for the
+style.

@@ -30,7 +30,7 @@ Wireframe edge:  blank(e0) lit(s0) lit(s1) ... lit(e1)        -> isolated edge s
 
 * [Laser optimization](LaserOptimizer.md) splits the frame into segments at blanked runs - each dot dwell run is its own single-shape segment, reordered like any other shape. Since 2026-09 it blanks on **every** inter-shape move (at least 1 point, scaled by jump length up to `BlankingDelayPoints`), so even nearby dots and shapes can never burn a connecting line. Corner dwell ignores dwell runs (they evaluate as 180°).
 * [Laser safety](Laser%20Safety.md) passes dots through unchanged as long as the dwell run stays within `MaxStaticPoints` (default 64) - the operators clamp their `DotDwellPoints` to 64 for exactly that reason. Long blanked dot jumps are subdivided with blanked points only.
-* Output operators ([EtherDream](EtherDream.md), [PONK](PONK.md)) send the encoding as-is; on the wire blanking is intensity 0 / the DAC control bit.
+* The transports ([EtherDream](EtherDream.md), [PONK](PONK.md)) send the encoding as-is; on the wire blanking is intensity 0 / the DAC control bit.
 
 ## Practical notes
 

@@ -1,34 +1,39 @@
 # Troubleshooting
 
-Symptom -> cause -> fix for the laser pipeline. Operators referenced: [LaserCamera](LaserCamera.md), [Laser optimization](LaserOptimizer.md), [EtherDream](EtherDream.md), [PONK](PONK.md), [PONKInput](PONKInput.md), [CITP](CITP.md).
+Symptom -> cause -> fix for the laser pipeline. Referenced: [LaserCamera](LaserCamera.md), [Laser optimization](LaserOptimizer.md), [EtherDream](EtherDream.md), [PONK](PONK.md), [PONKInput](PONKInput.md), [CITP](CITP.md).
 
 ## Nothing comes out of the projector
 
 | Check | Fix |
 |-------|-----|
-| Output disabled / simulation still on | `Enable` on, `SimulationMode` off on the output operator |
-| Status says "Connecting..." forever | Wrong DAC IP - enable `DiscoverDevices` and pick from the dropdown |
+| Output not sending | `Send` on for the laser output, and the app-bar **LASER** master armed (it re-arms off at every editor start) |
+| Status says "Connecting..." forever | Wrong DAC IP - clear the address to auto-pick a discovered DAC, or pick from the address field's chevron |
+| Status: "DAC wedged (buffer full, idle)" | A previous session died mid-write and the DAC keeps the stale buffer; power-cycle the DAC |
 | Status shows warm-up retries | The projector light engine is still warming; wait (~60 s max), then check the projector itself |
-| E-stop warning | Clear the stop on the hardware, then toggle `ClearEStop` |
+| E-stop warning | Clear the stop on the hardware - the stream's recovery ladder re-arms the session on its own |
 | Points counted but nothing drawn | Frame may be all blanked points (`I = 0`) - check upstream of the output |
-| PointCount is 0 after [LaserCamera](LaserCamera.md) | Content behind the camera or outside the frustum is culled - aim the camera at the points |
+| No points after [LaserCamera](LaserCamera.md) | Content behind the camera or outside the frustum is culled - aim the camera at the points |
+| Preview shows a frame, device gets nothing | Output not bound to a plug, or bound while `Send` is off - check the output card's bound-device list |
 
 ## Image looks wrong
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| Doubled/ghosted shapes, corners smeared | Scanners can't follow | Use [Laser optimization](LaserOptimizer.md); raise `BlankingDelayPoints`/`CornerAnchorCount`, lower `ScanRate` |
+| Doubled/ghosted shapes, corners smeared | Scanners can't follow | Use [Laser optimization](LaserOptimizer.md); raise `BlankingDelayPoints`/`CornerAnchorCount`, lower the plug's `Scan rate` |
 | Shapes drawn in chaotic order, lots of invisible jumps | Path order unoptimized | `EnableOptimization` on [Laser optimization](LaserOptimizer.md) |
-| Image scaled into a corner or squashed | Coordinate-space mixup | See [Laser Data Model](Laser%20Data%20Model.md); for [CITP](CITP.md) tune `ScaleX/Y` (default 1/16) and `OffsetX/Y` |
+| Content smaller than the aimed zone / distorted | Frame mapping | Set the output's *Frame mapping* (Fit keeps aspect, Stretch fills, Crop covers); see the output's safety section |
+| Image lands outside the aimed zone | Safe zone vs. content | Check the safe zone and the setup rectangle in the output's safety section |
 | PONK content zoomed/cropped wrongly | Sub-rectangle mapping | Set MinX/MaxX/MinY/MaxY on [PONKInput](PONKInput.md) back to -1..1 |
-| Beam flickers when graph pauses | `LoopLastFrame` off | Enable it on the output operator to keep rescanning the last frame |
+
+The streams loop the last frame between the driver's ~30 Hz submissions and blank via the watchdog when fresh frames stop - a paused graph never burns a frozen lit frame and never flickers.
 
 ## PONK specific
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | `FrameCount` stays 0 | Sender/receiver mismatch | Same port (default 5583), same multicast group, `ExpectedSenderId` = 0, firewall allows UDP |
-| `ExpectedSenderId` filtering drops everything | Id is random per sender instance | Read the current value from the `SenderId` output |
+| `ExpectedSenderId` filtering drops everything | Id persisted per sender plug | Read the current value from the `SenderId` output, then set it |
+| Receiver shows a duplicate sender per restart | Old sessions keyed on old ids | Sender ids persist on the plug now; delete the receiver's accumulated duplicate inputs once |
 | Chunks never complete | Fragment loss or timeout too low | Raise `Timeout`; check network for UDP loss |
 | Log shows CRC mismatch | Corrupted datagrams, or a sender with the old 48-byte-header bug | Update the sender; see [Laser Protocols](Laser%20Protocols.md) |
 
@@ -36,20 +41,23 @@ Symptom -> cause -> fix for the laser pipeline. Operators referenced: [LaserCame
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| Discovery finds nothing | DAC on another subnet/broadcast blocked | Connect by IP directly; check `LocalIpAddress` matches the DAC's subnet |
-| "Discovery port 7654 already in use" warning | Another operator/app owns discovery | Harmless - shared discovery results are reused |
-| Second app can't connect to the DAC | Ether Dream allows one session | Disconnect the first (disable the operator) |
-| Send errors repeat, then reconnect loop | Unstable network/DAC | Check `PrintToLog` details; check cabling |
+| Discovery finds nothing | DAC on another subnet/broadcast blocked | Type the DAC's IP directly; check `Local interface` matches the DAC's subnet |
+| "Discovery port 7654 already in use" warning | Another app owns discovery | Harmless - the shared discovery results are reused |
+| Second app can't connect to the DAC | Ether Dream allows one TCP session | Close the other app or unbind this output |
+| Send errors repeat, then reconnect loop | Unstable network/DAC, or a wedged DAC (see above) | Check cabling; if the status reports the wedge, power-cycle the DAC |
+| Connect / stall / recycle repeats after a crash | The DAC firmware keeps a stale full buffer | Power-cycle the DAC - the stream reconnects on its own |
 
 ## CITP / Capture specific
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| Capture never sees the feed | **Known limitation:** the current build hardcodes a direct connection (10.0.0.233:47999) and bypasses discovery - see note in [CITP](CITP.md) | Remove the hardcoded connect in `StartCitpClient`, or point it at your Capture host |
-| Feed listed but no frames | Capture hasn't sent `LaserFeedControl` start | Check `FeedActive`/`RequiredFps` outputs |
+| Capture never sees the feed | Discovery never saw Capture's announcement | Check `Local interface` (announcements from other subnets are ignored once one is set); pick Capture from the address dropdown |
+| Feed listed but no frames | Capture hasn't started the feed | Click the feed's start button in Capture; the status line then reads "Feed N active at X fps" |
+| Feed disappeared after a restart | Control session died silently | The feed list re-announces every 5 s - it comes back on its own; if not, check the above |
 
 ## Debugging tools
 
-* `PrintToLog` on every operator - details in the log (open with **F12** in TiXL).
-* Output operators publish `StatusMessage` (also visible via the node's status bar) and counters (`PointsSent`, `FrameCount`, `PacketsSent`, `BufferFullness`).
-* [Testing](Testing.md) pages describe the protocol regression harnesses in `Core.Tests` - useful as executable protocol references.
+* The plug's **status line** in the Output Setup is the live view of every transport: connecting, streaming, warm-up, watchdog, wedge detection.
+* With the editor started via `--debug-server <port>`, the `getLaserStatus` command reports master/driver state and per-output stream diagnostics over TCP - the remote view during a show.
+* `PrintToLog` on the operators - details in the log (open with **F12** in TiXL).
+* [Testing](Testing.md) describes the protocol regression harnesses in `Core.Tests` - useful as executable protocol references.

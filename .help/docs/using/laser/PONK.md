@@ -22,7 +22,7 @@ Streams laser frames to a PONK-compatible receiver (e.g. MadMapper's Ponk input)
 
 * Each frame is packed in the mandatory `XY_F32_RGB_U8` format (float XY in -1..1, 8-bit RGB), prefixed with the two metadata entries `PATHNUMB` and `MAXSPEED`, then split into chunks of up to 1420 bytes per datagram. All chunks of a frame carry the same frame number and byte-sum checksum.
 * Frames are capped at 32000 points (protocol limits: point count is a `ushort`, chunk count a `byte`).
-* Sender identity: a 32-byte name (the plug's `Sender name`) plus a stable random id.
+* Sender identity: a 32-byte name (the plug's `Sender name`) plus a random id that is generated once and persisted on the plug - receivers (MadMapper keys its Ponk inputs on the id) recognize the sender across editor restarts.
 * **Threading model mirrors [EtherDream](EtherDream.md)**: a connection loop owns the UDP socket (bind + multicast interface/TTL/group options) and a send loop drains a queue of max 5 frames. Send errors are retried up to 20 times before the socket is rebuilt.
 * **Watchdog**: no fresh frames for about a second blanks the beam instead of looping a stale lit frame.
 * The app-bar **LASER** master button keeps sending the last frame zero-colored, so the beam is off while the geometry keeps scanning (settled blanking).

@@ -23,7 +23,7 @@ The transport lives in the Output Setup: add a **CITP capture** under *Add laser
 
 ## Behavior
 
-1. **Discovery** - listens for CITP `PINF`/`PLoc` announcements on multicast `224.0.0.180:4809`. When a peer announces a TCP port, a connection is attempted (packets from other subnets than the selected interface are ignored). If discovery times out, a direct connection to `127.0.0.1:51245` is tried - that is Capture's default.
+1. **Discovery** - listens for CITP `PINF`/`PLoc` announcements on multicast `224.0.0.180:4809`. When a peer announces a TCP port, a connection is attempted (announcements from a different subnet are ignored once a local interface is selected). If discovery finds nothing, a direct connection to `127.0.0.1:51245` is tried - that is Capture's default.
 2. **Session** - over TCP the stream answers `GetLaserFeedList` with one feed, announced as `<FeedName> 0`, and acknowledges `EnterShow`.
 3. **Streaming** - honors `LaserFeedControl` (the receiver asks for the feed and requests an FPS; the feed sends nothing before that), then streams CAEX `LaserFeedFrame` datagrams back over UDP to `224.0.0.180:4809`, converting ILDA 16-bit coordinates to CITP 12-bit and colors to RGB565.
 4. A frame larger than one datagram (~12,000 points) is truncated with a warning - reduce the point density upstream.
