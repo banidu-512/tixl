@@ -16,6 +16,8 @@ using T3.Editor.Gui.Interaction.Timing;
 using T3.Core.Animation;
 using T3.Core.Settings;
 using T3.Core.Stats;
+using T3.Core.Show;
+using T3.Editor.Show;
 using T3.Editor.Gui.Windows;
 using T3.Editor.Gui.Windows.Analyze;
 using T3.Editor.Gui.Windows.Layouts;
@@ -627,6 +629,14 @@ internal static class DebugServer
                 break;
             }
 
+            case "boygroup":
+                HandleBoygroupControl(request, context);
+                break;
+
+            case "failover":
+                HandleFailoverControl(request, context);
+                break;
+
             case null:
                 context.SendError("MISSING_METHOD", "Request has no 'method' field");
                 break;
@@ -635,6 +645,84 @@ internal static class DebugServer
                 context.SendError("UNKNOWN_METHOD", $"Unknown method '{method}'");
                 break;
         }
+    }
+
+    /// <summary>Drives boygrouping for external agents: op = server | join | leave | status.</summary>
+    private static void HandleBoygroupControl(JObject request, RequestContext context)
+    {
+        var boygroup = Show.BoygroupManager.Instance;
+        switch (request["op"]?.Value<string>())
+        {
+            case "server":
+                boygroup.StartServer(request["port"]?.Value<int>() ?? 44720,
+                                     request["password"]?.Value<string>() ?? "",
+                                     request["group"]?.Value<string>() ?? "Main");
+                break;
+
+            case "join":
+                boygroup.JoinServer(request["host"]?.Value<string>() ?? "127.0.0.1",
+                                    request["port"]?.Value<int>() ?? 44720,
+                                    request["group"]?.Value<string>() ?? "Main",
+                                    request["password"]?.Value<string>() ?? "");
+                break;
+
+            case "leave":
+                boygroup.Leave();
+                break;
+
+            case "status":
+                break;
+
+            default:
+                context.SendError("INVALID_PARAM", "boygroup requires op = server | join | leave | status");
+                return;
+        }
+
+        context.SendOk(new JObject
+                           {
+                               ["state"] = boygroup.State.ToString(),
+                               ["status"] = boygroup.StatusText,
+                               ["error"] = boygroup.ErrorText,
+                               ["group"] = boygroup.GroupName,
+                           });
+    }
+
+    /// <summary>Drives the failover arbiter for external agents: op = enable | disable | status.</summary>
+    private static void HandleFailoverControl(JObject request, RequestContext context)
+    {
+        switch (request["op"]?.Value<string>())
+        {
+            case "enable":
+                Core.Show.FailoverArbiter.ApplyConfig(new Core.Show.FailoverConfig
+                                                          {
+                                                              Enabled = true,
+                                                              ShowId = request["showId"]?.Value<string>() ?? "tixl-show",
+                                                              Priority = request["priority"]?.Value<int>() ?? 100,
+                                                              HeartbeatMs = request["heartbeatMs"]?.Value<int>() ?? 500,
+                                                              TimeoutFactor = request["timeoutFactor"]?.Value<int>() ?? 3,
+                                                              Preempt = request["preempt"]?.Value<bool>() ?? true,
+                                                          });
+                break;
+
+            case "disable":
+                Core.Show.FailoverArbiter.ApplyConfig(new Core.Show.FailoverConfig { Enabled = false });
+                break;
+
+            case "status":
+                break;
+
+            default:
+                context.SendError("INVALID_PARAM", "failover requires op = enable | disable | status");
+                return;
+        }
+
+        context.SendOk(new JObject
+                           {
+                               ["role"] = Core.Show.FailoverArbiter.RoleText,
+                               ["suppressed"] = Core.Show.FailoverArbiter.IsOutputSuppressed,
+                               ["peer"] = Core.Show.FailoverArbiter.PeerSummary,
+                               ["takeovers"] = Core.Show.FailoverArbiter.TakeoverCount,
+                           });
     }
 
     private static void HandleGetLogTail(JObject request, RequestContext context)
