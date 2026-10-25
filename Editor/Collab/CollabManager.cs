@@ -496,6 +496,9 @@ internal sealed class CollabManager
 
     private void DrainInboundQueue()
     {
+        if (_transport == null)
+            return;
+
         var processed = 0;
         // A message handler may end the session (auth failure, host bye), nulling the transport
         // mid-loop — the null-conditional keeps the loop condition safe on the next iteration.
