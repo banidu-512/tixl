@@ -317,11 +317,55 @@ internal sealed class WindowsUiContentDrawer : IUiContentDrawer<Device>
 
     public void RenderDrawData(ImDrawDataPtr drawData)
     {
+        LogBigDrawLists(drawData);
         lock (_contextLock)
         {
             PrepareData(drawData);
             DrawData(drawData);
         }
+    }
+
+    // TEMP DIAGNOSTIC: find which draw list carries the viewport-sized ellipse that flashes.
+    private static long _lastBigDrawLog;
+
+    private static unsafe string NameOf(ImDrawListPtr list)
+    {
+        var namePtr = ((ImGuiNET.ImDrawList*)list.NativePtr)->_OwnerName;
+        return namePtr == null ? "?" : System.Runtime.InteropServices.Marshal.PtrToStringUTF8((IntPtr)namePtr) ?? "?";
+    }
+
+    private static void LogBigDrawLists(ImDrawDataPtr drawData)
+    {
+        var now = System.Diagnostics.Stopwatch.GetTimestamp();
+        if (now - _lastBigDrawLog < System.Diagnostics.Stopwatch.Frequency * 2)
+            return;
+
+        _lastBigDrawLog = now;
+        var sb = new System.Text.StringBuilder($"draw lists ({drawData.CmdListsCount}) mouse={ImGui.GetIO().MousePos}: ");
+        for (var i = 0; i < drawData.CmdListsCount; i++)
+        {
+            var list = drawData.CmdLists[i];
+            var count = list.VtxBuffer.Size;
+            if (count == 0)
+                continue;
+
+            float minX = float.MaxValue, minY = float.MaxValue, maxX = float.MinValue, maxY = float.MinValue;
+            for (var v = 0; v < count; v++)
+            {
+                var p = list.VtxBuffer[v].pos;
+                if (!float.IsFinite(p.X) || !float.IsFinite(p.Y))
+                    continue;
+                if (p.X < minX) minX = p.X;
+                if (p.X > maxX) maxX = p.X;
+                if (p.Y < minY) minY = p.Y;
+                if (p.Y > maxY) maxY = p.Y;
+            }
+
+            var firstCmd = list.CmdBuffer[0];
+            sb.Append($"[{i}: {NameOf(list)} n={count} b={minX:0},{minY:0},{maxX:0},{maxY:0} c={firstCmd.ClipRect.X:0},{firstCmd.ClipRect.Y:0},{firstCmd.ClipRect.Z:0},{firstCmd.ClipRect.W:0}] ");
+        }
+
+        T3.Core.Logging.Log.Warning(sb.ToString());
     }
 
     private void PrepareData(ImDrawDataPtr drawData)
