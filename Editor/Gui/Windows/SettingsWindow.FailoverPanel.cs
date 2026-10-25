@@ -4,6 +4,7 @@ using T3.Core.Show;
 using T3.Editor.Gui.Input;
 using T3.Editor.Gui.Styling;
 using T3.Editor.Gui.UiHelpers;
+using T3.Editor.Show;
 
 namespace T3.Editor.Gui.Windows;
 
@@ -22,8 +23,11 @@ internal sealed partial class SettingsWindow
                                           ref config.FailoverEnabled,
                                           """
                                           Two machines run the same composition; exactly one (ACTIVE) streams network
-                                          outputs. If it dies, the Standby takes over automatically and streams until
-                                          the master returns. Artnet, sACN and stream outputs (NDI/Spout) honor this;
+                                          outputs. The active machine also hosts a collaboration session and the
+                                          standby joins it automatically, so both stay on the same show state. If
+                                          the active node dies, the Standby takes over automatically and streams until
+                                          the master returns — then the master streams again and the backup steps
+                                          down and follows. Artnet, sACN and stream outputs (NDI/Spout) honor this;
                                           local display windows keep rendering on both machines.
                                           """,
                                           false);
@@ -80,6 +84,9 @@ internal sealed partial class SettingsWindow
         ImGui.PopStyleColor();
 
         ImGui.Bullet();
+        ImGui.TextUnformatted($"Sync: {FailoverCollabLink.Instance.StatusText}");
+
+        ImGui.Bullet();
         ImGui.TextUnformatted(FailoverArbiter.PeerSummary);
 
         ImGui.Bullet();
@@ -98,12 +105,19 @@ internal sealed partial class SettingsWindow
         FormInputs.AddVerticalSpace();
         CustomComponents.HelpText("""
                                   How to set up a redundant pair:
-                                  1. Run the same project and composition on both machines (boygrouping or manual copies).
-                                  2. Enable failover on both, same Show Id, master gets the higher Priority.
+                                  1. Enable failover on both machines, same Show Id; give the preferred master the
+                                     higher Priority (e.g. 100 vs 50).
+                                  2. That's it: the ACTIVE machine hosts a collaboration session and the Standby
+                                     joins it automatically — use the same collab port and password on both.
+                                     Edits on the master reach the backup live, so a takeover continues the same
+                                     show. When the master returns it reclaims the output (preempt) and the
+                                     backup steps down and follows it again.
                                   3. Configure your Artnet/sACN/stream outputs identically on both.
-                                  The Standby machine renders silently and starts streaming within the timeout when the
-                                  ACTIVE machine stops answering. Heartbeats use multicast so both machines can also be
-                                  rehearsed on a single PC.
+                                  The Standby renders silently and starts streaming within the timeout when the
+                                  ACTIVE machine stops answering. Heartbeats use multicast so both machines can
+                                  also be rehearsed on a single PC. Timeline playback (play/pause, position) is
+                                  not synced by the session — start playback on the backup too, or keep playing
+                                  on both.
                                   """);
     }
 }
