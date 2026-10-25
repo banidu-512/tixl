@@ -358,13 +358,13 @@ internal static class LaserDriver
                 if (plug == null)
                     continue;
 
-                var hasStatus = _streams.TryGetValue(plug.Id, out var stream);
+                _streams.TryGetValue(plug.Id, out var stream);
                 bindings.Add(new
                                  {
                                      plug = plug.Name,
                                      kind = plug.Kind,
-                                     connected = hasStatus && stream.IsConnected,
-                                     status = hasStatus ? stream.StatusMessage : "no stream",
+                                     connected = stream is { IsConnected: true },
+                                     status = stream?.StatusMessage ?? "no stream",
                                  });
             }
 
