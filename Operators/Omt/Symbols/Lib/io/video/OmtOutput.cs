@@ -4,48 +4,42 @@ using Lib.Utils;
 namespace Lib.io.video;
 
 [Guid("957ef10e-b410-4eb6-8c2a-b813e8df3a3e")]
-[ExportDependencies("libomtnet.dll", "libvmx.dll", "libvmx.so", "libvmx.dylib")]
+[ExportDependencies("libomtnet.dll", "libvmx.dll", "libvmx.dylib", "libvmx.so")]
 public sealed class OmtOutput : Instance<OmtOutput>, IStatusProvider
 {
     [Output(Guid = "cade9b2b-2a82-4028-859e-813f0a763c39", DirtyFlagTrigger = DirtyFlagTrigger.Always)]
     public readonly Slot<Texture2D?> TextureOutput = new();
 
-    /** Animated: the sender is announced asynchronously, so the address appears a moment after the first frame. */
-    [Output(Guid = "fc06d936-aa9d-4e70-af49-acf151cbf3ca", DirtyFlagTrigger = DirtyFlagTrigger.Animated)]
+    [Output(Guid = "fc06d936-aa9d-4e70-af49-acf151cbf3ca")]
     public readonly Slot<string?> SourceAddress = new();
 
     public OmtOutput()
     {
         TextureOutput.UpdateAction = Update;
-
-        // Separate from Update, which sends: evaluating both outputs must not send a frame twice.
-        SourceAddress.UpdateAction = UpdateSourceAddress;
-    }
-
-    private void UpdateSourceAddress(EvaluationContext context)
-    {
-        SourceAddress.Value = _sender?.AdvertisedAddress;
+        SourceAddress.UpdateAction = Update;
     }
 
     private void Update(EvaluationContext context)
     {
         var texture = Texture.GetValue(context);
-        var senderName = SenderName.GetValue(context);
+        var senderName = SenderName.GetValue(context) ?? "TiXL";
 
         TextureOutput.Value = texture;
 
         if (texture == null)
         {
             _lastErrorMessage = "No texture input";
+            SourceAddress.Value = _sender?.AdvertisedAddress;
             return;
         }
 
-        _sender ??= new OmtSender(senderName ?? string.Empty);
+        _sender ??= new OmtSender(senderName);
         _sender.Rename(senderName);
         _sender.FrameRate = FrameRate.GetValue(context);
         _sender.EnableAlpha = EnableAlpha.GetValue(context);
         _sender.Send(texture);
         _lastErrorMessage = _sender.LastError;
+        SourceAddress.Value = _sender.AdvertisedAddress;
         SenderName.Update(context);
     }
 
@@ -54,7 +48,6 @@ public sealed class OmtOutput : Instance<OmtOutput>, IStatusProvider
         if (!isDisposing)
             return;
 
-        // Returns at once: the sender's thread withdraws the announcement and frees the native sender itself.
         _sender?.Dispose();
         _sender = null;
     }

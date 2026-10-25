@@ -10,12 +10,15 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using ImGuiNET;
+using NAudio.Midi;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using T3.Core.Animation;
+using T3.Core.IO;
 using T3.Core.Settings;
 using T3.Core.Stats;
 using T3.Core.Show;
+using T3.Core.Video;
 using T3.Editor.Collab;
 using T3.Editor.Show;
 using T3.Editor.Gui.Windows;
@@ -23,6 +26,7 @@ using T3.Editor.Gui;
 using T3.Editor.Gui.Windows.Analyze;
 using T3.Editor.Gui.Windows.Layouts;
 using T3.Core.Logging;
+using T3.IoServices;
 using T3.Core.Model;
 using T3.Core.Operator;
 using T3.Core.Resource.ShaderCompiling;
@@ -841,11 +845,42 @@ internal static class DebugServer
                 boygroup.DeployAndSync();
                 break;
 
+            // Verification hook: injects a local input event through the same simulated bus the
+            // operators use. On a master it is captured and replicated like a hardware event, which
+            // makes end-to-end input replication testable without a controller or camera.
+            case "injectIo":
+            {
+                var kind = request["kind"]?.Value<string>() ?? "";
+                if (string.Equals(kind, "midi", StringComparison.OrdinalIgnoreCase))
+                {
+                    var status = request["status"]?.Value<int>() ?? 0xB0;
+                    var data1 = request["data1"]?.Value<int>() ?? 0;
+                    var data2 = request["data2"]?.Value<int>() ?? 0;
+                    var rawMessage = (status & 0xFF) | ((data1 & 0x7F) << 8) | ((data2 & 0x7F) << 16);
+                    SimulatedIoBus.DispatchMidi(new SimulatedIoBus.SimulatedMidiEvent(request["device"]?.Value<string>() ?? "Debug",
+                                                                                    MidiEvent.FromRawMessage(rawMessage)));
+                }
+                else if (string.Equals(kind, "osc", StringComparison.OrdinalIgnoreCase))
+                {
+                    SimulatedIoBus.DispatchOsc(new SimulatedIoBus.SimulatedOscEvent(request["port"]?.Value<int>() ?? 7000,
+                                                                                  request["address"]?.Value<string>() ?? "/debug",
+                                                                                  request["value"]?.Value<float>() ?? 0f));
+                }
+                else
+                {
+                    context.SendError("INVALID_PARAM", "injectIo requires kind = midi | osc");
+                    return;
+                }
+
+                break;
+            }
+
             case "status":
                 break;
 
             default:
-                context.SendError("INVALID_PARAM", "boygroup requires op = enable | disable | invite | bindRemote | unbindRemote | deploy | status");
+                context.SendError("INVALID_PARAM",
+                                  "boygroup requires op = enable | disable | invite | bindRemote | unbindRemote | deploy | injectIo | status");
                 return;
         }
 
@@ -911,6 +946,15 @@ internal static class DebugServer
                                ["fps"] = boygroup.EditorFps,
                                ["uptimeSecs"] = boygroup.SessionUptimeSeconds,
                                ["savedNodes"] = new JArray(Show.BoygroupManager.RememberedNodes),
+                               ["inputRelay"] = new JObject
+                                                    {
+                                                        ["summary"] = boygroup.InputRelaySummary,
+                                                        ["capturing"] = boygroup.IsCapturingInputs,
+                                                        ["midiReplay"] = RemoteInputBus.IsMidiReplayActive,
+                                                        ["oscReplay"] = RemoteInputBus.IsOscReplayActive,
+                                                        ["videoSources"] = RemoteVideoInputBus.RemoteSourceCount,
+                                                        ["videoSummary"] = RemoteVideoInputBus.Summary,
+                                                    },
                                ["clients"] = clients,
                                ["discovered"] = discovered,
                            });

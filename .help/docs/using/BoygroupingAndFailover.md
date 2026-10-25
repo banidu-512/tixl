@@ -18,6 +18,18 @@ The master shows the added nodes, their local output bindings and their deployme
 
 The **Network** section of the Collaboration, Boygrouping and Failover settings is shared: pick the show network's Ethernet adapter there when the machine also has Wi-Fi, VPN or Hyper-V adapters. **Automatic** keeps the previous behavior. A pinned adapter takes effect the next time boygrouping is enabled; failover rebinds immediately.
 
+## Input replication
+
+A render node does not need the controllers or cameras the show was built with. The master forwards its hardware input to the nodes that are connected:
+
+- **MIDI** messages are captured once at the device layer and replayed through the same `[MidiInput]` operators on every node, so device, channel, controller, note and control-range filters produce exactly the master's values. MIDI clock and note/CC traffic are both carried.
+- **OSC** packets are forwarded as their original bytes and parsed on the node, so multi-argument messages keep every value and type. Port and address filters behave as they do on the master.
+- **[VideoDeviceInput]** streams its captured frame over **OMT**. The master advertises each camera under a stable name (`MACHINENAME (TiXL <node> <device> <hash>)`) and a node presents that stream instead of opening a local camera. The node's camera stays closed even while the stream is still connecting. No video is sent when the project has no video input.
+- Input traffic is only captured while at least one render node is connected. Events are batched once per frame; an overflowing queue drops events and reports it in the log rather than growing without bound.
+- A slave that truly has its own controllers still uses them while the master sends no MIDI/OSC, and switches to the master's input as soon as replicas arrive.
+
+Video replication requires the OMT codec (`libvmx`). It ships with the Omt package on Windows and Apple Silicon; on other platforms build it from the libvmx sources and place it next to the Omt package (see the `OmtInput` status message). Without it, MIDI and OSC still replicate and the video input falls back to the machine's own camera.
+
 ## Show failover
 
 Show failover keeps a redundant pair of machines streaming. Both run the same composition; only the **Active** one sends Art-Net, sACN and streams. The **Standby** renders silently and takes over within `timeout factor × heartbeat` (about 1.5 s with the defaults) when the active machine stops sending heartbeats.

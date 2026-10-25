@@ -18,4 +18,10 @@ public interface IOutputStreamSender : IDisposable
     bool Send(Texture2D texture);
 
     string? LastError { get; }
+
+    /// <summary>
+    /// The address a receiver selects in this stream, when the transport has a discoverable one (OMT). Null for
+    /// transports that are found by name only, and before the sender has opened.
+    /// </summary>
+    string? AdvertisedAddress => null;
 }
