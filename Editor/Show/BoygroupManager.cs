@@ -351,6 +351,22 @@ internal sealed class BoygroupManager
     /// <summary>Slave action: connect to the master that invited this node.</summary>
     private void JoinMaster(string host, int port)
     {
+        // A join while already connected (a second invitation or the debug bridge) must replace the
+        // old link, not run beside it: two sessions would receive every input event twice.
+        if (_transport != null)
+        {
+            _transport.PeerDisconnected -= OnPeerDisconnected;
+            _transport.Dispose();
+            _transport = null;
+        }
+
+        while (_pendingDisconnects.TryDequeue(out _))
+        {
+        }
+
+        RemoteVideoInputBus.ClearRemoteSources();
+        RemoteInputBus.ResetRemoteActivity();
+
         StopNodeResponder();
         StopDiscovery(); // the session link replaces discovery until it ends
         ErrorText = "";
@@ -835,6 +851,10 @@ internal sealed class BoygroupManager
 
             if (State == BoygroupState.Client)
             {
+                // A replaced link's late disconnect must not tear down the session that replaced it.
+                if (_transport is not BoygroupClientTransport current || !ReferenceEquals(current.ServerPeer, peer))
+                    continue;
+
                 ErrorText = "Disconnected from the boygroup master";
                 ReturnToWaiting();
             }
