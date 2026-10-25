@@ -1,6 +1,4 @@
 #nullable enable
-using System.Diagnostics;
-using T3.Core.SystemUi;
 using System.IO;
 using T3.Editor.Gui.Windows.OutputSetup;
 using T3.Core.DataTypes.Vector;
@@ -42,7 +40,6 @@ internal static class OutputSetupHandling
         ActiveSetup.Current = entry.Setup;
         ActiveSetup.Machine = entry.MachineConfig;
         ResolveCanvasResolutions(entry.Setup, entry.MachineConfig);
-        SetupRelations.SyncPinsToLinkedPatches(entry.Setup);
         if (switched)
             ActiveSetup.NotifyChanged();
     }
@@ -52,32 +49,6 @@ internal static class OutputSetupHandling
     /// Operators reading the setup follow along each frame instead of jumping at the release.
     /// </summary>
     public static void NotifyLiveEdit() => ActiveSetup.NotifyChanged();
-
-    /// <summary>
-    /// Moves routing along when send ops are re-created under new child ids. Covers every setup of the focused
-    /// project, not only the active one, because each file routes those ops by itself.
-    /// </summary>
-    public static void RemapContentSources(IReadOnlyDictionary<Guid, Guid> oldToNewChildIds)
-    {
-        if (!TryGetFocusedEntry(out var entry, out var setupsFolder))
-            return;
-
-        if (RemapContentSources(entry.Setup, oldToNewChildIds))
-            SaveActive();
-
-        if (!Directory.Exists(setupsFolder))
-            return;
-
-        var activeFilePath = SetupFilePath(setupsFolder, entry.Setup.Name);
-        foreach (var filePath in Directory.GetFiles(setupsFolder, "*" + Setup.FileSuffix))
-        {
-            if (string.Equals(filePath, activeFilePath, StringComparison.OrdinalIgnoreCase))
-                continue;
-
-            if (Setup.TryLoadFromFile(filePath, out var setup, out _) && RemapContentSources(setup, oldToNewChildIds))
-                setup.TrySaveToFile(filePath);
-        }
-    }
 
     /// <summary>Drops a closed project's cached setup, so reopening reloads from disk.</summary>
     public static void OnProjectClosed(string projectFolder)
@@ -112,10 +83,13 @@ internal static class OutputSetupHandling
 
         // A setup edit (re-routing, a new slice, a moved patch) changes what the cards show, so they render once more.
         T3.Core.Output.Rendering.OutputPreviewRefresh.InvalidateAll();
+
+        // A boygroup server forwards setup edits to its render nodes as they are saved.
+        T3.Editor.Show.BoygroupManager.Instance.OnSetupSaved();
+
         if (!TryGetFocusedEntry(out var entry, out var setupsFolder))
             return;
 
-        SetupRelations.SyncPinsToLinkedPatches(entry.Setup);
         Directory.CreateDirectory(setupsFolder);
         if (entry.Setup.TrySaveToFile(SetupFilePath(setupsFolder, entry.Setup.Name)))
             entry.IsSaved = true;
@@ -125,33 +99,64 @@ internal static class OutputSetupHandling
     }
 
     /// <summary>
-    /// Shows the active setup's file in the system's file manager. A setup that only exists in memory is saved
-    /// first, so there is a file to show. Elsewhere than on Windows this opens the containing folder.
+    /// Forgets a project's cached setup after its setup files changed on disk — a boygroup deploy,
+    /// an external edit. Without <paramref name="projectFolder"/> the focused project is used. Only
+    /// the presented project's release/notify happens here; another project reloads when focused.
     /// </summary>
-    public static void RevealActiveFile()
+    public static void OnSetupFilesChanged(string? projectFolder = null)
     {
-        if (!TryGetFocusedEntry(out var entry, out var setupsFolder))
-            return;
+        var folder = projectFolder;
+        if (string.IsNullOrEmpty(folder))
+            folder = ProjectView.Focused?.OpenedProject.Package.Folder;
 
-        if (!entry.IsSaved)
-            SaveActive();
+        if (!string.IsNullOrEmpty(folder))
+            _entriesByProjectFolder.Remove(folder);
 
-        var path = SetupFilePath(setupsFolder, entry.Setup.Name);
-        if (!OperatingSystem.IsWindows())
+        if (string.IsNullOrEmpty(folder) || IsFocusedProject(folder))
         {
-            CoreUi.Instance.OpenWithDefaultApplication(setupsFolder);
-            return;
-        }
-
-        try
-        {
-            Process.Start("explorer.exe", $"/select,\"{path}\"");
-        }
-        catch (Exception e)
-        {
-            Log.Warning($"Failed to reveal setup file '{path}': {e.Message}");
+            OutputPresentation.ReleaseAll();
+            StructureVersion++;
+            ActiveSetup.NotifyChanged();
         }
     }
+
+    /// <summary>
+    /// Loads a setup file into a specific project and makes it that project's active setup. Used by
+    /// boygroup deploy so a received setup lands in the master's project even while another project
+    /// is focused.
+    /// </summary>
+    public static bool TryApplySetupFile(string projectFolder, string setupName)
+    {
+        var setupsFolder = SetupFiles.FolderIn(projectFolder);
+        if (!Setup.TryLoadFromFile(SetupFilePath(setupsFolder, setupName), out var setup, out _))
+            return false;
+
+        var entry = GetOrLoadEntry(projectFolder);
+        entry.Setup = setup;
+        entry.IsSaved = true;
+
+        Directory.CreateDirectory(setupsFolder);
+        entry.MachineConfig.ActiveSetupName = setupName;
+        entry.MachineConfig.TrySaveToFile(Path.Combine(setupsFolder, MachineConfig.FileName));
+
+        if (IsFocusedProject(projectFolder))
+        {
+            OutputPresentation.ReleaseAll();
+            StructureVersion++;
+            ActiveSetup.NotifyChanged();
+        }
+
+        return true;
+    }
+
+    private static bool IsFocusedProject(string projectFolder)
+    {
+        var focused = ProjectView.Focused?.OpenedProject.Package.Folder;
+        return focused != null && string.Equals(focused, projectFolder, PathComparison);
+    }
+
+    private static StringComparison PathComparison =>
+        OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
 
     /// <summary>Setup names available for the focused project: its .meta/Setups/*.setup.json files, or the unsaved default.</summary>
     public static void GetAvailableSetupNames(List<string> names)
@@ -180,10 +185,6 @@ internal static class OutputSetupHandling
 
         if (!Setup.TryLoadFromFile(SetupFilePath(setupsFolder, setupName), out var setup, out _))
             return false;
-
-        // A file copied by hand shares its id with the original, and undo would then cross between the two.
-        if (setup.Id == entry.Setup.Id)
-            setup.Id = Guid.NewGuid();
 
         entry.Setup = setup;
         OutputPresentation.ReleaseAll();
@@ -281,34 +282,19 @@ internal static class OutputSetupHandling
 
         var names = new List<string>();
         GetAvailableSetupNames(names);
-
-        // An unreadable file is skipped: staying on the deleted setup would write its file back at the next save.
-        foreach (var name in names)
+        if (names.Count > 0)
         {
-            if (TrySwitchTo(name))
-                return true;
+            TrySwitchTo(names[0]);
+        }
+        else
+        {
+            entry.Setup = Setup.CreateDefault();
+            entry.IsSaved = false;
+            OutputPresentation.ReleaseAll();
+            StructureVersion++;
         }
 
-        entry.Setup = Setup.CreateDefault(FreeDefaultSetupName(setupsFolder));
-        entry.IsSaved = false;
-        OutputPresentation.ReleaseAll();
-        StructureVersion++;
         return true;
-    }
-
-    private static bool RemapContentSources(Setup setup, IReadOnlyDictionary<Guid, Guid> oldToNewChildIds)
-    {
-        var changed = false;
-        foreach (var source in setup.ContentSources)
-        {
-            if (!oldToNewChildIds.TryGetValue(source.SymbolChildId, out var newChildId))
-                continue;
-
-            source.SymbolChildId = newChildId;
-            changed = true;
-        }
-
-        return changed;
     }
 
     private sealed class ProjectEntry
@@ -379,7 +365,7 @@ internal static class OutputSetupHandling
         var isSaved = setup != null;
         if (setup == null)
         {
-            setup = Setup.CreateDefault(FreeDefaultSetupName(setupsFolder));
+            setup = Setup.CreateDefault();
         }
         else if (wasRepaired)
         {
@@ -387,20 +373,21 @@ internal static class OutputSetupHandling
             setup.TrySaveToFile(SetupFilePath(setupsFolder, setup.Name));
         }
 
+        // Configs from older builds can pair a laser output with a display/stream plug. The
+        // presentation pass ignores those, but a stale pair also draws a misleading board edge and
+        // can present an input full-screen on a display in builds that lack the guard - clean it
+        // while loading and persist, so the fix doesn't depend on the user unbinding by hand.
+        var mismatched = machineConfig.RemoveKindMismatchedBindings(setup.Outputs);
+        if (mismatched > 0)
+        {
+            T3.Core.Logging.Log.Warning($"Dropped {mismatched} output binding(s) whose plug kind does not match the output kind "
+                                        + "(a laser output cannot be presented on a display or stream).");
+            machineConfig.TrySaveToFile(Path.Combine(setupsFolder, MachineConfig.FileName));
+        }
+
         entry = new ProjectEntry { Setup = setup, MachineConfig = machineConfig, IsSaved = isSaved };
         _entriesByProjectFolder[projectFolder] = entry;
         return entry;
-    }
-
-    /** A name with no file behind it, so a default standing in for an unreadable "Setup 1" can't save over that file. */
-    private static string FreeDefaultSetupName(string setupsFolder)
-    {
-        for (var ordinal = 1;; ordinal++)
-        {
-            var name = $"Setup {ordinal}";
-            if (!File.Exists(SetupFilePath(setupsFolder, name)))
-                return name;
-        }
     }
 
     private static string SetupFilePath(string setupsFolder, string setupName)

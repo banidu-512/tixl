@@ -327,7 +327,7 @@ internal sealed class CollabHostTransport : CollabTransport
             udp.Client.EnableBroadcast = false;
 
             if (enableLanDiscovery)
-                DiscoveryResponder = new LanDiscoveryResponder(tcpPort, announcementFactory);
+                DiscoveryResponder = new LanDiscoveryResponder(tcpPort + LanDiscoveryResponder.DiscoveryPortOffset, announcementFactory);
 
             _udp = udp;
         }
@@ -624,8 +624,9 @@ internal sealed class CollabClientTransport : CollabTransport
 }
 
 /// <summary>
-/// LAN discovery: answers UDP broadcast probes with a small JSON announcement. Runs on its own
-/// socket (broadcast port = session TCP port + 1) so it can be enabled and disabled independently.
+/// LAN discovery: answers UDP broadcast probes with a small JSON announcement and forwards other
+/// unicast packets (boygroup invitations) to an optional handler. Runs on its own socket so it can be
+/// enabled and disabled independently of a session.
 /// </summary>
 internal sealed class LanDiscoveryResponder : IDisposable
 {
@@ -635,11 +636,16 @@ internal sealed class LanDiscoveryResponder : IDisposable
     private readonly UdpClient _udp;
     private readonly CancellationTokenSource _cancellation = new();
     private readonly Func<JObject> _announcementFactory;
+    private readonly Action<JObject, IPEndPoint>? _messageHandler;
 
-    public LanDiscoveryResponder(int tcpPort, Func<JObject> announcementFactory)
+    /// <param name="discoveryPort">The UDP port this responder listens on — a session's TCP port plus
+    /// <see cref="DiscoveryPortOffset"/>, or a standalone boygroup node's port plus the offset.</param>
+    public LanDiscoveryResponder(int discoveryPort, Func<JObject> announcementFactory,
+                                 Action<JObject, IPEndPoint>? messageHandler = null)
     {
         _announcementFactory = announcementFactory;
-        _udp = new UdpClient(tcpPort + DiscoveryPortOffset);
+        _messageHandler = messageHandler;
+        _udp = new UdpClient(discoveryPort);
         _udp.Client.EnableBroadcast = true;
         _ = Task.Run(LoopAsync);
     }
@@ -663,18 +669,32 @@ internal sealed class LanDiscoveryResponder : IDisposable
             }
 
             var text = Encoding.UTF8.GetString(result.Buffer);
-            if (text != ProbePayload)
+            if (text == ProbePayload)
+            {
+                var announcement = _announcementFactory();
+                var payload = CollabProtocol.EncodeJson(announcement);
+                try
+                {
+                    await _udp.SendAsync(payload, payload.Length, result.RemoteEndPoint);
+                }
+                catch (SocketException)
+                {
+                    // The probing client may already be gone.
+                }
+
+                continue;
+            }
+
+            if (_messageHandler == null)
                 continue;
 
-            var announcement = _announcementFactory();
-            var payload = CollabProtocol.EncodeJson(announcement);
             try
             {
-                await _udp.SendAsync(payload, payload.Length, result.RemoteEndPoint);
+                _messageHandler(JObject.Parse(text), result.RemoteEndPoint);
             }
-            catch (SocketException)
+            catch (JsonException)
             {
-                // The probing client may already be gone.
+                // Some other tool answered our broadcast; ignore.
             }
         }
     }
@@ -734,7 +754,7 @@ internal sealed class LanDiscoveryScanner : IDisposable
                 {
                     var result = await udp.ReceiveAsync(timeout.Token);
                     var text = Encoding.UTF8.GetString(result.Buffer);
-                    if (!text.StartsWith("{\"collab\""))
+                    if (!text.StartsWith("{\"collab\"") && !text.StartsWith("{\"boygroup\""))
                         continue;
 
                     var json = JObject.Parse(text);

@@ -242,12 +242,14 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
 
         // Boygrouping (show distribution to render nodes)
         public string BoygroupClientName = "";
+
+        /// <summary>Whether boygrouping starts with the editor (and stays available for discovery).</summary>
+        public bool BoygroupEnabled = false;
+
+        /// <summary>Master shares its show; Slave waits to be added by a master on the network.</summary>
+        public Show.BoygroupRole BoygroupRole = Show.BoygroupRole.Master;
+
         public int BoygroupPort = 44720;
-        public bool BoygroupAutoJoin = true;
-        public bool BoygroupDeployMirror = false;
-        public List<string> BoygroupGroups = ["Main"];
-        public string BoygroupLastServer = "";
-        public string BoygroupLastGroup = "";
 
         // Show failover (active/standby output arbitration)
         public bool FailoverEnabled = false;

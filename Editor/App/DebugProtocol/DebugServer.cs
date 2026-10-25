@@ -754,15 +754,46 @@ internal static class DebugServer
                 break;
 
             case "leave":
-                boygroup.Leave();
+                boygroup.SetEnabled(false);
+                break;
+
+            case "deploy":
+                boygroup.DeployAndSync();
                 break;
 
             case "status":
                 break;
 
             default:
-                context.SendError("INVALID_PARAM", "boygroup requires op = server | join | leave | status");
+                context.SendError("INVALID_PARAM", "boygroup requires op = enable | disable | invite | deploy | status");
                 return;
+        }
+
+        var clients = new JArray();
+        OutputSetupHandling.TryGetActiveSetup(out var activeSetup, out _);
+        foreach (var client in boygroup.Clients)
+        {
+            clients.Add(new JObject
+                            {
+                                ["name"] = client.Name,
+                                ["address"] = client.Address,
+                                ["group"] = client.Group,
+                                ["status"] = client.StatusText,
+                                ["deployed"] = client.IsDeployed,
+                                ["bindings"] = Show.BoygroupManager.DescribeBindings(client.MachineConfig, activeSetup),
+                            });
+        }
+
+        var discovered = new JArray();
+        foreach (var node in boygroup.DiscoveredServers)
+        {
+            discovered.Add(new JObject
+                               {
+                                   ["name"] = node.Name,
+                                   ["address"] = node.Address,
+                                   ["port"] = node.Port,
+                                   ["role"] = node.Role,
+                               });
         }
 
         context.SendOk(new JObject
@@ -770,7 +801,10 @@ internal static class DebugServer
                                ["state"] = boygroup.State.ToString(),
                                ["status"] = boygroup.StatusText,
                                ["error"] = boygroup.ErrorText,
+                               ["role"] = UserSettings.Config.BoygroupRole.ToString(),
                                ["group"] = boygroup.GroupName,
+                               ["clients"] = clients,
+                               ["discovered"] = discovered,
                            });
     }
 

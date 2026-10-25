@@ -4,15 +4,16 @@ Two features for running a show on more than one computer. Both are experimental
 
 ## Boygrouping
 
-Boygrouping distributes a show to render nodes. One TiXL instance is the server; the others join it as clients, either through LAN discovery or with a direct address. A server can hold several named groups.
+Boygrouping distributes a show to render nodes. Enable it in **Settings → Boygrouping** and pick a role: **Master** on the machine that edits the show, **Slave** on every render node. Enabled instances announce themselves on the LAN — there is no address, password or scan step. The master lists the TiXL instances it finds and **Add** invites one to connect.
 
-- **Deploy & Sync** pushes the changed project files (hash-diffed, chunked and verified), the Output Setup and the live graph state to every client. Clients restart into the new state and rejoin automatically.
-- The server drives playback and the clients follow its clock.
-- In the [Output Setup](OutputSetup.md) every output has a **Render on machine** assignment, so each node presents only the outputs assigned to it. `(all machines)` keeps the default behavior. The machine-specific bindings in `outputs.machine.json` are never deployed.
+- **Deploy & Sync** sends the master's Output Setup files to the added render nodes. Project files are not transferred and clients do not restart: each slave writes the setups into its own copy of the project and switches to the master's active setup right away.
+- Setup edits made on the master are forwarded as they are saved, so slaves follow a venue change live.
+- The master drives playback and the slaves follow its clock.
+- Each slave presents the outputs connected in its own **[Output Setup](OutputSetup.md) → Local Bindings**: displays and stream/laser plugs are machine state, so every render node decides which output goes where. Only the setups (content, surfaces, outputs) are shared; `outputs.machine.json` is never sent.
 
-Configure and manage servers in **Settings → Boygrouping**: node name, port and password, starting a server or joining one (direct address or LAN discovery), groups, deploy options, and the server-side clients and playback controls.
+The master shows the added nodes, their local output bindings and their deployment status. A slave keeps its role and stays discoverable after a master disappears, so another master can add it without restarting the editor.
 
-The **Network** section of the Collaboration, Boygrouping and Failover settings is shared: pick the show network's Ethernet adapter there when the machine also has Wi-Fi, VPN or Hyper-V adapters. **Automatic** keeps the previous behavior. A pinned adapter takes effect the next time a session or server starts; failover rebinds immediately.
+The **Network** section of the Collaboration, Boygrouping and Failover settings is shared: pick the show network's Ethernet adapter there when the machine also has Wi-Fi, VPN or Hyper-V adapters. **Automatic** keeps the previous behavior. A pinned adapter takes effect the next time boygrouping is enabled; failover rebinds immediately.
 
 ## Show failover
 

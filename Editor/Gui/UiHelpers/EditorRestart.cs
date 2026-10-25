@@ -1,7 +1,5 @@
-﻿#nullable enable
+#nullable enable
 using System.Diagnostics;
-using System.IO;
-using T3.Editor.App.Startup;
 using T3.Editor.SystemUi;
 
 namespace T3.Editor.Gui.UiHelpers;
@@ -26,7 +24,6 @@ internal static class EditorRestart
             return false;
         }
 
-        var wasSupervised = CrashWatchdog.IsChildProcess;
         try
         {
             // Collect the carried-over flags first (drop stale wait flags from earlier restarts,
@@ -62,21 +59,6 @@ internal static class EditorRestart
             carryArgs.Add($"--wait-for-exit={Environment.ProcessId}");
 
             var startInfo = new ProcessStartInfo { FileName = exePath };
-
-            // A `dotnet TiXL.dll ...` launch has the managed host as ProcessPath; the assembly path
-            // must be the first argument or the new process cannot find the editor. The apphost
-            // (TiXL.exe / TiXL) needs no such argument.
-            var isDotnetHost = string.Equals(Path.GetFileNameWithoutExtension(exePath), "dotnet", StringComparison.OrdinalIgnoreCase);
-            if (isDotnetHost)
-            {
-                var assemblyPath = typeof(EditorRestart).Assembly.Location;
-                if (!string.IsNullOrEmpty(assemblyPath) && File.Exists(assemblyPath))
-                    startInfo.ArgumentList.Add(assemblyPath);
-                else if (Environment.GetCommandLineArgs()[0] is { } entryArg
-                         && entryArg.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
-                    startInfo.ArgumentList.Add(entryArg);
-            }
-
             if (OperatingSystem.IsWindows())
             {
                 // Launch via the shell so the child isn't part of this process's job
@@ -96,12 +78,10 @@ internal static class EditorRestart
                     startInfo.ArgumentList.Add(arg);
             }
 
-            CrashWatchdog.SetSupervised(false);
             Process.Start(startInfo);
         }
         catch (Exception e)
         {
-            CrashWatchdog.SetSupervised(wasSupervised);
             Log.Warning($"Failed to start a new editor instance: {e.Message}");
             return false;
         }

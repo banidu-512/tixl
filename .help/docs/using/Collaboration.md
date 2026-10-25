@@ -7,6 +7,7 @@ Sessions are configured in **Settings → Collaboration**. The feature is experi
 ## Hosting and joining
 
 - **LAN**: one editor hosts on a configurable TCP port (44700 by default); the others find it through LAN discovery or join with a direct IP address.
+- **Shared project**: **Share project** picks which project the session works on. **Current project** follows whichever project is focused; choosing another one opens it when hosting starts. The **Projects** window offers the same operation per project in its context menu.
 - **Online**: join a direct address (an open port, or a VPN such as Tailscale), or meet in a room on a relay. The relay is the `CollabRelay` project in this repository (`dotnet run --project CollabRelay`). The host shares the generated room code and the others enter it, so no port forwarding is needed.
 - **Projects window**: running LAN sessions are listed next to the projects, and a project's context menu offers **Host Collaboration Session**.
 - **Password**: a session can be password protected. Authentication is a PBKDF2/HMAC challenge-response; the password itself never crosses the network.
