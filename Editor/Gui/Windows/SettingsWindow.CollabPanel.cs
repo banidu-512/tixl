@@ -276,8 +276,11 @@ internal sealed partial class SettingsWindow
     }
 
     /// <summary>One clipboard string carrying both things a joiner needs.</summary>
-    private static string BuildInvite(string roomCode) =>
-        $"TiXL collab invite\nRelay: {RelayAddressOrDefault()}\nRoom: {roomCode}";
+    private static string BuildInvite(CollabManager manager)
+    {
+        var relay = string.IsNullOrEmpty(manager.RelayEndpoint) ? RelayAddressOrDefault() : manager.RelayEndpoint;
+        return $"TiXL collab invite\nRelay: {relay}\nRoom: {manager.RoomCode}";
+    }
 
     /// <summary>Reads an invite copied by <see cref="BuildInvite"/>; the relay line is optional.</summary>
     private static bool TryParseInvite(string? text, out string relay, out string room)
@@ -415,7 +418,7 @@ internal sealed partial class SettingsWindow
 
             ImGui.SameLine();
             if (ImGui.SmallButton("Copy invite"))
-                ImGui.SetClipboardText(BuildInvite(manager.RoomCode));
+                ImGui.SetClipboardText(BuildInvite(manager));
             CustomComponents.TooltipForLastItem("Copies the relay address and room code as a single invite. The other person can use \"Paste invite & join\".");
         }
 
