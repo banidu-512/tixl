@@ -92,7 +92,8 @@ internal static class SetupParameterView
             CustomComponents.StylizedText($"+{selection.Count - 1} more selected", Fonts.FontSmall, UiColors.TextMuted);
         }
 
-        ImGui.EndChild();
+        ImGui.EndChild(); // ##setupEntityCard
+        ImGui.EndChild(); // setupEntity
         return true;
     }
 
