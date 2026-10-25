@@ -9,6 +9,23 @@ using T3.Serialization;
 
 namespace T3.Core.Output;
 
+/// <summary>How a laser output maps the incoming frame's extent onto the aimed zone (the setup rect).</summary>
+public enum LaserFrameMappingMode
+{
+    /// <summary>The frame is the scanner field - positions pass through untouched.</summary>
+    Off = 0,
+
+    /// <summary>The frame's actual extent fills the rect on both axes (aspect may distort).</summary>
+    Stretch = 1,
+
+    /// <summary>The frame's actual extent is scaled into the rect with its aspect preserved, centered.</summary>
+    Fit = 2,
+
+    /// <summary>The frame's actual extent fills the rect completely with its aspect preserved
+    /// (the larger scale wins); overflow beyond the scanner field is clamped away.</summary>
+    Crop = 3,
+}
+
 /// <summary>
 /// "What am I rendering for?" — a named canvas with optional device binding (per machine,
 /// stored separately) and optional calibrated camera. Covers the always-present Default,
@@ -22,6 +39,13 @@ public sealed class OutputDefinition
         public const string Format = "Format";
         public const string Projector = "Projector";
         public const string Display = "Display";
+
+        /// <summary>
+        /// A laser scanner — a pinhole projector for vector content. Carries a <see cref="ProjectorCamera"/>
+        /// (the scanner's pose and scan lens) and binds to a laser plug instead of presenting a canvas: its
+        /// content comes from a [LaserCamera] in the graph routed to this output via its OutputRef, not from slices.
+        /// </summary>
+        public const string Laser = "Laser";
     }
 
     /// <summary>
@@ -290,6 +314,20 @@ public sealed class OutputDefinition
     public Int2 ResolvedResolution = new(1920, 1080);
     public ProjectorCamera? Camera;
 
+    /// <summary>
+    /// Optimizer + safety settings for a laser output, applied by the laser output driver before streaming.
+    /// Null on laser outputs from older setups; consumers fall back to <see cref="LaserProcessingSettings.Default"/>
+    /// (uncalibrated — only the alignment rectangle streams).
+    /// </summary>
+    public LaserProcessingSettings? LaserProcessing;
+
+    /// <summary>
+    /// How the incoming laser frame lands in the aimed zone (the setup rect): <see cref="LaserFrameMappingMode.Fit"/>
+    /// rescales the frame's actual extent into the rect with its aspect preserved, <see cref="LaserFrameMappingMode.Stretch"/>
+    /// fills both axes (may distort), Off streams the frame as the scanner field itself.
+    /// </summary>
+    public LaserFrameMappingMode FrameMapping = LaserFrameMappingMode.Fit;
+
     /// <summary>Pause presenting to this output without dropping its device binding (e.g. mute an NDI feed).</summary>
     public bool IsSending = true;
 
@@ -347,6 +385,8 @@ public sealed class OutputDefinition
         writer.WriteString("Kind", Kind);
         writer.WriteInt2("CanvasResolution", CanvasResolution);
         writer.WriteValue("Send", IsSending);
+        if (Kind == Kinds.Laser)
+            writer.WriteValue("FrameMapping", (int)FrameMapping);
         if (Patches.Count > 0)
         {
             writer.WritePropertyName("Patches");
@@ -361,6 +401,12 @@ public sealed class OutputDefinition
         {
             writer.WritePropertyName("Camera");
             Camera.WriteToJson(writer);
+        }
+
+        if (LaserProcessing != null)
+        {
+            writer.WritePropertyName("LaserProcessing");
+            LaserProcessing.WriteToJson(writer);
         }
 
         if (BoardPlacement != null)
@@ -387,6 +433,7 @@ public sealed class OutputDefinition
                              Kind = token.ReadValueSafe("Kind", Kinds.Display) ?? Kinds.Display,
                              CanvasResolution = ClampResolution(OutputJson.ReadInt2(token["CanvasResolution"], new Int2(1920, 1080))),
                              IsSending = token.ReadValueSafe("Send", true),
+                             FrameMapping = (LaserFrameMappingMode)Math.Clamp(token.ReadValueSafe("FrameMapping", (int)LaserFrameMappingMode.Fit), 0, 3),
                              Patches = token.ReadListSafe("Patches", Patch.ReadFromJson),
                              ReferenceImageId = OutputJson.ReadGuid(token["ReferenceImage"]),
                              ReferenceOpacity = Math.Clamp(token.ReadValueSafe("ReferenceOpacity", 0.5f), 0f, 1f),
@@ -394,6 +441,9 @@ public sealed class OutputDefinition
 
         if (token["Camera"] is JObject cameraToken)
             output.Camera = ProjectorCamera.ReadFromJson(cameraToken);
+
+        if (token["LaserProcessing"] is JObject processingToken)
+            output.LaserProcessing = LaserProcessingSettings.ReadFromJson(processingToken);
 
         if (token["BoardPlacement"] is JObject placement)
             output.BoardPlacement = BoardPlacement.ReadFromJson(placement);

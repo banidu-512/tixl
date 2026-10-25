@@ -32,6 +32,9 @@ public sealed class MachineConfig
     /// <summary>Stream senders this machine offers as plugs, next to its displays.</summary>
     public List<StreamPlug> StreamPlugs = [];
 
+    /// <summary>Laser devices this machine can send to as plugs, next to its displays and streams.</summary>
+    public List<LaserPlug> LaserPlugs = [];
+
     public StreamPlug? FindStreamPlug(Guid plugId)
     {
         foreach (var stream in StreamPlugs)
@@ -43,11 +46,52 @@ public sealed class MachineConfig
         return null;
     }
 
+    public LaserPlug? FindLaserPlug(Guid plugId)
+    {
+        foreach (var laser in LaserPlugs)
+        {
+            if (laser.Id == plugId)
+                return laser;
+        }
+
+        return null;
+    }
+
     /// <summary>Removes a stream plug and every binding into it.</summary>
     public void RemoveStream(Guid plugId)
     {
         StreamPlugs.RemoveAll(s => s.Id == plugId);
         Bindings.RemoveAll(b => b.IsStream && b.PlugId == plugId);
+    }
+
+    /// <summary>Removes a laser plug and every binding into it.</summary>
+    public void RemoveLaser(Guid plugId)
+    {
+        LaserPlugs.RemoveAll(l => l.Id == plugId);
+        Bindings.RemoveAll(b => b.IsLaser && b.PlugId == plugId);
+    }
+
+    /// <summary>
+    /// Drops bindings whose device kind disagrees with the kind of the output they name: a display or
+    /// stream binding on a laser output (which would present the input full-screen on that display -
+    /// a laser output has no canvas, its frame is vector content streamed by the laser driver), and a
+    /// laser binding on a canvas output. Configs written by older builds can carry such a pair; the
+    /// presentation pass skips them, but removing them keeps the board and the status honest.
+    /// Returns the number of bindings removed.
+    /// </summary>
+    public int RemoveKindMismatchedBindings(IEnumerable<OutputDefinition> outputs)
+    {
+        var laserOutputIds = new HashSet<Guid>();
+        var canvasOutputIds = new HashSet<Guid>();
+        foreach (var output in outputs)
+        {
+            if (output.Kind == OutputDefinition.Kinds.Laser)
+                laserOutputIds.Add(output.Id);
+            else
+                canvasOutputIds.Add(output.Id);
+        }
+
+        return Bindings.RemoveAll(b => b.IsLaser ? canvasOutputIds.Contains(b.OutputId) : laserOutputIds.Contains(b.OutputId));
     }
 
     public PlugBinding? FindBinding(Guid outputId)
@@ -61,16 +105,45 @@ public sealed class MachineConfig
         return null;
     }
 
-    /// <summary>Adds or replaces the binding for an output.</summary>
+    /// <summary>All bindings of a laser output - it can fan the same frame out to several devices
+    /// (the same show on two scanners). Other output kinds stay single-bound: a display would be
+    /// fought over and a stream would carry two canvases through one sender.</summary>
+    public IEnumerable<PlugBinding> FindLaserBindings(Guid outputId)
+    {
+        foreach (var binding in Bindings)
+        {
+            if (binding.OutputId == outputId && binding.IsLaser)
+                yield return binding;
+        }
+    }
+
+    /// <summary>Adds or replaces the binding for an output. Laser bindings accumulate - rebinding the
+    /// same plug replaces that one binding; the output's other plugs keep theirs. Non-laser outputs
+    /// stay single-bound.</summary>
     public void Bind(PlugBinding binding)
     {
-        Bindings.RemoveAll(b => b.OutputId == binding.OutputId);
+        if (binding.IsLaser)
+        {
+            Bindings.RemoveAll(b => b.IsLaser && b.OutputId == binding.OutputId && b.PlugId == binding.PlugId);
+        }
+        else
+        {
+            Bindings.RemoveAll(b => b.OutputId == binding.OutputId);
+        }
+
         Bindings.Add(binding);
     }
 
     public void Unbind(Guid outputId)
     {
         Bindings.RemoveAll(b => b.OutputId == outputId);
+    }
+
+    /// <summary>Removes exactly the output's binding to one plug - how a multi-bound laser output
+    /// lets go of one of its devices while keeping the rest.</summary>
+    public void Unbind(Guid outputId, Guid plugId)
+    {
+        Bindings.RemoveAll(b => b.OutputId == outputId && b.PlugId == plugId);
     }
 
     public string ToJsonString()
@@ -101,6 +174,16 @@ public sealed class MachineConfig
                 writer.WriteEndArray();
             }
 
+            if (LaserPlugs.Count > 0)
+            {
+                writer.WritePropertyName("Lasers");
+                writer.WriteStartArray();
+                foreach (var laser in LaserPlugs)
+                    laser.WriteToJson(writer);
+
+                writer.WriteEndArray();
+            }
+
             writer.WriteEndObject();
             writer.Flush();
         }
@@ -119,6 +202,7 @@ public sealed class MachineConfig
                        ActiveSetupName = token.ReadValueSafe("ActiveSetupName", string.Empty) ?? string.Empty,
                        Bindings = token.ReadListSafe("Bindings", PlugBinding.ReadFromJson),
                        StreamPlugs = token.ReadListSafe("Streams", StreamPlug.ReadFromJson),
+                       LaserPlugs = token.ReadListSafe("Lasers", LaserPlug.ReadFromJson),
                    };
     }
 
