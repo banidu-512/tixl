@@ -154,6 +154,26 @@ internal static class LaserDriver
         return cached.Points;
     }
 
+    /// <summary>The most recent raw frame the routed camera produced (pre-pipeline), for
+    /// diagnostics - where the optimizer's input came from. Empty when no pull happened yet.</summary>
+    public static LaserPoint[] GetRawFrame(OutputDefinition output)
+    {
+        foreach (var camera in LaserContent.Cameras)
+        {
+            if (camera is not Instance instance || LaserContent.OutputRefOf(instance) != output.Id)
+                continue;
+
+            if (!_cameraPulls.TryGetValue(instance.SymbolChildId, out var pulled))
+                break;
+
+            if (pulled.List is StructuredList<LaserPoint> typed && typed.TypedElements != null)
+                return typed.TypedElements;
+            break;
+        }
+
+        return Array.Empty<LaserPoint>();
+    }
+
     /// <summary>The live status of the stream serving this output — connection, buffer, watchdog.</summary>
     public static bool TryGetStreamStatus(Guid outputId, out string message, out IStatusProvider.StatusLevel level)
     {

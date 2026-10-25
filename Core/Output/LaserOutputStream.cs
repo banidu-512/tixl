@@ -463,23 +463,58 @@ public sealed class LaserOutputStream : IDisposable
                 if (_isPlaying)
                     recoverEscalation = 0;
 
-                // Master off: settled blanking. The blanked copy of the last frame must keep
-                // being STREAMED - the DAC loops whatever its buffer holds, so skipping the
-                // send would leave the last lit frame burning on the wall. The pick below
-                // ignores queued frames while the master is off and zeroes the geometry.
+                // Master off: STOP the DAC. Streaming a blanked copy of the last frame keeps the
+                // scanners sweeping the geometry with zeroed colors - correct for ILDA-compliant
+                // blanking, but a projector that emits on zero-color points keeps drawing. The
+                // stop command halts playback outright (light source off, engine idle) while the
+                // TCP session stays warm, so re-enabling the master resumes within one poll.
                 var masterOff = !LaserMasterEnable.Enabled;
                 if (masterOff)
                 {
                     _pointQueue.Clear();
-                    if (_lastFrame is { Length: > 0 } && !_masterBlankApplied)
+                    _sendFrame = null;
+                    _needsDarkApproach = true;
+
+                    if (!_masterStopped)
                     {
-                        _lastFrame = BlankFrame(_lastFrame, ref _blankFrameScratch);
-                        _masterBlankApplied = true;
+                        _masterStopped = true;
+                        try
+                        {
+                            dac.Stop();
+                            SetStatus("Laser master off - DAC stopped", IStatusProvider.StatusLevel.Notice);
+                        }
+                        catch (Exception e)
+                        {
+                            // A dead stop command takes the normal error ladder; the state below
+                            // still skips streaming, so nothing lit can leave this stream.
+                            SetStatus($"Master off, stop failed: {e.Message}", IStatusProvider.StatusLevel.Warning);
+                        }
                     }
+
+                    // Hold: heartbeat only, no points out. The 5 ms idle poll also detects a
+                    // dead link so the connection loop can rebuild it while disabled.
+                    PollDac(dac, ref lastPingUtc, ref pingFailures);
+                    try { await Task.Delay(5, token); }
+                    catch (OperationCanceledException) { return; }
+                    continue;
                 }
-                else
+
+                if (_masterStopped)
                 {
-                    _masterBlankApplied = false;
+                    // Master came back: reset the engine's state machine so the send path's
+                    // own prepare/begin cycle starts a clean session.
+                    _masterStopped = false;
+                    try
+                    {
+                        dac.ClearEStop();
+                        dac.Prepare();
+                    }
+                    catch
+                    {
+                        // The normal send path re-prepares per chunk; a failure here surfaces there.
+                    }
+
+                    _needsDarkApproach = true;
                 }
 
                 // Pick the frame to stream: fresh frames first, otherwise loop the last one
@@ -488,7 +523,7 @@ public sealed class LaserOutputStream : IDisposable
                 if (_sendFrame == null || _sendOffset >= _sendFrame.Length)
                 {
                     LaserPoint[]? frame = null;
-                    if (!masterOff && _pointQueue.TryDequeue(out var points) && points.Length > 0)
+                    if (_pointQueue.TryDequeue(out var points) && points.Length > 0)
                     {
                         frame = points;
                         // Every fresh frame leads beam-off: the approach to its first point is
@@ -503,11 +538,7 @@ public sealed class LaserOutputStream : IDisposable
                         // second, so an unapproached seam would ring the scanners at loop rate.
                         _needsDarkApproach = true;
 
-                        if (masterOff)
-                        {
-                            frame = _lastFrame;
-                        }
-                        else if (WatchdogElapsed(_lastEnqueueTimestamp))
+                        if (WatchdogElapsed(_lastEnqueueTimestamp))
                         {
                             if (!_watchdogBlanked)
                             {
@@ -860,7 +891,11 @@ public sealed class LaserOutputStream : IDisposable
         private volatile int _bufferFullness;
         private long _lastEnqueueTimestamp;
         private volatile bool _watchdogBlanked;
-        private bool _masterBlankApplied;
+
+        /// <summary>True while the master is off and the DAC has been commanded to stop; the
+        /// send loop holds (heartbeat only) until the master comes back.</summary>
+        private bool _masterStopped;
+
         private LaserPoint[] _blankFrameScratch = Array.Empty<LaserPoint>();
         private LaserPoint[] _approachScratch = Array.Empty<LaserPoint>();
         private volatile bool _killedSocket;

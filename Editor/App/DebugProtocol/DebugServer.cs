@@ -318,6 +318,58 @@ internal static class DebugServer
                 break;
             }
 
+            case "getLaserFrame":
+            {
+                // Dumps the pipeline frame of a laser output (name in "output", default first
+                // laser output): x/y/i samples for scope-level diagnosis. "maxPoints" caps the
+                // sample count, "litOnly" skips blanked samples.
+                if (!OutputSetupHandling.TryGetActiveSetup(out var frameSetup, out _))
+                {
+                    context.SendError("NO_SETUP", "No active output setup");
+                    break;
+                }
+
+                var wantedName = request["output"]?.ToString();
+                T3.Core.Output.OutputDefinition? wanted = null;
+                foreach (T3.Core.Output.OutputDefinition o in frameSetup.Outputs)
+                {
+                    if (o.Kind != T3.Core.Output.OutputDefinition.Kinds.Laser)
+                        continue;
+                    if (wanted == null || o.Name == wantedName)
+                        wanted = o;
+                }
+
+                if (wanted == null)
+                {
+                    context.SendError("NO_LASER_OUTPUT", "No laser output in the active setup");
+                    break;
+                }
+
+                var maxPoints = request["maxPoints"]?.Type == Newtonsoft.Json.Linq.JTokenType.Integer ? request["maxPoints"].Value<int>() : 600;
+                var litOnly = request["litOnly"]?.Type == Newtonsoft.Json.Linq.JTokenType.Boolean && request["litOnly"].Value<bool>();
+                var raw = request["raw"]?.Type == Newtonsoft.Json.Linq.JTokenType.Boolean && request["raw"].Value<bool>();
+                var points = raw ? T3.Editor.Gui.Windows.OutputSetup.LaserDriver.GetRawFrame(wanted) : T3.Editor.Gui.Windows.OutputSetup.LaserDriver.GetFrame(wanted);
+                var arr = new Newtonsoft.Json.Linq.JArray();
+                var sent = 0;
+                for (var i = 0; i < points.Length && sent < maxPoints; i++)
+                {
+                    var p = points[i];
+                    if (litOnly && p.I == 0)
+                        continue;
+                    arr.Add(new Newtonsoft.Json.Linq.JArray { p.X, p.Y, p.I });
+                    sent++;
+                }
+
+                context.SendOk(new JObject
+                                   {
+                                       ["output"] = wanted.Name,
+                                       ["totalPoints"] = points.Length,
+                                       ["returned"] = sent,
+                                       ["points"] = arr,
+                                   });
+                break;
+            }
+
             case "getMetrics":
                 HandleGetMetrics(context);
                 break;

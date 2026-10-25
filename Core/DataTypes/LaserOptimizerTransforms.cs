@@ -353,10 +353,18 @@ public static class LaserOptimizerTransforms
         }
     }
 
+    /// <summary>
+    /// Corner dwell on the finished tour. A sharp turn (angle at a lit point between its
+    /// neighbours below the threshold) repeats the corner point so the beam lingers and the
+    /// corner renders sharply. Reads only written samples: the original version probed the
+    /// not-yet-written slot after the write head - an always-zero point that made every lit
+    /// point register as a corner aimed at the origin and injected those zero samples into
+    /// the frame (the scope's "beam goes to the middle between shapes").
+    /// </summary>
     private static void ApplyCornerDwellingToOutput(
         LaserPoint[] output, ref int outputCount, float cornerAngleThreshold, int cornerAnchorCount)
     {
-        if (outputCount < 3)
+        if (outputCount < 3 || cornerAnchorCount <= 1)
             return;
 
         var originalCount = outputCount;
@@ -364,26 +372,25 @@ public static class LaserOptimizerTransforms
 
         var writeIndex = 0;
         tempArray[writeIndex++] = output[0];
-        tempArray[writeIndex++] = output[1];
 
-        for (var i = 2; i < originalCount; i++)
+        for (var i = 1; i < originalCount; i++)
         {
             if (writeIndex >= tempArray.Length)
                 break;
 
             tempArray[writeIndex++] = output[i];
 
-            if (i < originalCount - 1 && output[i].I > 0 && output[i + 1].I > 0)
+            // Sharp corner at this point: measured between the two written neighbours and
+            // the next input point, all real samples.
+            if (i + 1 < originalCount && output[i].I > 0 && output[i + 1].I > 0 && writeIndex >= 2)
             {
-                if (i < originalCount - 2 && writeIndex >= 2)
+                var angle = CalculateAngle(tempArray[writeIndex - 2], tempArray[writeIndex - 1], output[i + 1]);
+                if (angle < cornerAngleThreshold)
                 {
-                    var angle = CalculateAngleInOutput(tempArray, writeIndex - 2, writeIndex - 1, writeIndex);
-                    if (angle < cornerAngleThreshold)
+                    for (var a = 1; a < cornerAnchorCount && writeIndex < tempArray.Length; a++)
                     {
-                        for (var a = 1; a < cornerAnchorCount && writeIndex < tempArray.Length; a++)
-                        {
-                            tempArray[writeIndex++] = tempArray[writeIndex - 1];
-                        }
+                        tempArray[writeIndex] = tempArray[writeIndex - 1];
+                        writeIndex++;
                     }
                 }
             }
