@@ -303,10 +303,11 @@ In:
   verified; encode is not), MIDI via RtMidi,
   OSC / Art-Net (after splitting the Io package).
 
-Out (v5.x or never): macOS, Microsoft Store, NDI, Spout, Mediapipe, webcams (later through SDL3's camera
-API, which also retires [Plan_VideoDeviceInput](Plan_VideoDeviceInput.md)'s OpenCV problem), screen
+Out (v5.x or never): macOS, Microsoft Store, NDI, Spout, Mediapipe, screen
 capture, SpaceMouse (unless SDL HID makes it trivial), Ableton Link, OpenCV ops, the legacy graph,
-Hexa.NET.ImGui / ImGui 1.92, multi-viewport, HDR.
+Hexa.NET.ImGui / ImGui 1.92, multi-viewport, HDR. Webcams were in this list, but landed early
+(2026-10-08): `[VideoDeviceInput]` captures via FFmpeg V4L2 on Linux / dshow on Windows; SDL3's camera
+API may still replace that in v5.x.
 
 Windows users lose Spout and NDI in v5.0 until they return in v5.x. Keep v4.x available and say so in
 the release notes.
@@ -588,7 +589,8 @@ Estimate: 25–50 commits, 50–120 agent hours.
 - [Plan_PlayerExportCleanup](Plan_PlayerExportCleanup.md): its startup dialog moves off WinForms in
   Phase 2.
 - [Plan_MultiViewport](Plan_MultiViewport.md): rebuild on SDL3 after v5.0 instead of Win32.
-- [Plan_VideoDeviceInput](Plan_VideoDeviceInput.md): replaced by SDL3 camera input in v5.x.
+- [Plan_VideoDeviceInput](Plan_VideoDeviceInput.md): RESOLVED 2026-10-08 — FFmpeg dshow/v4l2 port; SDL3
+  camera input may still supersede it in v5.x.
 - [Plan_FfmpegEncode](Plan_FfmpegEncode.md): render export on Linux needs matching FFmpeg builds.
 
 ## Open questions
