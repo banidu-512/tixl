@@ -465,14 +465,25 @@ internal sealed partial class SettingsWindow
                                              ref config.CollabDiscordClientId,
                                              null,
                                              null,
-                                             "From the Discord Developer Portal (Applications > Your App > OAuth2).");
+                                             """
+                                             From the Discord Developer Portal (Applications > Your App > OAuth2).
+                                             Leave empty if the build ships TiXL's own application id.
+                                             """);
 
-        changed |= DrawSecretInput("Discord Client Secret",
-                                   ref config.CollabDiscordClientSecret,
-                                   "Stored only in this machine's user settings. Add a redirect URI http://127.0.0.1:<any port>/callback/ to your Discord application's OAuth2 redirects.");
+        CustomComponents.HelpText("""
+                                  One-time setup: create a Discord application, then add this exact redirect URI
+                                  under OAuth2 → Redirects in the Developer Portal.
+                                  """);
+        FormInputs.ApplyIndent();
+        ImGui.TextUnformatted(CollabDiscordAuth.RedirectUri);
+        ImGui.SameLine();
+        if (ImGui.SmallButton("Copy"))
+            ImGui.SetClipboardText(CollabDiscordAuth.RedirectUri);
+        CustomComponents.TooltipForLastItem("Discord matches the redirect URI verbatim, so the port is fixed.");
 
         var loginState = CollabDiscordAuth.State;
         var loginBusy = loginState is CollabDiscordAuth.LoginState.WaitingForBrowser or CollabDiscordAuth.LoginState.ExchangingCode;
+        var canLogIn = CollabDiscordAuth.HasDefaultClient || !string.IsNullOrWhiteSpace(config.CollabDiscordClientId);
 
         FormInputs.SetCursorToParameterEdit();
         if (loginBusy)
@@ -484,8 +495,10 @@ internal sealed partial class SettingsWindow
         }
         else
         {
+            ImGui.BeginDisabled(!canLogIn);
             if (ImGui.Button("Log in with Discord"))
                 CollabDiscordAuth.StartLogin();
+            ImGui.EndDisabled();
 
             if (loginState == CollabDiscordAuth.LoginState.Failed)
             {
@@ -494,9 +507,14 @@ internal sealed partial class SettingsWindow
                 ImGui.TextUnformatted(CollabDiscordAuth.StatusText);
                 ImGui.PopStyleColor();
             }
+            else if (!canLogIn)
+            {
+                ImGui.SameLine();
+                ImGui.TextDisabled("Enter the client ID first");
+            }
             else
             {
-                CustomComponents.TooltipForLastItem("Optional: use your Discord identity in collaboration sessions instead of a local nickname.");
+                CustomComponents.TooltipForLastItem("Opens discord.com in your browser. Uses your Discord identity in collaboration sessions instead of a local nickname.");
             }
         }
     }
