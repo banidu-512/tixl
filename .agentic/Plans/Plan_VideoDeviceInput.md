@@ -1,6 +1,28 @@
-# Plan — `[VideoDeviceInput]` OpenCV native-init crash (deferred)
+# Plan — `[VideoDeviceInput]` OpenCV native-init crash
 
-**Status:** Deferred 2026-06-03. Webcam capture via `[VideoDeviceInput]` throws on first use.
+**Status:** RESOLVED 2026-10-08, via option 2 (FFmpeg port). `[VideoDeviceInput]` now captures through
+FFmpeg — DirectShow (`video=<name>` + `f=dshow`) on Windows, V4L2 (`/dev/videoN` + `f=v4l2`) on Linux —
+following the `[VideoStreamInput]` template, and moved into the `Video` operator package (the GUID and
+namespace are unchanged, so existing graphs keep working; projects need `<Operators Include="Video"/>`).
+This removes the last OpenCV `VideoCapture` consumer, fixes the Windows `NativeMethods` crash by
+construction, and makes webcams work on Linux. Flips/resize/rotation-warp are reimplemented in managed
+code (`SoftwareFrameConverter` scales via swscale; a managed bilinear warp replaced `Cv2.WarpAffine`).
+Linux device enumeration reads `/sys/class/video4linux`; capability dropdowns fall back to defaults there.
+
+**Verified 2026-10-08 (Linux, DJI Pocket 3 UVC):** live capture works end to end — 1920x1080@30 MJPG
+through the bundled LGPL FFmpeg (required `avdevice_register_all` + dependency-ordered native preload so
+the v4l2 demuxer registers into *our* libavformat; a system-wide FFmpeg otherwise hijacks the bind).
+Pipeline measured headlessly: conversion 1.7 ms/frame, full-frame copy 1.4 ms, decode wait-dominated —
+the capture thread is cheap. Basic camera configs (Pan/Tilt/Zoom/Focus/Exposure/Brightness) apply
+on-change through a V4L2 ioctl bridge with UVC-conventional fallback ranges (the camera does not report
+ranges); the bridge also drives DirectShow on Windows (compiled, needs hardware verification). Stability:
+30 soak cycles of open/read/dispose recovered 100% with no fd leaks; capture threads orphan safely on
+slow joins (polling waits, tokens never disposed under a running thread); device-busy states surface in
+Status. Eval-side uploads are frame-gated (30/s, not 60/s) and run outside the capture lock.
+
+---
+
+**Historical status:** Deferred 2026-06-03. Webcam capture via `[VideoDeviceInput]` throws on first use.
 Not a release blocker. `[VideoDeviceInput]` is the **last remaining consumer of OpenCV's
 `VideoCapture`** after the FFmpeg migration ported `VideoStreamInput` off OpenCV.
 
