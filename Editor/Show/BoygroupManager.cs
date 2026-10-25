@@ -408,11 +408,13 @@ internal sealed class BoygroupManager
 
     private void HandleHello(CollabPeerConnection peer, JObject json)
     {
+        // A hello from an unregistered connection is simply a new client: the transport accepts
+        // peers on its own, so this is where the server first learns who connected.
         var client = _clients.FirstOrDefault(c => ReferenceEquals(c.Peer, peer));
         if (client == null)
         {
-            Log.Warning("Boygroup: hello from unknown connection");
-            return;
+            client = new ClientInfo { Peer = peer };
+            _clients.Add(client);
         }
 
         client.Name = CollabProtocol.GetString(json, "name", "client");
