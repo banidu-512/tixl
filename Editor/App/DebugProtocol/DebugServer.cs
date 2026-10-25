@@ -15,6 +15,9 @@ using Newtonsoft.Json.Linq;
 using T3.Core.Animation;
 using T3.Core.Settings;
 using T3.Core.Stats;
+using T3.Core.Show;
+using T3.Editor.Collab;
+using T3.Editor.Show;
 using T3.Editor.Gui.Windows;
 using T3.Editor.Gui;
 using T3.Editor.Gui.Windows.Analyze;
@@ -38,7 +41,6 @@ using T3.Editor.UiModel;
 using T3.Editor.UiModel.Commands;
 using T3.Editor.UiModel.Commands.Graph;
 using T3.Editor.UiModel.ProjectHandling;
-using T3.Core.Settings;
 
 namespace T3.Editor.App.DebugProtocol;
 
@@ -346,9 +348,12 @@ internal static class DebugServer
                     break;
                 }
 
-                var maxPoints = request["maxPoints"]?.Type == Newtonsoft.Json.Linq.JTokenType.Integer ? request["maxPoints"].Value<int>() : 600;
-                var litOnly = request["litOnly"]?.Type == Newtonsoft.Json.Linq.JTokenType.Boolean && request["litOnly"].Value<bool>();
-                var raw = request["raw"]?.Type == Newtonsoft.Json.Linq.JTokenType.Boolean && request["raw"].Value<bool>();
+                var maxPointsToken = request["maxPoints"];
+                var maxPoints = maxPointsToken is { Type: Newtonsoft.Json.Linq.JTokenType.Integer } ? maxPointsToken.Value<int>() : 600;
+                var litOnlyToken = request["litOnly"];
+                var litOnly = litOnlyToken is { Type: Newtonsoft.Json.Linq.JTokenType.Boolean } && litOnlyToken.Value<bool>();
+                var rawToken = request["raw"];
+                var raw = rawToken is { Type: Newtonsoft.Json.Linq.JTokenType.Boolean } && rawToken.Value<bool>();
                 var points = raw ? T3.Editor.Gui.Windows.OutputSetup.LaserDriver.GetRawFrame(wanted) : T3.Editor.Gui.Windows.OutputSetup.LaserDriver.GetFrame(wanted);
                 var arr = new Newtonsoft.Json.Linq.JArray();
                 var sent = 0;
@@ -627,6 +632,18 @@ internal static class DebugServer
                 break;
             }
 
+            case "collab":
+                HandleCollabControl(request, context);
+                break;
+
+            case "boygroup":
+                HandleBoygroupControl(request, context);
+                break;
+
+            case "failover":
+                HandleFailoverControl(request, context);
+                break;
+
             case null:
                 context.SendError("MISSING_METHOD", "Request has no 'method' field");
                 break;
@@ -635,6 +652,141 @@ internal static class DebugServer
                 context.SendError("UNKNOWN_METHOD", $"Unknown method '{method}'");
                 break;
         }
+    }
+
+    /// <summary>Drives the collab session for external agents: op = host | join | leave | status.</summary>
+    private static void HandleCollabControl(JObject request, RequestContext context)
+    {
+        var collab = CollabManager.Instance;
+        switch (request["op"]?.Value<string>())
+        {
+            case "host":
+                collab.StartHost(request["port"]?.Value<int>() ?? 44700,
+                                 request["password"]?.Value<string>() ?? "",
+                                 request["lan"]?.Value<bool>() ?? true);
+                break;
+
+            case "join":
+                collab.JoinDirect(request["host"]?.Value<string>() ?? "127.0.0.1",
+                                  request["port"]?.Value<int>() ?? 44700,
+                                  request["password"]?.Value<string>() ?? "");
+                break;
+
+            case "leave":
+                collab.Leave();
+                break;
+
+            case "chat":
+                collab.SendChat(request["text"]?.Value<string>() ?? "");
+                break;
+
+            case "status":
+                break;
+
+            default:
+                context.SendError("INVALID_PARAM", "collab requires op = host | join | leave | status");
+                return;
+        }
+
+        context.SendOk(new JObject
+                           {
+                               ["state"] = collab.State.ToString(),
+                               ["status"] = collab.StatusText,
+                               ["error"] = collab.ErrorText,
+                               ["peers"] = collab.Peers.Count,
+                               ["chatLines"] = collab.ChatLog.Count,
+                           });
+    }
+
+    /// <summary>Drives boygrouping for external agents: op = server | join | leave | status.</summary>
+    private static void HandleBoygroupControl(JObject request, RequestContext context)
+    {
+        var boygroup = Show.BoygroupManager.Instance;
+        switch (request["op"]?.Value<string>())
+        {
+            case "server":
+                boygroup.StartServer(request["port"]?.Value<int>() ?? 44720,
+                                     request["password"]?.Value<string>() ?? "",
+                                     request["group"]?.Value<string>() ?? "Main");
+                break;
+
+            case "join":
+                boygroup.JoinServer(request["host"]?.Value<string>() ?? "127.0.0.1",
+                                    request["port"]?.Value<int>() ?? 44720,
+                                    request["group"]?.Value<string>() ?? "Main",
+                                    request["password"]?.Value<string>() ?? "");
+                break;
+
+            case "leave":
+                boygroup.Leave();
+                break;
+
+            case "status":
+                break;
+
+            default:
+                context.SendError("INVALID_PARAM", "boygroup requires op = server | join | leave | status");
+                return;
+        }
+
+        context.SendOk(new JObject
+                           {
+                               ["state"] = boygroup.State.ToString(),
+                               ["status"] = boygroup.StatusText,
+                               ["error"] = boygroup.ErrorText,
+                               ["group"] = boygroup.GroupName,
+                           });
+    }
+
+    /// <summary>Drives the failover arbiter for external agents: op = enable | disable | status.</summary>
+    private static void HandleFailoverControl(JObject request, RequestContext context)
+    {
+        switch (request["op"]?.Value<string>())
+        {
+            case "enable":
+            {
+                // The update loop pushes UserSettings into the arbiter every frame, so enabling
+                // has to go through the persisted settings or it is overwritten immediately.
+                UserSettings.Config.FailoverEnabled = true;
+                UserSettings.Config.FailoverShowId = request["showId"]?.Value<string>() ?? UserSettings.Config.FailoverShowId;
+                UserSettings.Config.FailoverPriority = request["priority"]?.Value<int>() ?? UserSettings.Config.FailoverPriority;
+                UserSettings.Config.FailoverHeartbeatMs = request["heartbeatMs"]?.Value<int>() ?? UserSettings.Config.FailoverHeartbeatMs;
+                UserSettings.Config.FailoverTimeoutFactor = request["timeoutFactor"]?.Value<int>() ?? UserSettings.Config.FailoverTimeoutFactor;
+                UserSettings.Config.FailoverPreempt = request["preempt"]?.Value<bool>() ?? UserSettings.Config.FailoverPreempt;
+                UserSettings.Save();
+                Core.Show.FailoverArbiter.ApplyConfig(new Core.Show.FailoverConfig
+                                                          {
+                                                              Enabled = true,
+                                                              ShowId = UserSettings.Config.FailoverShowId,
+                                                              Priority = UserSettings.Config.FailoverPriority,
+                                                              HeartbeatMs = UserSettings.Config.FailoverHeartbeatMs,
+                                                              TimeoutFactor = UserSettings.Config.FailoverTimeoutFactor,
+                                                              Preempt = UserSettings.Config.FailoverPreempt,
+                                                          });
+                break;
+            }
+
+            case "disable":
+                UserSettings.Config.FailoverEnabled = false;
+                UserSettings.Save();
+                Core.Show.FailoverArbiter.ApplyConfig(new Core.Show.FailoverConfig { Enabled = false });
+                break;
+
+            case "status":
+                break;
+
+            default:
+                context.SendError("INVALID_PARAM", "failover requires op = enable | disable | status");
+                return;
+        }
+
+        context.SendOk(new JObject
+                           {
+                               ["role"] = Core.Show.FailoverArbiter.RoleText,
+                               ["suppressed"] = Core.Show.FailoverArbiter.IsOutputSuppressed,
+                               ["peer"] = Core.Show.FailoverArbiter.PeerSummary,
+                               ["takeovers"] = Core.Show.FailoverArbiter.TakeoverCount,
+                           });
     }
 
     private static void HandleGetLogTail(JObject request, RequestContext context)
