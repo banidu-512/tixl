@@ -327,6 +327,7 @@ internal sealed class WindowsUiContentDrawer : IUiContentDrawer<Device>
 
     // TEMP DIAGNOSTIC: find which draw list carries the viewport-sized ellipse that flashes.
     private static long _lastBigDrawLog;
+    private static int _lastListCount = -1;
 
     private static unsafe string NameOf(ImDrawListPtr list)
     {
@@ -337,7 +338,9 @@ internal sealed class WindowsUiContentDrawer : IUiContentDrawer<Device>
     private static void LogBigDrawLists(ImDrawDataPtr drawData)
     {
         var now = System.Diagnostics.Stopwatch.GetTimestamp();
-        if (now - _lastBigDrawLog < System.Diagnostics.Stopwatch.Frequency * 2)
+        var listCountChanged = drawData.CmdListsCount != _lastListCount;
+        _lastListCount = drawData.CmdListsCount;
+        if (!listCountChanged && now - _lastBigDrawLog < System.Diagnostics.Stopwatch.Frequency * 2)
             return;
 
         _lastBigDrawLog = now;
