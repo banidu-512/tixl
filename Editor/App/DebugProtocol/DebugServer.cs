@@ -866,6 +866,7 @@ internal static class DebugServer
                                ["role"] = UserSettings.Config.BoygroupRole.ToString(),
                                ["group"] = boygroup.GroupName,
                                ["timeFollow"] = boygroup.TimeFollowSummary,
+                               ["bars"] = T3.Core.Animation.Playback.Current?.TimeInBars ?? 0,
                                ["clients"] = clients,
                                ["discovered"] = discovered,
                            });

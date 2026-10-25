@@ -1186,7 +1186,13 @@ internal sealed class BoygroupManager
         if (State != BoygroupState.Server)
             return;
 
+        // "Play all" includes the master: otherwise its anchors keep reporting a stopped timeline
+        // and the clients pause again right after starting.
+        if (Playback.Current != null)
+            Playback.Current.PlaybackSpeed = play ? 1.0 : 0.0;
+
         BroadcastToGroup(new { t = "play", playing = play, bars = Playback.Current?.TimeInBars ?? 0 });
+        SendTimeSyncNow();
     }
 
     private void ApplyPlayControl(JObject json)
