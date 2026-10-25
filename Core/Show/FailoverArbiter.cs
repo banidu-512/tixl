@@ -337,7 +337,9 @@ public static class FailoverArbiter
             socket = _heartbeatSocket;
             showId = _config.ShowId;
             priority = _config.Priority;
-            advertiseActive = _role == NodeRole.Active;
+            // A contested node is muted but has claimed the role: it must advertise that claim, or
+            // the current active keeps streaming through the handover until it hears the new active.
+            advertiseActive = _role is NodeRole.Active or NodeRole.Contested;
         }
 
         if (socket == null)
@@ -450,16 +452,21 @@ public static class FailoverArbiter
             var config = _config;
 
             PeerInfo? bestActive = null;
+            PeerInfo? bestPeer = null;
             foreach (var peer in _peers.Values)
             {
                 if (now - peer.LastHeardTicks > timeout)
                     continue;
+
+                if (bestPeer == null || Beats(peer.Priority, peer.NodeId, bestPeer.Priority, bestPeer.NodeId))
+                    bestPeer = peer;
 
                 if (peer.AdvertisesActive && (bestActive == null || Beats(peer.Priority, peer.NodeId, bestActive.Priority, bestActive.NodeId)))
                     bestActive = peer;
             }
 
             var iWin = bestActive == null || Beats(config.Priority, NodeId, bestActive.Priority, bestActive.NodeId);
+            var outrankedByLivePeer = bestPeer != null && Beats(bestPeer.Priority, bestPeer.NodeId, config.Priority, NodeId);
 
             switch (_role)
             {
@@ -470,19 +477,32 @@ public static class FailoverArbiter
                     if (now - _lastStateChangeTicks < 2 * timeout)
                         return;
 
+                    // A peer that outranks us can claim at any moment - including one that is still
+                    // probing or already contested, neither of which advertises itself as active.
+                    // Yielding here is what stops two nodes that start together from both claiming
+                    // at the probe deadline (each saw no active peer).
+                    if (outrankedByLivePeer)
+                    {
+                        Transition(NodeRole.Standby, bestActive != null
+                                                         ? "Active peer has higher priority"
+                                                         : "Higher-priority peer is present");
+                        return;
+                    }
+
                     if (bestActive == null)
                     {
                         Transition(NodeRole.Active, "No active peer — becoming active");
                     }
-                    else if (iWin)
+                    else if (config.Preempt)
                     {
-                        Transition(NodeRole.Contested, config.Preempt
-                                                           ? $"Preempting lower-priority active peer"
-                                                           : "Contested — resolving startup overlap");
+                        Transition(NodeRole.Contested, "Preempting lower-priority active peer");
                     }
                     else
                     {
-                        Transition(NodeRole.Standby, $"Active peer has higher priority");
+                        // An active peer that outranked us was handled above, so this is a lower
+                        // priority active we would win against - but preempt is off: a returning
+                        // node must not take the role from a live active.
+                        Transition(NodeRole.Standby, "Active peer is present — preempt is off");
                     }
 
                     break;
@@ -492,6 +512,11 @@ public static class FailoverArbiter
                 {
                     if (bestActive == null)
                     {
+                        // A higher-ranked node that is alive but has not claimed yet (still probing
+                        // or contested) will; promoting now puts two nodes on the wire.
+                        if (outrankedByLivePeer)
+                            return;
+
                         _takeoverCount++;
                         Transition(NodeRole.Active, "Active peer lost — taking over");
                         return;
@@ -511,7 +536,7 @@ public static class FailoverArbiter
                     if (now - _lastStateChangeTicks < timeout)
                         return;
 
-                    if (!iWin)
+                    if (outrankedByLivePeer || !iWin)
                     {
                         Transition(NodeRole.Standby, "Yielding to higher-priority peer");
                         return;
