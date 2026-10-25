@@ -75,6 +75,12 @@ mkdir -p "$contents/MacOS" "$payload"
 # Everything the Editor finds relative to itself stays next to its executable, as in the Linux tarball.
 cp -a "$build_dir/." "$payload/"
 
+# libmediapipe_c.dylib resolves its OpenCL imports by dynamic lookup and Apple Silicon macOS has no
+# OpenCL - the no-op stub must be in the process before the first mediapipe_c P/Invoke (loaded by
+# MediapipeNativeLibrary). Built from the checked-in source; the signing loop below ad-hoc signs it.
+clang -arch x86_64 -arch arm64 -shared -o "$payload/libmediapipe_opencl_stub.dylib" \
+    "$root/Dependencies/osx/mediapipe-opencl-stub.c"
+
 # Same split as the other installers: package metadata ships from the source tree.
 for package in Lib Examples; do
     mkdir -p "$payload/Operators/$package/.meta"
@@ -99,9 +105,17 @@ while IFS= read -r -d '' dll; do
     fi
 done < <(find "$payload" -name '*.dll' -print0)
 
-if [[ ! -f "$payload/libtixlaudio.dylib" ]]; then
-    echo "Warning: libtixlaudio.dylib is missing - audio won't work. See Dependencies/osx/README.md." >&2
+if [[ ! -f "$payload/libbass.dylib" ]]; then
+    echo "Warning: libbass.dylib is missing - audio won't work. See Dependencies/osx/README.md." >&2
 fi
+
+# Bundle an LGPL FFmpeg with the Video operator package (next to its VideoServices.dll, where
+# FfmpegLibrary looks). There is no LGPL macOS FFmpeg package to reference, so it is compiled
+# here; Homebrew's FFmpeg stays GPL and is only a development fallback.
+echo "Building FFmpeg (LGPL)..."
+ffmpeg_dir="$payload/Operators/Video"
+"$script_dir/build-ffmpeg.sh" "$ffmpeg_dir"
+
 
 # Vulkan: the loader next to the executable (VulkanLoader looks there first), and MoltenVK registered through
 # an ICD file the launcher names in VK_DRIVER_FILES.
@@ -123,40 +137,9 @@ else
     echo "Warning: no Vulkan loader/MoltenVK in $vulkan_lib_dir - the app needs them installed. Set VULKAN_LIB_DIR." >&2
 fi
 
-# Slang: only what slangc needs for HLSL -> SPIR-V (~37 MB; slang-llvm alone is 100 MB and only serves CPU
-# targets). slangc finds its libraries through @loader_path/../lib, and SlangShaderCompiler.FindCompiler looks
-# for it in <app>/slang/bin. The version comes from the compiler's pin so the two can't drift.
-slang_version="$(sed -n 's/.*PinnedVersion = "\(.*\)";.*/\1/p' "$root/Core/Resource/ShaderCompiling/SlangShaderCompiler.cs")"
-if [[ -z "$slang_version" ]]; then
-    echo "Could not read SlangShaderCompiler.PinnedVersion" >&2
-    exit 1
-fi
-slang_archive="$output/downloads/slang-$slang_version-macos-aarch64.tar.gz"
-if [[ ! -f "$slang_archive" ]]; then
-    echo "Downloading Slang $slang_version..."
-    mkdir -p "$(dirname "$slang_archive")"
-    curl -fsSL -o "$slang_archive.part" \
-        "https://github.com/shader-slang/slang/releases/download/v$slang_version/$(basename "$slang_archive")"
-    mv "$slang_archive.part" "$slang_archive"
-fi
-slang_staging="$output/slang-staging"
-rm -rf "$slang_staging"
-mkdir -p "$slang_staging" "$payload/slang/bin" "$payload/slang/lib"
-tar -xzf "$slang_archive" -C "$slang_staging"
-cp "$slang_staging/bin/slangc" "$payload/slang/bin/"
-for library in "libslang-compiler.0.$slang_version.dylib" "libslang-glslang-$slang_version.dylib" \
-               "libslang-glsl-module-$slang_version.dylib"; do
-    cp "$slang_staging/lib/$library" "$payload/slang/lib/"
-done
-cp "$slang_staging/LICENSE" "$payload/slang/"
-rm -rf "$slang_staging"
-if [[ "$("$payload/slang/bin/slangc" -v 2>&1)" != "$slang_version"* ]]; then
-    echo "Bundled slangc does not report version $slang_version" >&2
-    exit 1
-fi
-
 # Icon: AppIcon.png is the logo on Apple's icon grid (a rounded square spanning 824 of 1024 px, with a shadow) -
 # a full-bleed square looks oversized next to every other app and covers its name in the app switcher.
+
 iconset="$output/TiXL.iconset"
 rm -rf "$iconset"
 mkdir -p "$iconset"
@@ -189,6 +172,8 @@ cat > "$contents/Info.plist" <<PLIST
     <string>TiXL keeps your projects in your Documents folder.</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>TiXL can react to sound from a microphone or line input.</string>
+    <key>NSCameraUsageDescription</key>
+    <string>TiXL can capture live video from a webcam or capture card.</string>
 </dict>
 </plist>
 PLIST
