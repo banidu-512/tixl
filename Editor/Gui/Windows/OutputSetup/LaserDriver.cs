@@ -223,6 +223,14 @@ internal static class LaserDriver
             _pipelineSessions[output.Id] = session = new LaserPipeline.Session();
 
         var settings = output.LaserProcessing ?? LaserProcessingSettings.Default;
+
+        // Frame mapping: in calibrated mode the incoming frame's actual extent is rescaled into
+        // the aimed zone (the setup rect) - Stretch fills both axes, Fit preserves aspect. Before
+        // the pipeline, so the safety transforms clamp the mapped result. The input is the
+        // camera's live backing array; mapping returns a copy.
+        if (settings.Safety.Calibrated)
+            input = LaserPipeline.MapFrameIntoZone(input, count, settings.Safety, output.FrameMapping);
+
         return session.Apply(settings, input, count, out _);
     }
 

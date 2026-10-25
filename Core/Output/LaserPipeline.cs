@@ -70,6 +70,70 @@ public static class LaserPipeline
     }
 
     /// <summary>
+    /// Maps the incoming frame's actual extent onto the output's aimed zone (the setup rect):
+    /// the frame's lit bounding box is rescaled so the content fills the zone - with
+    /// <see cref="LaserFrameMappingMode.Stretch"/> both axes fill independently (aspect may
+    /// distort), with <see cref="LaserFrameMappingMode.Fit"/> the aspect is preserved and the
+    /// content is centered. Returns a new array - the input is the camera's live backing list
+    /// and must not be mutated. Degenerate frames pass through untouched.
+    /// </summary>
+    public static LaserPoint[]? MapFrameIntoZone(LaserPoint[]? input, int count, LaserProcessingSettings.SafetySettings safety, LaserFrameMappingMode mode)
+    {
+        if (mode == LaserFrameMappingMode.Off || input == null || count <= 1)
+            return input;
+
+        var minX = int.MaxValue;
+        var maxX = int.MinValue;
+        var minY = int.MaxValue;
+        var maxY = int.MinValue;
+        for (var i = 0; i < count; i++)
+        {
+            var x = input[i].X;
+            var y = input[i].Y;
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+        }
+
+        // A flat frame (a line, a single point) has nothing to rescale - pass through.
+        if (maxX - minX < 4 || maxY - minY < 4)
+            return input;
+
+        RectFromSafety(safety, out var cx, out var cy, out var halfW, out var halfH);
+
+        const float field = 32767f;
+        var bboxCenterX = (minX + maxX) * 0.5f / field;
+        var bboxCenterY = (minY + maxY) * 0.5f / field;
+        var bboxHalfW = (maxX - minX) * 0.5f / field;
+        var bboxHalfH = (maxY - minY) * 0.5f / field;
+
+        var targetHalfW = halfW / field;
+        var targetHalfH = halfH / field;
+        var scaleX = targetHalfW / MathF.Max(bboxHalfW, 0.0001f);
+        var scaleY = targetHalfH / MathF.Max(bboxHalfH, 0.0001f);
+        if (mode == LaserFrameMappingMode.Fit)
+        {
+            var scale = MathF.Min(scaleX, scaleY);
+            scaleX = scale;
+            scaleY = scale;
+        }
+
+        var mapped = new LaserPoint[count];
+        for (var i = 0; i < count; i++)
+        {
+            var p = input[i];
+            var nx = Math.Clamp((p.X / field - bboxCenterX) * scaleX + cx / field, -1f, 1f);
+            var ny = Math.Clamp((p.Y / field - bboxCenterY) * scaleY + cy / field, -1f, 1f);
+            p.X = Math.Clamp((int)(nx * field), -32767, 32767);
+            p.Y = Math.Clamp((int)(ny * field), -32767, 32767);
+            mapped[i] = p;
+        }
+
+        return mapped;
+    }
+
+    /// <summary>
     /// Manually parameterized alignment rectangle (green). The user starts with a tiny square at
     /// center and extends width/height step by step — no auto animation. Lifted 1:1 from the
     /// The setup pipeline emits the same frames the safety transform stage produces.

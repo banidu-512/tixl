@@ -1118,6 +1118,23 @@ internal static class SetupParameterView
             CustomComponents.StylizedText("Manual aim - [LaserCamera] with this output as OutputRef projects through this camera.",
                                           Fonts.FontSmall, UiColors.TextMuted);
         }
+
+        // How the incoming frame lands in the aimed zone: the frame's actual extent is rescaled
+        // into the setup rect, so the aimed area is what fills (a camera framing that leaves the
+        // field half-empty stops wasting half the scanners).
+        var frameMapping = output.FrameMapping;
+        if (FormInputs.AddEnumDropdown(ref frameMapping, "Frame mapping",
+                                       "How the incoming laser frame lands in the aimed zone (the setup rectangle): Fit rescales the frame's extent into the rect with its aspect preserved; Stretch fills both axes and may distort; Off streams the frame as the scanner field itself. Applies in calibrated mode.",
+                                       LaserFrameMappingMode.Fit,
+                                       m => m switch
+                                               {
+                                                   LaserFrameMappingMode.Stretch => "Stretch",
+                                                   LaserFrameMappingMode.Fit => "Fit (keep aspect)",
+                                                   _ => "Off",
+                                               }))
+        {
+            SetupUndo.RunUndoable("Set laser frame mapping", setup, () => output.FrameMapping = frameMapping);
+        }
     }
 
     /// <summary>

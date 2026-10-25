@@ -9,6 +9,19 @@ using T3.Serialization;
 
 namespace T3.Core.Output;
 
+/// <summary>How a laser output maps the incoming frame's extent onto the aimed zone (the setup rect).</summary>
+public enum LaserFrameMappingMode
+{
+    /// <summary>The frame is the scanner field - positions pass through untouched.</summary>
+    Off = 0,
+
+    /// <summary>The frame's actual extent fills the rect on both axes (aspect may distort).</summary>
+    Stretch = 1,
+
+    /// <summary>The frame's actual extent is scaled into the rect with its aspect preserved, centered.</summary>
+    Fit = 2,
+}
+
 /// <summary>
 /// "What am I rendering for?" — a named canvas with optional device binding (per machine,
 /// stored separately) and optional calibrated camera. Covers the always-present Default,
@@ -304,6 +317,13 @@ public sealed class OutputDefinition
     /// </summary>
     public LaserProcessingSettings? LaserProcessing;
 
+    /// <summary>
+    /// How the incoming laser frame lands in the aimed zone (the setup rect): <see cref="LaserFrameMappingMode.Fit"/>
+    /// rescales the frame's actual extent into the rect with its aspect preserved, <see cref="LaserFrameMappingMode.Stretch"/>
+    /// fills both axes (may distort), Off streams the frame as the scanner field itself.
+    /// </summary>
+    public LaserFrameMappingMode FrameMapping = LaserFrameMappingMode.Fit;
+
     /// <summary>Pause presenting to this output without dropping its device binding (e.g. mute an NDI feed).</summary>
     public bool IsSending = true;
 
@@ -361,6 +381,8 @@ public sealed class OutputDefinition
         writer.WriteString("Kind", Kind);
         writer.WriteInt2("CanvasResolution", CanvasResolution);
         writer.WriteValue("Send", IsSending);
+        if (Kind == Kinds.Laser)
+            writer.WriteValue("FrameMapping", (int)FrameMapping);
         if (Patches.Count > 0)
         {
             writer.WritePropertyName("Patches");
@@ -407,6 +429,7 @@ public sealed class OutputDefinition
                              Kind = token.ReadValueSafe("Kind", Kinds.Display) ?? Kinds.Display,
                              CanvasResolution = ClampResolution(OutputJson.ReadInt2(token["CanvasResolution"], new Int2(1920, 1080))),
                              IsSending = token.ReadValueSafe("Send", true),
+                             FrameMapping = (LaserFrameMappingMode)Math.Clamp(token.ReadValueSafe("FrameMapping", (int)LaserFrameMappingMode.Fit), 0, 2),
                              Patches = token.ReadListSafe("Patches", Patch.ReadFromJson),
                              ReferenceImageId = OutputJson.ReadGuid(token["ReferenceImage"]),
                              ReferenceOpacity = Math.Clamp(token.ReadValueSafe("ReferenceOpacity", 0.5f), 0f, 1f),
