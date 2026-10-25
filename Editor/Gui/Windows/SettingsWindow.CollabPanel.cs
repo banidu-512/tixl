@@ -475,9 +475,8 @@ internal sealed partial class SettingsWindow
                                   under OAuth2 → Redirects in the Developer Portal.
                                   """);
         FormInputs.ApplyIndent();
-        ImGui.TextUnformatted(CollabDiscordAuth.RedirectUri);
-        ImGui.SameLine();
-        if (ImGui.SmallButton("Copy"))
+        ImGui.TextWrapped(CollabDiscordAuth.RedirectUri);
+        if (ImGui.SmallButton("Copy redirect URI"))
             ImGui.SetClipboardText(CollabDiscordAuth.RedirectUri);
         CustomComponents.TooltipForLastItem("Discord matches the redirect URI verbatim, so the port is fixed.");
 
@@ -502,14 +501,12 @@ internal sealed partial class SettingsWindow
 
             if (loginState == CollabDiscordAuth.LoginState.Failed)
             {
-                ImGui.SameLine();
                 ImGui.PushStyleColor(ImGuiCol.Text, UiColors.StatusWarning.Rgba);
-                ImGui.TextUnformatted(CollabDiscordAuth.StatusText);
+                ImGui.TextWrapped(CollabDiscordAuth.StatusText);
                 ImGui.PopStyleColor();
             }
             else if (!canLogIn)
             {
-                ImGui.SameLine();
                 ImGui.TextDisabled("Enter the client ID first");
             }
             else
