@@ -30,9 +30,11 @@ namespace Lib.io.video.mediapipe
     }
 
     [Guid("A1B2C3D4-E5F6-4798-89AB-CDEF12345679")]
-    [ExportDependencies("mediapipe_c.dll", "OpenCvSharpExtern.dll", "Emgu.CV.dll", "cvextern.dll", "OpenGL.Net.dll", "CppSharp.Runtime.dll", "Google.Protobuf.dll")]
+    [ExportDependencies("mediapipe_c.dll", "libmediapipe_c.so", "libmediapipe_c.dylib", "libmediapipe_opencl_stub.dylib", "OpenCvSharpExtern.dll", "libOpenCvSharpExtern.so", "libOpenCvSharpExtern.dylib", "Emgu.CV.dll", "cvextern.dll", "OpenGL.Net.dll", "CppSharp.Runtime.dll", "Google.Protobuf.dll")]
     public class FaceDetection : Instance<FaceDetection>
     {
+        private const int MaxInferenceWidth = 640;
+
         [Output(Guid = "B2C3D4E5-F6A7-489A-9B0C-DEF123456790", DirtyFlagTrigger = DirtyFlagTrigger.Animated)]
         public readonly Slot<Texture2D> OutputTexture = new();
 
@@ -88,8 +90,10 @@ namespace Lib.io.video.mediapipe
             OutputTexture.Value = inputTexture;
 
             if (_processingTask == null || _processingTask.IsCompleted || _faceDetector == null ||
-                maxFaces != _activeMaxFaces || Math.Abs(confidenceThreshold - _activeConfidenceThreshold) > 0.001f)
+                maxFaces != _activeMaxFaces || Math.Abs(confidenceThreshold - _activeConfidenceThreshold) > 0.001f || Acceleration.GetValue(context) != _activeAcceleration || InferenceThreads.GetValue(context) != _activeInferenceThreads)
             {
+                _activeAcceleration = Acceleration.GetValue(context);
+                _activeInferenceThreads = InferenceThreads.GetValue(context);
                 InitializeWorker(maxFaces, confidenceThreshold, debug);
             }
 
@@ -99,7 +103,7 @@ namespace Lib.io.video.mediapipe
                 return;
             }
 
-            if (_inputQueue.Count < 1)
+            if (_inputQueue.IsEmpty && !_workerBusy)
             {
                 var request = CreateRequestFromTexture(inputTexture, confidenceThreshold, maxFaces, correctAspectRatio, zScale);
                 if (request != null)
@@ -112,20 +116,31 @@ namespace Lib.io.video.mediapipe
             {
                 if (result.FaceCount > 0)
                 {
+                    if (_currentResult != null)
+                    {
+                        ReturnPointArrayToPool(_currentResult.Detections);
+                    }
                     _currentResult = result;
+                }
+                else
+                {
+                    ReturnPointArrayToPool(result.Detections);
                 }
             }
 
             if (_currentResult != null)
             {
                 UpdateOutputsWithResult(_currentResult, showDetections, showKeypoints, detectionSize, detectionColor, keypointColor, useCombinedAiOutput, debug);
+                UpdateCount.Value++;
                 
                 if (debug)
                 {
                     using var mat = Texture2DToMat(inputTexture);
                     if (!mat.Empty())
                     {
-                        DrawDebugVisuals(mat, _currentResult);
+                        // The stored coordinates carry the conversion-time aspect factor in X - invert
+                        // it with the same value, or boxes land compressed on non-square images.
+                        DrawDebugVisuals(mat, _currentResult, correctAspectRatio ? (float)mat.Width / mat.Height : 1.0f);
                         UpdateDebugTextureFromMat(mat);
                     }
                 }
@@ -144,7 +159,11 @@ namespace Lib.io.video.mediapipe
             PointBuffer.Value = null!;
             FaceData.Value = new Dict<float>(0f);
             FaceCount.Value = 0;
-            _currentResult = null;
+            if (_currentResult != null)
+            {
+                ReturnPointArrayToPool(_currentResult.Detections);
+                _currentResult = null;
+            }
             DebugTexture.Value = null!;
         }
 
@@ -155,11 +174,14 @@ namespace Lib.io.video.mediapipe
         private readonly object _timestampLock = new object();
         
         private Task? _processingTask;
+        private volatile bool _workerBusy;
         private CancellationTokenSource? _cancellationTokenSource;
         private readonly ConcurrentQueue<FaceDetectionRequest> _inputQueue = new();
         private readonly ConcurrentQueue<FaceDetectionResultPacket> _outputQueue = new();
         private FaceDetectionResultPacket? _currentResult;
         private int _activeMaxFaces = -1;
+        private MediaPipeAcceleration? _activeAcceleration;
+        private int _activeInferenceThreads = -1;
         private float _activeConfidenceThreshold = -1f;
         private readonly object _workerLock = new object();
         
@@ -215,25 +237,41 @@ namespace Lib.io.video.mediapipe
                         return;
                     }
 
-                    var baseOptions = new Mediapipe.Tasks.Core.CoreBaseOptions(
-                        modelAssetPath: fullPath,
-                        delegateCase: Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU
-                    );
-
-                    FaceDetectorOptions options = new(
-                        baseOptions,
+                    var acceleration = _activeAcceleration ?? MediaPipeAcceleration.Cpu;
+                var delegateCase = acceleration == MediaPipeAcceleration.Xnnpack ? Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.Xnnpack
+                    : acceleration == MediaPipeAcceleration.Gpu ? Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.GPU
+                    : Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU;
+                var inferenceThreads = _activeInferenceThreads;
+                    FaceDetectorOptions BuildOptions(Mediapipe.Tasks.Core.CoreBaseOptions.Delegate delegateCase) => new(
+                        new Mediapipe.Tasks.Core.CoreBaseOptions(modelAssetPath: fullPath, delegateCase: delegateCase, numThreads: inferenceThreads),
                         VisionRunningMode.VIDEO,
                         minDetectionConfidence: 0.5f,
                         minSuppressionThreshold: 0.3f
                     );
 
+                    Mediapipe.Tasks.Vision.FaceDetector.FaceDetector? detector = null;
                     lock (_faceDetectorLock)
                     {
-                        _faceDetector = Mediapipe.Tasks.Vision.FaceDetector.FaceDetector.CreateFromOptions(options);
+                        try
+                        {
+                            detector = Mediapipe.Tasks.Vision.FaceDetector.FaceDetector.CreateFromOptions(BuildOptions(delegateCase));
+                        }
+                        catch (Exception gpuEx) when (acceleration != MediaPipeAcceleration.Cpu)
+                        {
+                            Log.Warning($"[FaceDetection] GPU acceleration not available ({gpuEx.Message}) - using CPU.", this);
+                            detector = Mediapipe.Tasks.Vision.FaceDetector.FaceDetector.CreateFromOptions(BuildOptions(Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU));
+                        }
+                        _faceDetector = detector;
                     }
-                    _cancellationTokenSource = new CancellationTokenSource();
-                    var token = _cancellationTokenSource.Token;
-                    _processingTask = Task.Run(() => WorkerLoop(token, debug), token);
+
+                    if (detector != null)
+                    {
+                        _cancellationTokenSource = new CancellationTokenSource();
+                        var token = _cancellationTokenSource.Token;
+                        // The worker loop owns this instance; StopWorker closes it only after that task
+                        // has exited, so DetectForVideo can never run on a closed detector.
+                        _processingTask = Task.Run(() => WorkerLoop(token, detector, debug), token);
+                    }
                 }
             }
             catch (Exception ex)
@@ -246,17 +284,26 @@ namespace Lib.io.video.mediapipe
             }
         }
 
-        private void WorkerLoop(CancellationToken token, bool debug)
+        private void WorkerLoop(CancellationToken token, Mediapipe.Tasks.Vision.FaceDetector.FaceDetector detector, bool debug)
         {
             while (!token.IsCancellationRequested)
             {
                 if (_inputQueue.TryDequeue(out var request))
                 {
+                    // Whatever piled up while the previous inference ran is stale by now - only the
+                    // newest frame is worth its latency, the rest goes straight back to the pool.
+                    while (_inputQueue.TryDequeue(out var newer))
+                    {
+                        ReturnBufferToPool(request.PixelData);
+                        request = newer;
+                    }
+
                     try
                     {
-                        if (_faceDetector != null && request.PixelData != null)
+                        if (request.PixelData != null)
                         {
-                            ProcessFrame(request, debug);
+                            _workerBusy = true;
+                            ProcessFrame(request, detector, debug);
                         }
                     }
                     catch (Exception ex)
@@ -265,6 +312,7 @@ namespace Lib.io.video.mediapipe
                     }
                     finally
                     {
+                        _workerBusy = false;
                         ReturnBufferToPool(request.PixelData);
                     }
                 }
@@ -275,17 +323,11 @@ namespace Lib.io.video.mediapipe
             }
         }
 
-        private void ProcessFrame(FaceDetectionRequest request, bool debug)
+        private void ProcessFrame(FaceDetectionRequest request, Mediapipe.Tasks.Vision.FaceDetector.FaceDetector detector, bool debug)
         {
             using var image = new Image(Mediapipe.ImageFormat.Types.Format.Srgb, request.Width, request.Height, request.Width * 3, request.PixelData!);
-            
-            Mediapipe.Tasks.Vision.FaceDetector.FaceDetector? detector;
-            lock (_faceDetectorLock)
-            {
-                detector = _faceDetector;
-            }
-            
-            var result = detector?.DetectForVideo(image, request.Timestamp);
+
+            var result = detector.DetectForVideo(image, request.Timestamp);
 
             if (result is { } validResult && validResult.Detections != null && validResult.Detections.Count > 0)
             {
@@ -312,12 +354,34 @@ namespace Lib.io.video.mediapipe
         {
             if (result.Detections == null) return null;
 
-            var points = new List<Point>();
-
             float aspectRatio = correctAspectRatio ? (float)imageWidth / imageHeight : 1.0f;
 
             try
             {
+                // Count the valid faces first so the array can come from the pool - the
+                // result-replacement path in Update returns it, keeping rentals and returns balanced.
+                var validFaces = 0;
+                foreach (var detection in result.Detections)
+                {
+                    if (validFaces >= maxFaces) break;
+
+                    float confidence = 0f;
+                    if (detection.Categories?.Count > 0)
+                    {
+                        confidence = detection.Categories[0].Score;
+                    }
+
+                    if (confidence >= confidenceThreshold
+                        && detection.BoundingBox.Right > detection.BoundingBox.Left
+                        && detection.BoundingBox.Bottom > detection.BoundingBox.Top)
+                    {
+                        validFaces++;
+                    }
+                }
+                if (validFaces == 0) return null;
+
+                var points = GetPointArray(validFaces * 10);
+                int pointIndex = 0;
                 int detectedFaces = 0;
                 foreach (var detection in result.Detections)
                 {
@@ -328,7 +392,7 @@ namespace Lib.io.video.mediapipe
                     {
                         confidence = detection.Categories[0].Score;
                     }
-                    
+
                     if (confidence < confidenceThreshold)
                     {
                         continue;
@@ -337,8 +401,8 @@ namespace Lib.io.video.mediapipe
                     if (detection.BoundingBox.Right > detection.BoundingBox.Left && detection.BoundingBox.Bottom > detection.BoundingBox.Top)
                     {
                         var bbox = detection.BoundingBox;
-                        
-                        var bboxPoint1 = new Point
+
+                        points[pointIndex++] = new Point
                         {
                             Position = new Vector3(((float)bbox.Left / imageWidth * 2.0f - 1.0f) * aspectRatio, 1.0f - (float)bbox.Top / imageHeight * 2.0f, 0),
                             F1 = detectedFaces * 10 + 0,
@@ -347,9 +411,7 @@ namespace Lib.io.video.mediapipe
                             Scale = Vector3.One,
                             Orientation = Quaternion.Identity
                         };
-                        points.Add(bboxPoint1);
-                        
-                        var bboxPoint2 = new Point
+                        points[pointIndex++] = new Point
                         {
                             Position = new Vector3(((float)bbox.Right / imageWidth * 2.0f - 1.0f) * aspectRatio, 1.0f - (float)bbox.Top / imageHeight * 2.0f, 0),
                             F1 = detectedFaces * 10 + 1,
@@ -358,9 +420,7 @@ namespace Lib.io.video.mediapipe
                             Scale = Vector3.One,
                             Orientation = Quaternion.Identity
                         };
-                        points.Add(bboxPoint2);
-                        
-                        var bboxPoint3 = new Point
+                        points[pointIndex++] = new Point
                         {
                             Position = new Vector3(((float)bbox.Right / imageWidth * 2.0f - 1.0f) * aspectRatio, 1.0f - (float)bbox.Bottom / imageHeight * 2.0f, 0),
                             F1 = detectedFaces * 10 + 2,
@@ -369,9 +429,7 @@ namespace Lib.io.video.mediapipe
                             Scale = Vector3.One,
                             Orientation = Quaternion.Identity
                         };
-                        points.Add(bboxPoint3);
-                        
-                        var bboxPoint4 = new Point
+                        points[pointIndex++] = new Point
                         {
                             Position = new Vector3(((float)bbox.Left / imageWidth * 2.0f - 1.0f) * aspectRatio, 1.0f - (float)bbox.Bottom / imageHeight * 2.0f, 0),
                             F1 = detectedFaces * 10 + 3,
@@ -380,14 +438,13 @@ namespace Lib.io.video.mediapipe
                             Scale = Vector3.One,
                             Orientation = Quaternion.Identity
                         };
-                        points.Add(bboxPoint4);
-                        
+
                         if (detection.Keypoints != null && detection.Keypoints.Count >= 6)
                         {
                             for (int i = 0; i < 6; i++)
                             {
                                 var keypoint = detection.Keypoints[i];
-                                var keypointPoint = new Point
+                                points[pointIndex++] = new Point
                                 {
                                     Position = new Vector3((keypoint.X * 2.0f - 1.0f) * aspectRatio, 1.0f - keypoint.Y * 2.0f, 0),
                                     F1 = detectedFaces * 10 + 4 + i,
@@ -396,7 +453,6 @@ namespace Lib.io.video.mediapipe
                                     Scale = Vector3.One,
                                     Orientation = Quaternion.Identity
                                 };
-                                points.Add(keypointPoint);
                             }
                         }
                         else
@@ -405,7 +461,7 @@ namespace Lib.io.video.mediapipe
                             var centerY = bbox.Top + (bbox.Bottom - bbox.Top) * 0.5f;
                             for (int i = 0; i < 6; i++)
                             {
-                                var placeholderPoint = new Point
+                                points[pointIndex++] = new Point
                                 {
                                     Position = new Vector3((centerX / imageWidth * 2.0f - 1.0f) * aspectRatio, 1.0f - centerY / imageHeight * 2.0f, 0),
                                     F1 = detectedFaces * 10 + 4 + i,
@@ -414,15 +470,14 @@ namespace Lib.io.video.mediapipe
                                     Scale = Vector3.One,
                                     Orientation = Quaternion.Identity
                                 };
-                                points.Add(placeholderPoint);
                             }
                         }
-                    }
 
-                    detectedFaces++;
+                        detectedFaces++;
+                    }
                 }
 
-                return points.Count > 0 ? points.ToArray() : null;
+                return pointIndex > 0 ? points : null;
             }
             catch (Exception ex)
             {
@@ -485,34 +540,40 @@ namespace Lib.io.video.mediapipe
             lock (_workerLock)
             {
                 _cancellationTokenSource?.Cancel();
-                try
+                var task = _processingTask;
+                _processingTask = null;
+
+                Mediapipe.Tasks.Vision.FaceDetector.FaceDetector? detector;
+                lock (_faceDetectorLock)
                 {
-                    if (_processingTask != null && !_processingTask.IsCompleted)
+                    detector = _faceDetector;
+                    _faceDetector = null;
+                }
+
+                if (detector != null)
+                {
+                    // DetectForVideo cannot be interrupted and runs on the worker outside every lock, so
+                    // Close() must wait until that task has fully exited or it is a use-after-free in
+                    // native code. The worker loop holds its own reference, making the hand-off safe
+                    // without ever blocking the eval thread on an in-flight inference.
+                    Task.Run(async () =>
                     {
-                        if (!_processingTask.Wait(1000))
+                        if (task != null)
                         {
-                            if (debug) Log.Warning("[FaceDetection] THREAD SAFETY: Worker task did not complete within timeout", this);
+                            try { await task; }
+                            catch (Exception) { }
                         }
-                    }
+                        try
+                        {
+                            detector.Close();
+                        }
+                        catch (Exception ex)
+                        {
+                            if (debug) Log.Error($"[FaceDetection] Error closing FaceDetector: {ex.Message}", this);
+                        }
+                    });
                 }
-                catch (Exception ex)
-                {
-                    if (debug) Log.Error($"[FaceDetection] THREAD SAFETY: Error waiting for worker task: {ex.Message}", this);
-                }
-                
-                try
-                {
-                    lock (_faceDetectorLock)
-                    {
-                        _faceDetector?.Close();
-                        _faceDetector = null;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    if (debug) Log.Error($"[FaceDetection] RESOURCE MANAGEMENT: Error closing FaceDetector: {ex.Message}", this);
-                }
-                
+
                 while (_inputQueue.TryDequeue(out var req))
                 {
                     ReturnBufferToPool(req.PixelData);
@@ -580,7 +641,10 @@ namespace Lib.io.video.mediapipe
         private byte[] GetBuffer(int size)
         {
             if (_bufferPool.TryTake(out var b) && b.Length == size) return b;
-            return new byte[size];
+
+            // Pinned on the POH: the native Image keeps this pointer and reads it during
+            // DetectForVideo, after the wrapper's own pin over the constructor has been released.
+            return GC.AllocateUninitializedArray<byte>(size, pinned: true);
         }
 
         private void ReturnBufferToPool(byte[]? b)
@@ -612,7 +676,9 @@ namespace Lib.io.video.mediapipe
         
         private void ReturnPointArrayToPool(Point[]? arr)
         {
-            if (arr != null)
+            // Empty results carry the shared Array.Empty instance, never rented - pooling it would add
+            // one entry per face-less inference without bound.
+            if (arr is { Length: > 0 })
             {
                 var size = arr.Length;
                 if (!_pointArrayPool.TryGetValue(size, out var pool))
@@ -650,25 +716,35 @@ namespace Lib.io.video.mediapipe
 
             try
             {
-                byte[] buffer = GetBuffer(width * height * 3);
+                // MediaPipe resizes to its model input (~128px) internally; feeding the full camera
+                // image only burns downsample/memcpy time before hitting that resize.
+                var downscale = Math.Min(1.0f, (float)MaxInferenceWidth / width);
+                var inferenceWidth = Math.Max(1, (int)(width * downscale));
+                var inferenceHeight = Math.Max(1, (int)(height * downscale));
+
+                byte[] buffer = GetBuffer(inferenceWidth * inferenceHeight * 3);
                 unsafe
                 {
                     IntPtr srcPtr = dataBox.DataPointer;
                     int rowPitch = dataBox.RowPitch;
-                    
+
                     fixed (byte* dst = buffer)
                     {
                         IntPtr dstPtr = (IntPtr)dst;
-                        Parallel.For(0, height, y =>
+                        float sourceXStep = (float)width / inferenceWidth;
+                        float sourceYStep = (float)height / inferenceHeight;
+
+                        Parallel.For(0, inferenceHeight, iy =>
                         {
-                            byte* rowSrc = (byte*)srcPtr + (y * rowPitch);
-                            byte* rowDst = (byte*)dstPtr + (y * width * 3);
-                            
-                            for (int x = 0; x < width; x++)
+                            byte* rowSrc = (byte*)srcPtr + ((int)(iy * sourceYStep)) * rowPitch;
+                            byte* rowDst = (byte*)dstPtr + iy * inferenceWidth * 3;
+
+                            for (int ix = 0; ix < inferenceWidth; ix++)
                             {
-                                rowDst[x * 3] = rowSrc[x * 4 + 2];     // R
-                                rowDst[x * 3 + 1] = rowSrc[x * 4 + 1]; // G
-                                rowDst[x * 3 + 2] = rowSrc[x * 4];     // B
+                                int sx = (int)(ix * sourceXStep);
+                                rowDst[ix * 3] = rowSrc[sx * 4];         // R
+                                rowDst[ix * 3 + 1] = rowSrc[sx * 4 + 1]; // G
+                                rowDst[ix * 3 + 2] = rowSrc[sx * 4 + 2]; // B
                             }
                         });
                     }
@@ -680,8 +756,8 @@ namespace Lib.io.video.mediapipe
                 return new FaceDetectionRequest 
                 { 
                     PixelData = buffer, 
-                    Width = width, 
-                    Height = height, 
+                    Width = inferenceWidth, 
+                    Height = inferenceHeight, 
                     Timestamp = ts,
                     ConfidenceThreshold = confidenceThreshold,
                     MaxFaces = maxFaces,
@@ -719,7 +795,7 @@ namespace Lib.io.video.mediapipe
             }
         }
 
-        private void DrawDebugVisuals(Mat mat, FaceDetectionResultPacket result)
+        private void DrawDebugVisuals(Mat mat, FaceDetectionResultPacket result, float aspectRatio)
         {
             if (result.Detections == null || result.Detections.Length == 0) return;
             
@@ -739,9 +815,9 @@ namespace Lib.io.video.mediapipe
                 var p3 = result.Detections[baseIdx + 2];
                 var p4 = result.Detections[baseIdx + 3];
                 
-                int x1 = (int)((p1.Position.X + 1.0f) / 2.0f * mat.Width);
+                int x1 = (int)((p1.Position.X / aspectRatio + 1.0f) / 2.0f * mat.Width);
                 int y1 = (int)((1.0f - p1.Position.Y) / 2.0f * mat.Height);
-                int x2 = (int)((p3.Position.X + 1.0f) / 2.0f * mat.Width);
+                int x2 = (int)((p3.Position.X / aspectRatio + 1.0f) / 2.0f * mat.Width);
                 int y2 = (int)((1.0f - p3.Position.Y) / 2.0f * mat.Height);
                 
                 int width = x2 - x1;
@@ -763,7 +839,7 @@ namespace Lib.io.video.mediapipe
                     if (kpIdx >= result.Detections.Length) break;
                     
                     var kp = result.Detections[kpIdx];
-                    int kpX = (int)((kp.Position.X + 1.0f) / 2.0f * mat.Width);
+                    int kpX = (int)((kp.Position.X / aspectRatio + 1.0f) / 2.0f * mat.Width);
                     int kpY = (int)((1.0f - kp.Position.Y) / 2.0f * mat.Height);
                     
                     Cv2.Circle(mat, new OpenCvSharp.Point(kpX, kpY), 2, keypointColor, -1);
@@ -826,6 +902,7 @@ namespace Lib.io.video.mediapipe
                 device.ImmediateContext.UnmapSubresource(stagingTexture, 0);
             }
  
+            Cv2.CvtColor(mat, mat, ColorConversionCodes.RGBA2BGRA);
             return mat;
         }
         #endregion
@@ -916,6 +993,10 @@ namespace Lib.io.video.mediapipe
         {
             if (isDisposing)
             {
+                // Stops the worker task and hands the detector to its deferred closer - closing it here
+                // directly could hit a frame still running on the worker thread.
+                StopWorker(false);
+
                 try
                 {
                     lock (_faceDetectorLock)
@@ -941,7 +1022,8 @@ namespace Lib.io.video.mediapipe
                 }
                 
                 _debugTexture?.Dispose();
-                
+                _debugTexture = null;
+
                 lock (_textureCacheLock)
                 {
                     foreach (var kvp in _cachedStagingTextures)
@@ -967,6 +1049,8 @@ namespace Lib.io.video.mediapipe
                 }
                 
                 _bufferPool.Clear();
+
+                base.Dispose(isDisposing);
             }
         }
         #endregion
@@ -1007,6 +1091,17 @@ namespace Lib.io.video.mediapipe
 
         [Input(Guid = "F3A4B5C6-D7E8-59F0-01A2-345678901CD4")]
         public readonly InputSlot<bool> CorrectAspectRatio = new(false);
+
+        /// <summary>Inference acceleration: Cpu = plain single-threaded TF Lite (works everywhere),
+        /// Xnnpack = multithreaded CPU (the fast default; see InferenceThreads), Gpu = OpenGL/EGL
+        /// delegate (Linux native has it; the CPU-only Windows/macOS natives fall back to Cpu).</summary>
+        [Input(Guid = "a1b2c3d4-0002-4a9b-8c2d-101010101010")]
+        public readonly InputSlot<MediaPipeAcceleration> Acceleration = new(MediaPipeAcceleration.Xnnpack);
+
+        /// <summary>Worker threads for the Xnnpack acceleration (0 = library default). Ignored by Cpu and Gpu.</summary>
+        [Input(Guid = "a1b2c3d4-1002-4a9b-8c2d-101010101010")]
+        public readonly InputSlot<int> InferenceThreads = new(0);
+
 
         [Input(Guid = "A4B5C6D7-E8F9-60A1-12B3-456789012DE5")]
         public readonly InputSlot<float> ZScale = new(1.0f);
