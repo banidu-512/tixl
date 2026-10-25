@@ -50,6 +50,7 @@ public static class LaserOptimizerTransforms
         public LaserPoint[] Output = new LaserPoint[0];
         public readonly List<int> SegmentStartIndices = [];
         public readonly List<int> SegmentEndIndices = [];
+        public readonly List<int> TourOrder = [];
         public bool[] Visited = new bool[256];
     }
 
@@ -148,6 +149,15 @@ public static class LaserOptimizerTransforms
         var currentX = 0;
         var currentY = 0;
 
+        // The greedy tour is collected first and emitted after a rotation pass: the DAC replays
+        // the finished frame in a continuous loop, so the link from the LAST emitted shape back
+        // to the FIRST is scanned just as often as every other link. Starting the tour at the
+        // shape nearest null (the natural greedy seed) puts that loop seam wherever it happens
+        // to fall - rotating the visit order so the seam is the shortest available link keeps
+        // the loop closed and smooth, which is repeated 40 times a second on a typical frame.
+        var tourOrder = scratch.TourOrder;
+        tourOrder.Clear();
+
         for (var i = 0; i < starts.Count; i++)
         {
             var bestDist = float.MaxValue;
@@ -184,10 +194,27 @@ public static class LaserOptimizerTransforms
                 break;
 
             visited[bestIndex] = true;
+            tourOrder.Add(bestReverse ? ~bestIndex : bestIndex);
+
+            var segStart = starts[bestIndex];
+            var segEnd = ends[bestIndex];
+            currentX = input[bestReverse ? segStart : segEnd].X;
+            currentY = input[bestReverse ? segStart : segEnd].Y;
+        }
+
+        var rotation = FindBestSeamRotation(input, starts, ends, tourOrder);
+
+        var emitX = 0;
+        var emitY = 0;
+        for (var i = 0; i < tourOrder.Count; i++)
+        {
+            var entry = tourOrder[(i + rotation) % tourOrder.Count];
+            var bestReverse = entry < 0;
+            var bestIndex = bestReverse ? ~entry : entry;
             var segStart = starts[bestIndex];
             var segEnd = ends[bestIndex];
 
-            InsertBlankingIfNeeded(output, ref outputCount, currentX, currentY, input[segStart].X, input[segStart].Y, maxJumpDistance, blankingDelayPoints);
+            InsertBlankingIfNeeded(output, ref outputCount, emitX, emitY, input[segStart].X, input[segStart].Y, maxJumpDistance, blankingDelayPoints);
 
             if (bestReverse)
             {
@@ -206,11 +233,51 @@ public static class LaserOptimizerTransforms
                 }
             }
 
-            currentX = input[segEnd].X;
-            currentY = input[segEnd].Y;
+            emitX = input[bestReverse ? segStart : segEnd].X;
+            emitY = input[bestReverse ? segStart : segEnd].Y;
         }
 
         ApplyCornerDwellingToOutput(output, ref outputCount, cornerAngleThreshold, cornerAnchorCount);
+    }
+
+    /// <summary>
+    /// Picks the rotation of the greedy tour whose closing link (last shape's exit point back to
+    /// the first shape's entry point) is shortest. Rotating a tour only changes which two
+    /// neighbouring links become the seam, so this never adds travel inside the tour.
+    /// Deterministic: ties resolve to the earliest rotation.
+    /// </summary>
+    private static int FindBestSeamRotation(LaserPoint[] input, List<int> starts, List<int> ends, List<int> tourOrder)
+    {
+        if (tourOrder.Count < 2)
+            return 0;
+
+        var bestRotation = 0;
+        var bestSeamSq = float.MaxValue;
+
+        for (var r = 0; r < tourOrder.Count; r++)
+        {
+            // Rotating to start at r: the seam link connects tour order r-1's exit to r's entry.
+            var lastEntry = tourOrder[(r + tourOrder.Count - 1) % tourOrder.Count];
+            var firstEntry = tourOrder[r];
+
+            var lastIdx = lastEntry < 0 ? ~lastEntry : lastEntry;
+            var firstIdx = firstEntry < 0 ? ~firstEntry : firstEntry;
+
+            // Exit of a reversed segment is its start index; entry of a reversed segment is its end.
+            var lastExitX = input[lastEntry < 0 ? starts[lastIdx] : ends[lastIdx]].X;
+            var lastExitY = input[lastEntry < 0 ? starts[lastIdx] : ends[lastIdx]].Y;
+            var firstEntryX = input[firstEntry < 0 ? ends[firstIdx] : starts[firstIdx]].X;
+            var firstEntryY = input[firstEntry < 0 ? ends[firstIdx] : starts[firstIdx]].Y;
+
+            var seamSq = CalculateDistanceSquared(lastExitX, lastExitY, firstEntryX, firstEntryY);
+            if (seamSq < bestSeamSq)
+            {
+                bestSeamSq = seamSq;
+                bestRotation = r;
+            }
+        }
+
+        return bestRotation;
     }
 
     private static void FindSegments(LaserPoint[] input, int inputCount, List<int> startIndices, List<int> endIndices)
@@ -329,8 +396,10 @@ public static class LaserOptimizerTransforms
     /// <summary>
     /// Blanked approach to a shape start. The beam must always be off while moving between two
     /// shapes - otherwise nearby shapes get connected by a lit line, and dot-like single points
-    /// would burn strokes to their neighbours. The number of blanked points scales with jump
-    /// length (long jumps give the scanners more settling time), up to blankingDelayPoints.
+    /// would burn strokes to their neighbours. The blanked samples are distributed along the
+    /// travel line so the scanners track a ramp instead of a single-sample step (a step is a
+    /// maximal-acceleration demand that rings the galvos - the opposite of longevity), with the
+    /// last samples held at the target so the scanners settle before the beam turns on.
     /// Sub-pixel moves are skipped: the beam is already at the target.
     /// </summary>
     private static void InsertBlankingIfNeeded(
@@ -357,10 +426,21 @@ public static class LaserOptimizerTransforms
         var blankCount = (int)MathF.Ceiling(distance / maxJumpDistance * blankingDelayPoints);
         blankCount = Math.Clamp(blankCount, 1, blankingDelayPoints);
 
-        for (var b = 0; b < blankCount && outputCount < output.Length; b++)
+        // Most samples ramp along the path, the rest settle at the target. One sample alone
+        // cannot both ramp and settle - keep it as a pure settle like the classic blanking shift.
+        var settleCount = Math.Min(2, blankCount - 1);
+        var rampCount = blankCount - settleCount;
+
+        for (var b = 1; b <= rampCount && outputCount < output.Length; b++)
         {
-            output[outputCount++] = LaserPoint.CreateBlanked(toX, toY);
+            var t = b / (float)(rampCount + 1);
+            output[outputCount++] = LaserPoint.CreateBlanked(
+                (int)MathF.Round(fromX + dx * t),
+                (int)MathF.Round(fromY + dy * t));
         }
+
+        for (var s = 0; s < settleCount && outputCount < output.Length; s++)
+            output[outputCount++] = LaserPoint.CreateBlanked(toX, toY);
     }
 
     private static float CalculateAngle(LaserPoint p1, LaserPoint p2, LaserPoint p3)

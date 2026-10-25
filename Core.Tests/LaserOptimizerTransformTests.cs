@@ -1,3 +1,4 @@
+using System.Linq;
 using T3.Core.DataTypes;
 using Xunit;
 
@@ -36,10 +37,13 @@ public class LaserOptimizerTransformTests
     }
 
     [Fact]
-    public void Apply_ReordersSegmentsIntoNearestNeighbourTour()
+    public void Apply_ReordersSegmentsIntoSeamOptimalTour()
     {
-        // Three small shapes ordered far-to-near from the origin: the tour should visit the
-        // closest first. Each shape is a single lit point with blanks between.
+        // Three dots on a line with UNEQUAL gaps (3000 and 6000): the greedy tour from null
+        // visits them near-to-far, but the frame is looped by the DAC continuously, so the
+        // tour gets rotated to make the closing seam the shortest link. Starting at the
+        // middle dot gives the minimal seam (3000) - that is the correct start now, not the
+        // dot nearest the origin.
         var input = new[]
                         {
                             Blank(0, 0),
@@ -50,10 +54,14 @@ public class LaserOptimizerTransformTests
 
         var result = LaserOptimizerTransforms.Apply(input, input.Length, Config(), _scratch);
 
-        // First lit point must be the nearest one (3000, 0), not the input's first (9000, 0).
-        var firstLit = Array.Find(result, p => p.I > 0);
-        Assert.NotNull(firstLit);
-        Assert.Equal(3000, firstLit!.X);
+        var litPoints = result.Where(p => p.I > 0).ToArray();
+        Assert.Equal(3, litPoints.Length);
+
+        // Minimal seam: start and end of the loop are the two closest dots (3000 gap).
+        var seamDx = litPoints[^1].X - litPoints[0].X;
+        var seamDy = litPoints[^1].Y - litPoints[0].Y;
+        Assert.True(MathF.Sqrt(seamDx * (float)seamDx + seamDy * (float)seamDy) <= 3000,
+                    $"loop seam must be the shortest link, was {MathF.Sqrt(seamDx * (float)seamDx + seamDy * (float)seamDy)}");
     }
 
     [Fact]
@@ -76,7 +84,9 @@ public class LaserOptimizerTransformTests
     public void Apply_InsertsBlankedJumpsBetweenShapes()
     {
         // Two single-point shapes (separated by a blank so they are two segments): the move
-        // between them must be blanked, never lit.
+        // between them must be blanked, never lit - and it must be a RAMP from the previous
+        // shape toward the target, ending settled at the target (a single-sample step is a
+        // maximal-acceleration demand on the galvos).
         var input = new[]
                         {
                             Lit(0, 0),
@@ -86,7 +96,7 @@ public class LaserOptimizerTransformTests
 
         var result = LaserOptimizerTransforms.Apply(input, input.Length, Config(maxJump: 5000, blanking: 4), _scratch);
 
-        // Between the two lit points there must be blanked points at the target location.
+        // Between the two lit points there must be blanked points marching toward the target.
         var litIndices = new List<int>();
         for (var i = 0; i < result.Length; i++)
         {
@@ -98,7 +108,16 @@ public class LaserOptimizerTransformTests
         var between = result[(litIndices[0] + 1)..litIndices[1]];
         Assert.NotEmpty(between);
         Assert.All(between, p => Assert.Equal(0, p.I));
-        Assert.All(between, p => Assert.Equal(20000, p.X));
+
+        // All travel samples stay on the path (between the two shapes, never past the target)...
+        Assert.All(between, p => Assert.InRange(p.X, 0, 20000));
+
+        // ...advance monotonically toward the target...
+        for (var i = 1; i < between.Length; i++)
+            Assert.True(between[i].X >= between[i - 1].X, "travel samples must advance toward the target");
+
+        // ...and the last samples settle at the target so the scanners stop before the beam opens.
+        Assert.Equal(20000, between[^1].X);
     }
 
     [Fact]

@@ -19,7 +19,7 @@ The Ether Dream protocol port is fixed at 7765; there is nothing to configure th
 
 * **Discovery**: DACs announce themselves by UDP broadcast on port 7654. A DAC being streamed to stops broadcasting, so the address picker also offers the currently connected device.
 * **Connection loop**: reconnects every 2 s until cancelled and rebuilds the connection after fatal errors. All of this runs on the stream's own threads - the editor never blocks on the DAC.
-* **Send loop**: paces points into the DAC buffer at the configured scan rate. Transient errors are retried; light-engine warm-up (`InvalidOperationException`) is retried for up to ~60 s before surfacing as a warning.
+* **Send loop**: paces points into the DAC buffer at the configured scan rate. Transient errors are retried; light-engine warm-up (`InvalidOperationException`) is retried for up to ~60 s before surfacing as a warning. Every frame - fresh or looped - leads with a dark ramp from wherever the scanners sit (the previous frame's exit, or park after a begin), so playback never commands a single-sample cross-field step.
 * **Watchdog**: if no fresh frames arrive for about a second (stalled graph, paused project), the beam blanks instead of freezing the last lit frame.
 * The plug's status line shows the live state (connecting / streaming / warm-up / buffer).
 

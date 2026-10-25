@@ -137,9 +137,12 @@ public sealed class LaserOutputStream : IDisposable
         return Environment.TickCount64 - last > (long)(WatchdogTimeoutSec * 1000f);
     }
 
-    /// <summary>Leads the frame with dark copies of its first point: the scanners travel from
-    /// wherever they are parked to the shape's start with the beam off.</summary>
-    internal static LaserPoint[] PrependDarkApproach(LaserPoint[] frame, ref LaserPoint[] scratch)
+    /// <summary>Leads the frame with a dark ramp from the scanners' current position to the
+    /// frame's first point: they travel from wherever they are parked (or wherever the previous
+    /// frame ended) with the beam off, in bounded steps instead of one maximal-acceleration
+    /// jump. A fresh frame after (re)begin starts from the park position (0,0); while looping,
+    /// it starts from the previous frame's exit so consecutive passes chain smoothly.</summary>
+    internal static LaserPoint[] PrependDarkApproach(LaserPoint[] frame, int fromX, int fromY, ref LaserPoint[] scratch)
     {
         const int approachPoints = 6;
         var total = frame.Length + approachPoints;
@@ -147,12 +150,18 @@ public sealed class LaserOutputStream : IDisposable
             scratch = new LaserPoint[total];
 
         var first = frame[0];
-        first.R = 0;
-        first.G = 0;
-        first.B = 0;
-        first.I = 0;
+        var targetX = first.X;
+        var targetY = first.Y;
+
+        // The ramp fills all but the last sample; the final sample sits on the target so the
+        // scanners are settled there before the first lit point arrives.
         for (var i = 0; i < approachPoints; i++)
-            scratch[i] = first;
+        {
+            var t = (i + 1) / (float)approachPoints;
+            var x = (int)MathF.Round(fromX + (targetX - fromX) * t);
+            var y = (int)MathF.Round(fromY + (targetY - fromY) * t);
+            scratch[i] = LaserPoint.CreateBlanked(x, y);
+        }
 
         Array.Copy(frame, 0, scratch, approachPoints, frame.Length);
         return scratch;
@@ -489,6 +498,11 @@ public sealed class LaserOutputStream : IDisposable
                     }
                     else if (_lastFrame is { Length: > 0 })
                     {
+                        // The loop seam (this frame's exit back to its own start) gets the same
+                        // dark ramp as a fresh frame: the DAC replays the frame ~40 times a
+                        // second, so an unapproached seam would ring the scanners at loop rate.
+                        _needsDarkApproach = true;
+
                         if (masterOff)
                         {
                             frame = _lastFrame;
@@ -519,13 +533,24 @@ public sealed class LaserOutputStream : IDisposable
                         continue;
                     }
 
-                    // Galvo safety: after any engine (re)start the scanners sit at their park
-                    // position (center). Lead the frame with dark copies of its first point so
-                    // the travel from park to the shape start happens beam-off.
+                    // Galvo safety: the lead-in must be a dark ramp so the travel to the shape
+                    // start happens beam-off AND in bounded steps (a single-sample jump is a
+                    // maximal-acceleration demand that rings the scanners). After an engine
+                    // (re)start the scanners sit parked at center; while streaming they sit
+                    // wherever the previous frame ended - ramp from the real position.
                     _sendFrameRaw = frame;
                     if (_needsDarkApproach && frame.Length > 0)
                     {
-                        frame = PrependDarkApproach(frame, ref _approachScratch);
+                        if (_lastFrame is { Length: > 0 } last)
+                        {
+                            var lastPoint = last[last.Length - 1];
+                            frame = PrependDarkApproach(frame, lastPoint.X, lastPoint.Y, ref _approachScratch);
+                        }
+                        else
+                        {
+                            frame = PrependDarkApproach(frame, 0, 0, ref _approachScratch);
+                        }
+
                         _needsDarkApproach = false;
                     }
 
