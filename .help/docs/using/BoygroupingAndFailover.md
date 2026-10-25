@@ -8,8 +8,8 @@ Boygrouping distributes a show to render nodes. Enable it in **Settings → Boyg
 
 - **Deploy & Sync** sends the master's Output Setup files to the added render nodes. Project files are not transferred and clients do not restart: each slave writes the setups into its own copy of the project and switches to the master's active setup right away.
 - Setup edits made on the master are forwarded as they are saved, so slaves follow a venue change live.
-- The master drives playback and the slaves follow its clock.
-- Each slave presents the outputs connected in its own **[Output Setup](OutputSetup.md) → Local Bindings**: displays and stream/laser plugs are machine state, so every render node decides which output goes where. Only the setups (content, surfaces, outputs) are shared; `outputs.machine.json` is never sent.
+- The master drives playback and the slaves follow its clock: it sends a playback position for a future instant on its own clock, each slave measures the clock offset (NTP-style, best round trip) and switches when its monotonic clock reaches that instant. Timeline phase therefore does not depend on network jitter, and the time cursor advances every frame.
+- Each slave presents the outputs connected in its own **[Output Setup](OutputSetup.md) → Local Bindings**. On a master, the connected nodes' displays are listed in that same column under the node's name: drop an output on one to route it on that machine. The master sends the request, the render node binds it in its own `outputs.machine.json` and reports back, so the edge, the bound state and **Unbind** always reflect the client's real state. Only outputs and setups are shared; `outputs.machine.json` is never overwritten by a deploy.
 
 The master shows the added nodes, their local output bindings and their deployment status. A slave keeps its role and stays discoverable after a master disappears, so another master can add it without restarting the editor.
 
