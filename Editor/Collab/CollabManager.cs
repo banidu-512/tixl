@@ -304,6 +304,11 @@ internal sealed class CollabManager
 
         _sessionLog.Clear();
         _opsReceivedThisSecond.Clear();
+        while (_pendingDisconnects.TryDequeue(out _))
+        {
+            // Drop disconnect events from the dead session; replaying them into a future
+            // session would remove peers it never had.
+        }
         _localPresence = new PresencePacket();
         _password = "";
         RoomCode = "";
@@ -414,6 +419,12 @@ internal sealed class CollabManager
             return;
 
         ProcessPendingDisconnects();
+
+        // A disconnect handled above can end the session (host loss, relay link death), and
+        // Leave() disposes the transport — nothing below may run against it.
+        if (State == SessionState.Off)
+            return;
+
         DrainInboundQueue();
         SendHeartbeatsAndPrune();
         SendLocalPresence();
@@ -479,6 +490,9 @@ internal sealed class CollabManager
 
     private void DrainInboundQueue()
     {
+        if (_transport == null)
+            return;
+
         var processed = 0;
         while (processed < MaxInboundPerFrame && _transport.Inbound.TryDequeue(out var message))
         {
