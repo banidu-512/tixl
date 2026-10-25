@@ -1,0 +1,683 @@
+#nullable enable
+using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Linq;
+using System.Net;
+using System.Net.NetworkInformation;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Net.Sockets;
+using System.Text;
+using Newtonsoft.Json;
+using T3.Core.Logging;
+
+namespace T3.Core.Show;
+
+/// <summary>
+/// Configures <see cref="FailoverArbiter"/>. Lives in Core so runtime-compiled operators (Artnet,
+/// sACN, stream senders) can read the arbiter's suppression flag; the editor pushes its persisted
+/// settings into this shape.
+/// </summary>
+public sealed record FailoverConfig
+{
+    public bool Enabled;
+    public string ShowId = "tixl-show";
+    public int Priority = 100;
+    public int HeartbeatMs = 500;
+    public int TimeoutFactor = 3;
+    public bool Preempt = true;
+
+    public FailoverConfig Copy() => new()
+                                         {
+                                             Enabled = Enabled,
+                                             ShowId = ShowId,
+                                             Priority = Priority,
+                                             HeartbeatMs = HeartbeatMs,
+                                             TimeoutFactor = TimeoutFactor,
+                                             Preempt = Preempt,
+                                         };
+
+    public bool ConfigEquals(FailoverConfig? other)
+    {
+        return other != null
+               && Enabled == other.Enabled
+               && ShowId == other.ShowId
+               && Priority == other.Priority
+               && HeartbeatMs == other.HeartbeatMs
+               && TimeoutFactor == other.TimeoutFactor
+               && Preempt == other.Preempt;
+    }
+}
+
+/// <summary>
+/// Active/standby arbitration for show-critical network outputs (Artnet, sACN, NDI/Spout streams).
+/// Two TiXL machines run the same composition; exactly one is Active and actually sends. The other
+/// renders silently (Standby) and takes over within `TimeoutFactor × HeartbeatMs` if the active
+/// node dies. Heartbeats are small UDP datagrams multicast on the LAN; a shared Show Id isolates
+/// unrelated pairs. Multicast (not broadcast) is deliberate: it also loops back on the sending
+/// host, so a master and backup can be rehearsed on one machine.
+///
+/// Election rules (VRRP-flavored):
+/// - Higher Priority wins; equal priority breaks the tie by lower IP, then lower node id.
+/// - A Standby promotes when no Active peer has been heard for TimeoutFactor × HeartbeatMs.
+/// - Preempt (default on): a returning node with higher priority reclaims Active from a lower
+///   priority Active peer through a short contested mute window, so both sides never stream at
+///   once. With Preempt off, a returning node stays Standby until the current Active dies.
+///
+/// Operators check <see cref="IsOutputSuppressed"/> before sending. The flag is also true during
+/// startup probing and contested handovers — brief output blackouts on role changes are
+/// intentional and much cheaper than two masters fighting on the same DMX universe.
+/// </summary>
+public static class FailoverArbiter
+{
+    public enum NodeRole
+    {
+        Disabled,
+        Probing,
+        Active,
+        Standby,
+        Contested,
+    }
+
+    private const int FailoverPort = 44910;
+    private const int MaxDatagramSize = 512;
+
+    /// <summary>Link-local multicast block (224.0.0.0/24); flooded by switches, never routed.</summary>
+    private static readonly IPAddress GroupAddress = IPAddress.Parse("224.0.0.157");
+
+    private static readonly object Gate = new();
+
+    private static FailoverConfig _config = new();
+    private static NodeRole _role = NodeRole.Disabled;
+    private static readonly string NodeId = Guid.NewGuid().ToString("N");
+
+    /// <summary>
+    /// One receive/send socket per usable IPv4 interface. Membership pinned per interface is what
+    /// makes the arbiter work on multi-homed machines: with a single IPAddress.Any membership the
+    /// OS picks one default route and heartbeat datagrams arriving on every other NIC (WSL, Hyper-V,
+    /// Docker, VPN adapters) are silently dropped — the classic cause of a false "no active peer"
+    /// and a dual-active pair streaming the same DMX universe.
+    /// </summary>
+    private static readonly List<Socket> _heartbeatSockets = new();
+    private static CancellationTokenSource? _cancellation;
+
+    private sealed class PeerInfo
+    {
+        public int Priority;
+        public bool AdvertisesActive;
+        public long LastHeardTicks;
+        public string NodeId = "";
+    }
+
+    private static readonly Dictionary<string, PeerInfo> _peers = new(); // key: node id
+
+    private static long _lastStateChangeTicks = Environment.TickCount64;
+    private static int _takeoverCount;
+    private static string _lastEvent = "";
+
+    private static readonly ConcurrentQueue<string> _recentEvents = new();
+
+    /// <summary>True while this machine must NOT send network output. Operators check this per frame.</summary>
+    public static bool IsOutputSuppressed
+    {
+        get
+        {
+            lock (Gate)
+            {
+                return _role is not (NodeRole.Active or NodeRole.Disabled);
+            }
+        }
+    }
+
+    public static bool IsEnabled
+    {
+        get
+        {
+            lock (Gate)
+                return _config.Enabled;
+        }
+    }
+
+    /// <summary>Snapshot strings for the settings panel (UI thread).</summary>
+    public static string RoleText
+    {
+        get
+        {
+            lock (Gate)
+            {
+                return _role switch
+                           {
+                               NodeRole.Disabled  => "Off",
+                               NodeRole.Probing   => "Probing",
+                               NodeRole.Active    => "ACTIVE (streaming)",
+                               NodeRole.Standby   => "Standby",
+                               NodeRole.Contested => "Handover",
+                               _                  => "?",
+                           };
+            }
+        }
+    }
+
+    public static string PeerSummary
+    {
+        get
+        {
+            lock (Gate)
+            {
+                var now = Environment.TickCount64;
+                var timeout = TimeoutMs;
+                var alive = 0;
+                PeerInfo? bestActive = null;
+                foreach (var peer in _peers.Values)
+                {
+                    if (now - peer.LastHeardTicks > timeout)
+                        continue;
+
+                    alive++;
+                    if (peer.AdvertisesActive && (bestActive == null || Beats(peer.Priority, peer.NodeId, bestActive.Priority, bestActive.NodeId)))
+                        bestActive = peer;
+                }
+
+                if (alive == 0)
+                    return "No peers seen";
+
+                var age = bestActive != null ? now - bestActive.LastHeardTicks : -1;
+                return $"{alive} peer(s); active peer: {(bestActive != null ? $"priority {bestActive.Priority}, heard {age} ms ago" : "none")}";
+            }
+        }
+    }
+
+    public static int TakeoverCount
+    {
+        get
+        {
+            lock (Gate)
+                return _takeoverCount;
+        }
+    }
+
+    public static string LastEvent
+    {
+        get
+        {
+            lock (Gate)
+                return _lastEvent;
+        }
+    }
+
+    public static IReadOnlyList<string> RecentEvents
+    {
+        get
+        {
+            lock (Gate)
+                return _recentEvents.ToArray();
+        }
+    }
+
+    private static int TimeoutMs
+    {
+        get
+        {
+            lock (Gate)
+                return Math.Max(2, _config.TimeoutFactor) * Math.Max(50, _config.HeartbeatMs);
+        }
+    }
+
+    /// <summary>Pushes the editor's persisted settings. Cheap enough to call every frame; no-ops when unchanged.</summary>
+    public static void ApplyConfig(FailoverConfig config)
+    {
+        lock (Gate)
+        {
+            if (_config.ConfigEquals(config))
+                return;
+
+            var wasEnabled = _config.Enabled;
+            _config = config.Copy();
+
+            if (!wasEnabled && _config.Enabled)
+            {
+                Start();
+            }
+            else if (wasEnabled && !_config.Enabled)
+            {
+                Stop();
+            }
+            else if (_config.Enabled)
+            {
+                // Priority/preempt changes re-evaluate on the next tick naturally.
+                RecordEvent("Configuration updated");
+            }
+        }
+    }
+
+    private static void Start()
+    {
+        _role = NodeRole.Probing;
+        _lastStateChangeTicks = Environment.TickCount64;
+        _peers.Clear();
+        RecordEvent($"Enabled (show '{_config.ShowId}', priority {_config.Priority})");
+
+        try
+        {
+            // Join the heartbeat group on every real interface, not just the OS default route:
+            // multi-homed machines (WSL/Hyper-V/VPN adapters) otherwise never hear peers on the
+            // show NIC. Loopback keeps one-PC master/backup rehearsal working via MulticastLoopback.
+            var interfaces = new List<IPAddress>();
+            try
+            {
+                foreach (var networkInterface in NetworkInterface.GetAllNetworkInterfaces())
+                {
+                    if (networkInterface.OperationalStatus != OperationalStatus.Up
+                        || networkInterface.NetworkInterfaceType is NetworkInterfaceType.Loopback or NetworkInterfaceType.Tunnel
+                        || !networkInterface.SupportsMulticast)
+                        continue;
+
+                    var ipv4 = networkInterface.GetIPProperties().UnicastAddresses
+                                          .FirstOrDefault(a => a.Address.AddressFamily == AddressFamily.InterNetwork)?.Address;
+                    if (ipv4 != null)
+                        interfaces.Add(ipv4);
+                }
+            }
+            catch (Exception e)
+            {
+                Log.Warning($"Failover: interface enumeration failed ({e.Message}); using default route");
+            }
+
+            if (interfaces.Count == 0)
+                interfaces.Add(IPAddress.Any);
+
+            lock (Gate)
+            {
+                foreach (var address in interfaces)
+                {
+                    try
+                    {
+                        var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+                        socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+                        socket.Bind(new IPEndPoint(address, FailoverPort));
+                        socket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.MulticastLoopback, true);
+                        socket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.AddMembership,
+                                               new MulticastOption(GroupAddress, address));
+                        _heartbeatSockets.Add(socket);
+                        RecordEvent($"Heartbeat socket on {address}");
+                    }
+                    catch (Exception e)
+                    {
+                        Log.Warning($"Failover: could not bind {address}:{FailoverPort}: {e.Message}");
+                    }
+                }
+
+                // Supplementary default-route socket: on Linux a specific-IP bind never receives
+                // multicast looped back from a local sender (verified), which would break the
+                // one-PC master/backup rehearsal. The Any bind still does. Duplicates are
+                // harmless — peers are deduped by node id.
+                try
+                {
+                    var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+                    socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+                    socket.Bind(new IPEndPoint(IPAddress.Any, FailoverPort));
+                    socket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.MulticastLoopback, true);
+                    socket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.AddMembership,
+                                           new MulticastOption(GroupAddress, IPAddress.Any));
+                    _heartbeatSockets.Add(socket);
+                }
+                catch (Exception e)
+                {
+                    Log.Warning($"Failover: could not bind default-route heartbeat socket: {e.Message}");
+                }
+            }
+        }
+        catch (Exception e)
+        {
+            Log.Warning($"Failover: could not bind heartbeat multicast on port {FailoverPort}: {e.Message}");
+            _role = NodeRole.Disabled;
+            RecordEvent($"Failed to bind port {FailoverPort}");
+            return;
+        }
+
+        _cancellation = new CancellationTokenSource();
+        var token = _cancellation.Token;
+        Socket[] sockets;
+        lock (Gate)
+            sockets = _heartbeatSockets.ToArray();
+        foreach (var socket in sockets)
+            _ = Task.Run(() => ListenLoop(socket, token), token);
+        _ = Task.Run(() => TickLoop(token), token);
+    }
+
+    private static void Stop()
+    {
+        _role = NodeRole.Disabled;
+        _peers.Clear();
+        RecordEvent("Disabled — output resumed");
+        _cancellation?.Cancel();
+        _cancellation = null;
+        Socket[] sockets;
+        lock (Gate)
+        {
+            sockets = _heartbeatSockets.ToArray();
+            _heartbeatSockets.Clear();
+        }
+
+        foreach (var socket in sockets)
+        {
+            try
+            {
+                socket.Close();
+            }
+            catch
+            {
+                // Socket already dead.
+            }
+        }
+    }
+
+    private static void TickLoop(CancellationToken token)
+    {
+        while (!token.IsCancellationRequested)
+        {
+            try
+            {
+                SendHeartbeat();
+                EvaluateState();
+            }
+            catch (Exception e)
+            {
+                Log.Warning($"Failover: tick error: {e.Message}");
+            }
+
+            int delay;
+            lock (Gate)
+                delay = Math.Clamp(_config.HeartbeatMs / 2, 50, 500);
+
+            try
+            {
+                Task.Delay(delay, token).Wait(token);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+        }
+    }
+
+    private static void SendHeartbeat()
+    {
+        Socket[] sockets;
+        string showId;
+        int priority;
+        bool advertiseActive;
+        lock (Gate)
+        {
+            sockets = _heartbeatSockets.ToArray();
+            showId = _config.ShowId;
+            priority = _config.Priority;
+            // A contested node is muted but has claimed the role: it must advertise that claim, or
+            // the current active keeps streaming through the handover until it hears the new active.
+            advertiseActive = _role is NodeRole.Active or NodeRole.Contested;
+        }
+
+        if (sockets.Length == 0)
+            return;
+
+        var payload = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(new
+                                                                             {
+                                                                                 show = showId,
+                                                                                 id = NodeId,
+                                                                                 prio = priority,
+                                                                                 active = advertiseActive,
+                                                                             }));
+
+        // One copy per interface: heartbeats are ~100 bytes, and peers that only share one NIC
+        // with us still get every datagram. Duplicates are harmless (peers key by node id).
+        foreach (var socket in sockets)
+        {
+            try
+            {
+                socket.SendTo(payload, new IPEndPoint(GroupAddress, FailoverPort));
+            }
+            catch (Exception e) when (e is SocketException or ObjectDisposedException)
+            {
+                // Interface vanished (cable out, adapter reset); the remaining sockets still send.
+            }
+        }
+    }
+
+    private static void ListenLoop(Socket listenSocket, CancellationToken token)
+    {
+        var buffer = new byte[MaxDatagramSize];
+        while (!token.IsCancellationRequested)
+        {
+            EndPoint remote = new IPEndPoint(IPAddress.Any, 0);
+            int length;
+            try
+            {
+                length = listenSocket.ReceiveFrom(buffer, ref remote);
+            }
+            catch (Exception e) when (e is SocketException or ObjectDisposedException)
+            {
+                break;
+            }
+
+            try
+            {
+                if (length <= 0 || length > MaxDatagramSize)
+                    continue;
+
+                var heartbeat = JsonConvert.DeserializeObject<Heartbeat>(Encoding.UTF8.GetString(buffer, 0, length));
+                if (heartbeat == null || string.IsNullOrEmpty(heartbeat.Show) || string.IsNullOrEmpty(heartbeat.Id))
+                    continue;
+
+                lock (Gate)
+                {
+                    if (heartbeat.Show != _config.ShowId)
+                        continue; // Another show on the same network — ignore.
+
+                    if (heartbeat.Id == NodeId)
+                        continue; // Our own multicast loopback.
+                }
+
+                lock (Gate)
+                {
+                    if (!_peers.TryGetValue(heartbeat.Id, out var peer))
+                    {
+                        peer = new PeerInfo();
+                        _peers[heartbeat.Id] = peer;
+                        RecordEvent($"Peer discovered (priority {heartbeat.Prio}, {(heartbeat.Active ? "active" : "standby")})");
+                    }
+
+                    peer.Priority = heartbeat.Prio;
+                    peer.AdvertisesActive = heartbeat.Active;
+                    peer.NodeId = heartbeat.Id;
+                    peer.LastHeardTicks = Environment.TickCount64;
+                }
+            }
+            catch
+            {
+                // Malformed datagram from some other tool on this port — ignore.
+            }
+        }
+    }
+
+    private sealed class Heartbeat
+    {
+        public string? Show { get; set; }
+        public string? Id { get; set; }
+        public int Prio { get; set; }
+        public bool Active { get; set; }
+    }
+
+    /// <summary>Does (priority, id) win the election against the other side? Deterministic from both sides.</summary>
+    private static bool Beats(int priorityA, string idA, int priorityB, string idB)
+    {
+        if (priorityA != priorityB)
+            return priorityA > priorityB;
+
+        return string.CompareOrdinal(idA, idB) < 0;
+    }
+
+    private static void EvaluateState()
+    {
+        lock (Gate)
+        {
+            if (_role == NodeRole.Disabled)
+                return;
+
+            var now = Environment.TickCount64;
+            var timeout = TimeoutMs;
+            var config = _config;
+
+            // Peers that stopped sending can never win an election again. Without this the table
+            // grows for the life of the process: every restarted node mints a new id, and any LAN
+            // sender can add entries at will.
+            PruneStalePeers(now, timeout);
+
+            PeerInfo? bestActive = null;
+            PeerInfo? bestPeer = null;
+            foreach (var peer in _peers.Values)
+            {
+                if (now - peer.LastHeardTicks > timeout)
+                    continue;
+
+                if (bestPeer == null || Beats(peer.Priority, peer.NodeId, bestPeer.Priority, bestPeer.NodeId))
+                    bestPeer = peer;
+
+                if (peer.AdvertisesActive && (bestActive == null || Beats(peer.Priority, peer.NodeId, bestActive.Priority, bestActive.NodeId)))
+                    bestActive = peer;
+            }
+
+            var iWin = bestActive == null || Beats(config.Priority, NodeId, bestActive.Priority, bestActive.NodeId);
+            var outrankedByLivePeer = bestPeer != null && Beats(bestPeer.Priority, bestPeer.NodeId, config.Priority, NodeId);
+
+            switch (_role)
+            {
+                case NodeRole.Probing:
+                {
+                    // The probe window (2×timeout) lets a joining node hear existing masters before
+                    // claiming anything.
+                    if (now - _lastStateChangeTicks < 2 * timeout)
+                        return;
+
+                    // A peer that outranks us can claim at any moment - including one that is still
+                    // probing or already contested, neither of which advertises itself as active.
+                    // Yielding here is what stops two nodes that start together from both claiming
+                    // at the probe deadline (each saw no active peer).
+                    if (outrankedByLivePeer)
+                    {
+                        Transition(NodeRole.Standby, bestActive != null
+                                                         ? "Active peer has higher priority"
+                                                         : "Higher-priority peer is present");
+                        return;
+                    }
+
+                    if (bestActive == null)
+                    {
+                        Transition(NodeRole.Active, "No active peer — becoming active");
+                    }
+                    else if (config.Preempt)
+                    {
+                        Transition(NodeRole.Contested, "Preempting lower-priority active peer");
+                    }
+                    else
+                    {
+                        // An active peer that outranked us was handled above, so this is a lower
+                        // priority active we would win against - but preempt is off: a returning
+                        // node must not take the role from a live active.
+                        Transition(NodeRole.Standby, "Active peer is present — preempt is off");
+                    }
+
+                    break;
+                }
+
+                case NodeRole.Standby:
+                {
+                    if (bestActive == null)
+                    {
+                        // A higher-ranked node that is alive but has not claimed yet (still probing
+                        // or contested) will; promoting now puts two nodes on the wire.
+                        if (outrankedByLivePeer)
+                            return;
+
+                        _takeoverCount++;
+                        Transition(NodeRole.Active, "Active peer lost — taking over");
+                        return;
+                    }
+
+                    if (config.Preempt && iWin && now - _lastStateChangeTicks > 2 * timeout)
+                    {
+                        Transition(NodeRole.Contested, "Preempting lower-priority active peer");
+                    }
+
+                    break;
+                }
+
+                case NodeRole.Contested:
+                {
+                    // Both sides are muted for one timeout window, then the winner claims.
+                    if (now - _lastStateChangeTicks < timeout)
+                        return;
+
+                    if (outrankedByLivePeer || !iWin)
+                    {
+                        Transition(NodeRole.Standby, "Yielding to higher-priority peer");
+                        return;
+                    }
+
+                    Transition(NodeRole.Active, "Claimed active after handover");
+                    break;
+                }
+
+                case NodeRole.Active:
+                {
+                    if (bestActive != null && !iWin)
+                    {
+                        Transition(NodeRole.Contested, "Higher-priority peer is claiming");
+                    }
+
+                    break;
+                }
+            }
+        }
+    }
+
+    /// <summary>Drops peers unheard for many timeouts; a returning node re-announces itself. Caller holds Gate.</summary>
+    private static void PruneStalePeers(long now, int timeout)
+    {
+        if (_peers.Count == 0)
+            return;
+
+        _stalePeerIds.Clear();
+        foreach (var (id, peer) in _peers)
+        {
+            if (now - peer.LastHeardTicks > 10L * timeout)
+                _stalePeerIds.Add(id);
+        }
+
+        foreach (var id in _stalePeerIds)
+            _peers.Remove(id);
+    }
+
+    private static readonly List<string> _stalePeerIds = [];
+
+    private static void Transition(NodeRole newRole, string reason)
+    {
+        if (_role == newRole)
+            return;
+
+        _role = newRole;
+        _lastStateChangeTicks = Environment.TickCount64;
+        RecordEvent($"{newRole}: {reason}");
+        Log.Info($"Failover: {newRole} — {reason}");
+    }
+
+    private static void RecordEvent(string message)
+    {
+        _lastEvent = $"{DateTime.Now:HH:mm:ss}  {message}";
+        _recentEvents.Enqueue(_lastEvent);
+        while (_recentEvents.Count > 12)
+        {
+            _recentEvents.TryDequeue(out _);
+        }
+    }
+}

@@ -29,10 +29,19 @@ namespace T3.Editor.Gui;
 
 public static partial class T3Ui
 {
+    private static readonly T3.Core.Show.FailoverConfig _failoverConfig = new();
+
     internal static void ProcessFrame()
     {
         Profiling.KeepFrameData();
         App.DebugProtocol.DebugServer.ProcessMainThreadQueue();
+        _failoverConfig.Enabled = UserSettings.Config.FailoverEnabled;
+        _failoverConfig.ShowId = UserSettings.Config.FailoverShowId;
+        _failoverConfig.Priority = UserSettings.Config.FailoverPriority;
+        _failoverConfig.HeartbeatMs = UserSettings.Config.FailoverHeartbeatMs;
+        _failoverConfig.TimeoutFactor = UserSettings.Config.FailoverTimeoutFactor;
+        _failoverConfig.Preempt = UserSettings.Config.FailoverPreempt;
+        T3.Core.Show.FailoverArbiter.ApplyConfig(_failoverConfig);
         //ImGui.PushStyleColor(ImGuiCol.Text, UiColors.Text.Rgba);
         DragAndDropHandling.Update();
         MagGraph.Ui.DropHandling.DrawDragIndicator();

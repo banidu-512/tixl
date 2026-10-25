@@ -197,6 +197,15 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public bool EnableAutoBackup = true;
         public bool MinimalBackup = true;
 
+
+        // Show failover (active/standby output arbitration)
+        public bool FailoverEnabled = false;
+        public string FailoverShowId = "tixl-show";
+        public int FailoverPriority = 100;
+        public int FailoverHeartbeatMs = 500;
+        public int FailoverTimeoutFactor = 3;
+        public bool FailoverPreempt = true;
+
         public float GizmoSize = 100;
 
 
