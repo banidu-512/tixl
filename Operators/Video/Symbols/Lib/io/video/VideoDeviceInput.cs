@@ -14,7 +14,7 @@ namespace Lib.io.video;
 /// native initialization and could not run on Linux at all.
 /// </summary>
 [Guid("cd5a182e-254b-4e65-820b-ff754122614c")]
-public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolder, IStatusProvider
+public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolder, IStatusProvider, IRemoteVideoInput
 {
     // Output slots
     [Output(Guid = "1d0159cc-33d2-46b1-9c0c-7054aa560df5", DirtyFlagTrigger = DirtyFlagTrigger.Animated)]
@@ -147,6 +147,17 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
     private int _uploadedFrameCounter;
     private byte[]? _uploadBuffer;
 
+    // Boygroup video replication. On a render node _remoteActive keeps the camera closed and the
+    // master's received frame is presented instead.
+    private string? _relayKey;
+    private string _relayDisplayName = "Camera";
+    private bool _remoteActive;
+    private bool _remoteWasActive;
+    private Texture2D? _remoteTexture;
+    private int _remoteFrameCounter = -1;
+    private int _presentedRemoteFrameCounter = -1;
+    private string _remoteStatus = "";
+
     public VideoDeviceInput()
     {
         _basicConfigs =
@@ -163,8 +174,49 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
         UpdateCount.UpdateAction = Update;
         Resolution.UpdateAction = Update;
         Status.UpdateAction = Update;
-        ControlsCatalog.UpdateAction = Update;
+        ControlsCatalog.UpdateAction += Update;
+
+        // A boygroup master publishes this camera's frame; a render node gets the frame from the master.
+        RemoteVideoInputBus.RegisterInput(this);
     }
+
+    /// <summary>
+    /// Identity shared by the master's and the render node's copy of this operator. The deployed project
+    /// keeps its package id and instance path, so the two sides match without a manual mapping.
+    /// </summary>
+    public string RelayKey => _relayKey ??= BuildRelayKey();
+
+    public string RelayDisplayName => _relayDisplayName;
+
+    /// <summary>Master side: the frame captured locally, which the boygroup relay publishes over OMT.</summary>
+    public Texture2D? RelayTexture => _gpuTexture;
+
+    /// <summary>The local camera's own status, shown by the master when there is no frame to relay yet.</summary>
+    public string RelayStatus => _lastStatusMessage;
+
+    /// <summary>Render-node side: the master's frame replaces this machine's camera entirely.</summary>
+    public void ApplyRemoteFrame(Texture2D? texture, int frameCounter, string status)
+    {
+        _remoteActive = true;
+        _remoteTexture = texture;
+        _remoteFrameCounter = frameCounter;
+        _remoteStatus = status;
+    }
+
+    public void EndRemoteFrames()
+    {
+        _remoteActive = false;
+        _remoteTexture = null;
+        _remoteFrameCounter = -1;
+        _remoteStatus = "";
+    }
+
+    private string BuildRelayKey()
+    {
+        var packageId = Symbol?.SymbolPackage?.Id ?? Guid.Empty;
+        return packageId.ToString("N") + "/" + string.Join("/", InstancePath.Select(id => id.ToString("N")));
+    }
+
 
     public IStatusProvider.StatusLevel GetStatusLevel()
     {
@@ -206,9 +258,17 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
 
     private void Update(EvaluationContext context)
     {
+        var configuredDevice = InputDeviceName.GetValue(context);
+        if (!string.IsNullOrWhiteSpace(configuredDevice))
+            _relayDisplayName = configuredDevice;
+
+        // A boygroup render node presents the master's stream instead of opening a local camera.
+        if (UpdateRemoteFrames())
+            return;
+
         WebcamScan.Scan();
 
-        var deviceName = InputDeviceName.GetValue(context);
+        var deviceName = configuredDevice;
         if (string.IsNullOrEmpty(deviceName) && WebcamScan.Devices.Count > 0)
         {
             deviceName = WebcamScan.Devices[0].Name;
@@ -366,6 +426,65 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
         }
 
         Status.Value = _lastStatusMessage;
+    }
+
+    /// <summary>
+    /// Presents the frame a boygroup master sent for this operator. Returns true while remote control is
+    /// active, in which case the local camera must stay closed.
+    /// </summary>
+    private bool UpdateRemoteFrames()
+    {
+        if (!_remoteActive)
+        {
+            if (_remoteWasActive)
+            {
+                _remoteWasActive = false;
+                _presentedRemoteFrameCounter = -1;
+                Texture.Value = null!;
+                Resolution.Value = default;
+                UpdateCount.Value++;
+                SetStatus("Remote stream ended — resuming the local camera");
+                Status.Value = _lastStatusMessage;
+            }
+
+            return false;
+        }
+
+        if (!_remoteWasActive)
+        {
+            _remoteWasActive = true;
+
+            // Release the camera completely while the master drives this input; the worker is created
+            // again if the stream ends and local capture resumes.
+            StopCaptureThread();
+            _controlWorker?.Dispose();
+            _controlWorker = null;
+        }
+
+        var status = string.IsNullOrWhiteSpace(_remoteStatus) ? "Receiving video from the boygroup master" : _remoteStatus;
+        SetStatus(status);
+        Status.Value = status;
+        ControlsCatalog.Value = "";
+
+        Texture.Value = _remoteTexture!;
+        if (_remoteTexture != null)
+        {
+            var description = _remoteTexture.Description;
+            if (description.Width > 0 && description.Height > 0)
+                Resolution.Value = new Int2(description.Width, description.Height);
+        }
+        else
+        {
+            Resolution.Value = default;
+        }
+
+        if (_remoteFrameCounter != _presentedRemoteFrameCounter)
+        {
+            _presentedRemoteFrameCounter = _remoteFrameCounter;
+            UpdateCount.Value++;
+        }
+
+        return true;
     }
 
     private bool IsCaptureThreadRunning()
@@ -907,6 +1026,7 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
         if (!disposing)
             return;
 
+        RemoteVideoInputBus.UnregisterInput(this);
         StopCaptureThread();
         _controlWorker?.Dispose();
         _controlWorker = null;

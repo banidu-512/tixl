@@ -222,6 +222,7 @@
         <PackageNames Include="Skills" />
         <PackageNames Include="Spout" />
         <PackageNames Include="Ndi" />
+        <PackageNames Include="Omt" />
         <PackageNames Include="Video" />
         <PackageNames Include="Io" />
         <PackageNames Include="Mediapipe">

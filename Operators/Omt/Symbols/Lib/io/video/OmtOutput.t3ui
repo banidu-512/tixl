@@ -1,0 +1,57 @@
+{
+  "FormatVersion": 3,
+  "Id": "957ef10e-b410-4eb6-8c2a-b813e8df3a3e"/*OmtOutput*/,
+  "Description": "Open Media Transport live video output. B8G8R8A8_UNorm or R8G8B8A8_UNorm textures are required. You can adjust the render format by using a ConvertFormat op or [RenderTarget] like in this example: [TorusMesh]->[DrawMesh]->[RenderTarget]->[OmtOutput]. OMT sources are discovered on the LAN; a receiver connects by picking the source named MACHINENAME (SenderName).",
+  "InputUis": [
+    {
+      "InputId": "a16c8835-4298-43c0-b240-9ab428f6dba9"/*Texture*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "InputId": "852d49b4-a3d9-48b0-a855-d41383f7f95e"/*SenderName*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 90.0
+      },
+      "Usage": "Default",
+      "Description": "The source name receivers see, after the machine name."
+    },
+    {
+      "InputId": "98e9190e-9cde-45da-bffc-e3c97a528be3"/*FrameRate*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 135.0
+      },
+      "Description": "Frames per second sent to receivers. Rendered frames in between are skipped."
+    },
+    {
+      "InputId": "e7bbb443-b97e-4446-acb8-10648d65237a"/*EnableAlpha*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 180.0
+      },
+      "Description": "Send BGRA with alpha instead of opaque UYVY. Receivers must request BGRA to see it."
+    }
+  ],
+  "SymbolChildUis": [],
+  "OutputUis": [
+    {
+      "OutputId": "cade9b2b-2a82-4028-859e-813f0a763c39"/*TextureOutput*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 200.0
+      }
+    },
+    {
+      "OutputId": "fc06d936-aa9d-4e70-af49-acf151cbf3ca"/*SourceAddress*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 250.0
+      },
+      "Description": "The source name receivers discover: MACHINENAME (SenderName)."
+    }
+  ]
+}

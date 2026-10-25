@@ -149,6 +149,18 @@ internal sealed partial class SettingsWindow
         DrawMasterDiagnostics(manager);
 
         FormInputs.AddVerticalSpace();
+        FormInputs.AddSectionSubHeader("Inputs");
+        FormInputs.AddVerticalSpace();
+        CustomComponents.HelpText("""
+                                  MIDI and OSC received on this machine are mirrored to the render nodes, so
+                                  their graphs see the same values without their own controllers. A
+                                  [VideoDeviceInput] streams its camera over OMT and a render node presents
+                                  that stream instead of opening a local camera.
+                                  """);
+        FormInputs.SetCursorToParameterEdit();
+        ImGui.TextWrapped(manager.InputRelaySummary);
+
+        FormInputs.AddVerticalSpace();
         FormInputs.AddSectionSubHeader("Show control");
         FormInputs.AddVerticalSpace();
 
@@ -375,6 +387,8 @@ internal sealed partial class SettingsWindow
         ImGui.TextUnformatted(manager.TimeFollowSummary);
         ImGui.Bullet();
         ImGui.TextUnformatted(manager.DeploySummary);
+        ImGui.Bullet();
+        ImGui.TextWrapped(manager.InputRelaySummary);
 
         FormInputs.AddVerticalSpace(6);
         FormInputs.SetCursorToParameterEdit();
@@ -384,9 +398,12 @@ internal sealed partial class SettingsWindow
 
         FormInputs.AddVerticalSpace();
         CustomComponents.HelpText("""
-                                  The master's output setups are applied here automatically. Which output reaches
-                                  which display, stream or laser is set in Output Setup → Local Bindings on this
-                                  machine and never overwritten by the master.
+                                  The master's audio/control inputs drive this machine: MIDI and OSC are
+                                  replayed into the same operators, and a webcam is received over OMT.
+                                  Local controllers take over again while the master sends no input.
+                                  The master's output setups are applied here automatically. Which output
+                                  reaches which display, stream or laser is set in Output Setup → Local
+                                  Bindings on this machine and never overwritten by the master.
                                   """);
     }
 }

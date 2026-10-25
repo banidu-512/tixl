@@ -28,6 +28,8 @@
     <Compile Include="../../Editor/Collab/CollabRelayTransport.cs" Link="Included/CollabRelayTransport.cs" />
     <Compile Include="../../Editor/Show/BoygroupDeployer.cs" Link="Included/BoygroupDeployer.cs" />
     <Compile Include="../../Core/Utils/LanInterfaces.cs" Link="Included/LanInterfaces.cs" />
+    <Compile Include="../../Core/IO/RemoteInputBus.cs" Link="Included/RemoteInputBus.cs" />
+    <Compile Include="../../Editor/Show/BoygroupInputWire.cs" Link="Included/BoygroupInputWire.cs" />
     <Compile Include="../../Core/Show/FailoverArbiter.cs" Link="Included/FailoverArbiter.cs" />
   </ItemGroup>
 </Project>

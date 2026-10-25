@@ -11,6 +11,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using Newtonsoft.Json.Linq;
+using T3.Core.IO;
 using T3.Core.Show;
 using T3.Core.Utils;
 using T3.Editor.Collab;
@@ -30,6 +31,7 @@ internal static class Program
         Run("framing.roundtrip", TestFramingRoundTrip);
         Run("framing.maxsize", TestFrameSizeLimit);
         Run("json.decode", TestJsonDecode);
+        Run("io.wire", TestInputWire);
         Run("presence.roundtrip", TestPresencePacket);
         Run("auth.mac", TestAuth);
         Run("heartbeat.answers-not-answered", TestHeartbeatAnswersAreNotAnswered);
@@ -143,6 +145,43 @@ internal static class Program
         // JSON never starts with '{' collides with relay control lines — assert the discriminator.
         var objStart = Encoding.UTF8.GetBytes("{\"t\":\"x\"}");
         Check(objStart[0] == (byte)'{', "JSON frames must start with '{' (relay control-line convention)");
+    }
+
+    /// <summary>
+    /// Input replication batch: MIDI stays a device + raw message pair, and OSC keeps its original
+    /// packet bytes so argument types survive the round trip.
+    /// </summary>
+    private static void TestInputWire()
+    {
+        var midi = new List<RemoteMidiEvent>
+                       {
+                           new("Controller", 0xB3 | (7 << 8) | (100 << 16)),
+                           new("", 0x90 | (60 << 8) | (127 << 16)),
+                       };
+
+        // OSC "/debug" (8 bytes padded), type tag ",f" (4 bytes), float 0.25 (big-endian).
+        var packet = new byte[]
+                         {
+                             0x2F, 0x64, 0x65, 0x62, 0x75, 0x67, 0x00, 0x00,
+                             0x2C, 0x66, 0x00, 0x00,
+                             0x3E, 0x80, 0x00, 0x00,
+                         };
+        var osc = new List<RemoteOscPacket> { new(7000, packet) };
+
+        var json = BoygroupInputWire.Encode(midi, osc);
+        Check(BoygroupInputWire.TryDecode(json, out var decodedMidi, out var decodedOsc), "batch was rejected");
+        Check(decodedMidi.Count == 2, "wrong MIDI event count");
+        Check(decodedMidi[0].DeviceProductName == "Controller" && decodedMidi[0].RawMessage == midi[0].RawMessage, "MIDI event changed");
+        Check(decodedMidi[1].RawMessage == midi[1].RawMessage, "device-less MIDI event changed");
+        Check(decodedOsc.Count == 1 && decodedOsc[0].Port == 7000, "OSC packet changed");
+        Check(decodedOsc[0].Packet.AsSpan().SequenceEqual(packet), "OSC bytes were not preserved");
+
+        // A malformed entry only drops itself, and an empty batch decodes to "nothing".
+        var broken = JObject.Parse("""{"t":"io","midi":[["x",0],["ok",144]],"osc":[{"p":1,"d":"%%%"}]}""");
+        Check(BoygroupInputWire.TryDecode(broken, out var recoveredMidi, out var recoveredOsc), "partial batch rejected");
+        Check(recoveredMidi.Count == 1 && recoveredMidi[0].RawMessage == 144, "valid MIDI entry in a partial batch was lost");
+        Check(recoveredOsc.Count == 0, "malformed OSC entry was accepted");
+        Check(!BoygroupInputWire.TryDecode(JObject.Parse("""{"t":"io"}"""), out _, out _), "empty batch reported content");
     }
 
     // ---------------------------------------------------------------------------------------

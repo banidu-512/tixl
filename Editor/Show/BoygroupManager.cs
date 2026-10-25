@@ -4,11 +4,18 @@ using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
+using System.Threading;
+using NAudio.Midi;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using Rug.Osc;
 using T3.Core.Animation;
+using T3.Core.IO;
 using T3.Core.Output;
+using T3.Core.Output.Streaming;
+using T3.Core.Video;
 using T3.Editor.Collab;
+using T3.IoServices;
 using T3.Editor.Gui.UiHelpers;
 using T3.Editor.Gui.Windows.OutputSetup;
 using T3.Editor.SystemUi;
@@ -132,8 +139,66 @@ internal sealed class BoygroupManager
     private const string DefaultGroup = "Main";
     private readonly ConcurrentQueue<(string Host, int Port)> _pendingInvites = new();
 
+    // Input replication. Hardware callbacks enqueue from their own threads; the UI thread batches them
+    // into one message per frame.
+    private const int MaxQueuedInputEvents = 8192;
+    private readonly ConcurrentQueue<RemoteMidiEvent> _outgoingMidi = new();
+    private readonly ConcurrentQueue<RemoteOscPacket> _outgoingOsc = new();
+    private readonly List<RemoteMidiEvent> _outgoingMidiBatch = [];
+    private readonly List<RemoteOscPacket> _outgoingOscBatch = [];
+    private long _droppedInputEvents;
+
+    // Video input relay: one OMT sender per registered VideoDeviceInput on the master.
+    private readonly Dictionary<string, IOutputStreamSender> _videoSenders = new(StringComparer.Ordinal);
+    private string _videoRelaySummary = "No video input";
+    private int _lastVideoInputsVersion = -1;
+    private long _nextVideoSourcesTicks;
+    private string _lastVideoSourcesJson = "";
+
     private BoygroupManager()
     {
+        RemoteInputBus.MidiCaptured += OnMidiCaptured;
+        RemoteInputBus.OscCaptured += OnOscCaptured;
+        RemoteInputBus.ErrorReported += message => Log.Warning(message);
+    }
+
+    /// <summary>What the input replication is doing, for the settings panel and the debug bridge.</summary>
+    public string InputRelaySummary => State switch
+                                           {
+                                               BoygroupState.Server => $"MIDI/OSC from this machine · {_videoRelaySummary}",
+                                               BoygroupState.Client => $"Receiving MIDI/OSC/video · {RemoteVideoInputBus.Summary}",
+                                               _                     => "",
+                                           };
+
+    /// <summary>True while this master forwards its hardware input to at least one render node.</summary>
+    public bool IsCapturingInputs => RemoteInputBus.IsCapturing;
+
+    private void OnMidiCaptured(RemoteMidiEvent ev)
+    {
+        if (State != BoygroupState.Server)
+            return;
+
+        if (_outgoingMidi.Count >= MaxQueuedInputEvents)
+        {
+            Interlocked.Increment(ref _droppedInputEvents);
+            return;
+        }
+
+        _outgoingMidi.Enqueue(ev);
+    }
+
+    private void OnOscCaptured(RemoteOscPacket packet)
+    {
+        if (State != BoygroupState.Server)
+            return;
+
+        if (_outgoingOsc.Count >= MaxQueuedInputEvents)
+        {
+            Interlocked.Increment(ref _droppedInputEvents);
+            return;
+        }
+
+        _outgoingOsc.Enqueue(packet);
     }
 
     // ---------------------------------------------------------------------------------------
@@ -372,6 +437,24 @@ internal sealed class BoygroupManager
         _setupPushPending = false;
         _serverProjectName = "";
         _serverProjectFolder = "";
+
+        // Input replication belongs to the session that just ended. On a master this releases the OMT
+        // senders; on a render node it hands the inputs back to the local hardware.
+        RemoteInputBus.IsCapturing = false;
+        RemoteInputBus.ResetRemoteActivity();
+        RemoteVideoInputBus.ClearRemoteSources();
+        ResetVideoRelay();
+
+        while (_outgoingMidi.TryDequeue(out _))
+        {
+        }
+
+        while (_outgoingOsc.TryDequeue(out _))
+        {
+        }
+
+        Interlocked.Exchange(ref _droppedInputEvents, 0);
+
         State = BoygroupState.Off;
         StatusText = "Boygrouping is off";
     }
@@ -466,6 +549,9 @@ internal sealed class BoygroupManager
 
         if (State == BoygroupState.Client)
         {
+            // Update the camera receivers before this frame's graph evaluation; the new texture is then
+            // presented by the VideoDeviceInput op in the same frame.
+            RemoteVideoInputBus.Pump();
             SendClockPings();
             SendStats();
             ApplyPendingAnchor();
@@ -474,6 +560,8 @@ internal sealed class BoygroupManager
 
         if (State == BoygroupState.Server)
         {
+            PumpInputReplication();
+            PumpVideoRelay();
             SendNodePings();
             RefreshDiscoveredServers();
         }
@@ -481,6 +569,211 @@ internal sealed class BoygroupManager
         {
             TryAutoJoinMaster();
         }
+    }
+
+    /// <summary>
+    /// Sends the MIDI and OSC events captured since the last frame. Batching once per frame keeps the
+    /// ordering and keeps a fast controller from producing one TCP write per event.
+    /// </summary>
+    private void PumpInputReplication()
+    {
+        if (_outgoingMidi.IsEmpty && _outgoingOsc.IsEmpty)
+            return;
+
+        _outgoingMidiBatch.Clear();
+        _outgoingOscBatch.Clear();
+
+        for (var i = 0; i < BoygroupInputWire.MaxEventsPerBatch && _outgoingMidi.TryDequeue(out var midi); i++)
+            _outgoingMidiBatch.Add(midi);
+
+        for (var i = 0; i < BoygroupInputWire.MaxEventsPerBatch && _outgoingOsc.TryDequeue(out var osc); i++)
+            _outgoingOscBatch.Add(osc);
+
+        if (_outgoingMidiBatch.Count == 0 && _outgoingOscBatch.Count == 0)
+            return;
+
+        BroadcastToGroup(BoygroupInputWire.Encode(_outgoingMidiBatch, _outgoingOscBatch));
+
+        // A producer faster than the link must not make the queue grow without bound.
+        var dropped = Interlocked.Exchange(ref _droppedInputEvents, 0);
+        if (dropped > 0)
+            Log.Warning($"Boygroup: dropped {dropped} input events because the replication queue overflowed");
+    }
+
+    /// <summary>
+    /// Master side: keeps one OMT sender per VideoDeviceInput, sends its frame and tells the render nodes
+    /// which source to receive. The source list is re-broadcast when it changes and again periodically so
+    /// a node that joins later picks it up.
+    /// </summary>
+    private void PumpVideoRelay()
+    {
+        var provider = OutputStreamRegistry.TryGetProvider(RemoteVideoInputBus.PreferredTransportKind);
+        var inputs = RemoteVideoInputBus.Inputs;
+
+        if (RemoteVideoInputBus.InputsVersion != _lastVideoInputsVersion)
+        {
+            _lastVideoInputsVersion = RemoteVideoInputBus.InputsVersion;
+            RemoveStaleVideoSenders(inputs);
+            _nextVideoSourcesTicks = 0;
+        }
+
+        var sources = new JArray();
+        var streaming = 0;
+        var firstProblem = "";
+
+        foreach (var input in inputs)
+        {
+            var key = input.RelayKey;
+            if (string.IsNullOrEmpty(key))
+                continue;
+
+            if (provider == null)
+            {
+                firstProblem = $"the {RemoteVideoInputBus.PreferredTransportKind} package is not loaded";
+                sources.Add(VideoSourceEntry(key, "", firstProblem));
+                continue;
+            }
+
+            if (!_videoSenders.TryGetValue(key, out var sender))
+            {
+                try
+                {
+                    sender = provider.CreateSender(BuildVideoSourceName(input, key));
+                    sender.Configure(new OutputStreamSettings(60, false));
+                    _videoSenders[key] = sender;
+                }
+                catch (Exception e)
+                {
+                    firstProblem = $"OMT sender failed: {e.Message}";
+                    sources.Add(VideoSourceEntry(key, "", firstProblem));
+                    continue;
+                }
+            }
+
+            var texture = input.RelayTexture;
+            string status;
+            if (texture == null)
+            {
+                status = string.IsNullOrWhiteSpace(input.RelayStatus) ? "waiting for the camera" : input.RelayStatus;
+                if (string.IsNullOrEmpty(firstProblem))
+                    firstProblem = status;
+            }
+            else
+            {
+                bool sent;
+                try
+                {
+                    sent = sender.Send(texture);
+                }
+                catch (Exception e)
+                {
+                    sent = false;
+                    status = $"OMT send failed: {e.Message}";
+                    firstProblem = status;
+                    sources.Add(VideoSourceEntry(key, sender.AdvertisedAddress ?? "", status));
+                    continue;
+                }
+
+                if (!sent)
+                {
+                    status = sender.LastError ?? "the OMT sender is not sending";
+                    firstProblem = status;
+                }
+                else
+                {
+                    status = "live";
+                    streaming++;
+                }
+            }
+
+            var address = sender.AdvertisedAddress ?? "";
+            if (string.IsNullOrEmpty(address) && string.IsNullOrEmpty(firstProblem))
+                firstProblem = "waiting for the OMT sender";
+
+            sources.Add(VideoSourceEntry(key, address, status));
+        }
+
+        _videoRelaySummary = inputs.Count == 0
+                                 ? "No video input in the project"
+                                 : streaming > 0
+                                     ? $"{streaming} of {inputs.Count} video input{(inputs.Count == 1 ? "" : "s")} streaming over OMT"
+                                     : string.IsNullOrEmpty(firstProblem) ? "Waiting for the camera" : firstProblem;
+
+        var json = sources.ToString(Formatting.None);
+        var now = Environment.TickCount64;
+        if (json == _lastVideoSourcesJson && now < _nextVideoSourcesTicks)
+            return;
+
+        _lastVideoSourcesJson = json;
+        _nextVideoSourcesTicks = now + 2000;
+        BroadcastToGroup(new JObject
+                             {
+                                 ["t"] = "videoSources",
+                                 ["status"] = _videoRelaySummary,
+                                 ["sources"] = sources,
+                             });
+    }
+
+    private static JObject VideoSourceEntry(string key, string address, string status) =>
+        new()
+            {
+                ["key"] = key,
+                ["address"] = address,
+                ["status"] = status,
+            };
+
+    private void RemoveStaleVideoSenders(IReadOnlyList<IRemoteVideoInput> inputs)
+    {
+        var liveKeys = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var input in inputs)
+        {
+            var key = input.RelayKey;
+            if (!string.IsNullOrEmpty(key))
+                liveKeys.Add(key);
+        }
+
+        foreach (var key in _videoSenders.Keys.ToArray())
+        {
+            if (liveKeys.Contains(key))
+                continue;
+
+            _videoSenders[key].Dispose();
+            _videoSenders.Remove(key);
+        }
+    }
+
+    private void ResetVideoRelay()
+    {
+        foreach (var sender in _videoSenders.Values)
+            sender.Dispose();
+
+        _videoSenders.Clear();
+        _videoRelaySummary = "No video input";
+        _lastVideoInputsVersion = -1;
+        _nextVideoSourcesTicks = 0;
+        _lastVideoSourcesJson = "";
+    }
+
+    /// <summary>
+    /// Unique per machine, stable across restarts and readable in an OMT receiver's source list.
+    /// </summary>
+    private static string BuildVideoSourceName(IRemoteVideoInput input, string key)
+    {
+        var device = string.IsNullOrWhiteSpace(input.RelayDisplayName) ? "Camera" : input.RelayDisplayName;
+        return $"TiXL {LocalNodeName} {device} {StableHash(key):x8}";
+    }
+
+    private static uint StableHash(string value)
+    {
+        // FNV-1a: a stable suffix for the source name; HashCode is randomized per process.
+        var hash = 2166136261u;
+        foreach (var c in value)
+        {
+            hash ^= c;
+            hash *= 16777619u;
+        }
+
+        return hash;
     }
 
     /// <summary>Counts editor frames for the render-node diagnostics; a local measure, not a graph stat.</summary>
@@ -558,6 +851,10 @@ internal sealed class BoygroupManager
         StatusText = count == 0
                          ? $"Master on port {UserSettings.Config.BoygroupPort} — waiting for render nodes"
                          : $"{count} render node{(count == 1 ? "" : "s")} connected";
+
+        // Input capture costs nothing until a node is actually listening. A render node that is still
+        // authenticating will be included when CompleteAuth triggers this method again.
+        RemoteInputBus.IsCapturing = count > 0;
     }
 
     // ---------------------------------------------------------------------------------------
@@ -784,6 +1081,16 @@ internal sealed class BoygroupManager
 
                 break;
 
+            // Hardware input replicated from the master: MIDI messages and complete OSC packets.
+            case "io" when State == BoygroupState.Client:
+                ApplyRemoteInput(json);
+                break;
+
+            // The master's video inputs and the OMT sources they are published on.
+            case "videoSources" when State == BoygroupState.Client:
+                ApplyRemoteVideoSources(json);
+                break;
+
             case "bindings" when State == BoygroupState.Server:
                 HandleClientBindings(peer, json);
                 break;
@@ -847,6 +1154,73 @@ internal sealed class BoygroupManager
                 Log.Debug($"Boygroup: ignoring message '{type}' in state {State}");
                 break;
         }
+    }
+
+    /// <summary>
+    /// Client side: replays the master's MIDI/OSC through the same simulated-input path a recorded
+    /// session uses, so device/channel/address filters produce exactly the master's values.
+    /// </summary>
+    private static void ApplyRemoteInput(JObject json)
+    {
+        if (!BoygroupInputWire.TryDecode(json, out var midi, out var osc))
+            return;
+
+        foreach (var remote in midi)
+        {
+            try
+            {
+                var midiEvent = MidiEvent.FromRawMessage(remote.RawMessage);
+                if (midiEvent == null)
+                    continue;
+
+                SimulatedIoBus.DispatchMidi(new SimulatedIoBus.SimulatedMidiEvent(remote.DeviceProductName, midiEvent));
+                RemoteInputBus.MarkRemoteMidiReceived();
+            }
+            catch (Exception e)
+            {
+                Log.Debug($"Boygroup: dropping a malformed MIDI event: {e.Message}");
+            }
+        }
+
+        foreach (var remote in osc)
+        {
+            try
+            {
+                if (OscPacket.Read(remote.Packet, 0, remote.Packet.Length) is not OscMessage message)
+                    continue;
+
+                SimulatedIoBus.DispatchOscPacket(new SimulatedIoBus.SimulatedOscPacket(remote.Port, message));
+                RemoteInputBus.MarkRemoteOscReceived();
+            }
+            catch (Exception e)
+            {
+                Log.Debug($"Boygroup: dropping a malformed OSC packet: {e.Message}");
+            }
+        }
+    }
+
+    /// <summary>Client side: applies the master's video input list to the remote camera bus.</summary>
+    private static void ApplyRemoteVideoSources(JObject json)
+    {
+        var sources = new List<RemoteVideoSource>();
+        if (json["sources"] is JArray array)
+        {
+            foreach (var token in array)
+            {
+                if (token is not JObject entry)
+                    continue;
+
+                var key = CollabProtocol.GetString(entry, "key");
+                if (string.IsNullOrEmpty(key))
+                    continue;
+
+                sources.Add(new RemoteVideoSource(key,
+                                                  CollabProtocol.GetString(entry, "address"),
+                                                  CollabProtocol.GetString(entry, "status")));
+            }
+        }
+
+        RemoteVideoInputBus.SetRemoteSources(sources);
     }
 
     // ---------------------------------------------------------------------------------------
@@ -961,6 +1335,9 @@ internal sealed class BoygroupManager
         if (client.DelayMs != 0)
             SendJson(client.Peer, new { t = "delay", ms = client.DelayMs });
         UpdateMasterStatus();
+
+        // The new node needs the input source list right away, not on the next periodic broadcast.
+        _nextVideoSourcesTicks = 0;
 
         // Late joiners get the current setups and graph without waiting for a deploy; after this they
         // receive live ops like everyone else.
