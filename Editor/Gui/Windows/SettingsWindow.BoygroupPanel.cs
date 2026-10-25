@@ -123,8 +123,8 @@ internal sealed partial class SettingsWindow
             ImGui.TextDisabled("Looking for other TiXL instances on this network...");
 
         // Connected nodes stop announcing themselves, so they are listed first - otherwise a node
-        // would disappear from this list right after being added.
-        foreach (var client in clients)
+        // would disappear from this list right after being added. Snapshot: Remove mutates the list.
+        foreach (var client in clients.ToArray())
         {
             ImGui.PushID("client" + client.Address + client.Name);
             FormInputs.SetCursorToParameterEdit();
@@ -133,7 +133,18 @@ internal sealed partial class SettingsWindow
             ImGui.PushStyleColor(ImGuiCol.Text, (client.IsDeployed ? UiColors.StatusActivated : UiColors.StatusWarning).Rgba);
             ImGui.TextUnformatted(client.StatusText);
             ImGui.PopStyleColor();
-            ImGui.PopID();
+
+            ImGui.SameLine();
+            if (ImGui.SmallButton("Remove"))
+                manager.RemoveClient(client);
+            CustomComponents.TooltipForLastItem("Disconnect this render node and remove it from the saved list.");
+
+            var diagnostics = DescribeClientDiagnostics(client);
+            if (!string.IsNullOrEmpty(diagnostics))
+            {
+                FormInputs.ApplyIndent();
+                CustomComponents.StylizedText(diagnostics, Fonts.FontSmall, UiColors.TextMuted);
+            }
 
             if (client.MachineConfig?.Bindings.Count > 0)
             {
@@ -141,6 +152,8 @@ internal sealed partial class SettingsWindow
                 CustomComponents.StylizedText(BoygroupManager.DescribeBindings(client.MachineConfig, setup),
                                               Fonts.FontSmall, UiColors.TextMuted);
             }
+
+            ImGui.PopID();
         }
 
         foreach (var node in nodes)
@@ -154,9 +167,20 @@ internal sealed partial class SettingsWindow
             ImGui.SameLine();
             if (!node.IsMaster)
             {
-                if (ImGui.SmallButton("Add"))
+                var saved = BoygroupManager.RememberedNodes.Any(n => string.Equals(n, node.Name, StringComparison.OrdinalIgnoreCase));
+                if (ImGui.SmallButton(saved ? "Reconnect" : "Add"))
                     manager.InviteClient(node);
-                CustomComponents.TooltipForLastItem("Ask this instance to render the show on this machine.");
+                CustomComponents.TooltipForLastItem(saved
+                                                        ? "Saved render node — asks it to connect again."
+                                                        : "Ask this instance to render the show on this machine.");
+
+                if (saved)
+                {
+                    ImGui.SameLine();
+                    if (ImGui.SmallButton("Forget"))
+                        BoygroupManager.ForgetNode(node.Name);
+                    CustomComponents.TooltipForLastItem("Stop reconnecting this node after a restart.");
+                }
             }
             else
             {
@@ -165,6 +189,30 @@ internal sealed partial class SettingsWindow
 
             ImGui.PopID();
         }
+
+        // Saved nodes that are neither connected nor visible right now; without this they could only
+        // be removed during the short time they are discovered.
+        var offline = BoygroupManager.RememberedNodes
+                                         .Where(n => !manager.IsClientConnected(n)
+                                                     && !nodes.Any(node => string.Equals(node.Name, n, StringComparison.OrdinalIgnoreCase)))
+                                         .ToList();
+        if (offline.Count > 0)
+        {
+            FormInputs.AddVerticalSpace(6);
+            ImGui.TextDisabled("Saved, not found:");
+            foreach (var name in offline)
+            {
+                ImGui.PushID("offline" + name);
+                ImGui.Bullet();
+                ImGui.TextUnformatted(name);
+                ImGui.SameLine();
+                if (ImGui.SmallButton("Forget"))
+                    BoygroupManager.ForgetNode(name);
+                ImGui.PopID();
+            }
+        }
+
+        DrawMasterDiagnostics(manager);
 
         FormInputs.AddVerticalSpace();
         FormInputs.AddSectionSubHeader("Show control");
@@ -197,6 +245,41 @@ internal sealed partial class SettingsWindow
             ImGui.SameLine();
             ImGui.TextDisabled(manager.DeploySummary);
         }
+    }
+
+    private static string DescribeClientDiagnostics(BoygroupManager.ClientInfo client)
+    {
+        var parts = new List<string>();
+        if (client.RttMs >= 0)
+            parts.Add($"RTT {client.RttMs:0} ms");
+
+        parts.Add($"clock {client.ClockOffsetMs:+0.0;-0.0;0} ms");
+        if (client.ClientFps > 0)
+            parts.Add($"{client.ClientFps:0} fps");
+        if (!string.IsNullOrEmpty(client.ClientVersion))
+            parts.Add($"v{client.ClientVersion}");
+
+        return string.Join(" · ", parts);
+    }
+
+    private static void DrawMasterDiagnostics(BoygroupManager manager)
+    {
+        var config = UserSettings.Config;
+        FormInputs.AddVerticalSpace();
+        FormInputs.AddSectionSubHeader("Diagnostics");
+        FormInputs.AddVerticalSpace();
+
+        var network = string.IsNullOrWhiteSpace(config.NetworkInterface) ? "Automatic" : config.NetworkInterface;
+        FormInputs.SetCursorToParameterEdit();
+        ImGui.TextDisabled($"Port {config.BoygroupPort} · {network}");
+
+        var uptime = TimeSpan.FromSeconds(manager.SessionUptimeSeconds);
+        FormInputs.SetCursorToParameterEdit();
+        ImGui.TextDisabled($"Uptime {uptime.ToString(@"hh\:mm\:ss")} · master {manager.EditorFps:0} fps");
+
+        FormInputs.SetCursorToParameterEdit();
+        ImGui.TextDisabled($"Connected {manager.Clients.Count} · saved {BoygroupManager.RememberedNodes.Count}"
+                           + $" · discovered {manager.DiscoveredServers.Count}");
     }
 
     private static bool IsConnected(BoygroupManager manager, BoygroupManager.DiscoveredServer node)
@@ -234,6 +317,10 @@ internal sealed partial class SettingsWindow
         ImGui.TextUnformatted(manager.TimeFollowSummary);
         ImGui.Bullet();
         ImGui.TextUnformatted(manager.DeploySummary);
+
+        FormInputs.AddVerticalSpace(6);
+        FormInputs.SetCursorToParameterEdit();
+        ImGui.TextDisabled($"Clock offset {manager.ClockOffsetMs:+0.0;-0.0;0} ms · {manager.EditorFps:0} fps");
 
         FormInputs.AddVerticalSpace();
         CustomComponents.HelpText("""

@@ -251,6 +251,12 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
 
         public int BoygroupPort = 44720;
 
+        /// <summary>
+        /// Render nodes a master has added, by node name. Remembered so a restart reconnects them as
+        /// soon as they are discovered instead of starting with an empty show.
+        /// </summary>
+        public List<string> BoygroupAddedNodes = [];
+
         // Show failover (active/standby output arbitration)
         public bool FailoverEnabled = false;
         public string FailoverShowId = "tixl-show";
