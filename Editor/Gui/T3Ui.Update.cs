@@ -24,24 +24,16 @@ using T3.Editor.UiModel;
 using T3.Editor.UiModel.ProjectHandling;
 using T3.Editor.UiModel.Selection;
 using T3.SystemUi;
+using T3.Editor.Gui.Windows.TimeLine;
 
 namespace T3.Editor.Gui;
 
 public static partial class T3Ui
 {
-    private static readonly T3.Core.Show.FailoverConfig _failoverConfig = new();
-
     internal static void ProcessFrame()
     {
         Profiling.KeepFrameData();
         App.DebugProtocol.DebugServer.ProcessMainThreadQueue();
-        _failoverConfig.Enabled = UserSettings.Config.FailoverEnabled;
-        _failoverConfig.ShowId = UserSettings.Config.FailoverShowId;
-        _failoverConfig.Priority = UserSettings.Config.FailoverPriority;
-        _failoverConfig.HeartbeatMs = UserSettings.Config.FailoverHeartbeatMs;
-        _failoverConfig.TimeoutFactor = UserSettings.Config.FailoverTimeoutFactor;
-        _failoverConfig.Preempt = UserSettings.Config.FailoverPreempt;
-        T3.Core.Show.FailoverArbiter.ApplyConfig(_failoverConfig);
         //ImGui.PushStyleColor(ImGuiCol.Text, UiColors.Text.Rgba);
         DragAndDropHandling.Update();
         MagGraph.Ui.DropHandling.DrawDragIndicator();
@@ -88,10 +80,14 @@ public static partial class T3Ui
 
         FitViewToSelectionHandling.ProcessNewFrame();
         SrvManager.RemoveForDisposedTextures();
+        GpuResourceReleasing.Update();
         KeyActionHandling.InitializeFrame();
 
         CompatibleMidiDeviceHandling.RescanIfDevicesChanged();
         CompatibleMidiDeviceHandling.UpdateConnectedDevices();
+        Interaction.Gamepad.GamepadIndicator.Update();
+        T3.IoServices.SpaceMouseInput.Update();
+        T3.IoServices.SpaceMouseInput.IsAvailableToOperators = UserSettings.Config.SpaceMouseUsage == UserSettings.InputDeviceUsages.Operators;
 
         var nodeSelection = ProjectView.Focused?.NodeSelection;
         if (nodeSelection != null)
@@ -102,8 +98,14 @@ public static partial class T3Ui
             NodeSelection.InvalidateSelectedOpsForTransformGizmo(nodeSelection);
         }
 
+        // Playback shortcuts are global and must fire once per frame, no matter how many timelines are shown.
+        TimeControls.HandleTimeControlActions();
+        RecordingSession.OnFrame();
+
+        CheckIfEscapeCouldCancelSomething();
+
         // Draw everything!
-        ImGui.DockSpaceOverViewport();
+        LayoutHandling.DrawMainDockSpace();
 
         ImGui.PushStyleVar(ImGuiStyleVar.WindowBorderSize, 1);
         WindowManager.Draw();
@@ -133,6 +135,7 @@ public static partial class T3Ui
         _couldNotLoadProjectDialog.Draw();
         _missingOperatorsDialog.Draw();
         _sendCrashReportsDialog.Draw();
+        ShareSessionDialog.Draw();
         CreateFromTemplateDialog.Draw();
         _userNameDialog.Draw();
         Windows.AssetLib.FolderImportDialog.Instance.Draw();
@@ -140,6 +143,13 @@ public static partial class T3Ui
         ExitDialog.Draw();
         OperatorHelp.EditDescriptionDialog.Draw();
         SkillMapPopup.Draw();
+
+        // Reopen before the welcome check: restoring the project's window visibility would otherwise
+        // close a welcome window that was just opened.
+        if (!_lastProjectReopened)
+            _lastProjectReopened = LastOpenProject.ProcessStartupReopen();
+
+        LastOpenProject.Update();
 
         // Classify the launch first so the welcome window claims the foreground before the
         // user-name prompt. They must not overlap — the user-name dialog waits until the
@@ -176,6 +186,7 @@ public static partial class T3Ui
         }
 
         KeyboardAndMouseOverlay.Draw();
+        ActionToast.Draw();
 
         Playback.OpNotReady = false;
         AutoBackup.AutoBackup.CheckForSave();
@@ -202,7 +213,7 @@ public static partial class T3Ui
     /// </summary>
     private static void CheckForVersionWelcome()
     {
-        if (_versionWelcomeChecked || !IsWindowLayoutComplete() || IsAnyPopupOpen)
+        if (_versionWelcomeChecked || !_lastProjectReopened || IsAnyPopupOpen)
             return;
 
         _versionWelcomeChecked = true;
@@ -223,6 +234,7 @@ public static partial class T3Ui
     }
 
     private static bool _versionWelcomeChecked;
+    private static bool _lastProjectReopened;
     private static bool _blockedProjectsChecked;
     private static bool _missingOperatorsChecked;
     private static bool _crashReportsChecked;

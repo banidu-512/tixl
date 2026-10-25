@@ -77,12 +77,36 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
 
         public readonly Dictionary<string, Guid> LastOpsForWindows = new();
 
+        /// <summary>
+        /// Operator bookmarks per project, keyed by the project's root symbol. The index is the digit key; each entry
+        /// is an instance path of Guids joined by '/', stored as text because Guid lists don't deserialize reliably.
+        /// </summary>
+        public readonly Dictionary<Guid, string?[]> OperatorBookmarks = new();
+
         [JsonConverter(typeof(StringEnumConverter))]
         public GraphHoverModes HoverMode = GraphHoverModes.LastValue;
 
         // Projects
         public List<string> ProjectDirectories = [];
         public bool EnableUsbProjectDetection = true;
+        public bool ReopenLastProjectOnStartup = true;
+
+        /// <summary>Projects switched away from stay loaded for a quick return; older ones are unloaded.</summary>
+        public int KeepLoadedProjectCount = 3;
+
+        /// <summary>
+        /// Share of the GPU memory budget the driver grants TiXL. Above it, render targets nothing shows are
+        /// released; below it, nothing is, so a show that fits never pays for a rebuild.
+        /// </summary>
+        public int GpuMemoryLimitPercent = 90;
+
+        /// <summary>0 keeps them for as long as their project is loaded, which avoids rebuild hitches.</summary>
+        public int ReleaseUnusedRenderTargetsAfterSeconds = 0;
+
+        /// <summary>Folder of the project that was open when the editor closed; empty if it closed in the project hub.</summary>
+        public string LastOpenProjectFolder = string.Empty;
+
+        public readonly ToastSettings Toasts = new();
 
         // Startup & recovery
         /// <summary>Project folder that opens automatically on the next launch. Empty starts with the Hub.</summary>
@@ -123,13 +147,14 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         /** Frames per second to render at with vsync; 0 renders every refresh of the pacing display. */
         public int TargetFrameRate = 0;
 
-        /** Windows' implementation of mirroring a display is extremely slow and can
-        * take up to 50% of the GPU time. Enabling this work around will copy the Main window
-        * SwapChain buffer into a texture that is used for the 2nd viewer window.
-        */
-        public bool MirrorUiOnSecondView = false;
+        /** Frames the loop may run ahead of the display: 1 for the lowest input latency, 2 to absorb late frames. */
+        public int FrameLatency = 1;
 
         public bool EnableKeyboardShortCuts = true;
+
+        /** Whether a connected game controller drives operators like [Gamepad] or the editor (its camera). */
+        [JsonConverter(typeof(StringEnumConverter))]
+        public InputDeviceUsages GamepadUsage = InputDeviceUsages.Operators;
 
         public GraphStyles GraphStyle = GraphStyles.Magnetic;
 
@@ -150,6 +175,9 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
 
         /// <summary>Opacity of a surface's content previewed over its photo — on the traced quad and on its Board card.</summary>
         public float OutputSetupContentPreviewOpacity = 0.65f;
+
+        /// <summary>Opacity of an output's picture carried back through a corner pin onto a surface's Board card.</summary>
+        public float OutputSetupProjectionPreviewOpacity = 0f;
 
         /// <summary>Whether the output setup's rect fields read in pixels of what they sit on, or as ratios of it.
         /// The values are stored as ratios either way; this is only how they are shown and typed.</summary>
@@ -207,15 +235,6 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public bool EnableAutoBackup = true;
         public bool MinimalBackup = true;
 
-
-        // Show failover (active/standby output arbitration)
-        public bool FailoverEnabled = false;
-        public string FailoverShowId = "tixl-show";
-        public int FailoverPriority = 100;
-        public int FailoverHeartbeatMs = 500;
-        public int FailoverTimeoutFactor = 3;
-        public bool FailoverPreempt = true;
-
         public float GizmoSize = 100;
 
 
@@ -232,9 +251,21 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public float TimeRasterDensity = 1f;
 
         // Space mouse
-        public float SpaceMouseRotationSpeedFactor = 1f;
-        public float SpaceMouseMoveSpeedFactor = 1f;
-        public float SpaceMouseDamping = 0.5f;
+        public float SpaceMouseRotationSpeedFactor = 0.3f;
+        public float SpaceMouseMoveSpeedFactor = 0.2f;
+        public float SpaceMouseDamping = 0.95f;
+
+        /** Whether the SpaceMouse flies the camera (Editor) or drives operators like [SpaceMouse]. */
+        [JsonConverter(typeof(StringEnumConverter))]
+        public InputDeviceUsages SpaceMouseUsage = InputDeviceUsages.Editor;
+
+        // Game controller camera
+        /** Seconds the camera takes to follow the sticks; longer is calmer, e.g. for live demos. */
+        public float GamepadCameraSmoothing = 0.4f;
+
+        public float GamepadCameraMoveSpeed = 1f;
+        public float GamepadCameraLookSpeed = 1f;
+        public bool GamepadCameraInvertLook;
 
         // Migration-only: these load from existing userSettings.json to preserve
         // the user's last render path counters. Not written back.
@@ -264,6 +295,7 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public bool LogAudioDetails = false;
         public bool LogAudioRenderingDetails = false;
         public bool LogVideoRenderingDetails = false;
+        public bool LogPresentationModeChanges = false;
 
         public CompilerOptions.Verbosity CompileCsVerbosity = CompilerOptions.Verbosity.Minimal;
 
@@ -308,6 +340,14 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
     {
         Legacy,
         Magnetic,
+    }
+
+    /** Who an input device drives; Editor means the camera of the output. Stored by name. */
+    public enum InputDeviceUsages
+    {
+        Operators,
+        Editor,
+        Off,
     }
 
     internal static bool IsUserNameDefined()
