@@ -64,6 +64,19 @@ internal sealed class BoygroupManager
         /// Bindings so an output can be routed to that machine's screen.</summary>
         public List<RemoteScreen> Screens = [];
 
+        /// <summary>Round trip of the session ping, for the render-node diagnostics.</summary>
+        public double RttMs = -1;
+
+        /// <summary>The client's measured clock offset to the master (master minus client).</summary>
+        public double ClockOffsetMs;
+
+        /// <summary>The client editor's frame rate, as it reports it.</summary>
+        public double ClientFps = -1;
+
+        public string ClientVersion = "";
+
+        public long LastSeenTicks;
+
         // Pending auth challenge (server side)
         public byte[]? PendingSalt;
         public byte[]? PendingNonce;
@@ -83,6 +96,7 @@ internal sealed class BoygroupManager
         public string Role = "";
         public List<string> Groups = [];
         public DateTime Seen = DateTime.UtcNow;
+        public long LastInviteTicks;
 
         public bool IsMaster => string.Equals(Role, "master", StringComparison.OrdinalIgnoreCase);
         public bool IsSlave => string.Equals(Role, "slave", StringComparison.OrdinalIgnoreCase);
@@ -98,6 +112,11 @@ internal sealed class BoygroupManager
 
     private long _nextHeartbeatTicks;
     private long _nextTimeSyncTicks;
+    private long _nextPingTicks;
+    private long _sessionStartedTicks;
+    private long _fpsWindowTicks;
+    private int _fpsFrames;
+    private double _editorFps = -1;
     private long _autoEnableCheckTicks;
 
     private const string DefaultGroup = "Main";
@@ -149,6 +168,7 @@ internal sealed class BoygroupManager
             _transport.PeerDisconnected += OnPeerDisconnected;
             _password = "";
             State = BoygroupState.Server;
+            _sessionStartedTicks = Environment.TickCount64;
             StatusText = $"Master on port {port} — waiting for render nodes";
             StartDiscovery();
             Log.Info($"Boygroup: master started on port {port}");
@@ -217,13 +237,17 @@ internal sealed class BoygroupManager
     }
 
     /// <summary>Master action: ask a discovered node to connect to this master.</summary>
-    public void InviteClient(DiscoveredServer node)
+    /// <param name="announce">False for the automatic reconnect of a saved node — it must not keep
+    /// replacing the status line while the node is still booting.</param>
+    public void InviteClient(DiscoveredServer node, bool announce = true)
     {
         if (State != BoygroupState.Server)
             return;
 
         if (!IPAddress.TryParse(node.Address, out var address))
             return;
+
+        RememberNode(node.Name);
 
         try
         {
@@ -236,12 +260,14 @@ internal sealed class BoygroupManager
                                                         });
             udp.Send(payload, payload.Length,
                      new IPEndPoint(address, node.Port + LanDiscoveryResponder.DiscoveryPortOffset));
-            StatusText = $"Invited {node.Name} — waiting for it to connect";
+            if (announce)
+                StatusText = $"Invited {node.Name} — waiting for it to connect";
             Log.Info($"Boygroup: invited '{node.Name}' at {node.Address}");
         }
         catch (SocketException e)
         {
-            ErrorText = $"Could not reach {node.Name}: {e.Message}";
+            if (announce)
+                ErrorText = $"Could not reach {node.Name}: {e.Message}";
         }
     }
 
@@ -420,16 +446,41 @@ internal sealed class BoygroupManager
         SendHeartbeats();
         SendTimeSync();
         MaybeSendBindings();
+        TrackFrameRate();
 
         if (State == BoygroupState.Client)
         {
             SendClockPings();
+            SendStats();
             ApplyPendingAnchor();
             ApplyIntegratedTime();
         }
 
         if (State == BoygroupState.Server)
+        {
+            SendNodePings();
             RefreshDiscoveredServers();
+        }
+    }
+
+    /// <summary>Counts editor frames for the render-node diagnostics; a local measure, not a graph stat.</summary>
+    private void TrackFrameRate()
+    {
+        _fpsFrames++;
+        var now = Environment.TickCount64;
+        if (_fpsWindowTicks == 0)
+        {
+            _fpsWindowTicks = now;
+            return;
+        }
+
+        var elapsed = now - _fpsWindowTicks;
+        if (elapsed < 1000)
+            return;
+
+        _editorFps = _fpsFrames * 1000.0 / elapsed;
+        _fpsFrames = 0;
+        _fpsWindowTicks = now;
     }
 
     private static bool _autoEnableAttempted;
@@ -487,6 +538,126 @@ internal sealed class BoygroupManager
         StatusText = count == 0
                          ? $"Master on port {UserSettings.Config.BoygroupPort} — waiting for render nodes"
                          : $"{count} render node{(count == 1 ? "" : "s")} connected";
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Render-node management
+    // ---------------------------------------------------------------------------------------
+
+    public static IReadOnlyList<string> RememberedNodes => UserSettings.Config.BoygroupAddedNodes;
+
+    public bool IsClientConnected(string name) =>
+        _clients.Any(c => c.Peer.IsAuthenticated && string.Equals(c.Name, name, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>Adding a node is persistent: a restart invites it again as soon as it is discovered.</summary>
+    private static void RememberNode(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+            return;
+
+        var nodes = UserSettings.Config.BoygroupAddedNodes;
+        if (nodes.Any(n => string.Equals(n, name, StringComparison.OrdinalIgnoreCase)))
+            return;
+
+        nodes.Add(name);
+        UserSettings.Save();
+    }
+
+    public static void ForgetNode(string name)
+    {
+        var nodes = UserSettings.Config.BoygroupAddedNodes;
+        var removed = nodes.RemoveAll(n => string.Equals(n, name, StringComparison.OrdinalIgnoreCase));
+        if (removed > 0)
+            UserSettings.Save();
+    }
+
+    /// <summary>Removes a render node from the show and from the saved list.</summary>
+    public void RemoveClient(ClientInfo client)
+    {
+        ForgetNode(client.Name);
+        if (client.Peer.IsAuthenticated)
+        {
+            client.Peer.SessionClosed = true;
+            client.Peer.Close();
+        }
+
+        _clients.Remove(client);
+        UpdateMasterStatus();
+        Log.Info($"Boygroup: removed render node '{client.Name}'");
+    }
+
+    /// <summary>Session info for the settings panel's diagnostics.</summary>
+    public double SessionUptimeSeconds => _sessionStartedTicks == 0 ? 0 : (Environment.TickCount64 - _sessionStartedTicks) / 1000.0;
+
+    public double EditorFps => _editorFps;
+
+    /// <summary>The measured clock difference to the master (master minus this machine), for diagnostics.</summary>
+    public double ClockOffsetMs => _clockOffsetTicks / (double)TimeSpan.TicksPerMillisecond;
+
+    private void SendNodePings()
+    {
+        var now = Environment.TickCount64;
+        if (now < _nextPingTicks)
+            return;
+
+        _nextPingTicks = now + 2000;
+        foreach (var client in _clients)
+        {
+            if (!client.Peer.IsAuthenticated)
+                continue;
+
+            SendJson(client.Peer, new { t = "ping", id = now, sent = now });
+        }
+    }
+
+    private void HandlePong(CollabPeerConnection peer, JObject json)
+    {
+        var client = _clients.FirstOrDefault(c => ReferenceEquals(c.Peer, peer));
+        if (client == null)
+            return;
+
+        var sent = json["sent"]?.Value<long>() ?? 0;
+        if (sent <= 0)
+            return;
+
+        var rtt = Math.Max(0, Environment.TickCount64 - sent);
+        client.RttMs = client.RttMs < 0 ? rtt : client.RttMs * 0.7 + rtt * 0.3;
+        client.LastSeenTicks = Environment.TickCount64;
+    }
+
+    private void HandleClientStats(CollabPeerConnection peer, JObject json)
+    {
+        var client = _clients.FirstOrDefault(c => ReferenceEquals(c.Peer, peer));
+        if (client == null)
+            return;
+
+        client.ClockOffsetMs = json["clockOffsetMs"]?.Value<double>() ?? 0;
+        client.ClientFps = json["fps"]?.Value<double>() ?? -1;
+        client.ClientVersion = CollabProtocol.GetString(json, "version");
+        client.LastSeenTicks = Environment.TickCount64;
+    }
+
+    private long _nextStatsTicks;
+
+    /// <summary>Client side: the numbers the master shows in its render-node diagnostics.</summary>
+    private void SendStats()
+    {
+        var now = Environment.TickCount64;
+        if (now < _nextStatsTicks)
+            return;
+
+        _nextStatsTicks = now + 2000;
+        if (_transport is not BoygroupClientTransport clientTransport)
+            return;
+
+        SendJson(clientTransport.ServerPeer,
+                 new
+                 {
+                     t = "stats",
+                     clockOffsetMs = _clockOffsetTicks / (double)TimeSpan.TicksPerMillisecond,
+                     fps = _editorFps,
+                     version = typeof(BoygroupManager).Assembly.GetName().Version?.ToString() ?? "",
+                 });
     }
 
     // ---------------------------------------------------------------------------------------
@@ -568,6 +739,20 @@ internal sealed class BoygroupManager
 
             case "clockPong" when State == BoygroupState.Client:
                 HandleClockPong(json);
+                break;
+
+            // Session diagnostics: the master pings each node and shows the round trip and the
+            // node's own report (clock offset, frame rate, version).
+            case "ping" when State == BoygroupState.Client:
+                SendJson(peer, new { t = "pong", id = json["id"]?.Value<long>() ?? 0, sent = json["sent"]?.Value<long>() ?? 0 });
+                break;
+
+            case "pong" when State == BoygroupState.Server:
+                HandlePong(peer, json);
+                break;
+
+            case "stats" when State == BoygroupState.Server:
+                HandleClientStats(peer, json);
                 break;
 
             case "bindOutput" when State == BoygroupState.Client:
@@ -698,6 +883,7 @@ internal sealed class BoygroupManager
                      project = ProjectView.Focused?.OpenedProject.Package.DisplayName ?? "",
                  });
         Log.Info($"Boygroup: client authenticated: {client.Name} ({client.Address}) group '{client.Group}'");
+        RememberNode(client.Name);
         UpdateMasterStatus();
 
         // Late joiners get the current setups and graph without waiting for a deploy; after this they
@@ -1487,7 +1673,30 @@ internal sealed class BoygroupManager
         _discoveredServers.RemoveAll(d => d.Seen < DateTime.UtcNow - TimeSpan.FromSeconds(15));
     }
 
-    private void RefreshDiscoveredServers() => DrainDiscovery();
+    private void RefreshDiscoveredServers()
+    {
+        DrainDiscovery();
+        if (State != BoygroupState.Server)
+            return;
+
+        // Saved render nodes come back on their own after a restart. The pause between attempts
+        // covers a node that is still booting and cannot answer yet.
+        var now = Environment.TickCount64;
+        foreach (var node in _discoveredServers)
+        {
+            if (node.IsMaster || !IsRemembered(node.Name) || IsClientConnected(node.Name))
+                continue;
+
+            if (now - node.LastInviteTicks < 15_000)
+                continue;
+
+            node.LastInviteTicks = now;
+            InviteClient(node, announce: false);
+        }
+    }
+
+    private static bool IsRemembered(string name) =>
+        UserSettings.Config.BoygroupAddedNodes.Any(n => string.Equals(n, name, StringComparison.OrdinalIgnoreCase));
 
     // ---------------------------------------------------------------------------------------
     // Shared plumbing

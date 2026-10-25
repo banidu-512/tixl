@@ -739,6 +739,17 @@ internal static class DebugServer
                 break;
             }
 
+            case "removeNode":
+            {
+                var name = request["name"]?.Value<string>() ?? "";
+                var client = boygroup.Clients.FirstOrDefault(c => string.Equals(c.Name, name, StringComparison.OrdinalIgnoreCase));
+                if (client != null)
+                    boygroup.RemoveClient(client);
+                else
+                    Show.BoygroupManager.ForgetNode(name);
+                break;
+            }
+
             // Bind an output on a render node's own display, exactly like dropping it on the
             // node's screen row in Output Setup.
             case "bindRemote":
@@ -843,6 +854,10 @@ internal static class DebugServer
                                 ["deployed"] = client.IsDeployed,
                                 ["bindings"] = Show.BoygroupManager.DescribeBindings(client.MachineConfig, activeSetup),
                                 ["screens"] = screens,
+                                ["rttMs"] = client.RttMs,
+                                ["clockOffsetMs"] = client.ClockOffsetMs,
+                                ["fps"] = client.ClientFps,
+                                ["version"] = client.ClientVersion,
                             });
         }
 
@@ -867,6 +882,9 @@ internal static class DebugServer
                                ["group"] = boygroup.GroupName,
                                ["timeFollow"] = boygroup.TimeFollowSummary,
                                ["bars"] = T3.Core.Animation.Playback.Current?.TimeInBars ?? 0,
+                               ["fps"] = boygroup.EditorFps,
+                               ["uptimeSecs"] = boygroup.SessionUptimeSeconds,
+                               ["savedNodes"] = new JArray(Show.BoygroupManager.RememberedNodes),
                                ["clients"] = clients,
                                ["discovered"] = discovered,
                            });
