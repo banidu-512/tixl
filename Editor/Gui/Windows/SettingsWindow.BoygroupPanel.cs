@@ -174,16 +174,12 @@ internal sealed partial class SettingsWindow
         ImGui.SameLine();
         ImGui.TextDisabled(manager.TimeFollowSummary);
 
-        FormInputs.AddVerticalSpace();
-
-        FormInputs.SetCursorToParameterEdit();
-        if (ImGui.Button("Deploy & Sync"))
-            manager.DeployAndSync();
-        CustomComponents.TooltipForLastItem("Send the master's output setups to the added render nodes. Project files are not transferred.");
-
+        // No deploy button: setups and graph changes are pushed as they happen. The summary only
+        // reports what the last automatic push covered.
         if (!string.IsNullOrEmpty(manager.DeploySummary))
         {
-            ImGui.SameLine();
+            FormInputs.AddVerticalSpace(6);
+            FormInputs.SetCursorToParameterEdit();
             ImGui.TextDisabled(manager.DeploySummary);
         }
     }
