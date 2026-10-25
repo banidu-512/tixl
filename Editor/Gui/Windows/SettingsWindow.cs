@@ -30,6 +30,7 @@ internal sealed partial class SettingsWindow : Window
         Interface,
         Theme,
         Projects,
+        Startup,
         Audio,
         Midi,
         SpaceMouse,
@@ -329,6 +330,11 @@ internal sealed partial class SettingsWindow : Window
                     ColorThemeEditor.DrawEditor();
                     break;
 
+                case Categories.Startup:
+                    FormInputs.AddVerticalSpace();
+                    DrawStartupPanel(ref changed);
+                    break;
+
                 case Categories.Projects:
                 {
                     CustomComponents
@@ -613,6 +619,7 @@ internal sealed partial class SettingsWindow : Window
                                                                         Categories.Interface  => "User Interface",
                                                                         Categories.Theme      => "Color Theme",
                                                                         Categories.Projects   => "Project specific settings",
+                                                                        Categories.Startup    => "Startup and Recovery",
                                                                         Categories.Audio      => "Audio System",
                                                                         Categories.Midi       => "Midi & OSC",
                                                                         Categories.SpaceMouse => "Space Mouse",
