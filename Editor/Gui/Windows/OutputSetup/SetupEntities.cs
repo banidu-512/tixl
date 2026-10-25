@@ -72,8 +72,7 @@ internal static class SetupEntities
             case SetupEntityKinds.Output:
             {
                 var output = setup.FindOutput(id);
-                name = output == null ? label : SetupLabels.OutputLabel(output);
-                return output != null;
+                return TryName(output?.Name, label, output != null, out name);
             }
 
             case SetupEntityKinds.ReferenceImage:
@@ -241,6 +240,12 @@ internal static class SetupEntities
             foreach (var stream in machineConfig.StreamPlugs)
             {
                 if (Matches(setup, SetupEntityKinds.Plug, stream.Id, name, out kind, out id))
+                    return true;
+            }
+
+            foreach (var laser in machineConfig.LaserPlugs)
+            {
+                if (Matches(setup, SetupEntityKinds.Plug, laser.Id, name, out kind, out id))
                     return true;
             }
 

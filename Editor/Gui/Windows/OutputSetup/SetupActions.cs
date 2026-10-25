@@ -45,9 +45,9 @@ internal static class SetupActions
                                                       var min = new Vector2(0.25f, 0.25f);
                                                       var max = new Vector2(0.75f, 0.75f);
 
+                                                      // Left unnamed: the label is derived from its position (see SetupLabels.PatchLabel).
                                                       var patch = new OutputDefinition.Patch
                                                                       {
-                                                                          Name = NextPatchName(output),
                                                                           Quad = [min, new Vector2(max.X, min.Y), max, new Vector2(min.X, max.Y)],
                                                                       };
                                                       output.Patches.Add(patch);
@@ -55,27 +55,10 @@ internal static class SetupActions
                                                   });
     }
 
-    /** A name that stays with the patch when the list is reordered, and that no other patch of the output carries. */
-    private static string NextPatchName(OutputDefinition output)
-    {
-        for (var ordinal = SetupRelations.CountListedPatches(output) + 1;; ordinal++)
-        {
-            var name = $"Patch {ordinal}";
-            var isTaken = false;
-            foreach (var other in output.Patches)
-            {
-                isTaken |= SetupLabels.PatchLabel(output, other) == name;
-            }
-
-            if (!isTaken)
-                return name;
-        }
-    }
-
     /// <summary>A full-canvas patch fed by a slice; the caller places it on an output and owns the undo step.</summary>
     internal static OutputDefinition.Patch CreateFullCanvasPatch(Guid sliceId)
     {
-        // Left unnamed, which is what makes it the output's implicit patch (SetupRelations.TryGetImplicitPatch).
+        // Left unnamed: the label is derived from its position (see SetupLabels.PatchLabel).
         return new OutputDefinition.Patch { SliceId = sliceId, Quad = OutputDefinition.FullCanvasQuad() };
     }
 
@@ -135,9 +118,27 @@ internal static class SetupActions
         if (selected.Count < 2)
             return;
 
-        // The same order a wallpaper layout cuts its strip in, so the Board row reads like the strip.
+        // Walls first, plan by plan and edge by edge around each; then whatever is left, west to east.
         var ordered = new List<Surface>(selected.Count);
-        WallpaperLayout.OrderAroundRoom(setup, selected, ordered, out _);
+        foreach (var plan in setup.FloorPlans)
+        {
+            for (var segment = 0; segment < plan.SegmentCount; segment++)
+            {
+                var wall = setup.FindSurface(plan.WallOf(segment));
+                if (wall != null && selected.Contains(wall) && !ordered.Contains(wall))
+                    ordered.Add(wall);
+            }
+        }
+
+        var rest = new List<Surface>();
+        foreach (var surface in selected)
+        {
+            if (!ordered.Contains(surface))
+                rest.Add(surface);
+        }
+
+        rest.Sort((a, b) => LeftEdgeOf(a).CompareTo(LeftEdgeOf(b)));
+        ordered.AddRange(rest);
 
         // The row starts where the selection already is, so an arrange doesn't fling the cards across the Board.
         var left = float.MaxValue;
@@ -302,6 +303,11 @@ internal static class SetupActions
                                                                             Name = nameOf(setup),
                                                                             Kind = kind,
                                                                         };
+
+                                                       // A laser output is driven by its scanner camera from the
+                                                       // start — the manual look-at is how it is aimed before a solve.
+                                                       if (kind == OutputDefinition.Kinds.Laser && output.Camera == null)
+                                                           output.Camera = new OutputDefinition.ProjectorCamera();
 
                                                        setup.Outputs.Add(output);
                                                        selection.Select(SetupEntityKinds.Output, output.Id);
@@ -513,7 +519,6 @@ internal static class SetupActions
                                                                              var max = new Vector2((column + 1) / (float)columns, (row + 1) / (float)rows);
                                                                              output.Patches.Add(new OutputDefinition.Patch
                                                                                                     {
-                                                                                                        Name = NextPatchName(output),
                                                                                                         SliceId = feed,
                                                                                                         QuarterTurns = turns,
                                                                                                         Quad = [min, new Vector2(max.X, min.Y), max, new Vector2(min.X, max.Y)],
@@ -726,7 +731,7 @@ internal static class SetupActions
     /// are named by the OS — see <see cref="CanRenamePlug"/>).</summary>
     internal static bool CanRename(SetupEntityKinds kind) => SetupEntityKindInfo.Of(kind).CanRename;
 
-    internal static bool CanRenamePlug(Guid plugId) => !Plugs.TryGetDisplayIndex(plugId, out _) && !Plugs.IsRemoteDisplay(plugId);
+    internal static bool CanRenamePlug(Guid plugId) => !Plugs.TryGetDisplayIndex(plugId, out _);
 
     /// <summary>Renames an entity by kind. A content source has no name of its own — renaming it renames its
     /// op (already undoable as a graph command), which flows back through the sync.</summary>
@@ -885,18 +890,6 @@ internal static class SetupActions
     }
 
     /// <summary>Deleting a slice clears it from anything showing it — the reference would mean nothing.</summary>
-    /// <summary>Drops a content source and its slices, and with them every route that showed them.</summary>
-    internal static void RemoveContentSource(Setup setup, ContentSource source)
-    {
-        for (var s = setup.Slices.Count - 1; s >= 0; s--)
-        {
-            if (setup.Slices[s].SourceId == source.Id)
-                DeleteSliceInternal(setup, setup.Slices[s].Id);
-        }
-
-        setup.ContentSources.Remove(source);
-    }
-
     private static void DeleteSliceInternal(Setup setup, Guid sliceId)
     {
         foreach (var surface in setup.Surfaces)
@@ -943,11 +936,9 @@ internal static class SetupActions
         }
     }
 
-    // Deleting an output cascades: drop every surface's mapping onto it, unbind the display, release
-    // cameras routed to it (their OutputRef would dangle forever — cleared so the routing sync can
-    // attach them to another laser output), and stop presenting it. Surfaces left without a mapping
-    // simply have no output — not lost. (The display binding lives in the per-machine config outside
-    // the setup file, so an undo restores the output unbound.)
+    // Deleting an output cascades: drop every surface's mapping onto it, unbind the display, and stop
+    // presenting it. Surfaces left without a mapping simply have no output — not lost. (The display binding
+    // lives in the per-machine config outside the setup file, so an undo restores the output unbound.)
     private static void DeleteOutputInternal(Setup setup, MachineConfig machineConfig, Guid outputId)
     {
         setup.Outputs.RemoveAll(o => o.Id == outputId);
@@ -956,13 +947,6 @@ internal static class SetupActions
             surface.OutputMappings.RemoveAll(m => m.OutputId == outputId);
 
         machineConfig.Unbind(outputId);
-
-        var cameras = LaserContent.Cameras;
-        for (var i = 0; i < cameras.Count; i++)
-        {
-            if (cameras[i] is T3.Core.Operator.Instance instance && LaserContent.OutputRefOf(instance) == outputId)
-                LaserContent.SetOutputRef(instance, Guid.Empty);
-        }
     }
 
     /// <summary>The duplicate cascades, one per kind, side by side.</summary>
@@ -1071,7 +1055,8 @@ internal static class SetupActions
 
                 // Same place on the canvas: the copy is meant to be re-fed or moved, not hidden under the original.
                 copy.Id = Guid.NewGuid();
-                copy.Name = string.IsNullOrEmpty(copy.Name) ? NextPatchName(owner) : copy.Name + " copy";
+                if (!string.IsNullOrEmpty(copy.Name))
+                    copy.Name += " copy";
 
                 owner.Patches.Add(copy);
                 selection.Select(SetupEntityKinds.Patch, copy.Id);

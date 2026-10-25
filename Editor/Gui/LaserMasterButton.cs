@@ -9,8 +9,6 @@ using T3.Core.Operator;
 using T3.Core.Output;
 using T3.Core.Resource;
 using T3.Core.Operator.Slots;
-using T3.Editor.Gui.Dialog;
-using T3.Editor.Gui.UiHelpers;
 using T3.Editor.UiModel.ProjectHandling;
 
 namespace T3.Editor.Gui;
@@ -19,7 +17,8 @@ namespace T3.Editor.Gui;
 /// The master laser enable / emergency button in the app menu bar. Appears whenever a
 /// laser operator is placed in any opened project. A plain click toggles the global
 /// <see cref="LaserMasterEnable"/> state - all laser output operators blank their frames
-/// while it is off.
+/// while it is off. Ctrl+Click switches between the plain red/green button and the
+/// "Imma firin mah lazer" face rendering (firing = enabled, closed = disabled).
 /// </summary>
 internal static class LaserMasterButton
 {
@@ -86,28 +85,13 @@ internal static class LaserMasterButton
         if (ctrlHeld)
         {
             _faceMode = !_faceMode;
-        }
-        else if (enabled)
-        {
-            LaserMasterEnable.Enabled = false;
-            Log.Debug("Laser master enable -> DISABLED (red) - laser outputs blanked");
-        }
-        else if (UserSettings.Config.LaserSafetyWarningAcknowledged)
-        {
-            Arm();
+            Log.Debug($"Laser master button: switching to {(_faceMode ? "Imma-firin-mah-lazer" : "standard")} rendering");
         }
         else
         {
-            // First arm (or the acknowledgement was declined): the safety warning gates the
-            // master. The dialog arms the master itself when confirmed with OK.
-            T3Ui.LaserArmWarningDialog.ShowNextFrame();
+            LaserMasterEnable.Enabled = !enabled;
+            Log.Debug($"Laser master enable -> {(LaserMasterEnable.Enabled ? "ENABLED (green)" : "DISABLED (red) - laser outputs blanked")}");
         }
-    }
-
-    private static void Arm()
-    {
-        LaserMasterEnable.Enabled = true;
-        Log.Debug("Laser master enable -> ENABLED (green) - master armed, laser outputs stream");
     }
 
     private static void DrawTooltip(bool enabled)
@@ -134,6 +118,7 @@ internal static class LaserMasterButton
         }
         ImGui.Separator();
         ImGui.TextUnformatted("Click: enable / disable all laser output");
+        ImGui.TextUnformatted("Ctrl+Click: toggle Imma-firin-mah-lazer face");
         ImGui.EndTooltip();
     }
 

@@ -63,15 +63,21 @@ internal sealed partial class SetupOutputView
     }
 
     /// <summary>
-    /// The previews that must stay live: the focused output's composite, and whatever the selection points at —
-    /// a surface or slice through to the source feeding it, so dragging content around shows the real thing.
-    /// Several selected take turns; everything else holds the content it rendered once.
+    /// The previews that must stay live: the focused output's composite, whatever the selection
+    /// points at — a surface or slice through to the source feeding it, so dragging content
+    /// around shows the real thing — and every content source of the setup: the setup is a live
+    /// view for laser rigs too, so an unselected send must not freeze while the show runs from
+    /// here. All of them share the per-frame turn budget, so a frame never carries more than a
+    /// single send's cost however many are live.
     /// </summary>
     private static void MarkEditedPreviews(Setup setup, OutputDefinition? output, SetupEntitySelection? selection)
     {
         OutputPreviewRefresh.BeginPriorityFrame();
         if (output != null)
             OutputPreviewRefresh.AddPriority(output.Id);
+
+        foreach (var source in setup.ContentSources)
+            OutputPreviewRefresh.AddPriority(source.SymbolChildId);
 
         if (selection == null)
             return;
@@ -267,10 +273,6 @@ internal sealed partial class SetupOutputView
         {
             _projection.Origin = new Vector2(min.X, max.Y);
             _projection.PixelsPerMeter = BoardPixelSize(setup, _spaceKind, _spaceId).X / MathF.Max(max.X - min.X, 0.0001f);
-
-            // An image's space is the whole image, while its card may show only a crop of it.
-            if (_spaceKind == SetupEntityKinds.ReferenceImage && setup.FindReferenceImage(_spaceId) is { } spaceImage)
-                _projection.Origin = ImageOriginOnBoard(spaceImage, min, max, _projection.PixelsPerMeter);
         }
 
         _spaceOrigin = _projection.Origin;
@@ -528,14 +530,11 @@ internal sealed partial class SetupOutputView
         }
 
         // The reference points on the plain projector canvas, where they can be walked onto the wall.
-        if (!rectifying && _projectsPhoto && _editMode == EditModes.Output
-            && TryFindAlignSubject(setup, outputId, out var alignSubject, out _)
-            && alignSubject.Pinned.FindMapping(outputId) is { Quad.Length: >= 4 } pinMapping
-            && SurfaceMetrics.CountPoints(alignSubject.Traced) > 0)
+        var pinMapping = focusCarrier?.FindMapping(outputId);
+        if (_editMode == EditModes.Output && !rectifying && focusCarrier != null && pinMapping != null && pinMapping.Quad.Length >= 4
+            && SurfaceMetrics.CountPoints(focusCarrier) > 0)
         {
-            DrawReferencePointPins(setup, dl, alignSubject, pinMapping, editable, handleFade);
-            if (setup.FindOutput(outputId) is { } calibratedOutput)
-                ProjectorCalibration.FollowPin(calibratedOutput, alignSubject.Pinned, pinMapping);
+            DrawReferencePointPins(setup, dl, focusCarrier, pinMapping, outputId, canvasSize, editable, handleFade);
         }
     }
 
@@ -852,9 +851,6 @@ internal sealed partial class SetupOutputView
                 SurfaceGeometry.DragEdge(surface, edge, surfacePos, _edgeDragStretches);
                 SurfaceGeometry.LocalBounds(surface, out var newMin, out var newMax);
                 KeepContentInPlace(setup, oldMin, oldMax, newMin, newMax);
-                if (!_edgeDragStretches)
-                    FloorPlanSync.FollowWallWidth(setup, surface, edge);
-
                 break;
             }
 

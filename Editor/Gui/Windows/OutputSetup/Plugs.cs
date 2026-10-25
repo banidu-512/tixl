@@ -3,8 +3,6 @@ using T3.Editor.SystemUi;
 using T3.Core.DataTypes.Vector;
 using T3.Core.Output;
 using T3.Core.Output.Streaming;
-using T3.Core.Utils;
-using T3.Editor.Show;
 using T3.Editor.UiModel.ProjectHandling;
 
 namespace T3.Editor.Gui.Windows.OutputSetup;
@@ -49,36 +47,9 @@ internal static class Plugs
         if (TryGetDisplayIndex(plugId, out var displayIndex))
             return DisplayLabel(displayIndex);
 
-        if (TryGetRemoteDisplayName(plugId, out var remoteName))
-            return remoteName;
-
         return machineConfig.FindStreamPlug(plugId)?.Name
                ?? machineConfig.FindLaserPlug(plugId)?.Name
                ?? "Output";
-    }
-
-    /// <summary>A display of a connected render node, listed under Local Bindings next to this machine's own.</summary>
-    public static bool IsRemoteDisplay(Guid plugId) => BoygroupManager.Instance.TryGetRemoteDisplayPlug(plugId, out _, out _);
-
-    /// <summary>The "node / display" name of a render node's display; false for any other plug.</summary>
-    public static bool TryGetRemoteDisplayName(Guid plugId, out string name)
-    {
-        name = "";
-        if (!BoygroupManager.Instance.TryGetRemoteDisplayPlug(plugId, out var client, out var displayIndex))
-            return false;
-
-        var screenName = $"Display {displayIndex + 1}";
-        foreach (var screen in client.Screens)
-        {
-            if (screen.Index != displayIndex)
-                continue;
-
-            screenName = screen.Name;
-            break;
-        }
-
-        name = $"{client.Name} / {screenName}";
-        return true;
     }
 
     /// <summary>Whether a plug id still names an attached display, a stream or a laser this machine offers.</summary>
@@ -86,9 +57,6 @@ internal static class Plugs
     {
         if (TryGetDisplayIndex(plugId, out var displayIndex))
             return displayIndex < EditorUi.Instance.AllScreens.Count;
-
-        if (IsRemoteDisplay(plugId))
-            return true;
 
         return machineConfig.FindStreamPlug(plugId) != null || machineConfig.FindLaserPlug(plugId) != null;
     }
@@ -145,11 +113,22 @@ internal static class Plugs
         if (isLaserOutput != isLaserPlug)
             return;
 
+        _outputsToRelease.Clear();
+
         // A laser plug takes several outputs - two scanners driven by one show, a preview rig - and
         // the laser driver fans the same frame out to each. Canvas plugs stay single-bound: two
         // canvases through one sender would fight over it.
         if (!isLaserPlug)
-            RemoveBindingsToPlug(machineConfig, plugId, exceptOutputId: outputId);
+        {
+            foreach (var existing in machineConfig.Bindings)
+            {
+                if (existing.OutputId != outputId && BoundPlugId(existing) == plugId)
+                    _outputsToRelease.Add((existing.OutputId, plugId));
+            }
+        }
+
+        foreach (var (releasedOutputId, releasedPlugId) in _outputsToRelease)
+            machineConfig.Unbind(releasedOutputId, releasedPlugId);
 
         if (TryGetDisplayIndex(plugId, out var displayIndex))
             BindOutputToDisplay(machineConfig, outputId, displayIndex);
@@ -169,20 +148,8 @@ internal static class Plugs
     /// <summary>Drops one of an output's bindings, keeping the others (a laser output's other devices).</summary>
     public static void UnbindOutput(MachineConfig machineConfig, Guid outputId, Guid plugId)
     {
-        // Display bindings store no PlugId - it is derived from the display index - so matching the
-        // stored id directly would silently keep the binding on screen after an "Unbind".
-        RemoveBindingsToPlug(machineConfig, plugId, exceptOutputId: null, onlyOutputId: outputId);
+        machineConfig.Unbind(outputId, plugId);
         OutputSetupHandling.SaveActive();
-    }
-
-    /// <param name="exceptOutputId">Binding of this output to the plug is kept (rebinding it).</param>
-    /// <param name="onlyOutputId">Only this output's binding is removed (unbinding it).</param>
-    private static void RemoveBindingsToPlug(MachineConfig machineConfig, Guid plugId, Guid? exceptOutputId = null,
-                                             Guid? onlyOutputId = null)
-    {
-        machineConfig.Bindings.RemoveAll(b => b.OutputId != exceptOutputId
-                                              && (onlyOutputId == null || b.OutputId == onlyOutputId)
-                                              && BoundPlugId(b) == plugId);
     }
     #endregion
 
@@ -315,11 +282,6 @@ internal static class Plugs
                             Port = kind == LaserPlug.Kinds.Ponk ? 5583
                                : kind == LaserPlug.Kinds.EtherDream ? 7765
                                : 0,
-                            // The basic interface: the first usable NIC. Editable per plug; empty
-                            // on machines without one ("any interface").
-                            LocalAddress = LanInterfaces.GetUsable() is { Count: > 0 } usable
-                                               ? usable[0].Address.ToString()
-                                               : string.Empty,
                         };
         machineConfig.LaserPlugs.Add(laser);
         OutputSetupHandling.SaveActive();
@@ -385,4 +347,5 @@ internal static class Plugs
     #endregion
 
     private static readonly List<string> _displayLabels = [];
+    private static readonly List<(Guid OutputId, Guid PlugId)> _outputsToRelease = [];
 }
