@@ -640,18 +640,31 @@ internal static class DebugServer
         switch (request["op"]?.Value<string>())
         {
             case "enable":
+            {
+                // The update loop pushes UserSettings into the arbiter every frame, so enabling
+                // has to go through the persisted settings or it is overwritten immediately.
+                UserSettings.Config.FailoverEnabled = true;
+                UserSettings.Config.FailoverShowId = request["showId"]?.Value<string>() ?? UserSettings.Config.FailoverShowId;
+                UserSettings.Config.FailoverPriority = request["priority"]?.Value<int>() ?? UserSettings.Config.FailoverPriority;
+                UserSettings.Config.FailoverHeartbeatMs = request["heartbeatMs"]?.Value<int>() ?? UserSettings.Config.FailoverHeartbeatMs;
+                UserSettings.Config.FailoverTimeoutFactor = request["timeoutFactor"]?.Value<int>() ?? UserSettings.Config.FailoverTimeoutFactor;
+                UserSettings.Config.FailoverPreempt = request["preempt"]?.Value<bool>() ?? UserSettings.Config.FailoverPreempt;
+                UserSettings.Save();
                 Core.Show.FailoverArbiter.ApplyConfig(new Core.Show.FailoverConfig
                                                           {
                                                               Enabled = true,
-                                                              ShowId = request["showId"]?.Value<string>() ?? "tixl-show",
-                                                              Priority = request["priority"]?.Value<int>() ?? 100,
-                                                              HeartbeatMs = request["heartbeatMs"]?.Value<int>() ?? 500,
-                                                              TimeoutFactor = request["timeoutFactor"]?.Value<int>() ?? 3,
-                                                              Preempt = request["preempt"]?.Value<bool>() ?? true,
+                                                              ShowId = UserSettings.Config.FailoverShowId,
+                                                              Priority = UserSettings.Config.FailoverPriority,
+                                                              HeartbeatMs = UserSettings.Config.FailoverHeartbeatMs,
+                                                              TimeoutFactor = UserSettings.Config.FailoverTimeoutFactor,
+                                                              Preempt = UserSettings.Config.FailoverPreempt,
                                                           });
                 break;
+            }
 
             case "disable":
+                UserSettings.Config.FailoverEnabled = false;
+                UserSettings.Save();
                 Core.Show.FailoverArbiter.ApplyConfig(new Core.Show.FailoverConfig { Enabled = false });
                 break;
 
