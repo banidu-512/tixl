@@ -5,9 +5,10 @@ self-contained: clone, build, run, report. Do not push commits unless explicitly
 
 ## Context
 
-Branch `feat/collabmulti` (fork: `https://github.com/banidu-512/tixl`) adds three network
-features to TiXL. The full TiXL editor targets `net10.0-windows` and will NOT build or run
-on Linux — that is expected and not a problem. What runs everywhere is:
+Branch `feat/collabmulti` (fork: `https://github.com/banidu-512/tixl`) is based on upstream
+`tixl3d/tixl` `feat/linux-port`, which targets plain `net10.0` — the editor itself now builds
+cross-platform on this base, but building the full editor is out of scope for this quick
+verification. What matters here:
 
 1. **`Tests/CollabHeadless`** — a `net10.0` console harness that compile-includes the real
    production sources (framing, auth, presence packets, file deployment, failover arbiter)
