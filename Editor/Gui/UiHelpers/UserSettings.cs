@@ -108,6 +108,16 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
 
         public readonly ToastSettings Toasts = new();
 
+        // Startup & recovery
+        /// <summary>Project folder that opens automatically on the next launch. Empty starts with the Hub.</summary>
+        public string StartupProjectFolder = "";
+
+        /// <summary>Installs a per-user OS login entry (Windows Run key, Linux XDG autostart, macOS LaunchAgent).</summary>
+        public bool AutostartWithSystem = false;
+
+        /// <summary>Relaunch the editor automatically after a crash via a supervisor process.</summary>
+        public bool CrashAutoRestart = false;
+
         // UI-Elements
         public bool ShowThumbnails = true;
         public bool ShowMainMenu = true;
