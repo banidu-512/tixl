@@ -368,32 +368,57 @@ public static class FailoverArbiter
 
             lock (Gate)
             {
-                foreach (var address in interfaces)
+                if (pinnedInterface != null)
                 {
+                    // Pinned adapter. The socket binds the multicast GROUP address, not the interface's
+                    // unicast IP: some Linux kernels (verified on Debian 13) never deliver multicast to
+                    // a socket bound to a specific unicast address, which deafened a pinned standby into
+                    // promoting itself against a live master. Membership still restricts receiving to the
+                    // chosen NIC, and IP_MULTICAST_IF pins the outgoing interface, so heartbeats both
+                    // ways stay on that adapter.
                     try
                     {
                         var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
                         socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
-                        socket.Bind(new IPEndPoint(address, FailoverPort));
+                        socket.Bind(new IPEndPoint(GroupAddress, FailoverPort));
                         socket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.MulticastLoopback, true);
                         socket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.AddMembership,
-                                               new MulticastOption(GroupAddress, address));
+                                               new MulticastOption(GroupAddress, pinnedInterface.Address));
+                        socket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.MulticastInterface,
+                                               pinnedInterface.Address.GetAddressBytes());
                         _heartbeatSockets.Add(socket);
-                        RecordEvent($"Heartbeat socket on {address}");
+                        RecordEvent($"Heartbeat socket on {pinnedInterface.Name} ({pinnedInterface.Address})");
                     }
                     catch (Exception e)
                     {
-                        Log.Warning($"Failover: could not bind {address}:{FailoverPort}: {e.Message}");
+                        Log.Warning($"Failover: could not bind {pinnedInterface.Address}:{FailoverPort}: {e.Message}");
                     }
                 }
-
-                // Supplementary default-route socket: on Linux a specific-IP bind never receives
-                // multicast looped back from a local sender (verified), which would break the
-                // one-PC master/backup rehearsal. The Any bind still does. Duplicates are
-                // harmless — peers are deduped by node id. Skip it when the user pinned an
-                // adapter, or heartbeats from other NICs would leak into the pair.
-                if (pinnedInterface == null)
+                else
                 {
+                    foreach (var address in interfaces)
+                    {
+                        try
+                        {
+                            var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+                            socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+                            socket.Bind(new IPEndPoint(address, FailoverPort));
+                            socket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.MulticastLoopback, true);
+                            socket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.AddMembership,
+                                                   new MulticastOption(GroupAddress, address));
+                            _heartbeatSockets.Add(socket);
+                            RecordEvent($"Heartbeat socket on {address}");
+                        }
+                        catch (Exception e)
+                        {
+                            Log.Warning($"Failover: could not bind {address}:{FailoverPort}: {e.Message}");
+                        }
+                    }
+
+                    // Supplementary default-route socket: on Linux a specific-IP bind never receives
+                    // multicast looped back from a local sender (verified), which would break the
+                    // one-PC master/backup rehearsal. The Any bind still does. Duplicates are
+                    // harmless — peers are deduped by node id.
                     try
                     {
                         var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
