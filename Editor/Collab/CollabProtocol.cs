@@ -173,21 +173,55 @@ internal static class CollabProtocol
 
     public static string GetString(JObject json, string property, string fallback = "")
     {
-        return json.TryGetValue(property, out var value) ? value.Value<string>() ?? fallback : fallback;
+        if (!json.TryGetValue(property, out var value))
+            return fallback;
+
+        return value.Type switch
+                   {
+                       JTokenType.Null or JTokenType.Undefined => fallback,
+                       JTokenType.String => value.Value<string>() ?? fallback,
+                       _ => value.ToString(),
+                   };
     }
 
     public static bool TryGetGuid(JObject json, string property, out Guid guid)
     {
         guid = Guid.Empty;
-        return json.TryGetValue(property, out var value)
-               && Guid.TryParse(value.Value<string>(), out guid);
+        if (!json.TryGetValue(property, out var value))
+            return false;
+
+        // A malformed op must not take the host down: only string/Guid tokens are candidates.
+        switch (value.Type)
+        {
+            case JTokenType.String:
+                return Guid.TryParse(value.Value<string>(), out guid);
+            case JTokenType.Guid:
+                guid = value.Value<Guid>();
+                return true;
+            default:
+                return false;
+        }
     }
 
     public static bool TryGetInt(JObject json, string property, out int value)
     {
         value = 0;
-        return json.TryGetValue(property, out var token)
-               && int.TryParse(token.Value<string>(), out value);
+        if (!json.TryGetValue(property, out var token))
+            return false;
+
+        switch (token.Type)
+        {
+            case JTokenType.Integer:
+                value = token.Value<int>();
+                return true;
+            case JTokenType.Float:
+                value = (int)token.Value<double>();
+                return true;
+            case JTokenType.String:
+                return int.TryParse(token.Value<string>(), out value);
+            default:
+                return false;
+        }
     }
 }
 
