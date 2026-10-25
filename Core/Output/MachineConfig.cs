@@ -82,16 +82,45 @@ public sealed class MachineConfig
         return null;
     }
 
-    /// <summary>Adds or replaces the binding for an output.</summary>
+    /// <summary>All bindings of a laser output - it can fan the same frame out to several devices
+    /// (the same show on two scanners). Other output kinds stay single-bound: a display would be
+    /// fought over and a stream would carry two canvases through one sender.</summary>
+    public IEnumerable<PlugBinding> FindLaserBindings(Guid outputId)
+    {
+        foreach (var binding in Bindings)
+        {
+            if (binding.OutputId == outputId && binding.IsLaser)
+                yield return binding;
+        }
+    }
+
+    /// <summary>Adds or replaces the binding for an output. Laser bindings accumulate - rebinding the
+    /// same plug replaces that one binding; the output's other plugs keep theirs. Non-laser outputs
+    /// stay single-bound.</summary>
     public void Bind(PlugBinding binding)
     {
-        Bindings.RemoveAll(b => b.OutputId == binding.OutputId);
+        if (binding.IsLaser)
+        {
+            Bindings.RemoveAll(b => b.IsLaser && b.OutputId == binding.OutputId && b.PlugId == binding.PlugId);
+        }
+        else
+        {
+            Bindings.RemoveAll(b => b.OutputId == binding.OutputId);
+        }
+
         Bindings.Add(binding);
     }
 
     public void Unbind(Guid outputId)
     {
         Bindings.RemoveAll(b => b.OutputId == outputId);
+    }
+
+    /// <summary>Removes exactly the output's binding to one plug - how a multi-bound laser output
+    /// lets go of one of its devices while keeping the rest.</summary>
+    public void Unbind(Guid outputId, Guid plugId)
+    {
+        Bindings.RemoveAll(b => b.OutputId == outputId && b.PlugId == plugId);
     }
 
     public string ToJsonString()

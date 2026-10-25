@@ -32,14 +32,7 @@ public static class LaserPipeline
 
             if (!settings.Safety.Calibrated)
             {
-                const float field = 32767f;
-                var cx = (int)(Math.Clamp(settings.Safety.SetupCenterX, -1f, 1f) * field);
-                var cy = (int)(Math.Clamp(settings.Safety.SetupCenterY, -1f, 1f) * field);
-                // Normalized field units: width/height 1.0 = the full field (-32767..32767), so the
-                // alignment rectangle can actually reach fullscreen. The old half-field mapping
-                // (w * 0.5) capped it at half the scanner range with the UI clamped at 1.0.
-                var hw = (int)(Math.Clamp(settings.Safety.SetupWidth, 0.005f, 1f) * field);
-                var hh = (int)(Math.Clamp(settings.Safety.SetupHeight, 0.005f, 1f) * field);
+                RectFromSafety(settings.Safety, out var cx, out var cy, out var hw, out var hh);
                 status = settings.Safety.DescribeSetup();
                 return BuildSetupRectangle(cx, cy, hw, hh);
             }
@@ -62,6 +55,18 @@ public static class LaserPipeline
             status = stats.Describe(result.Count);
             return result.ToArray();
         }
+    }
+
+    /// <summary>The setup rect's normalized units mapped to scanner coordinates: center -1..1, width/height
+    /// 0..1 where 1.0 spans the full field (-32767..32767). Shared by the uncalibrated safety frame and the
+    /// test screen.</summary>
+    public static void RectFromSafety(LaserProcessingSettings.SafetySettings safety, out int cx, out int cy, out int halfWidth, out int halfHeight)
+    {
+        const float field = 32767f;
+        cx = (int)(Math.Clamp(safety.SetupCenterX, -1f, 1f) * field);
+        cy = (int)(Math.Clamp(safety.SetupCenterY, -1f, 1f) * field);
+        halfWidth = (int)(Math.Clamp(safety.SetupWidth, 0.005f, 1f) * field);
+        halfHeight = (int)(Math.Clamp(safety.SetupHeight, 0.005f, 1f) * field);
     }
 
     /// <summary>
