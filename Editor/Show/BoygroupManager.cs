@@ -3,14 +3,11 @@ using System.Collections.Concurrent;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
-using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using T3.Core.Animation;
 using T3.Core.Output;
 using T3.Editor.Collab;
 using T3.Editor.Gui.UiHelpers;
-using T3.Editor.Gui.Windows.OutputSetup;
-using T3.Editor.SystemUi;
 using T3.Editor.UiModel;
 using T3.Editor.UiModel.Commands;
 using T3.Editor.UiModel.ProjectHandling;
@@ -18,14 +15,13 @@ using T3.Editor.UiModel.ProjectHandling;
 namespace T3.Editor.Show;
 
 /// <summary>
-/// Boygrouping: one TiXL instance is the master and shares its output setup and live show state with
-/// render nodes, vvvv-style; each slave presents the outputs bound on that machine in its own
-/// Output Setup → Local Bindings. Deployment is setup-based: slaves receive and apply the master's
-/// setups, never its project files.
+/// Boygrouping: one TiXL instance (server) distributes a show to render-node clients, vvvv-style.
+/// The server deploys project files and live output state, drives playback, and each client renders
+/// only the outputs assigned to it in the Output Setup (OutputDefinition.MachineName).
 ///
-/// There is no manual address or password: every enabled instance announces itself on the LAN, the
-/// master lists the discovered nodes, and adding one invites that node to connect. Threading follows
-/// CollabManager — network threads only enqueue, every state change happens in <see cref="Update"/>.
+/// Threading contract matches CollabManager: network threads only enqueue inbound messages; every
+/// state change and every graph/file write happens in <see cref="Update"/> on the UI thread. File
+/// transfers run per client in small steps per frame so large deployments never stall rendering.
 /// </summary>
 internal sealed class BoygroupManager
 {
@@ -34,7 +30,6 @@ internal sealed class BoygroupManager
     public enum BoygroupState
     {
         Off,
-        WaitingForMaster,
         Server,
         Client,
     }
@@ -45,6 +40,7 @@ internal sealed class BoygroupManager
     public string GroupName { get; private set; } = "";
     public string TimeFollowSummary { get; private set; } = "Time follow off";
     public string DeploySummary { get; private set; } = "";
+    public bool RestartPending { get; private set; }
 
     public sealed class ClientInfo
     {
@@ -55,52 +51,43 @@ internal sealed class BoygroupManager
         public string StatusText = "connected";
         public bool IsDeployed;
 
-        /// <summary>The client's machine-local output bindings (outputs.machine.json), reported over the
-        /// session so the master can see where each render node presents.</summary>
-        public MachineConfig? MachineConfig;
-
-        /// <summary>The client's displays, reported with its bindings. The master lists them under Local
-        /// Bindings so an output can be routed to that machine's screen.</summary>
-        public List<RemoteScreen> Screens = [];
-
         // Pending auth challenge (server side)
         public byte[]? PendingSalt;
         public byte[]? PendingNonce;
-    }
 
-    /// <summary>One display of a connected render node, as that machine enumerated it.</summary>
-    public sealed record RemoteScreen(int Index, string Name, int Width, int Height);
+        // Deploy pipeline state (server side)
+        public Dictionary<string, BoygroupDeployer.InventoryEntry>? PendingInventory;
+        public List<string>? PendingFiles;
+        public int FilesDone;
+        public BoygroupDeployer.FileSender? Sender;
+        public bool Mirror;
+    }
 
     private readonly List<ClientInfo> _clients = [];
     public IReadOnlyList<ClientInfo> Clients => _clients;
 
     public sealed class DiscoveredServer
     {
-        public string Name = "";
+        public string ServerName = "";
         public string Address = "";
         public int Port;
-        public string Role = "";
         public List<string> Groups = [];
         public DateTime Seen = DateTime.UtcNow;
-
-        public bool IsMaster => string.Equals(Role, "master", StringComparison.OrdinalIgnoreCase);
-        public bool IsSlave => string.Equals(Role, "slave", StringComparison.OrdinalIgnoreCase);
     }
 
     private readonly List<DiscoveredServer> _discoveredServers = [];
     public IReadOnlyList<DiscoveredServer> DiscoveredServers => _discoveredServers;
 
     private LanDiscoveryScanner? _discoveryScanner;
-    private LanDiscoveryResponder? _nodeResponder;
     private BoygroupTransport? _transport;
     private string _password = "";
 
     private long _nextHeartbeatTicks;
     private long _nextTimeSyncTicks;
-    private long _autoEnableCheckTicks;
+    private long _autoJoinCheckTicks;
 
-    private const string DefaultGroup = "Main";
-    private readonly ConcurrentQueue<(string Host, int Port)> _pendingInvites = new();
+    // Client-side deploy receiver
+    private readonly BoygroupDeployer.FileReceiver _fileReceiver = new();
 
     private BoygroupManager()
     {
@@ -110,199 +97,68 @@ internal sealed class BoygroupManager
     // Lifecycle
     // ---------------------------------------------------------------------------------------
 
-    /// <summary>The settings toggle: enabled instances are discoverable on the network.</summary>
-    public void SetEnabled(bool enabled)
+    public void StartServer(int port, string password, string group)
     {
-        UserSettings.Config.BoygroupEnabled = enabled;
-        UserSettings.Save();
-
-        if (enabled)
-            ApplyRole();
-        else
+        if (State != BoygroupState.Off)
             Leave();
-    }
 
-    /// <summary>Applies the configured role: master listens and scans, slave waits to be added.</summary>
-    public void ApplyRole()
-    {
-        TearDownSession();
         ErrorText = "";
-
-        if (UserSettings.Config.BoygroupRole == BoygroupRole.Master)
-            StartMaster();
-        else
-            StartSlave();
-    }
-
-    private void StartMaster()
-    {
-        var config = UserSettings.Config;
-        var port = config.BoygroupPort;
-        GroupName = DefaultGroup;
-        _serverProjectName = "";
-        _serverProjectFolder = "";
-
         try
         {
-            _transport = new BoygroupServerTransport(port, [DefaultGroup], config.NetworkInterface);
+            _password = password ?? "";
+            GroupName = group;
+            _transport = new BoygroupServerTransport(port, UserSettings.Config.BoygroupGroups.ToArray());
             _transport.PeerDisconnected += OnPeerDisconnected;
-            _password = "";
             State = BoygroupState.Server;
-            StatusText = $"Master on port {port} — waiting for render nodes";
-            StartDiscovery();
-            Log.Info($"Boygroup: master started on port {port}");
+            StatusText = $"Serving group '{group}' on port {port}";
+            PersistJoinTarget("127.0.0.1", group);
+            Log.Info($"Boygroup: server started (group '{group}', port {port})");
         }
         catch (SocketException e)
         {
             ErrorText = $"Could not open port {port}: {e.Message}";
             _transport = null;
             State = BoygroupState.Off;
-            StatusText = "Boygrouping failed";
         }
     }
 
-    private void StartSlave()
+    public void JoinServer(string host, int port, string group, string password)
     {
-        GroupName = DefaultGroup;
-        try
-        {
-            StartNodeResponder();
-            State = BoygroupState.WaitingForMaster;
-            StatusText = "Slave — waiting for a master to add this instance";
-            Log.Info("Boygroup: slave enabled, waiting for a master");
-        }
-        catch (SocketException e)
-        {
-            ErrorText = $"Could not listen for invitations on port {UserSettings.Config.BoygroupPort + LanDiscoveryResponder.DiscoveryPortOffset}: {e.Message}";
-            State = BoygroupState.Off;
-            StatusText = "Boygrouping failed";
-        }
-    }
+        if (State != BoygroupState.Off)
+            Leave();
 
-    /// <summary>Announces this slave and receives master invitations on the discovery port.</summary>
-    private void StartNodeResponder()
-    {
-        if (_nodeResponder != null)
-            return;
-
-        _nodeResponder = new LanDiscoveryResponder(UserSettings.Config.BoygroupPort + LanDiscoveryResponder.DiscoveryPortOffset,
-                                                    () => new JObject
-                                                              {
-                                                                  ["boygroup"] = true,
-                                                                  ["role"] = "slave",
-                                                                  ["name"] = LocalNodeName,
-                                                                  ["port"] = UserSettings.Config.BoygroupPort,
-                                                              },
-                                                    OnDiscoveryMessage);
-    }
-
-    private void StopNodeResponder()
-    {
-        _nodeResponder?.Dispose();
-        _nodeResponder = null;
-    }
-
-    /// <summary>Responder thread: an invitation is handed to the UI thread, which connects.</summary>
-    private void OnDiscoveryMessage(JObject json, IPEndPoint source)
-    {
-        if (json["t"]?.Value<string>() != "boygroup-invite")
-            return;
-
-        if (State is not (BoygroupState.WaitingForMaster or BoygroupState.Off))
-            return;
-
-        var port = json["port"]?.Value<int>() ?? UserSettings.Config.BoygroupPort;
-        _pendingInvites.Enqueue((source.Address.ToString(), port));
-    }
-
-    /// <summary>Master action: ask a discovered node to connect to this master.</summary>
-    public void InviteClient(DiscoveredServer node)
-    {
-        if (State != BoygroupState.Server)
-            return;
-
-        if (!IPAddress.TryParse(node.Address, out var address))
-            return;
-
-        try
-        {
-            using var udp = new UdpClient();
-            var payload = CollabProtocol.EncodeJson(new JObject
-                                                        {
-                                                            ["t"] = "boygroup-invite",
-                                                            ["port"] = UserSettings.Config.BoygroupPort,
-                                                            ["project"] = ProjectView.Focused?.OpenedProject.Package.DisplayName ?? "",
-                                                        });
-            udp.Send(payload, payload.Length,
-                     new IPEndPoint(address, node.Port + LanDiscoveryResponder.DiscoveryPortOffset));
-            StatusText = $"Invited {node.Name} — waiting for it to connect";
-            Log.Info($"Boygroup: invited '{node.Name}' at {node.Address}");
-        }
-        catch (SocketException e)
-        {
-            ErrorText = $"Could not reach {node.Name}: {e.Message}";
-        }
-    }
-
-    /// <summary>Slave action: connect to the master that invited this node.</summary>
-    private void JoinMaster(string host, int port)
-    {
-        StopNodeResponder();
         ErrorText = "";
-        GroupName = DefaultGroup;
-        _serverProjectName = "";
-        _serverProjectFolder = "";
-        _lastBindingsSent = ""; // the master needs this machine's bindings
-        DeploySummary = "";
-
         try
         {
+            _password = password ?? "";
+            GroupName = group;
             var address = ResolveHost(host);
             if (address == null)
                 throw new ArgumentException($"'{host}' is not a valid address");
 
-            var transport = BoygroupClientTransport.Connect(new IPEndPoint(address, port));
-            _transport = transport;
-            transport.PeerDisconnected += OnPeerDisconnected;
+            _transport = BoygroupClientTransport.Connect(new IPEndPoint(address, port));
+            _transport.PeerDisconnected += OnPeerDisconnected;
             State = BoygroupState.Client;
-            StatusText = $"Connecting to master at {host}:{port}...";
-            // Subscribe first, then start reading: a link that dies right now must report.
-            transport.StartReading();
-            SendJson(transport.ServerPeer,
+            StatusText = $"Joining '{group}' on {host}:{port}...";
+            SendJson(((_transport as BoygroupClientTransport)!).ServerPeer,
                      new
                      {
                          t = "hello",
                          name = ClientDisplayName(),
-                         group = DefaultGroup,
+                         group,
                      });
-            _password = "";
+            PersistJoinTarget(host, group);
         }
         catch (Exception e)
         {
-            ErrorText = $"Boygroup connection failed: {e.Message}";
+            ErrorText = $"Boygroup join failed: {e.Message}";
             _transport?.Dispose();
             _transport = null;
-            ReturnToWaiting();
+            State = BoygroupState.Off;
         }
     }
 
-    /// <summary>Public entry used by the debug bridge and tests; the UI adds nodes by invitation.</summary>
-    public void JoinServer(string host, int port, string group, string password)
-    {
-        JoinMaster(host, port);
-    }
-
-    /// <summary>Disables boygrouping and ends the current session.</summary>
     public void Leave()
-    {
-        TearDownSession();
-        UserSettings.Config.BoygroupEnabled = false;
-        UserSettings.Save();
-        StatusText = "Boygrouping is off";
-    }
-
-    /// <summary>Releases everything a role/session owns without changing the enabled setting.</summary>
-    private void TearDownSession()
     {
         if (_transport != null)
         {
@@ -311,53 +167,48 @@ internal sealed class BoygroupManager
             _transport = null;
         }
 
-        StopDiscovery();
-        StopNodeResponder();
-        while (_pendingInvites.TryDequeue(out _))
+        foreach (var client in _clients)
         {
-            // Invitations belong to the session that was just torn down.
+            client.Sender?.Dispose();
         }
 
         _clients.Clear();
-        while (_pendingDisconnects.TryDequeue(out _))
-        {
-            // Drop events from the dead session: replaying them into the next one would end it
-            // immediately (the collab manager drains its queue for the same reason).
-        }
-
+        _fileReceiver.Cancel();
         _password = "";
         GroupName = "";
-        _setupPushPending = false;
-        _serverProjectName = "";
-        _serverProjectFolder = "";
+        RestartPending = false;
         State = BoygroupState.Off;
         StatusText = "Boygrouping is off";
     }
 
-    /// <summary>A slave whose master vanished stays enabled and discoverable for the next master.</summary>
-    private void ReturnToWaiting()
-    {
-        TearDownSession();
-        if (!UserSettings.Config.BoygroupEnabled || UserSettings.Config.BoygroupRole != BoygroupRole.Slave)
-            return;
-
-        try
-        {
-            StartNodeResponder();
-            State = BoygroupState.WaitingForMaster;
-            StatusText = "Master disconnected — waiting to be added again";
-        }
-        catch (SocketException e)
-        {
-            ErrorText = $"Could not listen for invitations: {e.Message}";
-        }
-    }
-
-    /// <summary>The name this machine is known by in the client list and its local output bindings.</summary>
+    /// <summary>The name this machine is known by in output assignments (OutputDefinition.MachineName).</summary>
     public static string LocalNodeName =>
         string.IsNullOrWhiteSpace(UserSettings.Config.BoygroupClientName) ? Environment.MachineName : UserSettings.Config.BoygroupClientName;
 
     private static string ClientDisplayName() => LocalNodeName;
+
+    private void PersistJoinTarget(string host, string group)
+    {
+        var config = UserSettings.Config;
+        if (config.BoygroupLastServer == host && config.BoygroupLastGroup == group)
+            return;
+
+        config.BoygroupLastServer = host;
+        config.BoygroupLastGroup = group;
+        UserSettings.Save();
+    }
+
+    /// <summary>Auto-rejoin after a deployment restart (or normal launch) when enabled.</summary>
+    private void TryAutoJoin()
+    {
+        var config = UserSettings.Config;
+        if (!config.BoygroupAutoJoin || string.IsNullOrEmpty(config.BoygroupLastServer) || string.IsNullOrEmpty(config.BoygroupLastGroup))
+            return;
+
+        Log.Info($"Boygroup: auto-joining {config.BoygroupLastServer} group '{config.BoygroupLastGroup}'");
+        var port = config.BoygroupPort;
+        JoinServer(config.BoygroupLastServer, port, config.BoygroupLastGroup, config.CollabPassword);
+    }
 
     private static IPAddress? ResolveHost(string host)
     {
@@ -382,30 +233,26 @@ internal sealed class BoygroupManager
 
     public void Update()
     {
-        // Auto-enable shortly after startup (give the project time to load first).
+        // Auto-rejoin shortly after startup (give the project time to load first).
         if (State == BoygroupState.Off)
         {
-            if (_autoEnableCheckTicks == 0)
+            if (_autoJoinCheckTicks == 0)
             {
-                _autoEnableCheckTicks = Environment.TickCount64 + 5000;
+                _autoJoinCheckTicks = Environment.TickCount64 + 8000;
             }
-            else if (Environment.TickCount64 > _autoEnableCheckTicks && !_autoEnableAttempted)
+            else if (Environment.TickCount64 > _autoJoinCheckTicks && !_autoJoinAttempted)
             {
-                _autoEnableAttempted = true;
-                if (UserSettings.Config.BoygroupEnabled)
-                    ApplyRole();
+                _autoJoinAttempted = true;
+                TryAutoJoin();
             }
 
             return;
         }
 
-        while (_pendingInvites.TryDequeue(out var invite))
-            JoinMaster(invite.Host, invite.Port);
-
         ProcessPendingDisconnects();
 
-        // A disconnect or an inbound message can end the session, disposing the transport — the
-        // remaining steps must not run against it.
+        // Disconnects and inbound messages can both end the session (server loss, restart
+        // request), disposing the transport — the remaining steps must not run against it.
         if (State == BoygroupState.Off)
             return;
 
@@ -414,16 +261,14 @@ internal sealed class BoygroupManager
         if (State == BoygroupState.Off)
             return;
 
-        PumpPendingSetupPush();
+        PumpDeploy();
         SendHeartbeats();
         SendTimeSync();
-        MaybeSendBindings();
-
-        if (State == BoygroupState.Server)
-            RefreshDiscoveredServers();
+        ProcessPendingRestart();
+        RefreshDiscoveredServers();
     }
 
-    private static bool _autoEnableAttempted;
+    private static bool _autoJoinAttempted;
 
     private void DrainInbound()
     {
@@ -454,30 +299,18 @@ internal sealed class BoygroupManager
             var client = _clients.FirstOrDefault(c => ReferenceEquals(c.Peer, peer));
             if (client != null)
             {
+                client.Sender?.Dispose();
                 _clients.Remove(client);
                 Log.Info($"Boygroup: client left: {client.Name}");
-                UpdateMasterStatus();
                 continue;
             }
 
             if (State == BoygroupState.Client)
             {
-                ErrorText = "Disconnected from the boygroup master";
-                ReturnToWaiting();
+                ErrorText = "Disconnected from boygroup server";
+                Leave();
             }
         }
-    }
-
-    /// <summary>Keeps the status line in step with how many render nodes are actually connected.</summary>
-    private void UpdateMasterStatus()
-    {
-        if (State != BoygroupState.Server)
-            return;
-
-        var count = _clients.Count(c => c.Peer.IsAuthenticated);
-        StatusText = count == 0
-                         ? $"Master on port {UserSettings.Config.BoygroupPort} — waiting for render nodes"
-                         : $"{count} render node{(count == 1 ? "" : "s")} connected";
     }
 
     // ---------------------------------------------------------------------------------------
@@ -503,16 +336,38 @@ internal sealed class BoygroupManager
 
             case "authOk":
                 StatusText = "Joined group";
-                _nextBindingsSendTicks = 0; // report the project's output bindings right away
-                // A report attempted before the handshake completed was dropped by the server; the
-                // file hasn't changed since, so clear the dedupe marker to send it again.
-                _lastBindingsSent = "";
-                TryOpenServerProject(json);
                 break;
 
             case "authFail":
                 ErrorText = "Rejected by server: " + CollabProtocol.GetString(json, "reason", "authentication failed");
                 Leave();
+                break;
+
+            case "inventory" when State == BoygroupState.Client:
+                HandleServerInventory(json);
+                break;
+
+            case "deployStart" when State == BoygroupState.Client:
+                _deployFilesTotal = json["count"]?.Value<int>() ?? 0;
+                _deployFilesDone = 0;
+                _deployErrors = 0;
+                DeploySummary = $"Receiving {_deployFilesTotal} file(s)...";
+                break;
+
+            case "fileBegin" when State == BoygroupState.Client:
+                StartReceivingFile(json);
+                break;
+
+            case "fileChunk" when State == BoygroupState.Client:
+                _fileReceiver.Chunk(json);
+                break;
+
+            case "fileEnd" when State == BoygroupState.Client:
+                FinishReceivingFile(json);
+                break;
+
+            case "deleteFile" when State == BoygroupState.Client:
+                DeleteClientFile(json);
                 break;
 
             case "deployDone" when State == BoygroupState.Client:
@@ -523,33 +378,10 @@ internal sealed class BoygroupManager
                 WriteSetupFile(json);
                 break;
 
-            case "activeSetup" when State == BoygroupState.Client:
-                ActivateSetup(json);
-                break;
-
             case "snapshot" when State == BoygroupState.Client:
                 if (json["op"] is JObject op)
                     CollabCommandWire.ApplyOp(op);
 
-                break;
-
-            case "op" when State == BoygroupState.Client:
-                // Live edits from the master, encoded exactly like a collaboration op.
-                if (json["op"] is JObject liveOp)
-                    CollabCommandWire.ApplyOp(liveOp);
-
-                break;
-
-            case "bindings" when State == BoygroupState.Server:
-                HandleClientBindings(peer, json);
-                break;
-
-            case "bindOutput" when State == BoygroupState.Client:
-                HandleRemoteBinding(json, bind: true);
-                break;
-
-            case "unbindOutput" when State == BoygroupState.Client:
-                HandleRemoteBinding(json, bind: false);
                 break;
 
             case "play" when State == BoygroupState.Client:
@@ -566,34 +398,9 @@ internal sealed class BoygroupManager
         }
     }
 
-    // ---------------------------------------------------------------------------------------
-    // Server: setup broadcast
-    // ---------------------------------------------------------------------------------------
-
-    private bool _setupPushPending;
-    private long _nextSetupPushTicks;
-
-    /// <summary>
-    /// Called after an output setup edit is saved. The server broadcasts it a moment later, so live
-    /// setup edits reach the render nodes the same way collaboration edits do.
-    /// </summary>
-    public void OnSetupSaved()
-    {
-        if (State == BoygroupState.Server)
-            _setupPushPending = true;
-    }
-
-    private void PumpPendingSetupPush()
-    {
-        if (!_setupPushPending
-            || State != BoygroupState.Server
-            || Environment.TickCount64 < _nextSetupPushTicks)
-            return;
-
-        _setupPushPending = false;
-        _nextSetupPushTicks = Environment.TickCount64 + 150;
-        PushSetupToGroup();
-    }
+    private int _deployFilesTotal;
+    private int _deployFilesDone;
+    private int _deployErrors;
 
     // ---------------------------------------------------------------------------------------
     // Server: handshake
@@ -601,13 +408,11 @@ internal sealed class BoygroupManager
 
     private void HandleHello(CollabPeerConnection peer, JObject json)
     {
-        // A hello from an unregistered connection is simply a new client: the transport accepts
-        // peers on its own, so this is where the server first learns who connected.
         var client = _clients.FirstOrDefault(c => ReferenceEquals(c.Peer, peer));
         if (client == null)
         {
-            client = new ClientInfo { Peer = peer };
-            _clients.Add(client);
+            Log.Warning("Boygroup: hello from unknown connection");
+            return;
         }
 
         client.Name = CollabProtocol.GetString(json, "name", "client");
@@ -663,281 +468,8 @@ internal sealed class BoygroupManager
     private void CompleteAuth(ClientInfo client)
     {
         client.Peer.IsAuthenticated = true;
-        SendJson(client.Peer,
-                 new
-                 {
-                     t = "authOk",
-                     serverName = Environment.MachineName,
-                     // Only the name: clients open their own copy. No project files are transferred.
-                     project = ProjectView.Focused?.OpenedProject.Package.DisplayName ?? "",
-                 });
+        SendJson(client.Peer, new { t = "authOk", serverName = Environment.MachineName });
         Log.Info($"Boygroup: client authenticated: {client.Name} ({client.Address}) group '{client.Group}'");
-        UpdateMasterStatus();
-
-        // Late joiners get the current setups and graph without waiting for a deploy; after this they
-        // receive live ops like everyone else.
-        var setups = PushSetupToGroup();
-        PushGraphSnapshotToGroup();
-        SendJson(client.Peer, new { t = "deployDone", setups });
-    }
-
-    /// <summary>
-    /// Opens (or focuses) the master's project locally if it is installed. Only the name crosses the
-    /// wire — the setups need the same graph to bind their content to, but the project itself is
-    /// never deployed. The folder is remembered so setup writes and bindings stay with that project
-    /// even when another graph window takes the UI focus.
-    /// </summary>
-    private void TryOpenServerProject(JObject json)
-    {
-        _serverProjectName = CollabProtocol.GetString(json, "project");
-        if (string.IsNullOrEmpty(_serverProjectName))
-            return;
-
-        _serverProjectFolder = CollabManager.FindProjectFolder(_serverProjectName) ?? "";
-        Log.Debug($"Boygroup: server project '{_serverProjectName}' resolves to '{_serverProjectFolder}'");
-        if (string.IsNullOrEmpty(_serverProjectFolder))
-        {
-            ErrorText = $"The master's project '{CollabManager.ShortProjectName(_serverProjectName)}' is not installed on this machine — "
-                        + "the received output setups can't bind their content without it.";
-            Log.Warning($"Boygroup: the server's project '{_serverProjectName}' is not installed here");
-            return;
-        }
-
-        var focusedName = ProjectView.Focused?.OpenedProject.Package.DisplayName;
-        if (string.Equals(focusedName, _serverProjectName, StringComparison.OrdinalIgnoreCase))
-            return;
-
-        if (CollabManager.TryOpenProjectByName(_serverProjectName))
-            Log.Info($"Boygroup: opened project '{_serverProjectName}'");
-        else
-            Log.Warning($"Boygroup: project '{_serverProjectName}' is installed but could not be opened");
-    }
-
-    private string _serverProjectName = "";
-    private string _serverProjectFolder = "";
-
-    /// <summary>
-    /// The project received setups and bindings belong to: the master's project on a client, the
-    /// focused project otherwise. Deliberately independent of UI focus, so a second graph window
-    /// can't redirect a deployment into another project.
-    /// </summary>
-    private string? GetSetupTargetFolder()
-    {
-        if (State == BoygroupState.Client && !string.IsNullOrEmpty(_serverProjectName))
-            return string.IsNullOrEmpty(_serverProjectFolder) ? null : _serverProjectFolder;
-
-        return GetProjectFolder();
-    }
-
-    /// <summary>The client's machine-local output bindings, so the master can see where each node presents.</summary>
-    private void HandleClientBindings(CollabPeerConnection peer, JObject json)
-    {
-        var client = _clients.FirstOrDefault(c => ReferenceEquals(c.Peer, peer));
-        if (client == null || !peer.IsAuthenticated)
-            return;
-
-        var configJson = json["config"]?.Value<string>();
-        if (string.IsNullOrEmpty(configJson))
-            return;
-
-        try
-        {
-            client.MachineConfig = MachineConfig.ReadFromJson(JObject.Parse(configJson));
-            client.Screens = ReadScreens(json["screens"]);
-            Log.Info($"Boygroup: bindings from {client.Name}: {DescribeBindings(client.MachineConfig, ActiveSetup.Current)}");
-            UpdateMasterStatus(); // clears a "Binding ..." message once the node applied it
-        }
-        catch (JsonException e)
-        {
-            Log.Warning($"Boygroup: malformed bindings from {client.Name}: {e.Message}");
-        }
-    }
-
-    private static List<RemoteScreen> ReadScreens(JToken? token)
-    {
-        var screens = new List<RemoteScreen>();
-        if (token is not JArray array)
-            return screens;
-
-        foreach (var screen in array)
-        {
-            var index = screen["index"]?.Value<int>() ?? screens.Count;
-            screens.Add(new RemoteScreen(index,
-                                         screen.Value<string>("name") ?? $"Display {index + 1}",
-                                         screen["width"]?.Value<int>() ?? 0,
-                                         screen["height"]?.Value<int>() ?? 0));
-        }
-
-        return screens;
-    }
-
-    /// <summary>The master's list of a client's displays; the id is stable across reconnects and frames.</summary>
-    public static Guid RemoteDisplayPlugId(ClientInfo client, int displayIndex)
-    {
-        var key = $"boygroup:{client.Address}:{client.Name}:{displayIndex}";
-        var hash = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(key));
-        return new Guid(hash.AsSpan(0, 16));
-    }
-
-    /// <summary>Resolves an outliner/board plug id back to the render node display it stands for.</summary>
-    public bool TryGetRemoteDisplayPlug(Guid plugId, out ClientInfo client, out int displayIndex)
-    {
-        foreach (var candidate in _clients)
-        {
-            foreach (var screen in candidate.Screens)
-            {
-                if (RemoteDisplayPlugId(candidate, screen.Index) != plugId)
-                    continue;
-
-                client = candidate;
-                displayIndex = screen.Index;
-                return true;
-            }
-        }
-
-        client = null!;
-        displayIndex = -1;
-        return false;
-    }
-
-    /// <summary>Master side: asks a render node to present an output on one of its own displays.</summary>
-    public void BindRemoteOutput(ClientInfo client, Guid outputId, int displayIndex)
-    {
-        if (State != BoygroupState.Server || !client.Peer.IsAuthenticated)
-            return;
-
-        SendJson(client.Peer, new { t = "bindOutput", output = outputId.ToString(), display = displayIndex });
-        StatusText = $"Binding {client.Name}'s Display {displayIndex + 1}...";
-    }
-
-    public void UnbindRemoteOutput(ClientInfo client, Guid outputId, int displayIndex)
-    {
-        if (State != BoygroupState.Server || !client.Peer.IsAuthenticated)
-            return;
-
-        SendJson(client.Peer, new { t = "unbindOutput", output = outputId.ToString(), display = displayIndex });
-    }
-
-    /// <summary>Output → plug pairs from one machine's config, resolved against the active setup's output names.</summary>
-    public static string DescribeBindings(MachineConfig? machineConfig, Setup? setup)
-    {
-        if (machineConfig == null || machineConfig.Bindings.Count == 0)
-            return "no display bindings";
-
-        var parts = new List<string>();
-        foreach (var binding in machineConfig.Bindings)
-        {
-            var outputName = setup?.FindOutput(binding.OutputId)?.Name ?? "?";
-            var plug = binding.IsLaser
-                           ? machineConfig.FindLaserPlug(binding.PlugId)?.Name ?? "missing laser"
-                           : binding.IsStream
-                               ? machineConfig.FindStreamPlug(binding.PlugId)?.Name ?? "missing stream"
-                               : $"Display {binding.DisplayIndex + 1}";
-            parts.Add($"{outputName} → {plug}");
-        }
-
-        return string.Join(" · ", parts);
-    }
-
-    private long _nextBindingsSendTicks;
-    private string _lastBindingsSent = "";
-
-    /// <summary>Client side: sends the project's machine config when it changed (every couple of seconds).</summary>
-    private void MaybeSendBindings()
-    {
-        if (State != BoygroupState.Client)
-            return;
-
-        var now = Environment.TickCount64;
-        if (now < _nextBindingsSendTicks)
-            return;
-
-        _nextBindingsSendTicks = now + 2000;
-
-        var projectFolder = GetSetupTargetFolder();
-        if (string.IsNullOrEmpty(projectFolder))
-            return;
-
-        var path = Path.Combine(SetupFiles.FolderIn(projectFolder), MachineConfig.FileName);
-        try
-        {
-            // The master also needs this machine's displays before anything is bound, and a fresh
-            // client may not have written a machine config yet.
-            var json = File.Exists(path) ? File.ReadAllText(path) : new MachineConfig().ToJsonString();
-            var screens = DescribeScreens();
-            var key = json + "|" + screens.ToString(Formatting.None);
-            if (key == _lastBindingsSent)
-                return;
-
-            _lastBindingsSent = key;
-            Log.Debug($"Boygroup: reporting output bindings from '{path}'");
-            if (_transport is BoygroupClientTransport clientTransport)
-                SendJson(clientTransport.ServerPeer, new { t = "bindings", config = json, screens });
-        }
-        catch (IOException e)
-        {
-            Log.Debug($"Boygroup: can't read machine bindings: {e.Message}");
-        }
-    }
-
-    /// <summary>This machine's displays, sent so a master can offer them as binding targets.</summary>
-    private static JArray DescribeScreens()
-    {
-        var result = new JArray();
-        var screens = EditorUi.Instance.AllScreens;
-        for (var i = 0; i < screens.Count; i++)
-        {
-            result.Add(new JObject
-                           {
-                               ["index"] = i,
-                               ["name"] = screens[i].DeviceName,
-                               ["width"] = screens[i].Bounds.Width,
-                               ["height"] = screens[i].Bounds.Height,
-                           });
-        }
-
-        return result;
-    }
-
-    /// <summary>Client side: applies a binding the master routed to one of this machine's displays.</summary>
-    private void HandleRemoteBinding(JObject json, bool bind)
-    {
-        if (!Guid.TryParse(CollabProtocol.GetString(json, "output"), out var outputId))
-            return;
-
-        var displayIndex = json["display"]?.Value<int>() ?? -1;
-        if (displayIndex < 0 || displayIndex >= EditorUi.Instance.AllScreens.Count)
-            return;
-
-        if (!OutputSetupHandling.TryGetActiveSetup(out _, out var machineConfig))
-            return;
-
-        var plugId = Plugs.DisplayPlugId(displayIndex);
-        if (bind)
-            Plugs.BindOutput(machineConfig, outputId, plugId);
-        else
-            Plugs.UnbindOutput(machineConfig, outputId, plugId);
-
-        // Report right away: the master's binding column is driven by what this machine says it presents.
-        _lastBindingsSent = "";
-        _nextBindingsSendTicks = 0;
-        MaybeSendBindings();
-    }
-
-    /// <summary>
-    /// Server side: every local graph edit is broadcast as a collaboration op, so clients follow the
-    /// master live after a deployment (the same wire format the collaboration session uses).
-    /// </summary>
-    public void OnLocalCommandAdded(ICommand command)
-    {
-        if (State != BoygroupState.Server || _clients.Count == 0)
-            return;
-
-        var op = CollabCommandWire.EncodeCommand(command);
-        if (op == null)
-            return;
-
-        BroadcastToGroup(new { t = "op", op });
     }
 
     private void Reject(CollabPeerConnection peer, string reason)
@@ -983,10 +515,7 @@ internal sealed class BoygroupManager
     // Deploy & Sync (server side)
     // ---------------------------------------------------------------------------------------
 
-    /// <summary>
-    /// Server action: share the output setup with the group. The project itself is not transferred —
-    /// a client runs its own copy and only receives the setups, so deployment no longer restarts it.
-    /// </summary>
+    /// <summary>Server action: push project files, the output setup, and live graph state to the group.</summary>
     public void DeployAndSync()
     {
         if (State != BoygroupState.Server)
@@ -995,54 +524,147 @@ internal sealed class BoygroupManager
             return;
         }
 
-        if (ProjectView.Focused == null)
+        var projectFolder = GetProjectFolder();
+        if (string.IsNullOrEmpty(projectFolder))
         {
-            ErrorText = "Open a project with an output setup before deploying";
+            ErrorText = "No project open — open a project before deploying";
             return;
         }
 
-        if (!OutputSetupHandling.TryGetActiveSetup(out _, out _))
-        {
-            ErrorText = "No output setup is active — create one in the Output Setup window before deploying";
-            return;
-        }
-
-        // Persist pending setup edits first: what clients receive must be what the master sees.
-        OutputSetupHandling.SaveActive();
-        _setupPushPending = false; // This deploy sends what SaveActive just wrote.
-
-        var setups = PushSetupToGroup();
-        PushGraphSnapshotToGroup();
-        BroadcastToGroup(new { t = "deployDone", setups });
+        var mirror = UserSettings.Config.BoygroupDeployMirror;
+        var inventory = BoygroupDeployer.BuildInventory(projectFolder);
 
         foreach (var client in _clients.Where(c => c.Peer.IsAuthenticated && c.Group == GroupName).ToList())
         {
-            client.IsDeployed = true;
-            client.StatusText = setups == 0 ? "no setup files" : $"setup synced ({setups})";
+            if (client.PendingFiles != null)
+                continue; // A deploy is already in flight for this client.
+
+            client.Mirror = mirror;
+            client.PendingInventory = inventory;
+            // The client's own inventory arrives first (it reported it in its hello); request it via
+            // deployStart and let the client answer with its inventory for diffing.
+            client.StatusText = "requesting inventory";
+            SendJson(client.Peer, new { t = "requestInventory" });
         }
 
-        DeploySummary = $"Sent {setups} output setup file(s)";
-        Log.Info($"Boygroup: sent {setups} output setup file(s) to group '{GroupName}'");
+        PushSetupToGroup();
+        PushGraphSnapshotToGroup();
     }
 
-    /// <summary>
-    /// Broadcasts every setup file and then the active one. Returns how many setup files were sent;
-    /// no project files are involved. Called on deploy, on a late join, and after every setup save.
-    /// </summary>
-    private int PushSetupToGroup()
+    private void HandleClientInventory(ClientInfo client, JObject json)
     {
-        if (State != BoygroupState.Server)
-            return 0;
+        if (client.PendingInventory == null)
+            return;
 
         var projectFolder = GetProjectFolder();
         if (string.IsNullOrEmpty(projectFolder))
-            return 0;
+            return;
+
+        var serverInventory = client.PendingInventory;
+        var clientInventory = BoygroupDeployer.ParseInventory(json);
+        var missing = BoygroupDeployer.ComputeMissingFiles(serverInventory, clientInventory);
+        var mirror = client.Mirror;
+
+        if (mirror)
+        {
+            foreach (var extra in BoygroupDeployer.ComputeExtraFiles(serverInventory, clientInventory))
+            {
+                SendJson(client.Peer, new { t = "deleteFile", path = extra });
+            }
+        }
+
+        client.PendingFiles = missing;
+        client.FilesDone = 0;
+        client.Sender = null;
+        client.StatusText = missing.Count == 0 ? "up to date" : $"sending {missing.Count} file(s)...";
+        client.IsDeployed = false;
+        SendJson(client.Peer, new { t = "deployStart", count = missing.Count, mirror });
+
+        if (missing.Count == 0)
+        {
+            FinishDeployToClient(client);
+        }
+    }
+
+    /// <summary>Runs one deploy step per client per frame; returns true when a frame budget is spent.</summary>
+    private void PumpDeploy()
+    {
+        if (State != BoygroupState.Server)
+            return;
+
+        var projectFolder = GetProjectFolder();
+        foreach (var client in _clients)
+        {
+            if (client.PendingFiles == null)
+                continue;
+
+            // A few chunk messages per client per frame keep transfers moving without hurting the
+            // render frame budget.
+            for (var step = 0; step < 24; step++)
+            {
+                if (client.Sender == null)
+                {
+                    if (client.FilesDone >= client.PendingFiles.Count)
+                    {
+                        FinishDeployToClient(client);
+                        break;
+                    }
+
+                    var relativePath = client.PendingFiles[client.FilesDone];
+                    try
+                    {
+                        client.Sender = new BoygroupDeployer.FileSender(projectFolder, relativePath);
+                        SendJson(client.Peer, new { t = "fileBegin", path = relativePath });
+                    }
+                    catch (Exception e)
+                    {
+                        Log.Warning($"Boygroup: can't read {relativePath}: {e.Message}");
+                        client.FilesDone++;
+                        continue;
+                    }
+                }
+
+                var message = client.Sender.NextMessage();
+                if (message == null)
+                    continue;
+
+                SendJson(client.Peer, message);
+                if (client.Sender.Completed)
+                {
+                    client.FilesDone++;
+                    client.Sender.Dispose();
+                    client.Sender = null;
+                    client.StatusText = $"sending {client.FilesDone}/{client.PendingFiles.Count}";
+                }
+                else
+                {
+                    break; // Spend the rest of this frame's budget on the next client.
+                }
+            }
+        }
+    }
+
+    private void FinishDeployToClient(ClientInfo client)
+    {
+        client.PendingFiles = null;
+        client.PendingInventory = null;
+        client.IsDeployed = true;
+        client.StatusText = "deployed";
+        SendJson(client.Peer, new { t = "deployDone", restart = true });
+        Log.Info($"Boygroup: deployment to {client.Name} complete");
+    }
+
+    /// <summary>Pushes the active output setup file so clients render the master's output config.</summary>
+    private void PushSetupToGroup()
+    {
+        var projectFolder = GetProjectFolder();
+        if (string.IsNullOrEmpty(projectFolder))
+            return;
 
         var setupsFolder = SetupFiles.FolderIn(projectFolder);
         if (!Directory.Exists(setupsFolder))
-            return 0;
+            return;
 
-        var count = 0;
         foreach (var filePath in Directory.EnumerateFiles(setupsFolder, "*" + Setup.FileSuffix))
         {
             try
@@ -1050,20 +672,12 @@ internal sealed class BoygroupManager
                 var json = File.ReadAllText(filePath);
                 var name = Path.GetFileName(filePath);
                 BroadcastToGroup(new { t = "setupJson", name, json });
-                count++;
             }
             catch (IOException e)
             {
                 Log.Warning($"Boygroup: can't read setup {filePath}: {e.Message}");
             }
         }
-
-        // After the files, so the client can switch to it without reading a stale copy.
-        var activeName = ActiveSetup.Current?.Name;
-        if (!string.IsNullOrEmpty(activeName))
-            BroadcastToGroup(new { t = "activeSetup", name = activeName });
-
-        return count;
     }
 
     private void PushGraphSnapshotToGroup()
@@ -1086,17 +700,79 @@ internal sealed class BoygroupManager
     }
 
     // ---------------------------------------------------------------------------------------
-    // Client: setup reception
+    // Client: deploy reception
     // ---------------------------------------------------------------------------------------
+
+    private void HandleServerInventory(JObject json)
+    {
+        // Client answers the server's request with what it has on disk.
+        var projectFolder = GetProjectFolder();
+        var inventory = string.IsNullOrEmpty(projectFolder)
+                            ? []
+                            : BoygroupDeployer.BuildInventory(projectFolder);
+        SendJson(((_transport as BoygroupClientTransport)!).ServerPeer, BoygroupDeployer.BuildInventoryMessage(inventory));
+    }
+
+    private void StartReceivingFile(JObject json)
+    {
+        var projectFolder = GetProjectFolder();
+        if (string.IsNullOrEmpty(projectFolder))
+        {
+            ErrorText = "No project open — can't receive deployment";
+            return;
+        }
+
+        try
+        {
+            _fileReceiver.Begin(projectFolder, json);
+        }
+        catch (Exception e)
+        {
+            ErrorText = $"Deploy: {e.Message}";
+        }
+    }
+
+    private void FinishReceivingFile(JObject json)
+    {
+        var error = _fileReceiver.Finish(json);
+        _deployFilesDone++;
+        if (error != null)
+        {
+            _deployErrors++;
+            Log.Warning($"Boygroup deploy: {error}");
+        }
+
+        DeploySummary = $"Receiving {_deployFilesDone}/{_deployFilesTotal} files" + (_deployErrors > 0 ? $" ({_deployErrors} failed)" : "");
+    }
+
+    private void DeleteClientFile(JObject json)
+    {
+        var projectFolder = GetProjectFolder();
+        if (string.IsNullOrEmpty(projectFolder))
+            return;
+
+        try
+        {
+            var relativePath = json["path"]?.Value<string>() ?? "";
+            var fullPath = BoygroupDeployer.SafeProjectPath(projectFolder, relativePath);
+            if (File.Exists(fullPath))
+            {
+                File.SetAttributes(fullPath, FileAttributes.Normal);
+                File.Delete(fullPath);
+                Log.Debug($"Boygroup deploy: removed {relativePath}");
+            }
+        }
+        catch (Exception e)
+        {
+            Log.Warning($"Boygroup deploy: can't delete {CollabProtocol.GetString(json, "path")}: {e.Message}");
+        }
+    }
 
     private void WriteSetupFile(JObject json)
     {
-        var projectFolder = GetSetupTargetFolder();
+        var projectFolder = GetProjectFolder();
         if (string.IsNullOrEmpty(projectFolder))
-        {
-            ErrorText = "No project open — can't apply the master's output setup";
             return;
-        }
 
         try
         {
@@ -1108,9 +784,6 @@ internal sealed class BoygroupManager
             Directory.CreateDirectory(setupsFolder);
             var fullPath = Path.Combine(setupsFolder, name);
             File.WriteAllText(fullPath, json["json"]?.Value<string>() ?? "");
-
-            // The setup cache is per project and would otherwise keep presenting the old file.
-            OutputSetupHandling.OnSetupFilesChanged(projectFolder);
             Log.Info($"Boygroup: setup updated: {name}");
         }
         catch (Exception e)
@@ -1119,36 +792,29 @@ internal sealed class BoygroupManager
         }
     }
 
-    /// <summary>Switches the client to the setup the master is presenting.</summary>
-    private void ActivateSetup(JObject json)
-    {
-        var name = json["name"]?.Value<string>() ?? "";
-        if (string.IsNullOrEmpty(name))
-            return;
-
-        var projectFolder = GetSetupTargetFolder();
-        if (string.IsNullOrEmpty(projectFolder))
-            return;
-
-        if (OutputSetupHandling.TryApplySetupFile(projectFolder, name))
-        {
-            DeploySummary = $"Using setup '{name}'";
-        }
-        else
-        {
-            // The file may have arrived with the same batch but switch failed (unreadable), so
-            // reload whatever is there instead of keeping stale state.
-            OutputSetupHandling.OnSetupFilesChanged(projectFolder);
-            Log.Warning($"Boygroup: can't switch to setup '{name}'");
-        }
-    }
-
     private void HandleDeployDone(JObject json)
     {
-        var setups = json["setups"]?.Value<int>() ?? 0;
-        DeploySummary = setups == 0
-                            ? "No output setup received"
-                            : $"Output setup synced ({setups} file{(setups == 1 ? "" : "s")})";
+        var shouldRestart = json["restart"]?.Value<bool>() ?? true;
+        DeploySummary = $"Deployment complete ({_deployFilesDone} files" + (_deployErrors > 0 ? $", {_deployErrors} failed" : "") + ")";
+
+        if (!shouldRestart || !UserSettings.Config.BoygroupAutoJoin)
+            return;
+
+        RestartPending = true;
+        // Brief delay so the panel shows what happened before the process exits.
+        _restartAtTicks = Environment.TickCount64 + 1500;
+    }
+
+    private long _restartAtTicks;
+
+    private void ProcessPendingRestart()
+    {
+        if (!RestartPending || _restartAtTicks == 0 || Environment.TickCount64 < _restartAtTicks)
+            return;
+
+        _restartAtTicks = 0;
+        Log.Info("Boygroup: restarting to apply deployed files");
+        EditorRestart.TryRestart();
     }
 
     // ---------------------------------------------------------------------------------------
@@ -1182,23 +848,6 @@ internal sealed class BoygroupManager
             return;
 
         _nextHeartbeatTicks = now + CollabProtocol.HeartbeatIntervalMs;
-
-        if (_transport is BoygroupClientTransport clientTransport)
-        {
-            // The server pings every client every second, so silence means the master is gone
-            // (or partitioned). Without this check the client kept dead-reckoning time forever
-            // from the last sync and reported itself as connected.
-            var serverPeer = clientTransport.ServerPeer;
-            if (serverPeer.IsTimedOut)
-            {
-                Log.Info("Boygroup: server timed out");
-                serverPeer.SessionClosed = true;
-                serverPeer.Close();
-            }
-
-            return;
-        }
-
         var timestamp = BitConverter.GetBytes(Environment.TickCount64);
         foreach (var client in _clients)
         {
@@ -1280,13 +929,11 @@ internal sealed class BoygroupManager
     // Discovery
     // ---------------------------------------------------------------------------------------
 
-    /// <summary>Starts continuous discovery of the TiXL instances on the network (master only).</summary>
     public void StartDiscovery()
     {
         _discoveryScanner ??= new LanDiscoveryScanner();
         _discoveredServers.Clear();
-        _discoveryScanner.Start(UserSettings.Config.BoygroupPort + LanDiscoveryResponder.DiscoveryPortOffset,
-                                UserSettings.Config.NetworkInterface);
+        _discoveryScanner.Start(UserSettings.Config.BoygroupPort + LanDiscoveryResponder.DiscoveryPortOffset);
     }
 
     public void StopDiscovery()
@@ -1294,7 +941,7 @@ internal sealed class BoygroupManager
         _discoveryScanner?.Stop();
     }
 
-    /// <summary>Moves scan results into the visible list; called from Update.</summary>
+    /// <summary>Moves scan results into the visible list; called from Update and the panel.</summary>
     public void DrainDiscovery()
     {
         if (_discoveryScanner == null)
@@ -1306,18 +953,12 @@ internal sealed class BoygroupManager
             if (announcement["boygroup"] == null)
                 continue;
 
-            var node = new DiscoveredServer
-                           {
-                               Name = CollabProtocol.GetString(announcement, "name",
-                                                               CollabProtocol.GetString(announcement, "server", "TiXL")),
-                               Address = result.Source.Address.ToString(),
-                               Port = announcement["port"]?.Value<int>() ?? UserSettings.Config.BoygroupPort,
-                               Role = CollabProtocol.GetString(announcement, "role", "master"),
-                           };
-
-            // The master's own announcement comes back through the broadcast.
-            if (node.IsMaster && string.Equals(node.Name, LocalNodeName, StringComparison.OrdinalIgnoreCase))
-                continue;
+            var server = new DiscoveredServer
+                             {
+                                 ServerName = CollabProtocol.GetString(announcement, "server", "boygroup server"),
+                                 Address = result.Source.Address.ToString(),
+                                 Port = announcement["port"]?.Value<int>() ?? UserSettings.Config.BoygroupPort,
+                             };
 
             if (announcement["groups"] is JArray groups)
             {
@@ -1325,20 +966,14 @@ internal sealed class BoygroupManager
                 {
                     var name = group.Value<string>();
                     if (!string.IsNullOrEmpty(name))
-                        node.Groups.Add(name);
+                        server.Groups.Add(name);
                 }
             }
 
-            var existing = _discoveredServers.FirstOrDefault(d => d.Address == node.Address && d.Port == node.Port);
-            if (existing != null)
-            {
-                existing.Name = node.Name;
-                existing.Role = node.Role;
-                existing.Seen = DateTime.UtcNow;
+            if (_discoveredServers.Any(d => d.Address == server.Address && d.Port == server.Port))
                 continue;
-            }
 
-            _discoveredServers.Add(node);
+            _discoveredServers.Add(server);
         }
 
         _discoveredServers.RemoveAll(d => d.Seen < DateTime.UtcNow - TimeSpan.FromSeconds(15));
