@@ -267,7 +267,7 @@ internal sealed class CollabManager
         _transport = transport;
         RoomCode = transport.AssignedRoomCode;
         State = SessionState.Hosting;
-        StatusText = $"Hosting via relay, room {RoomCode}";
+        StatusText = $"Hosting via relay {relayHost}:{relayPort}, room {RoomCode}";
         Log.Info($"Collab: hosting via relay {relayHost}:{relayPort}, room {RoomCode}");
     }
 
@@ -284,6 +284,10 @@ internal sealed class CollabManager
         }
 
         ErrorText = "";
+        _joinedHost = "";
+        _joinedRelayHost = relayHost;
+        _joinedRelayPort = relayPort;
+        _joinedRoomCode = roomCode.Trim().ToUpperInvariant();
         State = SessionState.Connecting;
         StatusText = $"Joining room {roomCode} via {relayHost}:{relayPort}...";
 
@@ -353,6 +357,9 @@ internal sealed class CollabManager
         ++_sessionGeneration;
         ErrorText = "";
         _joinedHost = $"{hostAddress}:{tcpPort}";
+        _joinedRelayHost = "";
+        _joinedRelayPort = 0;
+        _joinedRoomCode = "";
         State = SessionState.Connecting;
         StatusText = $"Connecting to {hostAddress}:{tcpPort}...";
 
@@ -426,7 +433,13 @@ internal sealed class CollabManager
         _projectDownload = null;
         _hostProjectName = "";
         _sessionProjectName = "";
+        _joinedHost = "";
+        _joinedRelayHost = "";
+        _joinedRelayPort = 0;
+        _joinedRoomCode = "";
         UserSettings.Config.CollabLastSessionHost = "";
+        UserSettings.Config.CollabLastRelayHost = "";
+        UserSettings.Config.CollabLastRelayRoom = "";
         UserSettings.Save();
         while (_pendingDisconnects.TryDequeue(out _))
         {
@@ -608,15 +621,38 @@ internal sealed class CollabManager
             return;
 
         var host = UserSettings.Config.CollabLastSessionHost;
-        if (string.IsNullOrEmpty(host))
+        if (TryParseEndpoint(host, out var hostName, out var port))
+        {
+            Log.Info($"Collab: auto-rejoining last session {host}");
+            JoinDirect(hostName, port, UserSettings.Config.CollabPassword ?? "");
             return;
+        }
 
-        var separator = host.LastIndexOf(':');
-        if (separator <= 0 || !int.TryParse(host[(separator + 1)..], out var port))
-            return;
+        // A relay join that restarted for a project download comes back through the same room.
+        var relayHost = UserSettings.Config.CollabLastRelayHost;
+        var roomCode = UserSettings.Config.CollabLastRelayRoom;
+        if (TryParseEndpoint(relayHost, out var relayName, out var relayPort) && !string.IsNullOrEmpty(roomCode))
+        {
+            Log.Info($"Collab: auto-rejoining relay room {roomCode} at {relayHost}");
+            JoinViaRelay(relayName, relayPort, roomCode, UserSettings.Config.CollabPassword ?? "");
+        }
+    }
 
-        Log.Info($"Collab: auto-rejoining last session {host}");
-        JoinDirect(host[..separator], port, UserSettings.Config.CollabPassword ?? "");
+    private static bool TryParseEndpoint(string? endpoint, out string host, out int port)
+    {
+        host = "";
+        port = 0;
+        if (string.IsNullOrWhiteSpace(endpoint))
+            return false;
+
+        var separator = endpoint.LastIndexOf(':');
+        if (separator <= 0
+            || !int.TryParse(endpoint[(separator + 1)..], out port)
+            || port is <= 0 or > 65535)
+            return false;
+
+        host = endpoint[..separator];
+        return !string.IsNullOrWhiteSpace(host);
     }
 
     private void ProcessPendingDisconnects()
@@ -1048,7 +1084,19 @@ internal sealed class CollabManager
 
         // Remember the session so a restart (e.g. after a project download) can rejoin, then make
         // sure the host's project is open locally — download it when this machine doesn't have it.
-        UserSettings.Config.CollabLastSessionHost = _joinedHost;
+        if (!string.IsNullOrEmpty(_joinedRoomCode))
+        {
+            UserSettings.Config.CollabLastSessionHost = "";
+            UserSettings.Config.CollabLastRelayHost = $"{_joinedRelayHost}:{_joinedRelayPort}";
+            UserSettings.Config.CollabLastRelayRoom = _joinedRoomCode;
+        }
+        else
+        {
+            UserSettings.Config.CollabLastSessionHost = _joinedHost;
+            UserSettings.Config.CollabLastRelayHost = "";
+            UserSettings.Config.CollabLastRelayRoom = "";
+        }
+
         UserSettings.Save();
         _hostProjectName = CollabProtocol.GetString(json, "project");
         EnsureHostProjectAvailable();
@@ -1056,6 +1104,11 @@ internal sealed class CollabManager
 
     /// <summary>host:port of the session this client dialed into (persisted for auto-rejoin).</summary>
     private string _joinedHost = "";
+
+    /// <summary>Relay endpoint and room of the session this client joined; empty for direct sessions.</summary>
+    private string _joinedRelayHost = "";
+    private int _joinedRelayPort;
+    private string _joinedRoomCode = "";
 
     private string _sessionProjectName = "";
     private string _hostProjectName = "";
@@ -1073,13 +1126,12 @@ internal sealed class CollabManager
     /// <summary>
     /// Opens the host's project locally, or asks the host to stream it over when it doesn't exist
     /// here. Once the files have landed the editor restarts and auto-rejoins; from then on the
-    /// session only syncs deltas.
+    /// session only syncs deltas. Works for direct and relay sessions because both expose a
+    /// <see cref="HostLink"/>, and a relay joiner now persists its room for the rejoin.
     /// </summary>
     private void EnsureHostProjectAvailable()
     {
-        // Only direct sessions: the persisted auto-rejoin target (`_joinedHost`) is a host:port, so
-        // a relay joiner that restarted for a download could not rejoin by room code.
-        if (string.IsNullOrEmpty(_hostProjectName) || _transport is not CollabClientTransport { HostPeer: { } host })
+        if (string.IsNullOrEmpty(_hostProjectName) || HostLink is not { } host)
             return;
 
         if (TryOpenProjectByName(_hostProjectName))

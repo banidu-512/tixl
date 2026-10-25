@@ -8,13 +8,13 @@ Sessions are configured in **Settings → Collaboration**. The feature is experi
 
 - **LAN**: one editor hosts on a configurable TCP port (44700 by default); the others find it through LAN discovery or join with a direct IP address.
 - **Shared project**: **Share project** picks which project the session works on. **Current project** follows whichever project is focused; choosing another one opens it when hosting starts. The **Projects** window offers the same operation per project in its context menu.
-- **Online**: join a direct address (an open port, or a VPN such as Tailscale), or meet in a room on a relay. The relay is the `CollabRelay` project in this repository (`dotnet run --project CollabRelay`). The host shares the generated room code and the others enter it, so no port forwarding is needed.
+- **Online**: join a direct address (an open port, or a VPN such as Tailscale), or meet in a room on a relay. The relay is the `CollabRelay` project in this repository (`dotnet run --project CollabRelay`, TCP 44710 by default); it must be reachable by everyone. Both sides enter the same address under **Relay server** (persisted; empty means `127.0.0.1:44710`). The host registers a room, gets a six-character code and can **Copy invite** (relay address plus code) for the other people, who use **Paste invite & join** or enter the code themselves. No port forwarding is needed.
 - **Projects window**: running LAN sessions are listed next to the projects, and a project's context menu offers **Host Collaboration Session**.
 - **Password**: a session can be password protected. Authentication is a PBKDF2/HMAC challenge-response; the password itself never crosses the network.
 - **Identity**: a local display name, or **Log in with Discord**, which opens discord.com in the browser and uses the verified Discord profile (name and avatar). The login uses OAuth2 with PKCE and needs no client secret. A Discord application is registered once: paste its **Client ID** into the Collaboration settings and add the exact redirect URI shown there (`http://127.0.0.1:38270/callback/`) under OAuth2 → Redirects. Builds that ship a TiXL application id need neither field — only the button. The account must be a member of the TiXL Discord server (https://discord.gg/YmSyQdeH3S): the login requests the `identify` and `guilds` scopes, resolves the invite to its server id and compares it with the account's server list. An account that is not in the server is told to join and can retry with one click.
 - **Network**: the **Interface** dropdown pins hosting, LAN discovery and presence to one adapter. Keep **Automatic** unless the machine also has Wi-Fi, VPN or Hyper-V adapters and the show runs on a specific Ethernet port.
 
-On join a client downloads the host's project if it doesn't have it, restarts into it and rejoins automatically.
+On join a client downloads the host's project if it doesn't have it, restarts into it and rejoins automatically. This also works through a relay: the joiner remembers the relay address and room code, so the restart returns to the same room.
 
 ## What is synchronized
 
