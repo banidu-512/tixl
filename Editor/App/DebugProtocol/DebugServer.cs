@@ -739,6 +739,43 @@ internal static class DebugServer
                 break;
             }
 
+            // Bind an output on a render node's own display, exactly like dropping it on the
+            // node's screen row in Output Setup.
+            case "bindRemote":
+            case "unbindRemote":
+            {
+                var clientName = request["client"]?.Value<string>() ?? "";
+                var client = boygroup.Clients.FirstOrDefault(c => string.Equals(c.Name, clientName, StringComparison.OrdinalIgnoreCase))
+                             ?? boygroup.Clients.FirstOrDefault();
+                if (client == null)
+                {
+                    context.SendError("NOT_FOUND", "No render node is connected");
+                    return;
+                }
+
+                OutputSetupHandling.TryGetActiveSetup(out var setup, out _);
+                var outputText = request["output"]?.Value<string>() ?? "";
+                var outputId = Guid.Empty;
+                if (!Guid.TryParse(outputText, out outputId))
+                {
+                    outputId = setup?.Outputs.FirstOrDefault(o => string.Equals(o.Name, outputText, StringComparison.OrdinalIgnoreCase))?.Id
+                               ?? Guid.Empty;
+                }
+
+                if (outputId == Guid.Empty)
+                {
+                    context.SendError("NOT_FOUND", "No output matches 'output'");
+                    return;
+                }
+
+                var display = request["display"]?.Value<int>() ?? 0;
+                if (request["op"]?.Value<string>() == "bindRemote")
+                    boygroup.BindRemoteOutput(client, outputId, display);
+                else
+                    boygroup.UnbindRemoteOutput(client, outputId, display);
+                break;
+            }
+
             // Legacy aliases kept for existing scripts: server starts a master, join connects a slave.
             case "server":
                 UserSettings.Config.BoygroupRole = Show.BoygroupRole.Master;
@@ -765,7 +802,7 @@ internal static class DebugServer
                 break;
 
             default:
-                context.SendError("INVALID_PARAM", "boygroup requires op = enable | disable | invite | deploy | status");
+                context.SendError("INVALID_PARAM", "boygroup requires op = enable | disable | invite | bindRemote | unbindRemote | deploy | status");
                 return;
         }
 
@@ -773,6 +810,18 @@ internal static class DebugServer
         OutputSetupHandling.TryGetActiveSetup(out var activeSetup, out _);
         foreach (var client in boygroup.Clients)
         {
+            var screens = new JArray();
+            foreach (var screen in client.Screens)
+            {
+                screens.Add(new JObject
+                                {
+                                    ["index"] = screen.Index,
+                                    ["name"] = screen.Name,
+                                    ["width"] = screen.Width,
+                                    ["height"] = screen.Height,
+                                });
+            }
+
             clients.Add(new JObject
                             {
                                 ["name"] = client.Name,
@@ -781,6 +830,7 @@ internal static class DebugServer
                                 ["status"] = client.StatusText,
                                 ["deployed"] = client.IsDeployed,
                                 ["bindings"] = Show.BoygroupManager.DescribeBindings(client.MachineConfig, activeSetup),
+                                ["screens"] = screens,
                             });
         }
 

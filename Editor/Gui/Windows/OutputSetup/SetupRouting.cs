@@ -107,6 +107,15 @@ internal static class SetupRouting
             var otherKind = dragKind == SetupEntityKinds.Plug ? targetKind : dragKind;
             var otherId = dragKind == SetupEntityKinds.Plug ? targetId : dragId;
 
+            // A render node's display is bound on that machine: the master only sends the request.
+            if (T3.Editor.Show.BoygroupManager.Instance.TryGetRemoteDisplayPlug(plugId, out var remoteClient, out var remoteDisplay))
+            {
+                if (otherKind == SetupEntityKinds.Output && setup.FindOutput(otherId) != null)
+                    T3.Editor.Show.BoygroupManager.Instance.BindRemoteOutput(remoteClient, otherId, remoteDisplay);
+
+                return;
+            }
+
             if (otherKind == SetupEntityKinds.Output)
             {
                 var output = setup.FindOutput(otherId);

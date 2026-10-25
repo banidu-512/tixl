@@ -143,6 +143,22 @@ internal static class SetupEntityContextMenu
                 break;
 
             case SetupEntityKinds.Plug:
+                // A render node's display belongs to that machine; only its binding is offered here.
+                if (T3.Editor.Show.BoygroupManager.Instance.TryGetRemoteDisplayPlug(id, out var remoteClient, out var remoteDisplayIndex))
+                {
+                    var remoteConfig = remoteClient.MachineConfig;
+                    var remoteBound = remoteConfig == null
+                                          ? null
+                                          : Plugs.TryGetBoundOutput(setup, remoteConfig, Plugs.DisplayPlugId(remoteDisplayIndex));
+                    if (remoteBound != null
+                        && CustomComponents.DrawMenuItem(15, $"Unbind {remoteBound.Name}"))
+                    {
+                        T3.Editor.Show.BoygroupManager.Instance.UnbindRemoteOutput(remoteClient, remoteBound.Id, remoteDisplayIndex);
+                    }
+
+                    break;
+                }
+
                 if (!OutputSetupHandling.TryGetActiveSetup(out _, out var plugMachineConfig))
                     break;
 

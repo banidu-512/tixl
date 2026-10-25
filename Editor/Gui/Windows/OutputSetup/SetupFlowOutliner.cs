@@ -226,7 +226,7 @@ internal sealed class SetupFlowOutliner
 
         BeginColumn(origin.X + 3 * columnWidth + gap * 0.5f, origin.Y, columnWidth - gap);
         DrawColumnHeader("LOCAL BINDINGS", "##addPlug", selection, _requestAddPlugMenu, SetupEntityKinds.Plug);
-        DrawLocalBindings(selection, setup, machineConfig, columnWidth - gap);
+        DrawLocalBindings(selection, setup, machineConfig);
         maxY = MathF.Max(maxY, ImGui.GetCursorScreenPos().Y);
 
         // Reference images and props are Board cards, not flow items: they are added from the Board's own menu.
@@ -320,6 +320,23 @@ internal sealed class SetupFlowOutliner
                 var binding = machineConfig.FindBinding(output.Id);
                 if (binding != null)
                     _connections.Add(new Connection(SetupEntityKinds.Output, output.Id, SetupEntityKinds.Plug, Plugs.BoundPlugId(binding)));
+            }
+        }
+
+        // Render nodes present their own bindings; their display rows sit in the same column, so the
+        // board can draw the master's routing edges too.
+        foreach (var client in BoygroupManager.Instance.Clients)
+        {
+            if (client.MachineConfig == null)
+                continue;
+
+            foreach (var binding in client.MachineConfig.Bindings)
+            {
+                if (binding.IsStream || binding.IsLaser || setup.FindOutput(binding.OutputId) == null)
+                    continue;
+
+                _connections.Add(new Connection(SetupEntityKinds.Output, binding.OutputId, SetupEntityKinds.Plug,
+                                                BoygroupManager.RemoteDisplayPlugId(client, binding.DisplayIndex)));
             }
         }
 
@@ -582,7 +599,7 @@ internal sealed class SetupFlowOutliner
     /// somewhere to land. Plug items aren't selectable; they take an output by drop and offer their menu.
     /// The column's "+" adds a stream sender of any kind whose package is loaded, or a laser device.
     /// </summary>
-    private void DrawLocalBindings(SetupEntitySelection selection, Setup setup, MachineConfig machineConfig, float columnWidth)
+    private void DrawLocalBindings(SetupEntitySelection selection, Setup setup, MachineConfig machineConfig)
     {
         var screens = EditorUi.Instance.AllScreens;
         for (var i = 0; i < screens.Count; i++)
@@ -706,33 +723,44 @@ internal sealed class SetupFlowOutliner
             SetupPopup.End();
         }
 
-        DrawClientBindings(setup, columnWidth);
+        DrawRemoteBindings(selection, setup);
     }
 
     /// <summary>
-    /// Where the connected render nodes present their outputs. Shown on the master only: each client
-    /// reports its machine config over the boygroup session, and this is the column where bindings live.
+    /// Displays of the connected render nodes, next to this machine's own. Dropping an output on one
+    /// binds it inside that client's machine config; the master never presents it itself, it only
+    /// asks the render node to.
     /// </summary>
-    private static void DrawClientBindings(Setup setup, float columnWidth)
+    private void DrawRemoteBindings(SetupEntitySelection selection, Setup setup)
     {
         var manager = BoygroupManager.Instance;
         if (manager.State != BoygroupManager.BoygroupState.Server || manager.Clients.Count == 0)
             return;
 
-        FormInputs.AddVerticalSpace(12);
-        ImGui.TextDisabled("CLIENT BINDINGS");
-
-        var scale = T3Ui.UiScaleFactor;
         foreach (var client in manager.Clients)
         {
-            if (!client.Peer.IsAuthenticated)
+            if (!client.Peer.IsAuthenticated || client.Screens.Count == 0)
                 continue;
 
-            ImGui.TextUnformatted(client.Name);
-            ImGui.PushTextWrapPos(ImGui.GetCursorPosX() + MathF.Max(columnWidth, 60 * scale));
-            CustomComponents.StylizedText(BoygroupManager.DescribeBindings(client.MachineConfig, setup),
-                                          Fonts.FontSmall, UiColors.TextMuted);
-            ImGui.PopTextWrapPos();
+            FormInputs.AddVerticalSpace(10);
+            ImGui.TextDisabled($"{client.Name.ToUpperInvariant()} · RENDER NODE");
+
+            foreach (var screen in client.Screens)
+            {
+                var bound = client.MachineConfig == null
+                                ? null
+                                : Plugs.TryGetBoundOutput(setup, client.MachineConfig, Plugs.DisplayPlugId(screen.Index));
+                var args = new OutlinerItem.Args
+                               {
+                                   Kind = SetupEntityKinds.Plug,
+                                   Id = BoygroupManager.RemoteDisplayPlugId(client, screen.Index),
+                                   Name = $"{client.Name} / {screen.Name}",
+                                   Status = $"{screen.Width}×{screen.Height}",
+                                   LeadingIcon = Icon.ConnectedOutput,
+                                   IsMuted = bound == null,
+                               };
+                DrawItem(selection, setup, ref args);
+            }
         }
     }
 
