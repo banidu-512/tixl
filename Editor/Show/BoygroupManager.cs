@@ -1498,6 +1498,31 @@ internal sealed class BoygroupManager
         SendTimeSyncNow();
     }
 
+    /// <summary>
+    /// Stops the master and every render node, following the master's timeline settings: when
+    /// "reset time after playback" is enabled, the show returns to the bar it was started from.
+    /// </summary>
+    public void StopAll()
+    {
+        if (State != BoygroupState.Server)
+            return;
+
+        var playback = Playback.Current;
+        if (playback == null)
+            return;
+
+        if (UserSettings.Config.ResetTimeAfterPlayback)
+            playback.TimeInBars = _playStartBars;
+
+        playback.PlaybackSpeed = 0;
+        BroadcastToGroup(new { t = "play", playing = false, bars = playback.TimeInBars });
+        SendTimeSyncNow();
+    }
+
+    /// <summary>The master's timeline bar when playback last started, used by StopAll's reset.</summary>
+    private double _playStartBars;
+    private double _lastMasterSpeed;
+
     private void ApplyPlayControl(JObject json)
     {
         var playing = json["playing"]?.Value<bool>() ?? false;
@@ -1562,6 +1587,12 @@ internal sealed class BoygroupManager
         var playback = Playback.Current;
         if (playback == null)
             return;
+
+        // Remember where the master started, whether from this panel or its own transport keys,
+        // so StopAll can reset to it when the timeline settings ask for that.
+        if (Math.Abs(_lastMasterSpeed) < 1e-3 && Math.Abs(playback.PlaybackSpeed) > 1e-3)
+            _playStartBars = playback.TimeInBars;
+        _lastMasterSpeed = playback.PlaybackSpeed;
 
         // Play-at anchor: the bars the master will have at an instant slightly in the future, sent
         // with that instant on the master's UTC clock. Clients convert it with their measured clock
