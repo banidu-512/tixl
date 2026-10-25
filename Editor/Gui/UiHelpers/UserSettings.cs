@@ -77,36 +77,12 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
 
         public readonly Dictionary<string, Guid> LastOpsForWindows = new();
 
-        /// <summary>
-        /// Operator bookmarks per project, keyed by the project's root symbol. The index is the digit key; each entry
-        /// is an instance path of Guids joined by '/', stored as text because Guid lists don't deserialize reliably.
-        /// </summary>
-        public readonly Dictionary<Guid, string?[]> OperatorBookmarks = new();
-
         [JsonConverter(typeof(StringEnumConverter))]
         public GraphHoverModes HoverMode = GraphHoverModes.LastValue;
 
         // Projects
         public List<string> ProjectDirectories = [];
         public bool EnableUsbProjectDetection = true;
-        public bool ReopenLastProjectOnStartup = true;
-
-        /// <summary>Projects switched away from stay loaded for a quick return; older ones are unloaded.</summary>
-        public int KeepLoadedProjectCount = 3;
-
-        /// <summary>
-        /// Share of the GPU memory budget the driver grants TiXL. Above it, render targets nothing shows are
-        /// released; below it, nothing is, so a show that fits never pays for a rebuild.
-        /// </summary>
-        public int GpuMemoryLimitPercent = 90;
-
-        /// <summary>0 keeps them for as long as their project is loaded, which avoids rebuild hitches.</summary>
-        public int ReleaseUnusedRenderTargetsAfterSeconds = 0;
-
-        /// <summary>Folder of the project that was open when the editor closed; empty if it closed in the project hub.</summary>
-        public string LastOpenProjectFolder = string.Empty;
-
-        public readonly ToastSettings Toasts = new();
 
         // Startup & recovery
         /// <summary>Project folder that opens automatically on the next launch. Empty starts with the Hub.</summary>
@@ -132,9 +108,6 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         /// <summary>When true, the Welcome window opens automatically at startup. Toggled from that window.</summary>
         public bool ShowWelcomeOnStartup = true;
 
-        /// <summary>When true, a warning lists symbols with operators that could not be found, once after startup.</summary>
-        public bool ShowMissingSymbolsWarningOnStartup = true;
-
         /// <summary>Whether the next launch offers crashes that were never reported.</summary>
         public bool AskToSendCrashReports = true;
 
@@ -147,21 +120,16 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public bool SuspendRenderingWhenHidden = true;
         public bool UseVSync = true;
 
-        /// <summary>Caps the short side of outputs sized by their window ("Fill" and aspect presets), e.g. in focus mode on high-res displays.</summary>
-        [JsonConverter(typeof(StringEnumConverter))]
-        public WindowFillResolutionLimits MaxWindowFillResolution = WindowFillResolutionLimits.Unlimited;
-
         /** Frames per second to render at with vsync; 0 renders every refresh of the pacing display. */
         public int TargetFrameRate = 0;
 
-        /** Frames the loop may run ahead of the display: 1 for the lowest input latency, 2 to absorb late frames. */
-        public int FrameLatency = 1;
+        /** Windows' implementation of mirroring a display is extremely slow and can
+        * take up to 50% of the GPU time. Enabling this work around will copy the Main window
+        * SwapChain buffer into a texture that is used for the 2nd viewer window.
+        */
+        public bool MirrorUiOnSecondView = false;
 
         public bool EnableKeyboardShortCuts = true;
-
-        /** Whether a connected game controller drives operators like [Gamepad] or the editor (its camera). */
-        [JsonConverter(typeof(StringEnumConverter))]
-        public InputDeviceUsages GamepadUsage = InputDeviceUsages.Operators;
 
         public GraphStyles GraphStyle = GraphStyles.Magnetic;
 
@@ -239,6 +207,15 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public bool EnableAutoBackup = true;
         public bool MinimalBackup = true;
 
+
+        // Show failover (active/standby output arbitration)
+        public bool FailoverEnabled = false;
+        public string FailoverShowId = "tixl-show";
+        public int FailoverPriority = 100;
+        public int FailoverHeartbeatMs = 500;
+        public int FailoverTimeoutFactor = 3;
+        public bool FailoverPreempt = true;
+
         public float GizmoSize = 100;
 
 
@@ -255,21 +232,9 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public float TimeRasterDensity = 1f;
 
         // Space mouse
-        public float SpaceMouseRotationSpeedFactor = 0.3f;
-        public float SpaceMouseMoveSpeedFactor = 0.2f;
-        public float SpaceMouseDamping = 0.95f;
-
-        /** Whether the SpaceMouse flies the camera (Editor) or drives operators like [SpaceMouse]. */
-        [JsonConverter(typeof(StringEnumConverter))]
-        public InputDeviceUsages SpaceMouseUsage = InputDeviceUsages.Editor;
-
-        // Game controller camera
-        /** Seconds the camera takes to follow the sticks; longer is calmer, e.g. for live demos. */
-        public float GamepadCameraSmoothing = 0.4f;
-
-        public float GamepadCameraMoveSpeed = 1f;
-        public float GamepadCameraLookSpeed = 1f;
-        public bool GamepadCameraInvertLook;
+        public float SpaceMouseRotationSpeedFactor = 1f;
+        public float SpaceMouseMoveSpeedFactor = 1f;
+        public float SpaceMouseDamping = 0.5f;
 
         // Migration-only: these load from existing userSettings.json to preserve
         // the user's last render path counters. Not written back.
@@ -299,7 +264,6 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public bool LogAudioDetails = false;
         public bool LogAudioRenderingDetails = false;
         public bool LogVideoRenderingDetails = false;
-        public bool LogPresentationModeChanges = false;
 
         public CompilerOptions.Verbosity CompileCsVerbosity = CompilerOptions.Verbosity.Minimal;
 
@@ -344,24 +308,6 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
     {
         Legacy,
         Magnetic,
-    }
-
-    /** Values are the largest short side in pixels; 0 means no limit. */
-    public enum WindowFillResolutionLimits
-    {
-        Unlimited = 0,
-        Max720p = 720,
-        Max1080p = 1080,
-        Max1440p = 1440,
-        Max2160p = 2160,
-    }
-
-    /** Who an input device drives; Editor means the camera of the output. Stored by name. */
-    public enum InputDeviceUsages
-    {
-        Operators,
-        Editor,
-        Off,
     }
 
     internal static bool IsUserNameDefined()
