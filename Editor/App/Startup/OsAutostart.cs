@@ -19,7 +19,7 @@ internal static class OsAutostart
     internal const string ArgMarker = "--autostart";
 
     private const string ValueName = "TiXL";
-    private const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
+    private const string RunKey = @"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
     private const string DesktopAppId = "app.tixl.TiXL";
     private const string PlistLabel = DesktopAppId + ".autostart";
 
@@ -54,7 +54,7 @@ internal static class OsAutostart
     internal static string DescribeEntry()
     {
         if (OperatingSystem.IsWindows())
-            return $@"HKCU\{RunKey}\{ValueName}";
+            return $@"{RunKey}\{ValueName}";
 
         if (OperatingSystem.IsLinux())
             return DesktopFilePath;

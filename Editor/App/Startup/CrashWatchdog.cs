@@ -69,14 +69,22 @@ internal static class CrashWatchdog
 
         try
         {
-            var startInfo = new ProcessStartInfo
-                                {
-                                    FileName = LaunchCommands.HostPath,
-                                    // Launch via the shell so the supervisor isn't part of this process's
-                                    // job object. Under a debugger that job is killed when we exit, which
-                                    // would take the supervisor down with it (same rationale as EditorRestart).
-                                    UseShellExecute = true,
-                                };
+            var startInfo = new ProcessStartInfo { FileName = LaunchCommands.HostPath };
+            if (OperatingSystem.IsWindows())
+            {
+                // Launch via the shell so the supervisor isn't part of this process's job
+                // object. Under a debugger (Rider) that job is killed when we exit, which
+                // would take the supervisor down with it (same rationale as EditorRestart).
+                startInfo.UseShellExecute = true;
+            }
+            else
+            {
+                // On Unix, UseShellExecute builds a shell command line and mangles
+                // ArgumentList entries into a single token; exec directly instead,
+                // which passes the argv through byte-exact.
+                startInfo.UseShellExecute = false;
+            }
+
             startInfo.ArgumentList.Add(WatchdogArg);
             foreach (var arg in SanitizePayload(args))
                 startInfo.ArgumentList.Add(arg);
