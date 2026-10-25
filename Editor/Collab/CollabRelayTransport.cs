@@ -95,118 +95,48 @@ internal sealed class CollabRelayHostTransport : CollabTransport
 {
     public string AssignedRoomCode { get; private set; } = "";
 
-    public override IReadOnlyList<CollabPeerConnection> Peers => _peerSnapshot;
+    public override IReadOnlyList<CollabPeerConnection> Peers => _peers;
 
     private readonly List<CollabPeerConnection> _peers = [];
-
-    /** Copy of _peers republished on every change, so the UI thread enumerates without locking. */
-    private volatile CollabPeerConnection[] _peerSnapshot = [];
-
     private readonly TcpClient _relayClient;
     private readonly NetworkStream _relayStream;
     private readonly object _relayWriteLock = new();
     private readonly CancellationTokenSource _cancellation = new();
-    private readonly Timer _keepAliveTimer;
-
-    /** The relay drops connections idle for 90 s; a host waiting for its first member sends nothing else. */
-    private const int KeepAliveIntervalMs = 15_000;
-
-    /** Never assigned to a member: the relay discards frames for it after counting them as activity. */
-    private const byte KeepAliveSlot = 0;
 
     private CollabRelayHostTransport(TcpClient relayClient, string assignedRoomCode)
     {
         _relayClient = relayClient;
         _relayStream = relayClient.GetStream();
         AssignedRoomCode = assignedRoomCode;
-        _keepAliveTimer = new Timer(_ => SendKeepAlive(), null, KeepAliveIntervalMs, KeepAliveIntervalMs);
+        _ = Task.Run(() => ReadRelayLoopAsync(_cancellation.Token));
     }
-
-    /// <summary>
-    /// Starts reading relay traffic. Must run after <see cref="CollabTransport.PeerDisconnected"/> is
-    /// wired, or a link that dies during the connect hand-off reports nothing.
-    /// </summary>
-    public void StartReading() => _ = Task.Run(() => ReadRelayLoopAsync(_cancellation.Token));
 
     /// <summary>Connects to the relay and registers as a room owner. Throws with a readable message on failure.</summary>
     public static async Task<CollabRelayHostTransport> ConnectAsync(string relayHost, int relayPort, string roomCode, CancellationToken cancellation)
     {
         var client = new TcpClient();
-        try
-        {
-            // A relay that accepts but never answers must not leave the session stuck in Connecting.
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
-            timeout.CancelAfter(CollabProtocol.ConnectTimeoutMs);
-            await client.ConnectAsync(relayHost, relayPort, timeout.Token);
-            client.NoDelay = true;
-            client.SendTimeout = CollabProtocol.WriteTimeoutMs;
-            var stream = client.GetStream();
+        await client.ConnectAsync(relayHost, relayPort, cancellation);
+        client.NoDelay = true;
+        var stream = client.GetStream();
 
-            var request = string.IsNullOrEmpty(roomCode)
-                              ? "{\"role\":\"host\",\"room\":\"\"}\n"
-                              : $"{{\"role\":\"host\",\"room\":\"{roomCode.Replace("\"", "")}\"}}\n";
-            var bytes = Encoding.UTF8.GetBytes(request);
-            await stream.WriteAsync(bytes, timeout.Token);
+        var request = string.IsNullOrEmpty(roomCode)
+                          ? "{\"role\":\"host\",\"room\":\"\"}\n"
+                          : $"{{\"role\":\"host\",\"room\":\"{roomCode.Replace("\"", "")}\"}}\n";
+        var bytes = Encoding.UTF8.GetBytes(request);
+        await stream.WriteAsync(bytes, cancellation);
 
-            var (ok, detail, _, reply) = await CollabRelayWire.ReadControlReplyAsync(stream, timeout.Token);
-            if (!ok)
-                throw new Exception(string.IsNullOrEmpty(detail) ? "relay refused the room" : detail);
+        var (ok, detail, _, reply) = await CollabRelayWire.ReadControlReplyAsync(stream, cancellation);
+        if (!ok)
+            throw new Exception(string.IsNullOrEmpty(detail) ? "relay refused the room" : detail);
 
-            var room = reply["room"]?.Value<string>() ?? "";
-            return new CollabRelayHostTransport(client, room);
-        }
-        catch
-        {
-            client.Dispose();
-            throw;
-        }
-    }
-
-    public override void SendToPeer(CollabPeerConnection peer, CollabProtocol.FrameType type, ReadOnlySpan<byte> payload)
+        var room = reply["room"]?.Value<string>() ?? "";
+        return new CollabRelayHostTransport(client, room);
+    }    public override void SendToPeer(CollabPeerConnection peer, CollabProtocol.FrameType type, ReadOnlySpan<byte> payload)
     {
         if (peer.SessionClosed)
             return;
 
-        WriteToRelay(peer.PresencePeerId, type, payload);
-    }
-
-    /// <summary>
-    /// Writes run on the UI thread and on the keep-alive timer; a dead relay link must not throw
-    /// into them. Closing the socket ends the read loop, which reports the lost relay.
-    /// </summary>
-    private void WriteToRelay(byte slot, CollabProtocol.FrameType type, ReadOnlySpan<byte> payload)
-    {
-        try
-        {
-            CollabRelayWire.WriteHostFrame(_relayStream, _relayWriteLock, slot, type, payload);
-        }
-        catch (Exception e) when (e is IOException or SocketException or ObjectDisposedException)
-        {
-            Log.Debug($"Collab relay: write failed: {e.Message}");
-            CloseRelayLink();
-        }
-    }
-
-    private void SendKeepAlive()
-    {
-        if (_cancellation.IsCancellationRequested)
-            return;
-
-        Span<byte> timestamp = stackalloc byte[CollabProtocol.HeartbeatPingSize];
-        System.Buffers.Binary.BinaryPrimitives.WriteInt64LittleEndian(timestamp, Environment.TickCount64);
-        WriteToRelay(KeepAliveSlot, CollabProtocol.FrameType.Heartbeat, timestamp);
-    }
-
-    private void CloseRelayLink()
-    {
-        try
-        {
-            _relayClient.Close();
-        }
-        catch
-        {
-            // Relay link already gone.
-        }
+        CollabRelayWire.WriteHostFrame(_relayStream, _relayWriteLock, peer.PresencePeerId, type, payload);
     }
 
     /// <summary>Presence for relayed peers always rides the reliable channel.</summary>
@@ -259,14 +189,12 @@ internal sealed class CollabRelayHostTransport : CollabTransport
         }
 
         _cancellation.Cancel();
-        _keepAliveTimer.Dispose();
         lock (_peers)
         {
             foreach (var peer in _peers)
                 peer.SessionClosed = true;
 
             _peers.Clear();
-            _peerSnapshot = [];
         }
 
         OnPeerDisconnected(new CollabPeerConnection(Stream.Null, int.MaxValue, null));
@@ -297,69 +225,25 @@ internal sealed class CollabRelayHostTransport : CollabTransport
         try
         {
             var json = JObject.Parse(line);
-            var type = CollabProtocol.GetString(json, "t");
-            if (!CollabProtocol.TryGetInt(json, "slot", out var slot) || slot <= 0 || slot >= CollabRelayWire.BroadcastSlot)
-                return;
-
+            var type = json["t"]?.Value<string>();
             if (type == "member")
             {
-                // A slot the relay hands out again belongs to a new connection: the previous
-                // holder is gone, and its authentication must not carry over.
-                RemovePeer(FindPeer(slot));
-
-                CollabPeerConnection? member = null;
-                member = new CollabPeerConnection(_relayStream, slot, () => RemovePeer(member));
+                var slot = json["slot"]?.Value<int>() ?? 0;
                 lock (_peers)
                 {
-                    _peers.Add(member);
-                    _peerSnapshot = _peers.ToArray();
+                    if (_peers.Any(p => p.AssignedId == slot))
+                        return;
+
+                    _peers.Add(new CollabPeerConnection(_relayStream, slot, () => { }));
                 }
 
                 OnStatus($"Peer joining via relay (slot {slot})");
-            }
-            else if (type == "left")
-            {
-                var peer = FindPeer(slot);
-                if (peer != null)
-                {
-                    peer.SessionClosed = true;
-                    RemovePeer(peer);
-                }
             }
         }
         catch (Newtonsoft.Json.JsonException)
         {
             Log.Debug($"Collab relay: ignoring malformed control line '{line}'");
         }
-    }
-
-    private CollabPeerConnection? FindPeer(int slot)
-    {
-        foreach (var peer in _peerSnapshot)
-        {
-            if (peer.AssignedId == slot)
-                return peer;
-        }
-
-        return null;
-    }
-
-    /// <summary>Drops a relayed member (left, timed out or rejected) and reports it once.</summary>
-    private void RemovePeer(CollabPeerConnection? peer)
-    {
-        if (peer == null)
-            return;
-
-        lock (_peers)
-        {
-            if (!_peers.Remove(peer))
-                return;
-
-            _peerSnapshot = _peers.ToArray();
-        }
-
-        peer.SessionClosed = true;
-        OnPeerDisconnected(peer);
     }
 
     private void DispatchRelayFrame(ReadOnlySpan<byte> frame)
@@ -371,8 +255,13 @@ internal sealed class CollabRelayHostTransport : CollabTransport
         var type = (CollabProtocol.FrameType)frame[1];
         var payload = frame[2..];
 
-        var peer = FindPeer(slot);
-        if (peer == null || peer.SessionClosed)
+        CollabPeerConnection? peer;
+        lock (_peers)
+        {
+            peer = _peers.FirstOrDefault(p => p.AssignedId == slot);
+        }
+
+        if (peer == null)
             return;
 
         peer.MarkHeardFrom();
@@ -389,16 +278,8 @@ internal sealed class CollabRelayHostTransport : CollabTransport
                 break;
 
             case CollabProtocol.FrameType.Heartbeat:
-                // Answer pings so the client's timeout logic sees life on the relay path; answers
-                // are one byte longer and never answered, or heartbeats would bounce forever.
-                if (payload.Length == CollabProtocol.HeartbeatPingSize)
-                {
-                    Span<byte> answer = stackalloc byte[CollabProtocol.HeartbeatPingSize + 1];
-                    payload.CopyTo(answer);
-                    answer[CollabProtocol.HeartbeatPingSize] = 0; // explicit: stackalloc is not guaranteed zeroed
-                    WriteToRelay(slot, CollabProtocol.FrameType.Heartbeat, answer);
-                }
-
+                // Echo so the client's timeout logic sees life on the relay path.
+                CollabRelayWire.WriteHostFrame(_relayStream, _relayWriteLock, slot, CollabProtocol.FrameType.Heartbeat, payload);
                 break;
         }
     }
@@ -406,17 +287,22 @@ internal sealed class CollabRelayHostTransport : CollabTransport
     public override void Dispose()
     {
         _cancellation.Cancel();
-        _keepAliveTimer.Dispose();
         lock (_peers)
         {
             foreach (var peer in _peers)
                 peer.SessionClosed = true;
 
             _peers.Clear();
-            _peerSnapshot = [];
         }
 
-        CloseRelayLink();
+        try
+        {
+            _relayClient.Close();
+        }
+        catch
+        {
+            // Relay link already gone.
+        }
     }
 
     protected override void EchoHeartbeat(CollabPeerConnection peer, ReadOnlySpan<byte> timestamp)
@@ -447,32 +333,21 @@ internal sealed class CollabRelayClientTransport : CollabTransport
     public static async Task<CollabRelayClientTransport> ConnectAsync(string relayHost, int relayPort, string roomCode, CancellationToken cancellation)
     {
         var client = new TcpClient();
-        try
-        {
-            // A relay that accepts but never answers must not leave the session stuck in Connecting.
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
-            timeout.CancelAfter(CollabProtocol.ConnectTimeoutMs);
-            await client.ConnectAsync(relayHost, relayPort, timeout.Token);
-            client.NoDelay = true;
-            client.SendTimeout = CollabProtocol.WriteTimeoutMs;
-            var stream = client.GetStream();
+        await client.ConnectAsync(relayHost, relayPort, cancellation);
+        client.NoDelay = true;
+        var stream = client.GetStream();
 
-            var request = $"{{\"role\":\"join\",\"room\":\"{roomCode.Trim().Replace("\"", "")}\"}}\n";
-            var bytes = Encoding.UTF8.GetBytes(request);
-            await stream.WriteAsync(bytes, timeout.Token);
+        var request = $"{{\"role\":\"join\",\"room\":\"{roomCode.Trim().Replace("\"", "")}\"}}\n";
+        var bytes = Encoding.UTF8.GetBytes(request);
+        await stream.WriteAsync(bytes, cancellation);
 
-            var (ok, detail, _, _) = await CollabRelayWire.ReadControlReplyAsync(stream, timeout.Token);
-            if (!ok)
-                throw new Exception(string.IsNullOrEmpty(detail) ? "could not join room" : detail);
+        var (ok, detail, _, _) = await CollabRelayWire.ReadControlReplyAsync(stream, cancellation);
+        if (!ok)
+            throw new Exception(string.IsNullOrEmpty(detail) ? "could not join room" : detail);
 
-            var transport = new CollabRelayClientTransport(client);
-            return transport;
-        }
-        catch
-        {
-            client.Dispose();
-            throw;
-        }
+        var transport = new CollabRelayClientTransport(client);
+        transport.StartReadLoop();
+        return transport;
     }
 
     public override void SendToPeer(CollabPeerConnection peer, CollabProtocol.FrameType type, ReadOnlySpan<byte> payload)
@@ -480,11 +355,8 @@ internal sealed class CollabRelayClientTransport : CollabTransport
         peer.Write(type, payload);
     }
 
-    /// <summary>
-    /// The relay stream carries plain framed traffic once joined — the standard read loop. Start it
-    /// only after PeerDisconnected is wired, so an immediately dying link is reported.
-    /// </summary>
-    public void StartReading() => _ = Task.Run(() => ReadLoop(_hostPeer));
+    /// <summary>The relay stream carries plain framed traffic once joined — reuse the standard read loop.</summary>
+    internal void StartReadLoop() => _ = Task.Run(() => ReadLoop(_hostPeer));
 
     /// <summary>No UDP pinhole through the relay — presence rides the reliable channel.</summary>
     public void SendPresence(ReadOnlySpan<byte> payload)
@@ -493,8 +365,6 @@ internal sealed class CollabRelayClientTransport : CollabTransport
     }
 
     public override IReadOnlyList<CollabPeerConnection> Peers => _hostPeer == null ? [] : [_hostPeer];
-
-    public override CollabPeerConnection? HostLink => _hostPeer;
 
     public override void Dispose()
     {
