@@ -21,9 +21,16 @@ internal abstract class BoygroupTransport : CollabTransport
 /// <summary>The show master: accepts clients and announces groups via LAN discovery.</summary>
 internal sealed class BoygroupServerTransport : BoygroupTransport
 {
-    public override IReadOnlyList<CollabPeerConnection> Peers => _peers;
+    /// <summary>Each accepted connection costs a frame buffer; a LAN peer must not be able to exhaust them.</summary>
+    private const int MaxClients = 64;
+
+    public override IReadOnlyList<CollabPeerConnection> Peers => _peerSnapshot;
 
     private readonly List<CollabPeerConnection> _peers = [];
+
+    /** Copy of _peers republished on every change, so UI and network readers never see the mutable list. */
+    private volatile CollabPeerConnection[] _peerSnapshot = [];
+
     private readonly TcpListener _listener;
     private readonly CancellationTokenSource _cancellation = new();
     private int _nextPeerId = 1;
@@ -56,6 +63,7 @@ internal sealed class BoygroupServerTransport : BoygroupTransport
         lock (_peers)
         {
             _peers.Remove(peer);
+            _peerSnapshot = _peers.ToArray();
         }
     }
 
@@ -78,11 +86,31 @@ internal sealed class BoygroupServerTransport : BoygroupTransport
                 continue;
             }
 
+            if (_peerSnapshot.Count(p => !p.SessionClosed) >= MaxClients)
+            {
+                Log.Warning("Boygroup: refused connection, client limit reached");
+                client.Close();
+                continue;
+            }
+
             client.NoDelay = true;
-            var peer = new CollabPeerConnection(client, Interlocked.Increment(ref _nextPeerId));
+            CollabPeerConnection peer;
+            try
+            {
+                peer = new CollabPeerConnection(client, Interlocked.Increment(ref _nextPeerId));
+            }
+            catch (Exception e) when (e is SocketException or ObjectDisposedException or InvalidOperationException)
+            {
+                // The client reset between accept and setup. One bad connection must not end
+                // the accept loop and leave the show master unreachable.
+                client.Close();
+                continue;
+            }
+
             lock (_peers)
             {
                 _peers.Add(peer);
+                _peerSnapshot = _peers.ToArray();
             }
 
             _ = Task.Run(() => ReadLoop(peer), CancellationToken.None);
@@ -99,6 +127,7 @@ internal sealed class BoygroupServerTransport : BoygroupTransport
                 peer.Close();
 
             _peers.Clear();
+            _peerSnapshot = [];
         }
 
         try
