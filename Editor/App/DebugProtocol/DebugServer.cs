@@ -572,6 +572,10 @@ internal static class DebugServer
                 collab.Leave();
                 break;
 
+            case "chat":
+                collab.SendChat(request["text"]?.Value<string>() ?? "");
+                break;
+
             case "status":
                 break;
 
@@ -586,6 +590,7 @@ internal static class DebugServer
                                ["status"] = collab.StatusText,
                                ["error"] = collab.ErrorText,
                                ["peers"] = collab.Peers.Count,
+                               ["chatLines"] = collab.ChatLog.Count,
                            });
     }
 
