@@ -1,0 +1,115 @@
+{
+  "FormatVersion": 3,
+  "Id": "2ccc2f86-fe71-42ff-b91d-812763f5c6cf"/*LaserCamera*/,
+  "Inputs": [
+    {
+      "Id": "0c48ed58-1242-4f8b-869a-7396cb055931"/*DotDwellPoints*/,
+      "DefaultValue": 8
+    },
+    {
+      "Id": "154b095b-d6fc-4283-b2b5-86778f6e68dd"/*StartIndex*/,
+      "DefaultValue": 0
+    },
+    {
+      "Id": "1683dc5c-a279-44d5-9fe9-8ef5134067c9"/*Up*/,
+      "DefaultValue": {
+        "X": 0.0,
+        "Y": 1.0,
+        "Z": 0.0
+      }
+    },
+    {
+      "Id": "1c513c59-cc3a-4a8e-b963-d21658cc9d43"/*Position*/,
+      "DefaultValue": {
+        "X": 0.0,
+        "Y": 0.0,
+        "Z": 2.4141
+      }
+    },
+    {
+      "Id": "3f7695e3-6fe2-4034-8337-b4a98c3a4489"/*ClipPlanes*/,
+      "DefaultValue": {
+        "X": 0.01,
+        "Y": 1000.0
+      }
+    },
+    {
+      "Id": "419decc0-d0c2-475b-b618-2db7b371f144"/*PointBuffer*/,
+      "DefaultValue": null
+    },
+    {
+      "Id": "42bcabad-7b49-48d1-95a3-9b0fc2e4eb91"/*Target*/,
+      "DefaultValue": {
+        "X": 0.0,
+        "Y": 0.0,
+        "Z": 0.0
+      }
+    },
+    {
+      "Id": "4f1f1654-6f6b-464a-8a43-74000c19f2ef"/*CaptureMeshes*/,
+      "DefaultValue": true
+    },
+    {
+      "Id": "4f55d55b-b51d-4a29-8788-e1ae21a80960"/*MaxEdgeStep*/,
+      "DefaultValue": 4000.0
+    },
+    {
+      "Id": "5479a43a-f274-4e5d-9be7-fe214b547616"/*LineBuffer*/,
+      "DefaultValue": null
+    },
+    {
+      "Id": "5544ec6e-0f90-4853-9af0-69da0f213c22"/*Roll*/,
+      "DefaultValue": 0.0
+    },
+    {
+      "Id": "6475ca9c-6ed6-4659-87d2-a602813c823c"/*Scene*/,
+      "DefaultValue": null
+    },
+    {
+      "Id": "73241494-c686-4013-96c0-ef40d5932f7f"/*PrintToLog*/,
+      "DefaultValue": false
+    },
+    {
+      "Id": "8c823c87-4d14-43e3-843d-d452e008b1ae"/*MaxCount*/,
+      "DefaultValue": 0
+    },
+    {
+      "Id": "950943bf-935a-484e-9667-16180784adc2"/*TriggerUpdate*/,
+      "DefaultValue": false
+    },
+    {
+      "Id": "9ce8f8f8-25a0-44c0-952c-d74ea4e22ce5"/*FieldOfView*/,
+      "DefaultValue": 45.0
+    },
+    {
+      "Id": "a0c2c2c8-f247-4b9d-8993-730d502b6aca"/*Mesh*/,
+      "DefaultValue": null
+    },
+    {
+      "Id": "a46a63d2-7359-4942-a19d-f1ef15e68895"/*CaptureDots*/,
+      "DefaultValue": true
+    },
+    {
+      "Id": "d62b1d2f-8b69-4f58-a8cb-9f9eb89a831d"/*AspectRatio*/,
+      "DefaultValue": -1.0
+    },
+    {
+      "Id": "e5c90440-378b-49d3-8c5c-72dcd65a2cda"/*UpdateContinuously*/,
+      "DefaultValue": true
+    },
+    {
+      "Id": "e7a2c41d-9b58-4c0f-a3d6-8e41f2b7c5a9"/*OutputRef*/,
+      "DefaultValue": "00000000-0000-0000-0000-000000000000"
+    },
+    {
+      "Id": "ed234344-726f-41de-90a1-5338f7903676"/*CaptureLines*/,
+      "DefaultValue": true
+    },
+    {
+      "Id": "f151b1b0-b820-47f6-b2cf-be1c2b339dca"/*Camera*/,
+      "DefaultValue": null
+    }
+  ],
+  "Children": [],
+  "Connections": []
+}
