@@ -112,9 +112,10 @@ public static class LaserPipeline
         var targetHalfH = halfH / field;
         var scaleX = targetHalfW / MathF.Max(bboxHalfW, 0.0001f);
         var scaleY = targetHalfH / MathF.Max(bboxHalfH, 0.0001f);
-        if (mode == LaserFrameMappingMode.Fit)
+        if (mode == LaserFrameMappingMode.Fit || mode == LaserFrameMappingMode.Crop)
         {
-            var scale = MathF.Min(scaleX, scaleY);
+            // Fit contains the frame in the rect; Crop covers it (overflow clamps at the field).
+            var scale = mode == LaserFrameMappingMode.Fit ? MathF.Min(scaleX, scaleY) : MathF.Max(scaleX, scaleY);
             scaleX = scale;
             scaleY = scale;
         }

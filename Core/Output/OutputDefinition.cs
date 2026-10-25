@@ -20,6 +20,10 @@ public enum LaserFrameMappingMode
 
     /// <summary>The frame's actual extent is scaled into the rect with its aspect preserved, centered.</summary>
     Fit = 2,
+
+    /// <summary>The frame's actual extent fills the rect completely with its aspect preserved
+    /// (the larger scale wins); overflow beyond the scanner field is clamped away.</summary>
+    Crop = 3,
 }
 
 /// <summary>
@@ -429,7 +433,7 @@ public sealed class OutputDefinition
                              Kind = token.ReadValueSafe("Kind", Kinds.Display) ?? Kinds.Display,
                              CanvasResolution = ClampResolution(OutputJson.ReadInt2(token["CanvasResolution"], new Int2(1920, 1080))),
                              IsSending = token.ReadValueSafe("Send", true),
-                             FrameMapping = (LaserFrameMappingMode)Math.Clamp(token.ReadValueSafe("FrameMapping", (int)LaserFrameMappingMode.Fit), 0, 2),
+                             FrameMapping = (LaserFrameMappingMode)Math.Clamp(token.ReadValueSafe("FrameMapping", (int)LaserFrameMappingMode.Fit), 0, 3),
                              Patches = token.ReadListSafe("Patches", Patch.ReadFromJson),
                              ReferenceImageId = OutputJson.ReadGuid(token["ReferenceImage"]),
                              ReferenceOpacity = Math.Clamp(token.ReadValueSafe("ReferenceOpacity", 0.5f), 0f, 1f),

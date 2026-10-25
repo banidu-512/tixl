@@ -1124,12 +1124,13 @@ internal static class SetupParameterView
         // field half-empty stops wasting half the scanners).
         var frameMapping = output.FrameMapping;
         if (FormInputs.AddEnumDropdown(ref frameMapping, "Frame mapping",
-                                       "How the incoming laser frame lands in the aimed zone (the setup rectangle): Fit rescales the frame's extent into the rect with its aspect preserved; Stretch fills both axes and may distort; Off streams the frame as the scanner field itself. Applies in calibrated mode.",
+                                       "How the incoming laser frame lands in the aimed zone (the setup rectangle): Fit rescales the frame's extent into the rect with its aspect preserved; Stretch fills both axes and may distort; Crop fills the rect completely with the aspect kept and cuts what falls outside the scanner field; Off streams the frame as the scanner field itself. Applies in calibrated mode.",
                                        LaserFrameMappingMode.Fit,
                                        m => m switch
                                                {
                                                    LaserFrameMappingMode.Stretch => "Stretch",
                                                    LaserFrameMappingMode.Fit => "Fit (keep aspect)",
+                                                   LaserFrameMappingMode.Crop => "Crop (fill, cut overflow)",
                                                    _ => "Off",
                                                }))
         {

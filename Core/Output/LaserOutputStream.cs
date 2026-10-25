@@ -623,6 +623,11 @@ public sealed class LaserOutputStream : IDisposable
                     {
                         RememberFrame(_sendFrameRaw);
                         _sendFrame = null;
+
+                        // A completed frame after a warning (stall, halt recovery) means the show
+                        // is back - the status line must not stay on the old warning forever.
+                        if (_statusLevel != IStatusProvider.StatusLevel.Success)
+                            SetStatus("Streaming", IStatusProvider.StatusLevel.Success);
                     }
                 }
                 catch (AggregateException ae) when (!token.IsCancellationRequested && ae.InnerException is InvalidOperationException ex)
@@ -1534,11 +1539,15 @@ public sealed class LaserOutputStream : IDisposable
             if (_disposed || IsConnected || _captureTcpPort > 0)
                 return;
 
-            // With a local interface selected, prefer peers from its subnet.
+            // With a local interface selected, prefer peers from its subnet: peers announcing
+            // from a different subnet than the chosen interface are ignored (virtual adapters
+            // announce on their own subnets - Capture on a vEthernet looks like that).
             var peerIp = IPAddress.Parse(peer.Ip);
-            if (!IPAddress.TryParse(_localAddress, out var selectedLocal) || IPAddress.IsLoopback(peerIp) ||
-                selectedLocal.GetAddressBytes().Length != 4 || peerIp.GetAddressBytes().Length != 4 ||
-                selectedLocal.GetAddressBytes()[0] != peerIp.GetAddressBytes()[0])
+            if (IPAddress.TryParse(_localAddress, out var selectedLocal)
+                && !IPAddress.IsLoopback(peerIp)
+                && selectedLocal.GetAddressBytes().Length == 4
+                && peerIp.GetAddressBytes().Length == 4
+                && selectedLocal.GetAddressBytes()[0] != peerIp.GetAddressBytes()[0])
             {
                 return;
             }
