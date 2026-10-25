@@ -5,8 +5,10 @@ using System.IO;
 using System.IO.Compression;
 using System.Threading.Tasks;
 using ImGuiNET;
+using T3.Core.Model;
 using T3.Core.SystemUi;
 using T3.Core.Utils;
+using T3.Editor.Collab;
 using T3.Editor.Compilation;
 using T3.Editor.Gui.Window;
 using T3.Editor.Gui.Input;
@@ -32,7 +34,10 @@ internal static class ProjectsPanel
         ImGui.BeginChild("content", new Vector2(0, 0), ImGuiChildFlags.Borders, ImGuiWindowFlags.NoBackground);
         {
             ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(5, 5));
-            
+
+            // 0. Live collaboration sessions — join straight from the hub.
+            DrawCollabSessions();
+
             foreach (var package in EditableSymbolProject.AllProjects)
             {
                 DrawProjectItem(window, package);
@@ -67,6 +72,156 @@ internal static class ProjectsPanel
         }
         ImGui.EndChild();
         ContentPanel.End();
+    }
+
+    /// <summary>
+    /// Live collaboration sessions in the hub: your own session while hosting/connected, plus
+    /// every session announced on the LAN. Clicking a session joins it and opens the project it
+    /// belongs to (when that project exists locally).
+    /// </summary>
+    private static void DrawCollabSessions()
+    {
+        var collab = CollabManager.Instance;
+        collab.RefreshDiscoveryFromHub();
+
+        var hasOwnSession = collab.State != CollabManager.SessionState.Off;
+        if (!hasOwnSession && collab.DiscoveredSessions.Count == 0)
+            return;
+
+        ImGui.Separator();
+        FormInputs.AddSectionHeader("Online sessions");
+
+        if (hasOwnSession)
+        {
+            var ownLabel = collab.State == CollabManager.SessionState.Hosting ? "Your session" : "Joined session";
+            DrawSessionRow("collab-own", ownLabel, collab.StatusText, null, null, isActive: true, locked: false);
+        }
+
+        foreach (var session in collab.DiscoveredSessions)
+        {
+            ImGui.PushID($"collab-{session.Address}:{session.Port}");
+            var clicked = DrawSessionRow(session.Name,
+                                         $"{session.Address}:{session.Port}",
+                                         session.Project is { Length: > 0 } p ? p : null,
+                                         null,
+                                         null,
+                                         isActive: false,
+                                         locked: session.PasswordProtected);
+            if (clicked)
+            {
+                JoinSession(session);
+            }
+            ImGui.PopID();
+        }
+
+        if (collab.State == CollabManager.SessionState.Connecting)
+        {
+            ImGui.TextDisabled(collab.StatusText);
+        }
+
+        if (!string.IsNullOrEmpty(collab.ErrorText) && collab.State != CollabManager.SessionState.Off)
+        {
+            ImGui.TextColored(UiColors.StatusWarning, collab.ErrorText);
+        }
+    }
+
+    /// <summary>Draws one session row. Returns true when clicked.</summary>
+    private static bool DrawSessionRow(string id, string title, string subtitle, string? detail, string? footer,
+                                       bool isActive, bool locked)
+    {
+        var dl = ImGui.GetWindowDrawList();
+        var clicked = ImGui.InvisibleButton(id, ProjectItemSize);
+        var isHovered = ImGui.IsItemHovered();
+        var background = isActive
+                             ? UiColors.StatusActivated.Fade(0.18f)
+                             : isHovered
+                                 ? UiColors.ForegroundFull.Fade(0.1f)
+                                 : UiColors.ForegroundFull.Fade(0.05f);
+
+        var min = ImGui.GetItemRectMin();
+        var max = ImGui.GetItemRectMax();
+        dl.AddRectFilled(min, max, background, 6);
+
+        var padding = 3f * T3Ui.UiScaleFactor;
+        var y = min.Y + 10f;
+        var x = min.X + 20f;
+
+        var titleText = locked ? $"{title}  🔒" : title;
+        dl.AddText(Fonts.FontBold, Fonts.FontBold.FontSize, new Vector2(x, y), UiColors.Text, titleText);
+
+        y += Fonts.FontBold.FontSize + 5;
+        if (!string.IsNullOrEmpty(subtitle))
+        {
+            dl.AddText(Fonts.FontNormal, Fonts.FontNormal.FontSize, new Vector2(x, y), UiColors.TextMuted, subtitle);
+            y += Fonts.FontNormal.FontSize + 4;
+        }
+
+        if (!string.IsNullOrEmpty(detail))
+        {
+            dl.AddText(Fonts.FontSmall, Fonts.FontSmall.FontSize, new Vector2(x, y), UiColors.TextMuted, detail);
+            y += Fonts.FontSmall.FontSize + 4;
+        }
+
+        if (!string.IsNullOrEmpty(footer))
+        {
+            dl.AddText(Fonts.FontSmall, Fonts.FontSmall.FontSize, new Vector2(x, y), UiColors.TextMuted, footer);
+        }
+
+        return clicked;
+    }
+
+    /// <summary>Joins a discovered session and opens the project it belongs to when available.</summary>
+    private static void JoinSession(CollabManager.DiscoveredSession session)
+    {
+        var collab = CollabManager.Instance;
+        collab.JoinDirect(session.Address, session.Port, UserSettings.Config.CollabPassword ?? "");
+
+        if (!string.IsNullOrEmpty(session.Project))
+        {
+            TryOpenProjectByName(session.Project);
+        }
+    }
+
+    /// <summary>Opens a local project by display name (short form accepted) into the visible graph window.</summary>
+    private static bool TryOpenProjectByName(string name)
+    {
+        foreach (var p in SymbolPackage.AllPackages)
+        {
+            // Created projects get a "<name> (<namespace>)" display name - accept the short form too.
+            if (p is not EditorSymbolPackage editorPackage
+                || !(string.Equals(editorPackage.DisplayName, name, StringComparison.OrdinalIgnoreCase)
+                     || editorPackage.DisplayName.StartsWith(name + " (", StringComparison.OrdinalIgnoreCase)))
+                continue;
+
+            if (!OpenedProject.TryCreate(editorPackage, out var openedProject, out var failureLog)
+                || openedProject == null)
+            {
+                Log.Warning($"Could not open collab project '{name}': {failureLog}");
+                return false;
+            }
+
+            GraphWindow? graphWindow = null;
+            foreach (var window in GraphWindow.GraphWindowInstances)
+            {
+                if (!window.Config.Visible)
+                    continue;
+
+                graphWindow = window;
+                break;
+            }
+
+            graphWindow ??= GraphWindow.GraphWindowInstances.Count > 0 ? GraphWindow.GraphWindowInstances[0] : null;
+            if (graphWindow == null || !graphWindow.TrySetToProject(openedProject, tryRestoreViewArea: false))
+            {
+                Log.Warning($"Could not open collab project '{name}' in a graph window");
+                return false;
+            }
+
+            return true;
+        }
+
+        Log.Info($"Collab session project '{name}' does not exist locally — staying in the current project.");
+        return false;
     }
 
     private static void DrawProjectTools()

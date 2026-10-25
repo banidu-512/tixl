@@ -115,7 +115,7 @@ internal sealed class CollabManager
         return name.Length <= 48 ? name : name[..48];
     }
 
-    public void StartHost(int tcpPort, string password, bool enableLanDiscovery)
+    public void StartHost(int tcpPort, string password, bool enableLanDiscovery, string? projectName = null)
     {
         if (IsSessionActive)
             Leave();
@@ -135,6 +135,9 @@ internal sealed class CollabManager
                                                                ["host"] = Environment.MachineName,
                                                                ["port"] = tcpPort,
                                                                ["pwd"] = !string.IsNullOrEmpty(_password),
+                                                               ["project"] = projectName
+                                                                             ?? ProjectView.Focused?.OpenedProject.Package.DisplayName
+                                                                             ?? "",
                                                            });
             _transport.PeerDisconnected += OnPeerDisconnectedTransport;
             State = SessionState.Hosting;
@@ -1310,13 +1313,50 @@ internal sealed class CollabManager
 
     private static int DefaultDiscoveryPort => UserSettings.Config.CollabPort + LanDiscoveryResponder.DiscoveryPortOffset;
 
+    private LanDiscoveryScanner? _hubScanner;
+    private long _lastHubScanTicks;
+
+    /// <summary>
+    /// Hub-facing discovery refresh: keeps scanning while no session is active so the project
+    /// list can show live sessions. During a session the collab update loop refreshes instead,
+    /// and the hub scanner shuts down.
+    /// </summary>
+    public void RefreshDiscoveryFromHub()
+    {
+        if (State != SessionState.Off)
+        {
+            if (_hubScanner != null)
+            {
+                _hubScanner.Stop();
+                _hubScanner.Dispose();
+                _hubScanner = null;
+            }
+
+            return;
+        }
+
+        _hubScanner ??= new LanDiscoveryScanner();
+        if (Environment.TickCount64 - _lastHubScanTicks > 1000)
+        {
+            _lastHubScanTicks = Environment.TickCount64;
+            _hubScanner.Start(DefaultDiscoveryPort); // re-probe; Start restarts its loop cleanly
+        }
+
+        RefreshDiscoveredFrom(_hubScanner);
+    }
+
     private void RefreshDiscoveredSessions()
     {
         if (_discoveryScanner == null)
             return;
 
+        RefreshDiscoveredFrom(_discoveryScanner);
+    }
+
+    private void RefreshDiscoveredFrom(LanDiscoveryScanner scanner)
+    {
         var cutoff = DateTime.UtcNow - TimeSpan.FromSeconds(3);
-        while (_discoveryScanner.Results.TryDequeue(out var result))
+        while (scanner.Results.TryDequeue(out var result))
         {
             var announcement = result.Announcement;
             var session = new DiscoveredSession
@@ -1326,6 +1366,7 @@ internal sealed class CollabManager
                                   Address = result.Source.Address.ToString(),
                                   Port = announcement["port"]?.Value<int>() ?? CollabProtocol.DefaultTcpPort,
                                   PasswordProtected = announcement["pwd"]?.Value<bool>() ?? false,
+                                  Project = CollabProtocol.GetString(announcement, "project", ""),
                               };
 
             if (_discovered.Any(d => d.Address == session.Address && d.Port == session.Port))
@@ -1354,6 +1395,7 @@ internal sealed class CollabManager
         public string Address = "";
         public int Port;
         public bool PasswordProtected;
+        public string Project = "";
         public DateTime Seen = DateTime.UtcNow;
 
         public override string ToString() => $"{Name}  ({Address}:{Port})";
