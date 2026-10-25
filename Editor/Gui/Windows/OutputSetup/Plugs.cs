@@ -139,13 +139,18 @@ internal static class Plugs
     {
         // Display bindings store no PlugId - it is derived from the display index - so matching the
         // stored id directly would silently keep the binding on screen after an "Unbind".
-        RemoveBindingsToPlug(machineConfig, plugId, outputId);
+        RemoveBindingsToPlug(machineConfig, plugId, exceptOutputId: null, onlyOutputId: outputId);
         OutputSetupHandling.SaveActive();
     }
 
-    private static void RemoveBindingsToPlug(MachineConfig machineConfig, Guid plugId, Guid? exceptOutputId = null)
+    /// <param name="exceptOutputId">Binding of this output to the plug is kept (rebinding it).</param>
+    /// <param name="onlyOutputId">Only this output's binding is removed (unbinding it).</param>
+    private static void RemoveBindingsToPlug(MachineConfig machineConfig, Guid plugId, Guid? exceptOutputId = null,
+                                             Guid? onlyOutputId = null)
     {
-        machineConfig.Bindings.RemoveAll(b => b.OutputId != exceptOutputId && BoundPlugId(b) == plugId);
+        machineConfig.Bindings.RemoveAll(b => b.OutputId != exceptOutputId
+                                              && (onlyOutputId == null || b.OutputId == onlyOutputId)
+                                              && BoundPlugId(b) == plugId);
     }
     #endregion
 

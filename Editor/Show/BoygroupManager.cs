@@ -745,6 +745,7 @@ internal sealed class BoygroupManager
             client.MachineConfig = MachineConfig.ReadFromJson(JObject.Parse(configJson));
             client.Screens = ReadScreens(json["screens"]);
             Log.Info($"Boygroup: bindings from {client.Name}: {DescribeBindings(client.MachineConfig, ActiveSetup.Current)}");
+            UpdateMasterStatus(); // clears a "Binding ..." message once the node applied it
         }
         catch (JsonException e)
         {
