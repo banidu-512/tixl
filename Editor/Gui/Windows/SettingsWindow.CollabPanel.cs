@@ -447,7 +447,8 @@ internal sealed partial class SettingsWindow
         if (!string.IsNullOrEmpty(config.CollabDiscordUserId))
         {
             ImGui.PushStyleColor(ImGuiCol.Text, UiColors.StatusActivated.Rgba);
-            ImGui.TextUnformatted($"Discord: {config.CollabDiscordUserName}");
+            var guild = string.IsNullOrEmpty(CollabDiscordAuth.GuildName) ? "" : $" · {CollabDiscordAuth.GuildName}";
+            ImGui.TextUnformatted($"Discord: {config.CollabDiscordUserName}{guild}");
             ImGui.PopStyleColor();
             if (ImGui.SmallButton("Log out"))
             {
@@ -472,7 +473,8 @@ internal sealed partial class SettingsWindow
 
         CustomComponents.HelpText("""
                                   One-time setup: create a Discord application, then add this exact redirect URI
-                                  under OAuth2 → Redirects in the Developer Portal.
+                                  under OAuth2 → Redirects in the Developer Portal. No client secret is needed
+                                  (the login uses PKCE).
                                   """);
         FormInputs.ApplyIndent();
         ImGui.TextWrapped(CollabDiscordAuth.RedirectUri);
@@ -480,6 +482,17 @@ internal sealed partial class SettingsWindow
             ImGui.SetClipboardText(CollabDiscordAuth.RedirectUri);
         CustomComponents.TooltipForLastItem("Discord matches the redirect URI verbatim, so the port is fixed.");
 
+        FormInputs.AddVerticalSpace(6);
+        CustomComponents.HelpText("""
+                                  Logging in opens Discord in your browser. The account you sign in with must be a
+                                  member of the TiXL Discord server — membership is what the login verifies.
+                                  """);
+        FormInputs.SetCursorToParameterEdit();
+        if (ImGui.Button("Join the Discord server"))
+            CollabDiscordAuth.OpenInvite();
+        CustomComponents.TooltipForLastItem("Opens the server invite in your browser so you can join before logging in.");
+
+        FormInputs.AddVerticalSpace(6);
         var loginState = CollabDiscordAuth.State;
         var loginBusy = loginState is CollabDiscordAuth.LoginState.WaitingForBrowser or CollabDiscordAuth.LoginState.ExchangingCode;
         var canLogIn = CollabDiscordAuth.HasDefaultClient || !string.IsNullOrWhiteSpace(config.CollabDiscordClientId);
@@ -495,12 +508,13 @@ internal sealed partial class SettingsWindow
         else
         {
             ImGui.BeginDisabled(!canLogIn);
-            if (ImGui.Button("Log in with Discord"))
+            if (ImGui.Button(CollabDiscordAuth.NeedsGuildJoin ? "Check membership again" : "Log in with Discord"))
                 CollabDiscordAuth.StartLogin();
             ImGui.EndDisabled();
 
             if (loginState == CollabDiscordAuth.LoginState.Failed)
             {
+                FormInputs.AddVerticalSpace(6);
                 ImGui.PushStyleColor(ImGuiCol.Text, UiColors.StatusWarning.Rgba);
                 ImGui.TextWrapped(CollabDiscordAuth.StatusText);
                 ImGui.PopStyleColor();
@@ -511,7 +525,7 @@ internal sealed partial class SettingsWindow
             }
             else
             {
-                CustomComponents.TooltipForLastItem("Opens discord.com in your browser. Uses your Discord identity in collaboration sessions instead of a local nickname.");
+                CustomComponents.TooltipForLastItem("Opens discord.com in your browser. The account must be a member of the TiXL Discord server.");
             }
         }
     }
