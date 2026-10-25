@@ -87,7 +87,13 @@ internal sealed class CollabPeerConnection
 
     public void MarkHeardFrom() => Interlocked.Exchange(ref _lastHeardFromTicks, Environment.TickCount64);
 
-    public bool IsTimedOut => Environment.TickCount64 - Interlocked.Read(ref _lastHeardFromTicks) > CollabProtocol.PeerTimeoutMs;
+    /// <summary>
+    /// Silence after which this peer is considered gone. Collaboration tolerates a slow link; a
+    /// boygroup session lowers it so a dropped master is noticed before the show visibly drifts.
+    /// </summary>
+    public int TimeoutMs { get; set; } = CollabProtocol.PeerTimeoutMs;
+
+    public bool IsTimedOut => Environment.TickCount64 - Interlocked.Read(ref _lastHeardFromTicks) > TimeoutMs;
 
     /// <summary>Thread-safe framed write. Callers must pass a payload already encoded for the frame type.</summary>
     public void Write(CollabProtocol.FrameType type, ReadOnlySpan<byte> payload)

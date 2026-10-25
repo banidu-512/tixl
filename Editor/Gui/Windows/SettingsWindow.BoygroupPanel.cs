@@ -146,6 +146,9 @@ internal sealed partial class SettingsWindow
                 CustomComponents.StylizedText(diagnostics, Fonts.FontSmall, UiColors.TextMuted);
             }
 
+            FormInputs.ApplyIndent();
+            DrawDelayControls(manager, client);
+
             if (client.MachineConfig?.Bindings.Count > 0)
             {
                 FormInputs.ApplyIndent();
@@ -247,6 +250,34 @@ internal sealed partial class SettingsWindow
         }
     }
 
+    /// <summary>Per-node presentation delay. Positive runs the node later, which is how projector or
+    /// capture latency differences between machines are lined up.</summary>
+    private static void DrawDelayControls(BoygroupManager manager, BoygroupManager.ClientInfo client)
+    {
+        ImGui.PushID("delay" + client.Name);
+        CustomComponents.StylizedText($"Delay {client.DelayMs:+0;-0;0} ms", Fonts.FontSmall,
+                                      client.DelayMs == 0 ? UiColors.TextMuted : UiColors.StatusActivated);
+        ImGui.SameLine();
+
+        if (ImGui.SmallButton("-10"))
+            manager.SetClientDelay(client, client.DelayMs - 10);
+
+        ImGui.SameLine();
+        if (ImGui.SmallButton("+10"))
+            manager.SetClientDelay(client, client.DelayMs + 10);
+
+        if (client.DelayMs != 0)
+        {
+            ImGui.SameLine();
+            if (ImGui.SmallButton("Reset"))
+                manager.SetClientDelay(client, 0);
+        }
+
+        CustomComponents.TooltipForLastItem($"Shift this node's presentation in time (up to ±{BoygroupManager.MaxSyncDelayMs} ms). "
+                                            + "Positive values render later, negative values earlier; the master re-syncs the node immediately.");
+        ImGui.PopID();
+    }
+
     private static string DescribeClientDiagnostics(BoygroupManager.ClientInfo client)
     {
         var parts = new List<string>();
@@ -254,6 +285,10 @@ internal sealed partial class SettingsWindow
             parts.Add($"RTT {client.RttMs:0} ms");
 
         parts.Add($"clock {client.ClockOffsetMs:+0.0;-0.0;0} ms");
+        if (client.SyncErrorMs > -0.5)
+            parts.Add($"sync {client.SyncErrorMs:+0.0;-0.0;0} ms");
+        if (client.SyncAgeMs >= 0)
+            parts.Add(client.SyncAgeMs < 1000 ? $"synced {client.SyncAgeMs:0} ms ago" : $"synced {client.SyncAgeMs / 1000:0} s ago");
         if (client.ClientFps > 0)
             parts.Add($"{client.ClientFps:0} fps");
         if (!string.IsNullOrEmpty(client.ClientVersion))
@@ -301,10 +336,16 @@ internal sealed partial class SettingsWindow
     {
         if (manager.State == BoygroupManager.BoygroupState.WaitingForMaster)
         {
-            CustomComponents.HelpText("""
-                                      This instance is visible on the network. Add it from the render-node list on a
-                                      master (Settings → Boygrouping → Master) to start receiving that show.
-                                      """);
+            var remembered = UserSettings.Config.BoygroupMasterName;
+            CustomComponents.HelpText(string.IsNullOrEmpty(remembered)
+                                          ? """
+                                            Looking for a master on the network. An enabled slave joins the first master that
+                                            appears; it can also be added from a master's render-node list.
+                                            """
+                                          : $"""
+                                             Looking for master '{remembered}'. An enabled slave reconnects to it as soon as it
+                                             appears, and to any other master while this one is absent.
+                                             """);
             return;
         }
 
@@ -312,7 +353,7 @@ internal sealed partial class SettingsWindow
             return;
 
         ImGui.Bullet();
-        ImGui.TextUnformatted($"Group: {manager.GroupName}");
+        ImGui.TextUnformatted(string.IsNullOrEmpty(manager.MasterName) ? $"Group: {manager.GroupName}" : $"Master: {manager.MasterName} · group {manager.GroupName}");
         ImGui.Bullet();
         ImGui.TextUnformatted(manager.TimeFollowSummary);
         ImGui.Bullet();
@@ -320,7 +361,9 @@ internal sealed partial class SettingsWindow
 
         FormInputs.AddVerticalSpace(6);
         FormInputs.SetCursorToParameterEdit();
-        ImGui.TextDisabled($"Clock offset {manager.ClockOffsetMs:+0.0;-0.0;0} ms · {manager.EditorFps:0} fps");
+        var sync = manager.SyncErrorMs > -0.5 ? $"{manager.SyncErrorMs:+0.0;-0.0;0} ms" : "—";
+        ImGui.TextDisabled($"Clock offset {manager.ClockOffsetMs:+0.0;-0.0;0} ms · sync error {sync}"
+                           + $" · delay {manager.ClientDelayMs:+0;-0;0} ms · {manager.EditorFps:0} fps");
 
         FormInputs.AddVerticalSpace();
         CustomComponents.HelpText("""
