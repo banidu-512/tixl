@@ -36,9 +36,25 @@ internal static class LaserOutputPreview
     {
         var uiScale = T3Ui.UiScaleFactor;
         var inset = 3f * uiScale;
-        var side = MathF.Min(max.X - min.X, max.Y - min.Y) - 2f * inset;
+        var width = max.X - min.X;
+        var height = max.Y - min.Y;
+        if (!float.IsFinite(width) || !float.IsFinite(height))
+            return;
+
+        var side = MathF.Min(width, height) - 2f * inset;
         if (side < 8f || fade <= 0.001f)
             return;
+
+        // TEMP DIAGNOSTIC: find who hands us a viewport-sized rect (the flashing preview).
+        if (side > 400f)
+        {
+            var now = System.Diagnostics.Stopwatch.GetTimestamp();
+            if (now - _lastHugeLog > System.Diagnostics.Stopwatch.Frequency)
+            {
+                _lastHugeLog = now;
+                T3.Core.Logging.Log.Warning($"laser preview huge: side={side:0}px min=({min.X:0},{min.Y:0}) max=({max.X:0},{max.Y:0}) scale={T3Ui.UiScaleFactor:0.##}\n{Environment.StackTrace}");
+            }
+        }
 
         var center = (min + max) * 0.5f;
         var half = side * 0.5f;
@@ -94,6 +110,8 @@ internal static class LaserOutputPreview
 
         dl.PopClipRect();
     }
+
+    private static long _lastHugeLog;
 
     private static bool IsLit(in LaserPoint p) => (p.R | p.G | p.B) != 0;
 
