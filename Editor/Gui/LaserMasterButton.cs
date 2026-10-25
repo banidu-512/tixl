@@ -2,7 +2,7 @@
 using System;
 using System.Collections.Generic;
 using ImGuiNET;
-using SharpDX.Direct3D11;
+using T3.Graphics.Compat;
 using T3.Core.DataTypes;
 using T3.Core.Logging;
 using T3.Core.Operator;
@@ -69,7 +69,7 @@ internal static class LaserMasterButton
                 var aspect = GetAspect(srv);
                 var size = new Vector2(frameHeight * aspect, frameHeight);
                 var pos = ImGui.GetCursorScreenPos();
-                ImGui.GetWindowDrawList().AddImage((IntPtr)srv, pos, pos + size);
+                ImGui.GetWindowDrawList().AddImage((IntPtr)srv.ImGuiTextureId, pos, pos + size);
                 ImGui.Dummy(size);
             }
         }
@@ -145,7 +145,7 @@ internal static class LaserMasterButton
 
     private static float GetAspect(ShaderResourceView srv)
     {
-        if (srv.Resource is SharpDX.Direct3D11.Texture2D texture)
+        if (srv.Resource is T3.Graphics.Compat.Texture2D texture)
             return (float)texture.Description.Width / texture.Description.Height;
 
         return 1f;

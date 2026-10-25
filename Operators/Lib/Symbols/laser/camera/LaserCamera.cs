@@ -1,4 +1,4 @@
-using SharpDX.Direct3D11;
+using T3.Graphics.Compat;
 using T3.Core.DataTypes;
 using T3.Core.Operator.Attributes;
 using T3.Core.Operator;
@@ -945,7 +945,7 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
 
         private T[] MapRead<T>(int index, int stride, int elementCount, int offsetElements) where T : struct
         {
-            SharpDX.DataStream stream = null;
+            DataStream stream = null;
             var mapped = false;
             try
             {

@@ -1,5 +1,5 @@
 using System;
-using SharpDX.Direct3D11;
+using T3.Graphics.Compat;
 using T3.Core.DataTypes;
 using T3.Core.Operator;
 using T3.Core.Operator.Attributes;
@@ -316,7 +316,7 @@ internal sealed class MeshToLaserPoints : Instance<MeshToLaserPoints>
                 cpuAccess.Buffer = new Buffer(ResourceManager.Device, desc);
             }
 
-            SharpDX.DataStream stream = null;
+            DataStream stream = null;
             var mapped = false;
             try
             {
