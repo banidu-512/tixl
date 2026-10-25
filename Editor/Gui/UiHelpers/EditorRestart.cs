@@ -1,5 +1,6 @@
 #nullable enable
 using System.Diagnostics;
+using System.IO;
 using T3.Editor.SystemUi;
 
 namespace T3.Editor.Gui.UiHelpers;
@@ -59,6 +60,21 @@ internal static class EditorRestart
             carryArgs.Add($"--wait-for-exit={Environment.ProcessId}");
 
             var startInfo = new ProcessStartInfo { FileName = exePath };
+
+            // A `dotnet TiXL.dll ...` launch has the managed host as ProcessPath; the assembly path
+            // must be the first argument or the new process cannot find the editor. The apphost
+            // (TiXL.exe / TiXL) needs no such argument.
+            var isDotnetHost = string.Equals(Path.GetFileNameWithoutExtension(exePath), "dotnet", StringComparison.OrdinalIgnoreCase);
+            if (isDotnetHost)
+            {
+                var assemblyPath = typeof(EditorRestart).Assembly.Location;
+                if (!string.IsNullOrEmpty(assemblyPath) && File.Exists(assemblyPath))
+                    startInfo.ArgumentList.Add(assemblyPath);
+                else if (Environment.GetCommandLineArgs()[0] is { } entryArg
+                         && entryArg.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
+                    startInfo.ArgumentList.Add(entryArg);
+            }
+
             if (OperatingSystem.IsWindows())
             {
                 // Launch via the shell so the child isn't part of this process's job
