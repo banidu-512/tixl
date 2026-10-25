@@ -754,7 +754,9 @@ internal sealed class BoygroupManager
 
             case "authFail":
                 ErrorText = "Rejected by server: " + CollabProtocol.GetString(json, "reason", "authentication failed");
-                Leave();
+                // A rejected connection is not a reason to switch boygrouping off: an enabled slave
+                // stays discoverable and can be added again (or by another master).
+                ReturnToWaiting();
                 break;
 
             case "deployDone" when State == BoygroupState.Client:
@@ -1297,7 +1299,7 @@ internal sealed class BoygroupManager
             || !CollabAuth.TryFromHexString(CollabProtocol.GetString(json, "nonce"), out var nonce))
         {
             ErrorText = "Server sent a malformed challenge";
-            Leave();
+            ReturnToWaiting();
             return;
         }
 
