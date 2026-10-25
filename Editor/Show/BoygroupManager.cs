@@ -868,6 +868,23 @@ internal sealed class BoygroupManager
             return;
 
         _nextHeartbeatTicks = now + CollabProtocol.HeartbeatIntervalMs;
+
+        if (_transport is BoygroupClientTransport clientTransport)
+        {
+            // The server pings every client every second, so silence means the master is gone
+            // (or partitioned). Without this check the client kept dead-reckoning time forever
+            // from the last sync and reported itself as connected.
+            var serverPeer = clientTransport.ServerPeer;
+            if (serverPeer.IsTimedOut)
+            {
+                Log.Info("Boygroup: server timed out");
+                serverPeer.SessionClosed = true;
+                serverPeer.Close();
+            }
+
+            return;
+        }
+
         var timestamp = BitConverter.GetBytes(Environment.TickCount64);
         foreach (var client in _clients)
         {
