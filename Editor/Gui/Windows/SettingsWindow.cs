@@ -84,9 +84,10 @@ internal sealed partial class SettingsWindow : Window
         }
         NavigationSidebar.EndColumn();
 
-        NavigationSidebar.BeginContentPanel(CategoryTitle(_activeCategory), this);
+        NavigationSidebar.BeginContentPanel(CategoryTitle(_activeCategory), this, alwaysShowScrollbar: true);
         {
             FormInputs.SetIndentToParameters();
+            FormInputs.PushMaxContentWidth(560);
             switch (_activeCategory)
             {
                 case Categories.Interface:
@@ -628,6 +629,8 @@ internal sealed partial class SettingsWindow : Window
                     break;
                 }
             }
+
+            FormInputs.PopMaxContentWidth();
 
             if (changed)
                 UserSettings.Save();
