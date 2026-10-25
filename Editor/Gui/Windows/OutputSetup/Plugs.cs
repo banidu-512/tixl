@@ -22,12 +22,18 @@ internal static class Plugs
         if (binding == null)
             return Guid.Empty;
 
-        return binding.IsStream ? binding.PlugId : DisplayPlugId(binding.DisplayIndex);
+        return binding.IsStream || binding.IsLaser ? binding.PlugId : DisplayPlugId(binding.DisplayIndex);
     }
 
     /// <summary>The name the binding presents to — for status lines ("→ Display 2", "→ Spout: Main").</summary>
     public static string BindingLabel(MachineConfig machineConfig, PlugBinding binding)
     {
+        if (binding.IsLaser)
+        {
+            var laser = machineConfig.FindLaserPlug(binding.PlugId);
+            return laser == null ? "missing laser" : $"{laser.Kind}: {laser.Name}";
+        }
+
         if (!binding.IsStream)
             return $"Display {binding.DisplayIndex + 1}";
 
@@ -35,22 +41,24 @@ internal static class Plugs
         return stream == null ? "missing stream" : $"{stream.Kind}: {stream.Name}";
     }
 
-    /// <summary>The plug's own name — the display's label, or the stream sender's name.</summary>
+    /// <summary>The plug's own name — the display's label, the stream sender's, or the laser device's.</summary>
     public static string PlugName(MachineConfig machineConfig, Guid plugId)
     {
         if (TryGetDisplayIndex(plugId, out var displayIndex))
             return DisplayLabel(displayIndex);
 
-        return machineConfig.FindStreamPlug(plugId)?.Name ?? "Output";
+        return machineConfig.FindStreamPlug(plugId)?.Name
+               ?? machineConfig.FindLaserPlug(plugId)?.Name
+               ?? "Output";
     }
 
-    /// <summary>Whether a plug id still names an attached display or a stream this machine offers.</summary>
+    /// <summary>Whether a plug id still names an attached display, a stream or a laser this machine offers.</summary>
     public static bool Exists(MachineConfig machineConfig, Guid plugId)
     {
         if (TryGetDisplayIndex(plugId, out var displayIndex))
             return displayIndex < EditorUi.Instance.AllScreens.Count;
 
-        return machineConfig.FindStreamPlug(plugId) != null;
+        return machineConfig.FindStreamPlug(plugId) != null || machineConfig.FindLaserPlug(plugId) != null;
     }
 
     /// <summary>The pixels a canvas presented here should have: the display's mode, or a sensible default for a stream.</summary>
@@ -82,23 +90,50 @@ internal static class Plugs
         return null;
     }
 
-    /// <summary>Binds an output to a plug (display or stream), replacing any earlier binding, and saves.</summary>
+    /// <summary>Binds an output to a plug (display, stream or laser), and saves. A plug presents one
+    /// output: binding a new one lets go of the old, or a display would be fought over and a stream
+    /// would carry two canvases through one sender, alternating frame by frame. Per-plug only - a
+    /// multi-bound laser output keeps its other devices. Laser outputs may bind several plugs (the
+    /// same frame to two scanners).</summary>
     public static void BindOutput(MachineConfig machineConfig, Guid outputId, Guid plugId)
     {
-        // A plug presents one output. Binding a new one lets go of the old, or a display would be fought over
-        // and a stream would carry two canvases through one sender, alternating frame by frame.
+        // The kinds on either side must agree. A display or stream plug never carries a laser output
+        // (a laser output has no canvas - presenting one would throw its input full-screen on that
+        // display), and a laser plug never carries a canvas output. Every binding path funnels
+        // through here, so the rule lives here as well as in the drop matrix.
+        if (!OutputSetupHandling.TryGetActiveSetup(out var setup, out _))
+            return;
+
+        var output = setup.FindOutput(outputId);
+        if (output == null)
+            return;
+
+        var isLaserOutput = output.Kind == OutputDefinition.Kinds.Laser;
+        var isLaserPlug = machineConfig.FindLaserPlug(plugId) != null;
+        if (isLaserOutput != isLaserPlug)
+            return;
+
         _outputsToRelease.Clear();
-        foreach (var existing in machineConfig.Bindings)
+
+        // A laser plug takes several outputs - two scanners driven by one show, a preview rig - and
+        // the laser driver fans the same frame out to each. Canvas plugs stay single-bound: two
+        // canvases through one sender would fight over it.
+        if (!isLaserPlug)
         {
-            if (existing.OutputId != outputId && BoundPlugId(existing) == plugId)
-                _outputsToRelease.Add(existing.OutputId);
+            foreach (var existing in machineConfig.Bindings)
+            {
+                if (existing.OutputId != outputId && BoundPlugId(existing) == plugId)
+                    _outputsToRelease.Add((existing.OutputId, plugId));
+            }
         }
 
-        foreach (var releasedOutputId in _outputsToRelease)
-            machineConfig.Unbind(releasedOutputId);
+        foreach (var (releasedOutputId, releasedPlugId) in _outputsToRelease)
+            machineConfig.Unbind(releasedOutputId, releasedPlugId);
 
         if (TryGetDisplayIndex(plugId, out var displayIndex))
             BindOutputToDisplay(machineConfig, outputId, displayIndex);
+        else if (machineConfig.FindLaserPlug(plugId) != null)
+            BindOutputToLaser(machineConfig, outputId, plugId);
         else
             BindOutputToStream(machineConfig, outputId, plugId);
     }
@@ -107,6 +142,13 @@ internal static class Plugs
     public static void UnbindOutput(MachineConfig machineConfig, Guid outputId)
     {
         machineConfig.Unbind(outputId);
+        OutputSetupHandling.SaveActive();
+    }
+
+    /// <summary>Drops one of an output's bindings, keeping the others (a laser output's other devices).</summary>
+    public static void UnbindOutput(MachineConfig machineConfig, Guid outputId, Guid plugId)
+    {
+        machineConfig.Unbind(outputId, plugId);
         OutputSetupHandling.SaveActive();
     }
     #endregion
@@ -176,6 +218,13 @@ internal static class Plugs
         OutputSetupHandling.SaveActive();
     }
 
+    /// <summary>Renames a stream or laser plug (displays are named by the OS).</summary>
+    public static void RenamePlug(MachineConfig machineConfig, Guid plugId, string newName)
+    {
+        RenameStream(machineConfig, plugId, newName);
+        UpdateLaser(machineConfig, plugId, newName, null, null);
+    }
+
     public static void RemoveStream(MachineConfig machineConfig, Guid plugId)
     {
         machineConfig.RemoveStream(plugId);
@@ -221,6 +270,82 @@ internal static class Plugs
     }
     #endregion
 
+    #region Laser plugs
+    /// <summary>Adds a laser plug under a free name — an EtherDream DAC address, a PONK endpoint or a CITP capture.</summary>
+    public static LaserPlug AddLaser(MachineConfig machineConfig, string kind)
+    {
+        var laser = new LaserPlug
+                        {
+                            Kind = kind,
+                            Name = FreeLaserName(machineConfig, kind),
+                            Address = kind == LaserPlug.Kinds.Ponk ? "239.255.10.24" : string.Empty,
+                            Port = kind == LaserPlug.Kinds.Ponk ? 5583
+                               : kind == LaserPlug.Kinds.EtherDream ? 7765
+                               : 0,
+                        };
+        machineConfig.LaserPlugs.Add(laser);
+        OutputSetupHandling.SaveActive();
+        return laser;
+    }
+
+    public static void UpdateLaser(MachineConfig machineConfig, Guid plugId, string? newName, string? newAddress, int? newPort)
+    {
+        var laser = machineConfig.FindLaserPlug(plugId);
+        if (laser == null)
+            return;
+
+        if (newName != null && laser.Name != newName)
+            laser.Name = newName;
+        if (newAddress != null && laser.Address != newAddress)
+            laser.Address = newAddress;
+        if (newPort.HasValue && laser.Port != newPort.Value)
+            laser.Port = newPort.Value;
+
+        OutputSetupHandling.SaveActive();
+    }
+
+    public static void RemoveLaser(MachineConfig machineConfig, Guid plugId)
+    {
+        machineConfig.RemoveLaser(plugId);
+        OutputSetupHandling.SaveActive();
+    }
+
+    private static void BindOutputToLaser(MachineConfig machineConfig, Guid outputId, Guid plugId)
+    {
+        if (machineConfig.FindLaserPlug(plugId) == null)
+            return;
+
+        machineConfig.Bind(new PlugBinding
+                               {
+                                   OutputId = outputId,
+                                   Kind = PlugBinding.Kinds.Laser,
+                                   PlugId = plugId,
+                               });
+        OutputSetupHandling.SaveActive();
+    }
+
+    private static string FreeLaserName(MachineConfig machineConfig, string kind)
+    {
+        var baseName = kind == LaserPlug.Kinds.Ponk ? "PONK" : "Laser";
+        var name = baseName;
+        for (var i = 2; i < 100 && HasLaserNamed(machineConfig, name); i++)
+            name = $"{baseName} {i}";
+
+        return name;
+    }
+
+    private static bool HasLaserNamed(MachineConfig machineConfig, string name)
+    {
+        foreach (var laser in machineConfig.LaserPlugs)
+        {
+            if (laser.Name == name)
+                return true;
+        }
+
+        return false;
+    }
+    #endregion
+
     private static readonly List<string> _displayLabels = [];
-    private static readonly List<Guid> _outputsToRelease = [];
+    private static readonly List<(Guid OutputId, Guid PlugId)> _outputsToRelease = [];
 }

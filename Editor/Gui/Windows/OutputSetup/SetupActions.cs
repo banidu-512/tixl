@@ -283,6 +283,16 @@ internal static class SetupActions
 
     internal static void AddOutput(SetupEntitySelection selection)
     {
+        AddOutput(selection, OutputDefinition.Kinds.Projector, setup => $"P{CountProjectorOutputs(setup) + 1}");
+    }
+
+    internal static void AddLaserOutput(SetupEntitySelection selection)
+    {
+        AddOutput(selection, OutputDefinition.Kinds.Laser, setup => $"L{CountLaserOutputs(setup) + 1}");
+    }
+
+    private static void AddOutput(SetupEntitySelection selection, string kind, Func<Setup, string> nameOf)
+    {
         if (!OutputSetupHandling.TryGetActiveSetup(out var setup, out _))
             return;
 
@@ -290,9 +300,15 @@ internal static class SetupActions
                                                    {
                                                        var output = new OutputDefinition
                                                                         {
-                                                                            Name = $"P{CountProjectorOutputs(setup) + 1}",
-                                                                            Kind = OutputDefinition.Kinds.Projector,
+                                                                            Name = nameOf(setup),
+                                                                            Kind = kind,
                                                                         };
+
+                                                       // A laser output is driven by its scanner camera from the
+                                                       // start — the manual look-at is how it is aimed before a solve.
+                                                       if (kind == OutputDefinition.Kinds.Laser && output.Camera == null)
+                                                           output.Camera = new OutputDefinition.ProjectorCamera();
+
                                                        setup.Outputs.Add(output);
                                                        selection.Select(SetupEntityKinds.Output, output.Id);
                                                    });
@@ -730,7 +746,7 @@ internal static class SetupActions
         if (kind == SetupEntityKinds.Plug)
         {
             if (OutputSetupHandling.TryGetActiveSetup(out _, out var machineConfig))
-                Plugs.RenameStream(machineConfig, id, newName);
+                Plugs.RenamePlug(machineConfig, id, newName);
 
             return;
         }
@@ -1130,6 +1146,18 @@ internal static class SetupActions
         foreach (var output in setup.Outputs)
         {
             if (output.Kind == OutputDefinition.Kinds.Projector)
+                count++;
+        }
+
+        return count;
+    }
+
+    private static int CountLaserOutputs(Setup setup)
+    {
+        var count = 0;
+        foreach (var output in setup.Outputs)
+        {
+            if (output.Kind == OutputDefinition.Kinds.Laser)
                 count++;
         }
 

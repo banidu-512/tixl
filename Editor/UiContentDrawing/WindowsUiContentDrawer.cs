@@ -145,6 +145,14 @@ internal sealed class WindowsUiContentDrawer : IUiContentDrawer<Device>
 
             if (ProgramWindows.Main.IsMinimized && UserSettings.Config.SuspendRenderingWhenHidden)
             {
+                // A minimized editor must keep the show alive: laser outputs stream from the
+                // setup, and skipping their pump stops fresh frames — the streams' frame
+                // watchdog blanks the beam after its grace period. The laser pump is pure
+                // graph evaluation (no ImGui), so it runs here at the sleep cadence (~10 Hz);
+                // the streams loop their last frame in between.
+                if (T3.Core.Output.LaserDriverEnabled.Enabled)
+                    LaserDriver.Update();
+
                 Thread.Sleep(100);
                 return;
             }
@@ -180,6 +188,12 @@ internal sealed class WindowsUiContentDrawer : IUiContentDrawer<Device>
             // (so its content evaluates even when nothing shows it) and hands it to that output's
             // display window. Must run before any viewer back buffer is bound below.
             OutputPresentation.UpdatePresentation();
+
+            // Laser outputs present no composite — their frame streams from the camera routed to
+            // them in the graph. Pump those streams here, every frame, so lasers stream whatever
+            // view the editor shows.
+            if (T3.Core.Output.LaserDriverEnabled.Enabled)
+                LaserDriver.Update();
 
             DrawOutputWindows();
 

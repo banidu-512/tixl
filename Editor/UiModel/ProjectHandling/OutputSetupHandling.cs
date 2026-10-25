@@ -309,6 +309,18 @@ internal static class OutputSetupHandling
             setup.TrySaveToFile(SetupFilePath(setupsFolder, setup.Name));
         }
 
+        // Configs from older builds can pair a laser output with a display/stream plug. The
+        // presentation pass ignores those, but a stale pair also draws a misleading board edge and
+        // can present an input full-screen on a display in builds that lack the guard - clean it
+        // while loading and persist, so the fix doesn't depend on the user unbinding by hand.
+        var mismatched = machineConfig.RemoveKindMismatchedBindings(setup.Outputs);
+        if (mismatched > 0)
+        {
+            T3.Core.Logging.Log.Warning($"Dropped {mismatched} output binding(s) whose plug kind does not match the output kind "
+                                        + "(a laser output cannot be presented on a display or stream).");
+            machineConfig.TrySaveToFile(Path.Combine(setupsFolder, MachineConfig.FileName));
+        }
+
         entry = new ProjectEntry { Setup = setup, MachineConfig = machineConfig, IsSaved = isSaved };
         _entriesByProjectFolder[projectFolder] = entry;
         return entry;
