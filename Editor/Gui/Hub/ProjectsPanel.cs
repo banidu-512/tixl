@@ -9,9 +9,10 @@ using T3.Core.Model;
 using T3.Core.SystemUi;
 using T3.Core.Utils;
 using T3.Editor.Collab;
-using T3.Editor.Gui.Windows.Layouts;
 using T3.Editor.Compilation;
+using T3.Editor.Gui.Help;
 using T3.Editor.Gui.Window;
+using T3.Editor.Gui.Windows.Layouts;
 using T3.Editor.Gui.Input;
 using T3.Editor.Gui.Styling;
 using T3.Editor.Gui.UiHelpers;
@@ -31,6 +32,7 @@ internal static class ProjectsPanel
         ContentPanel.Begin("Projects", null, DrawProjectTools, -heightForSkillQuest);
 
         FormInputs.AddVerticalSpace(20);
+        DrawMissingProjectDirectoriesWarning();
 
         ImGui.BeginChild("content", new Vector2(0, 0), ImGuiChildFlags.Borders, ImGuiWindowFlags.NoBackground);
         {
@@ -85,9 +87,6 @@ internal static class ProjectsPanel
     private static void DrawCollabSessions()
     {
         var collab = CollabManager.Instance;
-        if (!collab.IsEnabled)
-            return;
-
         collab.RefreshDiscoveryFromHub();
 
         var hasOwnSession = collab.State != CollabManager.SessionState.Off;
@@ -105,17 +104,16 @@ internal static class ProjectsPanel
             DrawSessionRow("collab-own", ownLabel, collab.StatusText, null, null, isActive: true, locked: false);
         }
 
-        var pinRequested = false;
         foreach (var session in collab.DiscoveredSessions)
         {
             ImGui.PushID($"collab-{session.Address}:{session.Port}");
             var title = string.IsNullOrEmpty(session.Name) ? $"{session.Address}:{session.Port}" : session.Name;
             var subtitle = session.PasswordProtected ? $"{session.Address}:{session.Port}  (password protected)"
                                                      : $"{session.Address}:{session.Port}";
-            var clicked = DrawSessionRow($"collab-{session.Address}:{session.Port}",
-                                         title,
+            var clicked = DrawSessionRow(title,
                                          subtitle,
                                          session.Project is { Length: > 0 } p ? p : null,
+                                         null,
                                          null,
                                          isActive: false,
                                          locked: false);
@@ -124,7 +122,7 @@ internal static class ProjectsPanel
                 if (session.PasswordProtected)
                 {
                     _pinSession = session; // ask first, join after confirm
-                    pinRequested = true;
+                    ImGui.OpenPopup("##join-pin");
                 }
                 else
                 {
@@ -133,11 +131,6 @@ internal static class ProjectsPanel
             }
             ImGui.PopID();
         }
-
-        // OpenPopup must run at the same id scope as BeginPopupModal — calling it inside the
-        // per-session PushID above scoped the popup to that row and the modal never opened.
-        if (pinRequested)
-            ImGui.OpenPopup(JoinPinPopupId);
 
         DrawJoinPinPopup(null);
 
@@ -154,15 +147,13 @@ internal static class ProjectsPanel
 
     private static CollabManager.DiscoveredSession? _pinSession;
     private static string _pinInput = "";
-    private const string JoinPinPopupId = "Join session";
 
     /// <summary>Modal asking for a session PIN; confirming joins the pending session.</summary>
     private static void DrawJoinPinPopup(string? _)
     {
         var size = new Vector2(320, 130) * T3Ui.UiScaleFactor;
         ImGui.SetNextWindowSize(size, ImGuiCond.Always);
-        // The id here must match the OpenPopup call exactly, or the modal never opens.
-        if (!ImGui.BeginPopupModal(JoinPinPopupId))
+        if (!ImGui.BeginPopupModal("Join session##join-pin"))
             return;
 
         var name = _pinSession == null ? "" : (string.IsNullOrEmpty(_pinSession.Name) ? $"{_pinSession.Address}" : _pinSession.Name);
@@ -246,24 +237,133 @@ internal static class ProjectsPanel
         return clicked;
     }
 
-    /// <summary>Joins a discovered session; the manager opens or downloads the host project.</summary>
+    /// <summary>Joins a discovered session and opens the project it belongs to when available.</summary>
     private static void JoinSession(CollabManager.DiscoveredSession session, string password)
     {
-        CollabManager.Instance.JoinDirect(session.Address, session.Port, password);
+        var collab = CollabManager.Instance;
+        collab.JoinDirect(session.Address, session.Port, password);
+
+        if (!string.IsNullOrEmpty(session.Project))
+        {
+            TryOpenProjectByName(session.Project);
+        }
+    }
+
+    /// <summary>Opens a local project by display name (short form accepted) into the visible graph window.</summary>
+    private static bool TryOpenProjectByName(string name)
+    {
+        foreach (var p in SymbolPackage.AllPackages)
+        {
+            // Created projects get a "<name> (<namespace>)" display name - accept the short form too.
+            if (p is not EditorSymbolPackage editorPackage
+                || !(string.Equals(editorPackage.DisplayName, name, StringComparison.OrdinalIgnoreCase)
+                     || editorPackage.DisplayName.StartsWith(name + " (", StringComparison.OrdinalIgnoreCase)))
+                continue;
+
+            if (!OpenedProject.TryCreate(editorPackage, out var openedProject, out var failureLog)
+                || openedProject == null)
+            {
+                Log.Warning($"Could not open collab project '{name}': {failureLog}");
+                return false;
+            }
+
+            GraphWindow? graphWindow = null;
+            foreach (var window in GraphWindow.GraphWindowInstances)
+            {
+                if (!window.Config.Visible)
+                    continue;
+
+                graphWindow = window;
+                break;
+            }
+
+            graphWindow ??= GraphWindow.GraphWindowInstances.Count > 0 ? GraphWindow.GraphWindowInstances[0] : null;
+            if (graphWindow == null || !graphWindow.TrySetToProject(openedProject, tryRestoreViewArea: false))
+            {
+                Log.Warning($"Could not open collab project '{name}' in a graph window");
+                return false;
+            }
+
+            return true;
+        }
+
+        Log.Info($"Collab session project '{name}' does not exist locally — staying in the current project.");
+        return false;
     }
 
     private static void DrawProjectTools()
     {
         var addProject = "Add Project...";
-        var size = CustomComponents.GetCtaButtonSize(addProject);
+        var ctaSize = CustomComponents.GetCtaButtonSize(addProject);
+        var iconSize = new Vector2(ctaSize.Y, ctaSize.Y);
+        var spacing = ImGui.GetStyle().ItemSpacing.X;
         var state = EditableSymbolProject.AllProjects.Any()
                         ? CustomComponents.ButtonStates.Default
                         : CustomComponents.ButtonStates.Activated;
-        CustomComponents.RightAlign(size.X + 10 * T3Ui.UiScaleFactor);
+        CustomComponents.RightAlign(ctaSize.X + 2 * (spacing + iconSize.X) + 10 * T3Ui.UiScaleFactor);
         if (CustomComponents.DrawCtaButton(addProject, Icon.None, state))
         {
             T3Ui.NewProjectDialog.ShowNextFrame();
         }
+
+        ImGui.SameLine();
+        if (CustomComponents.IconButton(Icon.Settings2, iconSize))
+            WindowManager.SettingsWindow.ShowProjectsCategory();
+        CustomComponents.TooltipForLastItem("Settings for All Projects", "Project folders, USB detection and how many projects stay loaded.");
+
+        ImGui.SameLine();
+        DocumentationButton.Draw(HelpDocId, HelpUrl, iconSize);
+    }
+
+    /// <summary>
+    /// One warning line for configured project folders that don't exist (e.g. an unplugged drive); their
+    /// projects are silently skipped at startup. Clicking it opens the settings to fix the list.
+    /// </summary>
+    private static void DrawMissingProjectDirectoriesWarning()
+    {
+        RefreshMissingProjectDirectories();
+        if (_missingProjectDirectories.Count == 0)
+            return;
+
+        ImGui.BeginGroup();
+        Icon.Warning.DrawAtCursor(UiColors.StatusAttention);
+        ImGui.SameLine(0, 4 * T3Ui.UiScaleFactor);
+        CustomComponents.StylizedText(_missingDirectoriesLabel, Fonts.FontNormal, UiColors.StatusAttention);
+        ImGui.EndGroup();
+
+        if (ImGui.IsItemClicked())
+            WindowManager.SettingsWindow.ShowProjectsCategory();
+
+        CustomComponents.TooltipForLastItem(_missingDirectoriesTooltip, "Click to edit the project folders in the settings.");
+        FormInputs.AddVerticalSpace(5);
+    }
+
+    /** Directory.Exists can stall on network or removable drives, so the check runs only every few seconds. */
+    private static void RefreshMissingProjectDirectories()
+    {
+        var now = ImGui.GetTime();
+        if (now - _missingDirectoriesCheckTime < 3)
+            return;
+
+        _missingDirectoriesCheckTime = now;
+        _missingProjectDirectories.Clear();
+        var projectDirectories = UserSettings.Config.ProjectDirectories;
+        if (projectDirectories == null)
+            return;
+
+        foreach (var directory in projectDirectories)
+        {
+            if (!string.IsNullOrWhiteSpace(directory) && !Directory.Exists(directory))
+                _missingProjectDirectories.Add(directory);
+        }
+
+        if (_missingProjectDirectories.Count == 0)
+            return;
+
+        _missingDirectoriesLabel = _missingProjectDirectories.Count == 1
+                                       ? "Project folder not found: " + _missingProjectDirectories[0]
+                                       : $"{_missingProjectDirectories.Count} project folders not found";
+        _missingDirectoriesTooltip = string.Join("\n", _missingProjectDirectories);
     }
 
     /// <summary>Draws one project row. Returns true when a click loaded the project into the given window.</summary>
@@ -385,35 +485,6 @@ internal static class ProjectsPanel
             if (CustomComponents.DrawMenuItem(_revealInExplorerId, PlatformNames.RevealInFileBrowser, reserveIconColumn: false))
             {
                 CoreUi.Instance.OpenWithDefaultApplication(package.Folder);
-            }
-
-            // Collab: host a session that shares exactly this project (pick the project first,
-            // then share it — instead of sharing whatever happens to be focused).
-            var collab = CollabManager.Instance;
-            if (!collab.IsEnabled)
-            {
-                // Collaboration is off in the settings: no host or join entries.
-            }
-            else if (collab.State == CollabManager.SessionState.Off)
-            {
-                if (CustomComponents.DrawMenuItem(_hostSessionId, "Host Collaboration Session", reserveIconColumn: false))
-                {
-                    collab.StartHost(UserSettings.Config.CollabPort,
-                                     UserSettings.Config.CollabPassword ?? "",
-                                     UserSettings.Config.CollabLanDiscovery,
-                                     package.DisplayName);
-                    WindowManager.CollabWindow.Config.Visible = true;
-                    ImGui.CloseCurrentPopup();
-                }
-            }
-            else
-            {
-                if (CustomComponents.DrawMenuItem(_leaveSessionId, $"Leave Collaboration Session ({collab.StatusText})",
-                                                  reserveIconColumn: false))
-                {
-                    collab.Leave(manual: true);
-                    ImGui.CloseCurrentPopup();
-                }
             }
 
             if (package is EditableSymbolProject { IsBuiltIn: false } shareableProject)
@@ -838,18 +909,23 @@ internal static class ProjectsPanel
 
     private readonly record struct BackupContentStats(int Operators, int Connections);
 
+    private const string HelpDocId = "ProjectPanel";
+    private const string HelpUrl = "https://help.tixl.app/using/";
+
     private static readonly Dictionary<string, (double LastUpdate, string Label)> _savedInfoLabels = new();
     private static readonly List<(string Label, AutoBackup.AutoBackup.BackupEntry Entry)> _backupMenuItems = new();
     private static readonly Dictionary<string, int> _backupSymbolCountsByPath = new();
     private static readonly ConcurrentDictionary<string, BackupContentStats> _backupContentStats = new();
     private static readonly HashSet<string> _contentStatsQueued = new();
     private static string? _backupMenuFolder;
+    private static readonly List<string> _missingProjectDirectories = new();
+    private static string _missingDirectoriesLabel = string.Empty;
+    private static string _missingDirectoriesTooltip = string.Empty;
+    private static double _missingDirectoriesCheckTime = double.NegativeInfinity;
     private static double _backupMenuUpdateTime;
 
     private static readonly int _revealInExplorerId = nameof(_revealInExplorerId).GetHashCode();
     private static readonly int _shareProjectId = nameof(_shareProjectId).GetHashCode();
-    private static readonly int _hostSessionId = nameof(_hostSessionId).GetHashCode();
-    private static readonly int _leaveSessionId = nameof(_leaveSessionId).GetHashCode();
     private static readonly int _restoreFromBackupId = nameof(_restoreFromBackupId).GetHashCode();
     private static readonly int _unloadProjectId = nameof(_unloadProjectId).GetHashCode();
     private static readonly int _archiveProjectId = nameof(_archiveProjectId).GetHashCode();

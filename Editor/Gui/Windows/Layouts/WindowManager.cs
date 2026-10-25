@@ -43,7 +43,7 @@ internal static partial class WindowManager
             ToggleWindowTypeVisibility<ConsoleLogWindow>();
         }
 
-        UpdateAppWindowSize();
+        LayoutHandling.KeepLayoutProportionsOnResize();
 
         foreach (var windowType in _windows)
         {
@@ -74,6 +74,7 @@ internal static partial class WindowManager
                                                                    : new WelcomeWindow();
 
     internal static readonly HelpWindow HelpWindow = new();
+    internal static readonly TimelineWindow TimelineWindow = new();
 
 
     private static void TryToInitialize()
@@ -88,6 +89,7 @@ internal static partial class WindowManager
                 new VariationsWindow(),
                 new OutputWindow(),
                 new GraphWindow(),
+                TimelineWindow,
                 new ParameterWindow(),
                 SymbolLibrary,
                 new AssetLibrary(),
@@ -107,7 +109,6 @@ internal static partial class WindowManager
 
 
         ReApplyLayout();
-        _appWindowSize = ImGui.GetIO().DisplaySize;
         _hasBeenInitialized = true;
     }
 
@@ -132,9 +133,6 @@ internal static partial class WindowManager
                 yield return window;
             }
         }
-
-        foreach (var window in GraphWindow.GraphWindowInstances)
-            yield return window;
     }
 
     public static bool IsAnyInstanceVisible<T>() where T : Window
@@ -158,17 +156,6 @@ internal static partial class WindowManager
         }
     }
 
-    private static void UpdateAppWindowSize()
-    {
-        var newSize = ImGui.GetIO().DisplaySize;
-        if (newSize == _appWindowSize)
-            return;
-
-        _appWindowSize = newSize;
-
-        LayoutHandling.UpdateAfterResize(newSize);
-    }
-
     public static void ToggleWindowTypeVisibility<T>() where T : Window
     {
         var instances = GetAllWindows().OfType<T>().ToList();
@@ -181,13 +168,10 @@ internal static partial class WindowManager
     internal static bool DemoWindowVisible;
     internal static bool MetricsWindowVisible;
     
-    private static Vector2 _appWindowSize;
-    
     /// <summary>
     /// Contains all possible window types and used for updating and layout management
     /// </summary>
     private static List<Window> _windows = [];
-    
-    public static bool ShowSecondaryRenderWindow { get; set; }
+
     private static bool _hasBeenInitialized;
 }
