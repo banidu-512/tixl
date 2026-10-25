@@ -352,7 +352,16 @@ internal sealed class BoygroupManager
                 Leave();
                 break;
 
-            case "inventory" when State == BoygroupState.Client:
+            case "inventory" when State == BoygroupState.Server:
+            {
+                // The client answered our requestInventory with what it has on disk.
+                var requestingClient = _clients.FirstOrDefault(c => ReferenceEquals(c.Peer, peer));
+                if (requestingClient != null)
+                    HandleClientInventory(requestingClient, json);
+                break;
+            }
+
+            case "requestInventory" when State == BoygroupState.Client:
                 HandleServerInventory(json);
                 break;
 
