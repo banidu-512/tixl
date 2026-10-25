@@ -394,7 +394,11 @@ internal static class Program
                     }
                     catch (Exception e) when (e is IOException or SocketException or ObjectDisposedException or OperationCanceledException)
                     {
-                        Console.WriteLine($"host write failed ({e.GetType().Name}), ending member connection");
+                        // A frame write that failed (or timed out) may have left part of a frame
+                        // on the host stream; the host's framing cannot recover from that, so
+                        // the host link has to be re-established instead of silently desynced.
+                        Console.WriteLine($"host write failed ({e.GetType().Name}), closing the host link");
+                        owner.Close();
                         return;
                     }
                 }
@@ -500,12 +504,28 @@ internal static class Program
 
     private static async Task WriteLineAsync(TcpClient client, string line)
     {
-        using var timeout = new CancellationTokenSource(WriteTimeoutMs);
         var gate = WriteGateOf(client);
-        await gate.WaitAsync(timeout.Token);
+        using var timeout = new CancellationTokenSource(WriteTimeoutMs);
+        try
+        {
+            await gate.WaitAsync(timeout.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            // No bytes were written while waiting for the gate.
+            return;
+        }
+
         try
         {
             await WriteRawLineAsync(client, line, timeout.Token);
+        }
+        catch (Exception e) when (e is OperationCanceledException or IOException or SocketException)
+        {
+            // A line write cancelled or failed mid-way leaves a partial line; every later line
+            // would be appended to it and be unparseable, so the stream cannot be used any more.
+            client.Close();
+            throw;
         }
         finally
         {
