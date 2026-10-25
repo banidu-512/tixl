@@ -278,8 +278,16 @@ internal sealed class CollabRelayHostTransport : CollabTransport
                 break;
 
             case CollabProtocol.FrameType.Heartbeat:
-                // Echo so the client's timeout logic sees life on the relay path.
-                CollabRelayWire.WriteHostFrame(_relayStream, _relayWriteLock, slot, CollabProtocol.FrameType.Heartbeat, payload);
+                // Answer pings so the client's timeout logic sees life on the relay path; answers
+                // are one byte longer and never answered, or heartbeats would bounce forever.
+                if (payload.Length == CollabProtocol.HeartbeatPingSize)
+                {
+                    Span<byte> answer = stackalloc byte[CollabProtocol.HeartbeatPingSize + 1];
+                    payload.CopyTo(answer);
+                    answer[CollabProtocol.HeartbeatPingSize] = 0; // explicit: stackalloc is not guaranteed zeroed
+                    CollabRelayWire.WriteHostFrame(_relayStream, _relayWriteLock, slot, CollabProtocol.FrameType.Heartbeat, answer);
+                }
+
                 break;
         }
     }
