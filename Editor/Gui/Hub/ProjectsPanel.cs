@@ -9,6 +9,7 @@ using T3.Core.Model;
 using T3.Core.SystemUi;
 using T3.Core.Utils;
 using T3.Editor.Collab;
+using T3.Editor.Gui.Windows.Layouts;
 using T3.Editor.Compilation;
 using T3.Editor.Gui.Window;
 using T3.Editor.Gui.Input;
@@ -101,6 +102,7 @@ internal static class ProjectsPanel
             DrawSessionRow("collab-own", ownLabel, collab.StatusText, null, null, isActive: true, locked: false);
         }
 
+        var pinRequested = false;
         foreach (var session in collab.DiscoveredSessions)
         {
             ImGui.PushID($"collab-{session.Address}:{session.Port}");
@@ -119,7 +121,7 @@ internal static class ProjectsPanel
                 if (session.PasswordProtected)
                 {
                     _pinSession = session; // ask first, join after confirm
-                    ImGui.OpenPopup(JoinPinPopupId);
+                    pinRequested = true;
                 }
                 else
                 {
@@ -128,6 +130,11 @@ internal static class ProjectsPanel
             }
             ImGui.PopID();
         }
+
+        // OpenPopup must run at the same id scope as BeginPopupModal — calling it inside the
+        // per-session PushID above scoped the popup to that row and the modal never opened.
+        if (pinRequested)
+            ImGui.OpenPopup(JoinPinPopupId);
 
         DrawJoinPinPopup(null);
 
@@ -375,6 +382,31 @@ internal static class ProjectsPanel
             if (CustomComponents.DrawMenuItem(_revealInExplorerId, PlatformNames.RevealInFileBrowser, reserveIconColumn: false))
             {
                 CoreUi.Instance.OpenWithDefaultApplication(package.Folder);
+            }
+
+            // Collab: host a session that shares exactly this project (pick the project first,
+            // then share it — instead of sharing whatever happens to be focused).
+            var collab = CollabManager.Instance;
+            if (collab.State == CollabManager.SessionState.Off)
+            {
+                if (CustomComponents.DrawMenuItem(_hostSessionId, "Host Collaboration Session", reserveIconColumn: false))
+                {
+                    collab.StartHost(UserSettings.Config.CollabPort,
+                                     UserSettings.Config.CollabPassword ?? "",
+                                     UserSettings.Config.CollabLanDiscovery,
+                                     package.DisplayName);
+                    WindowManager.CollabWindow.Config.Visible = true;
+                    ImGui.CloseCurrentPopup();
+                }
+            }
+            else
+            {
+                if (CustomComponents.DrawMenuItem(_leaveSessionId, $"Leave Collaboration Session ({collab.StatusText})",
+                                                  reserveIconColumn: false))
+                {
+                    collab.Leave();
+                    ImGui.CloseCurrentPopup();
+                }
             }
 
             if (package is EditableSymbolProject { IsBuiltIn: false } shareableProject)
@@ -809,6 +841,8 @@ internal static class ProjectsPanel
 
     private static readonly int _revealInExplorerId = nameof(_revealInExplorerId).GetHashCode();
     private static readonly int _shareProjectId = nameof(_shareProjectId).GetHashCode();
+    private static readonly int _hostSessionId = nameof(_hostSessionId).GetHashCode();
+    private static readonly int _leaveSessionId = nameof(_leaveSessionId).GetHashCode();
     private static readonly int _restoreFromBackupId = nameof(_restoreFromBackupId).GetHashCode();
     private static readonly int _unloadProjectId = nameof(_unloadProjectId).GetHashCode();
     private static readonly int _archiveProjectId = nameof(_archiveProjectId).GetHashCode();
