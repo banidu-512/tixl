@@ -143,6 +143,11 @@ public sealed class PonkDeviceSettings
     /// <summary>Sent as MAXSPEED path metadata — requested scanner-speed multiplier.</summary>
     public float MaxScanSpeed = 1f;
 
+    /// <summary>Sender identity in every packet header - persisted, so receivers (MadMapper keys
+    /// its Ponk inputs on it) recognize this plug across editor restarts instead of seeing a new
+    /// sender per session. 0 = generated on first use and written back here.</summary>
+    public int SenderId;
+
     public float MaxBrightness = 1f;
     public bool SwapColorChannels;
 
@@ -157,6 +162,7 @@ public sealed class PonkDeviceSettings
         writer.WriteValue("UseMulticast", UseMulticast);
         writer.WriteString("SenderName", SenderName);
         writer.WriteValue("MaxScanSpeed", MaxScanSpeed);
+        writer.WriteValue("SenderId", SenderId);
         writer.WriteValue("MaxBrightness", MaxBrightness);
         writer.WriteValue("SwapColorChannels", SwapColorChannels);
         writer.WriteValue("Keepalive", Keepalive);
@@ -170,6 +176,7 @@ public sealed class PonkDeviceSettings
                        UseMulticast = token.ReadValueSafe("UseMulticast", true),
                        SenderName = token.ReadValueSafe("SenderName", "TiXL") ?? "TiXL",
                        MaxScanSpeed = token.ReadValueSafe("MaxScanSpeed", 1f),
+                       SenderId = token.ReadValueSafe("SenderId", 0),
                        MaxBrightness = token.ReadValueSafe("MaxBrightness", 1f),
                        SwapColorChannels = token.ReadValueSafe("SwapColorChannels", false),
                        Keepalive = token.ReadValueSafe("Keepalive", false),

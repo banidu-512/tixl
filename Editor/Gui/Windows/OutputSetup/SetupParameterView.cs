@@ -640,6 +640,10 @@ internal static class SetupParameterView
         // device (Ether Dream DACs announce themselves by UDP broadcast).
         if (plug.Kind == LaserPlug.Kinds.EtherDream)
             LaserPlugDiscovery.EnsureEtherDreamDiscovery();
+        else if (plug.Kind == LaserPlug.Kinds.Citp)
+            CitpPeerDiscovery.EnsureStarted();
+        else if (plug.Kind == LaserPlug.Kinds.Ponk)
+            PonkSenderDiscovery.EnsureStarted();
 
         FormInputs.DrawInputLabel("Address");
         if (_laserAddressPlug != plug.Id)
@@ -649,7 +653,7 @@ internal static class SetupParameterView
         }
 
         var addressArrow = DrawEditableComboField("##laserAddress", ref _laserAddressBuffer, 64,
-                                                  plug.Kind == LaserPlug.Kinds.EtherDream ? $"##laserAddressPick{plug.Id:N}" : null);
+                                                  $"##laserAddressPick{plug.Id:N}");
         if (addressArrow)
             Plugs.UpdateLaser(machineConfig, plug.Id, null, _laserAddressBuffer.Trim(), null);
 
@@ -691,6 +695,62 @@ internal static class SetupParameterView
             }
 
             CustomComponents.StylizedText("DACs stop broadcasting while a show streams to them — the connected device is listed above.",
+                                          Fonts.FontSmall, UiColors.TextMuted);
+            ImGui.EndPopup();
+        }
+        else if (plug.Kind == LaserPlug.Kinds.Citp && ImGui.BeginPopup($"##laserAddressPick{plug.Id:N}"))
+        {
+            // CITP peers announce themselves (CITP PLoc on 224.0.0.180:4809) - Capture, Depence,
+            // media servers. Picking one sets host and port for a direct connection.
+            CitpPeerDiscovery.EnsureStarted();
+            var peers = CitpPeerDiscovery.Peers;
+            if (peers.Count == 0)
+                CustomComponents.StylizedText("listening for CITP peers announcing themselves…", Fonts.FontSmall, UiColors.TextMuted);
+
+            foreach (var peer in peers)
+            {
+                if (ImGui.Selectable($"{peer.Name} ({peer.Type}) — {peer.Ip}:{peer.TcpPort}")
+                    && (peer.Ip != plug.Address || peer.TcpPort != plug.Port))
+                {
+                    _laserAddressBuffer = peer.Ip;
+                    Plugs.UpdateLaser(machineConfig, plug.Id, null, peer.Ip, peer.TcpPort);
+                    ImGui.CloseCurrentPopup();
+                }
+            }
+
+            CustomComponents.StylizedText("Peers appear as they announce themselves on 224.0.0.180:4809.",
+                                          Fonts.FontSmall, UiColors.TextMuted);
+            ImGui.EndPopup();
+        }
+        else if (plug.Kind == LaserPlug.Kinds.Ponk && ImGui.BeginPopup($"##laserAddressPick{plug.Id:N}"))
+        {
+            PonkSenderDiscovery.EnsureStarted();
+
+            // Multicast first - it reaches every receiver and needs no address at all.
+            const string multicastAddress = "239.255.10.24";
+            if (ImGui.Selectable($"Multicast group — {multicastAddress} (all receivers)")
+                && plug.Address != multicastAddress)
+            {
+                _laserAddressBuffer = multicastAddress;
+                Plugs.UpdateLaser(machineConfig, plug.Id, null, multicastAddress, null);
+                ImGui.CloseCurrentPopup();
+            }
+
+            var senders = PonkSenderDiscovery.Senders;
+            foreach (var sender in senders)
+            {
+                if (ImGui.Selectable($"{sender.Name} — {sender.Ip}") && sender.Ip != plug.Address)
+                {
+                    _laserAddressBuffer = sender.Ip;
+                    Plugs.UpdateLaser(machineConfig, plug.Id, null, sender.Ip, null);
+                    ImGui.CloseCurrentPopup();
+                }
+            }
+
+            if (senders.Count == 0)
+                CustomComponents.StylizedText("listening for PONK senders on 239.255.10.24:5583…", Fonts.FontSmall, UiColors.TextMuted);
+
+            CustomComponents.StylizedText("Multicast reaches every receiver without an address; a receive-only MadMapper cannot announce itself, so only senders on the group are listed.",
                                           Fonts.FontSmall, UiColors.TextMuted);
             ImGui.EndPopup();
         }

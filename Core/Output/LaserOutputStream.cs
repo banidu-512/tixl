@@ -844,7 +844,7 @@ public sealed class LaserOutputStream : IDisposable
         private const int MaxChunkPayload = 1472 - HeaderSize;
         private const int MaxDatagramSize = 1472;
         private const int MaxPointsPerFrame = 32000;
-        private static readonly IPAddress DefaultMulticastAddress = IPAddress.Parse("239.255.10.24");
+        internal static readonly IPAddress DefaultMulticastAddress = IPAddress.Parse("239.255.10.24");
         private const int DefaultPort = 5583;
         private const int MaxSenderNameBytes = 32; // Null-terminated, so 31 usable chars
         private const int SendRetryDelayMs = 50;
@@ -863,6 +863,14 @@ public sealed class LaserOutputStream : IDisposable
             _maxBrightness = Math.Clamp(device.MaxBrightness, 0f, 1f);
             _swapColorChannels = device.SwapColorChannels;
             _keepalive = device.Keepalive;
+            if (device.SenderId == 0)
+            {
+                // First run of a plug that predates persisted ids: generate once, write back so
+                // every later session reuses it.
+                device.SenderId = Random.Shared.Next(int.MinValue, int.MaxValue);
+            }
+
+            _senderId = device.SenderId;
             _localAddress = plug.LocalAddress ?? string.Empty;
             _targetAddress = string.IsNullOrWhiteSpace(plug.Address) ? DefaultMulticastAddress.ToString() : plug.Address;
             _port = plug.Port > 0 ? plug.Port : DefaultPort;
@@ -881,9 +889,10 @@ public sealed class LaserOutputStream : IDisposable
         private readonly string _targetAddress;
         private readonly int _port;
 
-        // Stable sender identifier per stream - PONK spec says the receiver keys on this int
-        // and a reload should reuse the same id so the receiver treats it as the same source.
-        private readonly int _senderId = Random.Shared.Next(int.MinValue, int.MaxValue);
+        // Sender identity persisted on the plug: receivers (MadMapper keys its Ponk inputs on
+        // this int) must recognize the plug across editor restarts instead of seeing a new
+        // sender per session. 0 (old plugs) = generated once and written back to the device.
+        private readonly int _senderId;
 
         private readonly ConcurrentQueue<LaserPoint[]> _pointQueue = new();
         private CancellationTokenSource? _connectionCts;
@@ -1424,7 +1433,6 @@ public sealed class LaserOutputStream : IDisposable
         private readonly ConcurrentQueue<LaserPoint[]> _frameQueue = new();
 
         private CancellationTokenSource? _cts;
-        private UdpClient? _multicastListener;
         private TcpClient? _tcpClient;
         private NetworkStream? _tcpStream;
         private int _connectInProgress;
@@ -1474,10 +1482,6 @@ public sealed class LaserOutputStream : IDisposable
             if (_disposed)
                 return;
 
-            var localIp = IPAddress.Any;
-            if (!string.IsNullOrWhiteSpace(_localAddress) && IPAddress.TryParse(_localAddress, out var parsed))
-                localIp = parsed;
-
             // Host AND port on the plug = direct connect; anything else keeps PLoc discovery.
             _captureIp = _directHost;
             _captureTcpPort = string.IsNullOrWhiteSpace(_directHost) || _directPort <= 0 ? 0 : _directPort;
@@ -1495,148 +1499,61 @@ public sealed class LaserOutputStream : IDisposable
             }
             else
             {
-                // Join the CITP discovery multicast group. Bind 0.0.0.0: membership in the group
-                // (joined per interface below) is what filters by network, not the bind address.
-                try
-                {
-                    _multicastListener = new UdpClient(AddressFamily.InterNetwork);
-                    _multicastListener.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
-                    _multicastListener.Client.Bind(new IPEndPoint(IPAddress.Any, MulticastPort));
-                    try
-                    {
-                        _multicastListener.JoinMulticastGroup(MulticastAddress, localIp);
-                    }
-                    catch (SocketException)
-                    {
-                        // Some adapters don't support joining with a specific interface
-                        _multicastListener.JoinMulticastGroup(MulticastAddress);
-                    }
+                // The shared PLoc listener feeds peers to every CITP stream; this stream connects
+                // to the first peer that announces itself (subnet-filtered like the dropdown).
+                CitpPeerDiscovery.EnsureStarted();
+                CitpPeerDiscovery.PeerAnnounced += OnPeerAnnounced;
+                SetStatus($"Listening for Capture on {MulticastAddress}:{MulticastPort}", IStatusProvider.StatusLevel.Notice);
 
-                    _multicastListener.Client.ReceiveTimeout = 5000;
-                    SetStatus($"Listening for Capture on {MulticastAddress}:{MulticastPort}", IStatusProvider.StatusLevel.Notice);
-
-                    var token = cts.Token;
-                    var listener = _multicastListener;
-                    var thread = new Thread(() => UdpReceiveLoop(token, listener))
-                                     {
-                                         IsBackground = true,
-                                         Name = "CITP_UDP_Discovery",
-                                     };
-                    thread.Start();
-                }
-                catch (Exception ex)
-                {
-                    SetStatus($"CITP discovery failed to start: {ex.Message}", IStatusProvider.StatusLevel.Error);
-                }
-            }
-        }
-
-        #region Discovery (PINF/PLoc multicast)
-        private void UdpReceiveLoop(CancellationToken token, UdpClient listener)
-        {
-            var remoteEndPoint = new IPEndPoint(IPAddress.Any, 0);
-            while (!token.IsCancellationRequested)
-            {
-                try
-                {
-                    var bytes = listener.Receive(ref remoteEndPoint);
-                    if (token.IsCancellationRequested || IsConnected)
-                        continue;
-
-                    if (bytes.Length < 16)
-                        continue;
-
-                    if (ReadBigEndianUint(bytes, 0) != CitpCookie)
-                        continue;
-
-                    var remoteIp = remoteEndPoint.Address;
-                    if (remoteIp.IsIPv4MappedToIPv6)
-                        remoteIp = remoteIp.MapToIPv4();
-
-                    // With a local interface selected, prefer discovery packets from its subnet.
-                    if (!IPAddress.TryParse(_localAddress, out var selectedLocal) || IPAddress.IsLoopback(remoteIp) ||
-                        selectedLocal.GetAddressBytes().Length != 4 || remoteIp.GetAddressBytes().Length != 4 ||
-                        selectedLocal.GetAddressBytes()[0] == remoteIp.GetAddressBytes()[0])
-                    {
-                        int pInfOffset = -1;
-                        int pLocOffset = -1;
-                        for (var i = 12; i <= Math.Min(bytes.Length - 4, 24); i += 4)
-                        {
-                            var val = ReadBigEndianUint(bytes, i);
-                            if (val == PinFCookie)
-                                pInfOffset = i;
-                            if (val == PLocCookie)
-                                pLocOffset = i;
-                        }
-
-                        if (pInfOffset != -1)
-                        {
-                            for (var i = pInfOffset + 4; i <= bytes.Length - 8; i++)
-                            {
-                                if (ReadBigEndianUint(bytes, i) == PLocCookie)
+                // A receiver that announced before we started will not repeat immediately - try
+                // the default localhost capture once if nothing announced within a few seconds.
+                var connectionCts = cts;
+                _ = Task.Run(async () =>
                                 {
-                                    TryConnect(remoteIp, i, bytes);
-                                    break;
-                                }
-                            }
-                        }
-                        else if (pLocOffset != -1)
-                        {
-                            TryConnect(remoteIp, pLocOffset, bytes);
-                        }
-                    }
-                }
-                catch (SocketException ex)
-                {
-                    if (ex.SocketErrorCode == SocketError.TimedOut)
-                    {
-                        // No PLoc within the timeout: fall back to a direct localhost Capture.
-                        if (!IsConnected && !token.IsCancellationRequested && _captureTcpPort == 0)
-                        {
-                            _captureIp = "127.0.0.1";
-                            _captureTcpPort = DefaultCapturePort;
-                            ConnectToCapture();
-                        }
+                                    try
+                                    {
+                                        await Task.Delay(6000, connectionCts.Token);
+                                    }
+                                    catch (OperationCanceledException)
+                                    {
+                                        return;
+                                    }
 
-                        continue;
-                    }
-
-                    break;
-                }
-                catch (ObjectDisposedException)
-                {
-                    break;
-                }
-                catch
-                {
-                    if (!token.IsCancellationRequested)
-                        Thread.Sleep(100);
-                }
+                                    if (!_disposed && !IsConnected && _captureTcpPort == 0)
+                                    {
+                                        _captureIp = "127.0.0.1";
+                                        _captureTcpPort = DefaultCapturePort;
+                                        ConnectToCapture();
+                                    }
+                                });
             }
         }
 
-        private void TryConnect(IPAddress address, int cookieIndex, byte[] buffer)
+        private void OnPeerAnnounced(CitpPeerDiscovery.Peer peer)
         {
-            if (cookieIndex + 5 >= buffer.Length)
+            if (_disposed || IsConnected || _captureTcpPort > 0)
                 return;
 
-            // Little-endian per CITP spec
-            var tcpPort = (ushort)(buffer[cookieIndex + 4] | (buffer[cookieIndex + 5] << 8));
-            if (tcpPort == 0)
+            // With a local interface selected, prefer peers from its subnet.
+            var peerIp = IPAddress.Parse(peer.Ip);
+            if (!IPAddress.TryParse(_localAddress, out var selectedLocal) || IPAddress.IsLoopback(peerIp) ||
+                selectedLocal.GetAddressBytes().Length != 4 || peerIp.GetAddressBytes().Length != 4 ||
+                selectedLocal.GetAddressBytes()[0] != peerIp.GetAddressBytes()[0])
+            {
                 return;
+            }
 
             lock (_connectionLock)
             {
-                if (_tcpClient is { Connected: true })
+                if (_disposed || _tcpClient is { Connected: true })
                     return;
 
-                _captureIp = address.ToString();
-                _captureTcpPort = tcpPort;
+                _captureIp = peer.Ip;
+                _captureTcpPort = peer.TcpPort;
             }
 
             ConnectToCapture();
         }
-        #endregion
 
         #region TCP control connection
         private void ConnectToCapture()
@@ -2137,14 +2054,12 @@ public sealed class LaserOutputStream : IDisposable
                 return;
 
             _disposed = true;
+            CitpPeerDiscovery.PeerAnnounced -= OnPeerAnnounced;
             var cts = _cts;
             cts?.Cancel();
 
             lock (_connectionLock)
             {
-                try { _multicastListener?.Close(); } catch { /* ignore */ }
-                _multicastListener = null;
-
                 try { _tcpStream?.Close(); } catch { /* ignore */ }
                 _tcpStream = null;
 
