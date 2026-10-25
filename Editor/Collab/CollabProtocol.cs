@@ -212,11 +212,23 @@ internal static class CollabProtocol
         switch (token.Type)
         {
             case JTokenType.Integer:
-                value = token.Value<int>();
+            {
+                var number = token.Value<long>();
+                if (number is < int.MinValue or > int.MaxValue)
+                    return false;
+
+                value = (int)number;
                 return true;
+            }
             case JTokenType.Float:
-                value = (int)token.Value<double>();
+            {
+                var number = token.Value<double>();
+                if (double.IsNaN(number) || double.IsInfinity(number) || number < int.MinValue || number > int.MaxValue)
+                    return false;
+
+                value = (int)number;
                 return true;
+            }
             case JTokenType.String:
                 return int.TryParse(token.Value<string>(), out value);
             default:
