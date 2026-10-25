@@ -153,21 +153,6 @@ internal sealed partial class SettingsWindow
         FormInputs.AddVerticalSpace();
 
         FormInputs.SetCursorToParameterEdit();
-        if (ImGui.Button("Play all"))
-            manager.SendPlayControl(true);
-
-        ImGui.SameLine();
-        if (ImGui.Button("Pause all"))
-            manager.SendPlayControl(false);
-
-        ImGui.SameLine();
-        if (ImGui.Button("Stop all"))
-            manager.StopAll();
-        CustomComponents.TooltipForLastItem(UserSettings.Config.ResetTimeAfterPlayback
-                                                ? "Stops the master and all render nodes and returns to the bar playback started from (master timeline setting)."
-                                                : "Stops the master and all render nodes at the current bar (master timeline setting).");
-
-        ImGui.SameLine();
         if (ImGui.Button("Sync time now"))
             manager.SendTimeSyncNow();
 
@@ -207,8 +192,7 @@ internal sealed partial class SettingsWindow
         ImGui.TableSetupColumn("Status", ImGuiTableColumnFlags.WidthFixed, 74);
         ImGui.TableSetupColumn("RTT", ImGuiTableColumnFlags.WidthFixed, 52);
         ImGui.TableSetupColumn("Sync", ImGuiTableColumnFlags.WidthFixed, 58);
-        ImGui.TableSetupColumn("FPS", ImGuiTableColumnFlags.WidthFixed, 36);
-        ImGui.TableSetupColumn("Delay", ImGuiTableColumnFlags.WidthFixed, 186);
+        ImGui.TableSetupColumn("Delay", ImGuiTableColumnFlags.WidthFixed, 176);
         ImGui.TableSetupColumn("", ImGuiTableColumnFlags.WidthFixed, 64);
         ImGui.TableHeadersRow();
 
@@ -240,12 +224,9 @@ internal sealed partial class SettingsWindow
             CustomComponents.TooltipForLastItem("Drift the client measured when it applied the last timeline anchors.");
 
             ImGui.TableSetColumnIndex(4);
-            ImGui.TextDisabled(client.ClientFps > 0 ? $"{client.ClientFps:0}" : "—");
-
-            ImGui.TableSetColumnIndex(5);
             DrawDelayButtons(manager, client);
 
-            ImGui.TableSetColumnIndex(6);
+            ImGui.TableSetColumnIndex(5);
             if (ImGui.SmallButton("Remove"))
                 manager.RemoveClient(client);
             CustomComponents.TooltipForLastItem("Disconnect this render node and remove it from the saved list.");
@@ -266,13 +247,13 @@ internal sealed partial class SettingsWindow
             ImGui.TableSetColumnIndex(1);
             ImGui.TextDisabled(node.IsMaster ? "master" : "available");
 
-            for (var column = 2; column <= 5; column++)
+            for (var column = 2; column <= 4; column++)
             {
                 ImGui.TableSetColumnIndex(column);
                 ImGui.TextDisabled("—");
             }
 
-            ImGui.TableSetColumnIndex(6);
+            ImGui.TableSetColumnIndex(5);
             if (!node.IsMaster)
             {
                 if (ImGui.SmallButton(saved ? "Reconnect" : "Add"))
@@ -325,6 +306,8 @@ internal sealed partial class SettingsWindow
         parts.Add($"clock {client.ClockOffsetMs:+0.0;-0.0;0} ms");
         if (client.SyncAgeMs >= 0)
             parts.Add(client.SyncAgeMs < 1000 ? $"synced {client.SyncAgeMs:0} ms ago" : $"synced {client.SyncAgeMs / 1000:0} s ago");
+        if (client.ClientFps > 0)
+            parts.Add($"{client.ClientFps:0} fps");
         if (!string.IsNullOrEmpty(client.ClientVersion))
             parts.Add($"v{client.ClientVersion}");
 
