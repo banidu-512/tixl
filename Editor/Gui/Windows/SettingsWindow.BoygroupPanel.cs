@@ -6,27 +6,21 @@ using T3.Editor.Gui.Styling;
 using T3.Editor.Gui.UiHelpers;
 using T3.Editor.Show;
 
-namespace T3.Editor.Gui.Windows.OutputSetup;
+namespace T3.Editor.Gui.Windows;
 
 /// <summary>
-/// Boygrouping controls hosted by the Output window: distribute a show to render nodes,
-/// vvvv-style — a server instance deploys project files and live graph/output state to
-/// clients, controls playback, and each client renders only the outputs assigned to it in
-/// the Output Setup. Lives here (not in settings) because boygrouping is part of output
-/// routing: this machine's node name is what per-output "Render on machine" refers to.
+/// The "Boygrouping" panel of the settings window: a server instance deploys project files and
+/// live graph/output state to render nodes, drives playback, and each client presents only the
+/// outputs assigned to it. The node name configured here is what the per-output
+/// "Render on machine" assignment refers to.
 /// </summary>
-internal static class BoygroupSetupSection
+internal sealed partial class SettingsWindow
 {
-    public static void Draw()
+    private static void DrawBoygroupPanel(ref bool changed)
     {
-        if (!ImGui.CollapsingHeader("Boygrouping"))
-            return;
-
-        var changed = false;
         var manager = BoygroupManager.Instance;
         var config = UserSettings.Config;
 
-        // Identity ---------------------------------------------------------------
         FormInputs.AddSectionSubHeader("Identity");
         FormInputs.AddVerticalSpace();
 
@@ -53,19 +47,18 @@ internal static class BoygroupSetupSection
 
         FormInputs.AddVerticalSpace();
 
-        // Session ---------------------------------------------------------------
         FormInputs.AddSectionSubHeader("Session");
         FormInputs.AddVerticalSpace();
 
         if (manager.State == BoygroupManager.BoygroupState.Off)
         {
-            _group ??= UserSettings.Config.BoygroupGroups.FirstOrDefault() ?? "Main";
-            if (string.IsNullOrWhiteSpace(_serverAddress))
-                _serverAddress = string.IsNullOrWhiteSpace(config.BoygroupLastServer) ? "127.0.0.1" : config.BoygroupLastServer;
+            _boygroupGroup ??= UserSettings.Config.BoygroupGroups.FirstOrDefault() ?? "Main";
+            if (string.IsNullOrWhiteSpace(_boygroupServer))
+                _boygroupServer = string.IsNullOrWhiteSpace(config.BoygroupLastServer) ? "127.0.0.1" : config.BoygroupLastServer;
 
             if (CustomComponents.DrawCtaButton("Start Server", Icon.None, UiColors.ForegroundFull, UiColors.StatusActivated, Color.Transparent))
             {
-                manager.StartServer(config.BoygroupPort, config.CollabPassword, _group);
+                manager.StartServer(config.BoygroupPort, config.CollabPassword, _boygroupGroup);
             }
 
             CustomComponents.TooltipForLastItem("This machine becomes the boygroup server: it deploys files and live state to clients and drives playback.");
@@ -73,21 +66,21 @@ internal static class BoygroupSetupSection
             FormInputs.AddVerticalSpace();
             ImGui.TextUnformatted("Join a group:");
             ImGui.PushID("##boygroupgroup");
-            if (ImGui.InputText("Group", ref _group, 64, ImGuiInputTextFlags.EnterReturnsTrue))
+            if (ImGui.InputText("Group", ref _boygroupGroup, 64, ImGuiInputTextFlags.EnterReturnsTrue))
             {
-                JoinSession(manager, config);
+                JoinBoygroupSession(manager, config);
             }
 
-            if (ImGui.InputText("Server", ref _serverAddress, 64, ImGuiInputTextFlags.EnterReturnsTrue))
+            if (ImGui.InputText("Server", ref _boygroupServer, 64, ImGuiInputTextFlags.EnterReturnsTrue))
             {
-                JoinSession(manager, config);
+                JoinBoygroupSession(manager, config);
             }
 
             ImGui.PopID();
             ImGui.SameLine();
             if (ImGui.Button("Join"))
             {
-                JoinSession(manager, config);
+                JoinBoygroupSession(manager, config);
             }
 
             CustomComponents.TooltipForLastItem("Address of the boygroup server. Clients on the same network also appear below via discovery.");
@@ -109,7 +102,6 @@ internal static class BoygroupSetupSection
 
         FormInputs.AddVerticalSpace();
 
-        // Groups ---------------------------------------------------------------
         FormInputs.AddSectionSubHeader("Groups (multiboygrouping)");
         CustomComponents.HelpText("""
                                   A server can host several groups (e.g. 'Wall', 'Floor'). Clients join one group each;
@@ -147,7 +139,6 @@ internal static class BoygroupSetupSection
 
         FormInputs.AddVerticalSpace();
 
-        // Deploy options ---------------------------------------------------------------
         FormInputs.AddSectionSubHeader("Deployment");
         changed |= FormInputs.AddCheckBox("Mirror project folder",
                                           ref config.BoygroupDeployMirror,
@@ -164,20 +155,17 @@ internal static class BoygroupSetupSection
                                           used after a deployment restarts the client to apply new files.
                                           """,
                                           true);
-
-        if (changed)
-            UserSettings.Save();
     }
 
-    private static string? _group;
-    private static string _serverAddress = "";
+    private static string? _boygroupGroup;
+    private static string _boygroupServer = "";
 
-    private static void JoinSession(BoygroupManager manager, UserSettings.ConfigData config)
+    private static void JoinBoygroupSession(BoygroupManager manager, UserSettings.ConfigData config)
     {
-        var address = string.IsNullOrWhiteSpace(_serverAddress) ? "127.0.0.1" : _serverAddress.Trim();
-        var group = string.IsNullOrWhiteSpace(_group) ? "Main" : _group;
-        _serverAddress = address;
-        _group = group;
+        var address = string.IsNullOrWhiteSpace(_boygroupServer) ? "127.0.0.1" : _boygroupServer.Trim();
+        var group = string.IsNullOrWhiteSpace(_boygroupGroup) ? "Main" : _boygroupGroup;
+        _boygroupServer = address;
+        _boygroupGroup = group;
         UserSettings.Config.BoygroupLastServer = address;
         UserSettings.Config.BoygroupLastGroup = group;
         UserSettings.Save();
@@ -268,8 +256,8 @@ internal static class BoygroupSetupSection
         }
     }
 
-    private static bool _discoveryActive;
-    private static DateTime _discoveryUntil;
+    private static bool _boygroupDiscoveryActive;
+    private static DateTime _boygroupDiscoveryUntil;
 
     private static void DrawDiscoveredServers(BoygroupManager manager, ref bool changed)
     {
@@ -277,13 +265,13 @@ internal static class BoygroupSetupSection
         ImGui.TextUnformatted("Servers on this network:");
         ImGui.SameLine();
 
-        if (!_discoveryActive)
+        if (!_boygroupDiscoveryActive)
         {
             if (ImGui.SmallButton("Scan"))
             {
                 manager.StartDiscovery();
-                _discoveryActive = true;
-                _discoveryUntil = DateTime.UtcNow + TimeSpan.FromSeconds(6);
+                _boygroupDiscoveryActive = true;
+                _boygroupDiscoveryUntil = DateTime.UtcNow + TimeSpan.FromSeconds(6);
             }
         }
         else
@@ -293,10 +281,10 @@ internal static class BoygroupSetupSection
 
         manager.DrainDiscovery();
 
-        if (_discoveryActive && DateTime.UtcNow > _discoveryUntil)
+        if (_boygroupDiscoveryActive && DateTime.UtcNow > _boygroupDiscoveryUntil)
         {
             manager.StopDiscovery();
-            _discoveryActive = false;
+            _boygroupDiscoveryActive = false;
         }
 
         foreach (var server in manager.DiscoveredServers)
@@ -308,7 +296,7 @@ internal static class BoygroupSetupSection
             ImGui.PushID(server.Address + server.Port);
             if (ImGui.SmallButton("Join"))
             {
-                manager.JoinServer(server.Address, server.Port, _group ?? server.Groups.FirstOrDefault() ?? "Main",
+                manager.JoinServer(server.Address, server.Port, _boygroupGroup ?? server.Groups.FirstOrDefault() ?? "Main",
                                    UserSettings.Config.CollabPassword);
             }
 
