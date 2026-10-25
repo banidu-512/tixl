@@ -41,14 +41,32 @@ internal sealed class BoygroupServerTransport : BoygroupTransport
     {
         _listener = new TcpListener(IPAddress.Any, tcpPort);
         _listener.Start();
-        DiscoveryResponder = new LanDiscoveryResponder(tcpPort + LanDiscoveryResponder.DiscoveryPortOffset,
-                                                       () => new JObject
-                                                                 {
-                                                                     ["boygroup"] = true,
-                                                                     ["server"] = Environment.MachineName,
-                                                                     ["port"] = tcpPort,
-                                                                     ["groups"] = new JArray(groups),
-                                                                 });
+        try
+        {
+            DiscoveryResponder = new LanDiscoveryResponder(tcpPort + LanDiscoveryResponder.DiscoveryPortOffset,
+                                                           () => new JObject
+                                                                     {
+                                                                         ["boygroup"] = true,
+                                                                         ["server"] = Environment.MachineName,
+                                                                         ["port"] = tcpPort,
+                                                                         ["groups"] = new JArray(groups),
+                                                                     });
+        }
+        catch
+        {
+            // Release the listener, or a retry cannot bind the port again in this process.
+            try
+            {
+                _listener.Stop();
+            }
+            catch
+            {
+                // Listener already stopped.
+            }
+
+            throw;
+        }
+
         _ = Task.Run(() => AcceptLoopAsync(_cancellation.Token));
         Log.Info($"Boygroup: server listening on port {tcpPort}");
     }
