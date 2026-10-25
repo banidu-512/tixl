@@ -862,6 +862,7 @@ public sealed class LaserOutputStream : IDisposable
             _maxScanSpeed = MathF.Max(0.01f, device.MaxScanSpeed);
             _maxBrightness = Math.Clamp(device.MaxBrightness, 0f, 1f);
             _swapColorChannels = device.SwapColorChannels;
+            _keepalive = device.Keepalive;
             _localAddress = plug.LocalAddress ?? string.Empty;
             _targetAddress = string.IsNullOrWhiteSpace(plug.Address) ? DefaultMulticastAddress.ToString() : plug.Address;
             _port = plug.Port > 0 ? plug.Port : DefaultPort;
@@ -870,6 +871,7 @@ public sealed class LaserOutputStream : IDisposable
         }
 
         private readonly LaserPlug _plug;
+        private readonly bool _keepalive;
         private readonly bool _useMulticast;
         private readonly string _senderName;
         private readonly float _maxScanSpeed;
@@ -1087,9 +1089,11 @@ public sealed class LaserOutputStream : IDisposable
             {
                 // Master off: settled blanking. The blanked copy of the last frame must keep
                 // being SENT - receivers render whatever arrived last, so going silent leaves
-                // the last lit frame up until their own timeout blanks it. The pick below
-                // ignores queued frames while the master is off and zeroes the geometry.
-                var masterOff = !LaserMasterEnable.Enabled;
+                // the last lit frame up until their own timeout blanks it. With the plug's
+                // keepalive on, content streams unblanked even while the master is off - a
+                // deliberate preview override (PONK receivers can drive real scanners, so the
+                // default is off). The pick below ignores queued frames while blanked.
+                var masterOff = !LaserMasterEnable.Enabled && !_keepalive;
                 if (masterOff)
                 {
                     _pointQueue.Clear();
@@ -1399,6 +1403,7 @@ public sealed class LaserOutputStream : IDisposable
             _sourceKey = device.SourceKey != 0 ? device.SourceKey : (uint)Random.Shared.Next();
             _maxBrightness = Math.Clamp(device.MaxBrightness, 0f, 1f);
             _swapColorChannels = device.SwapColorChannels;
+            _keepalive = device.Keepalive;
             _directHost = plug.Address ?? string.Empty;
             _directPort = plug.Port > 0 ? plug.Port : 0;
             _localAddress = plug.LocalAddress ?? string.Empty;
@@ -1410,6 +1415,7 @@ public sealed class LaserOutputStream : IDisposable
         private readonly uint _sourceKey;
         private readonly float _maxBrightness;
         private readonly bool _swapColorChannels;
+        private readonly bool _keepalive;
         private readonly string _directHost;
         private readonly int _directPort;
         private readonly string _localAddress;
@@ -1814,6 +1820,9 @@ public sealed class LaserOutputStream : IDisposable
             }
             catch (Exception ex)
             {
+                // A dead control session must be torn down so discovery can reconnect - a
+                // lingering half-open socket keeps the feed invisible to the receiver.
+                StopTcpConnection();
                 SetStatus($"CITP send failed: {ex.Message}", IStatusProvider.StatusLevel.Warning);
             }
         }
@@ -1838,6 +1847,9 @@ public sealed class LaserOutputStream : IDisposable
             }
             catch (Exception ex)
             {
+                // A dead control session must be torn down so discovery can reconnect - a
+                // lingering half-open socket keeps the feed invisible to the receiver.
+                StopTcpConnection();
                 SetStatus($"CITP send failed: {ex.Message}", IStatusProvider.StatusLevel.Warning);
             }
         }
@@ -1862,6 +1874,9 @@ public sealed class LaserOutputStream : IDisposable
             }
             catch (Exception ex)
             {
+                // A dead control session must be torn down so discovery can reconnect - a
+                // lingering half-open socket keeps the feed invisible to the receiver.
+                StopTcpConnection();
                 SetStatus($"CITP send failed: {ex.Message}", IStatusProvider.StatusLevel.Warning);
             }
         }
@@ -1892,6 +1907,9 @@ public sealed class LaserOutputStream : IDisposable
             }
             catch (Exception ex)
             {
+                // A dead control session must be torn down so discovery can reconnect - a
+                // lingering half-open socket keeps the feed invisible to the receiver.
+                StopTcpConnection();
                 SetStatus($"CITP send failed: {ex.Message}", IStatusProvider.StatusLevel.Warning);
             }
         }
@@ -1930,6 +1948,10 @@ public sealed class LaserOutputStream : IDisposable
         #endregion
 
         #region Frame sending
+        /// <summary>How often the feed list is re-announced on the control session: Capture
+        /// re-lists the feed after restarts without waiting for its own GetLaserFeedList.</summary>
+        private static readonly TimeSpan ReannounceInterval = TimeSpan.FromSeconds(5);
+
         private void SendLoop()
         {
             var token = _cts?.Token ?? default;
@@ -1937,13 +1959,15 @@ public sealed class LaserOutputStream : IDisposable
             var target = new IPEndPoint(MulticastAddress, MulticastPort);
             LaserPoint[]? lastFrame = null;
             var blankScratch = Array.Empty<LaserPoint>();
+            var lastAnnounceUtc = DateTime.UtcNow;
 
             while (!token.IsCancellationRequested && !_disposed)
             {
-                // Master off: settled blanking - keep sending a zero-color copy of the last
-                // frame so the beam is off while the geometry keeps moving; UDP is lossy, so
-                // a one-off blank would be lost and the receiver keeps its last lit frame.
-                if (!LaserMasterEnable.Enabled)
+                // Keepalive: CITP is a previz path that never drives projectors, so with the
+                // plug's keepalive on the feed keeps streaming content while the LASER master
+                // is off. Without it, settled blanking - the geometry keeps moving, zero light.
+                var masterOff = !LaserMasterEnable.Enabled && !_keepalive;
+                if (masterOff)
                 {
                     _frameQueue.Clear();
                     if (_feedActive && lastFrame is { Length: > 0 })
@@ -1957,10 +1981,8 @@ public sealed class LaserOutputStream : IDisposable
                     }
 
                     Thread.Sleep(15);
-                    continue;
                 }
-
-                if (_feedActive && _frameQueue.TryDequeue(out var frame))
+                else if (_feedActive && _frameQueue.TryDequeue(out var frame))
                 {
                     lastFrame = frame;
                     try
@@ -1975,6 +1997,14 @@ public sealed class LaserOutputStream : IDisposable
                 else
                 {
                     Thread.Sleep(1);
+                }
+
+                // Re-announce the feed on the control session: if Capture restarted (or joined
+                // late) it re-lists the feed without anyone pressing anything.
+                if (IsConnected && DateTime.UtcNow - lastAnnounceUtc > ReannounceInterval)
+                {
+                    lastAnnounceUtc = DateTime.UtcNow;
+                    SendLaserFeedList();
                 }
             }
         }

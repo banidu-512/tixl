@@ -16,6 +16,7 @@ Streams laser frames to a PONK-compatible receiver (e.g. MadMapper's Ponk input)
 | `Scan speed (x)` | 1.0 | `MAXSPEED` render hint (scanner-speed multiplier request) |
 | `Brightness ceiling` | 1.0 | Final intensity ceiling (0..1) applied to every point right before encoding - not bypassable by upstream patches |
 | `Swap color channels` | off | For receivers that interpret the packed color as BGR |
+| `Keepalive` | off | Keeps streaming while the LASER master is off - a preview override; receivers can drive real scanners, so the master stays a hard kill while this is off |
 
 ## Behavior
 

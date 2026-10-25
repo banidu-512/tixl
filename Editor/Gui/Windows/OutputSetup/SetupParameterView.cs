@@ -887,6 +887,21 @@ internal static class SetupParameterView
 
             DrawRowReset("ResetScanSpeed", "scan speed", () => device.MaxScanSpeed = 1f, null);
 
+            var ponkKeepalive = device.Keepalive;
+            if (FormInputs.AddCheckBox("Keepalive", ref ponkKeepalive,
+                                       "Keeps streaming while the LASER master is off. A preview override for receivers that only visualize - PONK receivers can drive real scanners, so while this is off the master stays a hard kill."))
+            {
+                device.Keepalive = ponkKeepalive;
+                OutputSetupHandling.SaveActive();
+            }
+
+            DrawRowReset("ResetPonkKeepalive", "keepalive",
+                         () =>
+                             {
+                                 device.Keepalive = false;
+                                 OutputSetupHandling.SaveActive();
+                             }, null);
+
             DrawLaserCeilingAndSwap(machineConfig, plug, ref device.MaxBrightness, ref device.SwapColorChannels);
         }
         else if (plug.Kind == LaserPlug.Kinds.Citp)
@@ -933,6 +948,21 @@ internal static class SetupParameterView
             }
 
             DrawRowReset("ResetSourceKey", "source key", () => device.SourceKey = 0, null);
+
+            var citpKeepalive = device.Keepalive;
+            if (FormInputs.AddCheckBox("Keepalive", ref citpKeepalive,
+                                       "Keeps the feed streaming while the LASER master is off. CITP is a previz path that never drives projectors, so this defaults to on - Capture keeps showing the show while the real beam is dark."))
+            {
+                device.Keepalive = citpKeepalive;
+                OutputSetupHandling.SaveActive();
+            }
+
+            DrawRowReset("ResetCitpKeepalive", "keepalive",
+                         () =>
+                             {
+                                 device.Keepalive = false;
+                                 OutputSetupHandling.SaveActive();
+                             }, null);
 
             DrawLaserCeilingAndSwap(machineConfig, plug, ref device.MaxBrightness, ref device.SwapColorChannels);
         }

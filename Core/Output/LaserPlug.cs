@@ -146,6 +146,11 @@ public sealed class PonkDeviceSettings
     public float MaxBrightness = 1f;
     public bool SwapColorChannels;
 
+    /// <summary>Keep streaming while the LASER master is off. PONK receivers can drive real
+    /// scanners, so this defaults to off - the master stays a hard kill; enabling it is a
+    /// deliberate preview override.</summary>
+    public bool Keepalive;
+
     public void WriteToJson(JsonTextWriter writer)
     {
         writer.WriteStartObject();
@@ -154,6 +159,7 @@ public sealed class PonkDeviceSettings
         writer.WriteValue("MaxScanSpeed", MaxScanSpeed);
         writer.WriteValue("MaxBrightness", MaxBrightness);
         writer.WriteValue("SwapColorChannels", SwapColorChannels);
+        writer.WriteValue("Keepalive", Keepalive);
         writer.WriteEndObject();
     }
 
@@ -166,6 +172,7 @@ public sealed class PonkDeviceSettings
                        MaxScanSpeed = token.ReadValueSafe("MaxScanSpeed", 1f),
                        MaxBrightness = token.ReadValueSafe("MaxBrightness", 1f),
                        SwapColorChannels = token.ReadValueSafe("SwapColorChannels", false),
+                       Keepalive = token.ReadValueSafe("Keepalive", false),
                    };
     }
 }
@@ -182,6 +189,11 @@ public sealed class CitpDeviceSettings
     public float MaxBrightness = 1f;
     public bool SwapColorChannels;
 
+    /// <summary>Keep the feed alive while the LASER master is off - CITP is a previz path that
+    /// never drives projectors, so the visualizer keeps showing the show while the real beam is
+    /// dark. Defaults to on.</summary>
+    public bool Keepalive = true;
+
     public void WriteToJson(JsonTextWriter writer)
     {
         writer.WriteStartObject();
@@ -189,6 +201,7 @@ public sealed class CitpDeviceSettings
         writer.WriteValue("SourceKey", SourceKey);
         writer.WriteValue("MaxBrightness", MaxBrightness);
         writer.WriteValue("SwapColorChannels", SwapColorChannels);
+        writer.WriteValue("Keepalive", Keepalive);
         writer.WriteEndObject();
     }
 
@@ -200,6 +213,7 @@ public sealed class CitpDeviceSettings
                        SourceKey = token.ReadValueSafe("SourceKey", 0u),
                        MaxBrightness = token.ReadValueSafe("MaxBrightness", 1f),
                        SwapColorChannels = token.ReadValueSafe("SwapColorChannels", false),
+                       Keepalive = token.ReadValueSafe("Keepalive", true),
                    };
     }
 }

@@ -19,6 +19,7 @@ The transport lives in the Output Setup: add a **CITP capture** under *Add laser
 | `Source key` | 0 | Sender identity in CAEX messages; 0 = random per session |
 | `Brightness ceiling` | 1.0 | Final intensity ceiling (0..1) applied to every point right before encoding |
 | `Swap color channels` | off | For peers that interpret the packed color as BGR |
+| `Keepalive` | on | Keeps the feed streaming while the LASER master is off - Capture keeps showing the show while the real beam is dark |
 
 ## Behavior
 
@@ -27,7 +28,7 @@ The transport lives in the Output Setup: add a **CITP capture** under *Add laser
 3. **Streaming** - honors `LaserFeedControl` (the receiver asks for the feed and requests an FPS; the feed sends nothing before that), then streams CAEX `LaserFeedFrame` datagrams back over UDP to `224.0.0.180:4809`, converting ILDA 16-bit coordinates to CITP 12-bit and colors to RGB565.
 4. A frame larger than one datagram (~12,000 points) is truncated with a warning - reduce the point density upstream.
 
-The plug's status line follows the session: listening, connected to the peer, feed active at the requested fps.
+The plug's status line follows the session: listening, connected to the peer, feed active at the requested fps. The feed list is re-announced every few seconds on the control session, so Capture re-lists the feed after either side restarts.
 
 ## Usage notes
 
