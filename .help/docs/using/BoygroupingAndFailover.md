@@ -10,7 +10,7 @@ Boygrouping distributes a show to render nodes. One TiXL instance is the server;
 - The server drives playback and the clients follow its clock.
 - In the [Output Setup](OutputSetup.md) every output has a **Render on machine** assignment, so each node presents only the outputs assigned to it. `(all machines)` keeps the default behavior. The machine-specific bindings in `outputs.machine.json` are never deployed.
 
-Configure it in the **Boygrouping** section of the Output Setup parameter panel.
+Configure and manage servers in **Settings → Boygrouping**: node name, port and password, starting a server or joining one (direct address or LAN discovery), groups, deploy options, and the server-side clients and playback controls.
 
 ## Show failover
 

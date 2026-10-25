@@ -217,9 +217,6 @@ internal sealed partial class OutputWindow : Window
         ImGui.EndChild();
 
         _setupMode.DrawOutliner();
-
-        // Boygroup controls live with the outputs they route: node name, server/join, deploy.
-        OutputSetup.BoygroupSetupSection.Draw();
     }
 
 
