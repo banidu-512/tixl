@@ -93,7 +93,7 @@ public static class CitpPeerDiscovery
 
                 var peer = new Peer(name, type, remoteIp.ToString(), port);
                 PeersByKey[$"{peer.Ip}:{peer.TcpPort}"] = peer;
-                PeerAnnounced?.Invoke(peer);
+                RaisePeerAnnounced(peer);
             }
             catch (SocketException ex) when (ex.SocketErrorCode == SocketError.TimedOut)
             {
@@ -106,6 +106,27 @@ public static class CitpPeerDiscovery
             catch
             {
                 Thread.Sleep(100);
+            }
+        }
+    }
+
+    /// <summary>Notifies every subscriber independently - one throwing subscriber (a stream
+    /// mid-teardown) must not silence the announcement for the rest.</summary>
+    private static void RaisePeerAnnounced(Peer peer)
+    {
+        var handlers = PeerAnnounced?.GetInvocationList();
+        if (handlers == null)
+            return;
+
+        foreach (var handler in handlers)
+        {
+            try
+            {
+                ((Action<Peer>)handler)(peer);
+            }
+            catch (Exception e)
+            {
+                Log.Debug($"CITP peer discovery subscriber failed: {e.Message}");
             }
         }
     }

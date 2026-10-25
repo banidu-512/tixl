@@ -1,9 +1,11 @@
 #nullable enable
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using T3.Core.DataTypes;
+using T3.Core.Logging;
 using T3.Core.Operator;
 using T3.Core.Operator.Interfaces;
 using T3.Core.Operator.Slots;
@@ -49,7 +51,23 @@ internal static class LaserDriver
             return;
 
         _lastPump = now;
-        var pullStart = now;
+
+        // The pump runs inside the editor's frame loop: an exception from a broken project,
+        // a half-disposed camera or a dying stream must degrade THIS interval, never take the
+        // editor down. Every guard below logs throttled-once so a persistent failure stays
+        // visible without flooding the log at pump rate.
+        try
+        {
+            PumpAllOutputs(setup, machine, now);
+        }
+        catch (Exception e)
+        {
+            WarnThrottled($"laser pump failed - {e.Message}");
+        }
+    }
+
+    private static void PumpAllOutputs(Setup setup, MachineConfig machine, long pullStart)
+    {
         OutputContentResolver.PrepareContext(default);
         var context = OutputContentResolver.Context;
 
@@ -106,8 +124,8 @@ internal static class LaserDriver
         // the graph.
         foreach (var deadPlugId in _streams.Keys.Where(id => !livePlugIds.Contains(id)).ToList())
         {
-            _streams[deadPlugId].Dispose();
-            _streams.Remove(deadPlugId);
+            if (_streams.TryRemove(deadPlugId, out var dead))
+                dead.Dispose();
         }
 
         // The pump runs on the render thread and shares the frame budget with everything else.
@@ -170,7 +188,7 @@ internal static class LaserDriver
         // Test screen: the alignment rectangle with the output's name, regardless of the Calibrated
         // gate - it is the aiming aid used BEFORE calibration. The stream door still applies the
         // safety config, so the safe zone clamps it like anything else.
-        if (_testScreenOutputs.Contains(output.Id))
+        if (_testScreenOutputs.ContainsKey(output.Id))
         {
             var testSettings = output.LaserProcessing ?? LaserProcessingSettings.Default;
             LaserPipeline.RectFromSafety(testSettings.Safety, out var cx, out var cy, out var hw, out var hh);
@@ -192,17 +210,26 @@ internal static class LaserDriver
             }
             else
             {
-                if (pumpContext == null)
+                // The pull evaluates the routed camera's FULL scene subtree — user project code.
+                // A broken graph must cost this interval's frame, not the editor.
+                try
                 {
-                    // The shared evaluation context, reset for this pull: in setup mode with no
-                    // video composite rendering, nobody else prepares it, and a stale context freezes
-                    // time-animated content (the camera's roll animator, oscillators).
-                    OutputContentResolver.PrepareContext(default);
-                    list = ((ILaserContentSupplier)instance).GetLaserPoints(OutputContentResolver.Context);
+                    if (pumpContext == null)
+                    {
+                        // The shared evaluation context, reset for this pull: in setup mode with no
+                        // video composite rendering, nobody else prepares it, and a stale context freezes
+                        // time-animated content (the camera's roll animator, oscillators).
+                        OutputContentResolver.PrepareContext(default);
+                        list = ((ILaserContentSupplier)instance).GetLaserPoints(OutputContentResolver.Context);
+                    }
+                    else
+                    {
+                        list = ((ILaserContentSupplier)instance).GetLaserPoints(pumpContext);
+                    }
                 }
-                else
+                catch (Exception e)
                 {
-                    list = ((ILaserContentSupplier)instance).GetLaserPoints(pumpContext);
+                    WarnThrottled($"laser camera evaluation failed - {e.Message}");
                 }
 
                 _cameraPulls[instance.SymbolChildId] = (pullTimestamp, list);
@@ -247,14 +274,16 @@ internal static class LaserDriver
 
     private static long _lastPump;
 
-    /// <summary>Device streams per laser plug id; created lazily, disposed when the plug's binding goes away.</summary>
-    private static readonly Dictionary<Guid, LaserOutputStream> _streams = [];
+    /// <summary>Device streams per laser plug id; created lazily, disposed when the plug's binding
+    /// goes away. Concurrent: the debug server reads it from its TCP thread while the pump writes.</summary>
+    private static readonly ConcurrentDictionary<Guid, LaserOutputStream> _streams = [];
 
     /// <summary>Pipeline scratch per output; render-thread only, like everything that reads it.</summary>
     private static readonly Dictionary<Guid, LaserPipeline.Session> _pipelineSessions = [];
 
-    /// <summary>The frame the pump just computed and submitted per output - what the previews show.</summary>
-    private static readonly Dictionary<Guid, (long Timestamp, LaserPoint[] Points)> _frameCache = [];
+    /// <summary>The frame the pump just computed and submitted per output - what the previews show.
+    /// Concurrent for the debug server's diagnostics reader.</summary>
+    private static readonly ConcurrentDictionary<Guid, (long Timestamp, LaserPoint[] Points)> _frameCache = [];
 
     /// <summary>How long a pump-cached frame backs the previews before an on-demand pull (only while the driver is off).</summary>
     private static readonly long PreviewStaleAfter = Stopwatch.Frequency / 4; // 250 ms
@@ -262,18 +291,36 @@ internal static class LaserDriver
     /// <summary>One camera evaluation per pump interval, keyed by symbol-child id - shared by outputs routed to the same camera.</summary>
     private static readonly Dictionary<Guid, (long Pump, StructuredList? List)> _cameraPulls = [];
 
-    /// <summary>Outputs currently streaming the test screen (rectangle + output name); transient show state, never saved.</summary>
-    private static readonly HashSet<Guid> _testScreenOutputs = [];
+    /// <summary>Outputs currently streaming the test screen (rectangle + output name); transient
+    /// show state, never saved. Concurrent: toggled from the UI, read by the debug server.</summary>
+    private static readonly ConcurrentDictionary<Guid, byte> _testScreenOutputs = [];
 
-    public static bool IsTestScreen(Guid outputId) => _testScreenOutputs.Contains(outputId);
+    public static bool IsTestScreen(Guid outputId) => _testScreenOutputs.ContainsKey(outputId);
 
     public static void SetTestScreen(Guid outputId, bool on)
     {
         if (on)
-            _testScreenOutputs.Add(outputId);
+            _testScreenOutputs[outputId] = 0;
         else
-            _testScreenOutputs.Remove(outputId);
+            _testScreenOutputs.TryRemove(outputId, out _);
     }
+
+    /// <summary>Logs a warning once per message per few seconds - visible failures without
+    /// log flooding when the pump hits the same problem every interval.</summary>
+    private static void WarnThrottled(string message)
+    {
+        var now = Stopwatch.GetTimestamp();
+        var last = _lastWarnTimestamp;
+        if (last != 0 && now - last < Stopwatch.Frequency && _lastWarnMessage == message)
+            return;
+
+        _lastWarnTimestamp = now;
+        _lastWarnMessage = message;
+        Log.Warning($"Laser driver: {message}");
+    }
+
+    private static long _lastWarnTimestamp;
+    private static string? _lastWarnMessage;
 
     /// <summary>Live per-output state for the debug protocol: what the pump is doing, what the
     /// streams report, and how big the last frame was - the remote view of the show.</summary>
@@ -306,7 +353,7 @@ internal static class LaserDriver
                              {
                                  name = output.Name,
                                  sending = output.IsSending,
-                                 testScreen = _testScreenOutputs.Contains(output.Id),
+                                 testScreen = _testScreenOutputs.ContainsKey(output.Id),
                                  calibrated = output.LaserProcessing?.Safety.Calibrated ?? false,
                                  framePoints = cached.Points?.Length ?? 0,
                                  bindings,
@@ -316,12 +363,13 @@ internal static class LaserDriver
 
     private static void DisposeAllStreams()
     {
-        if (_streams.Count == 0)
+        if (_streams.IsEmpty)
             return;
 
-        foreach (var stream in _streams.Values)
-            stream.Dispose();
-
-        _streams.Clear();
+        foreach (var key in _streams.Keys)
+        {
+            if (_streams.TryRemove(key, out var stream))
+                stream.Dispose();
+        }
     }
 }

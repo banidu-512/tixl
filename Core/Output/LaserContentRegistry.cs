@@ -20,6 +20,8 @@ public interface ILaserContentSupplier
 /// <summary>
 /// The set of live <see cref="ILaserContentSupplier"/> instances. Suppliers add themselves on
 /// construction and remove themselves on dispose, so the registry survives operator hot-reloads.
+/// Thread-safe: membership changes from any thread (operator construction can run off the UI
+/// thread), readers always get an immutable snapshot - enumeration can never throw mid-change.
 /// Insertion order is preserved.
 /// </summary>
 public static class LaserContentRegistry
@@ -30,20 +32,40 @@ public static class LaserContentRegistry
 
     public static void Register(ILaserContentSupplier supplier)
     {
-        if (_suppliers.Contains(supplier))
-            return;
+        lock (_lock)
+        {
+            if (_suppliers.Contains(supplier))
+                return;
 
-        _suppliers.Add(supplier);
-        Version++;
+            _suppliers.Add(supplier);
+            Version++;
+            PublishSnapshot();
+        }
     }
 
     public static void Unregister(ILaserContentSupplier supplier)
     {
-        if (_suppliers.Remove(supplier))
+        lock (_lock)
+        {
+            if (!_suppliers.Remove(supplier))
+                return;
+
             Version++;
+            PublishSnapshot();
+        }
     }
 
-    public static IReadOnlyList<ILaserContentSupplier> Suppliers => _suppliers;
+    /// <summary>The current members as an immutable snapshot.</summary>
+    public static IReadOnlyList<ILaserContentSupplier> Suppliers => _snapshot;
 
+    private static void PublishSnapshot()
+    {
+        // Called under _lock only. The volatile publish makes the new array visible to
+        // lock-free readers in one piece.
+        System.Threading.Volatile.Write(ref _snapshot, _suppliers.ToArray());
+    }
+
+    private static readonly object _lock = new();
     private static readonly List<ILaserContentSupplier> _suppliers = [];
+    private static volatile ILaserContentSupplier[] _snapshot = [];
 }
