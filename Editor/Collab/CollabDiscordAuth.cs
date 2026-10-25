@@ -63,7 +63,7 @@ internal static class CollabDiscordAuth
 
     private static async Task LoginFlowAsync(string clientId, string clientSecret, CancellationToken cancellation)
     {
-        HttpListener listener = null;
+        HttpListener? listener = null;
         var redirectUri = "";
         try
         {

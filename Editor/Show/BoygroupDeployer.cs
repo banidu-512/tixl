@@ -187,7 +187,6 @@ internal static class BoygroupDeployer
         public readonly long LastWriteTicks;
         public long BytesSent;
         public bool Completed;
-        public string? Error;
 
         private FileStream? _fileStream;
         private byte[] _buffer = new byte[ChunkSize];

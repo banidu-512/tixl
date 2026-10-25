@@ -255,7 +255,7 @@ internal sealed class CollabRelayHostTransport : CollabTransport
         var type = (CollabProtocol.FrameType)frame[1];
         var payload = frame[2..];
 
-        CollabPeerConnection peer;
+        CollabPeerConnection? peer;
         lock (_peers)
         {
             peer = _peers.FirstOrDefault(p => p.AssignedId == slot);

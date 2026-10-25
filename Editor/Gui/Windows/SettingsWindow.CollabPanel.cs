@@ -158,8 +158,8 @@ internal sealed partial class SettingsWindow
         DrawDiscoveredSessions(manager);
     }
 
-    private static string _joinAddress;
-    private static string _roomCode;
+    private static string _joinAddress = "";
+    private static string _roomCode = "";
     private static string _relayAddress = "";
 
     private static void ParseRelayAddress(string text, out string host, out int port)

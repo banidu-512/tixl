@@ -52,8 +52,8 @@ internal sealed class CollabManager
 
     private CollabUserIdentity _localIdentity = new();
 
-    private CollabTransport _transport;
-    private LanDiscoveryScanner _discoveryScanner;
+    private CollabTransport? _transport;
+    private LanDiscoveryScanner? _discoveryScanner;
     private readonly List<DiscoveredSession> _discovered = [];
 
     /// <summary>Ops applied or received since session start; replayed to late joiners.</summary>
@@ -280,7 +280,7 @@ internal sealed class CollabManager
         }
     }
 
-    private static IPAddress ResolveHostName(string host)
+    private static IPAddress? ResolveHostName(string host)
     {
         try
         {
@@ -346,9 +346,9 @@ internal sealed class CollabManager
     private readonly Dictionary<int, PresencePacket> _latestPresenceByPeer = new();
 
     /// <summary>Display info about a session participant, or null when nothing is known yet.</summary>
-    public CollabPeerDisplay GetPresence(int peerId)
+    public CollabPeerDisplay? GetPresence(int peerId)
     {
-        PresencePacket presence = null;
+        PresencePacket? presence = null;
         Guid userId;
 
         var transportPeer = Peers.FirstOrDefault(p => p.AssignedId == peerId);
@@ -505,10 +505,10 @@ internal sealed class CollabManager
             if (message.Peer.SessionClosed && message.IsPresence)
                 continue;
 
-            if (message.IsPresence)
-                HandlePresence(message.Peer, message.Presence);
-            else
-                HandleJson(message.Peer, message.Json);
+            if (message is { IsPresence: true, Presence: { } presence })
+                HandlePresence(message.Peer, presence);
+            else if (message.Json is { } json)
+                HandleJson(message.Peer, json);
         }
     }
 
@@ -534,7 +534,7 @@ internal sealed class CollabManager
             var buffer = new byte[CollabProtocol.MaxPresencePayload];
             var size = presence.Encode(buffer);
             if (size > 0)
-                _transport.SendToPeer(other, CollabProtocol.FrameType.Presence, buffer.AsSpan(0, size));
+                _transport?.SendToPeer(other, CollabProtocol.FrameType.Presence, buffer.AsSpan(0, size));
         }
     }
 
@@ -651,11 +651,11 @@ internal sealed class CollabManager
 
     private sealed class PendingHandshake
     {
-        public byte[] Salt;
-        public byte[] Nonce;
+        public byte[]? Salt;
+        public byte[]? Nonce;
     }
 
-    private PendingHandshake _localAwaitedAuth;
+    private PendingHandshake? _localAwaitedAuth;
 
     private void HandleHostHello(CollabPeerConnection peer, JObject json)
     {
@@ -685,7 +685,7 @@ internal sealed class CollabManager
     private void HandleHostAuth(CollabPeerConnection peer, JObject json)
     {
         var pending = _localAwaitedAuth;
-        if (pending?.Salt == null)
+        if (pending?.Salt == null || pending.Nonce == null)
         {
             RejectPeer(peer, "no challenge pending");
             return;
@@ -1292,7 +1292,7 @@ internal sealed class CollabManager
             }
 
             if (peer.IsAuthenticated)
-                _transport.SendToPeer(peer, CollabProtocol.FrameType.Heartbeat, timestamp);
+                _transport?.SendToPeer(peer, CollabProtocol.FrameType.Heartbeat, timestamp);
         }
     }
 
@@ -1344,7 +1344,7 @@ internal sealed class CollabManager
 
     private void SendJson(CollabPeerConnection peer, object message) => _transport?.SendJson(peer, message);
 
-    private void BroadcastSystemMessage(object message, CollabPeerConnection except) => _transport?.BroadcastJson(Peers, message, except);
+    private void BroadcastSystemMessage(object message, CollabPeerConnection? except = null) => _transport?.BroadcastJson(Peers, message, except);
 
     /// <summary>LAN discovery announcement used in the settings tab.</summary>
     public sealed class DiscoveredSession
