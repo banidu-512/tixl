@@ -3,6 +3,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Net;
+using System.Net.NetworkInformation;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Net.Sockets;
@@ -90,7 +91,14 @@ public static class FailoverArbiter
     private static NodeRole _role = NodeRole.Disabled;
     private static readonly string NodeId = Guid.NewGuid().ToString("N");
 
-    private static Socket? _heartbeatSocket;
+    /// <summary>
+    /// One receive/send socket per usable IPv4 interface. Membership pinned per interface is what
+    /// makes the arbiter work on multi-homed machines: with a single IPAddress.Any membership the
+    /// OS picks one default route and heartbeat datagrams arriving on every other NIC (WSL, Hyper-V,
+    /// Docker, VPN adapters) are silently dropped — the classic cause of a false "no active peer"
+    /// and a dual-active pair streaming the same DMX universe.
+    /// </summary>
+    private static readonly List<Socket> _heartbeatSockets = new();
     private static CancellationTokenSource? _cancellation;
 
     private sealed class PeerInfo
@@ -244,11 +252,6 @@ public static class FailoverArbiter
 
     private static void Start()
     {
-        // Cross-platform notes: the multicast group loops back on Windows, macOS and Linux, so a
-        // master/backup pair works on one machine. On multi-homed machines membership with
-        // IPAddress.Any follows the default interface, which is the common show setup (single LAN
-        // NIC). If a machine routes the show network over a secondary NIC, join/send on that
-        // adapter's address instead.
         _role = NodeRole.Probing;
         _lastStateChangeTicks = Environment.TickCount64;
         _peers.Clear();
@@ -256,13 +259,66 @@ public static class FailoverArbiter
 
         try
         {
-            var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
-            socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
-            socket.Bind(new IPEndPoint(IPAddress.Any, FailoverPort));
-            socket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.MulticastLoopback, true);
-            socket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.AddMembership,
-                                   new MulticastOption(GroupAddress, IPAddress.Any));
-            _heartbeatSocket = socket;
+            // Join the heartbeat group on every real interface, not just the OS default route:
+            // multi-homed machines (WSL/Hyper-V/VPN adapters) otherwise never hear peers on the
+            // show NIC. Loopback keeps one-PC master/backup rehearsal working via MulticastLoopback.
+            var interfaces = new List<IPAddress>();
+            try
+            {
+                foreach (var networkInterface in NetworkInterface.GetAllNetworkInterfaces())
+                {
+                    if (networkInterface.OperationalStatus != OperationalStatus.Up
+                        || networkInterface.NetworkInterfaceType is NetworkInterfaceType.Loopback or NetworkInterfaceType.Tunnel
+                        || !networkInterface.SupportsMulticast)
+                        continue;
+
+                    var ipv4 = networkInterface.GetIPProperties().UnicastAddresses
+                                          .FirstOrDefault(a => a.Address.AddressFamily == AddressFamily.InterNetwork)?.Address;
+                    if (ipv4 != null)
+                        interfaces.Add(ipv4);
+                }
+            }
+            catch (Exception e)
+            {
+                Log.Warning($"Failover: interface enumeration failed ({e.Message}); using default route");
+            }
+
+            if (interfaces.Count == 0)
+                interfaces.Add(IPAddress.Any);
+
+            lock (Gate)
+            {
+                foreach (var address in interfaces)
+                {
+                    try
+                    {
+                        var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+                        socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+                        socket.Bind(new IPEndPoint(address, FailoverPort));
+                        socket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.MulticastLoopback, true);
+                        socket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.AddMembership,
+                                               new MulticastOption(GroupAddress, address));
+                        _heartbeatSockets.Add(socket);
+                        RecordEvent($"Heartbeat socket on {address}");
+                    }
+                    catch (Exception e)
+                    {
+                        Log.Warning($"Failover: could not bind {address}:{FailoverPort}: {e.Message}");
+                    }
+                }
+
+                if (_heartbeatSockets.Count == 0)
+                {
+                    // Every per-interface bind failed; last resort is the old default-route socket.
+                    var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+                    socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+                    socket.Bind(new IPEndPoint(IPAddress.Any, FailoverPort));
+                    socket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.MulticastLoopback, true);
+                    socket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.AddMembership,
+                                           new MulticastOption(GroupAddress, IPAddress.Any));
+                    _heartbeatSockets.Add(socket);
+                }
+            }
         }
         catch (Exception e)
         {
@@ -274,7 +330,11 @@ public static class FailoverArbiter
 
         _cancellation = new CancellationTokenSource();
         var token = _cancellation.Token;
-        _ = Task.Run(() => ListenLoop(token), token);
+        Socket[] sockets;
+        lock (Gate)
+            sockets = _heartbeatSockets.ToArray();
+        foreach (var socket in sockets)
+            _ = Task.Run(() => ListenLoop(socket, token), token);
         _ = Task.Run(() => TickLoop(token), token);
     }
 
@@ -285,16 +345,24 @@ public static class FailoverArbiter
         RecordEvent("Disabled — output resumed");
         _cancellation?.Cancel();
         _cancellation = null;
-        try
+        Socket[] sockets;
+        lock (Gate)
         {
-            _heartbeatSocket?.Close();
-        }
-        catch
-        {
-            // Socket already dead.
+            sockets = _heartbeatSockets.ToArray();
+            _heartbeatSockets.Clear();
         }
 
-        _heartbeatSocket = null;
+        foreach (var socket in sockets)
+        {
+            try
+            {
+                socket.Close();
+            }
+            catch
+            {
+                // Socket already dead.
+            }
+        }
     }
 
     private static void TickLoop(CancellationToken token)
@@ -328,19 +396,19 @@ public static class FailoverArbiter
 
     private static void SendHeartbeat()
     {
-        Socket? socket;
+        Socket[] sockets;
         string showId;
         int priority;
         bool advertiseActive;
         lock (Gate)
         {
-            socket = _heartbeatSocket;
+            sockets = _heartbeatSockets.ToArray();
             showId = _config.ShowId;
             priority = _config.Priority;
             advertiseActive = _role == NodeRole.Active;
         }
 
-        if (socket == null)
+        if (sockets.Length == 0)
             return;
 
         var payload = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(new
@@ -351,17 +419,22 @@ public static class FailoverArbiter
                                                                                  active = advertiseActive,
                                                                              }));
 
-        try
+        // One copy per interface: heartbeats are ~100 bytes, and peers that only share one NIC
+        // with us still get every datagram. Duplicates are harmless (peers key by node id).
+        foreach (var socket in sockets)
         {
-            socket.SendTo(payload, new IPEndPoint(GroupAddress, FailoverPort));
-        }
-        catch (SocketException)
-        {
-            // Best-effort; a missed heartbeat only delays takeover detection slightly.
+            try
+            {
+                socket.SendTo(payload, new IPEndPoint(GroupAddress, FailoverPort));
+            }
+            catch (Exception e) when (e is SocketException or ObjectDisposedException)
+            {
+                // Interface vanished (cable out, adapter reset); the remaining sockets still send.
+            }
         }
     }
 
-    private static void ListenLoop(CancellationToken token)
+    private static void ListenLoop(Socket listenSocket, CancellationToken token)
     {
         var buffer = new byte[MaxDatagramSize];
         while (!token.IsCancellationRequested)
@@ -370,11 +443,7 @@ public static class FailoverArbiter
             int length;
             try
             {
-                var socket = _heartbeatSocket;
-                if (socket == null)
-                    break;
-
-                length = socket.ReceiveFrom(buffer, ref remote);
+                length = listenSocket.ReceiveFrom(buffer, ref remote);
             }
             catch (Exception e) when (e is SocketException or ObjectDisposedException)
             {
