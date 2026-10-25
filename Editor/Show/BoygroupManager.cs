@@ -447,6 +447,7 @@ internal sealed class BoygroupManager
             {
                 _clients.Remove(client);
                 Log.Info($"Boygroup: client left: {client.Name}");
+                UpdateMasterStatus();
                 continue;
             }
 
@@ -456,6 +457,18 @@ internal sealed class BoygroupManager
                 ReturnToWaiting();
             }
         }
+    }
+
+    /// <summary>Keeps the status line in step with how many render nodes are actually connected.</summary>
+    private void UpdateMasterStatus()
+    {
+        if (State != BoygroupState.Server)
+            return;
+
+        var count = _clients.Count(c => c.Peer.IsAuthenticated);
+        StatusText = count == 0
+                         ? $"Master on port {UserSettings.Config.BoygroupPort} — waiting for render nodes"
+                         : $"{count} render node{(count == 1 ? "" : "s")} connected";
     }
 
     // ---------------------------------------------------------------------------------------
@@ -642,6 +655,7 @@ internal sealed class BoygroupManager
                      project = ProjectView.Focused?.OpenedProject.Package.DisplayName ?? "",
                  });
         Log.Info($"Boygroup: client authenticated: {client.Name} ({client.Address}) group '{client.Group}'");
+        UpdateMasterStatus();
 
         // Late joiners get the current setups and graph without waiting for a deploy; after this they
         // receive live ops like everyone else.
