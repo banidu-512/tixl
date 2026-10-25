@@ -45,6 +45,9 @@ internal sealed class CollabManager
     /// <summary>Room code when hosting through a relay; empty for direct sessions.</summary>
     public string RoomCode { get; private set; } = "";
 
+    /// <summary>The relay endpoint the active relay session uses, as "host:port"; empty otherwise.</summary>
+    public string RelayEndpoint { get; private set; } = "";
+
     public bool IsSessionActive => State is SessionState.Hosting or SessionState.Connected;
 
     public CollabUserIdentity LocalIdentity => _localIdentity;
@@ -213,6 +216,7 @@ internal sealed class CollabManager
             Leave();
 
         ErrorText = "";
+        RelayEndpoint = $"{relayHost}:{relayPort}";
 
         if (!TryFocusProject(projectName))
         {
@@ -288,6 +292,7 @@ internal sealed class CollabManager
         _joinedRelayHost = relayHost;
         _joinedRelayPort = relayPort;
         _joinedRoomCode = roomCode.Trim().ToUpperInvariant();
+        RelayEndpoint = $"{relayHost}:{relayPort}";
         State = SessionState.Connecting;
         StatusText = $"Joining room {roomCode} via {relayHost}:{relayPort}...";
 
@@ -449,6 +454,7 @@ internal sealed class CollabManager
         _localPresence = new PresencePacket();
         _password = "";
         RoomCode = "";
+        RelayEndpoint = "";
         _undoStack.Clear();
         _redoStack.Clear();
         _activeLocks.Clear();
