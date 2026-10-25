@@ -257,6 +257,13 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         /// </summary>
         public List<string> BoygroupAddedNodes = [];
 
+        /// <summary>Per-node presentation delay in milliseconds, set by the master (positive = later).</summary>
+        public Dictionary<string, int> BoygroupNodeDelays = [];
+
+        /// <summary>The master a slave last joined, by advertised name. A slave reconnects to it as
+        /// soon as it reappears on the network.</summary>
+        public string BoygroupMasterName = "";
+
         // Show failover (active/standby output arbitration)
         public bool FailoverEnabled = false;
         public string FailoverShowId = "tixl-show";

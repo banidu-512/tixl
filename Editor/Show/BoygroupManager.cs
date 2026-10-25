@@ -73,6 +73,15 @@ internal sealed class BoygroupManager
         /// <summary>The client editor's frame rate, as it reports it.</summary>
         public double ClientFps = -1;
 
+        /// <summary>Worst-case drift the client measured when applying the last anchors, in ms.</summary>
+        public double SyncErrorMs = -1;
+
+        /// <summary>How long ago the client last locked onto a master anchor, in ms (-1 before the first).</summary>
+        public double SyncAgeMs = -1;
+
+        /// <summary>Presentation delay set by the master: positive renders this node later.</summary>
+        public int DelayMs;
+
         public string ClientVersion = "";
 
         public long LastSeenTicks;
@@ -188,6 +197,7 @@ internal sealed class BoygroupManager
         try
         {
             StartNodeResponder();
+            StartDiscovery();
             State = BoygroupState.WaitingForMaster;
             StatusText = "Slave — waiting for a master to add this instance";
             Log.Info("Boygroup: slave enabled, waiting for a master");
@@ -275,6 +285,7 @@ internal sealed class BoygroupManager
     private void JoinMaster(string host, int port)
     {
         StopNodeResponder();
+        StopDiscovery(); // the session link replaces discovery until it ends
         ErrorText = "";
         GroupName = DefaultGroup;
         _serverProjectName = "";
@@ -372,6 +383,7 @@ internal sealed class BoygroupManager
         try
         {
             StartNodeResponder();
+            StartDiscovery();
             State = BoygroupState.WaitingForMaster;
             StatusText = "Master disconnected — waiting to be added again";
         }
@@ -460,6 +472,10 @@ internal sealed class BoygroupManager
         {
             SendNodePings();
             RefreshDiscoveredServers();
+        }
+        else if (State == BoygroupState.WaitingForMaster)
+        {
+            TryAutoJoinMaster();
         }
     }
 
@@ -594,6 +610,42 @@ internal sealed class BoygroupManager
     /// <summary>The measured clock difference to the master (master minus this machine), for diagnostics.</summary>
     public double ClockOffsetMs => _clockOffsetTicks / (double)TimeSpan.TicksPerMillisecond;
 
+    /// <summary>Drift measured when the last anchors were applied, in ms.</summary>
+    public double SyncErrorMs => _syncErrorMs;
+
+    /// <summary>Delay the master assigned to this node, in ms.</summary>
+    public int ClientDelayMs => _syncDelayMs;
+
+    /// <summary>The master this slave is connected to, by advertised name.</summary>
+    public string MasterName { get; private set; } = "";
+
+    public const int MaxSyncDelayMs = 500;
+
+    private int _syncDelayMs;
+    private double _syncErrorMs = -1;
+    private long _lastAnchorTicks;
+
+    /// <summary>Master side: shifts one node's presentation in time and tells it to apply immediately.</summary>
+    public void SetClientDelay(ClientInfo client, int delayMs)
+    {
+        delayMs = Math.Clamp(delayMs, -MaxSyncDelayMs, MaxSyncDelayMs);
+        client.DelayMs = delayMs;
+        client.SyncErrorMs = -1; // invalidated by the intentional phase jump
+
+        var delays = UserSettings.Config.BoygroupNodeDelays;
+        if (delayMs == 0)
+            delays.Remove(client.Name);
+        else
+            delays[client.Name] = delayMs;
+        UserSettings.Save();
+
+        SendJson(client.Peer, new { t = "delay", ms = delayMs });
+        SendTimeSyncNow();
+    }
+
+    private static int GetSavedDelay(string name) =>
+        UserSettings.Config.BoygroupNodeDelays.TryGetValue(name, out var delay) ? delay : 0;
+
     private void SendNodePings()
     {
         var now = Environment.TickCount64;
@@ -633,6 +685,8 @@ internal sealed class BoygroupManager
 
         client.ClockOffsetMs = json["clockOffsetMs"]?.Value<double>() ?? 0;
         client.ClientFps = json["fps"]?.Value<double>() ?? -1;
+        client.SyncErrorMs = json["syncErrorMs"]?.Value<double>() ?? -1;
+        client.SyncAgeMs = json["syncAgeMs"]?.Value<double>() ?? -1;
         client.ClientVersion = CollabProtocol.GetString(json, "version");
         client.LastSeenTicks = Environment.TickCount64;
     }
@@ -656,6 +710,9 @@ internal sealed class BoygroupManager
                      t = "stats",
                      clockOffsetMs = _clockOffsetTicks / (double)TimeSpan.TicksPerMillisecond,
                      fps = _editorFps,
+                     syncErrorMs = _syncErrorMs,
+                     delayMs = _syncDelayMs,
+                     syncAgeMs = _lastAnchorTicks == 0 ? -1 : Environment.TickCount64 - _lastAnchorTicks,
                      version = typeof(BoygroupManager).Assembly.GetName().Version?.ToString() ?? "",
                  });
     }
@@ -687,6 +744,7 @@ internal sealed class BoygroupManager
                 // A report attempted before the handshake completed was dropped by the server; the
                 // file hasn't changed since, so clear the dedupe marker to send it again.
                 _lastBindingsSent = "";
+                RememberMaster(json);
                 TryOpenServerProject(json);
                 break;
 
@@ -739,6 +797,14 @@ internal sealed class BoygroupManager
 
             case "clockPong" when State == BoygroupState.Client:
                 HandleClockPong(json);
+                break;
+
+            case "delay" when State == BoygroupState.Client:
+                _syncDelayMs = Math.Clamp(json["ms"]?.Value<int>() ?? 0, -MaxSyncDelayMs, MaxSyncDelayMs);
+                // The phase jump that follows is intentional, so it must not be reported as drift.
+                _lastSyncStopwatch = -1;
+                _syncErrorMs = -1;
+                Log.Info($"Boygroup: master set the presentation delay to {_syncDelayMs} ms");
                 break;
 
             // Session diagnostics: the master pings each node and shows the round trip and the
@@ -879,11 +945,15 @@ internal sealed class BoygroupManager
                  {
                      t = "authOk",
                      serverName = Environment.MachineName,
+                     masterName = LocalNodeName,
                      // Only the name: clients open their own copy. No project files are transferred.
                      project = ProjectView.Focused?.OpenedProject.Package.DisplayName ?? "",
                  });
         Log.Info($"Boygroup: client authenticated: {client.Name} ({client.Address}) group '{client.Group}'");
         RememberNode(client.Name);
+        client.DelayMs = GetSavedDelay(client.Name);
+        if (client.DelayMs != 0)
+            SendJson(client.Peer, new { t = "delay", ms = client.DelayMs });
         UpdateMasterStatus();
 
         // Late joiners get the current setups and graph without waiting for a deploy; after this they
@@ -891,6 +961,46 @@ internal sealed class BoygroupManager
         var setups = PushSetupToGroup();
         PushGraphSnapshotToGroup();
         SendJson(client.Peer, new { t = "deployDone", setups });
+    }
+
+    /// <summary>Slave side: keeps the master's name so a restart can find it again without a new invitation.</summary>
+    private void RememberMaster(JObject authOk)
+    {
+        var name = CollabProtocol.GetString(authOk, "masterName", CollabProtocol.GetString(authOk, "serverName"));
+        if (string.IsNullOrEmpty(name))
+            return;
+
+        MasterName = name;
+        if (name == UserSettings.Config.BoygroupMasterName)
+            return;
+
+        UserSettings.Config.BoygroupMasterName = name;
+        UserSettings.Save();
+    }
+
+    /// <summary>
+    /// Slave side: an enabled slave takes the first master that appears — boygrouping is this
+    /// machine's job once switched on. A remembered master always wins by name; only a slave that
+    /// has never joined one accepts any master, and every candidate is retried with a pause.
+    /// </summary>
+    private void TryAutoJoinMaster()
+    {
+        DrainDiscovery();
+        var remembered = UserSettings.Config.BoygroupMasterName;
+        var now = Environment.TickCount64;
+        foreach (var node in _discoveredServers)
+        {
+            if (!node.IsMaster || now - node.LastInviteTicks < 5_000)
+                continue;
+
+            if (!string.IsNullOrEmpty(remembered) && !string.Equals(node.Name, remembered, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            node.LastInviteTicks = now;
+            Log.Info($"Boygroup: slave joining master '{node.Name}' at {node.Address}:{node.Port}");
+            JoinMaster(node.Address, node.Port);
+            return;
+        }
     }
 
     /// <summary>
@@ -1535,6 +1645,9 @@ internal sealed class BoygroupManager
         _nextClockPingTicks = 0;
         _hasAnchor = false;
         _lastSyncStopwatch = -1;
+        _syncDelayMs = 0;
+        _syncErrorMs = -1;
+        _lastAnchorTicks = 0;
     }
 
     private bool _hasAnchor;
@@ -1553,7 +1666,10 @@ internal sealed class BoygroupManager
 
         var localUtc = masterUtc - _clockOffsetTicks;
         var deltaSecs = (localUtc - DateTime.UtcNow.Ticks) / (double)TimeSpan.TicksPerSecond;
-        _anchorLocalStopwatch = Stopwatch.GetTimestamp() + deltaSecs * Stopwatch.Frequency;
+
+        // Presentation delay set by the master: a positive value switches to the anchor later, so
+        // this node runs that many milliseconds behind the master's timeline.
+        _anchorLocalStopwatch = Stopwatch.GetTimestamp() + (deltaSecs + _syncDelayMs / 1000.0) * Stopwatch.Frequency;
         _anchorBars = json["bars"]?.Value<double>() ?? 0;
         _anchorSpeed = json["speed"]?.Value<double>() ?? 0;
         _anchorBpm = json["bpm"]?.Value<double>() ?? 120;
@@ -1572,11 +1688,22 @@ internal sealed class BoygroupManager
 
         // A late anchor still carries the right instant: advance its bars by the lateness rather than
         // snapping back to where the master was when it sent the packet.
-        var lateSecs = Math.Max(0, (Stopwatch.GetTimestamp() - _anchorLocalStopwatch) / Stopwatch.Frequency);
-        _lastSyncStopwatch = Stopwatch.GetTimestamp();
-        _lastSyncBars = _anchorBars + _anchorSpeed * lateSecs * _anchorBpm / 240.0;
+        var nowTicks = Stopwatch.GetTimestamp();
+        var lateSecs = Math.Max(0, (nowTicks - _anchorLocalStopwatch) / Stopwatch.Frequency);
+        var targetBars = _anchorBars + _anchorSpeed * lateSecs * _anchorBpm / 240.0;
+
+        // Self-check: compare the new anchor with where the previous trajectory says the timeline
+        // should be at this same instant. A node following a wrong clock still looks busy, so the
+        // measured correction is the only honest signal that it is actually in phase.
+        var measuredCorrection = MeasureAnchorCorrection(nowTicks, targetBars);
+        if (measuredCorrection > -0.5)
+            _syncErrorMs = _syncErrorMs < -0.5 ? measuredCorrection : _syncErrorMs * 0.7 + measuredCorrection * 0.3;
+
+        _lastSyncStopwatch = nowTicks;
+        _lastSyncBars = targetBars;
         _lastSyncSpeed = _anchorSpeed;
         _lastSyncBpm = _anchorBpm;
+        _lastAnchorTicks = Environment.TickCount64;
 
         playback.PlaybackSpeed = _anchorSpeed;
         playback.Bpm = _anchorBpm;
@@ -1586,6 +1713,20 @@ internal sealed class BoygroupManager
         TimeFollowSummary = _anchorSpeed != 0
                                 ? $"Following master: {_lastSyncBars:0.00} bars @ {_anchorBpm:0} bpm"
                                 : "Following master (paused)";
+    }
+
+    /// <summary>Milliseconds the timeline had to be corrected to match the new anchor; -1 when unknown.</summary>
+    private double MeasureAnchorCorrection(double nowTicks, double targetBars)
+    {
+        if (_lastSyncStopwatch < 0)
+            return -1;
+
+        var barsPerSec = Math.Abs(_anchorSpeed) * _anchorBpm / 240.0;
+        if (barsPerSec < 1e-9 || Math.Abs(_lastSyncSpeed - _anchorSpeed) > 1e-9 || Math.Abs(_lastSyncBpm - _anchorBpm) > 1e-6)
+            return -1; // Paused or just resumed: there is no trajectory to compare against.
+
+        var predictedBars = _lastSyncBars + _lastSyncSpeed * ((nowTicks - _lastSyncStopwatch) / Stopwatch.Frequency) * _lastSyncBpm / 240.0;
+        return (targetBars - predictedBars) / barsPerSec * 1000.0;
     }
 
     private double _lastSyncStopwatch = -1;

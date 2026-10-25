@@ -817,6 +817,22 @@ internal static class DebugServer
                 boygroup.SendTimeSyncNow();
                 break;
 
+            // Per-node presentation delay, positive = that node renders later.
+            case "setDelay":
+            {
+                var clientName = request["client"]?.Value<string>() ?? "";
+                var client = boygroup.Clients.FirstOrDefault(c => string.Equals(c.Name, clientName, StringComparison.OrdinalIgnoreCase))
+                             ?? boygroup.Clients.FirstOrDefault();
+                if (client == null)
+                {
+                    context.SendError("NOT_FOUND", "No render node is connected");
+                    return;
+                }
+
+                boygroup.SetClientDelay(client, request["ms"]?.Value<int>() ?? 0);
+                break;
+            }
+
             case "deploy":
                 boygroup.DeployAndSync();
                 break;
@@ -856,6 +872,9 @@ internal static class DebugServer
                                 ["screens"] = screens,
                                 ["rttMs"] = client.RttMs,
                                 ["clockOffsetMs"] = client.ClockOffsetMs,
+                                ["syncErrorMs"] = client.SyncErrorMs,
+                                ["syncAgeMs"] = client.SyncAgeMs,
+                                ["delayMs"] = client.DelayMs,
                                 ["fps"] = client.ClientFps,
                                 ["version"] = client.ClientVersion,
                             });
@@ -881,6 +900,9 @@ internal static class DebugServer
                                ["role"] = UserSettings.Config.BoygroupRole.ToString(),
                                ["group"] = boygroup.GroupName,
                                ["timeFollow"] = boygroup.TimeFollowSummary,
+                               ["masterName"] = boygroup.MasterName,
+                               ["syncErrorMs"] = boygroup.SyncErrorMs,
+                               ["delayMs"] = boygroup.ClientDelayMs,
                                ["bars"] = T3.Core.Animation.Playback.Current?.TimeInBars ?? 0,
                                ["fps"] = boygroup.EditorFps,
                                ["uptimeSecs"] = boygroup.SessionUptimeSeconds,

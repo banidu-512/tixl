@@ -17,6 +17,12 @@ namespace T3.Editor.Show;
 /// </summary>
 internal abstract class BoygroupTransport : CollabTransport
 {
+    /// <summary>
+    /// Grace before a silent peer is declared gone. Both sides exchange heartbeats at 1 Hz, so a
+    /// four second silence is a real outage; waiting for the 10 s collaboration default would let
+    /// a slave keep dead-reckoning a show that no longer exists.
+    /// </summary>
+    public const int PeerTimeoutMs = 4000;
 }
 
 /// <summary>The show master: accepts clients and announces groups via LAN discovery.</summary>
@@ -120,7 +126,10 @@ internal sealed class BoygroupServerTransport : BoygroupTransport
             CollabPeerConnection peer;
             try
             {
-                peer = new CollabPeerConnection(client, Interlocked.Increment(ref _nextPeerId));
+                peer = new CollabPeerConnection(client, Interlocked.Increment(ref _nextPeerId))
+                           {
+                               TimeoutMs = PeerTimeoutMs,
+                           };
             }
             catch (Exception e) when (e is SocketException or ObjectDisposedException or InvalidOperationException)
             {
@@ -182,7 +191,10 @@ internal sealed class BoygroupClientTransport : BoygroupTransport
     {
         _client = client;
         // TcpClient overload: bounds UI-thread writes with a send timeout, like the collab client.
-        _serverPeer = new CollabPeerConnection(client, 0);
+        _serverPeer = new CollabPeerConnection(client, 0)
+                          {
+                              TimeoutMs = PeerTimeoutMs,
+                          };
     }
 
     public static BoygroupClientTransport Connect(IPEndPoint endPoint)
