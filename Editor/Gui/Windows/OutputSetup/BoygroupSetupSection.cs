@@ -1,29 +1,32 @@
 #nullable enable
 using ImGuiNET;
 using T3.Core.DataTypes.Vector;
-using T3.Editor.Collab;
 using T3.Editor.Gui.Input;
 using T3.Editor.Gui.Styling;
 using T3.Editor.Gui.UiHelpers;
 using T3.Editor.Show;
 
-namespace T3.Editor.Gui.Windows;
+namespace T3.Editor.Gui.Windows.OutputSetup;
 
 /// <summary>
-/// The "Boygrouping" panel of the settings window: distribute a show to render nodes, vvvv-style —
-/// a server instance deploys project files and live graph/output state to clients, controls
-/// playback, and each client renders only the outputs assigned to it in the Output Setup.
+/// Boygrouping controls hosted by the Output window: distribute a show to render nodes,
+/// vvvv-style — a server instance deploys project files and live graph/output state to
+/// clients, controls playback, and each client renders only the outputs assigned to it in
+/// the Output Setup. Lives here (not in settings) because boygrouping is part of output
+/// routing: this machine's node name is what per-output "Render on machine" refers to.
 /// </summary>
-internal sealed partial class SettingsWindow
+internal static class BoygroupSetupSection
 {
-    private static void DrawBoygroupPanel(ref bool changed)
+    public static void Draw()
     {
+        if (!ImGui.CollapsingHeader("Boygrouping"))
+            return;
+
+        var changed = false;
         var manager = BoygroupManager.Instance;
         var config = UserSettings.Config;
 
-        // -------------------------------------------------------------------------------------
-        // Identity & connection
-        // -------------------------------------------------------------------------------------
+        // Identity ---------------------------------------------------------------
         FormInputs.AddSectionSubHeader("Identity");
         FormInputs.AddVerticalSpace();
 
@@ -50,19 +53,17 @@ internal sealed partial class SettingsWindow
 
         FormInputs.AddVerticalSpace();
 
-        // -------------------------------------------------------------------------------------
-        // Session
-        // -------------------------------------------------------------------------------------
+        // Session ---------------------------------------------------------------
         FormInputs.AddSectionSubHeader("Session");
         FormInputs.AddVerticalSpace();
 
         if (manager.State == BoygroupManager.BoygroupState.Off)
         {
-            _boygroupGroup ??= UserSettings.Config.BoygroupGroups.FirstOrDefault() ?? "Main";
+            _group ??= UserSettings.Config.BoygroupGroups.FirstOrDefault() ?? "Main";
 
             if (CustomComponents.DrawCtaButton("Start Server", Icon.None, UiColors.ForegroundFull, UiColors.StatusActivated, Color.Transparent))
             {
-                manager.StartServer(config.BoygroupPort, config.CollabPassword, _boygroupGroup);
+                manager.StartServer(config.BoygroupPort, config.CollabPassword, _group);
             }
 
             CustomComponents.TooltipForLastItem("This machine becomes the boygroup server: it deploys files and live state to clients and drives playback.");
@@ -70,25 +71,25 @@ internal sealed partial class SettingsWindow
             FormInputs.AddVerticalSpace();
             ImGui.TextUnformatted("Join a group:");
             ImGui.PushID("##boygroupgroup");
-            if (ImGui.InputText("Group", ref _boygroupGroup, 64, ImGuiInputTextFlags.EnterReturnsTrue))
+            if (ImGui.InputText("Group", ref _group, 64, ImGuiInputTextFlags.EnterReturnsTrue))
             {
-                manager.JoinServer("127.0.0.1", config.BoygroupPort, _boygroupGroup, config.CollabPassword);
+                manager.JoinServer("127.0.0.1", config.BoygroupPort, _group, config.CollabPassword);
             }
 
             ImGui.PopID();
             ImGui.SameLine();
             if (ImGui.Button("Join"))
             {
-                manager.JoinServer(_boygroupServerAddress ?? "127.0.0.1", config.BoygroupPort, _boygroupGroup, config.CollabPassword);
+                manager.JoinServer(_serverAddress ?? "127.0.0.1", config.BoygroupPort, _group, config.CollabPassword);
             }
 
             CustomComponents.TooltipForLastItem("Address of the boygroup server. Clients on the same network also appear below via discovery.");
 
-            DrawDiscoveredServers(manager, config.BoygroupPort, ref changed);
+            DrawDiscoveredServers(manager, ref changed);
         }
         else
         {
-            DrawBoygroupSession(manager);
+            DrawSession(manager);
         }
 
         if (!string.IsNullOrEmpty(manager.ErrorText))
@@ -101,14 +102,11 @@ internal sealed partial class SettingsWindow
 
         FormInputs.AddVerticalSpace();
 
-        // -------------------------------------------------------------------------------------
-        // Groups (multiboygrouping)
-        // -------------------------------------------------------------------------------------
+        // Groups ---------------------------------------------------------------
         FormInputs.AddSectionSubHeader("Groups (multiboygrouping)");
         CustomComponents.HelpText("""
                                   A server can host several groups (e.g. 'Wall', 'Floor'). Clients join one group each;
-                                  deploy and playback controls act per group. A client may also connect to two different
-                                  servers by running the join twice with different group names on separate ports.
+                                  deploy and playback controls act per group.
                                   """);
         FormInputs.AddVerticalSpace();
 
@@ -142,9 +140,7 @@ internal sealed partial class SettingsWindow
 
         FormInputs.AddVerticalSpace();
 
-        // -------------------------------------------------------------------------------------
-        // Deploy options
-        // -------------------------------------------------------------------------------------
+        // Deploy options ---------------------------------------------------------------
         FormInputs.AddSectionSubHeader("Deployment");
         changed |= FormInputs.AddCheckBox("Mirror project folder",
                                           ref config.BoygroupDeployMirror,
@@ -161,12 +157,15 @@ internal sealed partial class SettingsWindow
                                           used after a deployment restarts the client to apply new files.
                                           """,
                                           true);
+
+        if (changed)
+            UserSettings.Save();
     }
 
-    private static string? _boygroupGroup;
-    private static string? _boygroupServerAddress;
+    private static string? _group;
+    private static string? _serverAddress;
 
-    private static void DrawBoygroupSession(BoygroupManager manager)
+    private static void DrawSession(BoygroupManager manager)
     {
         ImGui.PushStyleColor(ImGuiCol.Text, UiColors.StatusActivated.Rgba);
         ImGui.TextUnformatted(manager.StatusText);
@@ -176,7 +175,7 @@ internal sealed partial class SettingsWindow
 
         if (manager.State == BoygroupManager.BoygroupState.Server)
         {
-            DrawBoygroupClients(manager);
+            DrawClients(manager);
 
             FormInputs.AddVerticalSpace();
             FormInputs.AddSectionSubHeader("Playback control");
@@ -225,7 +224,7 @@ internal sealed partial class SettingsWindow
         }
     }
 
-    private static void DrawBoygroupClients(BoygroupManager manager)
+    private static void DrawClients(BoygroupManager manager)
     {
         var clients = manager.Clients;
         if (clients.Count == 0)
@@ -250,24 +249,22 @@ internal sealed partial class SettingsWindow
         }
     }
 
-    private static bool _boygroupDiscoveryActive;
-    private static DateTime _boygroupDiscoveryUntil;
-    private static readonly List<BoygroupManager.DiscoveredServer> _boygroupDiscovered = [];
+    private static bool _discoveryActive;
+    private static DateTime _discoveryUntil;
 
-    private static void DrawDiscoveredServers(BoygroupManager manager, int discoveryPort, ref bool changed)
+    private static void DrawDiscoveredServers(BoygroupManager manager, ref bool changed)
     {
         FormInputs.AddVerticalSpace();
         ImGui.TextUnformatted("Servers on this network:");
         ImGui.SameLine();
 
-        if (!_boygroupDiscoveryActive)
+        if (!_discoveryActive)
         {
             if (ImGui.SmallButton("Scan"))
             {
-                _boygroupDiscovered.Clear();
                 manager.StartDiscovery();
-                _boygroupDiscoveryActive = true;
-                _boygroupDiscoveryUntil = DateTime.UtcNow + TimeSpan.FromSeconds(6);
+                _discoveryActive = true;
+                _discoveryUntil = DateTime.UtcNow + TimeSpan.FromSeconds(6);
             }
         }
         else
@@ -277,10 +274,10 @@ internal sealed partial class SettingsWindow
 
         manager.DrainDiscovery();
 
-        if (_boygroupDiscoveryActive && DateTime.UtcNow > _boygroupDiscoveryUntil)
+        if (_discoveryActive && DateTime.UtcNow > _discoveryUntil)
         {
             manager.StopDiscovery();
-            _boygroupDiscoveryActive = false;
+            _discoveryActive = false;
         }
 
         foreach (var server in manager.DiscoveredServers)
@@ -292,7 +289,7 @@ internal sealed partial class SettingsWindow
             ImGui.PushID(server.Address + server.Port);
             if (ImGui.SmallButton("Join"))
             {
-                manager.JoinServer(server.Address, server.Port, _boygroupGroup ?? server.Groups.FirstOrDefault() ?? "Main",
+                manager.JoinServer(server.Address, server.Port, _group ?? server.Groups.FirstOrDefault() ?? "Main",
                                    UserSettings.Config.CollabPassword);
             }
 

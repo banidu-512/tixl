@@ -307,6 +307,7 @@ internal sealed class CollabManager
 
         _sessionLog.Clear();
         _opsReceivedThisSecond.Clear();
+        _chatLog.Clear();
         while (_pendingDisconnects.TryDequeue(out _))
         {
             // Drop disconnect events from the dead session; replaying them into a future
@@ -620,6 +621,7 @@ internal sealed class CollabManager
                 }
 
                 Log.Info($"Collab: {name} joined");
+                AppendChat(null, $"{name} joined");
                 StatusText = State == SessionState.Hosting
                                  ? $"Hosting{(!string.IsNullOrEmpty(RoomCode) ? $" (room {RoomCode})" : "")}, {_roster.Count} participant(s)"
                                  : StatusText;
@@ -633,6 +635,21 @@ internal sealed class CollabManager
                     _roster.Remove(leftId);
 
                 Log.Info($"Collab: {name} left");
+                AppendChat(null, $"{name} left");
+                break;
+            }
+
+            case "chat" when IsSessionActive:
+            {
+                // Hosts relay chat to everyone else; both sides show it in the session chat log.
+                var text = CollabProtocol.GetString(json, "text");
+                if (string.IsNullOrEmpty(text))
+                    break;
+
+                var sender = CollabProtocol.GetString(json, "name", "?");
+                AppendChat(sender, text);
+                if (State == SessionState.Hosting)
+                    BroadcastSystemMessage(json, except: peer);
                 break;
             }
 
@@ -1399,5 +1416,54 @@ internal sealed class CollabManager
         public DateTime Seen = DateTime.UtcNow;
 
         public override string ToString() => $"{Name}  ({Address}:{Port})";
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Session chat
+    // ---------------------------------------------------------------------------------------
+
+    /// <summary>One line of the session chat; system lines (join/left) carry a null name.</summary>
+    public sealed class ChatEntry
+    {
+        public DateTime Time = DateTime.Now;
+        public string? Name;
+        public string Text = "";
+    }
+
+    private readonly List<ChatEntry> _chatLog = [];
+    private const int MaxChatEntries = 200;
+
+    /// <summary>Session chat history, newest last. UI thread only (handlers run on it).</summary>
+    public IReadOnlyList<ChatEntry> ChatLog => _chatLog;
+
+    private void AppendChat(string? name, string text)
+    {
+        _chatLog.Add(new ChatEntry { Name = name, Text = text });
+        if (_chatLog.Count > MaxChatEntries)
+            _chatLog.RemoveRange(0, _chatLog.Count - MaxChatEntries);
+    }
+
+    /// <summary>Sends a chat line to the session (to the host as a client, to everyone as host).</summary>
+    public void SendChat(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text) || !IsSessionActive)
+            return;
+
+        var message = new
+                          {
+                              t = "chat",
+                              name = _localIdentity.DisplayName,
+                              text,
+                          };
+        if (State == SessionState.Hosting)
+        {
+            AppendChat(_localIdentity.DisplayName, text);
+            BroadcastSystemMessage(message, except: null);
+        }
+        else if (_transport is CollabClientTransport { HostPeer: { } host })
+        {
+            _transport.SendJson(host, message);
+            AppendChat(_localIdentity.DisplayName, text);
+        }
     }
 }
