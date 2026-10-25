@@ -285,10 +285,20 @@ internal static class BoygroupDeployer
             if (_fileStream == null || _sha == null)
                 return;
 
-            var data = Convert.FromBase64String(message["data"]?.Value<string>() ?? "");
-            _fileStream.Write(data);
-            _sha.TransformBlock(data, 0, data.Length, null, 0);
-            BytesReceived += data.Length;
+            try
+            {
+                var data = Convert.FromBase64String(message["data"]?.Value<string>() ?? "");
+                _fileStream.Write(data);
+                _sha.TransformBlock(data, 0, data.Length, null, 0);
+                BytesReceived += data.Length;
+            }
+            catch (Exception e) when (e is FormatException or IOException)
+            {
+                // A malformed chunk or a disk write error must fail this file instead of
+                // throwing into the UI thread that drains the session's inbound queue.
+                Error = $"{RelativePath}: {e.Message}";
+                Cancel();
+            }
         }
 
         /// <summary>Verifies the received stream and moves it into place. Returns an error or null.</summary>
