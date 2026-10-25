@@ -790,6 +790,20 @@ public sealed class LaserOutputStream : IDisposable
             if (dac == null)
                 return;
 
+            // Ask the DAC to stop and discard its queue BEFORE the socket dies. Killing the
+            // connection mid-data leaves the firmware holding a stale full buffer - the
+            // soft-wedge state this DAC family then needs a power-cycle to clear. The stop
+            // travels on the still-open socket; the grace lets it flush.
+            try
+            {
+                dac.Stop();
+                Thread.Sleep(50);
+            }
+            catch
+            {
+                // Already dead - the kill below is all that's left
+            }
+
             try
             {
                 KillDacSocket(dac);
