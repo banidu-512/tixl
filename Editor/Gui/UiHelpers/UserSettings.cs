@@ -228,6 +228,12 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         /// what brings a client back after a project download restarted the editor.</summary>
         public string CollabLastSessionHost = "";
 
+        /// <summary>
+        /// The project hosted when starting a session. Empty shares the focused project; a name opens
+        /// (and focuses) that project first, so a host can share a project without switching to it.
+        /// </summary>
+        public string CollabShareProject = "";
+
         public string CollabDiscordClientId = "";
         public string CollabDiscordClientSecret = "";
         public string CollabDiscordUserId = "";

@@ -6,6 +6,7 @@ using Newtonsoft.Json.Linq;
 using T3.Editor.Gui.Input;
 using T3.Editor.Gui.Styling;
 using T3.Editor.Gui.UiHelpers;
+using T3.Editor.UiModel;
 
 namespace T3.Editor.Gui.Windows;
 
@@ -74,7 +75,7 @@ internal sealed partial class SettingsWindow
         }
         else
         {
-            DrawHostAndJoinControls(manager);
+            DrawHostAndJoinControls(manager, ref changed);
         }
 
         if (!string.IsNullOrEmpty(manager.ErrorText))
@@ -90,14 +91,18 @@ internal sealed partial class SettingsWindow
     // Hosting / joining
     // ---------------------------------------------------------------------------------------
 
-    private static void DrawHostAndJoinControls(CollabManager manager)
+    private static void DrawHostAndJoinControls(CollabManager manager, ref bool changed)
     {
         var config = UserSettings.Config;
 
         FormInputs.AddSectionSubHeader("Host");
+        DrawShareProjectChoice(ref changed);
+        FormInputs.AddVerticalSpace();
+
+        FormInputs.SetCursorToParameterEdit();
         if (CustomComponents.DrawCtaButton("Host on LAN", Icon.None, UiColors.ForegroundFull, UiColors.StatusActivated, Color.Transparent))
         {
-            manager.StartHost(config.CollabPort, config.CollabPassword, config.CollabLanDiscovery);
+            manager.StartHost(config.CollabPort, config.CollabPassword, config.CollabLanDiscovery, CollabManager.ConfiguredShareProject);
         }
 
         CustomComponents.TooltipForLastItem("Start a session others can join. You keep full control: every edit from participants is applied to your graph first and then distributed.");
@@ -106,11 +111,12 @@ internal sealed partial class SettingsWindow
 
         DrawSecretInput("Relay server", ref _relayAddress, "Address of a TiXLCollabRelay server, e.g. relay.example.com:44710. Hosts and joiners must use the same relay.");
 
+        FormInputs.SetCursorToParameterEdit();
         ImGui.PushID("##collabrelayhost");
         if (ImGui.Button("Host via relay"))
         {
             ParseRelayAddress(_relayAddress, out var host, out var port);
-            manager.StartHostViaRelay(host, port);
+            manager.StartHostViaRelay(host, port, CollabManager.ConfiguredShareProject);
         }
 
         ImGui.PopID();
@@ -120,14 +126,17 @@ internal sealed partial class SettingsWindow
 
         FormInputs.AddSectionSubHeader("Join");
         _joinAddress ??= "";
+        FormInputs.DrawInputLabel("Address");
         ImGui.PushID("##collabjoin");
-        if (ImGui.InputText("Address", ref _joinAddress, 256, ImGuiInputTextFlags.EnterReturnsTrue))
+        ImGui.SetNextItemWidth(FormInputs.GetAvailableInputSize(null, false, true).X);
+        if (ImGui.InputText("##collabJoinAddress", ref _joinAddress, 256, ImGuiInputTextFlags.EnterReturnsTrue))
         {
             ParseJoinAddress(_joinAddress, config.CollabPort, out var host, out var port);
             manager.JoinDirect(host, port, config.CollabPassword);
         }
 
         ImGui.PopID();
+        CustomComponents.TooltipForLastItem("Direct address of the host, e.g. 192.168.1.42 for LAN sessions or a public address / VPN IP for online sessions.");
         ImGui.SameLine();
         if (ImGui.Button("Connect"))
         {
@@ -135,13 +144,15 @@ internal sealed partial class SettingsWindow
             manager.JoinDirect(host, port, config.CollabPassword);
         }
 
-        CustomComponents.TooltipForLastItem("Direct address of the host, e.g. 192.168.1.42 for LAN sessions or a public address / VPN IP for online sessions.");
+        CustomComponents.TooltipForLastItem("Join the host at the address above.");
 
         FormInputs.AddVerticalSpace();
 
         _roomCode ??= "";
+        FormInputs.DrawInputLabel("Room code");
         ImGui.PushID("##collabroom");
-        if (ImGui.InputText("Room code", ref _roomCode, 12, ImGuiInputTextFlags.EnterReturnsTrue))
+        ImGui.SetNextItemWidth(FormInputs.GetAvailableInputSize(null, false, true).X);
+        if (ImGui.InputText("##collabRoomCode", ref _roomCode, 12, ImGuiInputTextFlags.EnterReturnsTrue))
         {
             ParseRelayAddress(_relayAddress, out var host, out var port);
             manager.JoinViaRelay(host, port, _roomCode, config.CollabPassword);
@@ -163,6 +174,47 @@ internal sealed partial class SettingsWindow
     private static string _joinAddress = "";
     private static string _roomCode = "";
     private static string _relayAddress = "";
+
+    private const string CurrentProjectLabel = "Current project";
+    private static readonly List<string> _shareProjectChoices = [];
+
+    /// <summary>
+    /// Which project the host shares. The focused project is the default; selecting another one is
+    /// persisted and opened when hosting starts, so a session can be prepared from any project tab.
+    /// </summary>
+    private static void DrawShareProjectChoice(ref bool changed)
+    {
+        var config = UserSettings.Config;
+
+        _shareProjectChoices.Clear();
+        _shareProjectChoices.Add(CurrentProjectLabel);
+        foreach (var project in EditableSymbolProject.AllProjects)
+        {
+            var name = project.DisplayName;
+            if (!string.IsNullOrEmpty(name) && !_shareProjectChoices.Contains(name))
+                _shareProjectChoices.Add(name);
+        }
+
+        var selected = string.IsNullOrEmpty(config.CollabShareProject) ? CurrentProjectLabel : config.CollabShareProject;
+        if (!_shareProjectChoices.Contains(selected))
+            _shareProjectChoices.Add(selected); // The saved project is not loaded right now — keep it readable.
+
+        // AddDropdown uses a fixed internal combo id; the Network section above has one in the same
+        // panel, so scope this one to keep the two apart.
+        ImGui.PushID("##shareProject");
+        var dropdownChanged = FormInputs.AddDropdown(ref selected, _shareProjectChoices, "Share project",
+                                    """
+                                    The project participants receive and edit together.
+                                    'Current project' follows whichever project is focused; choosing another one opens it when hosting starts.
+                                    """);
+        ImGui.PopID();
+
+        if (!dropdownChanged)
+            return;
+
+        config.CollabShareProject = selected == CurrentProjectLabel ? "" : selected;
+        changed = true;
+    }
 
     private static void ParseRelayAddress(string text, out string host, out int port)
     {
@@ -297,6 +349,11 @@ internal sealed partial class SettingsWindow
                 ImGui.SetTooltip("Share this code with the people you want to collaborate with.");
         }
 
+        if (!string.IsNullOrEmpty(manager.SharedProjectName))
+        {
+            ImGui.TextDisabled($"Sharing: {CollabManager.ShortProjectName(manager.SharedProjectName)}");
+        }
+
         FormInputs.AddVerticalSpace();
 
         var roster = manager.Roster;
@@ -362,13 +419,16 @@ internal sealed partial class SettingsWindow
 
     private static bool DrawSecretInput(string label, ref string secret, string tooltip)
     {
+        FormInputs.DrawInputLabel(label);
+
         ImGui.PushID(label);
         var input = secret ?? "";
-        var changed = ImGui.InputText(label, ref input, 256, ImGuiInputTextFlags.Password);
+        ImGui.SetNextItemWidth(FormInputs.GetAvailableInputSize(tooltip, false, true).X);
+        ImGui.PushStyleVar(ImGuiStyleVar.FrameRounding, 5);
+        var changed = ImGui.InputText("##secret", ref input, 256, ImGuiInputTextFlags.Password);
+        ImGui.PopStyleVar();
+        FormInputs.AppendTooltip(tooltip);
         ImGui.PopID();
-
-        if (!string.IsNullOrEmpty(tooltip))
-            CustomComponents.TooltipForLastItem(tooltip);
 
         if (changed)
             secret = input;
@@ -414,6 +474,7 @@ internal sealed partial class SettingsWindow
         var loginState = CollabDiscordAuth.State;
         var loginBusy = loginState is CollabDiscordAuth.LoginState.WaitingForBrowser or CollabDiscordAuth.LoginState.ExchangingCode;
 
+        FormInputs.SetCursorToParameterEdit();
         if (loginBusy)
         {
             ImGui.TextDisabled(CollabDiscordAuth.StatusText);
