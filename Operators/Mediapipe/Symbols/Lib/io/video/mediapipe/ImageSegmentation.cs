@@ -34,7 +34,7 @@ internal sealed class ImageSegmentationResultPacket
 }
 
 [Guid("23456789-0abc-def1-2345-67890abcdef1")]
-[ExportDependencies("mediapipe_c.dll", "OpenCvSharpExtern.dll", "Emgu.CV.dll", "cvextern.dll", "OpenGL.Net.dll", "CppSharp.Runtime.dll", "Google.Protobuf.dll")]
+[ExportDependencies("mediapipe_c.dll", "libmediapipe_c.so", "libmediapipe_c.dylib", "libmediapipe_opencl_stub.dylib", "OpenCvSharpExtern.dll", "libOpenCvSharpExtern.so", "libOpenCvSharpExtern.dylib", "Emgu.CV.dll", "cvextern.dll", "OpenGL.Net.dll", "CppSharp.Runtime.dll", "Google.Protobuf.dll")]
 public class ImageSegmentation : Instance<ImageSegmentation>
 {
     [Output(Guid = "90abcdef-1234-5678-90ab-cdef12345678", DirtyFlagTrigger = DirtyFlagTrigger.Animated)]
@@ -88,8 +88,17 @@ public class ImageSegmentation : Instance<ImageSegmentation>
 
         OutputTexture.Value = inputTexture;
 
-        if (_processingTask == null || _processingTask.IsCompleted || _imageSegmenter == null || model != _activeModel)
+        // A failed init (e.g. a model that is not shipped) must not rebuild the worker every
+        // frame - retry at most every couple of seconds.
+        var initAllowed = Environment.TickCount64 >= _nextInitAttemptTick;
+        if (initAllowed
+            && (_processingTask == null || _processingTask.IsCompleted || _imageSegmenter == null
+                || model != _activeModel
+                || Acceleration.GetValue(context) != _activeAcceleration
+                || InferenceThreads.GetValue(context) != _activeInferenceThreads))
         {
+            _activeAcceleration = Acceleration.GetValue(context);
+            _activeInferenceThreads = InferenceThreads.GetValue(context);
             InitializeWorker(debug, model);
         }
 
@@ -99,7 +108,7 @@ public class ImageSegmentation : Instance<ImageSegmentation>
             return;
         }
 
-        if (_inputQueue.Count < 1)
+        if (_inputQueue.IsEmpty && !_workerBusy)
         {
             var request = CreateRequestFromTexture(inputTexture, selectedCategories, categoryAllowlist!);
             if (request != null)
@@ -119,6 +128,7 @@ public class ImageSegmentation : Instance<ImageSegmentation>
         if (_currentResult != null)
         {
             UpdateOutputsWithResult(_currentResult, debug);
+            UpdateCount.Value++;
             
             if (debug)
             {
@@ -158,13 +168,20 @@ public class ImageSegmentation : Instance<ImageSegmentation>
     private readonly object _imageSegmenterLock = new object();
     private readonly object _timestampLock = new object();
 
+    private const int MaxInferenceWidth = 640;
+
     private Task? _processingTask;
+    private volatile bool _workerBusy;
+    private long _nextInitAttemptTick;
+    private SegmentationModel? _missingModelLogged;
     private CancellationTokenSource? _cancellationTokenSource;
     private readonly ConcurrentQueue<ImageSegmentationRequest> _inputQueue = new();
     private readonly ConcurrentQueue<ImageSegmentationResultPacket> _outputQueue = new();
     private ImageSegmentationResultPacket? _currentResult;
     private readonly object _workerLock = new object();
     private SegmentationModel _activeModel;
+    private MediaPipeAcceleration? _activeAcceleration;
+    private int _activeInferenceThreads = -1;
     
     private readonly ConcurrentDictionary<(int width, int height), T3.Graphics.Compat.Texture2D> _cachedStagingTextures = new();
     private readonly object _textureCacheLock = new object();
@@ -193,9 +210,6 @@ public class ImageSegmentation : Instance<ImageSegmentation>
                         break;
                     case SegmentationModel.DeepLabV3:
                         modelName = "deeplabv3.tflite";
-                        break;
-                    case SegmentationModel.MaskRCNN:
-                        modelName = "mask_rcnn_inception_resnet_v2_atrous_coco.tflite";
                         break;
                     case SegmentationModel.SelfieSegmenter:
                     default:
@@ -229,33 +243,56 @@ public class ImageSegmentation : Instance<ImageSegmentation>
 
                 if (!modelFound)
                 {
-                    if (debug) Log.Error($"[ImageSegmentation] Model not found: {fullPath}", this);
+                    _nextInitAttemptTick = Environment.TickCount64 + 2000;
+                    if (_missingModelLogged != model)
+                    {
+                        Log.Error($"[ImageSegmentation] Model not found: {modelName}", this);
+                        _missingModelLogged = model;
+                    }
                     return;
                 }
+                _missingModelLogged = null;
 
-                var baseOptions = new Mediapipe.Tasks.Core.CoreBaseOptions(
-                    modelAssetPath: fullPath,
-                    delegateCase: Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU
-                );
-
-                ImageSegmenterOptions options = new(
-                    baseOptions,
+                var acceleration = _activeAcceleration ?? MediaPipeAcceleration.Cpu;
+            var delegateCase = acceleration == MediaPipeAcceleration.Xnnpack ? Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.Xnnpack
+                : acceleration == MediaPipeAcceleration.Gpu ? Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.GPU
+                : Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU;
+            var inferenceThreads = _activeInferenceThreads;
+                ImageSegmenterOptions BuildOptions(Mediapipe.Tasks.Core.CoreBaseOptions.Delegate delegateCase) => new(
+                    new Mediapipe.Tasks.Core.CoreBaseOptions(modelAssetPath: fullPath, delegateCase: delegateCase, numThreads: inferenceThreads),
                     VisionRunningMode.VIDEO,
                     outputCategoryMask: true,
                     outputConfidenceMasks: true
                 );
 
+                ImageSegmenter? segmenter = null;
                 lock (_imageSegmenterLock)
                 {
-                    _imageSegmenter = ImageSegmenter.CreateFromOptions(options);
+                    try
+                    {
+                        segmenter = ImageSegmenter.CreateFromOptions(BuildOptions(delegateCase));
+                    }
+                    catch (Exception gpuEx) when (acceleration != MediaPipeAcceleration.Cpu)
+                    {
+                        Log.Warning($"[ImageSegmentation] GPU acceleration not available ({gpuEx.Message}) - using CPU.", this);
+                        segmenter = ImageSegmenter.CreateFromOptions(BuildOptions(Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU));
+                    }
+                    _imageSegmenter = segmenter;
                 }
-                _cancellationTokenSource = new CancellationTokenSource();
-                var token = _cancellationTokenSource.Token;
-                _processingTask = Task.Run(() => WorkerLoop(token, debug), token);
+
+                if (segmenter != null)
+                {
+                    _cancellationTokenSource = new CancellationTokenSource();
+                    var token = _cancellationTokenSource.Token;
+                    // The worker loop owns this instance; StopWorker closes it only after that task
+                    // has exited, so SegmentForVideo can never run on a closed segmenter.
+                    _processingTask = Task.Run(() => WorkerLoop(token, segmenter, debug), token);
+                }
             }
         }
         catch (Exception ex)
         {
+            _nextInitAttemptTick = Environment.TickCount64 + 2000;
             if (debug) Log.Error($"[ImageSegmentation] Init Failed: {ex.Message}", this);
             lock (_imageSegmenterLock)
             {
@@ -264,17 +301,26 @@ public class ImageSegmentation : Instance<ImageSegmentation>
         }
     }
 
-    private void WorkerLoop(CancellationToken token, bool debug)
+    private void WorkerLoop(CancellationToken token, ImageSegmenter segmenter, bool debug)
     {
         while (!token.IsCancellationRequested)
         {
             if (_inputQueue.TryDequeue(out var request))
             {
+                // Whatever piled up while the previous inference ran is stale by now - only the
+                // newest frame is worth its latency, the rest goes straight back to the pool.
+                while (_inputQueue.TryDequeue(out var newer))
+                {
+                    ReturnBufferToPool(request.PixelData);
+                    request = newer;
+                }
+
                 try
                 {
-                    if (_imageSegmenter != null && request.PixelData != null)
+                    if (request.PixelData != null)
                     {
-                        ProcessFrame(request, debug);
+                        _workerBusy = true;
+                        ProcessFrame(request, segmenter, debug);
                     }
                 }
                 catch (Exception ex)
@@ -283,6 +329,7 @@ public class ImageSegmentation : Instance<ImageSegmentation>
                 }
                 finally
                 {
+                    _workerBusy = false;
                     ReturnBufferToPool(request.PixelData);
                 }
             }
@@ -293,49 +340,53 @@ public class ImageSegmentation : Instance<ImageSegmentation>
         }
     }
 
-    private void ProcessFrame(ImageSegmentationRequest request, bool debug)
+    private void ProcessFrame(ImageSegmentationRequest request, ImageSegmenter segmenter, bool debug)
     {
         using var image = new Image(Mediapipe.ImageFormat.Types.Format.Srgb, request.Width, request.Height, request.Width * 3, request.PixelData!);
 
-        ImageSegmenter? segmenter;
-        lock (_imageSegmenterLock)
-        {
-            segmenter = _imageSegmenter;
-        }
-
-        var result = segmenter?.SegmentForVideo(image, request.Timestamp);
+        var result = segmenter.SegmentForVideo(image, request.Timestamp);
 
         if (result is { } validResult && validResult.ConfidenceMasks != null && validResult.ConfidenceMasks.Count > 0)
         {
-            var firstMask = validResult.ConfidenceMasks[0];
-            int maskWidth = firstMask.Width();
-            int maskHeight = firstMask.Height();
+            try
+            {
+                var firstMask = validResult.ConfidenceMasks[0];
+                int maskWidth = firstMask.Width();
+                int maskHeight = firstMask.Height();
 
-            var maskData = ConvertSegmentationResultToMask(validResult, maskWidth, maskHeight, request.SelectedCategories, debug);
-            
-            byte[]? categoryMaskData = null;
-            float[]? confidenceMaskData = null;
-            
-            if (validResult.CategoryMask != null)
-            {
-                categoryMaskData = ConvertCategoryMask(validResult, maskWidth, maskHeight, debug);
-            }
-            
-            if (validResult.ConfidenceMasks != null && validResult.ConfidenceMasks.Count > 0)
-            {
+                var maskData = ConvertSegmentationResultToMask(validResult, maskWidth, maskHeight, request.SelectedCategories, debug);
+
+                byte[]? categoryMaskData = null;
+                float[]? confidenceMaskData = null;
+
+                if (validResult.CategoryMask != null)
+                {
+                    categoryMaskData = ConvertCategoryMask(validResult, maskWidth, maskHeight, debug);
+                }
+
                 confidenceMaskData = ConvertConfidenceMask(validResult, maskWidth, maskHeight, debug);
+
+                var packet = new ImageSegmentationResultPacket
+                                 {
+                                     MaskData = maskData,
+                                     Width = maskWidth,
+                                     Height = maskHeight,
+                                     Confidence = 1.0f,
+                                     CategoryMaskData = categoryMaskData,
+                                     ConfidenceMaskData = confidenceMaskData
+                                 };
+                _outputQueue.Enqueue(packet);
             }
-            
-            var packet = new ImageSegmentationResultPacket
-                             {
-                                 MaskData = maskData,
-                                 Width = maskWidth,
-                                 Height = maskHeight,
-                                 Confidence = 1.0f,
-                                 CategoryMaskData = categoryMaskData,
-                                 ConfidenceMaskData = confidenceMaskData
-                             };
-            _outputQueue.Enqueue(packet);
+            finally
+            {
+                // The segmenter allocates the mask images per inference and the result owns
+                // them - not disposing them leaks native memory every frame.
+                foreach (var mask in validResult.ConfidenceMasks)
+                {
+                    mask?.Dispose();
+                }
+                validResult.CategoryMask?.Dispose();
+            }
         }
         else
         {
@@ -354,29 +405,38 @@ public class ImageSegmentation : Instance<ImageSegmentation>
         lock (_workerLock)
         {
             _cancellationTokenSource?.Cancel();
-            try
+            var task = _processingTask;
+            _processingTask = null;
+
+            ImageSegmenter? segmenter;
+            lock (_imageSegmenterLock)
             {
-                if (_processingTask != null && !_processingTask.IsCompleted)
-                {
-                    _processingTask.Wait(200);
-                }
-            }
-            catch (Exception ex)
-            {
-                if (debug) Log.Error($"[ImageSegmentation] THREAD SAFETY: Error waiting for worker task: {ex.Message}", this);
+                segmenter = _imageSegmenter;
+                _imageSegmenter = null;
             }
 
-            try
+            if (segmenter != null)
             {
-                lock (_imageSegmenterLock)
+                // SegmentForVideo cannot be interrupted and runs on the worker outside every lock, so
+                // Close() must wait until that task has fully exited or it is a use-after-free in
+                // native code. The worker loop holds its own reference, making the hand-off safe
+                // without ever blocking the eval thread on an in-flight inference.
+                Task.Run(async () =>
                 {
-                    _imageSegmenter?.Close();
-                    _imageSegmenter = null;
-                }
-            }
-            catch (Exception ex)
-            {
-                if (debug) Log.Error($"[ImageSegmentation] RESOURCE MANAGEMENT: Error closing ImageSegmenter: {ex.Message}", this);
+                    if (task != null)
+                    {
+                        try { await task; }
+                        catch (Exception) { }
+                    }
+                    try
+                    {
+                        segmenter.Close();
+                    }
+                    catch (Exception ex)
+                    {
+                        if (debug) Log.Error($"[ImageSegmentation] Error closing ImageSegmenter: {ex.Message}", this);
+                    }
+                });
             }
 
             while (_inputQueue.TryDequeue(out var req))
@@ -447,7 +507,10 @@ public class ImageSegmentation : Instance<ImageSegmentation>
     private byte[] GetBuffer(int size)
     {
         if (_bufferPool.TryTake(out var b) && b.Length == size) return b;
-        return new byte[size];
+
+        // Pinned on the POH: the native Image keeps this pointer and reads it during
+        // DetectForVideo, after the wrapper's own pin over the constructor has been released.
+        return GC.AllocateUninitializedArray<byte>(size, pinned: true);
     }
 
     private void ReturnBufferToPool(byte[]? b)
@@ -475,7 +538,14 @@ public class ImageSegmentation : Instance<ImageSegmentation>
 
         try
         {
-            byte[] buffer = GetBuffer(width * height * 3);
+            // MediaPipe resizes to its model input (256px) internally; feeding the full camera
+            // image only burns downsample/memcpy time before hitting that resize - and the
+            // returned masks/textures would be needlessly large.
+            var downscale = Math.Min(1.0f, (float)MaxInferenceWidth / width);
+            var inferenceWidth = Math.Max(1, (int)(width * downscale));
+            var inferenceHeight = Math.Max(1, (int)(height * downscale));
+
+            byte[] buffer = GetBuffer(inferenceWidth * inferenceHeight * 3);
             unsafe
             {
                 IntPtr srcPtr = dataBox.DataPointer;
@@ -484,16 +554,20 @@ public class ImageSegmentation : Instance<ImageSegmentation>
                 fixed (byte* dst = buffer)
                 {
                     IntPtr dstPtr = (IntPtr)dst;
-                    Parallel.For(0, height, y =>
-                    {
-                        byte* rowSrc = (byte*)srcPtr + (y * rowPitch);
-                        byte* rowDst = (byte*)dstPtr + (y * width * 3);
+                    float sourceXStep = (float)width / inferenceWidth;
+                    float sourceYStep = (float)height / inferenceHeight;
 
-                        for (int x = 0; x < width; x++)
+                    Parallel.For(0, inferenceHeight, iy =>
+                    {
+                        byte* rowSrc = (byte*)srcPtr + ((int)(iy * sourceYStep)) * rowPitch;
+                        byte* rowDst = (byte*)dstPtr + iy * inferenceWidth * 3;
+
+                        for (int ix = 0; ix < inferenceWidth; ix++)
                         {
-                            rowDst[x * 3] = rowSrc[x * 4 + 2];     // R
-                            rowDst[x * 3 + 1] = rowSrc[x * 4 + 1]; // G
-                            rowDst[x * 3 + 2] = rowSrc[x * 4];     // B
+                            int sx = (int)(ix * sourceXStep);
+                            rowDst[ix * 3] = rowSrc[sx * 4];         // R
+                            rowDst[ix * 3 + 1] = rowSrc[sx * 4 + 1]; // G
+                            rowDst[ix * 3 + 2] = rowSrc[sx * 4 + 2]; // B
                         }
                     });
                 }
@@ -505,8 +579,8 @@ public class ImageSegmentation : Instance<ImageSegmentation>
             return new ImageSegmentationRequest
             {
                 PixelData = buffer,
-                Width = width,
-                Height = height,
+                Width = inferenceWidth,
+                Height = inferenceHeight,
                 Timestamp = ts,
                 SelectedCategories = selectedCategories,
                 CategoryAllowlist = string.IsNullOrEmpty(categoryAllowlist) ? null : categoryAllowlist.Split(',')
@@ -623,7 +697,7 @@ public class ImageSegmentation : Instance<ImageSegmentation>
                         for (int i = 0; i < width * height; i++)
                         {
                             float val = BitConverter.ToSingle(tempBytes, i * 4);
-                            byte pixelVal = (byte)(val * 255);
+                            byte pixelVal = (byte)(Math.Clamp(float.IsNaN(val) ? 0f : val, 0f, 1f) * 255f);
                             
                             singleChannelMask[i] = Math.Max(singleChannelMask[i], pixelVal);
                         }
@@ -856,25 +930,33 @@ public class ImageSegmentation : Instance<ImageSegmentation>
 
         int width = result.Width;
         int height = result.Height;
-        
+
         if (result.CategoryMaskData != null)
         {
             var maskData = result.CategoryMaskData;
-            
+
+            // The segmenter runs on a downscaled inference image, so its masks are smaller than
+            // the camera frame - stretch them over the whole frame (nearest neighbour) instead of
+            // covering only the top-left corner.
+            int matWidth = mat.Width;
+            int matHeight = mat.Height;
+            float maskXStep = (float)width / matWidth;
+            float maskYStep = (float)height / matHeight;
+
             unsafe 
             {
                 byte* matPtr = mat.DataPointer;
                 long step = mat.Step();
                 int channels = mat.Channels();
 
-                Parallel.For(0, height, y =>
+                Parallel.For(0, matHeight, y =>
                 {
                     byte* rowPtr = matPtr + y * step;
-                    int rowOffset = y * width;
-                    
-                    for (int x = 0; x < width; x++)
+                    int maskRow = (int)(y * maskYStep) * width;
+
+                    for (int x = 0; x < matWidth; x++)
                     {
-                        int maskIndex = rowOffset + x;
+                        int maskIndex = maskRow + (int)(x * maskXStep);
                         if (maskIndex < maskData.Length)
                         {
                             int category = maskData[maskIndex];
@@ -935,6 +1017,10 @@ public class ImageSegmentation : Instance<ImageSegmentation>
     protected override void Dispose(bool isDisposing)
     {
         if (!isDisposing) return;
+
+        // Stops the worker task and hands the segmenter to its deferred closer - closing it here
+        // directly could hit a frame still running on the worker thread.
+        StopWorker(false);
 
         try
         {
@@ -1000,6 +1086,16 @@ public class ImageSegmentation : Instance<ImageSegmentation>
     [Input(Guid = "67890abc-def1-2345-6789-0abcdef12345")]
     public readonly InputSlot<string> SelectedCategories = new();
 
+    /// <summary>Inference acceleration: Cpu = plain single-threaded TF Lite (works everywhere),
+    /// Xnnpack = multithreaded CPU (the fast default; see InferenceThreads), Gpu = OpenGL/EGL
+    /// delegate (Linux native has it; the CPU-only Windows/macOS natives fall back to Cpu).</summary>
+    [Input(Guid = "a1b2c3d4-0005-4a9b-8c2d-101010101010")]
+    public readonly InputSlot<MediaPipeAcceleration> Acceleration = new(MediaPipeAcceleration.Xnnpack);
+
+    /// <summary>Worker threads for the Xnnpack acceleration (0 = library default). Ignored by Cpu and Gpu.</summary>
+    [Input(Guid = "a1b2c3d4-1005-4a9b-8c2d-101010101010")]
+    public readonly InputSlot<int> InferenceThreads = new(0);
+
     [Input(Guid = "7890abcd-ef12-3456-7890-abcdef123456")]
     public readonly InputSlot<bool> Debug = new(false);
 
@@ -1012,7 +1108,6 @@ public class ImageSegmentation : Instance<ImageSegmentation>
         SelfieSegmenter,
         SelfieMulticlass,
         DeepLabV3,
-        MaskRCNN,
     }
 
     #region Texture Conversion (Minimal OpenCV Usage)
@@ -1041,6 +1136,7 @@ public class ImageSegmentation : Instance<ImageSegmentation>
             device.ImmediateContext.UnmapSubresource(stagingTexture, 0);
         }
 
+        Cv2.CvtColor(mat, mat, ColorConversionCodes.RGBA2BGRA);
         return mat;
     }
     #endregion
