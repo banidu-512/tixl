@@ -794,6 +794,18 @@ internal static class DebugServer
                 boygroup.SetEnabled(false);
                 break;
 
+            case "play":
+                boygroup.SendPlayControl(true);
+                break;
+
+            case "pause":
+                boygroup.SendPlayControl(false);
+                break;
+
+            case "syncTime":
+                boygroup.SendTimeSyncNow();
+                break;
+
             case "deploy":
                 boygroup.DeployAndSync();
                 break;
@@ -853,6 +865,7 @@ internal static class DebugServer
                                ["error"] = boygroup.ErrorText,
                                ["role"] = UserSettings.Config.BoygroupRole.ToString(),
                                ["group"] = boygroup.GroupName,
+                               ["timeFollow"] = boygroup.TimeFollowSummary,
                                ["clients"] = clients,
                                ["discovered"] = discovered,
                            });

@@ -1,5 +1,6 @@
 #nullable enable
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
@@ -254,6 +255,7 @@ internal sealed class BoygroupManager
         _serverProjectFolder = "";
         _lastBindingsSent = ""; // the master needs this machine's bindings
         DeploySummary = "";
+        ResetClockSync();
 
         try
         {
@@ -419,6 +421,13 @@ internal sealed class BoygroupManager
         SendTimeSync();
         MaybeSendBindings();
 
+        if (State == BoygroupState.Client)
+        {
+            SendClockPings();
+            ApplyPendingAnchor();
+            ApplyIntegratedTime();
+        }
+
         if (State == BoygroupState.Server)
             RefreshDiscoveredServers();
     }
@@ -542,6 +551,23 @@ internal sealed class BoygroupManager
 
             case "bindings" when State == BoygroupState.Server:
                 HandleClientBindings(peer, json);
+                break;
+
+            // NTP-style clock offset: the client measures the master's UTC clock so a play-at anchor
+            // lands on the same instant everywhere, no matter how late its packet arrived.
+            case "clockPing" when State == BoygroupState.Server:
+                SendJson(peer, new
+                               {
+                                   t = "clockPong",
+                                   id = json["id"]?.Value<long>() ?? 0,
+                                   c1 = json["c1"]?.Value<long>() ?? 0,
+                                   m2 = DateTime.UtcNow.Ticks,
+                                   m3 = DateTime.UtcNow.Ticks,
+                               });
+                break;
+
+            case "clockPong" when State == BoygroupState.Client:
+                HandleClockPong(json);
                 break;
 
             case "bindOutput" when State == BoygroupState.Client:
@@ -1228,51 +1254,162 @@ internal sealed class BoygroupManager
         if (playback == null)
             return;
 
+        // Play-at anchor: the bars the master will have at an instant slightly in the future, sent
+        // with that instant on the master's UTC clock. Clients convert it with their measured clock
+        // offset and switch when their own monotonic clock reaches it, so a late or jittery packet
+        // does not shift the phase.
+        var lead = TimeSpan.FromMilliseconds(AnchorLeadMs);
+        var anchorBars = playback.TimeInBars + playback.PlaybackSpeed * lead.TotalSeconds * playback.Bpm / 240.0;
         BroadcastToGroup(new
                              {
                                  t = "time",
-                                 bars = playback.TimeInBars,
+                                 bars = anchorBars,
                                  speed = playback.PlaybackSpeed,
                                  bpm = playback.Bpm,
-                                 at = Environment.TickCount64,
+                                 at = (DateTime.UtcNow + lead).Ticks,
                              });
     }
 
-    private long _lastSyncWallMs = -1;
-    private double _lastSyncBars;
-    private double _lastSyncSpeed;
-    private double _lastSyncBpm = 120;
+    /// <summary>How far ahead a play-at anchor is scheduled: enough for LAN jitter, shorter than the send cadence.</summary>
+    private const int AnchorLeadMs = 80;
 
+    // Clock offset (master UTC - local UTC), taken from the sample with the least round trip.
+    private long _clockOffsetTicks;
+    private long _clockBestRttTicks = long.MaxValue;
+    private long _clockBestSampleUtc;
+    private long _nextClockPingTicks;
+    private long _clockPingId;
+    private int _clockSamples;
+
+    private void SendClockPings()
+    {
+        if (State != BoygroupState.Client)
+            return;
+
+        var now = Environment.TickCount64;
+        if (now < _nextClockPingTicks)
+            return;
+
+        // A burst establishes the offset quickly; after that a slow refresh tracks clock drift.
+        _nextClockPingTicks = now + (_clockSamples < 8 ? 1000 : 10_000);
+        if (_transport is not BoygroupClientTransport clientTransport)
+            return;
+
+        SendJson(clientTransport.ServerPeer,
+                 new
+                 {
+                     t = "clockPing",
+                     id = ++_clockPingId,
+                     c1 = DateTime.UtcNow.Ticks,
+                 });
+    }
+
+    private void HandleClockPong(JObject json)
+    {
+        if (json["id"]?.Value<long>() != _clockPingId)
+            return;
+
+        var c1 = json["c1"]?.Value<long>() ?? 0;
+        var m2 = json["m2"]?.Value<long>() ?? 0;
+        var m3 = json["m3"]?.Value<long>() ?? 0;
+        var c4 = DateTime.UtcNow.Ticks;
+        if (c1 == 0 || m2 == 0 || m3 == 0)
+            return;
+
+        var roundTrip = (c4 - c1) - (m3 - m2);
+        if (roundTrip < 0)
+            return;
+
+        // NTP offset: the master's clock minus this machine's, at the middle of the round trip.
+        var offset = ((m2 - c1) + (m3 - c4)) / 2;
+        _clockSamples++;
+
+        // The least-queueing sample is the most symmetric. A sample older than a minute is replaced
+        // even when it is not better, so a clock that was adjusted does not pin the offset forever.
+        if (roundTrip <= _clockBestRttTicks || c4 - _clockBestSampleUtc > TimeSpan.TicksPerMinute)
+        {
+            _clockOffsetTicks = offset;
+            _clockBestRttTicks = roundTrip;
+            _clockBestSampleUtc = c4;
+        }
+    }
+
+    private void ResetClockSync()
+    {
+        _clockOffsetTicks = 0;
+        _clockBestRttTicks = long.MaxValue;
+        _clockBestSampleUtc = 0;
+        _clockSamples = 0;
+        _nextClockPingTicks = 0;
+        _hasAnchor = false;
+        _lastSyncStopwatch = -1;
+    }
+
+    private bool _hasAnchor;
+    private double _anchorLocalStopwatch = -1;
+    private double _anchorBars;
+    private double _anchorSpeed;
+    private double _anchorBpm = 120;
+
+    /// <summary>Client side: converts the master's play-at instant into this machine's monotonic clock.</summary>
     private void ApplyTimeSync(JObject json)
     {
+        var playback = Playback.Current;
+        var masterUtc = json["at"]?.Value<long>() ?? 0;
+        if (playback == null || masterUtc == 0)
+            return;
+
+        var localUtc = masterUtc - _clockOffsetTicks;
+        var deltaSecs = (localUtc - DateTime.UtcNow.Ticks) / (double)TimeSpan.TicksPerSecond;
+        _anchorLocalStopwatch = Stopwatch.GetTimestamp() + deltaSecs * Stopwatch.Frequency;
+        _anchorBars = json["bars"]?.Value<double>() ?? 0;
+        _anchorSpeed = json["speed"]?.Value<double>() ?? 0;
+        _anchorBpm = json["bpm"]?.Value<double>() ?? 120;
+        _hasAnchor = true;
+    }
+
+    /// <summary>Client side: switches to the anchor once its instant arrives, then dead-reckons from there.</summary>
+    private void ApplyPendingAnchor()
+    {
+        if (!_hasAnchor || Stopwatch.GetTimestamp() < _anchorLocalStopwatch)
+            return;
+
         var playback = Playback.Current;
         if (playback == null)
             return;
 
-        _lastSyncWallMs = Environment.TickCount64;
-        _lastSyncBars = json["bars"]?.Value<double>() ?? 0;
-        _lastSyncSpeed = json["speed"]?.Value<double>() ?? 0;
-        _lastSyncBpm = json["bpm"]?.Value<double>() ?? 120;
+        // A late anchor still carries the right instant: advance its bars by the lateness rather than
+        // snapping back to where the master was when it sent the packet.
+        var lateSecs = Math.Max(0, (Stopwatch.GetTimestamp() - _anchorLocalStopwatch) / Stopwatch.Frequency);
+        _lastSyncStopwatch = Stopwatch.GetTimestamp();
+        _lastSyncBars = _anchorBars + _anchorSpeed * lateSecs * _anchorBpm / 240.0;
+        _lastSyncSpeed = _anchorSpeed;
+        _lastSyncBpm = _anchorBpm;
 
-        playback.PlaybackSpeed = _lastSyncSpeed;
-        playback.Bpm = _lastSyncBpm;
+        playback.PlaybackSpeed = _anchorSpeed;
+        playback.Bpm = _anchorBpm;
         ApplyIntegratedTime();
 
-        var playing = _lastSyncSpeed != 0;
-        TimeFollowSummary = playing
-                                ? $"Following master: {_lastSyncBars:0.00} bars @ {_lastSyncBpm:0} bpm"
+        _hasAnchor = false;
+        TimeFollowSummary = _anchorSpeed != 0
+                                ? $"Following master: {_lastSyncBars:0.00} bars @ {_anchorBpm:0} bpm"
                                 : "Following master (paused)";
     }
 
-    /// <summary>Dead-reckons between master updates so the time cursor moves every frame, not in 10 Hz steps.</summary>
+    private double _lastSyncStopwatch = -1;
+    private double _lastSyncBars;
+    private double _lastSyncSpeed;
+    private double _lastSyncBpm = 120;
+
+    /// <summary>Dead-reckons between master anchors so the time cursor moves every frame, not in 10 Hz steps.</summary>
     private void ApplyIntegratedTime()
     {
         var playback = Playback.Current;
-        if (playback == null || _lastSyncWallMs < 0)
+        if (playback == null || _lastSyncStopwatch < 0)
             return;
 
-        // Monotonic host clock: TimeOfDay would wrap at midnight and throw the time cursor away.
-        var elapsedSecs = (Environment.TickCount64 - _lastSyncWallMs) / 1000.0;
+        // Monotonic host clock: wall time could jump under an NTP correction.
+        var elapsedSecs = (Stopwatch.GetTimestamp() - _lastSyncStopwatch) / Stopwatch.Frequency;
         playback.TimeInBars = _lastSyncBars + _lastSyncSpeed * elapsedSecs * _lastSyncBpm / 240.0;
     }
 
