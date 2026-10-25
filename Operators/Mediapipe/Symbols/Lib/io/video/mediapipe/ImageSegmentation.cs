@@ -34,7 +34,7 @@ internal sealed class ImageSegmentationResultPacket
 }
 
 [Guid("23456789-0abc-def1-2345-67890abcdef1")]
-[ExportDependencies("mediapipe_c.dll", "libmediapipe_c.so", "libmediapipe_c.dylib", "libmediapipe_opencl_stub.dylib", "OpenCvSharpExtern.dll", "Emgu.CV.dll", "cvextern.dll", "OpenGL.Net.dll", "CppSharp.Runtime.dll", "Google.Protobuf.dll")]
+[ExportDependencies("mediapipe_c.dll", "libmediapipe_c.so", "libmediapipe_c.dylib", "libmediapipe_opencl_stub.dylib", "OpenCvSharpExtern.dll", "libOpenCvSharpExtern.so", "libOpenCvSharpExtern.dylib", "Emgu.CV.dll", "cvextern.dll", "OpenGL.Net.dll", "CppSharp.Runtime.dll", "Google.Protobuf.dll")]
 public class ImageSegmentation : Instance<ImageSegmentation>
 {
     [Output(Guid = "90abcdef-1234-5678-90ab-cdef12345678", DirtyFlagTrigger = DirtyFlagTrigger.Animated)]
@@ -88,7 +88,14 @@ public class ImageSegmentation : Instance<ImageSegmentation>
 
         OutputTexture.Value = inputTexture;
 
-        if (_processingTask == null || _processingTask.IsCompleted || _imageSegmenter == null || model != _activeModel || Acceleration.GetValue(context) != _activeAcceleration || InferenceThreads.GetValue(context) != _activeInferenceThreads)
+        // A failed init (e.g. a model that is not shipped) must not rebuild the worker every
+        // frame - retry at most every couple of seconds.
+        var initAllowed = Environment.TickCount64 >= _nextInitAttemptTick;
+        if (initAllowed
+            && (_processingTask == null || _processingTask.IsCompleted || _imageSegmenter == null
+                || model != _activeModel
+                || Acceleration.GetValue(context) != _activeAcceleration
+                || InferenceThreads.GetValue(context) != _activeInferenceThreads))
         {
             _activeAcceleration = Acceleration.GetValue(context);
             _activeInferenceThreads = InferenceThreads.GetValue(context);
@@ -101,7 +108,7 @@ public class ImageSegmentation : Instance<ImageSegmentation>
             return;
         }
 
-        if (_inputQueue.Count < 1)
+        if (_inputQueue.IsEmpty && !_workerBusy)
         {
             var request = CreateRequestFromTexture(inputTexture, selectedCategories, categoryAllowlist!);
             if (request != null)
@@ -121,6 +128,7 @@ public class ImageSegmentation : Instance<ImageSegmentation>
         if (_currentResult != null)
         {
             UpdateOutputsWithResult(_currentResult, debug);
+            UpdateCount.Value++;
             
             if (debug)
             {
@@ -160,7 +168,12 @@ public class ImageSegmentation : Instance<ImageSegmentation>
     private readonly object _imageSegmenterLock = new object();
     private readonly object _timestampLock = new object();
 
+    private const int MaxInferenceWidth = 640;
+
     private Task? _processingTask;
+    private volatile bool _workerBusy;
+    private long _nextInitAttemptTick;
+    private SegmentationModel? _missingModelLogged;
     private CancellationTokenSource? _cancellationTokenSource;
     private readonly ConcurrentQueue<ImageSegmentationRequest> _inputQueue = new();
     private readonly ConcurrentQueue<ImageSegmentationResultPacket> _outputQueue = new();
@@ -198,9 +211,6 @@ public class ImageSegmentation : Instance<ImageSegmentation>
                     case SegmentationModel.DeepLabV3:
                         modelName = "deeplabv3.tflite";
                         break;
-                    case SegmentationModel.MaskRCNN:
-                        modelName = "mask_rcnn_inception_resnet_v2_atrous_coco.tflite";
-                        break;
                     case SegmentationModel.SelfieSegmenter:
                     default:
                         modelName = "selfie_segmenter.tflite";
@@ -233,9 +243,15 @@ public class ImageSegmentation : Instance<ImageSegmentation>
 
                 if (!modelFound)
                 {
-                    if (debug) Log.Error($"[ImageSegmentation] Model not found: {fullPath}", this);
+                    _nextInitAttemptTick = Environment.TickCount64 + 2000;
+                    if (_missingModelLogged != model)
+                    {
+                        Log.Error($"[ImageSegmentation] Model not found: {modelName}", this);
+                        _missingModelLogged = model;
+                    }
                     return;
                 }
+                _missingModelLogged = null;
 
                 var acceleration = _activeAcceleration ?? MediaPipeAcceleration.Cpu;
             var delegateCase = acceleration == MediaPipeAcceleration.Xnnpack ? Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.Xnnpack
@@ -276,6 +292,7 @@ public class ImageSegmentation : Instance<ImageSegmentation>
         }
         catch (Exception ex)
         {
+            _nextInitAttemptTick = Environment.TickCount64 + 2000;
             if (debug) Log.Error($"[ImageSegmentation] Init Failed: {ex.Message}", this);
             lock (_imageSegmenterLock)
             {
@@ -290,10 +307,19 @@ public class ImageSegmentation : Instance<ImageSegmentation>
         {
             if (_inputQueue.TryDequeue(out var request))
             {
+                // Whatever piled up while the previous inference ran is stale by now - only the
+                // newest frame is worth its latency, the rest goes straight back to the pool.
+                while (_inputQueue.TryDequeue(out var newer))
+                {
+                    ReturnBufferToPool(request.PixelData);
+                    request = newer;
+                }
+
                 try
                 {
                     if (request.PixelData != null)
                     {
+                        _workerBusy = true;
                         ProcessFrame(request, segmenter, debug);
                     }
                 }
@@ -303,6 +329,7 @@ public class ImageSegmentation : Instance<ImageSegmentation>
                 }
                 finally
                 {
+                    _workerBusy = false;
                     ReturnBufferToPool(request.PixelData);
                 }
             }
@@ -321,35 +348,45 @@ public class ImageSegmentation : Instance<ImageSegmentation>
 
         if (result is { } validResult && validResult.ConfidenceMasks != null && validResult.ConfidenceMasks.Count > 0)
         {
-            var firstMask = validResult.ConfidenceMasks[0];
-            int maskWidth = firstMask.Width();
-            int maskHeight = firstMask.Height();
+            try
+            {
+                var firstMask = validResult.ConfidenceMasks[0];
+                int maskWidth = firstMask.Width();
+                int maskHeight = firstMask.Height();
 
-            var maskData = ConvertSegmentationResultToMask(validResult, maskWidth, maskHeight, request.SelectedCategories, debug);
-            
-            byte[]? categoryMaskData = null;
-            float[]? confidenceMaskData = null;
-            
-            if (validResult.CategoryMask != null)
-            {
-                categoryMaskData = ConvertCategoryMask(validResult, maskWidth, maskHeight, debug);
-            }
-            
-            if (validResult.ConfidenceMasks != null && validResult.ConfidenceMasks.Count > 0)
-            {
+                var maskData = ConvertSegmentationResultToMask(validResult, maskWidth, maskHeight, request.SelectedCategories, debug);
+
+                byte[]? categoryMaskData = null;
+                float[]? confidenceMaskData = null;
+
+                if (validResult.CategoryMask != null)
+                {
+                    categoryMaskData = ConvertCategoryMask(validResult, maskWidth, maskHeight, debug);
+                }
+
                 confidenceMaskData = ConvertConfidenceMask(validResult, maskWidth, maskHeight, debug);
+
+                var packet = new ImageSegmentationResultPacket
+                                 {
+                                     MaskData = maskData,
+                                     Width = maskWidth,
+                                     Height = maskHeight,
+                                     Confidence = 1.0f,
+                                     CategoryMaskData = categoryMaskData,
+                                     ConfidenceMaskData = confidenceMaskData
+                                 };
+                _outputQueue.Enqueue(packet);
             }
-            
-            var packet = new ImageSegmentationResultPacket
-                             {
-                                 MaskData = maskData,
-                                 Width = maskWidth,
-                                 Height = maskHeight,
-                                 Confidence = 1.0f,
-                                 CategoryMaskData = categoryMaskData,
-                                 ConfidenceMaskData = confidenceMaskData
-                             };
-            _outputQueue.Enqueue(packet);
+            finally
+            {
+                // The segmenter allocates the mask images per inference and the result owns
+                // them - not disposing them leaks native memory every frame.
+                foreach (var mask in validResult.ConfidenceMasks)
+                {
+                    mask?.Dispose();
+                }
+                validResult.CategoryMask?.Dispose();
+            }
         }
         else
         {
@@ -498,7 +535,14 @@ public class ImageSegmentation : Instance<ImageSegmentation>
 
         try
         {
-            byte[] buffer = GetBuffer(width * height * 3);
+            // MediaPipe resizes to its model input (256px) internally; feeding the full camera
+            // image only burns downsample/memcpy time before hitting that resize - and the
+            // returned masks/textures would be needlessly large.
+            var downscale = Math.Min(1.0f, (float)MaxInferenceWidth / width);
+            var inferenceWidth = Math.Max(1, (int)(width * downscale));
+            var inferenceHeight = Math.Max(1, (int)(height * downscale));
+
+            byte[] buffer = GetBuffer(inferenceWidth * inferenceHeight * 3);
             unsafe
             {
                 IntPtr srcPtr = dataBox.DataPointer;
@@ -507,16 +551,20 @@ public class ImageSegmentation : Instance<ImageSegmentation>
                 fixed (byte* dst = buffer)
                 {
                     IntPtr dstPtr = (IntPtr)dst;
-                    Parallel.For(0, height, y =>
-                    {
-                        byte* rowSrc = (byte*)srcPtr + (y * rowPitch);
-                        byte* rowDst = (byte*)dstPtr + (y * width * 3);
+                    float sourceXStep = (float)width / inferenceWidth;
+                    float sourceYStep = (float)height / inferenceHeight;
 
-                        for (int x = 0; x < width; x++)
+                    Parallel.For(0, inferenceHeight, iy =>
+                    {
+                        byte* rowSrc = (byte*)srcPtr + ((int)(iy * sourceYStep)) * rowPitch;
+                        byte* rowDst = (byte*)dstPtr + iy * inferenceWidth * 3;
+
+                        for (int ix = 0; ix < inferenceWidth; ix++)
                         {
-                            rowDst[x * 3] = rowSrc[x * 4];     // R
-                            rowDst[x * 3 + 1] = rowSrc[x * 4 + 1]; // G
-                            rowDst[x * 3 + 2] = rowSrc[x * 4 + 2];     // B
+                            int sx = (int)(ix * sourceXStep);
+                            rowDst[ix * 3] = rowSrc[sx * 4];         // R
+                            rowDst[ix * 3 + 1] = rowSrc[sx * 4 + 1]; // G
+                            rowDst[ix * 3 + 2] = rowSrc[sx * 4 + 2]; // B
                         }
                     });
                 }
@@ -528,8 +576,8 @@ public class ImageSegmentation : Instance<ImageSegmentation>
             return new ImageSegmentationRequest
             {
                 PixelData = buffer,
-                Width = width,
-                Height = height,
+                Width = inferenceWidth,
+                Height = inferenceHeight,
                 Timestamp = ts,
                 SelectedCategories = selectedCategories,
                 CategoryAllowlist = string.IsNullOrEmpty(categoryAllowlist) ? null : categoryAllowlist.Split(',')
@@ -646,7 +694,7 @@ public class ImageSegmentation : Instance<ImageSegmentation>
                         for (int i = 0; i < width * height; i++)
                         {
                             float val = BitConverter.ToSingle(tempBytes, i * 4);
-                            byte pixelVal = (byte)(val * 255);
+                            byte pixelVal = (byte)(Math.Clamp(float.IsNaN(val) ? 0f : val, 0f, 1f) * 255f);
                             
                             singleChannelMask[i] = Math.Max(singleChannelMask[i], pixelVal);
                         }
@@ -879,25 +927,33 @@ public class ImageSegmentation : Instance<ImageSegmentation>
 
         int width = result.Width;
         int height = result.Height;
-        
+
         if (result.CategoryMaskData != null)
         {
             var maskData = result.CategoryMaskData;
-            
+
+            // The segmenter runs on a downscaled inference image, so its masks are smaller than
+            // the camera frame - stretch them over the whole frame (nearest neighbour) instead of
+            // covering only the top-left corner.
+            int matWidth = mat.Width;
+            int matHeight = mat.Height;
+            float maskXStep = (float)width / matWidth;
+            float maskYStep = (float)height / matHeight;
+
             unsafe 
             {
                 byte* matPtr = mat.DataPointer;
                 long step = mat.Step();
                 int channels = mat.Channels();
 
-                Parallel.For(0, height, y =>
+                Parallel.For(0, matHeight, y =>
                 {
                     byte* rowPtr = matPtr + y * step;
-                    int rowOffset = y * width;
-                    
-                    for (int x = 0; x < width; x++)
+                    int maskRow = (int)(y * maskYStep) * width;
+
+                    for (int x = 0; x < matWidth; x++)
                     {
-                        int maskIndex = rowOffset + x;
+                        int maskIndex = maskRow + (int)(x * maskXStep);
                         if (maskIndex < maskData.Length)
                         {
                             int category = maskData[maskIndex];
@@ -1049,7 +1105,6 @@ public class ImageSegmentation : Instance<ImageSegmentation>
         SelfieSegmenter,
         SelfieMulticlass,
         DeepLabV3,
-        MaskRCNN,
     }
 
     #region Texture Conversion (Minimal OpenCV Usage)

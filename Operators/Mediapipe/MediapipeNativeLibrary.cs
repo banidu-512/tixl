@@ -49,7 +49,7 @@ internal static class MediapipeNativeLibrary
         var type = typeof(Lib.io.video.mediapipe.MediaPipeAcceleration);
 
         TypeNameRegistry.Entries[type] = "MediaPipeAcceleration";
-        InputValueCreators.Entries[type] = () => new InputValue<Lib.io.video.mediapipe.MediaPipeAcceleration>(Lib.io.video.mediapipe.MediaPipeAcceleration.Cpu);
+        InputValueCreators.Entries[type] = () => new InputValue<Lib.io.video.mediapipe.MediaPipeAcceleration>(Lib.io.video.mediapipe.MediaPipeAcceleration.Xnnpack);
         TypeValueToJsonConverters.Entries[type] = (writer, obj) => writer.WriteValue(obj.ToString());
         JsonToTypeValueConverters.Entries[type] = token =>
         {

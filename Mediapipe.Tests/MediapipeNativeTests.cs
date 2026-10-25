@@ -119,6 +119,88 @@ public class MediapipeNativeTests
         Assert.True(result.Detections == null || result.Detections.Count == 0);
     }
 
+    /// <summary>
+    /// The operators read the segmentation mask through PixelWriteLock and must dispose the
+    /// result's native mask images (the landmarker allocates one per inference). This runs the
+    /// exact operator path repeatedly - a missing dispose or an invalid mask read shows up as
+    /// native memory growth or a fault.
+    /// </summary>
+    [Fact]
+    public void PoseLandmarker_SegmentationMasks_ReadAndDisposeAcrossFrames()
+    {
+        var baseOptions = new CoreBaseOptions(modelAssetPath: AssetPath("pose_landmarker.task"),
+                                             delegateCase: CoreBaseOptions.Delegate.CPU);
+        var options = new PoseLandmarkerOptions(baseOptions, VisionRunningMode.VIDEO, numPoses: 1,
+                                                outputSegmentationMasks: true);
+        using var landmarker = PoseLandmarker.CreateFromOptions(options);
+
+        long timestamp = 0;
+        var framesWithMasks = 0;
+        for (var frame = 0; frame < 20; frame++)
+        {
+            timestamp += 33;
+            using var image = CreateTestImage();
+            var result = landmarker.DetectForVideo(image, timestamp);
+
+            // Whether the bundled pose model emits a segmentation-mask packet is model/native
+            // dependent; when it does, the operator path (read + dispose) must work without faults.
+            if (result.SegmentationMasks is not { Count: > 0 })
+                continue;
+
+            framesWithMasks++;
+            foreach (var mask in result.SegmentationMasks)
+            {
+                try
+                {
+                    Assert.True(mask.Width() > 0);
+                    Assert.True(mask.Height() > 0);
+                    mask.ConvertToCpu();
+                    using var pixelLock = new PixelWriteLock(mask);
+                    Assert.NotEqual(nint.Zero, pixelLock.Pixels());
+                }
+                finally
+                {
+                    mask.Dispose();
+                }
+            }
+        }
+    }
+
+    [Fact]
+    public void ImageSegmenter_Masks_ReadAndDisposeAcrossFrames()
+    {
+        var baseOptions = new CoreBaseOptions(modelAssetPath: AssetPath("selfie_segmenter.tflite"),
+                                             delegateCase: CoreBaseOptions.Delegate.CPU);
+        var options = new ImageSegmenterOptions(baseOptions, VisionRunningMode.VIDEO,
+                                                outputCategoryMask: true, outputConfidenceMasks: true);
+        using var segmenter = ImageSegmenter.CreateFromOptions(options);
+
+        long timestamp = 0;
+        for (var frame = 0; frame < 20; frame++)
+        {
+            timestamp += 33;
+            using var image = CreateTestImage();
+            var result = segmenter.SegmentForVideo(image, timestamp);
+
+            try
+            {
+                var mask = Assert.Single(result.ConfidenceMasks!);
+                mask.ConvertToCpu();
+                using var pixelLock = new PixelWriteLock(mask);
+                Assert.NotEqual(nint.Zero, pixelLock.Pixels());
+
+                Assert.NotNull(result.CategoryMask);
+                Assert.True(result.CategoryMask!.Width() > 0);
+            }
+            finally
+            {
+                foreach (var mask in result.ConfidenceMasks!)
+                    mask.Dispose();
+                result.CategoryMask?.Dispose();
+            }
+        }
+    }
+
     [Fact]
     public void ImageSegmenter_ConfidenceMask_MatchesInputDimensions()
     {

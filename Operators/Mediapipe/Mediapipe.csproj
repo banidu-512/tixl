@@ -123,11 +123,8 @@
     </PackageReference>
     <PackageReference Include="Google.Protobuf" Version="3.35.1" />
   </ItemGroup>
-  <!-- Native dependencies -->
+  <!-- Native dependencies (natives are copied by Editor.csproj from the solution Dependencies/ folder) -->
   <ItemGroup>
-    <Content Include="./dependencies/**/*" CopyToOutputDirectory="PreserveNewest">
-      <Link>%(RecursiveDir)%(Filename)%(Extension)</Link>
-    </Content>
     <!-- The mediapipe_c native ships from the solution's Dependencies folder (flat for Windows,
          Dependencies/linux-x64 and Dependencies/osx elsewhere), copied by Editor/Player.csproj. -->
     <None Remove="Examples\**" />

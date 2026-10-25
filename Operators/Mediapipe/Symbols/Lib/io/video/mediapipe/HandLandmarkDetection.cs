@@ -44,7 +44,7 @@ internal class HandLandmarkDetectionResultPacket
 }
 
 [Guid("4567890a-bcde-f123-4567-890abcdef123")]
-[ExportDependencies("mediapipe_c.dll", "libmediapipe_c.so", "libmediapipe_c.dylib", "libmediapipe_opencl_stub.dylib", "OpenCvSharpExtern.dll", "Emgu.CV.dll", "cvextern.dll", "OpenGL.Net.dll", "CppSharp.Runtime.dll", "Google.Protobuf.dll")]
+[ExportDependencies("mediapipe_c.dll", "libmediapipe_c.so", "libmediapipe_c.dylib", "libmediapipe_opencl_stub.dylib", "OpenCvSharpExtern.dll", "libOpenCvSharpExtern.so", "libOpenCvSharpExtern.dylib", "Emgu.CV.dll", "cvextern.dll", "OpenGL.Net.dll", "CppSharp.Runtime.dll", "Google.Protobuf.dll")]
 public class HandLandmarkDetection : Instance<HandLandmarkDetection>
 {
     // MediaPipe resizes to its model input (~224px) internally; a camera frame wider than this only
@@ -160,6 +160,7 @@ public class HandLandmarkDetection : Instance<HandLandmarkDetection>
         if (_currentResult != null)
         {
             UpdateOutputsWithResult(_currentResult, correctAspectRatio, zScale, inputTexture);
+            UpdateCount.Value++;
 
             if (debug)
             {

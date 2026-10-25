@@ -30,9 +30,11 @@ namespace Lib.io.video.mediapipe
     }
 
     [Guid("A1B2C3D4-E5F6-4798-89AB-CDEF12345679")]
-    [ExportDependencies("mediapipe_c.dll", "libmediapipe_c.so", "libmediapipe_c.dylib", "libmediapipe_opencl_stub.dylib", "OpenCvSharpExtern.dll", "Emgu.CV.dll", "cvextern.dll", "OpenGL.Net.dll", "CppSharp.Runtime.dll", "Google.Protobuf.dll")]
+    [ExportDependencies("mediapipe_c.dll", "libmediapipe_c.so", "libmediapipe_c.dylib", "libmediapipe_opencl_stub.dylib", "OpenCvSharpExtern.dll", "libOpenCvSharpExtern.so", "libOpenCvSharpExtern.dylib", "Emgu.CV.dll", "cvextern.dll", "OpenGL.Net.dll", "CppSharp.Runtime.dll", "Google.Protobuf.dll")]
     public class FaceDetection : Instance<FaceDetection>
     {
+        private const int MaxInferenceWidth = 640;
+
         [Output(Guid = "B2C3D4E5-F6A7-489A-9B0C-DEF123456790", DirtyFlagTrigger = DirtyFlagTrigger.Animated)]
         public readonly Slot<Texture2D> OutputTexture = new();
 
@@ -101,7 +103,7 @@ namespace Lib.io.video.mediapipe
                 return;
             }
 
-            if (_inputQueue.Count < 1)
+            if (_inputQueue.IsEmpty && !_workerBusy)
             {
                 var request = CreateRequestFromTexture(inputTexture, confidenceThreshold, maxFaces, correctAspectRatio, zScale);
                 if (request != null)
@@ -114,13 +116,22 @@ namespace Lib.io.video.mediapipe
             {
                 if (result.FaceCount > 0)
                 {
+                    if (_currentResult != null)
+                    {
+                        ReturnPointArrayToPool(_currentResult.Detections);
+                    }
                     _currentResult = result;
+                }
+                else
+                {
+                    ReturnPointArrayToPool(result.Detections);
                 }
             }
 
             if (_currentResult != null)
             {
                 UpdateOutputsWithResult(_currentResult, showDetections, showKeypoints, detectionSize, detectionColor, keypointColor, useCombinedAiOutput, debug);
+                UpdateCount.Value++;
                 
                 if (debug)
                 {
@@ -148,7 +159,11 @@ namespace Lib.io.video.mediapipe
             PointBuffer.Value = null!;
             FaceData.Value = new Dict<float>(0f);
             FaceCount.Value = 0;
-            _currentResult = null;
+            if (_currentResult != null)
+            {
+                ReturnPointArrayToPool(_currentResult.Detections);
+                _currentResult = null;
+            }
             DebugTexture.Value = null!;
         }
 
@@ -159,6 +174,7 @@ namespace Lib.io.video.mediapipe
         private readonly object _timestampLock = new object();
         
         private Task? _processingTask;
+        private volatile bool _workerBusy;
         private CancellationTokenSource? _cancellationTokenSource;
         private readonly ConcurrentQueue<FaceDetectionRequest> _inputQueue = new();
         private readonly ConcurrentQueue<FaceDetectionResultPacket> _outputQueue = new();
@@ -274,10 +290,19 @@ namespace Lib.io.video.mediapipe
             {
                 if (_inputQueue.TryDequeue(out var request))
                 {
+                    // Whatever piled up while the previous inference ran is stale by now - only the
+                    // newest frame is worth its latency, the rest goes straight back to the pool.
+                    while (_inputQueue.TryDequeue(out var newer))
+                    {
+                        ReturnBufferToPool(request.PixelData);
+                        request = newer;
+                    }
+
                     try
                     {
                         if (request.PixelData != null)
                         {
+                            _workerBusy = true;
                             ProcessFrame(request, detector, debug);
                         }
                     }
@@ -287,6 +312,7 @@ namespace Lib.io.video.mediapipe
                     }
                     finally
                     {
+                        _workerBusy = false;
                         ReturnBufferToPool(request.PixelData);
                     }
                 }
@@ -328,12 +354,34 @@ namespace Lib.io.video.mediapipe
         {
             if (result.Detections == null) return null;
 
-            var points = new List<Point>();
-
             float aspectRatio = correctAspectRatio ? (float)imageWidth / imageHeight : 1.0f;
 
             try
             {
+                // Count the valid faces first so the array can come from the pool - the
+                // result-replacement path in Update returns it, keeping rentals and returns balanced.
+                var validFaces = 0;
+                foreach (var detection in result.Detections)
+                {
+                    if (validFaces >= maxFaces) break;
+
+                    float confidence = 0f;
+                    if (detection.Categories?.Count > 0)
+                    {
+                        confidence = detection.Categories[0].Score;
+                    }
+
+                    if (confidence >= confidenceThreshold
+                        && detection.BoundingBox.Right > detection.BoundingBox.Left
+                        && detection.BoundingBox.Bottom > detection.BoundingBox.Top)
+                    {
+                        validFaces++;
+                    }
+                }
+                if (validFaces == 0) return null;
+
+                var points = GetPointArray(validFaces * 10);
+                int pointIndex = 0;
                 int detectedFaces = 0;
                 foreach (var detection in result.Detections)
                 {
@@ -344,7 +392,7 @@ namespace Lib.io.video.mediapipe
                     {
                         confidence = detection.Categories[0].Score;
                     }
-                    
+
                     if (confidence < confidenceThreshold)
                     {
                         continue;
@@ -353,8 +401,8 @@ namespace Lib.io.video.mediapipe
                     if (detection.BoundingBox.Right > detection.BoundingBox.Left && detection.BoundingBox.Bottom > detection.BoundingBox.Top)
                     {
                         var bbox = detection.BoundingBox;
-                        
-                        var bboxPoint1 = new Point
+
+                        points[pointIndex++] = new Point
                         {
                             Position = new Vector3(((float)bbox.Left / imageWidth * 2.0f - 1.0f) * aspectRatio, 1.0f - (float)bbox.Top / imageHeight * 2.0f, 0),
                             F1 = detectedFaces * 10 + 0,
@@ -363,9 +411,7 @@ namespace Lib.io.video.mediapipe
                             Scale = Vector3.One,
                             Orientation = Quaternion.Identity
                         };
-                        points.Add(bboxPoint1);
-                        
-                        var bboxPoint2 = new Point
+                        points[pointIndex++] = new Point
                         {
                             Position = new Vector3(((float)bbox.Right / imageWidth * 2.0f - 1.0f) * aspectRatio, 1.0f - (float)bbox.Top / imageHeight * 2.0f, 0),
                             F1 = detectedFaces * 10 + 1,
@@ -374,9 +420,7 @@ namespace Lib.io.video.mediapipe
                             Scale = Vector3.One,
                             Orientation = Quaternion.Identity
                         };
-                        points.Add(bboxPoint2);
-                        
-                        var bboxPoint3 = new Point
+                        points[pointIndex++] = new Point
                         {
                             Position = new Vector3(((float)bbox.Right / imageWidth * 2.0f - 1.0f) * aspectRatio, 1.0f - (float)bbox.Bottom / imageHeight * 2.0f, 0),
                             F1 = detectedFaces * 10 + 2,
@@ -385,9 +429,7 @@ namespace Lib.io.video.mediapipe
                             Scale = Vector3.One,
                             Orientation = Quaternion.Identity
                         };
-                        points.Add(bboxPoint3);
-                        
-                        var bboxPoint4 = new Point
+                        points[pointIndex++] = new Point
                         {
                             Position = new Vector3(((float)bbox.Left / imageWidth * 2.0f - 1.0f) * aspectRatio, 1.0f - (float)bbox.Bottom / imageHeight * 2.0f, 0),
                             F1 = detectedFaces * 10 + 3,
@@ -396,14 +438,13 @@ namespace Lib.io.video.mediapipe
                             Scale = Vector3.One,
                             Orientation = Quaternion.Identity
                         };
-                        points.Add(bboxPoint4);
-                        
+
                         if (detection.Keypoints != null && detection.Keypoints.Count >= 6)
                         {
                             for (int i = 0; i < 6; i++)
                             {
                                 var keypoint = detection.Keypoints[i];
-                                var keypointPoint = new Point
+                                points[pointIndex++] = new Point
                                 {
                                     Position = new Vector3((keypoint.X * 2.0f - 1.0f) * aspectRatio, 1.0f - keypoint.Y * 2.0f, 0),
                                     F1 = detectedFaces * 10 + 4 + i,
@@ -412,7 +453,6 @@ namespace Lib.io.video.mediapipe
                                     Scale = Vector3.One,
                                     Orientation = Quaternion.Identity
                                 };
-                                points.Add(keypointPoint);
                             }
                         }
                         else
@@ -421,7 +461,7 @@ namespace Lib.io.video.mediapipe
                             var centerY = bbox.Top + (bbox.Bottom - bbox.Top) * 0.5f;
                             for (int i = 0; i < 6; i++)
                             {
-                                var placeholderPoint = new Point
+                                points[pointIndex++] = new Point
                                 {
                                     Position = new Vector3((centerX / imageWidth * 2.0f - 1.0f) * aspectRatio, 1.0f - centerY / imageHeight * 2.0f, 0),
                                     F1 = detectedFaces * 10 + 4 + i,
@@ -430,15 +470,14 @@ namespace Lib.io.video.mediapipe
                                     Scale = Vector3.One,
                                     Orientation = Quaternion.Identity
                                 };
-                                points.Add(placeholderPoint);
                             }
                         }
-                    }
 
-                    detectedFaces++;
+                        detectedFaces++;
+                    }
                 }
 
-                return points.Count > 0 ? points.ToArray() : null;
+                return pointIndex > 0 ? points : null;
             }
             catch (Exception ex)
             {
@@ -672,25 +711,35 @@ namespace Lib.io.video.mediapipe
 
             try
             {
-                byte[] buffer = GetBuffer(width * height * 3);
+                // MediaPipe resizes to its model input (~128px) internally; feeding the full camera
+                // image only burns downsample/memcpy time before hitting that resize.
+                var downscale = Math.Min(1.0f, (float)MaxInferenceWidth / width);
+                var inferenceWidth = Math.Max(1, (int)(width * downscale));
+                var inferenceHeight = Math.Max(1, (int)(height * downscale));
+
+                byte[] buffer = GetBuffer(inferenceWidth * inferenceHeight * 3);
                 unsafe
                 {
                     IntPtr srcPtr = dataBox.DataPointer;
                     int rowPitch = dataBox.RowPitch;
-                    
+
                     fixed (byte* dst = buffer)
                     {
                         IntPtr dstPtr = (IntPtr)dst;
-                        Parallel.For(0, height, y =>
+                        float sourceXStep = (float)width / inferenceWidth;
+                        float sourceYStep = (float)height / inferenceHeight;
+
+                        Parallel.For(0, inferenceHeight, iy =>
                         {
-                            byte* rowSrc = (byte*)srcPtr + (y * rowPitch);
-                            byte* rowDst = (byte*)dstPtr + (y * width * 3);
-                            
-                            for (int x = 0; x < width; x++)
+                            byte* rowSrc = (byte*)srcPtr + ((int)(iy * sourceYStep)) * rowPitch;
+                            byte* rowDst = (byte*)dstPtr + iy * inferenceWidth * 3;
+
+                            for (int ix = 0; ix < inferenceWidth; ix++)
                             {
-                                rowDst[x * 3] = rowSrc[x * 4];     // R
-                                rowDst[x * 3 + 1] = rowSrc[x * 4 + 1]; // G
-                                rowDst[x * 3 + 2] = rowSrc[x * 4 + 2];     // B
+                                int sx = (int)(ix * sourceXStep);
+                                rowDst[ix * 3] = rowSrc[sx * 4];         // R
+                                rowDst[ix * 3 + 1] = rowSrc[sx * 4 + 1]; // G
+                                rowDst[ix * 3 + 2] = rowSrc[sx * 4 + 2]; // B
                             }
                         });
                     }
@@ -702,8 +751,8 @@ namespace Lib.io.video.mediapipe
                 return new FaceDetectionRequest 
                 { 
                     PixelData = buffer, 
-                    Width = width, 
-                    Height = height, 
+                    Width = inferenceWidth, 
+                    Height = inferenceHeight, 
                     Timestamp = ts,
                     ConfidenceThreshold = confidenceThreshold,
                     MaxFaces = maxFaces,
@@ -968,7 +1017,8 @@ namespace Lib.io.video.mediapipe
                 }
                 
                 _debugTexture?.Dispose();
-                
+                _debugTexture = null;
+
                 lock (_textureCacheLock)
                 {
                     foreach (var kvp in _cachedStagingTextures)
@@ -994,6 +1044,8 @@ namespace Lib.io.video.mediapipe
                 }
                 
                 _bufferPool.Clear();
+
+                base.Dispose(isDisposing);
             }
         }
         #endregion

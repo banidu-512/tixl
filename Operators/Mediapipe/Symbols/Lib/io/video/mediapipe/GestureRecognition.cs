@@ -48,7 +48,7 @@ internal class GestureRecognitionResultPacket
 }
 
 [Guid("A1B2C3D4-E5F6-4798-89AB-CDEF12345683")]
-[ExportDependencies("mediapipe_c.dll", "libmediapipe_c.so", "libmediapipe_c.dylib", "libmediapipe_opencl_stub.dylib", "OpenCvSharpExtern.dll", "Emgu.CV.dll", "cvextern.dll", "OpenGL.Net.dll", "CppSharp.Runtime.dll", "Google.Protobuf.dll")]
+[ExportDependencies("mediapipe_c.dll", "libmediapipe_c.so", "libmediapipe_c.dylib", "libmediapipe_opencl_stub.dylib", "OpenCvSharpExtern.dll", "libOpenCvSharpExtern.so", "libOpenCvSharpExtern.dylib", "Emgu.CV.dll", "cvextern.dll", "OpenGL.Net.dll", "CppSharp.Runtime.dll", "Google.Protobuf.dll")]
 public class GestureRecognition : Instance<GestureRecognition>
 {
     [Output(Guid = "B2C3D4E5-F6A7-489A-9B0C-DEF123456784", DirtyFlagTrigger = DirtyFlagTrigger.Animated)]
@@ -136,7 +136,7 @@ public class GestureRecognition : Instance<GestureRecognition>
             return;
         }
 
-        if (_inputQueue.Count < 1)
+        if (_inputQueue.IsEmpty && !_workerBusy)
         {
             var request = CreateRequestFromTexture(inputTexture, minHandDetectionConfidence, minHandPresenceConfidence, maxHands, categoryAllowlist!, categoryDenylist!);
             if (request != null)
@@ -194,7 +194,6 @@ public class GestureRecognition : Instance<GestureRecognition>
         PrimaryGesture.Value = "None";
         Confidence.Value = 0.0f;
         HandCount.Value = 0;
-        _landmarksArray = null;
         
         if (_currentResult != null)
         {
@@ -210,14 +209,15 @@ public class GestureRecognition : Instance<GestureRecognition>
     }
 
     #region MediaPipe Integration
+    private const int MaxInferenceWidth = 640;
+
     private HandLandmarker? _handLandmarker;
-    private Point[]? _landmarksArray;
     private long _frameTimestamp;
     private readonly object _handLandmarkerLock = new object();
     private readonly object _timestampLock = new object();
-    private readonly object _landmarksLock = new object();
 
     private Task? _processingTask;
+    private volatile bool _workerBusy;
     private CancellationTokenSource? _cancellationTokenSource;
     private readonly ConcurrentQueue<GestureRecognitionRequest> _inputQueue = new();
     private readonly ConcurrentQueue<GestureRecognitionResultPacket> _outputQueue = new();
@@ -342,10 +342,19 @@ public class GestureRecognition : Instance<GestureRecognition>
         {
             if (_inputQueue.TryDequeue(out var request))
             {
+                // Whatever piled up while the previous inference ran is stale by now - only the
+                // newest frame is worth its latency, the rest goes straight back to the pool.
+                while (_inputQueue.TryDequeue(out var newer))
+                {
+                    ReturnBufferToPool(request.PixelData);
+                    request = newer;
+                }
+
                 try
                 {
                     if (request.PixelData != null)
                     {
+                        _workerBusy = true;
                         ProcessFrame(request, landmarker, debug);
                     }
                 }
@@ -355,6 +364,7 @@ public class GestureRecognition : Instance<GestureRecognition>
                 }
                 finally
                 {
+                    _workerBusy = false;
                     ReturnBufferToPool(request.PixelData);
                 }
             }
@@ -575,25 +585,35 @@ public class GestureRecognition : Instance<GestureRecognition>
 
         try
         {
-            byte[] buffer = GetBuffer(width * height * 3);
+            // MediaPipe resizes to its model input (~224px) internally; feeding the full camera
+            // image only burns downsample/memcpy time before hitting that resize.
+            var downscale = Math.Min(1.0f, (float)MaxInferenceWidth / width);
+            var inferenceWidth = Math.Max(1, (int)(width * downscale));
+            var inferenceHeight = Math.Max(1, (int)(height * downscale));
+
+            byte[] buffer = GetBuffer(inferenceWidth * inferenceHeight * 3);
             unsafe
             {
                 IntPtr srcPtr = dataBox.DataPointer;
                 int rowPitch = dataBox.RowPitch;
-                
+
                 fixed (byte* dst = buffer)
                 {
                     IntPtr dstPtr = (IntPtr)dst;
-                    Parallel.For(0, height, y =>
+                    float sourceXStep = (float)width / inferenceWidth;
+                    float sourceYStep = (float)height / inferenceHeight;
+
+                    Parallel.For(0, inferenceHeight, iy =>
                     {
-                        byte* rowSrc = (byte*)srcPtr + (y * rowPitch);
-                        byte* rowDst = (byte*)dstPtr + (y * width * 3);
-                        
-                        for (int x = 0; x < width; x++)
+                        byte* rowSrc = (byte*)srcPtr + ((int)(iy * sourceYStep)) * rowPitch;
+                        byte* rowDst = (byte*)dstPtr + iy * inferenceWidth * 3;
+
+                        for (int ix = 0; ix < inferenceWidth; ix++)
                         {
-                            rowDst[x * 3] = rowSrc[x * 4];     // R
-                            rowDst[x * 3 + 1] = rowSrc[x * 4 + 1]; // G
-                            rowDst[x * 3 + 2] = rowSrc[x * 4 + 2];     // B
+                            int sx = (int)(ix * sourceXStep);
+                            rowDst[ix * 3] = rowSrc[sx * 4];         // R
+                            rowDst[ix * 3 + 1] = rowSrc[sx * 4 + 1]; // G
+                            rowDst[ix * 3 + 2] = rowSrc[sx * 4 + 2]; // B
                         }
                     });
                 }
@@ -605,8 +625,8 @@ public class GestureRecognition : Instance<GestureRecognition>
             return new GestureRecognitionRequest
             {
                 PixelData = buffer,
-                Width = width,
-                Height = height,
+                Width = inferenceWidth,
+                Height = inferenceHeight,
                 Timestamp = ts,
                 MinHandDetectionConfidence = minHandDetectionConfidence,
                 MinHandPresenceConfidence = minHandPresenceConfidence,
@@ -637,7 +657,7 @@ public class GestureRecognition : Instance<GestureRecognition>
         }
 
         HandCount.Value = result.HandCount;
-        _landmarksArray = result.Landmarks;
+        UpdateCount.Value++;
         Handedness.Value = result.Handedness != null ? new List<string>(result.Handedness) : new List<string>();
 
         var gesture = RecognizeBasicGesture(result.Landmarks);
@@ -798,42 +818,55 @@ public class GestureRecognition : Instance<GestureRecognition>
     {
         if (result.HandLandmarks == null) return null;
 
-        var landmarks = new List<Point>();
         float aspectRatio = (float)width / height;
+
+        // Count first so the array can come from the pool - Update's result-replacement
+        // path returns it, keeping rentals and returns balanced.
+        var total = 0;
+        for (int handIndex = 0; handIndex < result.HandLandmarks.Count && handIndex < maxHands; handIndex++)
+        {
+            var handLandmarks = result.HandLandmarks[handIndex];
+            if (handLandmarks.landmarks != null && handLandmarks.landmarks.Count > 0)
+                total += Math.Min(handLandmarks.landmarks.Count, 21);
+        }
+        if (total == 0) return null;
+
+        var landmarks = GetPointArray(total);
 
         try
         {
+            int landmarkIndex = 0;
             for (int handIndex = 0; handIndex < result.HandLandmarks.Count && handIndex < maxHands; handIndex++)
             {
                 var handLandmarks = result.HandLandmarks[handIndex];
+                if (handLandmarks.landmarks == null || handLandmarks.landmarks.Count == 0)
+                    continue;
 
-                if (handLandmarks.landmarks != null && handLandmarks.landmarks.Count > 0)
+                for (int i = 0; i < handLandmarks.landmarks.Count && i < 21; i++)
                 {
-                    for (int i = 0; i < handLandmarks.landmarks.Count && i < 21; i++)
+                    var landmark = handLandmarks.landmarks[i];
+
+                    var normalizedX = (landmark.X - 0.5f) * 2.0f * aspectRatio;
+
+                    var normalizedY = (1.0f - landmark.Y - 0.5f) * 2.0f;
+
+                    landmarks[landmarkIndex++] = new Point
                     {
-                        var landmark = handLandmarks.landmarks[i];
-
-                        var normalizedX = (landmark.X - 0.5f) * 2.0f * aspectRatio;
-                        
-                        var normalizedY = (1.0f - landmark.Y - 0.5f) * 2.0f;
-
-                        landmarks.Add(new Point
-                        {
-                            Position = new Vector3(normalizedX, normalizedY, landmark.Z),
-                            F1 = i,
-                            F2 = landmark.Visibility ?? 0f,
-                            Color = Vector4.One,
-                            Scale = Vector3.One,
-                            Orientation = Quaternion.Identity
-                        });
-                    }
+                        Position = new Vector3(normalizedX, normalizedY, landmark.Z),
+                        F1 = i,
+                        F2 = landmark.Visibility ?? 0f,
+                        Color = Vector4.One,
+                        Scale = Vector3.One,
+                        Orientation = Quaternion.Identity
+                    };
                 }
             }
 
-            return landmarks.Count > 0 ? landmarks.ToArray() : null;
+            return landmarks;
         }
         catch (Exception ex)
         {
+            ReturnPointArrayToPool(landmarks);
             if (debug) Log.Error($"[ConvertHandLandmarkerResultToLandmarks] Error converting MediaPipe landmarks: {ex.Message}", this);
             return null;
         }
@@ -843,37 +876,47 @@ public class GestureRecognition : Instance<GestureRecognition>
     {
         if (result.HandWorldLandmarks == null) return null;
 
-        var landmarks = new List<Point>();
+        var total = 0;
+        for (int handIndex = 0; handIndex < result.HandWorldLandmarks.Count && handIndex < maxHands; handIndex++)
+        {
+            var handLandmarks = result.HandWorldLandmarks[handIndex];
+            if (handLandmarks.landmarks != null && handLandmarks.landmarks.Count > 0)
+                total += Math.Min(handLandmarks.landmarks.Count, 21);
+        }
+        if (total == 0) return null;
+
+        var landmarks = GetPointArray(total);
 
         try
         {
+            int landmarkIndex = 0;
             for (int handIndex = 0; handIndex < result.HandWorldLandmarks.Count && handIndex < maxHands; handIndex++)
             {
                 var handLandmarks = result.HandWorldLandmarks[handIndex];
+                if (handLandmarks.landmarks == null || handLandmarks.landmarks.Count == 0)
+                    continue;
 
-                if (handLandmarks.landmarks != null && handLandmarks.landmarks.Count > 0)
+                for (int i = 0; i < handLandmarks.landmarks.Count && i < 21; i++)
                 {
-                    for (int i = 0; i < handLandmarks.landmarks.Count && i < 21; i++)
-                    {
-                        var landmark = handLandmarks.landmarks[i];
+                    var landmark = handLandmarks.landmarks[i];
 
-                        landmarks.Add(new Point
-                        {
-                            Position = new Vector3(landmark.X, landmark.Y, landmark.Z),
-                            F1 = i,
-                            F2 = landmark.Visibility ?? 0f,
-                            Color = Vector4.One,
-                            Scale = Vector3.One,
-                            Orientation = Quaternion.Identity
-                        });
-                    }
+                    landmarks[landmarkIndex++] = new Point
+                    {
+                        Position = new Vector3(landmark.X, landmark.Y, landmark.Z),
+                        F1 = i,
+                        F2 = landmark.Visibility ?? 0f,
+                        Color = Vector4.One,
+                        Scale = Vector3.One,
+                        Orientation = Quaternion.Identity
+                    };
                 }
             }
 
-            return landmarks.Count > 0 ? landmarks.ToArray() : null;
+            return landmarks;
         }
         catch (Exception ex)
         {
+            ReturnPointArrayToPool(landmarks);
             if (debug) Log.Error($"[ConvertHandLandmarkerResultToWorldLandmarks] Error converting MediaPipe world landmarks: {ex.Message}", this);
             return null;
         }
@@ -1214,6 +1257,9 @@ public class GestureRecognition : Instance<GestureRecognition>
             _aiDataSegmentationTexture?.Dispose();
             _aiDataSegmentationTexture = null;
         }
+
+        _debugTexture?.Dispose();
+        _debugTexture = null;
 
         lock (_textureCacheLock)
         {

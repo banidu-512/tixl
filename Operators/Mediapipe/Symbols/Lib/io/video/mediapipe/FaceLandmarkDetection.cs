@@ -33,7 +33,7 @@ namespace Lib.io.video.mediapipe
     }
 
     [Guid("9b2c3d4e-5f6a-4798-89ab-cdef12345678")]
-    [ExportDependencies("mediapipe_c.dll", "libmediapipe_c.so", "libmediapipe_c.dylib", "libmediapipe_opencl_stub.dylib", "OpenCvSharpExtern.dll", "Emgu.CV.dll", "cvextern.dll", "OpenGL.Net.dll", "CppSharp.Runtime.dll", "Google.Protobuf.dll")]
+    [ExportDependencies("mediapipe_c.dll", "libmediapipe_c.so", "libmediapipe_c.dylib", "libmediapipe_opencl_stub.dylib", "OpenCvSharpExtern.dll", "libOpenCvSharpExtern.so", "libOpenCvSharpExtern.dylib", "Emgu.CV.dll", "cvextern.dll", "OpenGL.Net.dll", "CppSharp.Runtime.dll", "Google.Protobuf.dll")]
     public class FaceLandmarkDetection : Instance<FaceLandmarkDetection>
     {
         [Output(Guid = "a1b2c3d4-e5f6-4798-89ab-cdef12345679", DirtyFlagTrigger = DirtyFlagTrigger.Animated)]
@@ -110,7 +110,7 @@ namespace Lib.io.video.mediapipe
                 return;
             }
 
-            if (_inputQueue.Count < 1)
+            if (_inputQueue.IsEmpty && !_workerBusy)
             {
                 var request = CreateRequestFromTexture(inputTexture);
                 if (request != null)
@@ -129,7 +129,15 @@ namespace Lib.io.video.mediapipe
             {
                 if (result.FaceCount > 0)
                 {
+                    if (_currentResult != null)
+                    {
+                        ReturnPointArrayToPool(_currentResult.Landmarks);
+                    }
                     _currentResult = result;
+                }
+                else
+                {
+                    ReturnPointArrayToPool(result.Landmarks);
                 }
             }
 
@@ -160,20 +168,25 @@ namespace Lib.io.video.mediapipe
         {
             FaceData.Value = new Dict<float>(0f);
             FaceCount.Value = 0;
-            _landmarksArray = null;
-            _currentResult = null;
+            if (_currentResult != null)
+            {
+                ReturnPointArrayToPool(_currentResult.Landmarks);
+                _currentResult = null;
+            }
             PointBuffer.Value = null;
             Blendshapes.Value = new Dict<float>(0f);
         }
 
         #region Worker Thread
         private FaceLandmarker? _faceLandmarker;
+        private const int MaxInferenceWidth = 640;
+
         private Task? _processingTask;
+        private volatile bool _workerBusy;
         private CancellationTokenSource? _cancellationTokenSource;
         private readonly ConcurrentQueue<FaceLandmarkRequest> _inputQueue = new();
         private readonly ConcurrentQueue<FaceLandmarkResultPacket> _outputQueue = new();
         private FaceLandmarkResultPacket? _currentResult;
-        private Point[]? _landmarksArray;
         
         private int _activeMaxFaces = -1;
         private MediaPipeAcceleration? _activeAcceleration;
@@ -208,7 +221,7 @@ namespace Lib.io.video.mediapipe
             {
                 lock (_workerLock)
                 {
-                    AssetRegistry.TryResolveAddress("Mediapipe:face_landmarker.task", this, out var modelPath, out _, logWarnings:true);
+                    var modelFound = AssetRegistry.TryResolveAddress("Mediapipe:face_landmarker.task", this, out var modelPath, out _, logWarnings:true);
                     // AssetRegistry.TryResolveAddress("Mediapipe:resources/face_landmarker.task", this, out var absolutePath, out _);
                     //
                     // string modelPath = Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Resources", "mediapipe", "face_landmarker.task"));
@@ -229,7 +242,7 @@ namespace Lib.io.video.mediapipe
                     //     }
                     // }
 
-                    if (!File.Exists(modelPath))
+                    if (!modelFound)
                     {
                         if (debug) Log.Error($"[FaceLandmark] Model not found: {modelPath}", this);
                         return;
@@ -292,10 +305,19 @@ namespace Lib.io.video.mediapipe
             {
                 if (_inputQueue.TryDequeue(out var request))
                 {
+                    // Whatever piled up while the previous inference ran is stale by now - only the
+                    // newest frame is worth its latency, the rest goes straight back to the pool.
+                    while (_inputQueue.TryDequeue(out var newer))
+                    {
+                        ReturnBufferToPool(request.PixelData);
+                        request = newer;
+                    }
+
                     try
                     {
                         if (request.PixelData != null)
                         {
+                            _workerBusy = true;
                             ProcessFrame(request, landmarker, debug);
                         }
                     }
@@ -305,6 +327,7 @@ namespace Lib.io.video.mediapipe
                     }
                     finally
                     {
+                        _workerBusy = false;
                         ReturnBufferToPool(request.PixelData);
                     }
                 }
@@ -454,7 +477,18 @@ namespace Lib.io.video.mediapipe
     
         private Point[] RawToPoints(FaceLandmarkerResult result)
         {
-            var pointsList = new List<Point>();
+            // Count first so the array can come from the pool - the result-replacement path
+            // in Update returns it, keeping rentals and returns balanced.
+            var total = 0;
+            foreach (var face in result.FaceLandmarks)
+            {
+                if (face.landmarks == null) continue;
+                total += Math.Min(face.landmarks.Count, 478);
+            }
+            if (total == 0) return Array.Empty<Point>();
+
+            var points = GetPointArray(total);
+            int pointIndex = 0;
             foreach (var face in result.FaceLandmarks)
             {
                 if (face.landmarks == null) continue;
@@ -466,15 +500,15 @@ namespace Lib.io.video.mediapipe
                     // X: Right is Positive
                     // Y: Up is Positive (Flip MediaPipe Y)
                     // Z: Forward/Depth (Flip MediaPipe Z)
-                    
+
                     var centeredX = l.X - 0.5f;
                     var centeredY = 0.5f - l.Y;
                     var z = -l.Z;
 
-                    pointsList.Add(new Point { Position = new Vector3(centeredX, centeredY, z), F1 = i, Orientation = Quaternion.Identity });
+                    points[pointIndex++] = new Point { Position = new Vector3(centeredX, centeredY, z), F1 = i, Orientation = Quaternion.Identity };
                 }
             }
-            return pointsList.ToArray();
+            return points;
         }
 
         private Dict<float> CalculateRawBounds(FaceLandmarkerResult result)
@@ -505,24 +539,29 @@ namespace Lib.io.video.mediapipe
             return dict;
         }
 
+        // Keys repeat every frame for the same face/category - intern them so camera-rate
+        // blendshape updates stop allocating interpolated strings.
+        private readonly ConcurrentDictionary<(int FaceIndex, string Category), string> _blendshapeKeyCache = new();
+
         private Dict<float> CalculateBlendshapes(FaceLandmarkerResult result)
         {
             var dict = new Dict<float>(0f);
-            
+
             if (result.FaceBlendshapes == null) return dict;
-            
+
             for (int faceIndex = 0; faceIndex < result.FaceBlendshapes.Count; faceIndex++)
             {
                 var faceBlendshapes = result.FaceBlendshapes[faceIndex];
                 if (faceBlendshapes.Categories == null) continue;
-                
+
                 foreach (var category in faceBlendshapes.Categories)
                 {
-                    string key = $"face_{faceIndex}_blendshape_{category.CategoryName}";
+                    string key = _blendshapeKeyCache.GetOrAdd((faceIndex, category.CategoryName ?? ""),
+                                                              static k => $"face_{k.FaceIndex}_blendshape_{k.Category}");
                     dict[key] = category.Score;
                 }
             }
-            
+
             return dict;
         }
 
@@ -672,7 +711,6 @@ namespace Lib.io.video.mediapipe
 
             lock (_landmarksLock)
             {
-                _landmarksArray = finalPoints;
             }
             UpdateLandmarkBuffer(finalPoints, showLandmarks);
             PointBuffer.Value = showLandmarks ? _landmarkBuffer : null;
@@ -812,20 +850,47 @@ namespace Lib.io.video.mediapipe
 
             try
             {
-                byte[] buffer = GetBuffer(width * height * 4);
+                // MediaPipe resizes to its model input (~256px) internally; feeding the full camera
+                // image only burns downsample/memcpy time before hitting that resize.
+                var downscale = Math.Min(1.0f, (float)MaxInferenceWidth / width);
+                var inferenceWidth = Math.Max(1, (int)(width * downscale));
+                var inferenceHeight = Math.Max(1, (int)(height * downscale));
+
+                byte[] buffer = GetBuffer(inferenceWidth * inferenceHeight * 4);
                 unsafe
                 {
-                    byte* src = (byte*)dataBox.DataPointer;
-                    System.Runtime.InteropServices.Marshal.Copy((IntPtr)src, buffer, 0, width * height * 4);
-                    
-                    // The camera texture is RGBA and the MediaPipe image below is Srgba -
-                    // the bytes are already in the right order, no channel swizzle.
+                    IntPtr srcPtr = dataBox.DataPointer;
+                    int rowPitch = dataBox.RowPitch;
+
+                    fixed (byte* dst = buffer)
+                    {
+                        IntPtr dstPtr = (IntPtr)dst;
+                        float sourceXStep = (float)width / inferenceWidth;
+                        float sourceYStep = (float)height / inferenceHeight;
+
+                        // The camera texture is RGBA and the MediaPipe image below is Srgba -
+                        // the bytes are already in the right order, no channel swizzle.
+                        Parallel.For(0, inferenceHeight, iy =>
+                        {
+                            byte* rowSrc = (byte*)srcPtr + ((int)(iy * sourceYStep)) * rowPitch;
+                            byte* rowDst = (byte*)dstPtr + iy * inferenceWidth * 4;
+
+                            for (int ix = 0; ix < inferenceWidth; ix++)
+                            {
+                                int sx = (int)(ix * sourceXStep);
+                                rowDst[ix * 4] = rowSrc[sx * 4];
+                                rowDst[ix * 4 + 1] = rowSrc[sx * 4 + 1];
+                                rowDst[ix * 4 + 2] = rowSrc[sx * 4 + 2];
+                                rowDst[ix * 4 + 3] = rowSrc[sx * 4 + 3];
+                            }
+                        });
+                    }
                 }
 
                 long ts;
                 lock(_timestampLock) { ts = _frameCounter; _frameCounter += 33333; }
 
-                return new FaceLandmarkRequest { PixelData = buffer, Width = width, Height = height, Timestamp = ts };
+                return new FaceLandmarkRequest { PixelData = buffer, Width = inferenceWidth, Height = inferenceHeight, Timestamp = ts };
             }
             finally
             {
@@ -1093,12 +1158,25 @@ namespace Lib.io.video.mediapipe
             if (isDisposing)
             {
                 StopWorker(false);
+
+                _debugTexture?.Dispose();
+                _debugTexture = null;
+
                 lock (_bufferLock)
                 {
                     _landmarkBuffer?.Dispose();
                     _landmarkBuffer = null;
                 }
-                
+
+                lock (_poolLock)
+                {
+                    foreach (var mat in _matPool)
+                    {
+                        mat?.Dispose();
+                    }
+                    _matPool.Clear();
+                }
+
                 lock (_textureCacheLock)
                 {
                     foreach (var kvp in _cachedStagingTextures)
@@ -1127,7 +1205,6 @@ namespace Lib.io.video.mediapipe
                 
                 lock (_landmarksLock)
                 {
-                    _landmarksArray = null;
                 }
                 
                 lock (_aiTextureLock)

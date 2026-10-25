@@ -32,8 +32,6 @@ internal class ObjectDetectionRequest
     public long Timestamp;
     public float MinDetectionConfidence;
     public int MaxObjects;
-    public string[]? CategoryAllowlist;
-    public string[]? CategoryDenylist;
 }
 
 internal class ObjectDetectionResultPacket
@@ -45,9 +43,11 @@ internal class ObjectDetectionResultPacket
 }
 
 [Guid("12345678-90ab-cdef-1234-567890abcdef")]
-[ExportDependencies("mediapipe_c.dll", "libmediapipe_c.so", "libmediapipe_c.dylib", "libmediapipe_opencl_stub.dylib", "OpenCvSharpExtern.dll", "Emgu.CV.dll", "cvextern.dll", "OpenGL.Net.dll", "CppSharp.Runtime.dll", "Google.Protobuf.dll")]
+[ExportDependencies("mediapipe_c.dll", "libmediapipe_c.so", "libmediapipe_c.dylib", "libmediapipe_opencl_stub.dylib", "OpenCvSharpExtern.dll", "libOpenCvSharpExtern.so", "libOpenCvSharpExtern.dylib", "Emgu.CV.dll", "cvextern.dll", "OpenGL.Net.dll", "CppSharp.Runtime.dll", "Google.Protobuf.dll")]
 public class ObjectDetection : Instance<ObjectDetection>
 {
+    private const int MaxInferenceWidth = 640;
+
     [Output(Guid = "bcdef123-4567-890a-bcde-f1234567890a", DirtyFlagTrigger = DirtyFlagTrigger.Animated)]
     public readonly Slot<Texture2D?> OutputTexture = new();
 
@@ -124,9 +124,9 @@ public class ObjectDetection : Instance<ObjectDetection>
             return;
         }
 
-        if (_inputQueue.Count < 1)
+        if (_inputQueue.IsEmpty && !_workerBusy)
         {
-            var request = CreateRequestFromTexture(inputTexture, minDetectionConfidence, maxObjects, categoryAllowlist!, categoryDenylist!);
+            var request = CreateRequestFromTexture(inputTexture, minDetectionConfidence, maxObjects);
             if (request != null)
             {
                 _inputQueue.Enqueue(request);
@@ -168,7 +168,6 @@ public class ObjectDetection : Instance<ObjectDetection>
     private void ClearOutputs()
     {
         ObjectCount.Value = 0;
-        _detectionsArray = null;
         _currentResult = null;
         DebugTexture.Value = null;
         PointBuffer.Value = null;
@@ -178,12 +177,12 @@ public class ObjectDetection : Instance<ObjectDetection>
 
     #region MediaPipe Integration
     private ObjectDetector? _objectDetector;
-    private Detection[]? _detectionsArray;
     private long _frameTimestamp;
     private readonly object _objectDetectorLock = new object();
     private readonly object _timestampLock = new object();
 
     private Task? _processingTask;
+    private volatile bool _workerBusy;
     private CancellationTokenSource? _cancellationTokenSource;
     private readonly ConcurrentQueue<ObjectDetectionRequest> _inputQueue = new();
     private readonly ConcurrentQueue<ObjectDetectionResultPacket> _outputQueue = new();
@@ -295,7 +294,8 @@ public class ObjectDetection : Instance<ObjectDetection>
                         Log.Warning($"[ObjectDetection] GPU acceleration not available ({gpuEx.Message}) - using CPU.", this);
                         baseOptions = new Mediapipe.Tasks.Core.CoreBaseOptions(
                                                                            modelAssetPath: fullPath,
-                                                                           delegateCase: Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU
+                                                                           delegateCase: Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU,
+                                                                           numThreads: inferenceThreads
                                                                           );
                         options = new ObjectDetectorOptions(
                                                     baseOptions,
@@ -335,10 +335,19 @@ public class ObjectDetection : Instance<ObjectDetection>
         {
             if (_inputQueue.TryDequeue(out var request))
             {
+                // Whatever piled up while the previous inference ran is stale by now - only the
+                // newest frame is worth its latency, the rest goes straight back to the pool.
+                while (_inputQueue.TryDequeue(out var newer))
+                {
+                    ReturnBufferToPool(request.PixelData);
+                    request = newer;
+                }
+
                 try
                 {
                     if (request.PixelData != null)
                     {
+                        _workerBusy = true;
                         ProcessFrame(request, detector, debug);
                     }
                 }
@@ -348,6 +357,7 @@ public class ObjectDetection : Instance<ObjectDetection>
                 }
                 finally
                 {
+                    _workerBusy = false;
                     ReturnBufferToPool(request.PixelData);
                 }
             }
@@ -551,8 +561,7 @@ public class ObjectDetection : Instance<ObjectDetection>
         }
     }
 
-    private ObjectDetectionRequest? CreateRequestFromTexture(Texture2D texture, float minDetectionConfidence, int maxObjects, string categoryAllowlist,
-                                                             string categoryDenylist)
+    private ObjectDetectionRequest? CreateRequestFromTexture(Texture2D texture, float minDetectionConfidence, int maxObjects)
     {
         if (texture == null || texture.IsDisposed) return null;
 
@@ -574,7 +583,13 @@ public class ObjectDetection : Instance<ObjectDetection>
 
         try
         {
-            byte[] buffer = GetBuffer(width * height * 3);
+            // MediaPipe resizes to its model input (~256px) internally; feeding the full camera
+            // image only burns downsample/memcpy time before hitting that resize.
+            var downscale = Math.Min(1.0f, (float)MaxInferenceWidth / width);
+            var inferenceWidth = Math.Max(1, (int)(width * downscale));
+            var inferenceHeight = Math.Max(1, (int)(height * downscale));
+
+            byte[] buffer = GetBuffer(inferenceWidth * inferenceHeight * 3);
             unsafe
             {
                 IntPtr srcPtr = dataBox.DataPointer;
@@ -583,16 +598,20 @@ public class ObjectDetection : Instance<ObjectDetection>
                 fixed (byte* dst = buffer)
                 {
                     IntPtr dstPtr = (IntPtr)dst;
-                    Parallel.For(0, height, y =>
-                                            {
-                                                byte* rowSrc = (byte*)srcPtr + (y * rowPitch);
-                                                byte* rowDst = (byte*)dstPtr + (y * width * 3);
+                    float sourceXStep = (float)width / inferenceWidth;
+                    float sourceYStep = (float)height / inferenceHeight;
 
-                                                for (int x = 0; x < width; x++)
+                    Parallel.For(0, inferenceHeight, iy =>
+                                            {
+                                                byte* rowSrc = (byte*)srcPtr + ((int)(iy * sourceYStep)) * rowPitch;
+                                                byte* rowDst = (byte*)dstPtr + iy * inferenceWidth * 3;
+
+                                                for (int ix = 0; ix < inferenceWidth; ix++)
                                                 {
-                                                    rowDst[x * 3] = rowSrc[x * 4]; // R
-                                                    rowDst[x * 3 + 1] = rowSrc[x * 4 + 1]; // G
-                                                    rowDst[x * 3 + 2] = rowSrc[x * 4 + 2]; // B
+                                                    int sx = (int)(ix * sourceXStep);
+                                                    rowDst[ix * 3] = rowSrc[sx * 4]; // R
+                                                    rowDst[ix * 3 + 1] = rowSrc[sx * 4 + 1]; // G
+                                                    rowDst[ix * 3 + 2] = rowSrc[sx * 4 + 2]; // B
                                                 }
                                             });
                 }
@@ -608,13 +627,11 @@ public class ObjectDetection : Instance<ObjectDetection>
             return new ObjectDetectionRequest
                        {
                            PixelData = buffer,
-                           Width = width,
-                           Height = height,
+                           Width = inferenceWidth,
+                           Height = inferenceHeight,
                            Timestamp = ts,
                            MinDetectionConfidence = minDetectionConfidence,
                            MaxObjects = maxObjects,
-                           CategoryAllowlist = string.IsNullOrEmpty(categoryAllowlist) ? null : categoryAllowlist.Split(','),
-                           CategoryDenylist = string.IsNullOrEmpty(categoryDenylist) ? null : categoryDenylist.Split(',')
                        };
         }
         finally
@@ -638,7 +655,6 @@ public class ObjectDetection : Instance<ObjectDetection>
         }
 
         ObjectCount.Value = result.ObjectCount;
-        _detectionsArray = result.Detections;
 
         var points = new StructuredList<T3.Core.DataTypes.Point>(result.ObjectCount * 5);
         var objectData = new Dict<float>(0f);
@@ -868,6 +884,9 @@ public class ObjectDetection : Instance<ObjectDetection>
         // Stops the worker task and hands the detector to its deferred closer - closing it here
         // directly could hit a frame still running on the worker thread.
         StopWorker(false);
+
+        _debugTexture?.Dispose();
+        _debugTexture = null;
 
         try
         {

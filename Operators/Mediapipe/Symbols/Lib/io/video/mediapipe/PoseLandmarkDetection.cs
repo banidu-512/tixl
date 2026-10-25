@@ -6,6 +6,7 @@ using Mediapipe;
 #nullable enable
 using Mediapipe.Tasks.Vision.PoseLandmarker;
 using Mediapipe.Tasks.Vision.Core;
+using Mediapipe.Framework.Formats;
 using T3.Core.Resource.Assets;
 using Image = Mediapipe.Framework.Formats.Image;
 // ReSharper disable EmptyGeneralCatchClause
@@ -27,10 +28,12 @@ internal class PoseLandmarkDetectionResultPacket
     public int PoseCount;
     public Point[]? WorldLandmarks;
     public byte[]? SegmentationMask;
+    public int SegmentationMaskWidth;
+    public int SegmentationMaskHeight;
 }
 
 [Guid("34567890-abcd-ef12-3456-7890abcdef12")]
-[ExportDependencies("mediapipe_c.dll", "libmediapipe_c.so", "libmediapipe_c.dylib", "libmediapipe_opencl_stub.dylib", "OpenCvSharpExtern.dll", "Emgu.CV.dll", "cvextern.dll", "OpenGL.Net.dll", "CppSharp.Runtime.dll", "Google.Protobuf.dll")]
+[ExportDependencies("mediapipe_c.dll", "libmediapipe_c.so", "libmediapipe_c.dylib", "libmediapipe_opencl_stub.dylib", "OpenCvSharpExtern.dll", "libOpenCvSharpExtern.so", "libOpenCvSharpExtern.dylib", "Emgu.CV.dll", "cvextern.dll", "OpenGL.Net.dll", "CppSharp.Runtime.dll", "Google.Protobuf.dll")]
 public class PoseLandmarkDetection : Instance<PoseLandmarkDetection>
 {
     // MediaPipe resizes to its model input (~256px) internally; a camera frame wider than this only
@@ -143,6 +146,7 @@ public class PoseLandmarkDetection : Instance<PoseLandmarkDetection>
         if (_currentResult != null)
         {
             UpdateOutputsWithResult(_currentResult, correctAspectRatio, zScale, inputTexture);
+            UpdateCount.Value++;
 
             if (debug)
             {
@@ -365,14 +369,16 @@ public class PoseLandmarkDetection : Instance<PoseLandmarkDetection>
         {
             var landmarks = ConvertPoseLandmarkerResultToLandmarks(result, _activeMaxPoses);
             var worldLandmarks = ConvertPoseLandmarkerResultToWorldLandmarks(result, _activeMaxPoses);
-            var segmentationMask = ConvertSegmentationMask(result, request.Width, request.Height);
+            var segmentationMask = ConvertSegmentationMask(result, out var maskWidth, out var maskHeight);
             
             var packet = new PoseLandmarkDetectionResultPacket
             {
                 Landmarks = landmarks,
                 PoseCount = landmarks != null ? landmarks.Length / 33 : 0,
                 WorldLandmarks = worldLandmarks,
-                SegmentationMask = segmentationMask
+                SegmentationMask = segmentationMask,
+                SegmentationMaskWidth = maskWidth,
+                SegmentationMaskHeight = maskHeight
             };
             _outputQueue.Enqueue(packet);
         }
@@ -661,7 +667,7 @@ public class PoseLandmarkDetection : Instance<PoseLandmarkDetection>
 
         if (result.SegmentationMask != null)
         {
-            UpdateSegmentationMaskTexture(result.SegmentationMask);
+            UpdateSegmentationMaskTexture(result.SegmentationMask, result.SegmentationMaskWidth, result.SegmentationMaskHeight);
         }
     }
 
@@ -939,31 +945,65 @@ public class PoseLandmarkDetection : Instance<PoseLandmarkDetection>
         }
     }
 
-    private byte[]? ConvertSegmentationMask(PoseLandmarkerResult result, int width, int height)
+    private byte[]? ConvertSegmentationMask(PoseLandmarkerResult result, out int maskWidth, out int maskHeight)
     {
+        maskWidth = 0;
+        maskHeight = 0;
         if (result.SegmentationMasks == null || result.SegmentationMasks.Count == 0) return null;
 
         try
         {
-            // Placeholder: return null if we can't easily extract without unsafe code or specific MP methods
-            return null; 
+            var mask = result.SegmentationMasks[0];
+            int width = mask.Width();
+            int height = mask.Height();
+            if (width <= 0 || height <= 0) return null;
+
+            mask.ConvertToCpu();
+            using (var pixelLock = new PixelWriteLock(mask))
+            {
+                nint pixelsPtr = pixelLock.Pixels();
+                if (pixelsPtr == 0) return null;
+
+                // Confidence masks are one float per pixel; compress to a single 8-bit channel.
+                int byteCount = width * height * 4;
+                var floatBytes = new byte[byteCount];
+                Marshal.Copy(pixelsPtr, floatBytes, 0, byteCount);
+
+                var maskData = new byte[width * height];
+                for (int i = 0; i < width * height; i++)
+                {
+                    float val = BitConverter.ToSingle(floatBytes, i * 4);
+                    if (float.IsNaN(val)) val = 0f;
+                    maskData[i] = (byte)(Math.Clamp(val, 0f, 1f) * 255f);
+                }
+
+                maskWidth = width;
+                maskHeight = height;
+                return maskData;
+            }
         }
         catch (Exception)
         {
             return null;
         }
+        finally
+        {
+            // The landmarker allocates these per inference and the result owns them - not
+            // disposing them leaks ~1MB of native memory per frame.
+            foreach (var mask in result.SegmentationMasks)
+            {
+                mask?.Dispose();
+            }
+        }
     }
 
-    private void UpdateSegmentationMaskTexture(byte[] maskData)
+    private void UpdateSegmentationMaskTexture(byte[] maskData, int width, int height)
     {
-        if (maskData == null! || maskData.Length == 0)
+        if (maskData == null! || maskData.Length == 0 || width <= 0 || height <= 0)
         {
             SegmentationMask.Value = null;
             return;
         }
-
-        int width = (int)Math.Sqrt(maskData.Length);
-        int height = width;
 
         if (_segmentationMaskTexture == null || _segmentationMaskTexture.Description.Width != width || _segmentationMaskTexture.Description.Height != height)
         {
@@ -1005,6 +1045,11 @@ public class PoseLandmarkDetection : Instance<PoseLandmarkDetection>
         // Stops the worker task and hands the landmarker to its deferred closer - closing it here
         // directly could hit a frame still running on the worker thread.
         StopWorker(false);
+
+        _debugTexture?.Dispose();
+        _debugTexture = null;
+        _segmentationMaskTexture?.Dispose();
+        _segmentationMaskTexture = null;
 
         try
         {

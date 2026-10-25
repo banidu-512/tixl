@@ -128,6 +128,16 @@
             <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
         </Content>
     </ItemGroup>
+
+    <!-- macOS: libmediapipe_c.dylib resolves its OpenCL imports by dynamic lookup and Apple Silicon
+         ships no OpenCL, so a no-op stub must be in the process before the first P/Invoke
+         (MediapipeNativeLibrary loads it from the app directory). Build it for dev builds too -
+         previously only the packaged DMG and the test host produced one, so a plain `dotnet run`
+         of the editor failed with "symbol not found in flat namespace". Needs clang. -->
+    <Target Name="BuildMediapipeOpenClStub" BeforeTargets="BeforeBuild" Condition="$([MSBuild]::IsOSPlatform('OSX'))">
+        <MakeDir Directories="$(OutputPath)" />
+        <Exec Command="clang -arch x86_64 -arch arm64 -shared -o &quot;$(OutputPath)libmediapipe_opencl_stub.dylib&quot; &quot;$(MSBuildThisFileDirectory)../Dependencies/osx/mediapipe-opencl-stub.c&quot;" />
+    </Target>
     <!-- =================================//===================================== -->
 
 
