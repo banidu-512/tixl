@@ -487,6 +487,8 @@ internal sealed class CollabRelayClientTransport : CollabTransport
 
     public override IReadOnlyList<CollabPeerConnection> Peers => _hostPeer == null ? [] : [_hostPeer];
 
+    public override CollabPeerConnection? HostLink => _hostPeer;
+
     public override void Dispose()
     {
         _cancellation.Cancel();
