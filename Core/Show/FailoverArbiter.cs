@@ -380,7 +380,13 @@ public static class FailoverArbiter
                     {
                         var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
                         socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
-                        socket.Bind(new IPEndPoint(GroupAddress, FailoverPort));
+                        // Windows delivers multicast to a socket bound to the interface's unicast address;
+                        // Debian 13 (verified) never does and only answers a group-address bind, where a
+                        // unicast bind would deafen a pinned standby into promoting itself against a live
+                        // master. Membership still restricts receiving to the chosen NIC, and
+                        // IP_MULTICAST_IF pins the outgoing interface, so heartbeats stay on that adapter.
+                        var bindAddress = OperatingSystem.IsLinux() ? GroupAddress : pinnedInterface.Address;
+                        socket.Bind(new IPEndPoint(bindAddress, FailoverPort));
                         socket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.MulticastLoopback, true);
                         socket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.AddMembership,
                                                new MulticastOption(GroupAddress, pinnedInterface.Address));
