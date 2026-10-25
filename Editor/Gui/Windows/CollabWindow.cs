@@ -90,7 +90,8 @@ internal sealed class CollabWindow : Window
         {
             collab.StartHost(UserSettings.Config.CollabPort,
                              UserSettings.Config.CollabPassword ?? "",
-                             UserSettings.Config.CollabLanDiscovery);
+                             UserSettings.Config.CollabLanDiscovery,
+                             CollabManager.ConfiguredShareProject);
         }
     }
 

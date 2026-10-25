@@ -139,6 +139,18 @@ internal sealed class CollabManager
 
         ++_sessionGeneration;
         ErrorText = "";
+
+        // A named project that isn't focused is opened first: the session snapshots and streams the
+        // focused project, so selecting one in the settings has to make it the one being edited.
+        if (!TryFocusProject(projectName))
+        {
+            ErrorText = $"Can't share '{projectName}': the project could not be opened";
+            StatusText = "Failed to host";
+            State = SessionState.Off;
+            _sessionProjectName = "";
+            return;
+        }
+
         try
         {
             _password = password ?? "";
@@ -156,9 +168,7 @@ internal sealed class CollabManager
                                                                ["host"] = Environment.MachineName,
                                                                ["port"] = tcpPort,
                                                                ["pwd"] = !string.IsNullOrEmpty(_password),
-                                                               ["project"] = projectName
-                                                                             ?? ProjectView.Focused?.OpenedProject.Package.DisplayName
-                                                                             ?? "",
+                                                               ["project"] = _sessionProjectName,
                                                            },
                                                  interfaceName ?? UserSettings.Config.NetworkInterface);
             _transport.PeerDisconnected += OnPeerDisconnectedTransport;
@@ -172,19 +182,52 @@ internal sealed class CollabManager
             StatusText = "Failed to host";
             _transport = null;
             State = SessionState.Off;
+            _sessionProjectName = "";
         }
     }
+
+    /// <summary>
+    /// Makes the named project the focused one. Empty is a no-op (the focused project is shared);
+    /// false means the project could not be opened, and hosting should not start without it.
+    /// </summary>
+    private static bool TryFocusProject(string? projectName)
+    {
+        if (string.IsNullOrWhiteSpace(projectName))
+            return true;
+
+        var focused = ProjectView.Focused;
+        if (focused != null && MatchesProjectName(focused.OpenedProject.Package.DisplayName, projectName))
+            return true;
+
+        return TryOpenProjectByName(projectName);
+    }
+
 
     /// <summary>
     /// Hosts through a relay so participants behind NATs can join by room code without port
     /// forwarding. Runs async: state goes Connecting until the relay confirms the room.
     /// </summary>
-    public void StartHostViaRelay(string relayHost, int relayPort)
+    public void StartHostViaRelay(string relayHost, int relayPort, string? projectName = null)
     {
         if (IsSessionActive)
             Leave();
 
         ErrorText = "";
+
+        if (!TryFocusProject(projectName))
+        {
+            ErrorText = $"Can't share '{projectName}': the project could not be opened";
+            StatusText = "Failed to host";
+            State = SessionState.Off;
+            _sessionProjectName = "";
+            return;
+        }
+
+        _sessionLog.Clear();
+        _sessionProjectName = projectName
+                              ?? ProjectView.Focused?.OpenedProject.Package.DisplayName
+                              ?? "";
+
         State = SessionState.Connecting;
         StatusText = $"Registering room at {relayHost}:{relayPort}...";
 
@@ -297,6 +340,7 @@ internal sealed class CollabManager
                                          ErrorText = $"{errorPrefix}: {message}";
                                          StatusText = statusText;
                                          State = SessionState.Off;
+                                         _sessionProjectName = "";
                                          Log.Warning($"Collab: {errorPrefix.ToLowerInvariant()}: {message}");
                                      });
     }
@@ -1011,6 +1055,16 @@ internal sealed class CollabManager
     private string _sessionProjectName = "";
     private string _hostProjectName = "";
 
+    /// <summary>The project new participants receive; empty when hosting without a project open.</summary>
+    public string SharedProjectName => _sessionProjectName;
+
+    /// <summary>
+    /// The project chosen in the collaboration settings; null means "share the focused project".
+    /// Call sites that host outside the settings panel use it too, so the dropdown applies everywhere.
+    /// </summary>
+    public static string? ConfiguredShareProject =>
+        string.IsNullOrWhiteSpace(UserSettings.Config.CollabShareProject) ? null : UserSettings.Config.CollabShareProject;
+
     /// <summary>
     /// Opens the host's project locally, or asks the host to stream it over when it doesn't exist
     /// here. Once the files have landed the editor restarts and auto-rejoins; from then on the
@@ -1041,11 +1095,14 @@ internal sealed class CollabManager
     /// <summary>Opens a local project by display name (short form accepted) into the visible graph window.</summary>
     internal static bool TryOpenProjectByName(string name)
     {
+        // An already opened view is reused: recreating its ProjectView would drop its view state.
+        if (TryFocusOpenProject(name))
+            return true;
+
         foreach (var p in SymbolPackage.AllPackages)
         {
             if (p is not EditorSymbolPackage editorPackage
-                || !(string.Equals(editorPackage.DisplayName, name, StringComparison.OrdinalIgnoreCase)
-                     || editorPackage.DisplayName.StartsWith(name + " (", StringComparison.OrdinalIgnoreCase)))
+                || !MatchesProjectName(editorPackage.DisplayName, name))
                 continue;
 
             if (!OpenedProject.TryCreate(editorPackage, out var openedProject, out var failureLog)
@@ -1076,6 +1133,29 @@ internal sealed class CollabManager
         }
 
         return false;
+    }
+
+    /// <summary>Brings an already opened project's graph view to the front without recreating it.</summary>
+    internal static bool TryFocusOpenProject(string name)
+    {
+        foreach (var window in GraphWindow.GraphWindowInstances)
+        {
+            var view = window.ProjectView;
+            if (view == null || !MatchesProjectName(view.OpenedProject.Package.DisplayName, name))
+                continue;
+
+            window.Config.Visible = true;
+            view.SetAsFocused();
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool MatchesProjectName(string displayName, string name)
+    {
+        return string.Equals(displayName, name, StringComparison.OrdinalIgnoreCase)
+               || displayName.StartsWith(name + " (", StringComparison.OrdinalIgnoreCase);
     }
 
     // ---------------------------------------------------------------------------------------
@@ -1770,13 +1850,12 @@ internal sealed class CollabManager
         upload.Sender?.Dispose();
     }
 
-    private static string? FindProjectFolder(string displayName)
+    internal static string? FindProjectFolder(string displayName)
     {
         foreach (var p in SymbolPackage.AllPackages)
         {
             if (p is EditableSymbolProject project
-                && (string.Equals(project.DisplayName, displayName, StringComparison.OrdinalIgnoreCase)
-                    || project.DisplayName.StartsWith(displayName + " (", StringComparison.OrdinalIgnoreCase)))
+                && MatchesProjectName(project.DisplayName, displayName))
             {
                 return project.CsProjectFile.Directory;
             }

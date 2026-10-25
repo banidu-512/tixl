@@ -663,7 +663,8 @@ internal static class DebugServer
             case "host":
                 collab.StartHost(request["port"]?.Value<int>() ?? 44700,
                                  request["password"]?.Value<string>() ?? "",
-                                 request["lan"]?.Value<bool>() ?? true);
+                                 request["lan"]?.Value<bool>() ?? true,
+                                 request["project"]?.Value<string>() ?? CollabManager.ConfiguredShareProject);
                 break;
 
             case "join":
@@ -695,19 +696,54 @@ internal static class DebugServer
                                ["error"] = collab.ErrorText,
                                ["peers"] = collab.Peers.Count,
                                ["chatLines"] = collab.ChatLog.Count,
+                               ["project"] = collab.SharedProjectName,
                            });
     }
 
-    /// <summary>Drives boygrouping for external agents: op = server | join | leave | status.</summary>
+    /// <summary>Drives boygrouping for external agents: op = enable | disable | invite | deploy | status.</summary>
     private static void HandleBoygroupControl(JObject request, RequestContext context)
     {
         var boygroup = Show.BoygroupManager.Instance;
         switch (request["op"]?.Value<string>())
         {
+            case "enable":
+            {
+                var roleText = request["role"]?.Value<string>();
+                UserSettings.Config.BoygroupRole = string.Equals(roleText, "slave", StringComparison.OrdinalIgnoreCase)
+                                                      ? Show.BoygroupRole.Slave
+                                                      : Show.BoygroupRole.Master;
+                UserSettings.Save();
+                boygroup.SetEnabled(true);
+                break;
+            }
+
+            case "disable":
+                boygroup.SetEnabled(false);
+                break;
+
+            case "invite":
+            {
+                var host = request["host"]?.Value<string>() ?? "";
+                var name = request["name"]?.Value<string>() ?? "";
+                var node = boygroup.DiscoveredServers.FirstOrDefault(n =>
+                                                                         (!string.IsNullOrEmpty(host) && n.Address == host)
+                                                                         || (!string.IsNullOrEmpty(name)
+                                                                             && string.Equals(n.Name, name, StringComparison.OrdinalIgnoreCase)));
+                if (node == null)
+                {
+                    context.SendError("NOT_FOUND", "No discovered TiXL instance matches 'host' or 'name'");
+                    return;
+                }
+
+                boygroup.InviteClient(node);
+                break;
+            }
+
+            // Legacy aliases kept for existing scripts: server starts a master, join connects a slave.
             case "server":
-                boygroup.StartServer(request["port"]?.Value<int>() ?? 44720,
-                                     request["password"]?.Value<string>() ?? "",
-                                     request["group"]?.Value<string>() ?? "Main");
+                UserSettings.Config.BoygroupRole = Show.BoygroupRole.Master;
+                UserSettings.Save();
+                boygroup.SetEnabled(true);
                 break;
 
             case "join":
