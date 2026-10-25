@@ -1,8 +1,10 @@
-﻿#nullable enable
+#nullable enable
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net;
+using System.Net.NetworkInformation;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Net.Sockets;
@@ -26,15 +28,6 @@ public sealed record FailoverConfig
     public int TimeoutFactor = 3;
     public bool Preempt = true;
 
-    /// <summary>Adapter name the heartbeat sockets bind to; empty = all interfaces (OS route).</summary>
-    public string NetworkInterfaceName = "";
-
-    /// <summary>
-    /// The project this node runs, advertised in the heartbeat so the standby can open the same
-    /// one. Empty while the editor shows the hub.
-    /// </summary>
-    public string ProjectName = "";
-
     public FailoverConfig Copy() => new()
                                          {
                                              Enabled = Enabled,
@@ -43,8 +36,6 @@ public sealed record FailoverConfig
                                              HeartbeatMs = HeartbeatMs,
                                              TimeoutFactor = TimeoutFactor,
                                              Preempt = Preempt,
-                                             NetworkInterfaceName = NetworkInterfaceName,
-                                             ProjectName = ProjectName,
                                          };
 
     public bool ConfigEquals(FailoverConfig? other)
@@ -55,9 +46,7 @@ public sealed record FailoverConfig
                && Priority == other.Priority
                && HeartbeatMs == other.HeartbeatMs
                && TimeoutFactor == other.TimeoutFactor
-               && Preempt == other.Preempt
-               && NetworkInterfaceName == other.NetworkInterfaceName
-               && ProjectName == other.ProjectName;
+               && Preempt == other.Preempt;
     }
 }
 
@@ -103,17 +92,22 @@ public static class FailoverArbiter
     private static NodeRole _role = NodeRole.Disabled;
     private static readonly string NodeId = Guid.NewGuid().ToString("N");
 
-    private static Socket? _heartbeatSocket;
+    /// <summary>
+    /// One receive/send socket per usable IPv4 interface. Membership pinned per interface is what
+    /// makes the arbiter work on multi-homed machines: with a single IPAddress.Any membership the
+    /// OS picks one default route and heartbeat datagrams arriving on every other NIC (WSL, Hyper-V,
+    /// Docker, VPN adapters) are silently dropped — the classic cause of a false "no active peer"
+    /// and a dual-active pair streaming the same DMX universe.
+    /// </summary>
+    private static readonly List<Socket> _heartbeatSockets = new();
     private static CancellationTokenSource? _cancellation;
 
     private sealed class PeerInfo
     {
         public int Priority;
         public bool AdvertisesActive;
-        public string ProjectName = "";
         public long LastHeardTicks;
         public string NodeId = "";
-        public string Address = "";
     }
 
     private static readonly Dictionary<string, PeerInfo> _peers = new(); // key: node id
@@ -203,117 +197,6 @@ public static class FailoverArbiter
         }
     }
 
-    /// <summary>True while this node streams the show (the active peer defines the show's project).</summary>
-    public static bool IsActiveNode
-    {
-        get
-        {
-            lock (Gate)
-                return _role == NodeRole.Active;
-        }
-    }
-
-    /// <summary>
-    /// The project the live active peer advertises, or null when no active peer is known. The
-    /// standby opens it so a takeover renders the same show.
-    /// </summary>
-    public static string? ActivePeerProjectName
-    {
-        get
-        {
-            lock (Gate)
-            {
-                var now = Environment.TickCount64;
-                var timeout = TimeoutMs;
-                PeerInfo? bestActive = null;
-                foreach (var peer in _peers.Values)
-                {
-                    if (now - peer.LastHeardTicks > timeout || !peer.AdvertisesActive)
-                        continue;
-
-                    if (bestActive == null || Beats(peer.Priority, peer.NodeId, bestActive.Priority, bestActive.NodeId))
-                        bestActive = peer;
-                }
-
-                var projectName = bestActive?.ProjectName;
-                return string.IsNullOrEmpty(projectName) ? null : projectName;
-            }
-        }
-    }
-
-    private static long _lastFrameTicks;
-
-    /// <summary>
-    /// Called once per presented frame. A node that comes back from a freeze longer than the stall
-    /// window demotes itself before the first output is evaluated, so a zombie master can never send
-    /// a frame while a standby has already taken over.
-    /// </summary>
-    public static void NotifyFrameAdvanced()
-    {
-        var now = Environment.TickCount64;
-        long previous;
-        lock (Gate)
-        {
-            previous = _lastFrameTicks;
-            _lastFrameTicks = now;
-        }
-
-        if (previous == 0)
-            return;
-
-        var stallWindow = (long)Math.Clamp(_config.HeartbeatMs * 3, 500, 30_000);
-        if (now - previous <= stallWindow || _role != NodeRole.Active)
-            return;
-
-        lock (Gate)
-        {
-            if (_role == NodeRole.Active)
-                Transition(NodeRole.Standby, $"Frame loop stalled for {now - previous} ms — yielding in case a standby took over");
-        }
-    }
-
-    /// <summary>Host name/address of the currently active peer (for NDI source-name matching);
-    /// null when failover is off or no active peer is heard from.</summary>
-    public static string? PeerHostName
-    {
-        get
-        {
-            lock (Gate)
-            {
-                var now = Environment.TickCount64;
-                var timeout = TimeoutMs;
-                PeerInfo? bestActive = null;
-                foreach (var peer in _peers.Values)
-                {
-                    if (now - peer.LastHeardTicks > timeout || !peer.AdvertisesActive)
-                        continue;
-
-                    if (bestActive == null || Beats(peer.Priority, peer.NodeId, bestActive.Priority, bestActive.NodeId))
-                        bestActive = peer;
-                }
-
-                var address = bestActive?.Address;
-                return string.IsNullOrEmpty(address) ? null : address;
-            }
-        }
-    }
-
-    /// <summary>Addresses of the peers heard from recently — the settings panel's network check
-    /// compares them against the selected adapter.</summary>
-    public static void GetLivePeerAddresses(List<string> addresses)
-    {
-        lock (Gate)
-        {
-            var now = Environment.TickCount64;
-            var timeout = TimeoutMs;
-            foreach (var peer in _peers.Values)
-            {
-                if (now - peer.LastHeardTicks <= timeout && peer.Address.Length > 0)
-                    addresses.Add(peer.Address);
-            }
-        }
-    }
-
     public static string LastEvent
     {
         get
@@ -362,64 +245,88 @@ public static class FailoverArbiter
             }
             else if (_config.Enabled)
             {
-                // A changed network interface must take effect while failover keeps running: the
-                // sockets still hold the old adapter until something unrelated forces a rebind.
-                if (!string.Equals(_boundInterfaceName, _config.NetworkInterfaceName ?? "", StringComparison.OrdinalIgnoreCase))
-                {
-                    RecordEvent($"Network interface changed to '{_config.NetworkInterfaceName ?? "any"}' — rebinding heartbeats");
-                    RebindSockets();
-                }
-                else
-                {
-                    // Priority/preempt changes re-evaluate on the next tick naturally.
-                    RecordEvent("Configuration updated");
-                }
+                // Priority/preempt changes re-evaluate on the next tick naturally.
+                RecordEvent("Configuration updated");
             }
         }
     }
 
-    /// <summary>The adapter the live heartbeat socket was bound for ("" = all interfaces), under Gate —
-    /// lets ApplyConfig notice a changed NetworkInterfaceName and rebind while failover keeps running.</summary>
-    private static string _boundInterfaceName = "";
-
     private static void Start()
     {
-        // Cross-platform notes: the multicast group loops back on Windows, macOS and Linux, so a
-        // master/backup pair works on one machine. With no adapter pinned, membership with
-        // IPAddress.Any follows the default interface — the common show setup (single LAN NIC).
-        // A pinned adapter (Settings → Network) binds and joins on that adapter's address instead.
-        var pinnedAddress = T3.Core.Utils.LanInterfaces.ResolveAddress(_config.NetworkInterfaceName);
-
-        // Unpinned multicast follows the OS's default adapter, which is not necessarily the show
-        // network on a machine with Wi-Fi, a VPN or Hyper-V adapters. Two such machines then cannot
-        // hear each other and BOTH become Active - both stream the show. Worth a loud warning.
-        if (pinnedAddress == null)
-        {
-            var usable = T3.Core.Utils.LanInterfaces.GetUsable();
-            if (usable.Count > 1)
-            {
-                Log.Warning("Failover: heartbeats are not pinned to an adapter and this machine has "
-                          + $"{usable.Count} usable network interfaces. If the pair ends up both ACTIVE, "
-                          + "pick the show network under Settings → Network (failover rebinds immediately).");
-            }
-        }
-
         _role = NodeRole.Probing;
         _lastStateChangeTicks = Environment.TickCount64;
         _peers.Clear();
-        RecordEvent($"Enabled (show '{_config.ShowId}', priority {_config.Priority}, "
-                  + $"interface '{(pinnedAddress != null ? _config.NetworkInterfaceName : "all")}')");
+        RecordEvent($"Enabled (show '{_config.ShowId}', priority {_config.Priority})");
 
         try
         {
-            var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
-            socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
-            socket.Bind(new IPEndPoint(pinnedAddress ?? IPAddress.Any, FailoverPort));
-            socket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.MulticastLoopback, true);
-            socket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.AddMembership,
-                                   new MulticastOption(GroupAddress, pinnedAddress ?? IPAddress.Any));
-            _heartbeatSocket = socket;
-            _boundInterfaceName = pinnedAddress != null ? _config.NetworkInterfaceName : "";
+            // Join the heartbeat group on every real interface, not just the OS default route:
+            // multi-homed machines (WSL/Hyper-V/VPN adapters) otherwise never hear peers on the
+            // show NIC. Loopback keeps one-PC master/backup rehearsal working via MulticastLoopback.
+            var interfaces = new List<IPAddress>();
+            try
+            {
+                foreach (var networkInterface in NetworkInterface.GetAllNetworkInterfaces())
+                {
+                    if (networkInterface.OperationalStatus != OperationalStatus.Up
+                        || networkInterface.NetworkInterfaceType is NetworkInterfaceType.Loopback or NetworkInterfaceType.Tunnel
+                        || !networkInterface.SupportsMulticast)
+                        continue;
+
+                    var ipv4 = networkInterface.GetIPProperties().UnicastAddresses
+                                          .FirstOrDefault(a => a.Address.AddressFamily == AddressFamily.InterNetwork)?.Address;
+                    if (ipv4 != null)
+                        interfaces.Add(ipv4);
+                }
+            }
+            catch (Exception e)
+            {
+                Log.Warning($"Failover: interface enumeration failed ({e.Message}); using default route");
+            }
+
+            if (interfaces.Count == 0)
+                interfaces.Add(IPAddress.Any);
+
+            lock (Gate)
+            {
+                foreach (var address in interfaces)
+                {
+                    try
+                    {
+                        var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+                        socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+                        socket.Bind(new IPEndPoint(address, FailoverPort));
+                        socket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.MulticastLoopback, true);
+                        socket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.AddMembership,
+                                               new MulticastOption(GroupAddress, address));
+                        _heartbeatSockets.Add(socket);
+                        RecordEvent($"Heartbeat socket on {address}");
+                    }
+                    catch (Exception e)
+                    {
+                        Log.Warning($"Failover: could not bind {address}:{FailoverPort}: {e.Message}");
+                    }
+                }
+
+                // Supplementary default-route socket: on Linux a specific-IP bind never receives
+                // multicast looped back from a local sender (verified), which would break the
+                // one-PC master/backup rehearsal. The Any bind still does. Duplicates are
+                // harmless — peers are deduped by node id.
+                try
+                {
+                    var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+                    socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+                    socket.Bind(new IPEndPoint(IPAddress.Any, FailoverPort));
+                    socket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.MulticastLoopback, true);
+                    socket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.AddMembership,
+                                           new MulticastOption(GroupAddress, IPAddress.Any));
+                    _heartbeatSockets.Add(socket);
+                }
+                catch (Exception e)
+                {
+                    Log.Warning($"Failover: could not bind default-route heartbeat socket: {e.Message}");
+                }
+            }
         }
         catch (Exception e)
         {
@@ -431,18 +338,12 @@ public static class FailoverArbiter
 
         _cancellation = new CancellationTokenSource();
         var token = _cancellation.Token;
-        _ = Task.Run(() => ListenLoop(token), token);
+        Socket[] sockets;
+        lock (Gate)
+            sockets = _heartbeatSockets.ToArray();
+        foreach (var socket in sockets)
+            _ = Task.Run(() => ListenLoop(socket, token), token);
         _ = Task.Run(() => TickLoop(token), token);
-    }
-
-    private static void RebindSockets()
-    {
-        // A changed adapter must take effect without ending the session: stop the loops, drop the
-        // socket, and start again with the new binding. Roles re-converge within a heartbeat.
-        _cancellation?.Cancel();
-        _heartbeatSocket?.Close();
-        _heartbeatSocket = null;
-        Start();
     }
 
     private static void Stop()
@@ -452,16 +353,24 @@ public static class FailoverArbiter
         RecordEvent("Disabled — output resumed");
         _cancellation?.Cancel();
         _cancellation = null;
-        try
+        Socket[] sockets;
+        lock (Gate)
         {
-            _heartbeatSocket?.Close();
-        }
-        catch
-        {
-            // Socket already dead.
+            sockets = _heartbeatSockets.ToArray();
+            _heartbeatSockets.Clear();
         }
 
-        _heartbeatSocket = null;
+        foreach (var socket in sockets)
+        {
+            try
+            {
+                socket.Close();
+            }
+            catch
+            {
+                // Socket already dead.
+            }
+        }
     }
 
     private static void TickLoop(CancellationToken token)
@@ -495,23 +404,21 @@ public static class FailoverArbiter
 
     private static void SendHeartbeat()
     {
-        Socket? socket;
+        Socket[] sockets;
         string showId;
-        string projectName;
         int priority;
         bool advertiseActive;
         lock (Gate)
         {
-            socket = _heartbeatSocket;
+            sockets = _heartbeatSockets.ToArray();
             showId = _config.ShowId;
-            projectName = _config.ProjectName ?? "";
             priority = _config.Priority;
             // A contested node is muted but has claimed the role: it must advertise that claim, or
             // the current active keeps streaming through the handover until it hears the new active.
             advertiseActive = _role is NodeRole.Active or NodeRole.Contested;
         }
 
-        if (socket == null)
+        if (sockets.Length == 0)
             return;
 
         var payload = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(new
@@ -520,20 +427,24 @@ public static class FailoverArbiter
                                                                                  id = NodeId,
                                                                                  prio = priority,
                                                                                  active = advertiseActive,
-                                                                                 proj = projectName,
                                                                              }));
 
-        try
+        // One copy per interface: heartbeats are ~100 bytes, and peers that only share one NIC
+        // with us still get every datagram. Duplicates are harmless (peers key by node id).
+        foreach (var socket in sockets)
         {
-            socket.SendTo(payload, new IPEndPoint(GroupAddress, FailoverPort));
-        }
-        catch (SocketException)
-        {
-            // Best-effort; a missed heartbeat only delays takeover detection slightly.
+            try
+            {
+                socket.SendTo(payload, new IPEndPoint(GroupAddress, FailoverPort));
+            }
+            catch (Exception e) when (e is SocketException or ObjectDisposedException)
+            {
+                // Interface vanished (cable out, adapter reset); the remaining sockets still send.
+            }
         }
     }
 
-    private static void ListenLoop(CancellationToken token)
+    private static void ListenLoop(Socket listenSocket, CancellationToken token)
     {
         var buffer = new byte[MaxDatagramSize];
         while (!token.IsCancellationRequested)
@@ -542,11 +453,7 @@ public static class FailoverArbiter
             int length;
             try
             {
-                var socket = _heartbeatSocket;
-                if (socket == null)
-                    break;
-
-                length = socket.ReceiveFrom(buffer, ref remote);
+                length = listenSocket.ReceiveFrom(buffer, ref remote);
             }
             catch (Exception e) when (e is SocketException or ObjectDisposedException)
             {
@@ -582,10 +489,8 @@ public static class FailoverArbiter
 
                     peer.Priority = heartbeat.Prio;
                     peer.AdvertisesActive = heartbeat.Active;
-                    peer.ProjectName = heartbeat.Proj ?? "";
                     peer.NodeId = heartbeat.Id;
                     peer.LastHeardTicks = Environment.TickCount64;
-                    peer.Address = remote is IPEndPoint endpoint ? endpoint.Address.ToString() : "";
                 }
             }
             catch
@@ -601,9 +506,6 @@ public static class FailoverArbiter
         public string? Id { get; set; }
         public int Prio { get; set; }
         public bool Active { get; set; }
-
-        /// <summary>Project the sending node runs; empty or absent on older builds.</summary>
-        public string? Proj { get; set; }
     }
 
     /// <summary>Does (priority, id) win the election against the other side? Deterministic from both sides.</summary>
@@ -767,20 +669,6 @@ public static class FailoverArbiter
         _lastStateChangeTicks = Environment.TickCount64;
         RecordEvent($"{newRole}: {reason}");
         Log.Info($"Failover: {newRole} — {reason}");
-    }
-
-    /// <summary>
-    /// Called by output operators (Art-Net/sACN) when sending keeps failing on the active node.
-    /// The fault is recorded for the failover UI; repeated faults from the active node are the
-    /// signal a standby should take over.
-    /// </summary>
-    public static void ReportOutputFault(string reason)
-    {
-        lock (Gate)
-        {
-            RecordEvent($"Output fault ({_role}): {reason}");
-        }
-        Log.Warning($"Failover: output fault reported while {_role} - {reason}");
     }
 
     private static void RecordEvent(string message)

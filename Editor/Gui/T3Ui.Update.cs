@@ -24,16 +24,24 @@ using T3.Editor.UiModel;
 using T3.Editor.UiModel.ProjectHandling;
 using T3.Editor.UiModel.Selection;
 using T3.SystemUi;
-using T3.Editor.Gui.Windows.TimeLine;
 
 namespace T3.Editor.Gui;
 
 public static partial class T3Ui
 {
+    private static readonly T3.Core.Show.FailoverConfig _failoverConfig = new();
+
     internal static void ProcessFrame()
     {
         Profiling.KeepFrameData();
         App.DebugProtocol.DebugServer.ProcessMainThreadQueue();
+        _failoverConfig.Enabled = UserSettings.Config.FailoverEnabled;
+        _failoverConfig.ShowId = UserSettings.Config.FailoverShowId;
+        _failoverConfig.Priority = UserSettings.Config.FailoverPriority;
+        _failoverConfig.HeartbeatMs = UserSettings.Config.FailoverHeartbeatMs;
+        _failoverConfig.TimeoutFactor = UserSettings.Config.FailoverTimeoutFactor;
+        _failoverConfig.Preempt = UserSettings.Config.FailoverPreempt;
+        T3.Core.Show.FailoverArbiter.ApplyConfig(_failoverConfig);
         //ImGui.PushStyleColor(ImGuiCol.Text, UiColors.Text.Rgba);
         DragAndDropHandling.Update();
         MagGraph.Ui.DropHandling.DrawDragIndicator();
@@ -60,7 +68,7 @@ public static partial class T3Ui
             // the mix only through the implicit default bus, so without this it would be decoded and fed but
             // never routed — silent in the rendered file while audible live. (The collector's own transport
             // gate already treats recording as running, so it expects to be called here.)
-            AudioGraphCollector.CollectLooseSources(ProjectView.Focused.TryGetCompositionInstance());
+            AudioGraphCollector.CollectLooseSources(ProjectView.Focused.CompositionInstance);
         }
 
         ScreenshotWriter.Update();
@@ -80,14 +88,10 @@ public static partial class T3Ui
 
         FitViewToSelectionHandling.ProcessNewFrame();
         SrvManager.RemoveForDisposedTextures();
-        GpuResourceReleasing.Update();
         KeyActionHandling.InitializeFrame();
 
         CompatibleMidiDeviceHandling.RescanIfDevicesChanged();
         CompatibleMidiDeviceHandling.UpdateConnectedDevices();
-        Interaction.Gamepad.GamepadIndicator.Update();
-        T3.IoServices.SpaceMouseInput.Update();
-        T3.IoServices.SpaceMouseInput.IsAvailableToOperators = UserSettings.Config.SpaceMouseUsage == UserSettings.InputDeviceUsages.Operators;
 
         var nodeSelection = ProjectView.Focused?.NodeSelection;
         if (nodeSelection != null)
@@ -98,14 +102,8 @@ public static partial class T3Ui
             NodeSelection.InvalidateSelectedOpsForTransformGizmo(nodeSelection);
         }
 
-        // Playback shortcuts are global and must fire once per frame, no matter how many timelines are shown.
-        TimeControls.HandleTimeControlActions();
-        RecordingSession.OnFrame();
-
-        CheckIfEscapeCouldCancelSomething();
-
         // Draw everything!
-        LayoutHandling.DrawMainDockSpace();
+        ImGui.DockSpaceOverViewport();
 
         ImGui.PushStyleVar(ImGuiStyleVar.WindowBorderSize, 1);
         WindowManager.Draw();
@@ -135,7 +133,6 @@ public static partial class T3Ui
         _couldNotLoadProjectDialog.Draw();
         _missingOperatorsDialog.Draw();
         _sendCrashReportsDialog.Draw();
-        ShareSessionDialog.Draw();
         CreateFromTemplateDialog.Draw();
         _userNameDialog.Draw();
         Windows.AssetLib.FolderImportDialog.Instance.Draw();
@@ -144,20 +141,10 @@ public static partial class T3Ui
         OperatorHelp.EditDescriptionDialog.Draw();
         SkillMapPopup.Draw();
 
-        // Reopen before the welcome check: restoring the project's window visibility would otherwise
-        // close a welcome window that was just opened.
-        if (!_lastProjectReopened)
-            _lastProjectReopened = LastOpenProject.ProcessStartupReopen();
-
-        LastOpenProject.Update();
-
         // Classify the launch first so the welcome window claims the foreground before the
         // user-name prompt. They must not overlap — the user-name dialog waits until the
         // welcome window is closed (see the IsVisible guard below).
         CheckForVersionWelcome();
-
-        // Once the layout is up, load the project configured in Settings → Startup.
-        App.Startup.StartupProjectLoader.CheckOncePerLaunch();
 
         if (IsWindowLayoutComplete() && _versionWelcomeChecked && !WindowManager.WelcomeWindow.IsVisible)
         {
@@ -176,8 +163,7 @@ public static partial class T3Ui
             else if (!_missingOperatorsChecked && !IsAnyPopupOpen)
             {
                 _missingOperatorsChecked = true;
-                if (UserSettings.Config.ShowMissingSymbolsWarningOnStartup)
-                    _missingOperatorsDialog.ShowIfOperatorsAreMissing();
+                _missingOperatorsDialog.ShowIfOperatorsAreMissing();
             }
             else if (!_crashReportsChecked && !IsAnyPopupOpen)
             {
@@ -187,7 +173,6 @@ public static partial class T3Ui
         }
 
         KeyboardAndMouseOverlay.Draw();
-        ActionToast.Draw();
 
         Playback.OpNotReady = false;
         AutoBackup.AutoBackup.CheckForSave();
@@ -214,7 +199,7 @@ public static partial class T3Ui
     /// </summary>
     private static void CheckForVersionWelcome()
     {
-        if (_versionWelcomeChecked || !_lastProjectReopened || IsAnyPopupOpen)
+        if (_versionWelcomeChecked || !IsWindowLayoutComplete() || IsAnyPopupOpen)
             return;
 
         _versionWelcomeChecked = true;
@@ -226,16 +211,13 @@ public static partial class T3Ui
         if (isNewVersion)
             AutoBackup.PreUpgradeSnapshot.CreateForExistingProjects();
 
-        // An OS-autostarted launch is a show machine booting — don't pop the welcome over the
-        // startup project; just record the version as seen.
-        if (!Program.StartedByOsAutostart && (UserSettings.Config.ShowWelcomeOnStartup || isNewVersion))
+        if (UserSettings.Config.ShowWelcomeOnStartup || isNewVersion)
             WindowManager.WelcomeWindow.Open();
         else
             VersionMarker.MarkCurrentVersionSeen();
     }
 
     private static bool _versionWelcomeChecked;
-    private static bool _lastProjectReopened;
     private static bool _blockedProjectsChecked;
     private static bool _missingOperatorsChecked;
     private static bool _crashReportsChecked;
