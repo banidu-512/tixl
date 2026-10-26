@@ -34,7 +34,31 @@ internal sealed class FailoverCollabLink
         if (!FailoverArbiter.IsEnabled)
         {
             StatusText = "Idle (failover off)";
+            _connectWatchTicks = 0;
             return;
+        }
+
+        // A dial that never completes — a dead master whose host drops instead of refuses SYNs —
+        // parks the session in Connecting for the OS connect timeout, which is minutes. Retire it
+        // so the current role's hosting/following can proceed.
+        if (collab.State == CollabManager.SessionState.Connecting)
+        {
+            if (_connectWatchTicks == 0)
+            {
+                _connectWatchTicks = Environment.TickCount64;
+            }
+            else if (Environment.TickCount64 - _connectWatchTicks > StaleConnectTimeoutMs)
+            {
+                Log.Info("Failover: the pending session dial never completed — abandoning it");
+                collab.Leave();
+                _dialedHost = "";
+                _connectWatchTicks = 0;
+                _nextActionTicks = Environment.TickCount64 + RetryCooldownMs;
+            }
+        }
+        else
+        {
+            _connectWatchTicks = 0;
         }
 
         // Cooldown between transitions: TCP teardown, the leaving session's cleanup and the
@@ -146,6 +170,10 @@ internal sealed class FailoverCollabLink
 
     private long _nextActionTicks;
 
+    /// <summary>When the current Connecting state was first seen, for the stale-dial guard.</summary>
+    private long _connectWatchTicks;
+
     private const int TransitionCooldownMs = 1000;
     private const int RetryCooldownMs = 2000;
+    private const int StaleConnectTimeoutMs = 15000;
 }
