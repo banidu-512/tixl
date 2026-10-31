@@ -545,28 +545,19 @@ namespace Lib.io.dmx
             for (int i = 0; i < fixtureChannelSize; i++)
                 _pointChannelValues.Add(0);
 
-            // Track universe state for fixtures per universe limiting
+            // A batch is FixturesPerUniverse fixtures packed back to back; it may span several universes.
             int currentChannelOffset = 0; // Offset in DMX channels (not absolute channel number)
             int fixturesInCurrentBatch = 0;
-            int channelsBeforeLastFixture = 0; // Track position before adding fixture for FillUniverse
 
             // Process each fixture
             for (int fixtureIdx = 0; fixtureIdx < fixtureCount; fixtureIdx++)
             {
                 bool logThisFixture = debugToLog && fixtureIdx == 0;
 
-                // Check if we need to start a new batch based on fixtures per universe
+                // The next batch starts at channel 1 of a fresh universe.
                 if (fixturesPerUniverse > 0 && fixturesInCurrentBatch >= fixturesPerUniverse)
                 {
-                    // Pad to universe boundary for clean batch separation
-                    int currentUniverse = (currentChannelOffset / UniverseSize);
-                    int nextUniverseStart = (currentUniverse + 1) * UniverseSize;
-                    int paddingNeeded = nextUniverseStart - currentChannelOffset;
-
-                    for (int p = 0; p < paddingNeeded; p++)
-                        _resultItems.Add(0);
-
-                    currentChannelOffset = nextUniverseStart;
+                    PadToUniverseBoundary(ref currentChannelOffset);
                     fixturesInCurrentBatch = 0;
                 }
 
@@ -590,9 +581,6 @@ namespace Lib.io.dmx
                 // Reset per‑fixture channel array
                 for (int i = 0; i < fixtureChannelSize; i++)
                     _pointChannelValues[i] = 0;
-
-                // Store position before adding this fixture for FillUniverse tracking
-                channelsBeforeLastFixture = currentChannelOffset;
 
                 // Get point data for this fixture (cycle through available points)
                 int pointIdx = fixtureIdx % Math.Max(1, effectedPointsCount);
@@ -640,44 +628,29 @@ namespace Lib.io.dmx
                 // Update tracking
                 currentChannelOffset += fixtureChannelSize;
                 fixturesInCurrentBatch++;
-
-                // FillUniverse: If we just crossed a universe boundary, fill the completed universe
-                if (fillUniverse && fixtureChannelSize > 0)
-                {
-                    int universeBefore = channelsBeforeLastFixture / UniverseSize;
-                    int universeAfter = currentChannelOffset / UniverseSize;
-
-                    if (universeAfter > universeBefore)
-                    {
-                        // We crossed one or more universe boundaries
-                        for (int u = universeBefore; u < universeAfter; u++)
-                        {
-                            int universeEnd = (u + 1) * UniverseSize;
-                            if (currentChannelOffset < universeEnd)
-                            {
-                                // Fill to end of this universe
-                                int paddingNeeded = universeEnd - currentChannelOffset;
-                                for (int p = 0; p < paddingNeeded; p++)
-                                    _resultItems.Add(0);
-
-                                currentChannelOffset = universeEnd;
-                            }
-                        }
-                    }
-                }
             }
 
-            // Final universe fill (only if not using fixtures per universe batching)
-            if (fillUniverse && fixturesPerUniverse == 0)
+            // Complete the last universe; earlier batches already end on a boundary.
+            if (fillUniverse)
             {
-                int remainder = _resultItems.Count % UniverseSize;
-                if (remainder != 0)
-                {
-                    int toAdd = UniverseSize - remainder;
-                    for (int i = 0; i < toAdd; i++)
-                        _resultItems.Add(0);
-                }
+                PadToUniverseBoundary(ref currentChannelOffset);
             }
+        }
+
+        /** Appends zeros up to the next 512-channel boundary; does nothing when already on one. */
+        private void PadToUniverseBoundary(ref int channelOffset)
+        {
+            var remainder = channelOffset % UniverseSize;
+            if (remainder == 0)
+                return;
+
+            var padding = UniverseSize - remainder;
+            for (var i = 0; i < padding; i++)
+            {
+                _resultItems.Add(0);
+            }
+
+            channelOffset += padding;
         }
         #endregion
 
