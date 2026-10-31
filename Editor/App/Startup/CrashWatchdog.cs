@@ -18,7 +18,7 @@ namespace T3.Editor.App.Startup;
 /// matter here (Vulkan driver faults, teardown segfaults), so restart decisions are made from a
 /// separate process via the child's exit code:
 ///   0                        normal quit
-///   1                        taskkill /f on Windows
+///   1 / -1                   taskkill /f, Task Manager / Stop-Process -Force on Windows
 ///   130 / 137 / 143          SIGINT / SIGKILL / SIGTERM on Linux — an explicit "stop" must not respawn
 ///   anything else            crash → restart
 /// Startup-crash floods (5 consecutive crashes within seconds of launch) give up instead of
@@ -33,10 +33,18 @@ internal static class CrashWatchdog
     private const long FastCrashWindowMs = 10_000;
     private const int RestartDelayMs = 2000;
 
-    private static readonly HashSet<int> _suppressRestartExitCodes = [1, 130, 137, 143];
+    private static readonly HashSet<int> _suppressRestartExitCodes = [1, -1, 130, 137, 143];
 
     /// <summary>True in editor processes spawned by the watchdog (i.e. this session is supervised).</summary>
     internal static bool IsChildProcess => Environment.GetEnvironmentVariable(ChildEnvVar) == "1";
+
+    /// <summary>
+    /// Marks or unmarks this process (and every process it spawns) as supervised. An in-app restart
+    /// unmarks it first, so the new instance starts its own supervisor instead of running unwatched
+    /// after the old supervisor exits with the old editor.
+    /// </summary>
+    internal static void SetSupervised(bool supervised)
+        => Environment.SetEnvironmentVariable(ChildEnvVar, supervised ? "1" : null);
 
     /// <summary>
     /// Handles a <c>--watchdog</c> launch: runs the supervision loop (which blocks until the
@@ -133,6 +141,9 @@ internal static class CrashWatchdog
             try
             {
                 child = StartChild(payload);
+
+                // The wait only applies to the first launch; the pid may belong to another process by the time of a restart.
+                payload = SanitizePayload(payload).ToArray();
             }
             catch (Exception e)
             {
