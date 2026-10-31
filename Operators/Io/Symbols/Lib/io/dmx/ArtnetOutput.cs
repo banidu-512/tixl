@@ -147,10 +147,16 @@ namespace Lib.io.dmx
             SetStatus("Connected and sending.", IStatusProvider.StatusLevel.Success);
 
             var inputValueLists = InputsValues.GetCollectedTypedInputs();
+
+            // Read every input exactly once: an upstream op with an Animated output (e.g.
+            // PointsToDmxLights) can produce a different length on a second evaluation in the
+            // same pass, which used to size the frame buffer from one length and copy another.
+            var inputBuffers = new List<List<int>?>(inputValueLists.Count);
             int totalChannels = 0;
             for (int i = 0; i < inputValueLists.Count; i++)
             {
                 var buf = inputValueLists[i].GetValue(context);
+                inputBuffers.Add(buf);
                 if (buf != null) totalChannels += buf.Count;
             }
 
@@ -163,7 +169,7 @@ namespace Lib.io.dmx
                 var lastInputIndex = universeChannels.Count - 1;
                 if (lastInputIndex < inputValueLists.Count)
                 {
-                    var lastBuffer = inputValueLists[lastInputIndex].GetValue(context);
+                    var lastBuffer = inputBuffers[lastInputIndex];
                     if (lastBuffer != null) nextUniverse = universeChannels[lastInputIndex] + (int)Math.Ceiling(lastBuffer.Count / 512.0);
                     else nextUniverse = universeChannels[lastInputIndex];
                 }
@@ -183,7 +189,7 @@ namespace Lib.io.dmx
 
             for (int i = 0; i < inputValueLists.Count; i++)
             {
-                var buf = inputValueLists[i].GetValue(context);
+                var buf = inputBuffers[i];
                 if (buf == null || buf.Count == 0) continue;
                 buf.CopyTo(frameData.Buffer, currentOffset);
                 frameData.Mappings[frameData.MappingCount++] = new InputMapping { Offset = currentOffset, Count = buf.Count, StartUniverse = universeChannels[i] };

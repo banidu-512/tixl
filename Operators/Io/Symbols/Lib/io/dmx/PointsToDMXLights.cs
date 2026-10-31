@@ -1,4 +1,5 @@
 using SharpDX;
+using T3.Core.Animation;
 using T3.Core.Utils;
 
 namespace Lib.io.dmx
@@ -56,12 +57,17 @@ namespace Lib.io.dmx
 
         // Cached forward axis – may be overridden by TestMode.
         private Vec3 _cachedForwardAxis = Vec3.UnitZ;
+
+        // Frame on which the channel data was last computed. Operators can be evaluated more than
+        // once per rendered frame; the readback and conversion are only worth doing once.
+        private int _lastUpdatedFrame = -1;
         #endregion
 
         #region Constructor
         public PointsToDmxLights()
         {
-            Result.UpdateAction = Update;
+            Result.UpdateAction = UpdateResult;
+            VisualizeLights.UpdateAction = UpdateVisualizeLights;
         }
         #endregion
 
@@ -232,7 +238,36 @@ namespace Lib.io.dmx
         #endregion
 
         #region Main Update Method
-        private void Update(EvaluationContext context)
+        private void UpdateResult(EvaluationContext context) => EnsureUpdated(context, false);
+
+        private void UpdateVisualizeLights(EvaluationContext context) => EnsureUpdated(context, true);
+
+        private void EnsureUpdated(EvaluationContext context, bool needsVisualization)
+        {
+            // The graph can evaluate an operator more than once per rendered frame (e.g. an output
+            // window and the composition's output chain). The readback and the per-fixture
+            // conversion only depend on this frame's inputs, so do them once and reuse the result.
+            if (_lastUpdatedFrame != Playback.FrameCount)
+            {
+                _lastUpdatedFrame = Playback.FrameCount;
+                Recompute(context);
+            }
+
+            if (!needsVisualization)
+                return;
+
+            if (_visualizationPoints.Length > 0)
+            {
+                UpdateVisualizationBuffer();
+                VisualizeLights.Value = _visualizeBuffer;
+            }
+            else
+            {
+                VisualizeLights.Value = null;
+            }
+        }
+
+        private void Recompute(EvaluationContext context)
         {
             var pointBuffer = EffectedPoints.GetValue(context);
             var referencePointBuffer = ReferencePoints.GetValue(context);
@@ -241,7 +276,7 @@ namespace Lib.io.dmx
             {
                 Log.Warning("EffectedPoints buffer is not connected or invalid.", this);
                 Result.Value?.Clear();
-                VisualizeLights.Value = null;
+                _visualizationPoints = Array.Empty<Point>();
                 _lastPanTiltPerFixture.Clear();
                 return;
             }
@@ -278,14 +313,11 @@ namespace Lib.io.dmx
 
                 UpdateChannelData(context, _points);
                 Result.Value = new List<int>(_resultItems);
-
-                UpdateVisualizationBuffer();
-                VisualizeLights.Value = _visualizeBuffer;
             }
             else
             {
                 Result.Value?.Clear();
-                VisualizeLights.Value = null;
+                _visualizationPoints = Array.Empty<Point>();
                 _lastPanTiltPerFixture.Clear();
             }
         }
@@ -492,7 +524,6 @@ namespace Lib.io.dmx
                                                                   fixtureIdx,
                                                                   logThisFixture,
                                                                   out finalVisPos);
-
                 // Store visualisation data
                 for (int p = 0; p < pixelsPerFixture; ++p)
                 {
@@ -507,7 +538,7 @@ namespace Lib.io.dmx
                 }
 
                 // Handle color, features, and custom variables
-                HandleColorAndFeatures(context, points, transformPoint, firstPixelIdx, pixelsPerFixture);
+                HandleColorAndFeatures(context, points, transformPoint, firstPixelIdx, pixelsPerFixture, fixtureChannelSize);
                 HandleCustomVariables(context);
 
                 // Append fixture's DMX channel list
@@ -1103,7 +1134,8 @@ namespace Lib.io.dmx
                                             Point[] points,
                                             Point transformPoint,
                                             int firstPixelIdx,
-                                            int pixelsPerFixture)
+                                            int pixelsPerFixture,
+                                            int fixtureChannelSize)
         {
             bool getColor = GetColor.GetValue(context);
             bool getF1 = GetF1.GetValue(context);
@@ -1156,64 +1188,124 @@ namespace Lib.io.dmx
                 Log.Warning("Per-pixel attributes are enabled, but all associated DMX channels are 0 or less. No per-pixel output will be generated.", this);
             }
 
-            for (int pix = 0; pix < pixelsPerFixture; ++pix)
+            // Reference-point mode can map many pixels onto one fixture. If the fixture's channel
+            // block is too small to hold a channel stride per pixel (e.g. 30 pixels on a 3-channel
+            // moving head), collapse the group into a single averaged value instead of writing
+            // per-pixel channels that would land outside the fixture's channel block.
+            bool canWritePerPixel = pixelsPerFixture <= 1
+                                    || pixelChannelStride == 0
+                                    || overallMaxPerPixelChannel + (pixelsPerFixture - 1) * pixelChannelStride <= fixtureChannelSize;
+
+            void WriteGroupValue(int baseChannel, float normalizedValue, bool is16BitChannel, string debugName)
             {
-                Point pt = points[firstPixelIdx + pix];
+                if (baseChannel <= 0) return;
+                SetDmxValue(normalizedValue, baseChannel, is16BitChannel ? baseChannel + 1 : 0, 0f, 1f, false, "Group-" + debugName);
+            }
 
-                void WriteSinglePixelDmxValue(int baseChannel, float normalizedValue, bool is16BitChannel, string debugName)
+            if (!canWritePerPixel)
+            {
+                int groupEnd = Math.Min(points.Length, firstPixelIdx + pixelsPerFixture);
+                int groupCount = Math.Max(1, groupEnd - firstPixelIdx);
+
+                if (getColor && (redChBase > 0 || greenChBase > 0 || blueChBase > 0 || whiteChBase > 0 || alphaChBase > 0))
                 {
-                    if (baseChannel <= 0) return;
-                    if (pixelChannelStride == 0) return;
-
-                    int relativeOffsetFromOverallMin = baseChannel - overallMinPerPixelChannel;
-                    int actualDmxCoarseChannel = overallMinPerPixelChannel + (pix * pixelChannelStride) + relativeOffsetFromOverallMin;
-
-                    int actualDmxFineChannel = is16BitChannel ? actualDmxCoarseChannel + 1 : 0;
-
-                    SetDmxValue(normalizedValue,
-                                actualDmxCoarseChannel,
-                                actualDmxFineChannel,
-                                0f, 1f,
-                                false,
-                                $"Pixel{pix}-{debugName}");
-                }
-
-                if (getColor)
-                {
-                    if (redChBase > 0 || greenChBase > 0 || blueChBase > 0 || whiteChBase > 0 || alphaChBase > 0)
+                    float r = 0f, g = 0f, b = 0f, a = 0f;
+                    for (int i = firstPixelIdx; i < groupEnd; i++)
                     {
-                        float r = float.IsNaN(pt.Color.X) ? 0f : Math.Clamp(pt.Color.X, 0f, 1f);
-                        float g = float.IsNaN(pt.Color.Y) ? 0f : Math.Clamp(pt.Color.Y, 0f, 1f);
-                        float b = float.IsNaN(pt.Color.Z) ? 0f : Math.Clamp(pt.Color.Z, 0f, 1f);
-                        float a = float.IsNaN(pt.Color.W) ? 1f : Math.Clamp(pt.Color.W, 0f, 1f);
-
-                        if (useCmy) { r = 1f - r; g = 1f - g; b = 1f - b; }
-
-                        WriteSinglePixelDmxValue(redChBase, r, is16BitColor, "Red");
-                        if (greenChBase > 0) WriteSinglePixelDmxValue(greenChBase, g, is16BitColor, "Green");
-                        if (blueChBase > 0) WriteSinglePixelDmxValue(blueChBase, b, is16BitColor, "Blue");
-                        if (whiteChBase > 0)
-                        {
-                            float w = Math.Min(r, Math.Min(g, b));
-                            WriteSinglePixelDmxValue(whiteChBase, w, is16BitColor, "White");
-                        }
-                        if (alphaChBase > 0)
-                        {
-                            WriteSinglePixelDmxValue(alphaChBase, a, is16BitColor, "Alpha");
-                        }
+                        Vector4 c = points[i].Color;
+                        r += float.IsNaN(c.X) ? 0f : Math.Clamp(c.X, 0f, 1f);
+                        g += float.IsNaN(c.Y) ? 0f : Math.Clamp(c.Y, 0f, 1f);
+                        b += float.IsNaN(c.Z) ? 0f : Math.Clamp(c.Z, 0f, 1f);
+                        a += float.IsNaN(c.W) ? 1f : Math.Clamp(c.W, 0f, 1f);
                     }
+
+                    r /= groupCount; g /= groupCount; b /= groupCount; a /= groupCount;
+                    if (useCmy) { r = 1f - r; g = 1f - g; b = 1f - b; }
+
+                    WriteGroupValue(redChBase, r, is16BitColor, "Red");
+                    if (greenChBase > 0) WriteGroupValue(greenChBase, g, is16BitColor, "Green");
+                    if (blueChBase > 0) WriteGroupValue(blueChBase, b, is16BitColor, "Blue");
+                    if (whiteChBase > 0) WriteGroupValue(whiteChBase, Math.Min(r, Math.Min(g, b)), is16BitColor, "White");
+                    if (alphaChBase > 0) WriteGroupValue(alphaChBase, a, is16BitColor, "Alpha");
                 }
 
                 if (getF1 && f1ByPixel && f1ChBase > 0)
                 {
-                    float f1 = float.IsNaN(pt.F1) ? 0f : Math.Clamp(pt.F1, 0f, 1f);
-                    WriteSinglePixelDmxValue(f1ChBase, f1, false, "F1");
+                    float f1 = 0f;
+                    for (int i = firstPixelIdx; i < groupEnd; i++)
+                        f1 += float.IsNaN(points[i].F1) ? 0f : Math.Clamp(points[i].F1, 0f, 1f);
+                    WriteGroupValue(f1ChBase, f1 / groupCount, false, "F1");
                 }
 
                 if (getF2 && f2ByPixel && f2ChBase > 0)
                 {
-                    float f2 = float.IsNaN(pt.F2) ? 0f : Math.Clamp(pt.F2, 0f, 1f);
-                    WriteSinglePixelDmxValue(f2ChBase, f2, false, "F2");
+                    float f2 = 0f;
+                    for (int i = firstPixelIdx; i < groupEnd; i++)
+                        f2 += float.IsNaN(points[i].F2) ? 0f : Math.Clamp(points[i].F2, 0f, 1f);
+                    WriteGroupValue(f2ChBase, f2 / groupCount, false, "F2");
+                }
+            }
+            else
+            {
+                for (int pix = 0; pix < pixelsPerFixture; ++pix)
+                {
+                    Point pt = points[firstPixelIdx + pix];
+
+                    void WriteSinglePixelDmxValue(int baseChannel, float normalizedValue, bool is16BitChannel, string debugName)
+                    {
+                        if (baseChannel <= 0) return;
+                        if (pixelChannelStride == 0) return;
+
+                        int relativeOffsetFromOverallMin = baseChannel - overallMinPerPixelChannel;
+                        int actualDmxCoarseChannel = overallMinPerPixelChannel + (pix * pixelChannelStride) + relativeOffsetFromOverallMin;
+
+                        int actualDmxFineChannel = is16BitChannel ? actualDmxCoarseChannel + 1 : 0;
+
+                        SetDmxValue(normalizedValue,
+                                    actualDmxCoarseChannel,
+                                    actualDmxFineChannel,
+                                    0f, 1f,
+                                    false,
+                                    $"Pixel{pix}-{debugName}");
+                    }
+
+                    if (getColor)
+                    {
+                        if (redChBase > 0 || greenChBase > 0 || blueChBase > 0 || whiteChBase > 0 || alphaChBase > 0)
+                        {
+                            float r = float.IsNaN(pt.Color.X) ? 0f : Math.Clamp(pt.Color.X, 0f, 1f);
+                            float g = float.IsNaN(pt.Color.Y) ? 0f : Math.Clamp(pt.Color.Y, 0f, 1f);
+                            float b = float.IsNaN(pt.Color.Z) ? 0f : Math.Clamp(pt.Color.Z, 0f, 1f);
+                            float a = float.IsNaN(pt.Color.W) ? 1f : Math.Clamp(pt.Color.W, 0f, 1f);
+
+                            if (useCmy) { r = 1f - r; g = 1f - g; b = 1f - b; }
+
+                            WriteSinglePixelDmxValue(redChBase, r, is16BitColor, "Red");
+                            if (greenChBase > 0) WriteSinglePixelDmxValue(greenChBase, g, is16BitColor, "Green");
+                            if (blueChBase > 0) WriteSinglePixelDmxValue(blueChBase, b, is16BitColor, "Blue");
+                            if (whiteChBase > 0)
+                            {
+                                float w = Math.Min(r, Math.Min(g, b));
+                                WriteSinglePixelDmxValue(whiteChBase, w, is16BitColor, "White");
+                            }
+                            if (alphaChBase > 0)
+                            {
+                                WriteSinglePixelDmxValue(alphaChBase, a, is16BitColor, "Alpha");
+                            }
+                        }
+                    }
+
+                    if (getF1 && f1ByPixel && f1ChBase > 0)
+                    {
+                        float f1 = float.IsNaN(pt.F1) ? 0f : Math.Clamp(pt.F1, 0f, 1f);
+                        WriteSinglePixelDmxValue(f1ChBase, f1, false, "F1");
+                    }
+
+                    if (getF2 && f2ByPixel && f2ChBase > 0)
+                    {
+                        float f2 = float.IsNaN(pt.F2) ? 0f : Math.Clamp(pt.F2, 0f, 1f);
+                        WriteSinglePixelDmxValue(f2ChBase, f2, false, "F2");
+                    }
                 }
             }
 
