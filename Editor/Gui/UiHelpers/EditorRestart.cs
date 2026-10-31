@@ -1,5 +1,6 @@
 #nullable enable
 using System.Diagnostics;
+using T3.Editor.App.Startup;
 using T3.Editor.SystemUi;
 
 namespace T3.Editor.Gui.UiHelpers;
@@ -22,6 +23,7 @@ internal static class EditorRestart
             return false;
         }
 
+        var wasSupervised = CrashWatchdog.IsChildProcess;
         try
         {
             var startInfo = new ProcessStartInfo
@@ -48,10 +50,12 @@ internal static class EditorRestart
             // our save-on-quit settings writes and kills the new instance during startup.
             startInfo.ArgumentList.Add($"--wait-for-exit={Environment.ProcessId}");
 
+            CrashWatchdog.SetSupervised(false);
             Process.Start(startInfo);
         }
         catch (Exception e)
         {
+            CrashWatchdog.SetSupervised(wasSupervised);
             Log.Warning($"Failed to start a new editor instance: {e.Message}");
             return false;
         }

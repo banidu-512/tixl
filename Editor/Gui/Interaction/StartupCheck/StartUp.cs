@@ -2,6 +2,7 @@ using System.IO;
 using T3.Core.SystemUi;
 using T3.Core.Settings;
 using T3.Core.Utils;
+using T3.Editor.App.Startup;
 using T3.Editor.Gui.UiHelpers;
 using T3.Editor.SystemUi;
 
@@ -20,7 +21,11 @@ public static class StartUp
         if (File.Exists(StartUpLockFilePath))
         {
             #if !DEBUG
-            ShowLastStartupFailedMessageBox();
+            // A modal dialog would leave an unattended machine stuck after a crash during startup.
+            if (CrashWatchdog.IsChildProcess)
+                Log.Warning("The previous startup did not complete; continuing because the editor is supervised.");
+            else
+                ShowLastStartupFailedMessageBox();
             #endif
         }
 
