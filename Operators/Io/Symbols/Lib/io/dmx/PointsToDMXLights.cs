@@ -61,6 +61,23 @@ namespace Lib.io.dmx
         // Frame on which the channel data was last computed. Operators can be evaluated more than
         // once per rendered frame; the readback and conversion are only worth doing once.
         private int _lastUpdatedFrame = -1;
+
+        /** Set when the visualization points changed and the GPU copy is stale. */
+        private bool _visualizationDirty;
+
+        /** Warnings are logged once per occurrence instead of every frame. */
+        [Flags]
+        private enum Warnings
+        {
+            NoPoints = 1,
+            ReferenceMismatch = 2,
+            NoFixtureChannels = 4,
+            ChannelOverflow = 8,
+            UpdateFailed = 16,
+        }
+
+        private Warnings _loggedWarnings;
+        private Warnings _warningsThisFrame;
         #endregion
 
         #region Constructor
@@ -237,6 +254,21 @@ namespace Lib.io.dmx
 
         #endregion
 
+        #region Disposal
+        protected override void Dispose(bool isDisposing)
+        {
+            if (isDisposing)
+            {
+                _pointsBufferReader.Dispose();
+                _referencePointsBufferReader.Dispose();
+                _visualizeBuffer?.Dispose();
+                _visualizeBuffer = null;
+            }
+
+            base.Dispose(isDisposing);
+        }
+        #endregion
+
         #region Main Update Method
         private void UpdateResult(EvaluationContext context) => EnsureUpdated(context, false);
 
@@ -250,21 +282,59 @@ namespace Lib.io.dmx
             if (_lastUpdatedFrame != Playback.FrameCount)
             {
                 _lastUpdatedFrame = Playback.FrameCount;
-                Recompute(context);
+                RecomputeGuarded(context);
             }
 
             if (!needsVisualization)
                 return;
 
-            if (_visualizationPoints.Length > 0)
-            {
-                UpdateVisualizationBuffer();
-                VisualizeLights.Value = _visualizeBuffer;
-            }
-            else
+            if (_visualizationPoints.Length == 0)
             {
                 VisualizeLights.Value = null;
+                return;
             }
+
+            if (_visualizationDirty)
+            {
+                UpdateVisualizationBuffer();
+                _visualizationDirty = false;
+            }
+
+            VisualizeLights.Value = _visualizeBuffer;
+        }
+
+        /** A failing conversion must degrade to "no output", not take down the frame loop. */
+        private void RecomputeGuarded(EvaluationContext context)
+        {
+            _warningsThisFrame = 0;
+            try
+            {
+                Recompute(context);
+            }
+            catch (Exception e)
+            {
+                if (ShouldLogOnce(Warnings.UpdateFailed))
+                {
+                    Log.Warning("Failed to compute DMX channels: " + e.Message, this);
+                }
+
+                _resultItems.Clear();
+                Result.Value = _resultItems;
+                _visualizationPoints = Array.Empty<Point>();
+            }
+
+            // A warning that did not recur this frame may be logged again the next time it happens.
+            _loggedWarnings &= _warningsThisFrame;
+        }
+
+        private bool ShouldLogOnce(Warnings warning)
+        {
+            _warningsThisFrame |= warning;
+            if ((_loggedWarnings & warning) != 0)
+                return false;
+
+            _loggedWarnings |= warning;
+            return true;
         }
 
         private void Recompute(EvaluationContext context)
@@ -274,10 +344,12 @@ namespace Lib.io.dmx
 
             if (pointBuffer == null || pointBuffer.Buffer == null || pointBuffer.Srv == null)
             {
-                Log.Warning("EffectedPoints buffer is not connected or invalid.", this);
-                Result.Value?.Clear();
-                _visualizationPoints = Array.Empty<Point>();
-                _lastPanTiltPerFixture.Clear();
+                if (ShouldLogOnce(Warnings.NoPoints))
+                {
+                    Log.Warning("EffectedPoints buffer is not connected or invalid.", this);
+                }
+
+                ClearOutput();
                 return;
             }
 
@@ -304,7 +376,7 @@ namespace Lib.io.dmx
             }
 
             // Process when we actually have points
-            if (_points != null && _points.Length > 0)
+            if (_points.Length > 0)
             {
                 if (_visualizationPoints.Length != _points.Length)
                     _visualizationPoints = new Point[_points.Length];
@@ -312,14 +384,27 @@ namespace Lib.io.dmx
                 ApplyTestMode(context);
 
                 UpdateChannelData(context, _points);
-                Result.Value = new List<int>(_resultItems);
+                Result.Value = _resultItems;
+                _visualizationDirty = true;
             }
             else
             {
-                Result.Value?.Clear();
+                _resultItems.Clear();
+                Result.Value = _resultItems;
                 _visualizationPoints = Array.Empty<Point>();
                 _lastPanTiltPerFixture.Clear();
             }
+        }
+
+        /** Drops the readback so a reconnected input never re-emits points from before the disconnect. */
+        private void ClearOutput()
+        {
+            _points = Array.Empty<Point>();
+            _referencePoints = Array.Empty<Point>();
+            _resultItems.Clear();
+            Result.Value = _resultItems;
+            _visualizationPoints = Array.Empty<Point>();
+            _lastPanTiltPerFixture.Clear();
         }
         #endregion
 
@@ -412,9 +497,13 @@ namespace Lib.io.dmx
                 fixtureCount = _referencePoints.Length;
                 if (fixtureCount == 0 || effectedPointsCount % fixtureCount != 0)
                 {
-                    Log.Warning(
-                        $"Effected points count ({effectedPointsCount}) is not a multiple of reference points count ({fixtureCount}). " +
-                        "Falling back to 1‑to‑1 mapping.", this);
+                    if (ShouldLogOnce(Warnings.ReferenceMismatch))
+                    {
+                        Log.Warning(
+                            $"Effected points count ({effectedPointsCount}) is not a multiple of reference points count ({fixtureCount}). " +
+                            "Falling back to 1‑to‑1 mapping.", this);
+                    }
+
                     fixtureCount = effectedPointsCount;
                     pixelsPerFixture = 1;
                     useReferencePoints = false;
@@ -443,7 +532,11 @@ namespace Lib.io.dmx
 
             if (fixtureChannelSize <= 0)
             {
-                if (effectedPointsCount > 0) Log.Warning("FixtureChannelSize is 0 or less, no DMX output generated.", this);
+                if (effectedPointsCount > 0 && ShouldLogOnce(Warnings.NoFixtureChannels))
+                {
+                    Log.Warning("FixtureChannelSize is 0 or less, no DMX output generated.", this);
+                }
+
                 return;
             }
 
@@ -1199,7 +1292,7 @@ namespace Lib.io.dmx
             void WriteGroupValue(int baseChannel, float normalizedValue, bool is16BitChannel, string debugName)
             {
                 if (baseChannel <= 0) return;
-                SetDmxValue(normalizedValue, baseChannel, is16BitChannel ? baseChannel + 1 : 0, 0f, 1f, false, "Group-" + debugName);
+                SetDmxValue(normalizedValue, baseChannel, is16BitChannel ? baseChannel + 1 : 0, 0f, 1f, false, debugName);
             }
 
             if (!canWritePerPixel)
@@ -1266,7 +1359,7 @@ namespace Lib.io.dmx
                                     actualDmxFineChannel,
                                     0f, 1f,
                                     false,
-                                    $"Pixel{pix}-{debugName}");
+                                    debugName);
                     }
 
                     if (getColor)
@@ -1347,40 +1440,18 @@ namespace Lib.io.dmx
                 return;
             }
 
-            // Create working copy of channels to avoid modifying the original
-            var workingChannels = new List<int>(channels);
-            
-            // Auto-resize values list to match channels size
-            var workingValues = new List<int>();
-            if (values != null)
+            // Missing values default to the middle of the DMX range; surplus values are ignored.
+            const int defaultValue = 128;
+            if (shouldLog && (values == null || values.Count != channels.Count))
             {
-                workingValues = new List<int>(values);
-            }
-            
-            // Ensure values list size matches channels size
-            if (workingValues.Count < workingChannels.Count)
-            {
-                // Extend values with default DMX value (128)
-                int valuesToAdd = workingChannels.Count - workingValues.Count;
-                for (int i = 0; i < valuesToAdd; i++)
-                {
-                    workingValues.Add(128); // Default DMX value (middle of 0-255 range)
-                }
-                if (shouldLog) Log.Debug($"Auto-resized CustomVariableValues: extended from {values?.Count ?? 0} to {workingValues.Count} elements with default value 128", this);
-            }
-            else if (workingValues.Count > workingChannels.Count)
-            {
-                // Trim excess values to match channels size
-                int excessCount = workingValues.Count - workingChannels.Count;
-                workingValues.RemoveRange(workingChannels.Count, excessCount);
-                if (shouldLog) Log.Debug($"Auto-trimmed CustomVariableValues: reduced from {values.Count} to {workingValues.Count} elements to match channels size", this);
+                Log.Debug($"CustomVariableValues has {values?.Count ?? 0} entries for {channels.Count} channels; using {defaultValue} for missing values", this);
             }
 
             // Process each channel-value pair
-            for (int i = 0; i < workingChannels.Count; i++)
+            for (int i = 0; i < channels.Count; i++)
             {
-                int channel = workingChannels[i];
-                int value = workingValues[i];
+                int channel = channels[i];
+                int value = values != null && i < values.Count ? values[i] : defaultValue;
 
                 // Validate channel number
                 if (channel <= 0)
@@ -1393,7 +1464,7 @@ namespace Lib.io.dmx
                 int clampedValue = Math.Clamp(value, 0, (int)customVarNormalizedMax);
 
                 // Set the DMX value
-                SetDmxValue(clampedValue, channel, 0, 0f, customVarNormalizedMax, shouldLog, $"CustomVar[{i}]");
+                SetDmxValue(clampedValue, channel, 0, 0f, customVarNormalizedMax, shouldLog, shouldLog ? $"CustomVar[{i}]" : string.Empty);
             }
         }
         #endregion
@@ -1452,8 +1523,12 @@ namespace Lib.io.dmx
                 return;
             if (index >= _pointChannelValues.Count)
             {
-                Log.Warning($"DMX channel list index {index + 1} out of range (list size {_pointChannelValues.Count}). " +
-                            $"Increase 'Fixture Channel Size' if you are using high channel numbers or 16-bit channels for multiple pixels.", this);
+                if (ShouldLogOnce(Warnings.ChannelOverflow))
+                {
+                    Log.Warning($"DMX channel list index {index + 1} out of range (list size {_pointChannelValues.Count}). " +
+                                $"Increase 'Fixture Channel Size' if you are using high channel numbers or 16-bit channels for multiple pixels.", this);
+                }
+
                 return;
             }
             _pointChannelValues[index] = value;

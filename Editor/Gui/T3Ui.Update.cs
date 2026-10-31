@@ -3,6 +3,7 @@ using T3.Core.Animation;
 using T3.Core.Audio;
 using T3.Core.Audio.Graph;
 using T3.Core.Resource;
+using T3.Core.Stats;
 using T3.Editor.App;
 using T3.Editor.Gui.Dialog;
 using T3.Editor.Compilation;
@@ -45,6 +46,7 @@ public static partial class T3Ui
         
         // Prepare the current frame 
         RenderStatsCollector.StartNewFrame();
+        OpTimings.StartNewFrame();
         
         UpdateModifiedProjects();
 

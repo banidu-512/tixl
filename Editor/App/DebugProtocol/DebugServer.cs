@@ -282,6 +282,23 @@ internal static class DebugServer
                 HandleGetFrameSamples(context);
                 break;
 
+            case "getOpTimings":
+                HandleGetOpTimings(context);
+                break;
+
+            case "setOpTimings":
+            {
+                var enabled = request["enabled"]?.Value<bool>() ?? true;
+                OpTimings.Enabled = enabled;
+                if (!enabled)
+                {
+                    OpTimings.Reset();
+                }
+
+                context.SendOk(new JObject { ["enabled"] = enabled });
+                break;
+            }
+
             case "screenshot":
                 HandleScreenshot(request, context);
                 break;
@@ -1083,6 +1100,28 @@ internal static class DebugServer
         result["renderStats"] = renderStats;
         result["gpuMemory"] = TryGetGpuMemoryInfo();
         context.SendOk(result);
+    }
+
+    /// <summary>
+    /// Enables per-operator update timing and returns the previous frame's slowest operators.
+    /// Opt-in: enabling adds a timestamp pair around every operator update, so only use it while profiling.
+    /// Times are inclusive of the operators each one evaluates.
+    /// </summary>
+    private static void HandleGetOpTimings(RequestContext context)
+    {
+        OpTimings.Enabled = true;
+        var rows = new JArray();
+        foreach (var (name, milliseconds, count) in OpTimings.Snapshot(30))
+        {
+            rows.Add(new JObject
+                         {
+                             ["name"] = name,
+                             ["ms"] = Math.Round(milliseconds, 3),
+                             ["updates"] = count,
+                         });
+        }
+
+        context.SendOk(new JObject { ["operators"] = rows });
     }
 
     /// <summary>The Performance window's rolling frame, CPU and present durations (oldest first), the data of its CSV export.</summary>

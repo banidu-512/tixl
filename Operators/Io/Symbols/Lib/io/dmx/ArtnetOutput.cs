@@ -24,6 +24,7 @@ namespace Lib.io.dmx
         private readonly ConcurrentDictionary<int, IPEndPoint> _universeRoutingTable = new();
         private readonly byte[] _packetBuffer = new byte[18 + 512];
         private readonly byte[] _universeSequenceNumbers = new byte[65536];
+        private readonly List<List<int>?> _inputBuffers = new();
 
         // --- Zero-Allocation Queue ---
         private readonly ConcurrentQueue<FrameData> _dataQueue = new();
@@ -148,10 +149,10 @@ namespace Lib.io.dmx
 
             var inputValueLists = InputsValues.GetCollectedTypedInputs();
 
-            // Read every input exactly once: an upstream op with an Animated output (e.g.
-            // PointsToDmxLights) can produce a different length on a second evaluation in the
-            // same pass, which used to size the frame buffer from one length and copy another.
-            var inputBuffers = new List<List<int>?>(inputValueLists.Count);
+            // Evaluate each input once: an Animated upstream output can change length between two evaluations,
+            // and the frame buffer is sized from one while the copy reads the other.
+            var inputBuffers = _inputBuffers;
+            inputBuffers.Clear();
             int totalChannels = 0;
             for (int i = 0; i < inputValueLists.Count; i++)
             {

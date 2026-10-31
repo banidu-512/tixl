@@ -66,49 +66,59 @@ public sealed class StructuredBufferReadAccess : IDisposable
             if (!request.IsReady)
                 continue;
 
-            // MapFlags.DoNotWait: a plain Map here blocks until the GPU has drained everything queued so
-            // far, which serializes the CPU against the whole frame. Do not wait unless we have to.
-            var dataBox = context.MapSubresource(
-                request.CpuAccessBuffer,
-                0,
-                MapMode.Read,
-                MapFlags.DoNotWait,
-                out var dataStream);
-
-            if (dataBox.DataPointer == IntPtr.Zero)
-            {
-                // Not downloaded yet - expected on the first attempt, because the copy was queued in
-                // the same frame. Retry on the next Update. Only when the staging slot is about to be
-                // reused do we wait for the GPU instead of silently dropping the data.
-                if (!request.IsLastAttempt)
-                    continue;
-
-                dataBox = context.MapSubresource(
-                    request.CpuAccessBuffer,
-                    0,
-                    MapMode.Read,
-                    MapFlags.None,
-                    out dataStream);
-
-                if (dataBox.DataPointer == IntPtr.Zero)
-                {
-                    Log.Warning("Failed to map buffer readback even after waiting; dropping the request.");
-                    _readRequests.RemoveAt(i);
-                    i--;
-                    continue;
-                }
-            }
-
             try
             {
-                request.OnSuccess(request, dataBox.DataPointer, dataStream);
+                // A blocking Map stalls the CPU until the GPU has drained everything queued so far.
+                // Only accept that when the staging slot is about to be reused.
+                var flags = request.IsLastAttempt ? MapFlags.None : MapFlags.DoNotWait;
+                if (!TryMap(context, request.CpuAccessBuffer, flags, out var dataBox, out var dataStream))
+                {
+                    if (request.IsLastAttempt)
+                    {
+                        Log.Warning("Failed to map buffer readback even after waiting; dropping the request.");
+                        _readRequests.RemoveAt(i);
+                        i--;
+                    }
+
+                    continue;
+                }
+
+                try
+                {
+                    request.OnSuccess(request, dataBox.DataPointer, dataStream);
+                }
+                finally
+                {
+                    context.UnmapSubresource(request.CpuAccessBuffer, 0);
+                    _readRequests.RemoveAt(i);
+                    i--;
+                }
             }
-            finally
+            catch (Exception e)
             {
-                context.UnmapSubresource(request.CpuAccessBuffer, 0);
-                _readRequests.RemoveAt(i);
-                i--;
+                // Lost device, disposed staging buffer or a throwing consumer: drop the request, keep the frame loop alive.
+                Log.Warning("Buffer readback failed: " + e.Message);
+                if (_readRequests.Remove(request))
+                {
+                    i--;
+                }
             }
+        }
+    }
+
+    /** Returns false while the GPU has not finished the copy yet (only possible with DoNotWait). */
+    private static bool TryMap(DeviceContext context, Buffer buffer, MapFlags flags, out DataBox dataBox, out DataStream dataStream)
+    {
+        try
+        {
+            dataBox = context.MapSubresource(buffer, 0, MapMode.Read, flags, out dataStream);
+            return dataBox.DataPointer != IntPtr.Zero && dataStream != null;
+        }
+        catch (SharpDXException e) when (e.Descriptor == SharpDX.DXGI.ResultCode.WasStillDrawing)
+        {
+            dataBox = default;
+            dataStream = null!;
+            return false;
         }
     }
 
