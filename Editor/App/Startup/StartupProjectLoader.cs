@@ -16,17 +16,27 @@ internal static class StartupProjectLoader
 {
     private static bool _checked;
 
+    /** Frames to wait for a graph window to exist before giving up (a few seconds). */
+    private const int MaxFramesToAwaitGraphWindow = 600;
+
     /// <summary>Called once per frame; does its work on the first frame with a complete layout.</summary>
     internal static void CheckOncePerLaunch()
     {
         if (_checked || ImGui.GetFrameCount() <= 2)
             return;
 
-        _checked = true;
-
         var folder = UserSettings.Config.StartupProjectFolder;
         if (string.IsNullOrWhiteSpace(folder))
+        {
+            _checked = true;
             return;
+        }
+
+        var graphWindow = GetGraphWindow();
+        if (graphWindow == null && ImGui.GetFrameCount() <= MaxFramesToAwaitGraphWindow)
+            return;
+
+        _checked = true;
 
         var project = FindProject(folder);
         if (project == null)
@@ -41,7 +51,6 @@ internal static class StartupProjectLoader
             return;
         }
 
-        var graphWindow = GetGraphWindow();
         if (graphWindow == null || !graphWindow.TrySetToProject(openedProject))
         {
             Log.Warning($"Could not open the startup project '{project.DisplayName}' in a graph window.");

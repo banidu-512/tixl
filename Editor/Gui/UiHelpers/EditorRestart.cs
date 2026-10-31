@@ -1,6 +1,6 @@
 #nullable enable
 using System.Diagnostics;
-using System.IO;
+using T3.Editor.App.Startup;
 using T3.Editor.SystemUi;
 
 namespace T3.Editor.Gui.UiHelpers;
@@ -23,61 +23,39 @@ internal static class EditorRestart
             return false;
         }
 
+        var wasSupervised = CrashWatchdog.IsChildProcess;
         try
         {
-            // Collect the carried-over flags first (drop stale wait flags from earlier restarts,
-            // then wait for this process so the new instance doesn't race our save-on-quit).
-            var carryArgs = new List<string>();
+            var startInfo = new ProcessStartInfo
+                                {
+                                    FileName = exePath,
+                                    // Launch via the shell so the child isn't part of this process's job
+                                    // object. Under a debugger (Rider) that job is killed when we exit,
+                                    // which would take the freshly spawned editor down with it.
+                                    UseShellExecute = true,
+                                };
+
+            // Keep flags like --override-version-id so the new instance uses the same folders,
+            // but drop stale wait flags from earlier restarts.
             var args = Environment.GetCommandLineArgs();
             for (var i = 1; i < args.Length; i++)
             {
                 if (args[i].StartsWith("--wait-for-exit=", StringComparison.Ordinal))
                     continue;
 
-                carryArgs.Add(args[i]);
+                startInfo.ArgumentList.Add(args[i]);
             }
 
-            carryArgs.Add($"--wait-for-exit={Environment.ProcessId}");
+            // The new instance waits for this process to fully exit — starting earlier races
+            // our save-on-quit settings writes and kills the new instance during startup.
+            startInfo.ArgumentList.Add($"--wait-for-exit={Environment.ProcessId}");
 
-            var startInfo = new ProcessStartInfo { FileName = exePath };
-
-            // A `dotnet TiXL.dll ...` launch has the managed host as ProcessPath; the assembly path
-            // must be the first argument or the new process cannot find the editor. The apphost
-            // (TiXL.exe / TiXL) needs no such argument.
-            var isDotnetHost = string.Equals(Path.GetFileNameWithoutExtension(exePath), "dotnet", StringComparison.OrdinalIgnoreCase);
-            if (isDotnetHost)
-            {
-                var assemblyPath = typeof(EditorRestart).Assembly.Location;
-                if (!string.IsNullOrEmpty(assemblyPath) && File.Exists(assemblyPath))
-                    startInfo.ArgumentList.Add(assemblyPath);
-                else if (Environment.GetCommandLineArgs()[0] is { } entryArg
-                         && entryArg.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
-                    startInfo.ArgumentList.Add(entryArg);
-            }
-
-            if (OperatingSystem.IsWindows())
-            {
-                // Launch via the shell so the child isn't part of this process's job
-                // object. Under a debugger (Rider) that job is killed when we exit,
-                // which would take the freshly spawned editor down with it.
-                startInfo.UseShellExecute = true;
-                foreach (var arg in carryArgs)
-                    startInfo.ArgumentList.Add(arg);
-            }
-            else
-            {
-                // On Unix, UseShellExecute builds a shell command line and mangles
-                // ArgumentList entries into a single token (observed: 'TiXL.dll---debug-server');
-                // exec directly instead, which passes the argv through byte-exact.
-                startInfo.UseShellExecute = false;
-                foreach (var arg in carryArgs)
-                    startInfo.ArgumentList.Add(arg);
-            }
-
+            CrashWatchdog.SetSupervised(false);
             Process.Start(startInfo);
         }
         catch (Exception e)
         {
+            CrashWatchdog.SetSupervised(wasSupervised);
             Log.Warning($"Failed to start a new editor instance: {e.Message}");
             return false;
         }
