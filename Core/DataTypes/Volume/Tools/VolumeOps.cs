@@ -466,38 +466,68 @@ public static class VolumeNoise
         {
             Transform = input.Transform,
         };
-        var scale = frequency / input.Transform.VoxelSize;
+
+        // A voxel's world position is translation + index * voxelSize, so the noise input
+        // p = world * (frequency / voxelSize) + offset is affine in the index:
+        // p = translation * (frequency / voxelSize) + offset + index * frequency.
+        // Stepping p by frequency per voxel instead of transforming each voxel removes a matrix
+        // multiply per sample - the bulk of the cost when an animated noise rebuilds a 24k-voxel
+        // band every frame.
+        var voxelSize = input.Transform.VoxelSize;
+        var baseP = input.Transform.Translation * (frequency / voxelSize) + offset;
+        var displacementScale = mode == Mode.Displace ? amplitude * voxelSize : amplitude;
+        var isReplace = mode == Mode.Replace;
 
         foreach (var leaf in input.Tree.Leaves)
         {
+            var origin = leaf.Origin;
+            var newLeaf = result.Tree.AddLeaf(origin);
+            var values = newLeaf.Values;
+
             // Inactive voxels keep their values: for a level set they carry the interior fill.
-            var values = new float[VdbLeafNode<float>.Size];
-            Array.Copy(leaf.Values, values, values.Length);
-            for (var i = 0; i < VdbLeafNode<float>.Size; i++)
+            if (!isReplace)
+                Array.Copy(leaf.Values, values, VdbLeafNode<float>.Size);
+
+            var words = leaf.ValueMask.Words;
+            for (var x = 0; x < 8; x++)
             {
-                var v = leaf.Values[i];
-                var isActive = leaf.ValueMask.IsOn(i);
-                if (!isActive && mode != Mode.Replace)
+                var word = isReplace ? ulong.MaxValue : words[x];
+                if (word == 0)
                     continue;
 
-                var coord = leaf.Origin + VdbCoord.LocalFromOffset(i);
-                var world = input.Transform.IndexToWorld(coord);
-                var p = world * scale + offset;
-                var n = noise.Fractal(noiseType, fractal, p.X, p.Y, p.Z, octaves);
-
-                values[i] = mode switch
+                var px = baseP.X + (origin.X + x) * frequency;
+                for (var y = 0; y < 8; y++)
                 {
-                    Mode.Add => v + n * amplitude,
-                    Mode.Multiply => v * (1f + n * amplitude),
-                    Mode.Displace => v + n * amplitude * input.Transform.VoxelSize,
-                    Mode.Replace => n * amplitude,
-                    _ => v,
-                };
+                    // Leaf offsets are x * 64 + y * 8 + z, so one mask word holds the
+                    // 8 z-voxels of an (x, y) row.
+                    var bits = (uint)((word >> (y * 8)) & 0xFF);
+                    if (bits == 0)
+                        continue;
+
+                    var py = baseP.Y + (origin.Y + y) * frequency;
+                    var rowOffset = (x << 6) + (y << 3);
+                    for (var z = 0; z < 8; z++)
+                    {
+                        if ((bits & (1u << z)) == 0)
+                            continue;
+
+                        var pz = baseP.Z + (origin.Z + z) * frequency;
+                        var n = noise.Fractal(noiseType, fractal, px, py, pz, octaves);
+                        var i = rowOffset + z;
+                        var v = leaf.Values[i];
+                        values[i] = mode switch
+                        {
+                            Mode.Add => v + n * amplitude,
+                            Mode.Multiply => v * (1f + n * amplitude),
+                            Mode.Displace => v + n * displacementScale,
+                            Mode.Replace => n * amplitude,
+                            _ => v,
+                        };
+                    }
+                }
             }
 
-            var newLeaf = result.Tree.AddLeaf(leaf.Origin);
-            Array.Copy(values, newLeaf.Values, values.Length);
-            if (mode == Mode.Replace)
+            if (isReplace)
                 newLeaf.ValueMask.SetAll();
             else
                 newLeaf.ValueMask.Words.AsSpan().CopyFrom(leaf.ValueMask.Words);
