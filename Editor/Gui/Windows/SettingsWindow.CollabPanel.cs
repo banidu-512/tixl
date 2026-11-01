@@ -88,6 +88,8 @@ internal sealed partial class SettingsWindow
             ImGui.PopStyleColor();
         }
 
+        DrawCameraSharing(ref changed);
+
         FormInputs.AddVerticalSpace();
         DrawAdvancedConnectionSettings(manager, ref changed);
     }
