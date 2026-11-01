@@ -1,7 +1,7 @@
 {
   "FormatVersion": 3,
   "Id": "9A7B3C8D-4E2F-5A6B-7C8D-9E0F1A2B3C4D"/*StreamDiffusion*/,
-  "Description": "AI image generation using Stable Diffusion with ONNX Runtime (DirectML). Supports text-to-image and image-to-image generation.\n\nThis operator runs SD 1.x / SD-Turbo models exported to ONNX. It can generate images from text prompts or transform existing images.\n\nTips:\n- Point `EnginePath` to a folder containing unet.onnx, text_encoder.onnx, vae_decoder.onnx and tokenizer files.\n- Add vae_encoder.onnx to enable img2img mode.\n- Use `TriggerGenerate` for manual generation or enable `AutoGenerate` for continuous output.\n- Adjust `Strength` in img2img mode to control how much the input influences the output.\n- Lower `Steps` = faster but lower quality; 1 step is good for SD Turbo models.\n- `Guidance` controls prompt adherence (1.0 = balanced, higher = stronger prompt).\n- Use `MatchInputSize` in img2img to preserve the input image dimensions.\n- `ResizeMode` controls how the input image fits the output size.\n- `PreserveDetails` blends the original input back into the result for structure retention.\n\nAKA: stable diffusion, ai, generation, diffusion, onnx, directml, streamdiffusion, txt2img, img2img",
+  "Description": "AI image generation using Stable Diffusion with ONNX Runtime. Supports text-to-image and image-to-image generation.\n\nThis operator runs SD 1.x / SD-Turbo models exported to ONNX. It can generate images from text prompts or transform existing images.\n\nTips:\n- Point `EnginePath` to a folder containing unet.onnx, text_encoder.onnx, vae_decoder.onnx and tokenizer files.\n- Add vae_encoder.onnx to enable img2img mode.\n- Use `TriggerGenerate` for manual generation or enable `AutoGenerate` for continuous output.\n- Adjust `Strength` in img2img mode to control how much the input influences the output.\n- Lower `Steps` = faster but lower quality; 1 step is good for SD Turbo models.\n- `Guidance` controls prompt adherence (1.0 = balanced, higher = stronger prompt).\n- Use `MatchInputSize` in img2img to preserve the input image dimensions.\n- `ResizeMode` controls how the input image fits the output size.\n- `PreserveDetails` blends the original input back into the result for structure retention.\n\nAKA: stable diffusion, ai, generation, diffusion, onnx, directml, streamdiffusion, txt2img, img2img",
   "InputUis": [
     {
       "InputId": "A1B2C3D4-E5F6-7890-ABCD-EF1234567890"/*EnginePath*/,
@@ -178,6 +178,36 @@
         "Y": 500
       },
       "Description": "Continuously regenerate when inputs change. Disable for manual trigger mode."
+    },
+    {
+      "InputId": "C7D8E9F0-A1B2-3456-7890-1234567890AB"/*ExecutionProviderParam*/,
+      "Position": {
+        "X": -250,
+        "Y": 550
+      },
+      "Description": "Hardware used for inference. Providers that are not available on this platform fall back to the next one, ending at CPU.",
+      "Usage": "CustomDropdown",
+      "DefaultInt": 2
+    },
+    {
+      "InputId": "A4B5C6D7-E8F9-0123-4567-890123456789"/*StreamStrength*/,
+      "Position": {
+        "X": -250,
+        "Y": 600
+      },
+      "Description": "How strongly each frame is re-noised in Stream mode. Lower values keep more of the previous frame.",
+      "DefaultFloat": 0.6,
+      "Min": 0.0,
+      "Max": 1.0
+    },
+    {
+      "InputId": "D2E3F4A5-B6C7-8901-2345-678901234567"/*Debug*/,
+      "Position": {
+        "X": -250,
+        "Y": 650
+      },
+      "Description": "Logs detailed timing and state information.",
+      "DefaultBool": false
     }
   ],
   "SymbolChildUis": [],

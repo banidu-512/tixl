@@ -19,6 +19,7 @@ namespace Lib.io.ai;
 [Guid("9A7B3C8D-4E2F-5A6B-7C8D-9E0F1A2B3C4D")]
 [ExportDependencies("Microsoft.ML.OnnxRuntime.dll", "onnxruntime.dll", "onnxruntime_providers_shared.dll",
     "onnxruntime_providers_cuda.dll", "onnxruntime_providers_tensorrt.dll",
+    "cudart64_13.dll", "cublas64_13.dll", "cublasLt64_13.dll", "cufft64_12.dll",
     "cudart64_12.dll", "cublas64_12.dll", "cublasLt64_12.dll", "cufft64_11.dll", "curand64_10.dll",
     "cudnn64_9.dll", "cudnn_*64_9.dll", "libonnxruntime*")]
 public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider, ICustomDropdownHolder
