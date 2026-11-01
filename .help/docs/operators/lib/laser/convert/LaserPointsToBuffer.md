@@ -4,7 +4,7 @@
 
 Converts a laser point list (`StructuredList<LaserPoint>`) into a GPU structured buffer (`BufferWithViews`) with the standard `Point` layout — the bridge from laser frames back into the graph.
 
-LaserPoint X/Y are scaled to world-space positions; R/G/B/I become the Color vector. Feed the buffer into a [LaserCamera]'s `PointBuffer` input to project received or generated frames to a laser output, or into a point draw op ([DrawPoints], [DrawBillboards]) to preview laser frames on screen.
+LaserPoint X/Y are scaled to world-space positions; R/G/B/I become the Color vector. Use the buffer to preview received or generated frames on screen with a point or line draw op ([DrawPoints2], [DrawLines]). It is not a route back into a [LaserCamera]: buffers from this operator are excluded from scene capture so a laser frame never echoes itself.
 
 ## Input Parameters
 | Name | Description |

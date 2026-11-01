@@ -4,20 +4,13 @@
   "Description": "Open Media Transport live video output. B8G8R8A8_UNorm or R8G8B8A8_UNorm textures are required. You can adjust the render format by using a ConvertFormat op or [RenderTarget] like in this example: [TorusMesh]->[DrawMesh]->[RenderTarget]->[OmtOutput]. OMT sources are discovered on the LAN; a receiver connects by picking the source named MACHINENAME (SenderName).",
   "InputUis": [
     {
-      "InputId": "a16c8835-4298-43c0-b240-9ab428f6dba9"/*Texture*/,
-      "Position": {
-        "X": -200.0,
-        "Y": 0.0
-      }
-    },
-    {
       "InputId": "852d49b4-a3d9-48b0-a855-d41383f7f95e"/*SenderName*/,
       "Position": {
         "X": -200.0,
         "Y": 90.0
       },
-      "Usage": "Default",
-      "Description": "The source name receivers see, after the machine name."
+      "Description": "The source name receivers see, after the machine name.",
+      "Usage": "Default"
     },
     {
       "InputId": "98e9190e-9cde-45da-bffc-e3c97a528be3"/*FrameRate*/,
@@ -26,6 +19,13 @@
         "Y": 135.0
       },
       "Description": "Frames per second sent to receivers. Rendered frames in between are skipped."
+    },
+    {
+      "InputId": "a16c8835-4298-43c0-b240-9ab428f6dba9"/*Texture*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 0.0
+      }
     },
     {
       "InputId": "e7bbb443-b97e-4446-acb8-10648d65237a"/*EnableAlpha*/,
@@ -50,8 +50,7 @@
       "Position": {
         "X": 300.0,
         "Y": 250.0
-      },
-      "Description": "The source name receivers discover: MACHINENAME (SenderName)."
+      }
     }
   ]
 }

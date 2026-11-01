@@ -1,0 +1,81 @@
+using System;
+using System.Collections.Generic;
+using System.Numerics;
+using T3.Core.DataTypes;
+using T3.Core.DataTypes.Volume;
+using T3.Core.DataTypes.Volume.Tools;
+using T3.Core.DataTypes.Volume.IO;
+using T3.Core.Logging;
+
+namespace Lib.volume.io;
+
+/// Writes the volume's grids to an OpenVDB .vdb file, readable by Houdini, Blender, Maya and TiXL. Saves once whenever Save switches from off to on.
+[Guid("df34163c-3dca-5de3-aabf-225dc08162a9")]
+internal sealed class SaveVdb : Instance<SaveVdb>
+{
+    [Output(Guid = "08124f7f-e719-5ce0-8f61-92e9cceb340c")]
+    public readonly Slot<bool> Saved = new();
+
+
+    public SaveVdb()
+    {
+        Saved.UpdateAction = Update;
+    }
+
+    private void Update(EvaluationContext context)
+    {
+        var volume = Volume.GetValue(context);
+        var path = PathSaved.GetValue(context)?.Trim();
+        var save = Save.GetValue(context);
+        var zip = ZipCompression.GetValue(context);
+
+        if (!save)
+        {
+            _wasSave = false;
+            Saved.Value = false;
+            return;
+        }
+
+        if (_wasSave)
+        {
+            Saved.Value = false;
+            return;
+        }
+
+        _wasSave = true;
+        Saved.Value = false;
+
+        if (volume == null || volume.Grids.Count == 0 || string.IsNullOrEmpty(path))
+            return;
+
+        try
+        {
+            var directory = System.IO.Path.GetDirectoryName(path);
+            if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
+                Directory.CreateDirectory(directory);
+
+            VdbFile.Save(volume, path, zip);
+            Log.Debug($"Saved {volume.Grids.Count} grid(s) to {path}", this);
+            Saved.Value = true;
+        }
+        catch (Exception e)
+        {
+            Log.Warning($"SaveVdb failed for {path}: {e.Message}", this);
+        }
+    }
+
+    private bool _wasSave;
+
+    [Input(Guid = "6db4a395-2245-58f4-9db8-3e6e5ae814e1")]
+    public readonly InputSlot<VdbVolume> Volume = new();
+
+    [Input(Guid = "21cb11b5-601d-5925-a11e-59a788f05fc0")]
+    private readonly InputSlot<string> PathSaved = new();
+
+    [Input(Guid = "0266ff85-52d7-59fb-a4e1-6b8c0557a3b9")]
+    public readonly InputSlot<bool> Save = new();
+
+    [Input(Guid = "48b7436c-1126-5b8f-af8b-d87880bc8077")]
+    public readonly InputSlot<bool> ZipCompression = new();
+
+}

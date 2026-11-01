@@ -12,7 +12,7 @@ namespace Lib.Utils;
 internal static class OmtRuntime
 {
     /// <summary>True where the native codec loads. Probed once; the result does not change while running.</summary>
-    public static bool IsAvailable => _isAvailable ??= Probe();
+    public static bool IsAvailable => _isAvailable.Value;
 
     /// <summary>What an operator reports while the codec is missing.</summary>
     public static string MissingMessage { get; } = BuildMissingMessage();
@@ -101,5 +101,5 @@ internal static class OmtRuntime
         }
     }
 
-    private static bool? _isAvailable;
+    private static readonly Lazy<bool> _isAvailable = new(Probe);
 }

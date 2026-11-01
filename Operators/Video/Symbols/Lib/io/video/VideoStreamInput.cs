@@ -311,19 +311,20 @@ namespace Lib.io.video
 
         protected override void Dispose(bool isDisposing)
         {
-            if (IsDisposed)
-                return;
-
-            if (!isDisposing)
-                return;
-
-            StopCaptureThread();
-            T3.Graphics.Compat.GraphicsUtilities.Dispose(ref _gpuTexture);
-            lock (_lockObject)
+            // No IsDisposed guard: the instance is flagged disposed before this runs, so a guard here
+            // skips the whole teardown and leaves the stream's capture thread running.
+            if (isDisposing)
             {
-                _sharedRgba = null;
-                _hasFrame = false;
+                StopCaptureThread();
+                T3.Graphics.Compat.GraphicsUtilities.Dispose(ref _gpuTexture);
+                lock (_lockObject)
+                {
+                    _sharedRgba = null;
+                    _hasFrame = false;
+                }
             }
+
+            base.Dispose(isDisposing);
         }
     }
 }

@@ -510,4 +510,20 @@ public class LaserSafetyTransformTests
         Assert.True(stats.JumpPointsInserted > 0, "subdivision must engage under a non-finite step limit");
         Assert.All(result, p => Assert.InRange(p.X, LaserSafetyTransforms.FieldMin, LaserSafetyTransforms.FieldMax));
     }
+
+    [Fact]
+    public void LimitStaticDwell_FullFieldStepCountsAsMovement()
+    {
+        // 65534 squared overflows int; the step must still read as motion, not as a frozen beam.
+        var points = Points(Lit(-32767, 0));
+        for (var i = 0; i < 4; i++)
+            points.Add(Lit(i % 2 == 0 ? 32767 : -32767, 0));
+
+        var config = LaserSafetyTransforms.Config.Default;
+        config.MaxStaticPoints = 1;
+        var stats = new LaserSafetyTransforms.Stats();
+        LaserSafetyTransforms.LimitStaticDwell(points, in config, ref stats);
+
+        Assert.Equal(0, stats.StaticBlanked);
+    }
 }

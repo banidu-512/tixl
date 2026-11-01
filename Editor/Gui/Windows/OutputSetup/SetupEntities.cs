@@ -42,7 +42,9 @@ internal static class SetupEntities
                 return setup.FindPatch(id, out _) != null;
 
             case SetupEntityKinds.ContentSource:
-                return setup.FindSourceByChildId(id) != null || ContentSourceSync.FindSendInstance(id) != null;
+                return setup.FindSourceByChildId(id) != null
+                       || ContentSourceSync.FindSendInstance(id) != null
+                       || LaserContent.FindCamera(id) != null;
 
             case SetupEntityKinds.Plug:
                 return OutputSetupHandling.TryGetActiveSetup(out _, out var machineConfig)
@@ -110,7 +112,7 @@ internal static class SetupEntities
             case SetupEntityKinds.ContentSource:
             {
                 // The live op names it; the setup's mirror stands in while nothing is instantiated.
-                var instance = ContentSourceSync.FindSendInstance(id);
+                var instance = ContentSourceSync.FindSendInstance(id) ?? LaserContent.FindCamera(id);
                 if (instance != null)
                 {
                     name = ContentSourceSync.SendName(instance);
@@ -220,6 +222,21 @@ internal static class SetupEntities
         foreach (var output in setup.Outputs)
         {
             if (Matches(setup, SetupEntityKinds.Output, output.Id, name, out kind, out id))
+                return true;
+        }
+
+        foreach (var source in setup.ContentSources)
+        {
+            if (Matches(setup, SetupEntityKinds.ContentSource, source.SymbolChildId, name, out kind, out id))
+                return true;
+        }
+
+        // Laser cameras are content without a source record: the live op is the entity.
+        var cameras = LaserContent.Cameras;
+        for (var i = 0; i < cameras.Count; i++)
+        {
+            if (cameras[i] is T3.Core.Operator.Instance camera
+                && Matches(setup, SetupEntityKinds.ContentSource, camera.SymbolChildId, name, out kind, out id))
                 return true;
         }
 

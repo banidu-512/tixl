@@ -77,6 +77,12 @@ public static class FfmpegLibrary
             return;
         }
 
+        // The first libav* call above also reveals where Sdcb's P/Invokes actually resolved the natives.
+        // That need not be this assembly's folder (the operator package is loaded from its build output
+        // while VideoServices can run from the editor's shadow copy), and the device demuxers must be
+        // registered into the same libavformat Sdcb talks to, not the copy the preload happened to load.
+        AdoptResolvedNativeFolder();
+
         // The editor ships an LGPL shared build. A GPL/non-free build dropped in by a user would silently
         // break the project's MIT/LGPL distribution guarantee, so refuse to use it. Developers can opt in to
         // running against whatever build they have installed via the TIXL_FFMPEG_ALLOW_RESTRICTED env var.
@@ -133,7 +139,8 @@ public static class FfmpegLibrary
             // libavdevice binds its own libavformat dependency by soname at load time — make sure the bundled
             // copy is in the process first, or (with a system FFmpeg installed) the registration below would
             // land in the system's libavformat instead of the one this process decodes with. No-op when the
-            // preload already loaded it.
+            // preload already loaded it. avfilter is loaded here too (from the same folder) because it
+            // imports libavformat and would otherwise load the copy next to whichever module pulled it in.
             var formatName = OperatingSystem.IsWindows() ? "avformat-61.dll"
                              : OperatingSystem.IsMacOS() ? "libavformat.61.dylib"
                              : "libavformat.so.61";
@@ -141,37 +148,32 @@ public static class FfmpegLibrary
             if (formatPath != null)
                 NativeLibrary.TryLoad(formatPath, out _);
 
+            if (FindBundledLibrary(FilterLibraryName) is { } filterPath)
+                NativeLibrary.TryLoad(filterPath, out _);
+
             if (!NativeLibrary.TryLoad(libraryPath, out var handle))
             {
                 Log.Warning($"Could not load '{libraryPath}' — device capture will be unavailable.");
                 return;
             }
 
-            try
-            {
-                var register = (RegisterDeviceDemuxersDelegate)Marshal.GetDelegateForFunctionPointer(
-                                   NativeLibrary.GetExport(handle, "avdevice_register_all"),
-                                   typeof(RegisterDeviceDemuxersDelegate));
-                register();
-            }
-            finally
-            {
-                // avdevice stays registered for the process lifetime; closing our handle keeps the library
-                // loaded (the demuxer list references its static memory).
-                NativeLibrary.Free(handle);
-            }
+            var register = (RegisterDeviceDemuxersDelegate)Marshal.GetDelegateForFunctionPointer(
+                               NativeLibrary.GetExport(handle, "avdevice_register_all"),
+                               typeof(RegisterDeviceDemuxersDelegate));
+            register();
 
-            // Verify the registration took effect — a no-op here means capture formats stay unresolvable
-            // even though plain file/network decoding works, which is hard to diagnose from the outside.
-            // The assembly location matters: on operator-package hot-reload a SECOND VideoServices copy
-            // initializes in the same process, and its view of the shared native libraries is what this
-            // log line is about.
+            // The handle is intentionally never freed: avdevice_register_all stores pointers into
+            // avdevice's own static memory in libavformat's demuxer list, so unloading the module leaves
+            // dangling entries — NativeLibrary.Free here makes the next av_demuxer_iterate read unmapped
+            // memory (an access violation). The module is part of the FFmpeg stack for the process lifetime.
+
             var deviceFormats = InputFormat.All
                                            .Select(f => f.Name)
                                            .ToList();
             var deviceNames = deviceFormats.Where(n => n.Contains("v4l2") || n.Contains("dshow") || n.Contains("avfoundation")).ToList();
             Log.Debug($"FFmpeg device demuxers registered: {(deviceNames.Count > 0 ? string.Join(", ", deviceNames) : "NONE FOUND")} " +
-                      $"({deviceFormats.Count} demuxers total, from '{typeof(FfmpegLibrary).Assembly.Location}')");
+                      $"({deviceFormats.Count} demuxers total, natives from '{_nativeFolder}', " +
+                      $"from '{typeof(FfmpegLibrary).Assembly.Location}')");
         }
         catch (Exception e)
         {
@@ -180,6 +182,10 @@ public static class FfmpegLibrary
     }
 
     private delegate void RegisterDeviceDemuxersDelegate();
+
+    private static string FilterLibraryName => OperatingSystem.IsWindows() ? "avfilter-10.dll"
+                                              : OperatingSystem.IsMacOS() ? "libavfilter.10.dylib"
+                                              : "libavfilter.so.10";
 
     // Route libav* logging through TiXL's logger instead of FFmpeg's default raw-stderr callback. Benign,
     // repetitive notices (e.g. swscale's "deprecated pixel format" warning when decoding full-range sources)
@@ -251,31 +257,108 @@ public static class FfmpegLibrary
         // name-based request for e.g. "libavcodec.so.61" falls through to the OS loader and can pick up a
         // system-wide FFmpeg — a different build with a different codec set (and possibly GPL) — before the
         // bundled one is ever seen.
-        var bundledFolders = BundledLibraryFolders(directory!);
-        var hasBundledLibraries = bundledFolders.Any(f => Directory.EnumerateFiles(f).Any(IsFfmpegLibrary));
+        //
+        // Pick exactly one folder for the whole process. Loading more than one copy of libavformat is the
+        // failure this must avoid: avdevice_register_all then registers its demuxers into whichever copy
+        // libavdevice bound to, while Sdcb's enumeration reads the other one — the libraries load fine and
+        // file decoding works, but dshow/v4l2 report as "not found in this FFmpeg build".
+        _nativeFolder = BundledLibraryFolders(directory!).FirstOrDefault(f => Directory.EnumerateFiles(f).Any(IsFfmpegLibrary));
 
-        if (OperatingSystem.IsMacOS() && !hasBundledLibraries)
+        if (OperatingSystem.IsMacOS() && _nativeFolder == null)
             UseInstalledLibrariesOnMac();
 
-        foreach (var folder in bundledFolders)
-        {
-            var loaded = false;
-            foreach (var path in OrderedFfmpegLibraries(folder))
-                loaded |= NativeLibrary.TryLoad(path, out _);
+        if (_nativeFolder == null)
+            return;
 
-            // Stop after the first layout that provided libraries so the bundled build wins over any
-            // same-soname copies deeper in the search order.
-            if (loaded)
-                break;
+        foreach (var path in OrderedFfmpegLibraries(_nativeFolder))
+        {
+            // avfilter/avformat/avdevice are deliberately deferred: avfilter imports avformat, so loading
+            // it here would pin libavformat to this folder before we know where Sdcb's P/Invokes resolve
+            // their natives — and avdevice_register_all must register into that same libavformat.
+            // RegisterDeviceDemuxers loads the three from the resolved folder once it is known.
+            var fileName = Path.GetFileName(path);
+            if (fileName.Contains("avfilter", StringComparison.Ordinal)
+                || fileName.Contains("avformat", StringComparison.Ordinal)
+                || fileName.Contains("avdevice", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            NativeLibrary.TryLoad(path, out _);
         }
     }
 
     /// <summary>
-    /// The folders that may hold the bundled FFmpeg libraries, best layout first: flat next to the assembly,
-    /// then NuGet's runtimes/&lt;rid&gt;/native for this platform's RIDs.
+    /// Points <see cref="_nativeFolder"/> at the folder the just-loaded native libraries actually came
+    /// from, when that differs from the preloaded folder.
     /// </summary>
+    /// <remarks>
+    /// Sdcb.FFmpeg resolves libav* through its own resolver, which does not necessarily use
+    /// Sdcb.FFmpeg.dll's directory: in the editor the operator package is loaded from its build output
+    /// while VideoServices runs from a shadow copy, and Sdcb's P/Invokes land in the build output. When
+    /// both folders are preloaded into one process there are two libavformat copies: avdevice binds to the
+    /// first loaded one (this assembly's), while Sdcb enumerates the other — file decoding works but
+    /// dshow/v4l2 report as "not found in this FFmpeg build". The preload skips avformat/avdevice for
+    /// exactly this reason, and this method makes the registration target the folder Sdcb uses.
+    /// </remarks>
+    private static void AdoptResolvedNativeFolder()
+    {
+        var utilName = OperatingSystem.IsWindows() ? "avutil-59.dll"
+                       : OperatingSystem.IsMacOS() ? "libavutil.59.dylib"
+                       : "libavutil.so.59";
+
+        try
+        {
+            using var process = System.Diagnostics.Process.GetCurrentProcess();
+            var loadedFolders = process.Modules
+                                     .Cast<System.Diagnostics.ProcessModule>()
+                                     .Where(m => string.Equals(Path.GetFileName(m.FileName), utilName, StringComparison.OrdinalIgnoreCase))
+                                     .Select(m => Path.GetDirectoryName(m.FileName))
+                                     .Where(d => !string.IsNullOrEmpty(d))
+                                     .ToList();
+
+            // Prefer a copy that is not the one this assembly preloaded — that is the one Sdcb resolved.
+            var resolved = loadedFolders.FirstOrDefault(d => !SameFolder(d!, _nativeFolder))
+                           ?? loadedFolders.FirstOrDefault();
+
+            if (!string.IsNullOrEmpty(resolved) && !SameFolder(resolved, _nativeFolder))
+            {
+                Log.Debug($"FFmpeg: native libraries resolved from '{resolved}' (preloaded from '{_nativeFolder ?? "none"}').");
+                _nativeFolder = resolved;
+            }
+        }
+        catch (Exception e)
+        {
+            // Module enumeration is a diagnostic aid, not a correctness requirement.
+            Log.Debug("FFmpeg: could not inspect loaded native modules: " + e.Message);
+        }
+    }
+
+    private static bool SameFolder(string? a, string? b)
+        => a != null && b != null && string.Equals(Path.GetFullPath(a), Path.GetFullPath(b), StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The folders that may hold the FFmpeg libraries, best first: the directory of Sdcb.FFmpeg's own
+    /// assembly, then flat next to this assembly, then NuGet's runtimes/&lt;rid&gt;/native for this
+    /// platform's RIDs.
+    /// </summary>
+    /// <remarks>
+    /// Sdcb's assembly directory is only a first guess. Its P/Invokes do not necessarily resolve there:
+    /// in the editor the operator package is loaded from its build output while Sdcb.FFmpeg.dll itself
+    /// runs from a shadow copy, and the native resolution follows the package folder. Whichever folder
+    /// wins, <see cref="AdoptResolvedNativeFolder"/> corrects <see cref="_nativeFolder"/> after the first
+    /// P/Invoke, so the device libraries are loaded and registered from the same place Sdcb queries.
+    /// </remarks>
     private static IEnumerable<string> BundledLibraryFolders(string directory)
     {
+        var sdcbDirectory = Path.GetDirectoryName(typeof(Sdcb.FFmpeg.Raw.ffmpeg).Assembly.Location);
+        if (!string.IsNullOrEmpty(sdcbDirectory)
+            && Directory.Exists(sdcbDirectory)
+            && !string.Equals(Path.GetFullPath(sdcbDirectory), Path.GetFullPath(directory), StringComparison.OrdinalIgnoreCase))
+        {
+            yield return sdcbDirectory;
+        }
+
         yield return directory;
 
         var runtimesRoot = Path.Combine(directory, "runtimes");
@@ -300,18 +383,17 @@ public static class FfmpegLibrary
     }
 
     /// <summary>
-    /// Finds a bundled FFmpeg library by exact file name, flat next to the assembly or under the NuGet runtimes
-    /// layout, or null when this installation carries none.
+    /// Finds a bundled FFmpeg library by exact file name in the folder the preload chose, or null when this
+    /// installation carries none. It must be the same folder for every caller — see
+    /// <see cref="BundledLibraryFolders"/> for why two copies must not be loaded.
     /// </summary>
     internal static string? FindBundledLibrary(string fileName)
     {
-        var directory = Path.GetDirectoryName(typeof(FfmpegLibrary).Assembly.Location);
-        if (string.IsNullOrEmpty(directory) || !Directory.Exists(directory))
+        if (_nativeFolder == null)
             return null;
 
-        return BundledLibraryFolders(directory!)
-                   .Select(folder => Path.Combine(folder, fileName))
-                   .FirstOrDefault(File.Exists);
+        var path = Path.Combine(_nativeFolder, fileName);
+        return File.Exists(path) ? path : null;
     }
 
     /// <summary>
@@ -406,4 +488,7 @@ public static class FfmpegLibrary
 
     private static readonly object _initLock = new();
     private static volatile bool _initialized;
+
+    /// <summary>The one folder every native FFmpeg library is loaded from; set once by the preload.</summary>
+    private static volatile string? _nativeFolder;
 }

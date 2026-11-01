@@ -40,10 +40,14 @@ internal sealed class LaserPointsToBuffer : Instance<LaserPointsToBuffer>
             // Glitchy input (e.g. malformed network frames) must not allocate a gigantic GPU buffer.
             var count = Math.Min(laserPoints.NumElements, MaxPoints);
 
-            // Build Point array with current scale applied. Use an exact-size buffer so the
-            // GPU upload always matches the allocation exactly (avoids native access violations).
-            if (_points == null || _points.Length != count)
-                _points = new T3.Core.DataTypes.Point[count];
+            // Build Point array with current scale applied. The array always has exactly the length
+            // of the GPU buffer, so the upload matches the allocation (avoids native access
+            // violations); the tail beyond the frame holds separators, which are never drawn.
+            EnsureCapacity(count);
+            for (var i = count; i < _filledCount; i++)
+                _points[i] = T3.Core.DataTypes.Point.Separator();
+
+            _filledCount = count;
 
             for (var i = 0; i < count; i++)
             {
@@ -64,7 +68,7 @@ internal sealed class LaserPointsToBuffer : Instance<LaserPointsToBuffer>
             }
 
             // Upload to GPU buffer
-            if (!UpdateBuffer(count))
+            if (!UpdateBuffer(_points.Length))
             {
                 PointCount.Value = 0;
                 PointCount.DirtyFlag.Invalidate();
@@ -83,6 +87,42 @@ internal sealed class LaserPointsToBuffer : Instance<LaserPointsToBuffer>
             PointCount.DirtyFlag.Invalidate();
             Buffer.Value = null;
         }
+    }
+
+    /// <summary>
+    /// Laser frames change length from frame to frame. The buffer only grows (with headroom) and shrinks
+    /// after the content has stayed small for a while, so a changing point count does not create and
+    /// destroy GPU resources every frame.
+    /// </summary>
+    private void EnsureCapacity(int count)
+    {
+        var current = _points?.Length ?? 0;
+        if (count > current)
+        {
+            Resize(Math.Min(MaxPoints, Math.Max(MinCapacity, count + count / 4)));
+            _slackFrames = 0;
+            return;
+        }
+
+        if (current <= MinCapacity || count * 4 > current)
+        {
+            _slackFrames = 0;
+            return;
+        }
+
+        if (++_slackFrames < ShrinkAfterFrames)
+            return;
+
+        _slackFrames = 0;
+        Resize(Math.Max(MinCapacity, count + count / 4));
+    }
+
+    private void Resize(int capacity)
+    {
+        _points = new T3.Core.DataTypes.Point[capacity];
+        var separator = T3.Core.DataTypes.Point.Separator();
+        Array.Fill(_points, separator);
+        _filledCount = 0;
     }
 
     private bool UpdateBuffer(int count)
@@ -143,15 +183,20 @@ internal sealed class LaserPointsToBuffer : Instance<LaserPointsToBuffer>
 
     protected override void Dispose(bool disposing)
     {
-        if (!disposing)
-            return;
+        if (disposing)
+            ReleaseBuffer();
 
-        ReleaseBuffer();
+        base.Dispose(disposing);
     }
 
     private Buffer _buffer;
     private readonly BufferWithViews _bufferWithViews = new();
     private T3.Core.DataTypes.Point[] _points;
+    private int _filledCount;
+    private int _slackFrames;
+
+    private const int MinCapacity = 256;
+    private const int ShrinkAfterFrames = 120;
 
     /// <summary>Hard cap on converted points (1M points = 64 MB GPU buffer) - bounds damage from corrupt input.</summary>
     private const int MaxPoints = 1 << 20;

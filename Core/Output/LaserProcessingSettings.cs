@@ -48,6 +48,15 @@ public sealed class LaserProcessingSettings
         writer.WriteValue("SetupCenterY", Safety.SetupCenterY);
         writer.WriteValue("SetupWidth", Safety.SetupWidth);
         writer.WriteValue("SetupHeight", Safety.SetupHeight);
+        writer.WriteValue("FrameWarp", Safety.FrameWarp);
+        writer.WriteValue("WarpCorner1X", Safety.WarpCorner1X);
+        writer.WriteValue("WarpCorner1Y", Safety.WarpCorner1Y);
+        writer.WriteValue("WarpCorner2X", Safety.WarpCorner2X);
+        writer.WriteValue("WarpCorner2Y", Safety.WarpCorner2Y);
+        writer.WriteValue("WarpCorner3X", Safety.WarpCorner3X);
+        writer.WriteValue("WarpCorner3Y", Safety.WarpCorner3Y);
+        writer.WriteValue("WarpCorner4X", Safety.WarpCorner4X);
+        writer.WriteValue("WarpCorner4Y", Safety.WarpCorner4Y);
         writer.WriteEndObject();
 
         writer.WriteEndObject();
@@ -88,6 +97,15 @@ public sealed class LaserProcessingSettings
                                       SetupCenterY = safety.ReadValueSafe("SetupCenterY", 0f),
                                       SetupWidth = safety.ReadValueSafe("SetupWidth", 0.04f),
                                       SetupHeight = safety.ReadValueSafe("SetupHeight", 0.04f),
+                                      FrameWarp = safety.ReadValueSafe("FrameWarp", false),
+                                      WarpCorner1X = safety.ReadValueSafe("WarpCorner1X", -0.02f),
+                                      WarpCorner1Y = safety.ReadValueSafe("WarpCorner1Y", 0.02f),
+                                      WarpCorner2X = safety.ReadValueSafe("WarpCorner2X", 0.02f),
+                                      WarpCorner2Y = safety.ReadValueSafe("WarpCorner2Y", 0.02f),
+                                      WarpCorner3X = safety.ReadValueSafe("WarpCorner3X", 0.02f),
+                                      WarpCorner3Y = safety.ReadValueSafe("WarpCorner3Y", -0.02f),
+                                      WarpCorner4X = safety.ReadValueSafe("WarpCorner4X", -0.02f),
+                                      WarpCorner4Y = safety.ReadValueSafe("WarpCorner4Y", -0.02f),
                                   };
         }
 
@@ -139,6 +157,22 @@ public sealed class LaserProcessingSettings
         public float SetupCenterY;
         public float SetupWidth = 0.04f;
         public float SetupHeight = 0.04f;
+
+        /// <summary>Keystone: the frame lands on four draggable corners instead of the setup
+        /// rectangle. While uncalibrated, the green alignment shape is the corner quad itself —
+        /// trapeze it against a skewed screen; in calibrated mode the camera frame is mapped onto
+        /// the quad with a homography. Corners are normalized field units (same as the setup rect),
+        /// ordered top-left → top-right → bottom-right → bottom-left in field space (y up), and
+        /// default to the setup rect's corners so switching on changes nothing at first.</summary>
+        public bool FrameWarp;
+        public float WarpCorner1X = -0.02f;
+        public float WarpCorner1Y = 0.02f;
+        public float WarpCorner2X = 0.02f;
+        public float WarpCorner2Y = 0.02f;
+        public float WarpCorner3X = 0.02f;
+        public float WarpCorner3Y = -0.02f;
+        public float WarpCorner4X = -0.02f;
+        public float WarpCorner4Y = -0.02f;
 
         public LaserSafetyTransforms.Config ToConfig() => new()
                                                               {

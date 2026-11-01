@@ -138,7 +138,10 @@ internal sealed class _DispatchSceneDraws : Instance<_DispatchSceneDraws>
                                               dispatch.VertexCount);
 
             // Log.Debug($"Dispatching draw for {dispatch.VertexCount} vertices...");
-            ResourceManager.Device.ImmediateContext.Draw(dispatch.VertexCount, dispatch.VertexStartIndex);
+            // A capture pass wants the buffers registered above, not pixels: rasterizing would
+            // paint into whatever target is bound (the visible viewport during the laser pump).
+            if (!context.CaptureOnlyDraws)
+                ResourceManager.Device.ImmediateContext.Draw(dispatch.VertexCount, dispatch.VertexStartIndex);
         }
     }
 

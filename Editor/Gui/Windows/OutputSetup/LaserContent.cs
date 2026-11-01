@@ -63,7 +63,7 @@ internal static class LaserContent
         if (parent == null)
             return;
 
-        UndoRedoStack.AddAndExecute(new ChangeInputValueCommand(parent.Symbol, camera.SymbolChildId, input, newValue, camera));
+        SetupUndo.ExecuteCompanion(new ChangeInputValueCommand(parent.Symbol, camera.SymbolChildId, input, newValue, camera));
     }
 
     private static bool TryGetInput(Instance camera, out Symbol.Child.Input input)

@@ -404,7 +404,7 @@ internal static class ProjectsPanel
                 if (CustomComponents.DrawMenuItem(_leaveSessionId, $"Leave Collaboration Session ({collab.StatusText})",
                                                   reserveIconColumn: false))
                 {
-                    collab.Leave();
+                    collab.Leave(manual: true);
                     ImGui.CloseCurrentPopup();
                 }
             }

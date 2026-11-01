@@ -3,6 +3,7 @@ using T3.Editor.SystemUi;
 using T3.Core.DataTypes.Vector;
 using T3.Core.Output;
 using T3.Core.Output.Streaming;
+using T3.Core.Utils;
 using T3.Editor.UiModel.ProjectHandling;
 
 namespace T3.Editor.Gui.Windows.OutputSetup;
@@ -283,6 +284,11 @@ internal static class Plugs
                             Port = kind == LaserPlug.Kinds.Ponk ? 5583
                                : kind == LaserPlug.Kinds.EtherDream ? 7765
                                : 0,
+                            // The basic interface: the first usable NIC. Editable per plug; empty
+                            // on machines without one ("any interface").
+                            LocalAddress = LanInterfaces.GetUsable() is { Count: > 0 } usable
+                                               ? usable[0].Address.ToString()
+                                               : string.Empty,
                         };
         machineConfig.LaserPlugs.Add(laser);
         OutputSetupHandling.SaveActive();

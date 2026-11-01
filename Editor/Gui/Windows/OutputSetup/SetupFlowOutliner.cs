@@ -5,6 +5,7 @@ using T3.Core.DataTypes;
 using T3.Core.Operator;
 using T3.Core.Operator.Slots;
 using T3.Core.Output;
+using T3.Core.Output.Rendering;
 using T3.Core.Output.Streaming;
 using T3.Editor.Gui.Help;
 using T3.Editor.Gui.Input;
@@ -585,8 +586,8 @@ internal sealed class SetupFlowOutliner
             if (CustomComponents.DrawMenuItem(111, "Laser"))
                 SetupActions.AddLaserOutput(selection);
 
-            CustomComponents.TooltipForLastItem("A laser scanner: bind it to an EtherDream or PONK plug and aim it with its scanner camera.",
-                                                "Set a [LaserCamera]'s OutputRef to this output; its camera drives the projection and the bound plug names the device.");
+            CustomComponents.TooltipForLastItem("A laser scanner: bind it to an EtherDream, PONK or CITP plug; the routed [LaserCamera]'s own aim drives the projection.",
+                                                "A new [LaserCamera] attaches itself to a free laser output automatically; drop a camera onto this output (or set its OutputRef) to route a specific one.");
 
             SetupPopup.End();
         }
@@ -891,16 +892,17 @@ internal sealed class SetupFlowOutliner
         var cameras = LaserContent.Cameras;
         for (var i = 0; i < cameras.Count; i++)
         {
-            if (cameras[i] is not Instance instance || !ContentSourceSync.IsInScope(instance))
+            if (cameras[i] is not Instance instance || !ContentSourceSync.IsInScope(instance, requireExposure: false))
                 continue;
 
             var outputRef = LaserContent.OutputRefOf(instance);
+            var isFrozen = !cameras[i].GetUpdateEnabled(OutputContentResolver.Context);
             var args = new OutlinerItem.Args
                            {
                                Kind = SetupEntityKinds.ContentSource,
                                Id = instance.SymbolChildId,
                                Name = ContentSourceSync.SendName(instance),
-                               Status = "laser",
+                               Status = isFrozen ? "laser · frozen" : "laser",
                                IsMuted = outputRef == Guid.Empty || setup.FindOutput(outputRef) == null,
                            };
             DrawItem(selection, setup, ref args);

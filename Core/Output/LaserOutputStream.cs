@@ -1,6 +1,7 @@
 #nullable enable
 using System;
 using System.Collections.Concurrent;
+using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -72,23 +73,32 @@ public sealed class LaserOutputStream : IDisposable
     /// <summary>
     /// Queues a frame for the send thread, re-applying the output's safety limits at the door -
     /// the non-bypassable stage that runs no matter what the caller did upstream. Copies out of
-    /// the caller's buffer; call from one thread only (the render thread).
+    /// the caller's buffer; call from one thread only (the render thread). Callers whose pipeline
+    /// already ran the same config this frame pass <paramref name="alreadySafetyApplied"/> to skip
+    /// the identical second pass (and its two array copies per frame).
     /// </summary>
-    public void SubmitFrame(LaserPoint[] frame, in LaserSafetyTransforms.Config safety)
+    public void SubmitFrame(in LaserFrame frame, in LaserSafetyTransforms.Config safety, bool alreadySafetyApplied = false)
     {
-        var count = frame.Length;
-        if (count == 0)
+        var count = frame.Count;
+        if (count <= 0 || frame.Points == null)
             return;
+
+        if (alreadySafetyApplied)
+        {
+            _inner.SubmitFrame(frame);
+            return;
+        }
 
         // The safety transforms are idempotent (clamps, subdivision, dwell blanking), so
         // re-applying the stage the setup pipeline already ran is safe and never inflates
         // the point count.
         _safetyWorkList.Clear();
         for (var i = 0; i < count; i++)
-            _safetyWorkList.Add(frame[i]);
+            _safetyWorkList.Add(frame.Points[i]);
 
         var result = LaserSafetyTransforms.Apply(_safetyWorkList, in safety, ref _safetyStats);
-        _inner.SubmitFrame(result.ToArray());
+        var exact = result.ToArray();
+        _inner.SubmitFrame(new LaserFrame(exact, exact.Length));
     }
 
     public bool IsConnected => _inner.IsConnected;
@@ -102,7 +112,16 @@ public sealed class LaserOutputStream : IDisposable
     /// address), so the driver rebuilds the stream when they no longer match - otherwise editing
     /// them on the plug card would only take effect after a restart.
     /// </summary>
-    public bool MatchesPlug(LaserPlug plug) => _inner.MatchesPlug(plug);
+    public bool MatchesPlug(LaserPlug plug) => _inner.DescribeMismatch(plug) == null;
+
+    /// <summary>Applies the plug settings that a running stream takes without a reconnect (brightness
+    /// ceiling, channel order, scan rate, keepalive). Call it each pump, before <see cref="MatchesPlug"/>.</summary>
+    public void ApplyLiveSettings(LaserPlug plug) => _inner.ApplyLiveSettings(plug);
+
+    /// <summary>The plug setting that no longer matches this stream, or null when it still does.
+    /// A persistent mismatch makes the driver rebuild the stream repeatedly - the reason a plug
+    /// card can read "connected, then instantly disconnected" over and over.</summary>
+    public string? DescribeMismatch(LaserPlug plug) => _inner.DescribeMismatch(plug);
 
     public void Dispose()
     {
@@ -117,13 +136,18 @@ public sealed class LaserOutputStream : IDisposable
     /// <summary>Protocol-specific transport behind a <see cref="LaserOutputStream"/>.</summary>
     private interface IStream : IDisposable
     {
-        void SubmitFrame(LaserPoint[] frame);
+        void SubmitFrame(in LaserFrame frame);
         bool IsConnected { get; }
         IStatusProvider.StatusLevel StatusLevel { get; }
         string StatusMessage { get; }
 
-        /// <summary>True when the live stream still reflects the plug's current device settings.</summary>
-        bool MatchesPlug(LaserPlug plug);
+        /// <summary>The plug setting that needs a new connection, or null when the live stream still serves the plug.</summary>
+        string? DescribeMismatch(LaserPlug plug);
+
+        /// <summary>Applies the plug settings the running stream reads per chunk; transports without any do nothing.</summary>
+        void ApplyLiveSettings(LaserPlug plug)
+        {
+        }
     }
 
     #region Shared helpers (blanking, watchdog, dark approach)
@@ -138,7 +162,7 @@ public sealed class LaserOutputStream : IDisposable
     }
 
     /// <summary>True when no fresh frame has been submitted within the watchdog window.</summary>
-    internal static bool WatchdogElapsed(long lastSubmitTimestamp)
+    internal static bool WatchdogElapsed(ref long lastSubmitTimestamp)
     {
         var last = Interlocked.Read(ref lastSubmitTimestamp);
         if (last == 0)
@@ -226,9 +250,10 @@ public sealed class LaserOutputStream : IDisposable
     /// <summary>Queue bookkeeping shared by both transports: bounds the queue, copies the frame
     /// out of the upstream buffer (producers reuse their allocation every frame) and resets the
     /// watchdog clock.</summary>
-    internal static LaserPoint[]? CopyForQueue(LaserPoint[] frame, ConcurrentQueue<LaserPoint[]> queue, int maxQueuedFrames)
+    internal static LaserPoint[]? CopyForQueue(in LaserFrame frame, ConcurrentQueue<LaserPoint[]> queue, int maxQueuedFrames)
     {
-        if (frame.Length == 0)
+        var count = frame.Count;
+        if (count <= 0 || frame.Points == null)
             return null;
 
         while (queue.Count >= maxQueuedFrames)
@@ -237,8 +262,10 @@ public sealed class LaserOutputStream : IDisposable
                 break;
         }
 
-        var copy = new LaserPoint[frame.Length];
-        Array.Copy(frame, copy, frame.Length);
+        // Exactly the frame, never the producer buffer's capacity: the tail past Count is
+        // padding, and streaming it would spend datagram budget on blanked origin dwells.
+        var copy = GC.AllocateUninitializedArray<LaserPoint>(count);
+        Array.Copy(frame.Points, copy, count);
         return copy;
     }
 
@@ -248,14 +275,22 @@ public sealed class LaserOutputStream : IDisposable
     /// `MAXSPEED`) fill it completely and are matched as 8 bytes by receivers - so a shorter key is
     /// zero-padded and an 8-character key must not lose its last byte.
     /// </summary>
+    internal static void WriteMetaEntry(Span<byte> destination, string key, float value)
+    {
+        destination[..8].Clear();
+        Encoding.ASCII.GetBytes(key.AsSpan(0, Math.Min(key.Length, 8)), destination[..8]);
+        BinaryPrimitives.WriteSingleLittleEndian(destination.Slice(8, 4), value);
+    }
+
     internal static void WriteMetaEntry(BinaryWriter writer, string key, float value)
     {
-        var keyBytes = Encoding.ASCII.GetBytes(key);
-        var keyBuf = new byte[8];
-        Array.Copy(keyBytes, keyBuf, Math.Min(keyBytes.Length, keyBuf.Length));
-        writer.Write(keyBuf);
-        writer.Write(value);
+        Span<byte> entry = stackalloc byte[MetaEntrySize];
+        WriteMetaEntry(entry, key, value);
+        writer.Write(entry);
     }
+
+    /** 8 byte key + float32 value. */
+    internal const int MetaEntrySize = 12;
     #endregion
 
     #region EtherDream transport
@@ -276,7 +311,6 @@ public sealed class LaserOutputStream : IDisposable
             _plugAddress = plug.Address ?? string.Empty;
             _maxBrightness = Math.Clamp(device.MaxBrightness, 0f, 1f);
             _swapColorChannels = device.SwapColorChannels;
-            _localAddress = plug.LocalAddress ?? string.Empty;
 
             // The plug picker lists DACs while a stream runs: a connected DAC stops its
             // discovery broadcasts, so start the shared listener with the stream.
@@ -287,10 +321,11 @@ public sealed class LaserOutputStream : IDisposable
 
         private readonly LaserPlug _plug;
         private readonly string _plugAddress;
-        private readonly int _scanRate;
-        private readonly float _maxBrightness;
-        private readonly bool _swapColorChannels;
-        private readonly string _localAddress;
+
+        // Read per chunk by the send loop, so a settings edit applies without a reconnect.
+        private volatile int _scanRate;
+        private volatile float _maxBrightness;
+        private volatile bool _swapColorChannels;
 
         // Library instances / connection state
         private Dac? _dac;
@@ -321,17 +356,39 @@ public sealed class LaserOutputStream : IDisposable
             return clamped == 100 && scanRate < 100 ? 30000 : clamped;
         }
 
-        public bool MatchesPlug(LaserPlug plug)
+        /// <summary>
+        /// Only the device address needs a new connection. Closing a session mid-write leaves the DAC's
+        /// firmware holding a stale full buffer until it is power-cycled, so everything else is applied
+        /// to the running stream here: scan rate, brightness ceiling and channel order are read per
+        /// chunk, and the interface is not used by this transport at all.
+        /// </summary>
+        public void ApplyLiveSettings(LaserPlug plug)
         {
             var device = plug.EtherDreamSettings;
-            return NormalizeScanRate(device.ScanRate) == _scanRate
-                   && Math.Clamp(device.MaxBrightness, 0f, 1f) == _maxBrightness
-                   && device.SwapColorChannels == _swapColorChannels
-                   && (plug.Address ?? string.Empty) == _plugAddress
-                   && (plug.LocalAddress ?? string.Empty) == _localAddress;
+            _scanRate = NormalizeScanRate(device.ScanRate);
+            _maxBrightness = Math.Clamp(device.MaxBrightness, 0f, 1f);
+            _swapColorChannels = device.SwapColorChannels;
         }
 
-        public void SubmitFrame(LaserPoint[] frame)
+        public string? DescribeMismatch(LaserPlug plug)
+        {
+            var address = plug.Address ?? string.Empty;
+            if (address != _plugAddress && !IsAutoSelectedDevice(address))
+                return $"address '{_plugAddress}' -> '{plug.Address}'";
+
+            return null;
+        }
+
+        /// <summary>A plug left empty streams to the first discovered DAC; the setup card then writes that
+        /// DAC's address into the plug, which is the connection the stream already has.</summary>
+        private bool IsAutoSelectedDevice(string address)
+        {
+            return _plugAddress.Length == 0
+                   && address.Length > 0
+                   && (address == _autoSelectedIp || address == _lastConnectIp);
+        }
+
+        public void SubmitFrame(in LaserFrame frame)
         {
             var copy = CopyForQueue(frame, _pointQueue, MaxQueuedFrames);
             if (copy == null)
@@ -408,7 +465,7 @@ public sealed class LaserOutputStream : IDisposable
             }
         }
 
-        private string? _autoSelectedIp;
+        private volatile string? _autoSelectedIp;
 
         private void TearDown()
         {
@@ -660,7 +717,7 @@ public sealed class LaserOutputStream : IDisposable
                         // second, so an unapproached seam would ring the scanners at loop rate.
                         _needsDarkApproach = true;
 
-                        if (WatchdogElapsed(_lastEnqueueTimestamp))
+                        if (WatchdogElapsed(ref _lastEnqueueTimestamp))
                         {
                             if (!_watchdogBlanked)
                             {
@@ -874,9 +931,17 @@ public sealed class LaserOutputStream : IDisposable
             }
         }
 
+        /// <summary>Queued frames are never mutated, so they are remembered by reference. The blank
+        /// scratch is rewritten on the next pass and has to be copied.</summary>
         private void RememberFrame(LaserPoint[] points)
         {
-            if (_lastFrame == null || _lastFrame.Length != points.Length)
+            if (!ReferenceEquals(points, _blankFrameScratch))
+            {
+                _lastFrame = points;
+                return;
+            }
+
+            if (_lastFrame == null || _lastFrame.Length != points.Length || ReferenceEquals(_lastFrame, points))
                 _lastFrame = new LaserPoint[points.Length];
 
             Array.Copy(points, _lastFrame, points.Length);
@@ -1057,6 +1122,16 @@ public sealed class LaserOutputStream : IDisposable
         internal static readonly IPAddress DefaultMulticastAddress = IPAddress.Parse("239.255.10.24");
         private const int DefaultPort = 5583;
         private const int MaxSenderNameBytes = 32; // Null-terminated, so 31 usable chars
+
+        /// <summary>An empty sender name resolves to the plug's name ("Laser 3"), so several TiXL
+        /// PONK senders are distinguishable on receivers instead of a pile of identical "TiXL"s.</summary>
+        private static string ResolveSenderName(LaserPlug plug, string? senderName)
+        {
+            if (!string.IsNullOrWhiteSpace(senderName))
+                return senderName;
+
+            return string.IsNullOrWhiteSpace(plug.Name) ? "TiXL" : plug.Name.Trim();
+        }
         private const int SendRetryDelayMs = 50;
         private const int MaxConsecutiveSendErrors = 20;
         private const int MaxQueuedFrames = 5;
@@ -1071,7 +1146,7 @@ public sealed class LaserOutputStream : IDisposable
             _plug = plug;
             var device = plug.PonkSettings;
             _useMulticast = device.UseMulticast;
-            _senderName = string.IsNullOrWhiteSpace(device.SenderName) ? "TiXL" : device.SenderName;
+            _senderName = ResolveSenderName(plug, device.SenderName);
             _maxScanSpeed = MathF.Max(0.01f, device.MaxScanSpeed);
             _maxBrightness = Math.Clamp(device.MaxBrightness, 0f, 1f);
             _swapColorChannels = device.SwapColorChannels;
@@ -1120,25 +1195,36 @@ public sealed class LaserOutputStream : IDisposable
         public IStatusProvider.StatusLevel StatusLevel => _statusLevel;
         public string StatusMessage => _statusMessage;
 
-        public bool MatchesPlug(LaserPlug plug)
+        public string? DescribeMismatch(LaserPlug plug)
         {
             var device = plug.PonkSettings;
-            var senderName = string.IsNullOrWhiteSpace(device.SenderName) ? "TiXL" : device.SenderName;
+            var senderName = ResolveSenderName(plug, device.SenderName);
             var target = string.IsNullOrWhiteSpace(plug.Address) ? DefaultMulticastAddress.ToString() : plug.Address;
             var port = plug.Port > 0 ? plug.Port : DefaultPort;
 
-            return device.UseMulticast == _useMulticast
-                   && senderName == _senderName
-                   && MathF.Max(0.01f, device.MaxScanSpeed) == _maxScanSpeed
-                   && Math.Clamp(device.MaxBrightness, 0f, 1f) == _maxBrightness
-                   && device.SwapColorChannels == _swapColorChannels
-                   && device.Keepalive == _keepalive
-                   && target == _targetAddress
-                   && port == _port
-                   && (plug.LocalAddress ?? string.Empty) == _localAddress;
+            if (device.UseMulticast != _useMulticast)
+                return "multicast mode changed";
+            if (senderName != _senderName)
+                return $"sender name '{_senderName}' -> '{senderName}'";
+            if (MathF.Max(0.01f, device.MaxScanSpeed) != _maxScanSpeed)
+                return $"scan speed {_maxScanSpeed} -> {device.MaxScanSpeed}";
+            if (Math.Clamp(device.MaxBrightness, 0f, 1f) != _maxBrightness)
+                return $"brightness {_maxBrightness} -> {device.MaxBrightness}";
+            if (device.SwapColorChannels != _swapColorChannels)
+                return "swap channels changed";
+            if (device.Keepalive != _keepalive)
+                return "keepalive changed";
+            if (target != _targetAddress)
+                return $"target '{_targetAddress}' -> '{target}'";
+            if (port != _port)
+                return $"port {_port} -> {port}";
+            if ((plug.LocalAddress ?? string.Empty) != _localAddress)
+                return $"local address '{_localAddress}' -> '{plug.LocalAddress}'";
+
+            return null;
         }
 
-        public void SubmitFrame(LaserPoint[] frame)
+        public void SubmitFrame(in LaserFrame frame)
         {
             var copy = CopyForQueue(frame, _pointQueue, MaxQueuedFrames);
             if (copy == null)
@@ -1282,9 +1368,22 @@ public sealed class LaserOutputStream : IDisposable
             catch { }
 
             // Bind to the chosen local interface (or Any) on an ephemeral port. Bind is required
-            // so multicast packets leave on the right interface.
+            // so multicast packets leave on the right interface. A pinned interface that can't
+            // bind (NIC unplugged, IP changed under us) falls back to OS routing instead of
+            // killing the stream - the retry loop keeps the pinned address for when it returns.
             var bindAddr = localIp ?? IPAddress.Any;
-            socket.Bind(new IPEndPoint(bindAddr, 0));
+            try
+            {
+                socket.Bind(new IPEndPoint(bindAddr, 0));
+            }
+            catch (SocketException)
+            {
+                if (bindAddr.Equals(IPAddress.Any))
+                    throw;
+
+                bindAddr = IPAddress.Any;
+                socket.Bind(new IPEndPoint(bindAddr, 0));
+            }
 
             if (useMulticast)
             {
@@ -1341,6 +1440,7 @@ public sealed class LaserOutputStream : IDisposable
                     if (_lastFrame is { Length: > 0 } && !_masterBlankApplied)
                     {
                         _lastFrame = BlankFrameCopy(_lastFrame);
+                        _lastFrameBlanked = true;
                         _masterBlankApplied = true;
                     }
                 }
@@ -1350,6 +1450,7 @@ public sealed class LaserOutputStream : IDisposable
                 }
 
                 LaserPoint[]? frame = null;
+                var frameIsBlanked = false;
                 if (!masterOff && _pointQueue.TryDequeue(out var points) && points.Length > 0)
                 {
                     frame = points;
@@ -1365,7 +1466,7 @@ public sealed class LaserOutputStream : IDisposable
                         // Frame watchdog: a stalled driver must not leave the last lit frame frozen
                         // on the receiver. Once the grace period expires, keep looping the geometry
                         // but with the beam blanked.
-                        var watchdogBlank = WatchdogElapsed(_lastEnqueueTimestamp);
+                        var watchdogBlank = WatchdogElapsed(ref _lastEnqueueTimestamp);
                         if (watchdogBlank && !_watchdogBlanked)
                         {
                             _watchdogBlanked = true;
@@ -1373,7 +1474,8 @@ public sealed class LaserOutputStream : IDisposable
                             SetStatus("Frame watchdog - no new frames, output blanked", IStatusProvider.StatusLevel.Warning);
                         }
 
-                        frame = watchdogBlank ? BlankFrameCopy(_lastFrame) : _lastFrame;
+                        frame = watchdogBlank && !_lastFrameBlanked ? BlankFrameCopy(_lastFrame) : _lastFrame;
+                        frameIsBlanked = watchdogBlank || _lastFrameBlanked;
                     }
                 }
 
@@ -1384,16 +1486,17 @@ public sealed class LaserOutputStream : IDisposable
                     continue;
                 }
 
-                var frameData = EncodeFrame(frame);
-                var crc = ComputeChecksum(frameData);
-                var chunkCount = ComputeChunkCount(frameData.Length);
+                var frameLength = EncodeFrame(frame);
+                var crc = ComputeChecksum(_encodeBuffer, frameLength);
+                var chunkCount = ComputeChunkCount(frameLength);
 
                 try
                 {
-                    SendFrame(socket, target, headerBuffer, frameData, crc, chunkCount, token);
+                    SendFrame(socket, target, headerBuffer, _encodeBuffer, frameLength, crc, chunkCount, token);
                     lastSendTicks = Environment.TickCount64;
                     _consecutiveErrors = 0;
-                    RememberFrame(frame);
+                    _lastFrame = frame;
+                    _lastFrameBlanked = frameIsBlanked;
                 }
                 catch (OperationCanceledException)
                 {
@@ -1419,7 +1522,7 @@ public sealed class LaserOutputStream : IDisposable
             }
         }
 
-        private void SendFrame(Socket socket, IPEndPoint target, byte[] headerBuffer, byte[] frameData, uint crc,
+        private void SendFrame(Socket socket, IPEndPoint target, byte[] headerBuffer, byte[] frameData, int frameLength, uint crc,
                                int chunkCount, CancellationToken token)
         {
             // PONK chunks are header-prefixed; each chunk's payload is a slice of the frame data.
@@ -1427,10 +1530,8 @@ public sealed class LaserOutputStream : IDisposable
             var written = 0;
             for (var chunkNumber = 0; chunkNumber < chunkCount; chunkNumber++)
             {
-                var payloadSize = Math.Min(MaxChunkPayload, frameData.Length - written);
+                var payloadSize = Math.Min(MaxChunkPayload, frameLength - written);
                 var totalSize = HeaderSize + payloadSize;
-                if (headerBuffer.Length < totalSize)
-                    Array.Resize(ref headerBuffer, totalSize);
 
                 WriteHeader(headerBuffer, _senderName, _senderId, _frameNumber, (byte)chunkCount, (byte)chunkNumber, crc);
                 Array.Copy(frameData, written, headerBuffer, HeaderSize, payloadSize);
@@ -1461,44 +1562,49 @@ public sealed class LaserOutputStream : IDisposable
             unchecked { _frameNumber++; }
         }
 
-        private byte[] EncodeFrame(LaserPoint[] points)
+        /// <summary>Encodes the frame into <see cref="_encodeBuffer"/> and returns the encoded length.</summary>
+        private int EncodeFrame(LaserPoint[] points)
         {
-            using var payload = new MemoryStream(MaxDatagramSize);
-            using var writer = new BinaryWriter(payload);
-
-            // One path per frame: PATHNUMB identifies the shape across frames so receivers can
-            // dispatch; MAXSPEED tells the receiver the requested scan-speed multiplier.
-            writer.Write(DataFormatXyF32RgbU8);
-            writer.Write((byte)2);
-            WriteMetaEntry(writer, "PATHNUMB", 1);
-            WriteMetaEntry(writer, "MAXSPEED", _maxScanSpeed);
-
             // pointCount is a ushort and chunkCount a byte, so cap the frame at a point count
             // whose chunking stays inside both limits.
             var count = Math.Min(points.Length, MaxPointsPerFrame);
-            writer.Write((ushort)count);
+            var length = PayloadHeaderSize + count * BytesPerPoint;
+            if (_encodeBuffer.Length < length)
+                _encodeBuffer = new byte[length];
 
+            var data = _encodeBuffer;
+
+            // One path per frame: PATHNUMB identifies the shape across frames so receivers can
+            // dispatch; MAXSPEED tells the receiver the requested scan-speed multiplier.
+            data[0] = DataFormatXyF32RgbU8;
+            data[1] = 2;
+            WriteMetaEntry(data.AsSpan(2, MetaEntrySize), "PATHNUMB", 1);
+            WriteMetaEntry(data.AsSpan(2 + MetaEntrySize, MetaEntrySize), "MAXSPEED", _maxScanSpeed);
+            BinaryPrimitives.WriteUInt16LittleEndian(data.AsSpan(2 + 2 * MetaEntrySize, 2), (ushort)count);
+
+            var offset = PayloadHeaderSize;
             for (var i = 0; i < count; i++)
             {
                 var p = points[i];
                 // LaserPoint.X/Y are ILDA-style 16-bit signed (-32768..32767); normalize to
                 // PONK's mandatory float32 [-1, 1] XY + uint8 RGB format. Colors are scaled by
                 // the brightness ceiling right before encoding - the final output audit.
-                var x = Math.Clamp(p.X / 32767f, -1f, 1f);
-                var y = Math.Clamp(p.Y / 32767f, -1f, 1f);
-                var r = (byte)Math.Clamp((int)MathF.Round(Math.Max(_swapColorChannels ? p.B : p.R, 0) * _maxBrightness) >> 8, 0, 255);
-                var g = (byte)Math.Clamp((int)MathF.Round(Math.Max(p.G, 0) * _maxBrightness) >> 8, 0, 255);
-                var b = (byte)Math.Clamp((int)MathF.Round(Math.Max(_swapColorChannels ? p.R : p.B, 0) * _maxBrightness) >> 8, 0, 255);
-
-                writer.Write(x);
-                writer.Write(y);
-                writer.Write(r);
-                writer.Write(g);
-                writer.Write(b);
+                BinaryPrimitives.WriteSingleLittleEndian(data.AsSpan(offset, 4), Math.Clamp(p.X / 32767f, -1f, 1f));
+                BinaryPrimitives.WriteSingleLittleEndian(data.AsSpan(offset + 4, 4), Math.Clamp(p.Y / 32767f, -1f, 1f));
+                data[offset + 8] = (byte)Math.Clamp((int)MathF.Round(Math.Max(_swapColorChannels ? p.B : p.R, 0) * _maxBrightness) >> 8, 0, 255);
+                data[offset + 9] = (byte)Math.Clamp((int)MathF.Round(Math.Max(p.G, 0) * _maxBrightness) >> 8, 0, 255);
+                data[offset + 10] = (byte)Math.Clamp((int)MathF.Round(Math.Max(_swapColorChannels ? p.R : p.B, 0) * _maxBrightness) >> 8, 0, 255);
+                offset += BytesPerPoint;
             }
 
-            return payload.ToArray();
+            return length;
         }
+
+        /** Data format, path-metadata count, two metadata entries and the point count. */
+        private const int PayloadHeaderSize = 2 + 2 * MetaEntrySize + 2;
+
+        /** float32 X, float32 Y, uint8 R, G, B. */
+        private const int BytesPerPoint = 11;
 
         private static void WriteHeader(byte[] buffer, string senderName, int senderId, byte frameNumber, byte chunkCount, byte chunkNumber, uint crc)
         {
@@ -1542,19 +1648,12 @@ public sealed class LaserOutputStream : IDisposable
         /// PONK's "CRC" is a sum of all frame-data bytes (mod 2^32). It's not a polynomial CRC;
         /// the field name is kept for protocol compatibility. Same value in every chunk of a frame.
         /// </summary>
-        private static uint ComputeChecksum(byte[] data)
+        private static uint ComputeChecksum(byte[] data, int length)
         {
             uint sum = 0;
-            for (var i = 0; i < data.Length; i++)
+            for (var i = 0; i < length; i++)
                 sum += data[i];
             return sum;
-        }
-
-        private void RememberFrame(LaserPoint[] points)
-        {
-            if (_lastFrame == null || _lastFrame.Length != points.Length)
-                _lastFrame = new LaserPoint[points.Length];
-            Array.Copy(points, _lastFrame, points.Length);
         }
 
         /// <summary>Returns a fresh blanked copy (positions kept, colors zeroed) — the watchdog
@@ -1584,6 +1683,12 @@ public sealed class LaserOutputStream : IDisposable
         private long _lastEnqueueTimestamp;
         private volatile bool _watchdogBlanked;
         private bool _masterBlankApplied;
+
+        /** The remembered frame already has its colors zeroed, so repeats need no new blanked copy. */
+        private bool _lastFrameBlanked;
+
+        /** Datagram payload of the frame being sent; send thread only. */
+        private byte[] _encodeBuffer = new byte[MaxDatagramSize];
     }
     #endregion
 
@@ -1628,11 +1733,15 @@ public sealed class LaserOutputStream : IDisposable
         private const int MaxQueuedFrames = 5;
         private const int ReconnectDelayMs = 2000;
         private const int LocalhostFallbackDelayMs = 6000;
+        private const int ConnectTimeoutMs = 3000;
+
+        /// <summary>Closed-session retries before a pinned target yields to what discovery announces.</summary>
+        private const int DiscoveryFallbackFailures = 3;
 
         public CitpStream(LaserPlug plug)
         {
             var device = plug.CitpSettings;
-            _feedName = string.IsNullOrWhiteSpace(device.FeedName) ? "Laser Feed" : device.FeedName.Trim();
+            _feedName = ResolveFeedName(plug, device.FeedName);
             _sourceKey = device.SourceKey != 0 ? device.SourceKey : (uint)Random.Shared.Next();
             _maxBrightness = Math.Clamp(device.MaxBrightness, 0f, 1f);
             _swapColorChannels = device.SwapColorChannels;
@@ -1646,9 +1755,12 @@ public sealed class LaserOutputStream : IDisposable
 
         private readonly string _feedName;
         private readonly uint _sourceKey;
-        private readonly float _maxBrightness;
-        private readonly bool _swapColorChannels;
-        private readonly bool _keepalive;
+
+        // Read per frame by the send loop, so a settings edit applies without a new session.
+        private volatile float _maxBrightness;
+        private volatile bool _swapColorChannels;
+        private volatile bool _keepalive;
+
         private readonly string _directHost;
         private readonly int _directPort;
         private readonly string _localAddress;
@@ -1665,6 +1777,7 @@ public sealed class LaserOutputStream : IDisposable
         private volatile bool _feedActive;
         private volatile int _requiredFps;
         private uint _frameSequenceNo;
+        private long _lastConnectFailureLog;
         private int _captureTcpPort; // staged before StartConnection; 0 = PLoc discovery
         private string _captureIp = string.Empty;
 
@@ -1685,22 +1798,53 @@ public sealed class LaserOutputStream : IDisposable
 
         public bool MatchesPlug(LaserPlug plug)
         {
+            return DescribeMismatch(plug) == null;
+        }
+
+        /// <summary>The field that no longer matches this stream's construction - null when the
+        /// stream still serves the plug. A persistent mismatch makes the driver dispose and rebuild
+        /// the stream every few hundred ms, which surfaces as "connected, then instantly
+        /// disconnected" in the UI; naming the field makes that loop visible in the log.</summary>
+        public void ApplyLiveSettings(LaserPlug plug)
+        {
             var device = plug.CitpSettings;
-            var feedName = string.IsNullOrWhiteSpace(device.FeedName) ? "Laser Feed" : device.FeedName.Trim();
+            _maxBrightness = Math.Clamp(device.MaxBrightness, 0f, 1f);
+            _swapColorChannels = device.SwapColorChannels;
+            _keepalive = device.Keepalive;
+        }
+
+        public string? DescribeMismatch(LaserPlug plug)
+        {
+            var device = plug.CitpSettings;
+            var feedName = ResolveFeedName(plug, device.FeedName);
             var directPort = plug.Port > 0 ? plug.Port : 0;
 
             // SourceKey is generated per session when the plug leaves it at 0, so it is not part of
             // the comparison - only what the UI can actually set.
-            return feedName == _feedName
-                   && Math.Clamp(device.MaxBrightness, 0f, 1f) == _maxBrightness
-                   && device.SwapColorChannels == _swapColorChannels
-                   && device.Keepalive == _keepalive
-                   && (plug.Address ?? string.Empty) == _directHost
-                   && directPort == _directPort
-                   && (plug.LocalAddress ?? string.Empty) == _localAddress;
+            if (feedName != _feedName)
+                return $"feed name '{_feedName}' -> '{feedName}'";
+
+            var address = plug.Address ?? string.Empty;
+            if ((address != _directHost || directPort != _directPort) && !IsConnectedPeer(address, directPort))
+                return $"target '{_directHost}:{_directPort}' -> '{address}:{directPort}'";
+            if ((plug.LocalAddress ?? string.Empty) != _localAddress)
+                return $"local address '{_localAddress}' -> '{plug.LocalAddress}'";
+
+            return null;
         }
 
-        public void SubmitFrame(LaserPoint[] frame)
+        /// <summary>A plug left on discovery that the setup card then pins to the peer this stream is already
+        /// connected to is the same session - rebuilding it would only drop the feed.</summary>
+        private bool IsConnectedPeer(string address, int port)
+        {
+            if (_directHost.Length != 0 || _directPort != 0 || !IsConnected)
+                return false;
+
+            lock (_connectionLock)
+                return address == _captureIp && port == _captureTcpPort;
+        }
+
+        public void SubmitFrame(in LaserFrame frame)
         {
             if (_disposed || !IsConnected || !_feedActive)
                 return;
@@ -1732,6 +1876,13 @@ public sealed class LaserOutputStream : IDisposable
             _feedActive = false;
             _requiredFps = 0;
 
+            // The discovery listener runs for every CITP stream, including a pinned host: Capture's
+            // control port is dynamic and only announced over PLoc, so a pinned port goes stale the
+            // moment Capture restarts. Listening lets the connect follow the live port (see
+            // AdoptAnnouncedPort) instead of retrying a dead one forever.
+            CitpPeerDiscovery.EnsureStarted();
+            CitpPeerDiscovery.PeerAnnounced += OnPeerAnnounced;
+
             if (IsDirectConnect)
             {
                 SetStatus($"Connecting to {_captureIp}:{_captureTcpPort}", IStatusProvider.StatusLevel.Notice);
@@ -1740,8 +1891,6 @@ public sealed class LaserOutputStream : IDisposable
             {
                 // The shared PLoc listener feeds peers to every CITP stream; this stream connects
                 // to the first peer that announces itself (subnet-filtered like the dropdown).
-                CitpPeerDiscovery.EnsureStarted();
-                CitpPeerDiscovery.PeerAnnounced += OnPeerAnnounced;
                 SetStatus($"Listening for Capture on {MulticastAddress}:{MulticastPort}", IStatusProvider.StatusLevel.Notice);
             }
 
@@ -1750,8 +1899,54 @@ public sealed class LaserOutputStream : IDisposable
             _ = Task.Run(() => ReconnectLoopAsync(token));
         }
 
+        /// <summary>
+        /// Capture's control port is dynamic: it re-announces the port it currently listens on, and
+        /// the port stored on a plug goes stale after any Capture restart. With a pinned host, adopt
+        /// the announced port for that host - that keeps the host pinned (the venue's machine) while
+        /// the port follows reality, instead of a session that can never connect.
+        /// </summary>
+        private bool AdoptAnnouncedPort()
+        {
+            if (!IsDirectConnect)
+                return false;
+
+            foreach (var peer in CitpPeerDiscovery.Peers)
+            {
+                if (!string.Equals(peer.Ip, _captureIp, StringComparison.Ordinal) || peer.TcpPort <= 0)
+                    continue;
+
+                if (peer.TcpPort == _captureTcpPort)
+                    return false;
+
+                lock (_connectionLock)
+                {
+                    if (_disposed || _tcpClient is { Connected: true })
+                        return false;
+
+                    Log.Info($"CITP: Capture at {_captureIp} announces port {peer.TcpPort} "
+                             + $"(plug has {_captureTcpPort}) - following the announced port");
+                    _captureTcpPort = peer.TcpPort;
+                }
+
+                return true;
+            }
+
+            return false;
+        }
+
         /** Host and port both set on the plug: connect there and ignore PLoc announcements. */
         private bool IsDirectConnect => _directPort > 0 && !string.IsNullOrWhiteSpace(_directHost);
+
+        /// <summary>An empty feed name resolves to the plug's name ("Laser 3"), so several TiXL
+        /// laser outputs appear as distinct feeds in Capture instead of a pile of identical
+        /// "Laser Feed"s that cannot be told apart or addressed separately.</summary>
+        private static string ResolveFeedName(LaserPlug plug, string? feedName)
+        {
+            if (!string.IsNullOrWhiteSpace(feedName))
+                return feedName.Trim();
+
+            return string.IsNullOrWhiteSpace(plug.Name) ? "Laser Feed" : plug.Name.Trim();
+        }
 
         /// <summary>
         /// Keeps the control session up: connects to the current target and reconnects after the
@@ -1762,12 +1957,17 @@ public sealed class LaserOutputStream : IDisposable
         private async Task ReconnectLoopAsync(CancellationToken token)
         {
             var startedAt = Environment.TickCount64;
+            var consecutiveFailures = 0;
             try
             {
                 while (!token.IsCancellationRequested && !_disposed)
                 {
                     if (!IsConnected)
                     {
+                        // Before retrying a pinned port, take Capture's announced one: a stale port
+                        // is the usual reason a plug sits on "connecting" while Capture is up.
+                        AdoptAnnouncedPort();
+
                         if (!IsDirectConnect && Environment.TickCount64 - startedAt > LocalhostFallbackDelayMs)
                         {
                             lock (_connectionLock)
@@ -1780,7 +1980,20 @@ public sealed class LaserOutputStream : IDisposable
                             }
                         }
 
-                        ConnectToCapture();
+                        await ConnectToCaptureAsync();
+
+                        if (IsConnected)
+                        {
+                            consecutiveFailures = 0;
+                        }
+                        else if (++consecutiveFailures >= DiscoveryFallbackFailures)
+                        {
+                            // Self-healing: a pinned host that stopped answering (Capture on another
+                            // NIC / another machine) falls back to what discovery actually announces,
+                            // so opening Capture reconnects on its own — no re-picking in the dropdown.
+                            if (AdoptDiscoveredPeer())
+                                consecutiveFailures = 0;
+                        }
                     }
 
                     await Task.Delay(ReconnectDelayMs, token);
@@ -1790,6 +2003,53 @@ public sealed class LaserOutputStream : IDisposable
             {
                 // Stream disposed
             }
+        }
+
+        /// <summary>Retargets a pinned connection at the peer CITP discovery actually announces -
+        /// same /24 first, then the first announced. Returns true when the target changed.</summary>
+        private bool AdoptDiscoveredPeer()
+        {
+            if (!IPAddress.TryParse(_captureIp, out var pinned) || pinned.GetAddressBytes().Length != 4)
+                return false;
+
+            var pinnedBytes = pinned.GetAddressBytes();
+            CitpPeerDiscovery.Peer? best = null;
+            CitpPeerDiscovery.Peer? first = null;
+
+            foreach (var peer in CitpPeerDiscovery.Peers)
+            {
+                if (peer.TcpPort <= 0 || !IPAddress.TryParse(peer.Ip, out var peerIp) || peerIp.GetAddressBytes().Length != 4)
+                    continue;
+
+                first ??= peer;
+
+                var bytes = peerIp.GetAddressBytes();
+                if (bytes[0] != pinnedBytes[0] || bytes[1] != pinnedBytes[1] || bytes[2] != pinnedBytes[2])
+                    continue;
+
+                best = peer;
+                break;
+            }
+
+            best ??= first;
+            if (best == null)
+                return false;
+
+            lock (_connectionLock)
+            {
+                if (_disposed || _tcpClient is { Connected: true })
+                    return false;
+
+                if (best.Ip == _captureIp && best.TcpPort == _captureTcpPort)
+                    return false;
+
+                Log.Debug($"CITP: {_captureIp}:{_captureTcpPort} is not answering - using the announced Capture "
+                          + $"{best.Ip}:{best.TcpPort} for feed '{_feedName}'");
+                _captureIp = best.Ip;
+                _captureTcpPort = best.TcpPort;
+            }
+
+            return true;
         }
 
         private void OnPeerAnnounced(CitpPeerDiscovery.Peer peer)
@@ -1823,11 +2083,11 @@ public sealed class LaserOutputStream : IDisposable
             }
 
             // Runs on the shared discovery thread - a blocking connect would stall every stream's discovery.
-            _ = Task.Run(ConnectToCapture);
+            _ = Task.Run(ConnectToCaptureAsync);
         }
 
         #region TCP control connection
-        private void ConnectToCapture()
+        private async Task ConnectToCaptureAsync()
         {
             string targetIp;
             int targetPort;
@@ -1849,7 +2109,7 @@ public sealed class LaserOutputStream : IDisposable
 
             try
             {
-                ConnectToCaptureInner(ip, targetPort);
+                await ConnectToCaptureInnerAsync(ip, targetPort);
             }
             finally
             {
@@ -1857,15 +2117,49 @@ public sealed class LaserOutputStream : IDisposable
             }
         }
 
-        private void ConnectToCaptureInner(IPAddress ip, int targetPort)
+        private async Task ConnectToCaptureInnerAsync(IPAddress ip, int targetPort)
         {
             TcpClient? tcpClient = null;
             try
             {
                 StopTcpConnection();
 
-                tcpClient = new TcpClient();
-                tcpClient.Connect(ip, targetPort);
+                tcpClient = new TcpClient(ip.AddressFamily);
+
+                // With a pinned interface, bind the socket to it so the session leaves on the
+                // chosen NIC. A bind that fails (NIC gone since the pick) falls back to OS
+                // routing rather than never connecting.
+                if (IPAddress.TryParse(_localAddress, out var localIp)
+                    && !localIp.Equals(IPAddress.Any)
+                    && !IPAddress.IsLoopback(ip))
+                {
+                    try
+                    {
+                        tcpClient.Client.Bind(new IPEndPoint(localIp, 0));
+                    }
+                    catch (Exception bindEx)
+                    {
+                        Log.Debug($"CITP: interface bind to {_localAddress} failed ({bindEx.Message}) - using OS routing");
+                    }
+                }
+
+                // A filtered/unreachable host used to stall a thread-pool thread for seconds in
+                // a blocking Connect every reconnect cycle - bound now, and the retry loop keeps
+                // its cadence.
+                using var connectCts = new CancellationTokenSource(ConnectTimeoutMs);
+                try
+                {
+                    await tcpClient.ConnectAsync(ip, targetPort, connectCts.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    SetStatus($"CITP: {ip}:{targetPort} did not answer within {ConnectTimeoutMs / 1000}s",
+                              IStatusProvider.StatusLevel.Notice);
+                    StopTcpConnection();
+                    try { tcpClient.Close(); } catch { /* ignore */ }
+                    return;
+                }
+
                 var tcpStream = tcpClient.GetStream();
 
                 lock (_connectionLock)
@@ -1881,6 +2175,7 @@ public sealed class LaserOutputStream : IDisposable
                     _tcpStream = tcpStream;
 
                     SetStatus($"Connected to Capture at {ip}:{targetPort}", IStatusProvider.StatusLevel.Success);
+                    Log.Debug($"CITP: control session established with {ip}:{targetPort} (feed '{_feedName}')");
 
                     var token = _cts.Token;
                     var client = tcpClient;
@@ -1907,6 +2202,17 @@ public sealed class LaserOutputStream : IDisposable
             catch (Exception ex)
             {
                 SetStatus($"Discovery: {ip}:{targetPort} refused connection ({ex.Message})", IStatusProvider.StatusLevel.Notice);
+
+                // Visible, not just in the card status: a plug retrying a dead port every 2 s is
+                // the usual reason a laser output never reaches its device.
+                var now = Environment.TickCount64;
+                if (now - _lastConnectFailureLog > 10000)
+                {
+                    _lastConnectFailureLog = now;
+                    Log.Debug($"CITP: cannot reach Capture at {ip}:{targetPort} ({ex.Message}) - retrying; "
+                              + "the plug follows Capture's announced port when one is known");
+                }
+
                 StopTcpConnection();
                 // A failed Connect leaves its socket open until finalization; retries run every few seconds.
                 try { tcpClient?.Close(); } catch { /* ignore */ }
@@ -1961,6 +2267,7 @@ public sealed class LaserOutputStream : IDisposable
                     var bytesRead = stream.Read(buffer, buffered, buffer.Length - buffered);
                     if (bytesRead == 0)
                     {
+                        Log.Debug($"CITP: receiver closed the control session (feed '{_feedName}') - reconnecting");
                         StopTcpConnection(client);
                         break;
                     }
@@ -2232,6 +2539,7 @@ public sealed class LaserOutputStream : IDisposable
             LaserPoint[]? lastFrame = null;
             var blankScratch = Array.Empty<LaserPoint>();
             var lastAnnounceUtc = DateTime.UtcNow;
+            var nextSendTimestamp = 0L;
 
             while (!token.IsCancellationRequested && !_disposed && ReferenceEquals(Volatile.Read(ref _tcpClient), client))
             {
@@ -2252,18 +2560,42 @@ public sealed class LaserOutputStream : IDisposable
                         catch { /* transient socket errors retry on the next tick */ }
                     }
 
-                    Thread.Sleep(15);
+                    var requiredFps = _requiredFps;
+                    Thread.Sleep(requiredFps > 0 ? Math.Max(1, 1000 / requiredFps) : 15);
                 }
-                else if (_feedActive && _frameQueue.TryDequeue(out var frame))
+                else if (_feedActive && !_frameQueue.IsEmpty)
                 {
-                    lastFrame = frame;
-                    try
+                    // The capture asks for a frame rate and plays what it gets at that rate. The driver
+                    // produces a frame per editor frame, which can be well above it; every extra frame
+                    // would wait in the receiver's queue and show up as lag. So frames go out at the
+                    // requested rate, and the newest one wins: one that waited behind a newer frame is
+                    // already out of date.
+                    var now = System.Diagnostics.Stopwatch.GetTimestamp();
+                    if (now < nextSendTimestamp)
                     {
-                        SendLaserFeedFrame(udpSender, frame, target);
+                        Thread.Sleep(1);
                     }
-                    catch (Exception ex)
+                    else
                     {
-                        SetStatus($"CITP frame send failed: {ex.Message}", IStatusProvider.StatusLevel.Warning);
+                        LaserPoint[]? newest = null;
+                        while (_frameQueue.TryDequeue(out var queued))
+                            newest = queued;
+
+                        if (newest != null)
+                        {
+                            lastFrame = newest;
+                            var requiredFps = _requiredFps;
+                            var interval = requiredFps > 0 ? System.Diagnostics.Stopwatch.Frequency / requiredFps : 0;
+                            nextSendTimestamp = Math.Max(nextSendTimestamp + interval, now);
+                            try
+                            {
+                                SendLaserFeedFrame(udpSender, newest, target);
+                            }
+                            catch (Exception ex)
+                            {
+                                SetStatus($"CITP frame send failed: {ex.Message}", IStatusProvider.StatusLevel.Warning);
+                            }
+                        }
                     }
                 }
                 else
@@ -2281,6 +2613,13 @@ public sealed class LaserOutputStream : IDisposable
             }
         }
 
+        /// <summary>Reusable datagram buffer, send thread only - the largest LaserFeedFrame this
+        /// stream can produce: 24-byte CITP header + 11-byte body + 5 bytes per point at the
+        /// datagram cap. Encoding into it replaces a MemoryStream + BinaryWriter + ToArray per
+        /// frame, which at pump rate across a rig was enough garbage to stall the editor on GC.
+        /// Byte layout identical to the BinaryWriter version it replaced.</summary>
+        private readonly byte[] _sendBuffer = new byte[35 + MaxPointsPerDatagram * 5];
+
         private void SendLaserFeedFrame(UdpClient udpSender, LaserPoint[] points, IPEndPoint target)
         {
             if (points.Length == 0)
@@ -2290,36 +2629,87 @@ public sealed class LaserOutputStream : IDisposable
 
             try
             {
-                using var ms = new MemoryStream();
-                using var writer = new BinaryWriter(ms);
+                var data = _sendBuffer;
 
-                // CAEX header: 20 (CITP) + 4 (ContentCode) = 24 bytes
-                WriteCitpHeader(writer, CaexCookie);
-                writer.Write((uint)CaexContentType.LaserFeedFrame);
+                // CITP header (20 bytes): cookie, version, request index, size placeholder,
+                // part count/part, content type - the same bytes WriteCitpHeader lays down.
+                // Locals, not the consts directly: a const-folded shift into a byte cast is a
+                // compile-time overflow the runtime cast is not.
+                var citpCookie = CitpCookie;
+                var caexCookie = CaexCookie;
+                data[0] = (byte)(citpCookie >> 24);
+                data[1] = (byte)(citpCookie >> 16);
+                data[2] = (byte)(citpCookie >> 8);
+                data[3] = (byte)citpCookie;
+                data[4] = 1;                    // VersionMajor
+                data[5] = 0;                    // VersionMinor
+                data[6] = 0;                    // RequestIndex
+                data[7] = 0;
+                // bytes 8-11: MessageSize, patched once the length is known
+                data[12] = 1;                   // MessagePartCount
+                data[13] = 0;
+                data[14] = 0;                   // MessagePart
+                data[15] = 0;
+                data[16] = (byte)(caexCookie >> 24);
+                data[17] = (byte)(caexCookie >> 16);
+                data[18] = (byte)(caexCookie >> 8);
+                data[19] = (byte)caexCookie;
+
+                // Layer content code (little-endian, as BinaryWriter.Write(uint) wrote it)
+                var contentCode = (uint)CaexContentType.LaserFeedFrame;
+                data[20] = (byte)contentCode;
+                data[21] = (byte)(contentCode >> 8);
+                data[22] = (byte)(contentCode >> 16);
+                data[23] = (byte)(contentCode >> 24);
 
                 // LaserFeedFrame body: sourceKey + feedIndex + frameSequence + pointCount
-                writer.Write(_sourceKey);
-                writer.Write((byte)0);
-                writer.Write(_frameSequenceNo++);
-                writer.Write((ushort)pointCount);
+                var sourceKey = _sourceKey;
+                data[24] = (byte)sourceKey;
+                data[25] = (byte)(sourceKey >> 8);
+                data[26] = (byte)(sourceKey >> 16);
+                data[27] = (byte)(sourceKey >> 24);
+                data[28] = 0;                   // feedIndex
 
+                var sequence = _frameSequenceNo++;
+                data[29] = (byte)sequence;
+                data[30] = (byte)(sequence >> 8);
+                data[31] = (byte)(sequence >> 16);
+                data[32] = (byte)(sequence >> 24);
+                data[33] = (byte)pointCount;
+                data[34] = (byte)(pointCount >> 8);
+
+                var maxBrightness = _maxBrightness;
+                var swapColor = _swapColorChannels;
+                var offset = 35;
                 for (var i = 0; i < pointCount; i++)
                 {
-                    var cp = ConvertLaserPoint(points[i]);
-                    writer.Write(cp.XLowByte);
-                    writer.Write(cp.YLowByte);
-                    writer.Write(cp.XyHighNibbles);
-                    writer.Write(cp.Color);
+                    // ConvertLaserPoint inlined: ILDA 16-bit signed -> 12-bit unsigned, RGB565 color
+                    var p = points[i];
+                    var xNorm = Math.Clamp(p.X / 32767f, -1f, 1f);
+                    var yNorm = Math.Clamp(p.Y / 32767f, -1f, 1f);
+                    var x = Math.Clamp((int)((xNorm + 1f) * 0.5f * 4095f), 0, 4095);
+                    var y = Math.Clamp((int)((yNorm + 1f) * 0.5f * 4095f), 0, 4095);
+
+                    var r = (byte)Math.Clamp((int)MathF.Round(Math.Max(swapColor ? p.B : p.R, 0) * maxBrightness) >> 8, 0, 255);
+                    var g = (byte)Math.Clamp((int)MathF.Round(Math.Max(p.G, 0) * maxBrightness) >> 8, 0, 255);
+                    var b = (byte)Math.Clamp((int)MathF.Round(Math.Max(swapColor ? p.R : p.B, 0) * maxBrightness) >> 8, 0, 255);
+                    var color = (ushort)(((r & 0xF8) << 8) | ((g & 0xFC) << 5) | ((b & 0xF8) >> 3));
+
+                    data[offset] = (byte)x;
+                    data[offset + 1] = (byte)y;
+                    data[offset + 2] = (byte)(((x >> 8) & 0x0F) | (((y >> 8) & 0x0F) << 4));
+                    data[offset + 3] = (byte)color;
+                    data[offset + 4] = (byte)(color >> 8);
+                    offset += 5;
                 }
 
-                var data = ms.ToArray();
-                var length = (uint)data.Length;
+                var length = offset;
                 data[8] = (byte)length;
                 data[9] = (byte)(length >> 8);
                 data[10] = (byte)(length >> 16);
                 data[11] = (byte)(length >> 24);
 
-                udpSender.Send(data, data.Length, target);
+                udpSender.Send(data, length, target);
             }
             catch (Exception ex)
             {
@@ -2327,41 +2717,6 @@ public sealed class LaserOutputStream : IDisposable
             }
         }
 
-        private struct CitpLaserPoint
-        {
-            public byte XLowByte;
-            public byte YLowByte;
-            public byte XyHighNibbles;
-            public ushort Color;
-        }
-
-        /// <summary>Converts a TiXL LaserPoint (ILDA-style 16-bit signed X/Y, 16-bit R/G/B) to a
-        /// CITP/CAEX laser point: 12-bit unsigned X/Y in 0..4095 and RGB565 color. The brightness
-        /// ceiling and channel order from the plug are applied here as the final audit.</summary>
-        private CitpLaserPoint ConvertLaserPoint(LaserPoint p)
-        {
-            // ILDA 16-bit signed -> [-1, 1] -> 12-bit unsigned (0..4095)
-            var xNorm = Math.Clamp(p.X / 32767f, -1f, 1f);
-            var yNorm = Math.Clamp(p.Y / 32767f, -1f, 1f);
-            var x = Math.Clamp((int)((xNorm + 1f) * 0.5f * 4095f), 0, 4095);
-            var y = Math.Clamp((int)((yNorm + 1f) * 0.5f * 4095f), 0, 4095);
-
-            // 16-bit intensities, ceiling applied, shifted to 8-bit for RGB565 packing.
-            var r = (byte)Math.Clamp((int)MathF.Round(Math.Max(_swapColorChannels ? p.B : p.R, 0) * _maxBrightness) >> 8, 0, 255);
-            var g = (byte)Math.Clamp((int)MathF.Round(Math.Max(p.G, 0) * _maxBrightness) >> 8, 0, 255);
-            var b = (byte)Math.Clamp((int)MathF.Round(Math.Max(_swapColorChannels ? p.R : p.B, 0) * _maxBrightness) >> 8, 0, 255);
-
-            // RGB565: R[15:11] = top 5 of R, G[10:5] = top 6 of G, B[4:0] = top 5 of B
-            var color = (ushort)(((r & 0xF8) << 8) | ((g & 0xFC) << 5) | ((b & 0xF8) >> 3));
-
-            return new CitpLaserPoint
-                       {
-                           XLowByte = (byte)(x & 0xFF),
-                           YLowByte = (byte)(y & 0xFF),
-                           XyHighNibbles = (byte)(((x >> 8) & 0x0F) | (((y >> 8) & 0x0F) << 4)),
-                           Color = color,
-                       };
-        }
         #endregion
 
         #region Helpers - CITP is little-endian ("All fields use little endian byte order" per spec); cookies are ASCII

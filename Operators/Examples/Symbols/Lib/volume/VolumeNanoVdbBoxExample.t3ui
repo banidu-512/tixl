@@ -1,0 +1,197 @@
+{
+  "FormatVersion": 3,
+  "Id": "e44dccac-69b6-5a5c-9396-411445c408f0"/*VolumeNanoVdbBoxExample*/,
+  "Description": "Fire, smoke and liquid in a glass box, raymarched on the GPU from NanoVDB buffers.\n\nThree volumes are generated and animated on the CPU: a sloshing liquid slab, a flame capsule and a smoke sphere, each displaced by [VolumeNoise]. [VolumeToNanoVdb] flattens every one into a NanoVDB buffer and [NanoVdbRender] walks the trees in HLSL to draw all three inside the box.",
+  "InputUis": [],
+  "SymbolChildUis": [
+    {
+      "ChildId": "1788b832-703f-4c3c-802f-cbe01e7d9fab",
+      "SymbolName": "Lib.numbers.anim.time.Time",
+      "Position": {
+        "X": 0.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "1d1d0374-2e5a-4b38-9bf6-10c6c9dc81ab",
+      "SymbolName": "Lib.volume.modify.VolumeNoise",
+      "Position": {
+        "X": 900.0,
+        "Y": 640.0
+      }
+    },
+    {
+      "ChildId": "2d6fc130-673f-4e22-9807-7ac367d7510e",
+      "SymbolName": "Lib.volume.gpu.VolumeToNanoVdb",
+      "Position": {
+        "X": 1200.0,
+        "Y": 320.0
+      }
+    },
+    {
+      "ChildId": "334fe7e1-529a-4e7d-b26a-6f584cdd7176",
+      "SymbolName": "Lib.volume.modify.VolumeNoise",
+      "Position": {
+        "X": 900.0,
+        "Y": 480.0
+      }
+    },
+    {
+      "ChildId": "3b475fc2-6637-4cf9-bdba-defdb94a8c28",
+      "SymbolName": "Types.Values.Vector3",
+      "Position": {
+        "X": 300.0,
+        "Y": 160.0
+      }
+    },
+    {
+      "ChildId": "5254d318-9d73-4258-99b6-5970c2f5cf02",
+      "SymbolName": "Lib.volume.gpu.VolumeToNanoVdb",
+      "Position": {
+        "X": 1200.0,
+        "Y": 480.0
+      }
+    },
+    {
+      "ChildId": "584a3ee7-af26-48a8-9f1e-0e34ef89be76",
+      "SymbolName": "Lib.volume.generate.VolumePrimitive",
+      "Position": {
+        "X": 600.0,
+        "Y": 640.0
+      }
+    },
+    {
+      "ChildId": "6459c8d0-3968-4d47-bc8a-8c866fe05b34",
+      "SymbolName": "Lib.render.camera.OrbitCamera",
+      "Position": {
+        "X": 1800.0,
+        "Y": 480.0
+      }
+    },
+    {
+      "ChildId": "6941b0fc-4f27-40ad-bf5c-c5e1348a2710",
+      "SymbolName": "Lib.volume.modify.VolumeNoise",
+      "Position": {
+        "X": 900.0,
+        "Y": 320.0
+      }
+    },
+    {
+      "ChildId": "715c77af-8540-4e0d-8382-e89d55d6b2a3",
+      "SymbolName": "Lib.image.generate.basic.RenderTarget",
+      "Position": {
+        "X": 2100.0,
+        "Y": 480.0
+      }
+    },
+    {
+      "ChildId": "7773b7c9-8be5-4567-ad5d-4d2595c77e03",
+      "SymbolName": "Lib.volume.render.NanoVdbRender",
+      "Position": {
+        "X": 1500.0,
+        "Y": 480.0
+      }
+    },
+    {
+      "ChildId": "902c94c3-8864-4394-bbe9-cc9710422635",
+      "SymbolName": "Lib.volume.gpu.VolumeToNanoVdb",
+      "Position": {
+        "X": 1200.0,
+        "Y": 640.0
+      }
+    },
+    {
+      "ChildId": "dbb01859-4795-4a61-b6f2-acba78141121",
+      "SymbolName": "Lib.volume.generate.VolumePrimitive",
+      "Position": {
+        "X": 600.0,
+        "Y": 320.0
+      }
+    },
+    {
+      "ChildId": "dd794270-33fd-4ad9-9275-9c7d6f44d927",
+      "SymbolName": "Lib.numbers.anim.time.Time",
+      "Position": {
+        "X": 0.0,
+        "Y": 160.0
+      }
+    },
+    {
+      "ChildId": "f7ba8f65-59ee-4c5d-a56f-aae5688173ca",
+      "SymbolName": "Lib.volume.generate.VolumePrimitive",
+      "Position": {
+        "X": 600.0,
+        "Y": 480.0
+      }
+    }
+  ],
+  "OutputUis": [
+    {
+      "OutputId": "18a45aa5-cbe6-533a-b63e-d499448ba874"/*ColorBuffer*/,
+      "Position": {
+        "X": 2500.0,
+        "Y": 480.0
+      }
+    }
+  ],
+  "Settings": {
+    "OutputWindows": [
+      {
+  "ShowGizmos": "On",
+  "TransformGizmoMode": "Move",
+  "BackgroundColor": [
+    0.1,
+    0.1,
+    0.1,
+    1.0
+  ],
+  "CameraControlMode": "AutoUseFirstCam",
+  "CameraPosition": [
+    0.0,
+    0.0,
+    2.4142134
+  ],
+  "CameraTarget": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "CameraRoll": 0.0,
+  "CameraSpeed": 1.0,
+  "ResolutionTitle": "Fill",
+  "ResolutionWidth": 0,
+  "ResolutionHeight": 0,
+  "ResolutionUseAsAspectRatio": true,
+  "IsPinned": true,
+  "PinnedInstancePath": [
+    "2e23eb22-5a0b-8566-e6b4-b87b08a176fa"
+  ],
+  "PinnedOutputId": "00000000-0000-0000-0000-000000000000",
+  "PinnedEntityKind": "None",
+  "PinnedEntityId": "00000000-0000-0000-0000-000000000000"
+}
+    ],
+    "WindowLayout": "[Window][Graph View##1]\nPos=201,24\nSize=269,876\nCollapsed=0\nDockId=0x00000003,0\n\n[Window][Variations]\nPos=999,429\nSize=601,471\nCollapsed=0\nDockId=0x0000000A,0\n\n[Window][Output View##0]\nPos=472,24\nSize=1128,403\nCollapsed=0\nDockId=0x00000007,0\n\n[Window][Console]\nPos=999,429\nSize=601,471\nCollapsed=0\nDockId=0x0000000A,2\n\n[Window][Symbol Library]\nPos=0,24\nSize=199,554\nCollapsed=0\nDockId=0x0000000D,0\n\n[Window][Parameters##1]\nPos=472,429\nSize=525,471\nCollapsed=0\nDockId=0x00000009,0\n\n[Window][Assets]\nPos=0,580\nSize=199,320\nCollapsed=0\nDockId=0x0000000E,0\n\n[Window][Help]\nPos=999,429\nSize=601,471\nCollapsed=0\nDockId=0x0000000A,1\n\n[Docking][Data]\nDockSpace         ID=0x08BD597D Window=0x1BBC0F80 Pos=0,24 Size=1600,876 Split=X Selected=0x8995E68A\n  DockNode        ID=0x0000000B Parent=0x08BD597D SizeRef=199,1391 Split=Y Selected=0x42C24103\n    DockNode      ID=0x0000000D Parent=0x0000000B SizeRef=549,881 HiddenTabBar=1 Selected=0xD41FC2E2\n    DockNode      ID=0x0000000E Parent=0x0000000B SizeRef=549,508 HiddenTabBar=1 Selected=0x42C24103\n  DockNode        ID=0x0000000C Parent=0x08BD597D SizeRef=3140,1391 Split=X\n    DockNode      ID=0x00000003 Parent=0x0000000C SizeRef=2010,1391 CentralNode=1 HiddenTabBar=1 Selected=0x8995E68A\n    DockNode      ID=0x00000004 Parent=0x0000000C SizeRef=1128,1391 Split=Y Selected=0xC9567BC1\n      DockNode    ID=0x00000007 Parent=0x00000004 SizeRef=916,641 HiddenTabBar=1 Selected=0xC9567BC1\n      DockNode    ID=0x00000008 Parent=0x00000004 SizeRef=916,748 Split=X Selected=0x35577784\n        DockNode  ID=0x00000009 Parent=0x00000008 SizeRef=525,446 HiddenTabBar=1 Selected=0x35577784\n        DockNode  ID=0x0000000A Parent=0x00000008 SizeRef=601,446 Selected=0xEA83D666\n\n",
+    "WindowLayoutImGuiVersion": "1.91.6",
+    "WindowVisibility": {
+      "Variations": true,
+      "Output View##0": true,
+      "Graph View##0": false,
+      "Graph View##1": true,
+      "Parameters##1": true,
+      "Symbol Library": true,
+      "Assets": true,
+      "Variation Explorer": false,
+      "Render To File": false,
+      "IO Events": false,
+      "Performance": false,
+      "Help": true,
+      "Console": true,
+      "Utilities": false,
+      "Guided Feature Tests": false,
+      "Settings": false,
+      "Composition Settings": false,
+      "Welcome to the TiXL Alpha": false
+    }
+  }
+}

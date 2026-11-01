@@ -7,6 +7,7 @@ using T3.Core.Operator.Interfaces;
 using T3.Core.Rendering;
 using T3.Core.Resource;
 using T3.Core.Utils;
+using static Lib.Utils.LaserProjection;
 
 namespace Lib.laser.convert;
 
@@ -70,7 +71,8 @@ internal sealed class MeshToLaserPoints : Instance<MeshToLaserPoints>
 
         var updateContinuously = UpdateContinuously.GetValue(context);
         var mode = (PrimitiveMode)Mode.GetValue(context).Clamp(0, 1);
-        var maxEdgeStep = MathF.Max(1f, MaxEdgeStep.GetValue(context));
+        var maxEdgeStep = MaxEdgeStep.GetValue(context);
+        maxEdgeStep = float.IsFinite(maxEdgeStep) ? MathF.Max(1f, maxEdgeStep) : 4000f;
         var dotDwell = DotDwellPoints.GetValue(context).Clamp(1, MaxDotDwellPoints);
         var brightness = Math.Clamp(Brightness.GetValue(context), 0f, 1f);
 
@@ -144,7 +146,8 @@ internal sealed class MeshToLaserPoints : Instance<MeshToLaserPoints>
                 haveLast = true;
             }
 
-            ToColor(vertices[i].ColorRgb, brightness, out var r, out var g, out var b);
+            var vertexColor = vertices[i].ColorRgb;
+            ToColor(vertexColor.X, vertexColor.Y, vertexColor.Z, brightness, out var r, out var g, out var b);
             for (var d = 0; d < dotDwell && count < _scratch.Length; d++)
             {
                 _scratch[count++] = new LaserPoint(x, y, r, g, b);
@@ -186,12 +189,12 @@ internal sealed class MeshToLaserPoints : Instance<MeshToLaserPoints>
                     break;
                 }
 
-                if (!TryProject(vertices[i0].Position, combined, out var x0, out var y0)
-                    || !TryProject(vertices[i1].Position, combined, out var x1, out var y1))
+                if (!TryProjectSegment(vertices[i0].Position, vertices[i1].Position, combined,
+                                       out var x0, out var y0, out var x1, out var y1))
                     continue;
 
-                var dx = (float)(x1 - x0);
-                var dy = (float)(y1 - y0);
+                var dx = x1 - x0;
+                var dy = y1 - y0;
                 var distance = MathF.Sqrt(dx * dx + dy * dy);
                 var steps = Math.Max(1, (int)MathF.Ceiling(distance / maxEdgeStep));
                 steps = Math.Min(steps, MaxSamplesPerEdge);
@@ -211,9 +214,10 @@ internal sealed class MeshToLaserPoints : Instance<MeshToLaserPoints>
                     break;
                 }
 
-                _scratch[count++] = LaserPoint.CreateBlanked(x0, y0);
+                _scratch[count++] = LaserPoint.CreateBlanked((int)MathF.Round(x0), (int)MathF.Round(y0));
 
-                ToColor(vertices[i0].ColorRgb, brightness, out var r, out var g, out var bl);
+                var color = vertices[i0].ColorRgb;
+                ToColor(color.X, color.Y, color.Z, brightness, out var r, out var g, out var bl);
                 for (var s = 0; s <= steps && count < _scratch.Length; s++)
                 {
                     var t = s / (float)steps;
@@ -250,43 +254,6 @@ internal sealed class MeshToLaserPoints : Instance<MeshToLaserPoints>
 
         var newSize = Math.Min(Math.Max(_scratch.Length * 2, required), MaxOutputPoints);
         Array.Resize(ref _scratch, newSize);
-    }
-
-    private static bool TryProject(Vector3 position, Matrix4x4 combined, out int x, out int y)
-    {
-        var posCs = Vector3.Transform(position, combined);
-
-        // Same culling window as LaserCamera
-        if (posCs.Z <= 0.001f || posCs.Z > 1000f)
-        {
-            x = 0;
-            y = 0;
-            return false;
-        }
-
-        var ndcX = posCs.X / posCs.Z;
-        var ndcY = posCs.Y / posCs.Z;
-
-        if (ndcX < -10 || ndcX > 10 || ndcY < -10 || ndcY > 10)
-        {
-            x = 0;
-            y = 0;
-            return false;
-        }
-
-        ndcX = Math.Clamp(ndcX, -1, 1);
-        ndcY = Math.Clamp(ndcY, -1, 1);
-
-        x = (int)(ndcX * 32767f);
-        y = (int)(ndcY * 32767f);
-        return true;
-    }
-
-    private static void ToColor(Vector3 colorRgb, float brightness, out int r, out int g, out int b)
-    {
-        r = (int)(Math.Clamp(colorRgb.X * brightness, 0f, 1f) * 65535f);
-        g = (int)(Math.Clamp(colorRgb.Y * brightness, 0f, 1f) * 65535f);
-        b = (int)(Math.Clamp(colorRgb.Z * brightness, 0f, 1f) * 65535f);
     }
 
     /// <summary>
@@ -339,7 +306,7 @@ internal sealed class MeshToLaserPoints : Instance<MeshToLaserPoints>
         }
         catch (Exception e)
         {
-            Log.Error($"MeshToLaserPoints: GPU readback of {typeof(T).Name} failed - {e.Message}", null);
+            Log.Error($"MeshToLaserPoints: GPU readback of {typeof(T).Name} failed - {e.Message}");
             return null;
         }
     }
@@ -356,13 +323,15 @@ internal sealed class MeshToLaserPoints : Instance<MeshToLaserPoints>
 
     protected override void Dispose(bool disposing)
     {
-        if (!disposing)
-            return;
+        if (disposing)
+        {
+            _vertexCpuAccess.Buffer?.Dispose();
+            _vertexCpuAccess.Buffer = null;
+            _indexCpuAccess.Buffer?.Dispose();
+            _indexCpuAccess.Buffer = null;
+        }
 
-        _vertexCpuAccess.Buffer?.Dispose();
-        _vertexCpuAccess.Buffer = null;
-        _indexCpuAccess.Buffer?.Dispose();
-        _indexCpuAccess.Buffer = null;
+        base.Dispose(disposing);
     }
 
     private static readonly StructuredList s_emptyList = new StructuredList<LaserPoint>(Array.Empty<LaserPoint>());

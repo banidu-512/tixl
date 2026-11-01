@@ -31,44 +31,62 @@ public static class LaserPlugDiscovery
     /// </summary>
     public static void EnsureEtherDreamDiscovery()
     {
-        if (_started)
-            return;
+        DeviceDiscovery discovery;
+        lock (_discoveryLock)
+        {
+            if (_discovery != null)
+                return;
 
-        _started = true;
-        try
-        {
-            _discovery = new DeviceDiscovery();
-        }
-        catch (Exception e)
-        {
-            // Address-in-use when the laser driver's stream already owns the port - its shared
-            // DiscoveredDevices table still fills, so this is fine.
-            Log.Debug($"Laser plug discovery not started ({e.Message}) - reusing any running discovery.");
-            return;
-        }
+            // A failed start (port taken for a moment, hot reload) is retried later instead of
+            // leaving the picker empty for the whole session.
+            var now = Environment.TickCount64;
+            if (now < _nextStartAttempt)
+                return;
 
-        var discovery = _discovery;
-        _ = Task.Run(() =>
-        {
-            while (true)
+            _nextStartAttempt = now + StartRetryIntervalMs;
+            try
             {
-                try
-                {
-                    discovery.GetAvailableDevices();
-                }
-                catch
-                {
-                    // Disposed (editor shutdown) — nothing left to drain
-                    return;
-                }
-
-                Thread.Sleep(200);
+                _discovery = discovery = new DeviceDiscovery();
             }
-        });
+            catch (Exception e)
+            {
+                // Address-in-use when another listener in the process already owns the port - its
+                // shared DiscoveredDevices table still fills, so this is fine.
+                Log.Debug($"Laser plug discovery not started ({e.Message}) - reusing any running discovery.");
+                return;
+            }
+        }
+
+        new Thread(() => DrainDiscovery(discovery))
+            {
+                IsBackground = true,
+                Name = "EtherDream_Discovery",
+            }
+            .Start();
     }
 
+    private static void DrainDiscovery(DeviceDiscovery discovery)
+    {
+        while (true)
+        {
+            try
+            {
+                discovery.GetAvailableDevices();
+            }
+            catch
+            {
+                // Disposed (editor shutdown) — nothing left to drain
+                return;
+            }
+
+            Thread.Sleep(200);
+        }
+    }
+
+    private const int StartRetryIntervalMs = 5000;
+    private static readonly object _discoveryLock = new();
     private static DeviceDiscovery? _discovery;
-    private static bool _started;
+    private static long _nextStartAttempt;
 
     /// <summary>Currently announced Ether Dream DACs as "(name, ip)" pairs, sorted by ip. Cached for a second.</summary>
     public static IReadOnlyList<(string Name, string Ip)> EtherDreamDacs
@@ -108,44 +126,63 @@ public static class LaserPlugDiscovery
     /// stops its discovery broadcasts, so without this the plug's picker would offer nothing
     /// exactly while a show is running. Set/cleared from the ops; read on the UI thread.
     /// </summary>
-    public static (string Name, string Ip)? ConnectedDevice { get; private set; }
+    public static (string Name, string Ip)? ConnectedDevice
+    {
+        get
+        {
+            var device = Volatile.Read(ref _connectedDevice);
+            return device == null ? null : (device.Name, device.Ip);
+        }
+    }
+
+    /// <summary>Published as one object: the name and address are written by stream threads and
+    /// read on the UI thread, and a tuple of two references is not written atomically.</summary>
+    private sealed record ConnectedDeviceInfo(string Name, string Ip);
+
+    private static ConnectedDeviceInfo? _connectedDevice;
 
     public static void SetConnectedDevice(string name, string ip)
     {
-        ConnectedDevice = (name, ip);
+        Volatile.Write(ref _connectedDevice, new ConnectedDeviceInfo(name, ip));
         _dacsTimestamp = long.MinValue; // the picker re-lists at once
     }
 
     public static void ClearConnectedDevice(string ip)
     {
-        if (ConnectedDevice is { } device && device.Ip == ip)
+        var device = Volatile.Read(ref _connectedDevice);
+        if (device != null && device.Ip == ip
+            && ReferenceEquals(Interlocked.CompareExchange(ref _connectedDevice, null, device), device))
         {
-            ConnectedDevice = null;
             _dacsTimestamp = long.MinValue;
         }
     }
 
     /// <summary>
-    /// This machine's IPv4 addresses with their interface names ("ethernet: 10.0.0.69"), cached for
-    /// ten seconds. GetAllNetworkInterfaces queries the network stack and can block for tens to
-    /// hundreds of milliseconds — it must never run per frame, or the UI hangs in steps whenever
-    /// Windows refreshes its adapter state.
+    /// This machine's IPv4 addresses with their interface names ("ethernet: 10.0.0.69"). The enumeration
+    /// queries the network stack and can block for tens to hundreds of milliseconds, so it never runs
+    /// on the caller's thread: the list is refreshed in the background every ten seconds and the caller
+    /// gets the last result (bind-all and localhost until the first one lands).
     /// </summary>
     public static IReadOnlyList<(string Name, string Ip)> InterfaceAddresses
     {
         get
         {
             var now = Environment.TickCount64;
-            if (_cachedInterfaces != null && now - _interfacesTimestamp < 10000)
-                return _cachedInterfaces;
+            if (now - _interfacesTimestamp >= 10000 && Interlocked.Exchange(ref _interfaceRefreshRunning, 1) == 0)
+            {
+                _interfacesTimestamp = now;
+                _ = Task.Run(RefreshInterfaceAddresses);
+            }
 
-            _interfacesTimestamp = now;
-            var result = new List<(string, string)>
-                             {
-                                 // Always offered: bind-all and loopback (local simulators/receivers).
-                                 ("any interface", "0.0.0.0"),
-                                 ("localhost", "127.0.0.1"),
-                             };
+            return _cachedInterfaces;
+        }
+    }
+
+    private static void RefreshInterfaceAddresses()
+    {
+        try
+        {
+            var result = new List<(string, string)>(BasicInterfaces);
             try
             {
                 foreach (var nic in NetworkInterface.GetAllNetworkInterfaces())
@@ -169,10 +206,17 @@ public static class LaserPlugDiscovery
             }
 
             _cachedInterfaces = result;
-            return _cachedInterfaces;
+        }
+        finally
+        {
+            Volatile.Write(ref _interfaceRefreshRunning, 0);
         }
     }
 
-    private static IReadOnlyList<(string Name, string Ip)>? _cachedInterfaces;
+    /** Always offered: bind-all and loopback (local simulators/receivers). */
+    private static readonly (string Name, string Ip)[] BasicInterfaces = [("any interface", "0.0.0.0"), ("localhost", "127.0.0.1")];
+
+    private static int _interfaceRefreshRunning;
+    private static volatile IReadOnlyList<(string Name, string Ip)> _cachedInterfaces = BasicInterfaces;
     private static long _interfacesTimestamp = long.MinValue;
 }

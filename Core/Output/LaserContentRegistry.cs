@@ -1,7 +1,9 @@
 #nullable enable
 using System.Collections.Generic;
+using System.Threading;
 using T3.Core.DataTypes;
 using T3.Core.Operator;
+using T3.Core.Operator.Slots;
 
 namespace T3.Core.Output;
 
@@ -15,6 +17,13 @@ public interface ILaserContentSupplier
 {
     /// <summary>The current laser frame (ILDA points), or null when nothing is produced.</summary>
     StructuredList? GetLaserPoints(EvaluationContext context);
+
+    /// <summary>When false the supplier holds its last frame instead of evaluating its content again.</summary>
+    bool GetUpdateEnabled(EvaluationContext context);
+
+    /// <summary>The op input behind <see cref="GetUpdateEnabled"/>, so a host edits it through its own undoable
+    /// input command rather than writing the slot directly.</summary>
+    IInputSlot UpdateInput { get; }
 }
 
 /// <summary>
@@ -28,7 +37,14 @@ public static class LaserContentRegistry
 {
     /// <summary>Bumped whenever membership changes, so hosts can skip work only invalidated by
     /// a laser camera appearing or disappearing.</summary>
-    public static int Version { get; private set; }
+    public static int Version => Volatile.Read(ref _version);
+
+    /// <summary>Upper bound on laser points the content suppliers generate per pull; 0 = uncapped.
+    /// The driver derives it from the routed output's bound plugs: a CITP LaserFeedFrame travels as
+    /// ONE datagram capped at 12,000 points and the encode drops everything beyond, so converting
+    /// more would be work whose result is thrown away. Set before a pull, read during it — render
+    /// thread only, like every laser cache.</summary>
+    public static int PointBudget;
 
     public static void Register(ILaserContentSupplier supplier)
     {
@@ -38,7 +54,7 @@ public static class LaserContentRegistry
                 return;
 
             _suppliers.Add(supplier);
-            Version++;
+            Interlocked.Increment(ref _version);
             PublishSnapshot();
         }
     }
@@ -50,21 +66,22 @@ public static class LaserContentRegistry
             if (!_suppliers.Remove(supplier))
                 return;
 
-            Version++;
+            Interlocked.Increment(ref _version);
             PublishSnapshot();
         }
     }
 
     /// <summary>The current members as an immutable snapshot.</summary>
-    public static IReadOnlyList<ILaserContentSupplier> Suppliers => System.Threading.Volatile.Read(ref _snapshot);
+    public static IReadOnlyList<ILaserContentSupplier> Suppliers => Volatile.Read(ref _snapshot);
 
     private static void PublishSnapshot()
     {
         // Called under _lock only. The volatile publish makes the new array visible to
         // lock-free readers in one piece.
-        System.Threading.Volatile.Write(ref _snapshot, _suppliers.ToArray());
+        Volatile.Write(ref _snapshot, _suppliers.ToArray());
     }
 
+    private static int _version;
     private static readonly object _lock = new();
     private static readonly List<ILaserContentSupplier> _suppliers = [];
     private static ILaserContentSupplier[] _snapshot = [];

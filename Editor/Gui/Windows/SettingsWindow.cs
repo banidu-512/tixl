@@ -23,6 +23,10 @@ internal sealed partial class SettingsWindow : Window
     internal SettingsWindow()
     {
         Config.Title = "Settings";
+
+        // The sidebar plus the 560px content column; tall enough that the Collaboration
+        // participant table (and its per-row actions) is visible without manual resizing.
+        WindowSizeOverride = new Vector2(700, 700);
     }
 
     private enum Categories

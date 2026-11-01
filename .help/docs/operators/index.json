@@ -140,6 +140,10 @@
       "url": "/operators/lib/field/render/RaymarchField/",
       "summary": "Renders the connected shader graph SDF."
     },
+    "Lib.field.render.RaymarchToCubeMap": {
+      "url": "/operators/lib/field/render/RaymarchToCubeMap/",
+      "summary": "Renders an SDF field into a cube map texture by raymarching the field into each face."
+    },
     "Lib.field.render.Render2dField": {
       "url": "/operators/lib/field/render/Render2dField/",
       "summary": "Renders a 2d color field into a texture."
@@ -1007,6 +1011,14 @@
     "Lib.io.video.NdiOutput": {
       "url": "/operators/lib/io/video/NdiOutput/",
       "summary": "NDI live video output. R8G8B8A8_UNorm texture format or R8G8B8A8_Typeless is required for output. You can adjust the render format by using a ConvertFormat op or [RenderTarget] like in this example: [TorusMesh]->[DrawMesh]->[RenderTarget]->[SpoutOutput]."
+    },
+    "Lib.io.video.OmtInput": {
+      "url": "/operators/lib/io/video/OmtInput/",
+      "summary": "Receives one OMT source and publishes it as a texture."
+    },
+    "Lib.io.video.OmtOutput": {
+      "url": "/operators/lib/io/video/OmtOutput/",
+      "summary": "Sends a texture as an OMT source that other OMT receivers can discover."
     },
     "Lib.io.video.PlayAudioClip": {
       "url": "/operators/lib/io/video/PlayAudioClip/",
@@ -2820,6 +2832,10 @@
       "url": "/operators/lib/render/shading/PointLight/",
       "summary": "The standard point light with transform gizmo."
     },
+    "Lib.render.shading.RenderToCubeMap": {
+      "url": "/operators/lib/render/shading/RenderToCubeMap/",
+      "summary": "Renders the connected scene command into a cube map texture."
+    },
     "Lib.render.shading.SetEnvironment": {
       "url": "/operators/lib/render/shading/SetEnvironment/",
       "summary": "Sets the image-based lighting (IBL) for the current RenderTarget. This texture can then be used by drawing operators for physically based rendering (PBR) further left in the graph."
@@ -4318,6 +4334,12 @@
     "OctahedronSDF": [
       "Lib.field.generate.sdf.OctahedronSDF"
     ],
+    "OmtInput": [
+      "Lib.io.video.OmtInput"
+    ],
+    "OmtOutput": [
+      "Lib.io.video.OmtOutput"
+    ],
     "Once": [
       "Lib.flow.Once"
     ],
@@ -4564,6 +4586,9 @@
     "RaymarchPoints": [
       "Lib.field.use.RaymarchPoints"
     ],
+    "RaymarchToCubeMap": [
+      "Lib.field.render.RaymarchToCubeMap"
+    ],
     "ReadFile": [
       "Lib.io.file.ReadFile"
     ],
@@ -4596,6 +4621,9 @@
     ],
     "Render2dField": [
       "Lib.field.render.Render2dField"
+    ],
+    "RenderToCubeMap": [
+      "Lib.render.shading.RenderToCubeMap"
     ],
     "RenderTarget": [
       "Lib.image.generate.basic.RenderTarget"

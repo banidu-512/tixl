@@ -60,22 +60,6 @@
       "Description": "Minimum confidence score for pose tracking."
     },
     {
-      "InputId": "abcdef12-3456-7890-abcd-ef1234567890"/*CorrectAspectRatio*/,
-      "Position": {
-        "X": -200.0,
-        "Y": 525.0
-      },
-      "Description": "Whether to correct aspect ratio for non-square inputs."
-    },
-    {
-      "InputId": "bcdef123-4567-890a-bcde-f1234567890a"/*ZScale*/,
-      "Position": {
-        "X": -200.0,
-        "Y": 600.0
-      },
-      "Description": "Scale factor for Z coordinate of points."
-    },
-    {
       "InputId": "a1b2c3d4-0007-4a9b-8c2d-101010101010"/*Acceleration*/,
       "Position": {
         "X": -200.0,
@@ -90,8 +74,24 @@
         "Y": 750.0
       },
       "Description": "Worker threads for the Xnnpack acceleration (0 = library default). Ignored by Cpu and Gpu."
+    },
+    {
+      "InputId": "abcdef12-3456-7890-abcd-ef1234567890"/*CorrectAspectRatio*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 525.0
+      },
+      "Description": "Whether to correct aspect ratio for non-square inputs."
+    },
+    {
+      "InputId": "bcdef123-4567-890a-bcde-f1234567890a"/*ZScale*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 600.0
+      },
+      "Description": "Scale factor for Z coordinate of points."
     }
-],
+  ],
   "SymbolChildUis": [],
   "OutputUis": [
     {

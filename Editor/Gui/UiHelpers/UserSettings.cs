@@ -217,9 +217,6 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         /// <summary>Persistent participant id; also seeds the per-user accent color.</summary>
         public string CollabUserId = "";
 
-        /// <summary>Display name override. Falls back to the Discord name, then the OS user name.</summary>
-        public string CollabDisplayName = "";
-
         public int CollabPort = CollabProtocol.DefaultTcpPort;
         public bool CollabLanDiscovery = true;
         public string CollabPassword = "";
@@ -237,6 +234,18 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
 
         /// <summary>Room code of the last joined relay session, for auto-rejoin after a restart.</summary>
         public string CollabLastRelayRoom = "";
+
+        /// <summary>
+        /// Comma-separated STUN/TURN URLs for the peer-to-peer data path of relay sessions. Empty
+        /// uses a public STUN server; peers that cannot connect fall back to the relay automatically.
+        /// </summary>
+        public string CollabWebRtcIceServers = "";
+
+        /// <summary>When false, relay sessions stay on the relay even if a direct path is possible.</summary>
+        public bool CollabWebRtcEnabled = true;
+
+        /// <summary>Whether a hosting member streams its rendered preview to the participants.</summary>
+        public bool CollabSharePreview = true;
 
         /// <summary>
         /// The project hosted when starting a session. Empty shares the focused project; a name opens

@@ -144,6 +144,7 @@ internal static class CrashWatchdog
             var startedAtMs = Environment.TickCount64;
             child.WaitForExit();
             var exitCode = child.ExitCode;
+            child.Dispose();
 
             if (exitCode == 0 || _suppressRestartExitCodes.Contains(exitCode))
             {

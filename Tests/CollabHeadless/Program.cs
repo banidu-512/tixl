@@ -37,11 +37,13 @@ internal static class Program
         Run("heartbeat.answers-not-answered", TestHeartbeatAnswersAreNotAnswered);
         Run("collab.host-port-release", TestHostPortReleasedOnFailure);
         Run("network.interface-bind", TestPinnedInterfaceBind);
+        Run("machine.local-address-reconcile", TestMachineAddressReconcile);
         Run("deploy.inventory", TestDeployInventoryDiff);
         Run("deploy.transfer", TestDeployFileTransfer);
         Run("deploy.pathsafety", TestDeployPathSafety);
         Run("failover.election", TestFailoverElection);
         Run("failover.no-dual-active", TestFailoverNoDualActive);
+        Run("failover.foreign-datagrams", TestFailoverSurvivesForeignDatagrams);
 
         Console.WriteLine(_failures == 0 ? "ALL TESTS PASSED" : $"{_failures} TEST(S) FAILED");
         return _failures == 0 ? 0 : 1;
@@ -202,20 +204,26 @@ internal static class Program
         var packet = new PresencePacket
                          {
                              PeerId = 7,
-                             Flags = PresencePacket.FlagHoveringCanvas,
+                             Flags = PresencePacket.FlagHoveringCanvas | PresencePacket.FlagLeftButton,
                              CompositionId = Guid.NewGuid(),
                              CursorOnCanvas = new Vector2(-123.5f, 88.25f),
                              SelectedChildIds = [Guid.NewGuid(), Guid.NewGuid()],
+                             WheelSpin = -42,
                          };
 
         var buffer = new byte[128];
         var size = packet.Encode(buffer);
-        Check(size == 2 + 16 + 8 + 1 + 2 * 16, $"encoded size {size} unexpected");
+        Check(size == 2 + 16 + 8 + 1 + 2 * 16 + 1, $"encoded size {size} unexpected");
         Check(PresencePacket.TryDecode(buffer.AsSpan(0, size), out var decoded), "decode failed");
         Check(decoded.PeerId == 7 && decoded.Flags == packet.Flags, "header fields mismatch");
         Check(decoded.CompositionId == packet.CompositionId, "composition id mismatch");
         Check(MathF.Abs(decoded.CursorOnCanvas.X - packet.CursorOnCanvas.X) < 0.001f, "cursor x drifted");
         Check(decoded.SelectedChildIds.SequenceEqual(packet.SelectedChildIds), "selection mismatch");
+        Check(decoded.WheelSpin == -42 && decoded.IsLeftButtonDown && !decoded.IsRightButtonDown, "button/wheel fields mismatch");
+
+        // A peer on an older build sends no trailing wheel byte: the packet still decodes, with no spin.
+        Check(PresencePacket.TryDecode(buffer.AsSpan(0, size - 1), out var older) && older.WheelSpin == 0
+              && older.SelectedChildIds.SequenceEqual(packet.SelectedChildIds), "older-build packet without wheel byte rejected");
 
         Check(!PresencePacket.TryDecode(buffer.AsSpan(0, 26), out _), "truncated packet accepted");
     }
@@ -328,6 +336,36 @@ internal static class Program
         var connect = client.ConnectAsync(lanInterface.Address, port);
         Check(connect.Wait(TimeSpan.FromSeconds(3)) && client.Connected,
               $"could not connect to pinned adapter {lanInterface.Address}:{port}");
+    }
+
+    /// <summary>
+    /// A cloned project's machine config can carry the source machine's "packets leave on" address.
+    /// The reconcile keeps deliberate pins (any address this machine holds, loopback included, and
+    /// unparsable values), re-homes a foreign pin to the adapter that reaches the target device, and
+    /// clears one it cannot place. TEST-NET addresses (RFC 5737) are foreign on every machine.
+    /// </summary>
+    private static void TestMachineAddressReconcile()
+    {
+        Check(LanInterfaces.ReconcileLocalAddress("", "192.0.2.10") == "", "empty pin was rewritten");
+        Check(LanInterfaces.ReconcileLocalAddress("eth0", "192.0.2.10") == "eth0", "unparsable pin was rewritten");
+        Check(LanInterfaces.ReconcileLocalAddress("127.0.0.1", "") == "127.0.0.1", "loopback pin was cleared");
+
+        const string foreign = "203.0.113.9";
+        Check(LanInterfaces.ReconcileLocalAddress(foreign, "") == "",
+              "foreign pin without a target survived");
+        Check(LanInterfaces.ReconcileLocalAddress(foreign, "198.51.100.1") == "",
+              "foreign pin with an unreachable target survived");
+
+        var adapter = LanInterfaces.GetUsable().FirstOrDefault();
+        if (adapter == null)
+        {
+            Console.WriteLine("      (no usable IPv4 adapter — re-home check skipped)");
+            return;
+        }
+
+        // The adapter's own address is the trivial case of "in its subnet".
+        Check(LanInterfaces.ReconcileLocalAddress(foreign, adapter.Address.ToString()) == adapter.Address.ToString(),
+              $"foreign pin did not re-home to {adapter.Name} ({adapter.Address})");
     }
 
     // ---------------------------------------------------------------------------------------
@@ -546,6 +584,44 @@ internal static class Program
         second.Poll();
         Check(first.IsUnsuppressed || second.IsUnsuppressed,
               $"neither node became active (first: {first.CurrentRole}; second: {second.CurrentRole})");
+    }
+
+    /// <summary>
+    /// Another tool on the heartbeat port (oversized or malformed datagrams) must not disturb the arbiter:
+    /// a standby that stopped listening promotes itself next to a live master. Guards the listener's
+    /// error handling; it passes on runtimes where a truncated read does not throw.
+    /// </summary>
+    private static void TestFailoverSurvivesForeignDatagrams()
+    {
+        var showId = $"headless-junk-{Environment.ProcessId}-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
+        var heartbeatMs = 150;
+        using var master = StartNode(showId, priority: 200, heartbeatMs);
+        using var backup = StartNode(showId, priority: 100, heartbeatMs);
+        Check(WaitForRole(master, "ACTIVE", TimeSpan.FromSeconds(8)), "master never became ACTIVE; events: " + master.AllEvents);
+        Check(WaitForRole(backup, "Standby", TimeSpan.FromSeconds(8)), "backup never settled on Standby; events: " + backup.AllEvents);
+
+        using (var junk = new System.Net.Sockets.UdpClient())
+        {
+            var group = new System.Net.IPEndPoint(System.Net.IPAddress.Parse("224.0.0.157"), 44910);
+            var oversized = new byte[4000];
+            var garbage = Encoding.UTF8.GetBytes("{ not a heartbeat");
+            for (var i = 0; i < 20; i++)
+            {
+                junk.Send(oversized, oversized.Length, group);
+                junk.Send(garbage, garbage.Length, group);
+                Thread.Sleep(20);
+            }
+        }
+
+        // Several timeouts with the master alive: a deaf backup would take over within one.
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(3);
+        while (DateTime.UtcNow < deadline)
+        {
+            backup.Poll();
+            Check(backup.CurrentRole.Contains("Standby", StringComparison.Ordinal),
+                  $"backup left Standby while the master was alive; events: {backup.AllEvents}");
+            Thread.Sleep(50);
+        }
     }
 
     /// <summary>One failover participant: applies the config, streams role changes to stdout.</summary>

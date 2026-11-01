@@ -13,6 +13,14 @@
       }
     },
     {
+      "ChildId": "08bdcdb0-7f55-4180-b5e2-760c13f93920",
+      "SymbolName": "Lib.numbers.anim.animators.AnimBoolean",
+      "Position": {
+        "X": 100.0,
+        "Y": 100.0
+      }
+    },
+    {
       "ChildId": "1e68a7ec-1d88-40fd-9e10-45179fc83220",
       "SymbolName": "Lib.render.shading.SetMaterial",
       "Position": {
@@ -21,27 +29,11 @@
       }
     },
     {
-      "ChildId": "1e993a8a-d3ef-4e6f-94ce-0a4897379b27",
-      "SymbolName": "Lib.render.camera.OrbitCamera",
-      "Position": {
-        "X": 2652.4915,
-        "Y": 263.83087
-      }
-    },
-    {
       "ChildId": "2644400f-53af-4c3c-9eea-b53484043061",
       "SymbolName": "Lib.render.shading.PointLight",
       "Position": {
         "X": 2331.626,
         "Y": 87.22052
-      }
-    },
-    {
-      "ChildId": "35b7e0e1-eb72-4fc4-a78d-e33f818213c9",
-      "SymbolName": "Lib.numbers.anim.animators.AnimValue",
-      "Position": {
-        "X": 50.774006,
-        "Y": 228.09274
       }
     },
     {
@@ -93,19 +85,11 @@
       }
     },
     {
-      "ChildId": "5415979e-3f0e-458f-81de-40b80ad53d05",
-      "SymbolName": "Lib.image.generate.basic.RenderTarget",
+      "ChildId": "5801f194-6740-4764-a9b9-b24ef4a2fe5b",
+      "SymbolName": "Lib.numbers.anim.animators.AnimBoolean",
       "Position": {
-        "X": 2987.2634,
-        "Y": 270.22263
-      }
-    },
-    {
-      "ChildId": "5a5326a7-54ae-40e3-ba12-fd8729905603",
-      "SymbolName": "Lib.numbers.anim._obsolete._AnimValueOld",
-      "Position": {
-        "X": 0.0,
-        "Y": 389.08044
+        "X": 100.0,
+        "Y": 100.0
       }
     },
     {
@@ -125,27 +109,11 @@
       }
     },
     {
-      "ChildId": "846e1bbf-059a-4005-b427-fb1ab4c81308",
-      "SymbolName": "Lib.point.sim.SimNoiseOffset",
-      "Position": {
-        "X": 1084.3082,
-        "Y": 489.64392
-      }
-    },
-    {
-      "ChildId": "8ac9584b-d248-404f-9c71-3d79597c0186",
+      "ChildId": "77a7286a-947f-4225-a77b-ff83525322bf",
       "SymbolName": "Lib.numbers.anim.animators.AnimValue",
       "Position": {
-        "X": 17.468811,
-        "Y": 293.83456
-      }
-    },
-    {
-      "ChildId": "a4ca6ca4-faca-4b25-b790-7a1424930cc9",
-      "SymbolName": "Lib.point.sim.SimDirectionalOffset",
-      "Position": {
-        "X": 1398.1975,
-        "Y": 405.40295
+        "X": 100.0,
+        "Y": 100.0
       }
     },
     {
@@ -162,14 +130,6 @@
       "Position": {
         "X": 2481.626,
         "Y": 87.22052
-      }
-    },
-    {
-      "ChildId": "a9e4b034-9bef-41b0-a43c-be2f68e20ee6",
-      "SymbolName": "Lib.point.sim.SimDirectionalOffset",
-      "Position": {
-        "X": 1547.1538,
-        "Y": 403.97754
       }
     },
     {
@@ -197,14 +157,6 @@
       }
     },
     {
-      "ChildId": "d7493725-dcd8-434d-860e-a329f5b6fe94",
-      "SymbolName": "Lib.numbers.anim._obsolete._Time_old",
-      "Position": {
-        "X": 892.6107,
-        "Y": 493.97247
-      }
-    },
-    {
       "ChildId": "e195be83-dbea-4856-a276-5da852c55946",
       "SymbolName": "Lib.point.sim.PointSimulation",
       "Position": {
@@ -218,14 +170,6 @@
       "Position": {
         "X": 167.24084,
         "Y": 182.16537
-      }
-    },
-    {
-      "ChildId": "eb328a46-8736-47f6-bdce-8a3fe679d064",
-      "SymbolName": "Lib.point._internal.MultiUpdatePoints",
-      "Position": {
-        "X": 1290.8975,
-        "Y": 234.43774
       }
     },
     {

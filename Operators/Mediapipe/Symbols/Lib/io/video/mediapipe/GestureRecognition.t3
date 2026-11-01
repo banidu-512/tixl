@@ -2,21 +2,21 @@
   "FormatVersion": 3,
   "Id": "a1b2c3d4-e5f6-4798-89ab-cdef12345683"/*GestureRecognition*/,
   "Inputs": [
-        {
-      "Id": "a1b2c3d4-0004-4a9b-8c2d-101010101010"/*Acceleration*/,
-      "DefaultValue": 1
-    },
     {
-      "Id": "a1b2c3d4-1004-4a9b-8c2d-101010101010"/*InferenceThreads*/,
-      "DefaultValue": 0
-    },
-{
       "Id": "04b5c6d7-e8f9-70a1-23b4-567890123456"/*CategoryDenylist*/,
       "DefaultValue": ""
     },
     {
       "Id": "15c6d7e8-f9a0-81b2-34d5-678901234567"/*CorrectAspectRatio*/,
       "DefaultValue": false
+    },
+    {
+      "Id": "a1b2c3d4-0004-4a9b-8c2d-101010101010"/*Acceleration*/,
+      "DefaultValue": "Xnnpack"
+    },
+    {
+      "Id": "a1b2c3d4-1004-4a9b-8c2d-101010101010"/*InferenceThreads*/,
+      "DefaultValue": 0
     },
     {
       "Id": "a1b2c3d4-e5f6-4798-89ab-cdef12345693"/*Debug*/,

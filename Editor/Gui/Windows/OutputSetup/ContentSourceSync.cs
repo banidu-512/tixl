@@ -39,8 +39,9 @@ internal static class ContentSourceSync
     }
 
     /// <summary>Whether a live send op belongs to the active composition: it lies under it, and any composition
-    /// nested in between lets it through.</summary>
-    public static bool IsInScope(Instance send)
+    /// nested in between lets it through. Laser cameras have no ExposeToParents input — they always pass the
+    /// nested-composition gate (<paramref name="requireExposure"/> = false).</summary>
+    public static bool IsInScope(Instance send, bool requireExposure = true)
     {
         var scopePath = _scopePath;
         var path = send.InstancePath;
@@ -58,7 +59,12 @@ internal static class ContentSourceSync
         for (var depth = path.Count - 1; ancestor != null && depth > scopePath.Count; depth--)
         {
             if (ancestor.Symbol.CompositionSettings.Enabled)
+            {
+                if (!requireExposure)
+                    return true;
+
                 return ContentSupplierSearch.IsExposedToParents(send.SymbolChild);
+            }
 
             ancestor = ancestor.Parent;
         }

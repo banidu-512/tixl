@@ -61,22 +61,32 @@ public sealed class EditorFixture : IDisposable
         return (state["children"]!.Count(), state["connections"]!.Count());
     }
 
-    /// <summary>Locates the _agentTests source folder (for reload tests), tolerant of the TiXL version folder name.</summary>
-    public static string FindPlaygroundSourceFile()
+    /// <summary>Locates the _agentTests source folder. Prefers the projects folder the running editor
+    /// actually opened: several TiXL version folders can sit side by side in Documents, and editing
+    /// another version's copy would make a reload test compile unchanged source.</summary>
+    public string FindPlaygroundSourceFile()
     {
+        var projects = (string?)Client.Call("getPaths").Result?["projects"];
+        if (!string.IsNullOrEmpty(projects))
+        {
+            var candidate = Path.Combine(projects, PlaygroundProject, "Symbols", PlaygroundProject + ".cs");
+            if (File.Exists(candidate))
+                return candidate;
+        }
+
         // DoNotVerify: a missing ~/Documents would otherwise come back as an empty string.
         var documents = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments, Environment.SpecialFolderOption.DoNotVerify);
         if (Directory.Exists(documents))
         {
             foreach (var versionDir in Directory.GetDirectories(documents, "TiXL*"))
             {
-                var candidate = Path.Combine(versionDir, "_agentTests", "Symbols", "_agentTests.cs");
+                var candidate = Path.Combine(versionDir, PlaygroundProject, "Symbols", PlaygroundProject + ".cs");
                 if (File.Exists(candidate))
                     return candidate;
             }
         }
 
-        throw new FileNotFoundException("Can't locate _agentTests/Symbols/_agentTests.cs under Documents/TiXL*");
+        throw new FileNotFoundException("Can't locate " + PlaygroundProject + "/Symbols/" + PlaygroundProject + ".cs");
     }
 
     private static string FindEditorExe()

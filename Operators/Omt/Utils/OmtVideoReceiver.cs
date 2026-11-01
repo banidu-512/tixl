@@ -10,6 +10,11 @@ namespace Lib.Utils;
 /// and upload path.
 /// <para>The receive thread only copies into memory. <see cref="TryUpload"/> runs on the render thread and
 /// uploads the newest frame, replacing one that has not been picked up yet.</para>
+/// <para>Lifetime: everything native about a stream lives in a <see cref="ReceiveSession"/>, and the thread
+/// started with that session is its only user — it receives, rebuilds a wedged transport and frees the whole
+/// session when it stops. The render thread reads volatile status fields and hands frames between the two
+/// sides under the session's lock, so no native object is ever freed while a call on another thread is still
+/// inside it, no matter how long a teardown waits.</para>
 /// </summary>
 internal sealed class OmtVideoReceiver : IDisposable
 {
@@ -17,7 +22,7 @@ internal sealed class OmtVideoReceiver : IDisposable
     {
         if (!OmtRuntime.IsAvailable)
         {
-            _lastStatusMessage = OmtRuntime.MissingMessage;
+            _staticStatusMessage = OmtRuntime.MissingMessage;
             return;
         }
 
@@ -27,26 +32,10 @@ internal sealed class OmtVideoReceiver : IDisposable
     /// <summary>The texture holding the last uploaded frame; null until the first frame arrives.</summary>
     public Texture2D? Texture => _gpuTexture;
 
-    public string? LastStatusMessage => _lastStatusMessage;
+    public string? LastStatusMessage => _session?.StatusMessage ?? _staticStatusMessage;
 
-    public bool IsConnected
-    {
-        get
-        {
-            var receiver = _receiver;
-            if (receiver == null)
-                return false;
-
-            try
-            {
-                return receiver.IsConnected();
-            }
-            catch
-            {
-                return false;
-            }
-        }
-    }
+    /// <summary>Reported by the receive thread, which asks the transport on its own regular wake-ups.</summary>
+    public bool IsConnected => _session?.TransportConnected ?? false;
 
     /// <summary>
     /// Uploads the newest pending frame on the calling thread. Returns true when a new frame was uploaded;
@@ -54,13 +43,8 @@ internal sealed class OmtVideoReceiver : IDisposable
     /// </summary>
     public bool TryUpload(out Texture2D? texture)
     {
-        FrameSlot? frame;
-        lock (_frameLock)
-        {
-            frame = _pendingFrame;
-            _pendingFrame = null;
-        }
-
+        var session = _session;
+        var frame = session?.TakePending();
         if (frame == null)
         {
             texture = _gpuTexture;
@@ -73,12 +57,15 @@ internal sealed class OmtVideoReceiver : IDisposable
             texture = _gpuTexture;
             return true;
         }
+        catch (Exception e)
+        {
+            Log.Debug($"Uploading an OMT frame failed: {e.Message}", this);
+            texture = _gpuTexture;
+            return false;
+        }
         finally
         {
-            lock (_frameLock)
-            {
-                _freeSlots.Push(frame);
-            }
+            session!.ReturnSlot(frame);
         }
     }
 
@@ -88,91 +75,175 @@ internal sealed class OmtVideoReceiver : IDisposable
 
         if (string.IsNullOrEmpty(sourceName))
         {
-            _lastStatusMessage = "No OMT source selected";
+            _staticStatusMessage = "No OMT source selected";
             return;
         }
 
+        var session = new ReceiveSession(sourceName);
         try
         {
-            _receiverName = sourceName;
-            _receiver = new OMTReceive(sourceName, OMTFrameType.Video, OMTPreferredVideoFormat.BGRA, OMTReceiveFlags.None);
-            _exitThread = false;
+            session.Receiver = CreateReceiver(sourceName);
+        }
+        catch (Exception e)
+        {
+            _staticStatusMessage = $"Could not receive OMT source {sourceName}: {e.Message}";
+            Log.Warning(_staticStatusMessage, this);
+            return;
+        }
+
+        _exitThread = false;
+        _session = session;
+        try
+        {
             _receiveThread = new Thread(ReceiveThreadProc)
                                  {
                                      IsBackground = true,
                                      Name = "OmtVideoReceiver",
                                  };
-
-            // The receiver is the thread's own: a thread that outlived a reconnect must never touch the new one.
-            _receiveThread.Start(_receiver);
-            _lastStatusMessage = $"Waiting for {sourceName}";
+            _receiveThread.Start(session);
         }
         catch (Exception e)
         {
-            _receiver = null;
-            _lastStatusMessage = $"Could not receive OMT source {sourceName}: {e.Message}";
-            Log.Warning(_lastStatusMessage, this);
+            // No thread runs the session, so freeing it here is safe.
+            _session = null;
+            DisposeReceiver(session.Receiver);
+            session.DisposeSlots();
+            _staticStatusMessage = $"Could not receive OMT source {sourceName}: {e.Message}";
+            Log.Warning(_staticStatusMessage, this);
+            return;
         }
+
+        _staticStatusMessage = null;
+        session.StatusMessage = $"Waiting for {sourceName}";
     }
 
     private void Disconnect()
     {
         _exitThread = true;
+        var thread = _receiveThread;
+        _receiveThread = null;
+        Volatile.Write(ref _session, null);
 
-        if (_receiveThread != null)
-        {
-            _receiveThread.Join(TimeSpan.FromSeconds(2));
-            _receiveThread = null;
-        }
+        // The session is not freed here: its own thread disposes it, whether that already happened or the
+        // thread is stuck inside a native call that outlasts this wait and cleans up when it returns.
+        thread?.Join(TimeSpan.FromSeconds(WorkerJoinTimeoutSeconds));
 
-        if (_receiver != null)
-        {
-            try
-            {
-                _receiver.Dispose();
-            }
-            catch (Exception e)
-            {
-                Log.Debug($"Disposing the OMT receiver threw: {e.Message}", this);
-            }
-
-            _receiver = null;
-        }
-
-        DiscardPendingFrames();
+        T3.Graphics.Compat.GraphicsUtilities.Dispose(ref _gpuTexture);
     }
 
     private void ReceiveThreadProc(object? state)
     {
-        if (state is not OMTReceive receiver)
+        if (state is not ReceiveSession session)
             return;
 
-        while (!_exitThread && ReferenceEquals(_receiver, receiver))
+        var consecutiveFailures = 0;
+        try
         {
-            try
+            while (!_exitThread && ReferenceEquals(Volatile.Read(ref _session), session))
             {
-                var frame = new OMTMediaFrame();
-                if (!receiver.Receive(OMTFrameType.Video, ReceiveTimeoutMs, ref frame))
+                var receiver = session.Receiver!;
+                try
                 {
-                    _lastStatusMessage = receiver.IsConnected() ? ConnectedStatus : $"Waiting for {_receiverName}";
-                    continue;
+                    var frame = new OMTMediaFrame();
+                    if (!receiver.Receive(OMTFrameType.Video, ReceiveTimeoutMs, ref frame))
+                    {
+                        session.TransportConnected = receiver.IsConnected();
+                        session.StatusMessage = session.TransportConnected
+                                                    ? ConnectedStatus
+                                                    : $"Waiting for {session.SourceName}";
+                        continue;
+                    }
+
+                    if (frame.Data == IntPtr.Zero || frame.Width <= 0 || frame.Height <= 0 || frame.Stride <= 0)
+                        continue;
+
+                    CopyToPendingFrame(session, frame);
+                    session.TransportConnected = true;
+                    session.StatusMessage = null;
+                    consecutiveFailures = 0;
                 }
+                catch (Exception e)
+                {
+                    if (_exitThread)
+                        break;
 
-                if (frame.Data == IntPtr.Zero || frame.Width <= 0 || frame.Height <= 0 || frame.Stride <= 0)
-                    continue;
+                    consecutiveFailures++;
+                    session.StatusMessage = $"OMT receive failed: {e.Message}";
+                    Log.Debug(e.ToString(), this);
 
-                CopyToPendingFrame(frame);
-                _lastStatusMessage = null;
+                    if (consecutiveFailures < RebuildAfterConsecutiveFailures)
+                    {
+                        Thread.Sleep(ReceiveRetryDelayMs);
+                        continue;
+                    }
+
+                    // Failures that keep coming mean the transport is wedged, not the network being slow:
+                    // replace it and keep going instead of leaving a frozen frame behind forever.
+                    if (!TryRebuildReceiver(session, receiver, out var replacement))
+                        break;
+
+                    if (!ReferenceEquals(replacement, receiver))
+                    {
+                        session.Receiver = replacement;
+                        DisposeReceiver(receiver);
+                        session.TransportConnected = false;
+                        session.StatusMessage = $"Reconnecting to {session.SourceName}";
+                        consecutiveFailures = 0;
+                    }
+
+                    Thread.Sleep(ReceiveRetryDelayMs);
+                }
             }
-            catch (Exception e)
-            {
-                if (_exitThread)
-                    return;
+        }
+        finally
+        {
+            session.Closed = true;
+            DisposeReceiver(session.Receiver);
+            session.DisposeSlots();
+        }
+    }
 
-                _lastStatusMessage = $"OMT receive failed: {e.Message}";
-                Log.Debug(e.ToString(), this);
-                return;
-            }
+    /// <summary>
+    /// Replaces a wedged transport on the receive thread. Returns false when this session was superseded by a
+    /// reconnect, which means the thread is done; true keeps the thread going, with a new receiver when one
+    /// could be created and the current one retained for another retry round when not.
+    /// </summary>
+    private bool TryRebuildReceiver(ReceiveSession session, OMTReceive current, out OMTReceive replacement)
+    {
+        replacement = current;
+        if (!ReferenceEquals(Volatile.Read(ref _session), session) || _exitThread)
+            return false;
+
+        try
+        {
+            replacement = CreateReceiver(session.SourceName);
+            session.Receiver = replacement;
+            return true;
+        }
+        catch (Exception e)
+        {
+            session.StatusMessage = $"Could not reconnect to {session.SourceName}: {e.Message}";
+            return true;
+        }
+    }
+
+    private static OMTReceive CreateReceiver(string sourceName)
+    {
+        return new OMTReceive(sourceName, OMTFrameType.Video, OMTPreferredVideoFormat.BGRA, OMTReceiveFlags.None);
+    }
+
+    private static void DisposeReceiver(OMTReceive? receiver)
+    {
+        if (receiver == null)
+            return;
+
+        try
+        {
+            receiver.Dispose();
+        }
+        catch (Exception e)
+        {
+            Log.Debug($"Disposing the OMT receiver threw: {e.Message}");
         }
     }
 
@@ -180,23 +251,17 @@ internal sealed class OmtVideoReceiver : IDisposable
     /// OMT decodes into a buffer it reuses on the next frame, so the pixels are copied out before the loop
     /// goes on. Frames the render thread hasn't picked up yet are replaced rather than queued.
     /// </summary>
-    private void CopyToPendingFrame(OMTMediaFrame frame)
+    private void CopyToPendingFrame(ReceiveSession session, OMTMediaFrame frame)
     {
         var length = frame.Stride * frame.Height;
-        var slot = TakeFreeSlot(Math.Max(length, 1));
+        var slot = session.TakeFreeSlot(Math.Max(length, 1));
 
         Marshal.Copy(frame.Data, slot.Bytes, 0, length);
         slot.Width = frame.Width;
         slot.Height = frame.Height;
         slot.Stride = frame.Stride;
 
-        lock (_frameLock)
-        {
-            if (_pendingFrame != null)
-                _freeSlots.Push(_pendingFrame);
-
-            _pendingFrame = slot;
-        }
+        session.StorePending(slot);
     }
 
     private void Upload(FrameSlot frame)
@@ -227,41 +292,104 @@ internal sealed class OmtVideoReceiver : IDisposable
         ResourceManager.Device.ImmediateContext.UpdateSubresource(new DataBox(frame.Pointer, frame.Stride, 0), _gpuTexture, 0);
     }
 
-    private FrameSlot TakeFreeSlot(int length)
-    {
-        lock (_frameLock)
-        {
-            if (_freeSlots.Count > 0)
-            {
-                var reusable = _freeSlots.Pop();
-                if (reusable.Capacity >= length)
-                    return reusable;
-
-                reusable.Dispose();
-            }
-        }
-
-        return new FrameSlot(length);
-    }
-
-    private void DiscardPendingFrames()
-    {
-        lock (_frameLock)
-        {
-            _pendingFrame?.Dispose();
-            _pendingFrame = null;
-
-            while (_freeSlots.Count > 0)
-                _freeSlots.Pop().Dispose();
-        }
-
-        T3.Graphics.Compat.GraphicsUtilities.Dispose(ref _gpuTexture);
-    }
-
     public void Dispose()
     {
         Disconnect();
-        _lastStatusMessage = null;
+        _staticStatusMessage = null;
+    }
+
+    /// <summary>
+    /// Everything one receive thread owns: its OMT receiver, its frame slots and the newest frame waiting for
+    /// the render thread. Each stream gets its own session, so a thread that outlived a reconnect can never
+    /// touch newer state, and its own finally frees the session no matter how late it returns.
+    /// </summary>
+    private sealed class ReceiveSession
+    {
+        public ReceiveSession(string sourceName) => SourceName = sourceName;
+
+        public readonly string SourceName;
+
+        /** The transport this thread receives with; replaced only by the thread itself while rebuilding. */
+        public OMTReceive? Receiver;
+
+        /** Set by the thread before it starts freeing the session's native objects. */
+        public volatile bool Closed;
+
+        /** Refreshed by the thread's regular wake-ups, so the render thread never calls into the transport. */
+        public volatile bool TransportConnected;
+
+        public volatile string? StatusMessage;
+
+        /// <summary>Takes the newest received frame; null when the render thread is already up to date.</summary>
+        public FrameSlot? TakePending()
+        {
+            lock (_slotLock)
+            {
+                var frame = _pendingFrame;
+                _pendingFrame = null;
+                return frame;
+            }
+        }
+
+        public void StorePending(FrameSlot slot)
+        {
+            lock (_slotLock)
+            {
+                if (_pendingFrame != null)
+                    _freeSlots.Push(_pendingFrame);
+
+                _pendingFrame = slot;
+            }
+        }
+
+        public void ReturnSlot(FrameSlot slot)
+        {
+            lock (_slotLock)
+            {
+                // The session may have been torn down while the render thread still held this frame; its
+                // pinned memory would never be freed by anyone else.
+                if (_slotsDisposed)
+                    slot.Dispose();
+                else
+                    _freeSlots.Push(slot);
+            }
+        }
+
+        public FrameSlot TakeFreeSlot(int length)
+        {
+            lock (_slotLock)
+            {
+                if (_freeSlots.Count > 0)
+                {
+                    var reusable = _freeSlots.Pop();
+                    if (reusable.Capacity >= length)
+                        return reusable;
+
+                    reusable.Dispose();
+                }
+            }
+
+            return new FrameSlot(length);
+        }
+
+        /** Only the owning thread calls this, after its receiver is gone and nothing fills the slots anymore. */
+        public void DisposeSlots()
+        {
+            lock (_slotLock)
+            {
+                _slotsDisposed = true;
+                _pendingFrame?.Dispose();
+                _pendingFrame = null;
+
+                while (_freeSlots.Count > 0)
+                    _freeSlots.Pop().Dispose();
+            }
+        }
+
+        private readonly object _slotLock = new();
+        private readonly Stack<FrameSlot> _freeSlots = new();
+        private FrameSlot? _pendingFrame;
+        private bool _slotsDisposed;
     }
 
     /// <summary>A received frame in memory the receive thread can fill while the render thread uploads another.</summary>
@@ -294,14 +422,20 @@ internal sealed class OmtVideoReceiver : IDisposable
     private const string ConnectedStatus = "Connected";
     private const int ReceiveTimeoutMs = 250;
 
-    private readonly Lock _frameLock = new();
-    private readonly Stack<FrameSlot> _freeSlots = new();
+    /** Backoff between receive attempts after an exception, and before rebuilding the transport. */
+    private const int ReceiveRetryDelayMs = 250;
 
-    private FrameSlot? _pendingFrame;
-    private OMTReceive? _receiver;
+    /** Roughly two seconds of back-to-back failures before the transport is rebuilt. */
+    private const int RebuildAfterConsecutiveFailures = 8;
+
+    /** How long a teardown waits for the receive thread before leaving the cleanup to the thread itself. */
+    private const int WorkerJoinTimeoutSeconds = 2;
+
+    private ReceiveSession? _session;
     private Thread? _receiveThread;
-    private string? _receiverName = string.Empty;
     private volatile bool _exitThread;
     private Texture2D? _gpuTexture;
-    private string? _lastStatusMessage;
+
+    /** Statuses set before a stream exists (no source selected, codec missing); a stream's own live on its session. */
+    private string? _staticStatusMessage;
 }

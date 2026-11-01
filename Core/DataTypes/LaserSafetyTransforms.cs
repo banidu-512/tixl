@@ -101,6 +101,16 @@ public static class LaserSafetyTransforms
     /// </summary>
     public static List<LaserPoint> Apply(List<LaserPoint> points, in Config config, ref Stats stats)
     {
+        return Apply(points, null, in config, ref stats);
+    }
+
+    /// <summary>
+    /// The same stage with a caller-owned scratch list for the jump-subdivision pass, so a
+    /// steady-state pump never allocates: when subdivision runs, <paramref name="subdivisionScratch"/>
+    /// is cleared and filled and returned instead of a fresh list. May be null (allocates then).
+    /// </summary>
+    public static List<LaserPoint> Apply(List<LaserPoint> points, List<LaserPoint> subdivisionScratch, in Config config, ref Stats stats)
+    {
         if (!config.BeamEnable)
         {
             for (var i = 0; i < points.Count; i++)
@@ -111,7 +121,7 @@ public static class LaserSafetyTransforms
 
         var safeConfig = Sanitize(in config);
         ClampToScanField(points, in safeConfig, ref stats);
-        points = LimitJumpDistance(points, in safeConfig, ref stats);
+        points = LimitJumpDistance(points, subdivisionScratch, in safeConfig, ref stats);
         LimitStaticDwell(points, in safeConfig, ref stats);
         ClampIntensity(points, in safeConfig, ref stats);
         DetectAndBlankOutOfBounds(points, ref stats);
@@ -186,6 +196,11 @@ public static class LaserSafetyTransforms
     /// </summary>
     public static List<LaserPoint> LimitJumpDistance(List<LaserPoint> points, in Config config, ref Stats stats)
     {
+        return LimitJumpDistance(points, null, in config, ref stats);
+    }
+
+    private static List<LaserPoint> LimitJumpDistance(List<LaserPoint> points, List<LaserPoint> subdivisionScratch, in Config config, ref Stats stats)
+    {
         var maxStep = MathF.Max(1f, Sanitize(in config).MaxStepPerPoint);
 
         // Fast path: measure first so frames without long jumps don't allocate.
@@ -201,7 +216,8 @@ public static class LaserSafetyTransforms
         if (MathF.Sqrt(longestSq) <= maxStep)
             return points;
 
-        var result = new List<LaserPoint>(points.Count * 2);
+        var result = subdivisionScratch ?? new List<LaserPoint>(points.Count * 2);
+        result.Clear();
         result.Add(points[0]);
 
         for (var i = 1; i < points.Count; i++)
@@ -243,7 +259,9 @@ public static class LaserSafetyTransforms
     /// </summary>
     public static void LimitStaticDwell(List<LaserPoint> points, in Config config, ref Stats stats)
     {
-        var thresholdSq = (float)(config.StaticDistance * config.StaticDistance);
+        // Widened before squaring: a full-field step squared overflows int and would read as "not moving".
+        var staticDistance = (long)Math.Clamp(config.StaticDistance, 0, FieldMax * 2);
+        var thresholdSq = staticDistance * staticDistance;
         var run = 0;
 
         for (var i = 0; i < points.Count; i++)
@@ -258,8 +276,8 @@ public static class LaserSafetyTransforms
             var moving = i == 0;
             if (!moving)
             {
-                var dx = p.X - points[i - 1].X;
-                var dy = p.Y - points[i - 1].Y;
+                long dx = p.X - points[i - 1].X;
+                long dy = p.Y - points[i - 1].Y;
                 moving = dx * dx + dy * dy > thresholdSq;
             }
 

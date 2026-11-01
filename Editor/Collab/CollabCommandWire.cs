@@ -328,6 +328,14 @@ internal static class CollabCommandWire
         var items = new JArray();
         foreach (var childUi in compositionUi.ChildUis.Values)
         {
+            // A child whose symbol did not resolve has no inputs to capture. Skipping it keeps a
+            // host with an incomplete project base from crashing the session for every joiner.
+            if (childUi.SymbolChild == null)
+            {
+                Log.Debug("Collab: skipping unresolved child in snapshot");
+                continue;
+            }
+
             items.Add(ChildRestoreToJson(CaptureChildRestoreData(compositionSymbol, childUi)));
         }
 

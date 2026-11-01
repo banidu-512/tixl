@@ -133,6 +133,7 @@ public static partial class T3Ui
 
     internal static readonly CreateFromTemplateDialog CreateFromTemplateDialog = new();
     private static readonly UserNameDialog _userNameDialog = new();
+    private static readonly CollabPasswordDialog _collabPasswordDialog = new();
     internal static readonly AboutDialog AboutDialog = new();
     private static readonly SearchDialog _searchDialog = new();
     internal static readonly NewProjectDialog NewProjectDialog = new();

@@ -105,7 +105,7 @@ internal sealed class BoygroupServerTransport : BoygroupTransport
             {
                 client = await _listener.AcceptTcpClientAsync(cancellation);
             }
-            catch (OperationCanceledException)
+            catch (Exception e) when (e is OperationCanceledException or ObjectDisposedException)
             {
                 break;
             }

@@ -183,6 +183,7 @@ internal sealed class WindowsUiContentDrawer : IUiContentDrawer<Device>
             // step with the live send ops — both independent of which windows are open.
             OutputSetupHandling.UpdateFrame();
             ContentSourceSync.UpdateFrame();
+            LaserRoutingSync.UpdateFrame();
 
             // Drive projection-mapping outputs: renders each bound output's composite every frame
             // (so its content evaluates even when nothing shows it) and hands it to that output's

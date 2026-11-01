@@ -20,6 +20,10 @@ namespace Lib.Utils;
 /// <para>Like the NDI sender, the frame is packed to UYVY on the GPU unless alpha is sent — that halves the
 /// readback and spares the encoder a colour conversion. With alpha, frames are sent as BGRA, the only 32-bit
 /// format OMT has.</para>
+/// <para>Lifetime: a native <see cref="OMTSend"/> is owned by the worker thread it was created for, and that
+/// thread frees it when it stops. Renaming or disposing therefore never frees a sender a native call is still
+/// inside — the render thread only swaps the current instance, and a worker that outlived its sender (a native
+/// call can stall on a dead network for longer than any join waits) cleans up on its own when it returns.</para>
 /// </summary>
 internal sealed class OmtSender : IOutputStreamSender
 {
@@ -53,10 +57,32 @@ internal sealed class OmtSender : IOutputStreamSender
     /// <summary>Re-targets the sender; takes effect on the next <see cref="Send"/>.</summary>
     public void Rename(string name)
     {
+        // Called every evaluation: only a changed name is worth sanitizing again.
+        if (ReferenceEquals(name, _lastRenameInput) || name == _lastRenameInput)
+            return;
+
+        _lastRenameInput = name;
         _requestedName = SanitizeName(name);
     }
 
+    private string? _lastRenameInput;
+
     public bool Send(Texture2D frame)
+    {
+        try
+        {
+            return SendCore(frame);
+        }
+        catch (Exception e)
+        {
+            // An op's evaluation must never throw: report and keep the graph alive.
+            _lastError = $"OMT send failed: {e.Message}";
+            Log.Debug(e.ToString(), this);
+            return false;
+        }
+    }
+
+    private bool SendCore(Texture2D frame)
     {
         if (!OmtRuntime.IsAvailable)
         {
@@ -113,11 +139,12 @@ internal sealed class OmtSender : IOutputStreamSender
         if (!EnsureOpen())
             return false;
 
+        var sender = _sender!;
         _lastError = null;
 
         // Nothing to encode for while nobody is connected. Probing occasionally still lets the first frame reach a
         // receiver that connects later, at the cost of at most one probe interval of latency.
-        if (_sender!.Connections == 0 && !IsDueForIdleProbe())
+        if (sender.Connections == 0 && !IsDueForIdleProbe())
             return true;
 
         if (!IsDueAtFrameRate())
@@ -193,14 +220,30 @@ internal sealed class OmtSender : IOutputStreamSender
     /// <summary>
     /// BGRA stored in memory as RGBA: swapping the two end bytes of every pixel makes it what OMT expects. Rows
     /// are <paramref name="rowPitch"/> apart, which a staging texture may pad beyond the pixels themselves.
+    /// <para>Runs on every readback frame of the alpha path, so whole pixels are swapped as SIMD vectors: keeping
+    /// one byte pair per 32-bit pixel fixed and rotating the other two is the same swap without touching alpha.</para>
     /// </summary>
     private static void SwapRedAndBlue(byte[] buffer, int rowBytes, int rowPitch, int height)
     {
+        var keepOddBytes = new Vector<uint>(0xFF00FF00u);  // alpha and green stay where they are
+        var keepEvenBytes = new Vector<uint>(0x00FF00FFu); // red and blue come from the rotation
+        var vectorBytes = Vector<uint>.Count * 4;
+
         for (var y = 0; y < height; y++)
         {
             var rowStart = y * rowPitch;
-            for (var x = rowStart; x < rowStart + rowBytes; x += 4)
-                (buffer[x], buffer[x + 2]) = (buffer[x + 2], buffer[x]);
+            var row = buffer.AsSpan(rowStart, rowBytes);
+            var x = 0;
+            for (; x + vectorBytes <= rowBytes; x += vectorBytes)
+            {
+                var pixels = MemoryMarshal.Cast<byte, uint>(row.Slice(x, vectorBytes));
+                var pixel = new Vector<uint>(pixels);
+                var rotated = (pixel << 16) | (pixel >> 16);
+                (pixel & keepOddBytes | rotated & keepEvenBytes).CopyTo(pixels);
+            }
+
+            for (; x < rowBytes; x += 4)
+                (buffer[rowStart + x], buffer[rowStart + x + 2]) = (buffer[rowStart + x + 2], buffer[rowStart + x]);
         }
     }
 
@@ -209,13 +252,17 @@ internal sealed class OmtSender : IOutputStreamSender
         if (_sender != null && _openedName == _requestedName)
             return true;
 
-        Release();
+        // Supersede instead of dispose: the worker started with the old sender frees it when it notices it is
+        // no longer the current one. Freeing it here could race a native call that is still inside it.
+        _sender = null;
+        _openedName = null;
 
         try
         {
-            _sender = new OMTSend(_requestedName, OMTQuality.Default);
+            var sender = new OMTSend(_requestedName, OMTQuality.Default);
+            _sender = sender;
             _openedName = _requestedName;
-            StartWorker();
+            StartWorker(sender);
             return true;
         }
         catch (Exception e)
@@ -387,11 +434,10 @@ internal sealed class OmtSender : IOutputStreamSender
         _frameAvailable.Set();
     }
 
-    private void StartWorker()
+    private void StartWorker(OMTSend sender)
     {
-        if (_worker != null)
-            return;
-
+        // Always a new thread: a worker of a superseded sender (a rename) winds down on its own, and the
+        // new sender has no thread of its own to send with otherwise - it would stay silent after a rename.
         _exit = false;
         _worker = new Thread(WorkerProc)
                       {
@@ -399,59 +445,82 @@ internal sealed class OmtSender : IOutputStreamSender
                           Name = "OmtStreamSender",
                           Priority = ThreadPriority.AboveNormal,
                       };
-        _worker.Start();
+        _worker.Start(sender);
     }
 
     private void StopWorker()
     {
-        if (_worker == null)
+        var worker = _worker;
+        if (worker == null)
             return;
 
         _exit = true;
         _frameAvailable.Set();
-        _worker.Join(TimeSpan.FromSeconds(2));
-        _worker = null;
 
-        lock (_queueLock)
-        {
-            while (_queue.Count > 0)
-                ArrayPool<byte>.Shared.Return(_queue.Dequeue().Buffer);
-        }
+        // When this times out the worker is still inside a native call; it frees its own sender and queue
+        // when the call returns. Nothing here touches pooled buffers or the sender after giving up.
+        worker.Join(TimeSpan.FromSeconds(WorkerJoinTimeoutSeconds));
+        _worker = null;
     }
 
-    private void WorkerProc()
+    private void WorkerProc(object? state)
     {
-        while (!_exit)
+        if (state is not OMTSend sender)
+            return;
+
+        try
         {
-            _frameAvailable.WaitOne(100);
-
-            PendingFrame? pending = null;
-            lock (_queueLock)
+            while (!_exit && ReferenceEquals(_sender, sender))
             {
-                if (_queue.Count > 0)
-                    pending = _queue.Dequeue();
+                _frameAvailable.WaitOne(100);
+
+                PendingFrame? pending = null;
+                lock (_queueLock)
+                {
+                    if (_queue.Count > 0)
+                        pending = _queue.Dequeue();
+                }
+
+                if (pending == null)
+                    continue;
+
+                try
+                {
+                    SendFrame(sender, pending);
+                }
+                catch (Exception e)
+                {
+                    _lastError = $"OMT send failed: {e.Message}";
+                    Log.Debug(e.ToString(), this);
+                }
+                finally
+                {
+                    ArrayPool<byte>.Shared.Return(pending.Buffer);
+                }
             }
-
-            if (pending == null)
-                continue;
-
+        }
+        finally
+        {
+            // This instance is the thread's own: freeing it here can never race a native call, and a
+            // teardown that stopped waiting leaves the whole cleanup to this thread.
             try
             {
-                SendFrame(pending);
+                sender.Dispose();
             }
             catch (Exception e)
             {
-                _lastError = $"OMT send failed: {e.Message}";
-                Log.Debug(e.ToString(), this);
+                Log.Debug($"Disposing the OMT sender threw: {e.Message}", this);
             }
-            finally
+
+            lock (_queueLock)
             {
-                ArrayPool<byte>.Shared.Return(pending.Buffer);
+                while (_queue.Count > 0)
+                    ArrayPool<byte>.Shared.Return(_queue.Dequeue().Buffer);
             }
         }
     }
 
-    private void SendFrame(PendingFrame pending)
+    private void SendFrame(OMTSend sender, PendingFrame pending)
     {
         var handle = GCHandle.Alloc(pending.Buffer, GCHandleType.Pinned);
         try
@@ -475,7 +544,7 @@ internal sealed class OmtSender : IOutputStreamSender
                                 DataLength = pending.Length,
                             };
 
-            _sender?.Send(frame);
+            sender.Send(frame);
         }
         finally
         {
@@ -485,21 +554,10 @@ internal sealed class OmtSender : IOutputStreamSender
 
     private void Release()
     {
-        if (_sender != null)
-        {
-            try
-            {
-                _sender.Dispose();
-            }
-            catch (Exception e)
-            {
-                Log.Debug($"Disposing the OMT sender threw: {e.Message}", this);
-            }
-
-            _sender = null;
-            _openedName = null;
-        }
-
+        // The native sender belongs to its worker thread, which frees it when it stops; this side only
+        // drops the reference so the advertised address stops reporting while the worker winds down.
+        _sender = null;
+        _openedName = null;
         ReleasePipeline();
     }
 
@@ -545,6 +603,9 @@ internal sealed class OmtSender : IOutputStreamSender
 
     private const int MinimumDimension = 16;
 
+    /** How long a teardown waits for the worker before leaving the cleanup to the worker itself. */
+    private const int WorkerJoinTimeoutSeconds = 2;
+
     /** How long to keep capturing frames while no receiver is connected. */
     private const int IdleProbeIntervalMs = 250;
 
@@ -558,10 +619,11 @@ internal sealed class OmtSender : IOutputStreamSender
     private Thread? _worker;
     private volatile bool _exit;
 
-    private OMTSend? _sender;
+    /** The sender the current worker owns; swapped by the render thread, supersession is how an old worker stops. */
+    private volatile OMTSend? _sender;
     private string _requestedName;
     private string? _openedName;
-    private string? _lastError;
+    private volatile string? _lastError;
 
     private int _width;
     private int _height;

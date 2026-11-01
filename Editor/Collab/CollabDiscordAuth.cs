@@ -3,7 +3,6 @@ using System.Net;
 using System.Net.Http;
 using System.Security.Cryptography;
 using System.Text;
-using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json.Linq;
 using T3.Editor.Gui.UiHelpers;
@@ -38,12 +37,10 @@ internal static class CollabDiscordAuth
     public static string RedirectUri => $"http://127.0.0.1:{RedirectPort}{RedirectPath}";
 
     /// <summary>
-    /// A TiXL-owned Discord application id can be baked in here: users then only press "Log in".
-    /// Left empty, the client id is entered once in Settings → Collaboration.
+    /// A TiXL-owned Discord application id can be baked in here: users then only press "Log In with Discord".
+    /// A CollabDiscordClientId entry in the user settings file overrides it.
     /// </summary>
-    private const string DefaultClientId = "";
-
-    public static bool HasDefaultClient => !string.IsNullOrWhiteSpace(DefaultClientId);
+    private const string DefaultClientId = "1566236111255248906";
 
     public static LoginState State { get; private set; } = LoginState.Idle;
     public static string StatusText { get; private set; } = "";
@@ -53,17 +50,10 @@ internal static class CollabDiscordAuth
 
     public static string InviteUrl => $"https://discord.gg/{InviteCode}";
 
-    /// <summary>Set when the account authenticated but is not a member of the community server.</summary>
-    public static bool NeedsGuildJoin { get; private set; }
-
     /// <summary>Name of the community server, resolved from the invite for the status line.</summary>
-    public static string GuildName { get; private set; } = "";
+    private static string GuildName { get; set; } = "";
 
     private static string _cachedGuildId = "";
-    private static CancellationTokenSource? _cancellation;
-
-    /// <summary>Opens the invite in the browser so a signed-in account can join the server.</summary>
-    public static void OpenInvite() => CoreUi.Instance.OpenWithDefaultApplication(InviteUrl);
 
     public static void StartLogin()
     {
@@ -76,23 +66,14 @@ internal static class CollabDiscordAuth
         if (string.IsNullOrWhiteSpace(clientId))
         {
             State = LoginState.Failed;
-            StatusText = "Set the Discord Client ID first (Settings → Collaboration)";
+            StatusText = "No Discord Client ID configured (CollabDiscordClientId in the user settings)";
             return;
         }
 
-        NeedsGuildJoin = false;
-        _cancellation = new CancellationTokenSource();
-        _ = Task.Run(() => LoginFlowAsync(clientId, clientSecret, _cancellation.Token));
+        _ = Task.Run(() => LoginFlowAsync(clientId, clientSecret));
     }
 
-    public static void Cancel()
-    {
-        _cancellation?.Cancel();
-        State = LoginState.Idle;
-        StatusText = "";
-    }
-
-    private static async Task LoginFlowAsync(string clientId, string clientSecret, CancellationToken cancellation)
+    private static async Task LoginFlowAsync(string clientId, string clientSecret)
     {
         HttpListener? listener = null;
         var redirectUri = RedirectUri;
@@ -130,7 +111,7 @@ internal static class CollabDiscordAuth
             CoreUi.Instance.OpenWithDefaultApplication(authorizeUrl);
             StatusText = "Waiting for the Discord login in your browser...";
 
-            var context = await listener.GetContextAsync().WaitAsync(TimeSpan.FromMinutes(3), cancellation);
+            var context = await listener.GetContextAsync().WaitAsync(TimeSpan.FromMinutes(3));
             var query = context.Request.QueryString;
 
             try
@@ -162,17 +143,16 @@ internal static class CollabDiscordAuth
             State = LoginState.ExchangingCode;
             StatusText = "Checking your Discord account...";
 
-            var profile = await ExchangeCodeAndFetchUserAsync(clientId, clientSecret, code, redirectUri, codeVerifier, cancellation);
+            var profile = await ExchangeCodeAndFetchUserAsync(clientId, clientSecret, code, redirectUri, codeVerifier);
 
             // Membership in the community server is the actual access check: a Discord account alone
             // proves an identity but not that it belongs to this show's people.
-            var guild = await ResolveInviteGuildAsync(cancellation);
-            var guilds = await FetchGuildIdsAsync(profile.AccessToken, cancellation);
+            var guild = await ResolveInviteGuildAsync();
+            var guilds = await FetchGuildIdsAsync(profile.AccessToken);
             if (!guilds.Contains(guild.Id))
             {
-                NeedsGuildJoin = true;
                 State = LoginState.Failed;
-                StatusText = $"{profile.UserName} is not a member of {guild.Name} yet — join it, then log in again.";
+                StatusText = $"{profile.UserName} is not a member of {guild.Name} yet — join it at {InviteUrl}, then log in again.";
                 Log.Info($"Collab: Discord account '{profile.UserName}' is not in guild {guild.Name} ({guild.Id})");
                 return;
             }
@@ -189,11 +169,6 @@ internal static class CollabDiscordAuth
             State = LoginState.Done;
             StatusText = $"Logged in as {profile.UserName} · {guild.Name}";
             Log.Info($"Collab: Discord login successful ({profile.UserName}, guild '{guild.Name}')");
-        }
-        catch (OperationCanceledException)
-        {
-            State = LoginState.Idle;
-            StatusText = "";
         }
         catch (Exception e)
         {
@@ -216,7 +191,7 @@ internal static class CollabDiscordAuth
     }
 
     private static async Task<(string UserId, string UserName, string AvatarHash, string AccessToken)> ExchangeCodeAndFetchUserAsync(
-        string clientId, string clientSecret, string code, string redirectUri, string codeVerifier, CancellationToken cancellation)
+        string clientId, string clientSecret, string code, string redirectUri, string codeVerifier)
     {
         using var client = new HttpClient();
         client.DefaultRequestHeaders.Add("User-Agent", "TiXLCollab");
@@ -235,9 +210,8 @@ internal static class CollabDiscordAuth
             form["client_secret"] = clientSecret;
 
         using var tokenResponse = await client.PostAsync("https://discord.com/api/oauth2/token",
-                                                         new FormUrlEncodedContent(form),
-                                                         cancellation);
-        var tokenBody = await tokenResponse.Content.ReadAsStringAsync(cancellation);
+                                                         new FormUrlEncodedContent(form));
+        var tokenBody = await tokenResponse.Content.ReadAsStringAsync();
         if (!tokenResponse.IsSuccessStatusCode)
             throw new Exception($"token exchange failed ({(int)tokenResponse.StatusCode}): {tokenBody.Trim()}");
 
@@ -247,8 +221,8 @@ internal static class CollabDiscordAuth
 
         using var request = new HttpRequestMessage(HttpMethod.Get, "https://discord.com/api/users/@me");
         request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken);
-        using var userResponse = await client.SendAsync(request, cancellation);
-        var userBody = await userResponse.Content.ReadAsStringAsync(cancellation);
+        using var userResponse = await client.SendAsync(request);
+        var userBody = await userResponse.Content.ReadAsStringAsync();
         if (!userResponse.IsSuccessStatusCode)
             throw new Exception($"profile fetch failed ({(int)userResponse.StatusCode})");
 
@@ -263,14 +237,14 @@ internal static class CollabDiscordAuth
     /// The guild behind the community invite. Resolved once per run: the invite endpoint is public
     /// and returns the guild id and name, which is what membership is compared against.
     /// </summary>
-    private static async Task<(string Id, string Name)> ResolveInviteGuildAsync(CancellationToken cancellation)
+    private static async Task<(string Id, string Name)> ResolveInviteGuildAsync()
     {
         if (!string.IsNullOrEmpty(_cachedGuildId))
             return (_cachedGuildId, GuildName);
 
         using var client = CreateHttpClient();
-        using var response = await client.GetAsync($"https://discord.com/api/v10/invites/{InviteCode}?with_counts=true", cancellation);
-        var body = await response.Content.ReadAsStringAsync(cancellation);
+        using var response = await client.GetAsync($"https://discord.com/api/v10/invites/{InviteCode}?with_counts=true");
+        var body = await response.Content.ReadAsStringAsync();
         if (!response.IsSuccessStatusCode)
             throw new Exception($"could not resolve the Discord invite '{InviteCode}' ({(int)response.StatusCode}) — it may have expired");
 
@@ -285,7 +259,7 @@ internal static class CollabDiscordAuth
     }
 
     /// <summary>Guild ids of the signed-in account. Requires the 'guilds' scope on the token.</summary>
-    private static async Task<HashSet<string>> FetchGuildIdsAsync(string accessToken, CancellationToken cancellation)
+    private static async Task<HashSet<string>> FetchGuildIdsAsync(string accessToken)
     {
         using var client = CreateHttpClient();
         var ids = new HashSet<string>();
@@ -299,8 +273,8 @@ internal static class CollabDiscordAuth
                       + (after.Length > 0 ? $"&after={Uri.EscapeDataString(after)}" : "");
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
             request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken);
-            using var response = await client.SendAsync(request, cancellation);
-            var body = await response.Content.ReadAsStringAsync(cancellation);
+            using var response = await client.SendAsync(request);
+            var body = await response.Content.ReadAsStringAsync();
             if (!response.IsSuccessStatusCode)
                 throw new Exception($"guild list failed ({(int)response.StatusCode}): {body.Trim()}");
 

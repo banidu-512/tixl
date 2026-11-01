@@ -242,22 +242,35 @@ public static class RemoteVideoInputBus
                 if (created)
                     state.Update();
 
-                input.ApplyRemoteFrame(state.Texture, state.FrameCounter, state.Status);
+                try
+                {
+                    input.ApplyRemoteFrame(state.Texture, state.FrameCounter, state.Status);
+                }
+                catch (Exception e)
+                {
+                    // One misbehaving input must not starve the others of their frames.
+                    Log.Debug($"Applying a remote video frame to '{input.RelayKey}' failed: {e.Message}");
+                }
+
                 _activeInputs.Add(input);
             }
 
             if (_activeInputs.Count > 0)
             {
-                var stillActive = _activeInputs.Where(input => _sources.ContainsKey(input.RelayKey)).ToArray();
-                if (stillActive.Length != _activeInputs.Count)
+                _endedScratch.Clear();
+                foreach (var input in _activeInputs)
                 {
-                    foreach (var input in _activeInputs.Except(stillActive))
-                        input.EndRemoteFrames();
-
-                    _activeInputs.Clear();
-                    foreach (var input in stillActive)
-                        _activeInputs.Add(input);
+                    if (!_sources.ContainsKey(input.RelayKey))
+                        _endedScratch.Add(input);
                 }
+
+                foreach (var input in _endedScratch)
+                {
+                    input.EndRemoteFrames();
+                    _activeInputs.Remove(input);
+                }
+
+                _endedScratch.Clear();
             }
         }
     }
@@ -404,7 +417,8 @@ public static class RemoteVideoInputBus
 
     private static readonly object _lock = new();
     private static readonly List<IRemoteVideoInput> _inputs = [];
-    private static IRemoteVideoInput[] _inputsSnapshot = [];
+    private static volatile IRemoteVideoInput[] _inputsSnapshot = [];
+    private static readonly List<IRemoteVideoInput> _endedScratch = [];
     private static readonly HashSet<IRemoteVideoInput> _activeInputs = [];
     private static readonly Dictionary<string, RemoteVideoSource> _sources = new(StringComparer.Ordinal);
     private static readonly Dictionary<string, RemoteSourceState> _states = new(StringComparer.Ordinal);

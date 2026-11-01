@@ -1020,23 +1020,24 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
 
     protected override void Dispose(bool disposing)
     {
-        if (IsDisposed)
-            return;
-
-        if (!disposing)
-            return;
-
-        RemoteVideoInputBus.UnregisterInput(this);
-        StopCaptureThread();
-        _controlWorker?.Dispose();
-        _controlWorker = null;
-        T3.Graphics.Compat.GraphicsUtilities.Dispose(ref _gpuTexture);
-
-        lock (_lockObject)
+        // No IsDisposed guard: the instance is flagged disposed before this runs, so a guard here skips
+        // the whole teardown and leaves the camera open with its capture thread running.
+        if (disposing)
         {
-            _sharedRgba = null;
-            _hasFrame = false;
+            RemoteVideoInputBus.UnregisterInput(this);
+            StopCaptureThread();
+            _controlWorker?.Dispose();
+            _controlWorker = null;
+            T3.Graphics.Compat.GraphicsUtilities.Dispose(ref _gpuTexture);
+
+            lock (_lockObject)
+            {
+                _sharedRgba = null;
+                _hasFrame = false;
+            }
         }
+
+        base.Dispose(disposing);
     }
 
     private sealed record CaptureThreadSettings

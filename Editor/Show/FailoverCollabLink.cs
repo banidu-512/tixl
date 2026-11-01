@@ -33,7 +33,19 @@ internal sealed class FailoverCollabLink
 
         if (!FailoverArbiter.IsEnabled)
         {
+            // A fresh failover run may own the session again; a manual leave from an earlier run must
+            // not suppress it forever.
+            collab.LeftManually = false;
             StatusText = "Idle (failover off)";
+            _connectWatchTicks = 0;
+            return;
+        }
+
+        // The user left the session on purpose. Failover would otherwise host/join again within a tick,
+        // making the Leave button look broken. Hosting or joining from the UI clears the latch.
+        if (collab.LeftManually)
+        {
+            StatusText = "Paused — the collab session was left manually";
             _connectWatchTicks = 0;
             return;
         }

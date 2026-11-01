@@ -25,10 +25,10 @@
         "X": -200.0,
         "Y": 150.0
       },
+      "Description": "Background color of each face.",
       "Min": 0.0,
       "Max": 1.0,
-      "ClampMin": true,
-      "Description": "Background color of each face."
+      "ClampMin": true
     },
     {
       "InputId": "9199affe-5613-4cfd-a09e-0b79e6b108f0"/*TextureFormat*/,

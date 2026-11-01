@@ -32,10 +32,10 @@ public class LaserGalvoLongevityTests
         return input.ToArray();
     }
 
-    private static float MaxConsecutiveStep(LaserPoint[] frame)
+    private static float MaxConsecutiveStep(LaserPoint[] frame, int count)
     {
         var maxStep = 0f;
-        for (var i = 1; i < frame.Length; i++)
+        for (var i = 1; i < count; i++)
         {
             var dx = frame[i].X - frame[i - 1].X;
             var dy = frame[i].Y - frame[i - 1].Y;
@@ -47,11 +47,12 @@ public class LaserGalvoLongevityTests
 
     private const int NearNullRadius = 300;
 
-    private static int CountNearNullSamples(LaserPoint[] frame)
+    private static int CountNearNullSamples(LaserPoint[] frame, int frameCount)
     {
         var count = 0;
-        foreach (var p in frame)
+        for (var i = 0; i < frameCount; i++)
         {
+            var p = frame[i];
             if (Math.Abs(p.X) < NearNullRadius && Math.Abs(p.Y) < NearNullRadius)
                 count++;
         }
@@ -69,12 +70,12 @@ public class LaserGalvoLongevityTests
     [Fact]
     public void DottedEllipseFrame_NeverVisitsNull()
     {
-        var pipelined = new LaserPipeline.Session().Apply(CalibratedDefaults(), BuildDottedEllipse(80, 8, 16000, 9000), 720, out _);
+        var pipelined = new LaserPipeline.Session().Apply(CalibratedDefaults(), BuildDottedEllipse(80, 8, 16000, 9000), 720, out _, out var frameCount);
 
         // The data generation must chain dot to dot: the scanners are never commanded to the
         // park position mid-frame (that pattern reads on a scope as the beam dwelling at null
         // between every shape).
-        Assert.Equal(0, CountNearNullSamples(pipelined));
+        Assert.Equal(0, CountNearNullSamples(pipelined, frameCount));
     }
 
     [Fact]
@@ -93,11 +94,11 @@ public class LaserGalvoLongevityTests
                             new LaserPoint(15000, 0, 0, 65535, 0, 65535),
                         };
 
-        var pipelined = new LaserPipeline.Session().Apply(CalibratedDefaults(), input.ToArray(), input.Count, out _);
+        var pipelined = new LaserPipeline.Session().Apply(CalibratedDefaults(), input.ToArray(), input.Count, out _, out var frameCount);
 
         // 30000 travel over 5 blank samples: the largest single step must be well under the
         // full distance (stacked blanking would step 30000 exactly).
-        var maxStep = MaxConsecutiveStep(pipelined);
+        var maxStep = MaxConsecutiveStep(pipelined, frameCount);
         Assert.True(maxStep < 20000, $"travel steps should be ramped, max step was {maxStep}");
     }
 
@@ -108,10 +109,11 @@ public class LaserGalvoLongevityTests
         // back to the first is scanned at loop rate and must not be a cross-field jump. With
         // dots on a ring, the tour's neighbouring dots are ~1255 units apart; the seam must be
         // of that scale, not of field scale (30000+).
-        var pipelined = new LaserPipeline.Session().Apply(CalibratedDefaults(), BuildDottedEllipse(80, 8, 16000, 9000), 720, out _);
+        var pipelined = new LaserPipeline.Session().Apply(CalibratedDefaults(), BuildDottedEllipse(80, 8, 16000, 9000), 720, out _, out var frameCount);
 
-        var seamDx = pipelined[pipelined.Length - 1].X - pipelined[0].X;
-        var seamDy = pipelined[pipelined.Length - 1].Y - pipelined[0].Y;
+        // frameCount, not Length: the session returns its reused buffer, whose Length is capacity.
+        var seamDx = pipelined[frameCount - 1].X - pipelined[0].X;
+        var seamDy = pipelined[frameCount - 1].Y - pipelined[0].Y;
         var seam = MathF.Sqrt(seamDx * (float)seamDx + seamDy * (float)seamDy);
 
         Assert.True(seam < 3000, $"loop seam should be a neighbour hop, was {seam}");
@@ -132,7 +134,7 @@ public class LaserGalvoLongevityTests
         Assert.Equal(10000, approached[6].X);
         Assert.Equal(5000, approached[6].Y);
 
-        var maxStep = MaxConsecutiveStep(approached);
+        var maxStep = MaxConsecutiveStep(approached, approached.Length);
         Assert.True(maxStep < 4000, $"approach steps should be ramped, max was {maxStep}");
 
         foreach (var p in approached[..6])
@@ -144,12 +146,13 @@ public class LaserGalvoLongevityTests
     {
         // The smoothing must not eat content: a 720-point dotted ellipse still carries every
         // dot with its dwell run intact (allowing the optimizer's added travel samples).
-        var pipelined = new LaserPipeline.Session().Apply(CalibratedDefaults(), BuildDottedEllipse(80, 8, 16000, 9000), 720, out _);
+        var pipelined = new LaserPipeline.Session().Apply(CalibratedDefaults(), BuildDottedEllipse(80, 8, 16000, 9000), 720, out _, out var frameCount);
 
         var litRuns = 0;
         var inRun = false;
-        foreach (var p in pipelined)
+        for (var i = 0; i < frameCount; i++)
         {
+            var p = pipelined[i];
             if (p.I > 0 && !inRun)
             {
                 litRuns++;

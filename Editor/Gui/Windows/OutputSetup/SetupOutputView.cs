@@ -346,7 +346,11 @@ internal sealed partial class SetupOutputView
         var straighten = _viewMorph.Value;
 
         // Pulled before the transform so the content aspect below reads a live evaluation context.
-        var composite = OutputCompositor.RenderPreview(outputId);
+        // Laser outputs have no canvas composite: asking would invalidate the null result and retry
+        // the render every frame forever - their content shows through the laser frame previews.
+        var composite = output.Kind == OutputDefinition.Kinds.Laser
+                            ? null
+                            : OutputCompositor.RenderPreview(outputId);
 
         // Rectify basis = the focused surface. Freeze it while it is the one being dragged, so the transform
         // doesn't chase its own edit; otherwise the live quad keeps R settled and current.

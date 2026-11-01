@@ -593,26 +593,26 @@ internal static partial class SetupParameterView
     }
 
     /// <summary>
-    /// A laser output carries the show: the scanner camera that aims it and the processing pipeline
-    /// (optimization + safety — managed here rather than in graph ops). The device itself — address,
-    /// port, device settings — lives on the laser plug it is bound to; select the plug in LOCAL
-    /// BINDINGS to edit it. Consumed by [LaserCamera]: setting its OutputRef to this output projects
-    /// through the scanner camera, and the output's driver streams the resulting frame to the bound plug.
+    /// A laser output carries the show: the processing pipeline (optimization + safety — managed here
+    /// rather than in graph ops). The projection itself is the routed [LaserCamera]'s own aim — its
+    /// Position/Target/Use Rotation/FieldOfView on the op. The device — address, port, device settings
+    /// — lives on the laser plug it is bound to; select the plug in LOCAL BINDINGS to edit it.
+    /// Setting a [LaserCamera]'s OutputRef to this output routes the camera's frame here.
     /// </summary>
     private static void DrawLaserOutputCard(Setup setup, MachineConfig machineConfig, OutputDefinition output)
     {
         // A laser output may bind several plugs - the same frame fans out to each device.
-        var boundPlugNames = new List<string>();
+        _boundPlugNames.Clear();
         foreach (var binding in machineConfig.FindLaserBindings(output.Id))
         {
             var plug = machineConfig.FindLaserPlug(binding.PlugId);
             if (plug != null)
-                boundPlugNames.Add(plug.Name);
+                _boundPlugNames.Add(plug.Name);
         }
 
-        var boundTo = boundPlugNames.Count == 0
+        var boundTo = _boundPlugNames.Count == 0
                           ? "unbound - drop this output on a laser plug (it can bind several)"
-                          : $"→ {string.Join(", ", boundPlugNames)} (edit a plug under Local Bindings)";
+                          : $"→ {string.Join(", ", _boundPlugNames)} (edit a plug under Local Bindings)";
         FormInputs.ApplyIndent();
         CustomComponents.StylizedText(boundTo, Fonts.FontSmall, UiColors.TextMuted);
 
@@ -626,17 +626,144 @@ internal static partial class SetupParameterView
         var previewDl = ImGui.GetWindowDrawList();
         previewDl.AddRectFilled(previewMin, previewMax, UiColors.BackgroundPopup.Fade(0.6f));
         LaserOutputPreview.DrawFrame(previewDl, previewMin, previewMax, LaserOutputPreview.GetFrame(output));
+
+        // Safe-zone outline and, with frame warp on, the four draggable keystone corners.
+        var processing = output.LaserProcessing ??= new LaserProcessingSettings();
+        DrawLaserFrameOverlay(setup, processing.Safety, previewDl, previewMin, previewMax);
+
         ImGui.SetCursorScreenPos(new Vector2(previewMin.X, previewMax.Y + 4f * T3Ui.UiScaleFactor));
         ImGui.Dummy(Vector2.Zero);
 
-        DrawLaserScannerCamera(setup, output);
         DrawLaserProcessing(setup, output);
 
         FormInputs.ApplyIndent();
-        CustomComponents.StylizedText("Set a [LaserCamera]'s OutputRef to this output - it projects through the scanner camera above, "
-                                      + "and while the master laser is on, the frame streams to the plug bound below.",
+        CustomComponents.StylizedText("The projection is the routed [LaserCamera]'s own aim (edited on the op). A new camera attaches itself to a free laser output "
+                                      + "automatically; drop a camera onto this output to route a specific one. While the master laser is on, the frame streams "
+                                      + "to the plug bound below.",
                                       Fonts.FontSmall, UiColors.TextMuted);
     }
+
+    /// <summary>
+    /// Over the frame preview: the safe zone the corners must stay inside, and — with frame warp
+    /// on — the warp quad with its four draggable corner handles. This is where the laser output's
+    /// "basic screen" is trapezed: drag a corner and the quad follows, clamped to the safe zone,
+    /// as one undo step per drag.
+    /// </summary>
+    private static void DrawLaserFrameOverlay(Setup setup, LaserProcessingSettings.SafetySettings safety,
+                                              ImDrawListPtr dl, Vector2 min, Vector2 max)
+    {
+        var uiScale = T3Ui.UiScaleFactor;
+        var inset = 3f * uiScale;
+        var side = MathF.Min(max.X - min.X, max.Y - min.Y) - 2f * inset;
+        if (side < 16f)
+            return;
+
+        var projection = new FieldProjection { Center = (min + max) * 0.5f, Half = side * 0.5f };
+
+        var zoneHalfW = MathF.Max(0f, safety.SafeZoneWidth) * 0.5f;
+        var zoneHalfH = MathF.Max(0f, safety.SafeZoneHeight) * 0.5f;
+        var zoneMin = new Vector2(Math.Clamp(safety.SafeZoneCenterX - zoneHalfW, -1f, 1f),
+                                  Math.Clamp(safety.SafeZoneCenterY - zoneHalfH, -1f, 1f));
+        var zoneMax = new Vector2(Math.Clamp(safety.SafeZoneCenterX + zoneHalfW, -1f, 1f),
+                                  Math.Clamp(safety.SafeZoneCenterY + zoneHalfH, -1f, 1f));
+        dl.AddRect(projection.CanvasToScreen(zoneMin), projection.CanvasToScreen(zoneMax),
+                   UiColors.TextMuted.Fade(0.3f), 0, ImDrawFlags.None, MathF.Max(1f, MathF.Round(uiScale)));
+
+        if (!safety.FrameWarp)
+            return;
+
+        Span<Vector2> corners =
+        [
+            new Vector2(safety.WarpCorner1X, safety.WarpCorner1Y),
+            new Vector2(safety.WarpCorner2X, safety.WarpCorner2Y),
+            new Vector2(safety.WarpCorner3X, safety.WarpCorner3Y),
+            new Vector2(safety.WarpCorner4X, safety.WarpCorner4Y),
+        ];
+
+        var quadColor = UiColors.StatusAttention.Fade(0.8f);
+        for (var i = 0; i < 4; i++)
+        {
+            dl.AddLine(projection.CanvasToScreen(corners[i]), projection.CanvasToScreen(corners[(i + 1) % 4]),
+                       quadColor, 1.5f * uiScale);
+        }
+
+        var style = CanvasPointHandle.Style.Default(UiColors.StatusAttention);
+        style.Radius = 4;
+        for (var i = 0; i < 4; i++)
+        {
+            ImGui.PushID(i);
+            var phase = CanvasPointHandle.Draw(ref corners[i], projection, style);
+            if (phase != CanvasPointHandle.DragPhases.None)
+            {
+                corners[i] = ClampToZone(corners[i], zoneMin, zoneMax);
+                SetWarpCorner(safety, i, corners[i]);
+
+                if (phase == CanvasPointHandle.DragPhases.Started)
+                {
+                    _laserWarpDragOldJson = setup.ToJsonString();
+                    OutputSetupHandling.NotifyLiveEdit();
+                }
+                else if (phase == CanvasPointHandle.DragPhases.Completed && _laserWarpDragOldJson != null)
+                {
+                    SetupUndo.CommitGesture(setup, "Warp laser frame corners", _laserWarpDragOldJson);
+                    _laserWarpDragOldJson = null;
+                }
+            }
+
+            ImGui.PopID();
+        }
+    }
+
+    private static Vector2 ClampToZone(Vector2 corner, Vector2 zoneMin, Vector2 zoneMax)
+    {
+        return new Vector2(Math.Clamp(corner.X, zoneMin.X, zoneMax.X),
+                           Math.Clamp(corner.Y, zoneMin.Y, zoneMax.Y));
+    }
+
+    private static void SetWarpCorner(LaserProcessingSettings.SafetySettings safety, int corner, Vector2 value)
+    {
+        switch (corner)
+        {
+            case 0:
+                safety.WarpCorner1X = value.X;
+                safety.WarpCorner1Y = value.Y;
+                break;
+            case 1:
+                safety.WarpCorner2X = value.X;
+                safety.WarpCorner2Y = value.Y;
+                break;
+            case 2:
+                safety.WarpCorner3X = value.X;
+                safety.WarpCorner3Y = value.Y;
+                break;
+            case 3:
+                safety.WarpCorner4X = value.X;
+                safety.WarpCorner4Y = value.Y;
+                break;
+        }
+    }
+
+    /// <summary>Maps normalized field units (-1..1, y up) onto the square preview rect (y down) —
+    /// the same inscribed square <see cref="LaserOutputPreview"/> draws the frame into, so the
+    /// handles sit exactly on the quad they warp.</summary>
+    private sealed class FieldProjection : ICanvasProjection
+    {
+        public Vector2 Center;
+        public float Half;
+
+        public Vector2 CanvasToScreen(Vector2 posInCanvas)
+        {
+            return new Vector2(Center.X + posInCanvas.X * Half, Center.Y - posInCanvas.Y * Half);
+        }
+
+        public Vector2 ScreenToCanvas(Vector2 posOnScreen)
+        {
+            return new Vector2((posOnScreen.X - Center.X) / Half, -(posOnScreen.Y - Center.Y) / Half);
+        }
+    }
+
+    private static string? _laserWarpDragOldJson;
+    private static readonly List<string> _boundPlugNames = [];
 
     /// <summary>
     /// A laser plug's own card: the endpoint (address, port, network interface) and the device settings
@@ -653,6 +780,11 @@ internal static partial class SetupParameterView
             CitpPeerDiscovery.EnsureStarted();
         else if (plug.Kind == LaserPlug.Kinds.Ponk)
             PonkSenderDiscovery.EnsureStarted();
+
+        // An address left empty gets a working basic one as soon as something is known - the
+        // first active CITP peer (instantly, while it announces), the first discovered Ether
+        // Dream DAC, or the PONK multicast group. Typing always wins afterwards.
+        AutoPreselectLaserEndpoint(machineConfig, plug);
 
         FormInputs.DrawInputLabel("Address");
         if (_laserAddressPlug != plug.Id)
@@ -794,7 +926,9 @@ internal static partial class SetupParameterView
             OutputSetupHandling.SaveActive();
         }
 
-        CustomComponents.TooltipForLastItem("Network interface packets leave on (this machine's NIC IP); empty = any. Type it, or pick from the chevron.");
+        CustomComponents.TooltipForLastItem(plug.Kind == LaserPlug.Kinds.EtherDream
+                                                ? "Not used by Ether Dream: the DAC is reached over the operating system's route."
+                                                : "Network interface packets leave on (this machine's NIC IP); empty = any. Type it, or pick from the chevron.");
 
         if (ImGui.BeginPopup($"##laserInterfacePick{plug.Id:N}"))
         {
@@ -837,6 +971,52 @@ internal static partial class SetupParameterView
             else
             {
                 CustomComponents.StylizedText("● not streaming — no laser stream for this plug yet (is the master laser on?)", Fonts.FontSmall, UiColors.TextMuted);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Fills a laser plug's empty address with a working basic endpoint as soon as one is known:
+    /// the first announcing CITP peer (direct host+port), the first discovered Ether Dream DAC,
+    /// or the PONK multicast group. Runs once per plug — as soon as the address is non-empty
+    /// (by this write or by typing) it never touches it again.
+    /// </summary>
+    private static void AutoPreselectLaserEndpoint(MachineConfig machineConfig, LaserPlug plug)
+    {
+        if (!string.IsNullOrWhiteSpace(plug.Address))
+            return;
+
+        switch (plug.Kind)
+        {
+            case LaserPlug.Kinds.Citp:
+            {
+                // "Select the first active instantly": the plug starts talking to the first peer
+                // that announced itself instead of waiting for a manual pick.
+                var peer = CitpPeerDiscovery.Peers.FirstOrDefault();
+                if (peer == null)
+                    return;
+
+                _laserAddressBuffer = peer.Ip;
+                Plugs.UpdateLaser(machineConfig, plug.Id, null, peer.Ip, peer.TcpPort);
+                break;
+            }
+            case LaserPlug.Kinds.EtherDream:
+            {
+                var dacs = LaserPlugDiscovery.EtherDreamDacs;
+                if (dacs.Count == 0)
+                    return;
+
+                _laserAddressBuffer = dacs[0].Ip;
+                Plugs.UpdateLaser(machineConfig, plug.Id, null, dacs[0].Ip, null);
+                break;
+            }
+            case LaserPlug.Kinds.Ponk:
+            {
+                // Multicast group = the PONK basic: reaches every receiver without an address.
+                const string multicast = "239.255.10.24";
+                _laserAddressBuffer = multicast;
+                Plugs.UpdateLaser(machineConfig, plug.Id, null, multicast, null);
+                break;
             }
         }
     }
@@ -1081,47 +1261,18 @@ internal static partial class SetupParameterView
         }
     }
 
-    /// <summary>The scanner camera: how the laser frame is projected. Manual look-at until a
-    /// calibration solve fills pose and lens; consumed by [LaserCamera] through this output's OutputRef.</summary>
-    private static void DrawLaserScannerCamera(Setup setup, OutputDefinition output)
+    /// <summary>
+    /// The setup-driven pipeline: optimization and safety for this laser output, applied by the output
+    /// operator before streaming. Safety starts uncalibrated - only the alignment rectangle streams -
+    /// and the app-bar laser button stays orange until every laser output is calibrated.
+    /// </summary>
+    private static void DrawLaserProcessing(Setup setup, OutputDefinition output)
     {
-        FormInputs.AddSectionSubHeader("Scanner Camera");
-        var cam = output.Camera ??= new OutputDefinition.ProjectorCamera();
+        var processing = output.LaserProcessing ??= new LaserProcessingSettings();
+        var optimizer = processing.Optimizer;
+        var safety = processing.Safety;
 
-        Span<float> position = [cam.ManualPosition.X, cam.ManualPosition.Y, cam.ManualPosition.Z];
-        var positionState = DrawFloatsRow("Position (m)", position, "Where the scanner sits, in stage metres (X right, Y up, Z towards the viewer).",
-                                          reserveRight: 22);
-        BeginFieldUndo(setup, positionState);
-        if ((positionState & InputEditStateFlags.Modified) != 0)
-            cam.ManualPosition = new Vector3(position[0], position[1], position[2]);
-
-        CommitFieldUndo(setup, "Aim laser", positionState);
-        DrawRowReset("ResetScannerPosition", "scanner position",
-                     () => cam.ManualPosition = new System.Numerics.Vector3(0, 1, 3), setup);
-
-        Span<float> target = [cam.ManualTarget.X, cam.ManualTarget.Y, cam.ManualTarget.Z];
-        var targetState = DrawFloatsRow("Target (m)", target, "The stage point the beam centre hits.",
-                                        reserveRight: 22);
-        BeginFieldUndo(setup, targetState);
-        if ((targetState & InputEditStateFlags.Modified) != 0)
-            cam.ManualTarget = new Vector3(target[0], target[1], target[2]);
-
-        CommitFieldUndo(setup, "Aim laser", targetState);
-        DrawRowReset("ResetScannerTarget", "scanner target",
-                     () => cam.ManualTarget = System.Numerics.Vector3.Zero, setup);
-
-        Span<float> fov = [cam.ManualFovYDegrees];
-        var fovState = DrawFloatsRow("Scan angle (°)", fov,
-                                     "The scanner's full optical scan angle - the aperture the ILDA field covers. ±20° galvos read 40°.",
-                                     speed: 0.1f, format: "{0:0.0}", reserveRight: 22);
-        BeginFieldUndo(setup, fovState);
-        if ((fovState & InputEditStateFlags.Modified) != 0)
-            cam.ManualFovYDegrees = Math.Clamp(fov[0], 1f, 179f);
-
-        CommitFieldUndo(setup, "Aim laser", fovState);
-        DrawRowReset("ResetScannerFov", "scan angle", () => cam.ManualFovYDegrees = 45, setup);
-
-        DrawLaserCalibration(setup, output, cam);
+        FormInputs.AddSectionSubHeader("Frame Mapping");
 
         // How the camera frame lands in the aimed zone. The frame is the scanner field itself (the
         // camera's picture), so this is a fixed transform of that field - content keeps its size
@@ -1140,18 +1291,36 @@ internal static partial class SetupParameterView
         {
             SetupUndo.RunUndoable("Set laser frame mapping", setup, () => output.FrameMapping = frameMapping);
         }
-    }
 
-    /// <summary>
-    /// The setup-driven pipeline: optimization and safety for this laser output, applied by the output
-    /// operator before streaming. Safety starts uncalibrated - only the alignment rectangle streams -
-    /// and the app-bar laser button stays orange until every laser output is calibrated.
-    /// </summary>
-    private static void DrawLaserProcessing(Setup setup, OutputDefinition output)
-    {
-        var processing = output.LaserProcessing ??= new LaserProcessingSettings();
-        var optimizer = processing.Optimizer;
-        var safety = processing.Safety;
+        // Keystone: four draggable corners in the frame preview above (clamped to the safe zone).
+        // Uncalibrated, the green alignment shape IS the quad - trapeze it against a skewed screen.
+        // Calibrated, the frame is mapped onto the quad with a homography.
+        var frameWarp = safety.FrameWarp;
+        if (FormInputs.AddCheckBox("Trapeze frame (4 corners)", ref frameWarp,
+                                   "Warps the frame onto the four corners instead of the setup rectangle: drag the corners in the frame preview above (they stay inside the safe zone). While uncalibrated, the green alignment shape becomes the corner quad itself — trapeze it against a skewed screen. In calibrated mode the camera frame is mapped onto the quad (keystone), replacing the Frame mapping. Switching on adopts the setup rectangle's corners, so nothing moves until a corner is dragged."))
+        {
+            SetupUndo.RunUndoable("Toggle laser frame warp", setup, () =>
+                                  {
+                                      safety.FrameWarp = frameWarp;
+                                      if (frameWarp)
+                                      {
+                                          // Start from the setup rect's corners: enabling changes nothing
+                                          // until a corner is dragged.
+                                          var halfW = safety.SetupWidth * 0.5f;
+                                          var halfH = safety.SetupHeight * 0.5f;
+                                          safety.WarpCorner1X = safety.SetupCenterX - halfW;
+                                          safety.WarpCorner1Y = safety.SetupCenterY + halfH;
+                                          safety.WarpCorner2X = safety.SetupCenterX + halfW;
+                                          safety.WarpCorner2Y = safety.SetupCenterY + halfH;
+                                          safety.WarpCorner3X = safety.SetupCenterX + halfW;
+                                          safety.WarpCorner3Y = safety.SetupCenterY - halfH;
+                                          safety.WarpCorner4X = safety.SetupCenterX - halfW;
+                                          safety.WarpCorner4Y = safety.SetupCenterY - halfH;
+                                      }
+                                  });
+        }
+
+        DrawRowReset("ResetFrameWarp", "frame corners", () => safety.FrameWarp = false, setup);
 
         FormInputs.AddSectionSubHeader("Optimization");
 
@@ -1211,7 +1380,6 @@ internal static partial class SetupParameterView
 
         // Test screen: the aiming aid that works BEFORE calibration - rectangle + output name, so
         // the projector on the wall can be told apart from its siblings. Transient show state.
-        FormInputs.ApplyIndent();
         var testScreen = LaserDriver.IsTestScreen(output.Id);
         if (FormInputs.AddCheckBox("Test screen", ref testScreen,
                                    "Streams the alignment rectangle with this output's name scanned inside it - regardless of Calibrated - so you can tell which projector is which. The frame preview shows it too. Master enable still gates the beam."))
@@ -1704,6 +1872,12 @@ internal static partial class SetupParameterView
     private static void DrawContentCard(Setup setup, Guid childId)
     {
         var instance = ContentSourceSync.FindSendInstance(childId);
+        if (instance == null)
+        {
+            DrawLaserCameraCard(setup, childId);
+            return;
+        }
+
         if (instance is not IContentSupplier supplier)
             return;
 
@@ -1739,6 +1913,34 @@ internal static partial class SetupParameterView
             FormInputs.ApplyIndent();
             CustomComponents.StylizedText($"⚠ also routed to an output of {other.Width}×{other.Height} — it shows {rendered.Width}×{rendered.Height}",
                                           Fonts.FontSmall, UiColors.StatusAttention);
+        }
+    }
+
+    /// <summary>
+    /// The laser counterpart of the content card: a [LaserCamera] has no pixels, so the card carries what
+    /// the send card does — freezing the content — plus where its frame is routed and how big it is.
+    /// </summary>
+    private static void DrawLaserCameraCard(Setup setup, Guid childId)
+    {
+        if (LaserContent.FindCamera(childId) is not { } instance || instance is not ILaserContentSupplier supplier)
+            return;
+
+        var update = supplier.GetUpdateEnabled(OutputContentResolver.Context);
+        if (FormInputs.AddCheckBox("Update", ref update, "When off, freezes this laser frame and stops evaluating the scene."))
+            SetInputUndoable(instance, supplier.UpdateInput, update);
+
+        var output = setup.FindOutput(LaserContent.OutputRefOf(instance));
+        FormInputs.ApplyIndent();
+        CustomComponents.StylizedText(output == null
+                                          ? "Not routed — drop it on a laser output."
+                                          : $"Streams to {output.Name} · {LaserDriver.GetFrame(output).Count} points",
+                                      Fonts.FontSmall, UiColors.TextMuted);
+
+        if (instance is IStatusProvider { } status && status.GetStatusLevel() >= IStatusProvider.StatusLevel.Warning
+                                                    && status.GetStatusMessage() is { } message)
+        {
+            FormInputs.ApplyIndent();
+            CustomComponents.StylizedText(message, Fonts.FontSmall, UiColors.StatusAttention);
         }
     }
 

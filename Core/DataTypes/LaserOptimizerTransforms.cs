@@ -51,16 +51,34 @@ public static class LaserOptimizerTransforms
         public readonly List<int> SegmentStartIndices = [];
         public readonly List<int> SegmentEndIndices = [];
         public readonly List<int> TourOrder = [];
-        public bool[] Visited = new bool[256];
 
         /// <summary>Borrowed buffer for the corner-dwell pass, so it does not allocate a frame copy.</summary>
         public LaserPoint[] Temp = new LaserPoint[0];
 
+        /// <summary>The segments not yet toured, as a swap-remove array - the sequential query
+        /// scans this compact list instead of chasing grid linked lists. RemainingPosition maps
+        /// segment id to its index in Remaining, so removing one is O(1).</summary>
+        public int[] Remaining = new int[0];
+        public int[] RemainingPosition = new int[0];
+        public int RemainingCount;
+
         // Uniform grid over the scan field for the greedy tour on dense frames: cell -> first entry,
         // entry -> next entry, entry -> segment index (entries are 2 per segment: start then end).
+        // GridPrev/GridEntryCell let a consumed segment be unlinked from its cells, so later
+        // queries stop re-traversing visited entries. The grid maps the CONTENT's bounding box
+        // (not the whole scanner field), so a frame concentrated into a small area - a wireframe
+        // seen small - still spreads thinly across the cells. GridCellLength tracks each cell's
+        // list length; should a frame still pile up in a few cells, the tour goes sequential.
         public int[] GridHead = new int[0];
         public int[] GridNext = new int[0];
+        public int[] GridPrev = new int[0];
         public int[] GridEntrySegment = new int[0];
+        public int[] GridEntryCell = new int[0];
+        public int[] GridCellLength = new int[0];
+        public int MaxCellEntries;
+        public float GridOriginX;
+        public float GridOriginY;
+        public float GridCellSizeCurrent = GridCellSize;
         public readonly List<int> GridUsedCells = [];
     }
 
@@ -70,8 +88,21 @@ public static class LaserOptimizerTransforms
     /// </summary>
     public static LaserPoint[] Apply(LaserPoint[] input, int count, in Config config, Scratch scratch)
     {
+        var buffer = ApplyIntoBuffer(input, count, config, scratch, out var outputCount);
+        return CopyExact(buffer, outputCount);
+    }
+
+    /// <summary>
+    /// The same pipeline, but emitted into (and returned as) the scratch's own output buffer -
+    /// zero allocation in steady state. The returned array is only valid until the next call on
+    /// the same scratch, and its Length is capacity, not content: <paramref name="outputCount"/>
+    /// is the frame length. A bad frame degrades (bounded writes), never throws.
+    /// </summary>
+    public static LaserPoint[] ApplyIntoBuffer(LaserPoint[] input, int count, in Config config, Scratch scratch, out int outputCount)
+    {
+        outputCount = 0;
         if (input == null || count <= 0)
-            return Array.Empty<LaserPoint>();
+            return scratch.Output;
 
         var blankingDelay = Math.Clamp(config.BlankingDelayPoints, 0, 100);
         var cornerAnchors = Math.Clamp(config.CornerAnchorCount, 1, 10);
@@ -83,15 +114,15 @@ public static class LaserOptimizerTransforms
         if (config.EnableOptimization)
         {
             OptimizePath(input, count, scratch.Output, config.MaxJumpDistance, blankingDelay,
-                         config.CornerAngleThreshold, cornerAnchors, scratch, out var outputCount);
-            return CopyExact(scratch.Output, outputCount);
+                         config.CornerAngleThreshold, cornerAnchors, scratch, out outputCount);
         }
         else
         {
             ApplyCornerDwellingAndBlanking(input, count, scratch.Output, config.MaxJumpDistance, blankingDelay,
-                                           config.CornerAngleThreshold, cornerAnchors, out var outputCount);
-            return CopyExact(scratch.Output, outputCount);
+                                           config.CornerAngleThreshold, cornerAnchors, out outputCount);
         }
+
+        return scratch.Output;
     }
 
     private static LaserPoint[] CopyExact(LaserPoint[] buffer, int outputCount)
@@ -151,14 +182,6 @@ public static class LaserOptimizerTransforms
             return;
         }
 
-        var visited = scratch.Visited;
-        if (visited.Length < starts.Count)
-        {
-            visited = new bool[starts.Count * 2];
-            scratch.Visited = visited;
-        }
-        Array.Clear(visited, 0, starts.Count);
-
         var currentX = 0;
         var currentY = 0;
 
@@ -171,21 +194,41 @@ public static class LaserOptimizerTransforms
         var tourOrder = scratch.TourOrder;
         tourOrder.Clear();
 
+        // Every consumed segment leaves the compact Remaining list, which both query strategies
+        // answer from: the grid ring scan for spread-out content, a sequential scan otherwise.
+        var segmentCount = starts.Count;
+        if (scratch.Remaining.Length < segmentCount)
+        {
+            scratch.Remaining = new int[segmentCount];
+            scratch.RemainingPosition = new int[segmentCount];
+        }
+        for (var i = 0; i < segmentCount; i++)
+        {
+            scratch.Remaining[i] = i;
+            scratch.RemainingPosition[i] = i;
+        }
+        scratch.RemainingCount = segmentCount;
+
         // Dense frames (a mesh wireframe can be thousands of short segments) make the exhaustive
-        // scan quadratic - seconds per frame at show densities. Small frames keep it: it pins the
-        // classic ordering exactly. Larger ones answer the same question - nearest unvisited
-        // segment - through a uniform grid of the scan field, expanding rings of cells and
-        // preferring the lower segment index on a tie, so the tour is the same wherever the
-        // exhaustive scan had a clear winner.
-        var useGrid = starts.Count > ExhaustiveSegmentLimit;
+        // scan quadratic - seconds per frame at show densities. Spread-out frames answer the
+        // nearest-unvisited question through a uniform grid of the scan field, expanding rings of
+        // cells. A frame CONCENTRATED into a few cells (a whole wireframe seen small on screen -
+        // the common case for a LaserCamera) would make every grid query sweep one enormous
+        // linked list; those go sequential, which is the same answer over compact arrays for a
+        // fraction of the cost.
+        var useGrid = segmentCount > ExhaustiveSegmentLimit;
         if (useGrid)
+        {
             BuildSegmentGrid(input, starts, ends, scratch);
+            if (scratch.MaxCellEntries > DenseCellEntryLimit)
+                useGrid = false;
+        }
 
         for (var i = 0; i < starts.Count; i++)
         {
             var bestIndex = useGrid
-                                ? FindNearestSegmentInGrid(input, starts, ends, visited, currentX, currentY, scratch)
-                                : FindNearestSegmentExhaustive(input, starts, ends, visited, currentX, currentY);
+                                ? FindNearestSegmentInGrid(input, starts, ends, currentX, currentY, scratch)
+                                : FindNearestInRemaining(input, starts, ends, currentX, currentY, scratch);
 
             if (bestIndex == -1)
                 break;
@@ -196,7 +239,9 @@ public static class LaserOptimizerTransforms
             var endToHere = CalculateDistanceSquared(currentX, currentY, input[ends[bestIndex]].X, input[ends[bestIndex]].Y);
             var bestReverse = endToHere < startToHere;
 
-            visited[bestIndex] = true;
+            if (useGrid)
+                UnlinkSegmentFromGrid(bestIndex, scratch);
+            RemoveFromRemaining(bestIndex, scratch);
             tourOrder.Add(bestReverse ? ~bestIndex : bestIndex);
 
             var segStart = starts[bestIndex];
@@ -248,9 +293,19 @@ public static class LaserOptimizerTransforms
         ApplyCornerDwellingToOutput(output, ref outputCount, cornerAngleThreshold, cornerAnchorCount, scratch);
     }
 
-    /// <summary>Up to this many lit segments the tour scans every segment: the classic ordering,
-    /// unchanged. A hand-drawn show never reaches it; a mesh wireframe is far beyond.</summary>
+    /// <summary>Up to this many lit segments the tour scans the compact remaining-list directly:
+    /// the classic ordering, unchanged. A hand-drawn show never reaches it; a mesh wireframe is
+    /// far beyond.</summary>
     private const int ExhaustiveSegmentLimit = 512;
+
+    /// <summary>A frame whose most occupied grid cell holds more than this many segment endpoints
+    /// is CONCENTRATED (a whole wireframe seen small): its grid queries would each sweep an
+    /// enormous linked list, so the whole tour goes sequential over the remaining-list.</summary>
+    private const int DenseCellEntryLimit = 256;
+
+    /// <summary>Rings the grid scan expands before giving up and answering from the remaining-list
+    /// - for the far-away-nearest case on spread-out frames.</summary>
+    private const int GridFallbackRing = 4;
 
     /// <summary>Tour grid resolution. 128 cells over the ±32768 field = 512 units per cell, so a
     /// step inspects a handful of nearby segments instead of every segment in the frame.</summary>
@@ -262,28 +317,30 @@ public static class LaserOptimizerTransforms
 
     private const float GridCellSize = 2f * GridFieldExtent / GridCellsPerAxis;
 
-    /// <summary>Nearest unvisited segment by the classic rule (scan order, strict improvement so the
-    /// lower index wins ties).</summary>
-    private static int FindNearestSegmentExhaustive(LaserPoint[] input, List<int> starts, List<int> ends, bool[] visited,
-                                                    int currentX, int currentY)
+    /// <summary>Nearest not-yet-toured segment, scanning the compact remaining list. Sequential
+    /// memory access makes this several times faster per candidate than the grid's linked lists -
+    /// it is the tour's workhorse for small and concentrated frames alike. Same rule everywhere:
+    /// nearest endpoint wins, ties keep the lower segment index.</summary>
+    private static int FindNearestInRemaining(LaserPoint[] input, List<int> starts, List<int> ends,
+                                              int currentX, int currentY, Scratch scratch)
     {
         var bestDist = float.MaxValue;
         var bestIndex = -1;
+        var remaining = scratch.Remaining;
+        var count = scratch.RemainingCount;
 
-        for (var j = 0; j < starts.Count; j++)
+        for (var i = 0; i < count; i++)
         {
-            if (visited[j])
-                continue;
-
+            var j = remaining[i];
             var distToStart = CalculateDistanceSquared(currentX, currentY, input[starts[j]].X, input[starts[j]].Y);
-            if (distToStart < bestDist)
+            if (distToStart < bestDist || (distToStart == bestDist && j < bestIndex))
             {
                 bestDist = distToStart;
                 bestIndex = j;
             }
 
             var distToEnd = CalculateDistanceSquared(currentX, currentY, input[ends[j]].X, input[ends[j]].Y);
-            if (distToEnd < bestDist)
+            if (distToEnd < bestDist || (distToEnd == bestDist && j < bestIndex))
             {
                 bestDist = distToEnd;
                 bestIndex = j;
@@ -293,20 +350,36 @@ public static class LaserOptimizerTransforms
         return bestIndex;
     }
 
-    private static int GridCellOf(int x, int y)
+    /// <summary>Swap-removes a consumed segment from the compact remaining list - O(1) via the
+    /// id-to-position map. The list and the tour grid consume together, so a query may answer
+    /// from either and see the same not-yet-toured set.</summary>
+    private static void RemoveFromRemaining(int segment, Scratch scratch)
     {
-        var cx = Math.Clamp((int)((x + GridFieldExtent) / GridCellSize), 0, GridCellsPerAxis - 1);
-        var cy = Math.Clamp((int)((y + GridFieldExtent) / GridCellSize), 0, GridCellsPerAxis - 1);
+        var position = scratch.RemainingPosition[segment];
+        var last = scratch.Remaining[--scratch.RemainingCount];
+        scratch.Remaining[position] = last;
+        scratch.RemainingPosition[last] = position;
+    }
+
+    private static int GridCellOf(int x, int y, Scratch scratch)
+    {
+        var cx = Math.Clamp((int)((x - scratch.GridOriginX) / scratch.GridCellSizeCurrent), 0, GridCellsPerAxis - 1);
+        var cy = Math.Clamp((int)((y - scratch.GridOriginY) / scratch.GridCellSizeCurrent), 0, GridCellsPerAxis - 1);
         return cy * GridCellsPerAxis + cx;
     }
 
     /// <summary>Buckets every segment's two endpoints into the tour grid (both endpoints, so the
-    /// nearest end is found no matter which side the beam approaches from).</summary>
+    /// nearest end is found no matter which side the beam approaches from). The grid maps the
+    /// content's bounding box: full-field cells would cram a small, centered frame into a
+    /// handful of giant cell lists, which is exactly the shape a LaserCamera wireframe has.
+    /// Also records each cell's list length - should a frame STILL pile into a few cells, the
+    /// tour switches to the sequential remaining-scan.</summary>
     private static void BuildSegmentGrid(LaserPoint[] input, List<int> starts, List<int> ends, Scratch scratch)
     {
         if (scratch.GridHead.Length < GridCellCount)
         {
             scratch.GridHead = new int[GridCellCount];
+            scratch.GridCellLength = new int[GridCellCount];
             Array.Fill(scratch.GridHead, -1);
         }
         else
@@ -314,26 +387,64 @@ public static class LaserOptimizerTransforms
             // Only the cells the previous frame touched need clearing, and usually far fewer
             // than the whole grid.
             foreach (var cell in scratch.GridUsedCells)
+            {
                 scratch.GridHead[cell] = -1;
+                scratch.GridCellLength[cell] = 0;
+            }
         }
 
         scratch.GridUsedCells.Clear();
+        scratch.MaxCellEntries = 0;
+
+        // Content bounds -> cell size. A degenerate extent (all points on one spot) falls back
+        // to the full-field mapping rather than dividing by zero.
+        var minX = float.MaxValue;
+        var minY = float.MaxValue;
+        var maxX = float.MinValue;
+        var maxY = float.MinValue;
+        for (var i = 0; i < starts.Count; i++)
+        {
+            Ref(ref minX, ref maxX, input[starts[i]].X);
+            Ref(ref minY, ref maxY, input[starts[i]].Y);
+            Ref(ref minX, ref maxX, input[ends[i]].X);
+            Ref(ref minY, ref maxY, input[ends[i]].Y);
+        }
+
+        var extentX = maxX - minX;
+        var extentY = maxY - minY;
+        var extent = MathF.Max(MathF.Max(extentX, extentY), 1f);
+        if (extent > 2f * GridFieldExtent)
+            extent = 2f * GridFieldExtent;
+
+        scratch.GridOriginX = minX;
+        scratch.GridOriginY = minY;
+        scratch.GridCellSizeCurrent = MathF.Max(extent / GridCellsPerAxis, 0.001f);
 
         int entryCount = starts.Count * 2;
         if (scratch.GridNext.Length < entryCount)
         {
             scratch.GridNext = new int[entryCount];
+            scratch.GridPrev = new int[entryCount];
             scratch.GridEntrySegment = new int[entryCount];
+            scratch.GridEntryCell = new int[entryCount];
         }
 
         var entry = 0;
         for (var i = 0; i < starts.Count; i++)
         {
             var startPoint = input[starts[i]];
-            AddGridEntry(GridCellOf(startPoint.X, startPoint.Y), i, ref entry, scratch);
+            AddGridEntry(GridCellOf(startPoint.X, startPoint.Y, scratch), i, ref entry, scratch);
 
             var endPoint = input[ends[i]];
-            AddGridEntry(GridCellOf(endPoint.X, endPoint.Y), i, ref entry, scratch);
+            AddGridEntry(GridCellOf(endPoint.X, endPoint.Y, scratch), i, ref entry, scratch);
+        }
+
+        void Ref(ref float lo, ref float hi, int value)
+        {
+            if (value < lo)
+                lo = value;
+            if (value > hi)
+                hi = value;
         }
     }
 
@@ -343,20 +454,56 @@ public static class LaserOptimizerTransforms
         if (head == -1)
             scratch.GridUsedCells.Add(cell);
 
+        var length = ++scratch.GridCellLength[cell];
+        if (length > scratch.MaxCellEntries)
+            scratch.MaxCellEntries = length;
+
         scratch.GridNext[entry] = head;
+        scratch.GridPrev[entry] = -1;
         scratch.GridEntrySegment[entry] = segment;
+        scratch.GridEntryCell[entry] = cell;
+        if (head != -1)
+            scratch.GridPrev[head] = entry;
         scratch.GridHead[cell] = entry;
         entry++;
     }
 
-    /// <summary>Same answer as the exhaustive scan for a dense frame: expand rings of cells around
-    /// the current position and stop once no cell still to be visited can hold a closer endpoint.
-    /// Ties keep the lower segment index, so the tour stays deterministic.</summary>
-    private static int FindNearestSegmentInGrid(LaserPoint[] input, List<int> starts, List<int> ends, bool[] visited,
+    /// <summary>Removes a consumed segment's two entries from the tour grid. The nearest query
+    /// only ever skips visited entries, so the tour is unchanged - but every later query stops
+    /// paying to traverse them, which is what degraded toward quadratic as the tour emptied a
+    /// dense neighborhood (each scan re-walked hundreds of consumed entries per cell).</summary>
+    private static void UnlinkSegmentFromGrid(int segment, Scratch scratch)
+    {
+        // BuildSegmentGrid assigns entries sequentially: segment i owns entries 2i and 2i+1.
+        UnlinkGridEntry(segment * 2, scratch);
+        UnlinkGridEntry(segment * 2 + 1, scratch);
+    }
+
+    private static void UnlinkGridEntry(int entry, Scratch scratch)
+    {
+        var prev = scratch.GridPrev[entry];
+        var next = scratch.GridNext[entry];
+        var cell = scratch.GridEntryCell[entry];
+
+        if (prev != -1)
+            scratch.GridNext[prev] = next;
+        else
+            scratch.GridHead[cell] = next;
+
+        if (next != -1)
+            scratch.GridPrev[next] = prev;
+    }
+
+    /// <summary>Same answer as the exhaustive scan for a spread-out frame: expand rings of cells
+    /// around the current position and stop once no cell still to be visited can hold a closer
+    /// endpoint. Ties keep the lower segment index, so the tour stays deterministic. When the
+    /// rings don't converge quickly (the nearest not-yet-toured segment is far away, or the
+    /// content is one concentrated blob), the compact remaining-list answers instead.</summary>
+    private static int FindNearestSegmentInGrid(LaserPoint[] input, List<int> starts, List<int> ends,
                                                 int currentX, int currentY, Scratch scratch)
     {
-        var cx = Math.Clamp((int)((currentX + GridFieldExtent) / GridCellSize), 0, GridCellsPerAxis - 1);
-        var cy = Math.Clamp((int)((currentY + GridFieldExtent) / GridCellSize), 0, GridCellsPerAxis - 1);
+        var cx = Math.Clamp((int)((currentX - scratch.GridOriginX) / scratch.GridCellSizeCurrent), 0, GridCellsPerAxis - 1);
+        var cy = Math.Clamp((int)((currentY - scratch.GridOriginY) / scratch.GridCellSizeCurrent), 0, GridCellsPerAxis - 1);
 
         var bestDist = float.MaxValue;
         var bestIndex = -1;
@@ -367,10 +514,16 @@ public static class LaserOptimizerTransforms
             // best hit is strictly closer than that, no candidate left can beat it.
             if (bestIndex >= 0 && ring > 0)
             {
-                var minDistance = (ring - 1) * GridCellSize;
+                var minDistance = (ring - 1) * scratch.GridCellSizeCurrent;
                 if (bestDist < minDistance * minDistance)
                     break;
             }
+
+            // Not converging: the nearest candidate is far away (sparse frame, long tour legs)
+            // and the rings would sweep thousands of mostly empty cells. The sequential scan
+            // over the remaining list returns the identical answer.
+            if (ring > GridFallbackRing)
+                return FindNearestInRemaining(input, starts, ends, currentX, currentY, scratch);
 
             var minY = Math.Max(0, cy - ring);
             var maxY = Math.Min(GridCellsPerAxis - 1, cy + ring);
@@ -389,15 +542,12 @@ public static class LaserOptimizerTransforms
                     for (var e = scratch.GridHead[gy * GridCellsPerAxis + gx]; e != -1; e = scratch.GridNext[e])
                     {
                         var j = scratch.GridEntrySegment[e];
-                        if (visited[j])
-                            continue;
-
                         var toStart = CalculateDistanceSquared(currentX, currentY, input[starts[j]].X, input[starts[j]].Y);
                         var toEnd = CalculateDistanceSquared(currentX, currentY, input[ends[j]].X, input[ends[j]].Y);
                         var distance = MathF.Min(toStart, toEnd);
 
                         // Strict improvement keeps the lower segment index on a tie, which is what
-                        // the exhaustive scan's < comparison does.
+                        // the sequential scan's comparison does too.
                         if (distance < bestDist || (distance == bestDist && (bestIndex < 0 || j < bestIndex)))
                         {
                             bestDist = distance;
@@ -412,7 +562,7 @@ public static class LaserOptimizerTransforms
         // belt and braces so a frame can never lose shapes to a bookkeeping slip.
         return bestIndex >= 0
                    ? bestIndex
-                   : FindNearestSegmentExhaustive(input, starts, ends, visited, currentX, currentY);
+                   : FindNearestInRemaining(input, starts, ends, currentX, currentY, scratch);
     }
 
     /// <summary>
@@ -629,10 +779,11 @@ public static class LaserOptimizerTransforms
 
     private static float CalculateAngle(LaserPoint p1, LaserPoint p2, LaserPoint p3)
     {
-        var dx1 = p2.X - p1.X;
-        var dy1 = p2.Y - p1.Y;
-        var dx2 = p3.X - p2.X;
-        var dy2 = p3.Y - p2.Y;
+        // Float before multiplying: full-field steps squared overflow int and turned the angle into NaN.
+        var dx1 = (float)(p2.X - p1.X);
+        var dy1 = (float)(p2.Y - p1.Y);
+        var dx2 = (float)(p3.X - p2.X);
+        var dy2 = (float)(p3.Y - p2.Y);
 
         var len1 = MathF.Sqrt(dx1 * dx1 + dy1 * dy1);
         var len2 = MathF.Sqrt(dx2 * dx2 + dy2 * dy2);
@@ -646,14 +797,6 @@ public static class LaserOptimizerTransforms
 
         var angleRad = MathF.Acos(cosAngle);
         return angleRad * (180f / MathF.PI);
-    }
-
-    private static float CalculateAngleInOutput(LaserPoint[] points, int i1, int i2, int i3)
-    {
-        if (i1 < 0 || i2 < 0 || i3 < 0 || i1 >= points.Length || i2 >= points.Length || i3 >= points.Length)
-            return 180f;
-
-        return CalculateAngle(points[i1], points[i2], points[i3]);
     }
 
     private static float CalculateDistanceSquared(int x1, int y1, int x2, int y2)

@@ -69,7 +69,7 @@
       },
       "Description": "Worker threads for the Xnnpack acceleration (0 = library default). Ignored by Cpu and Gpu."
     }
-],
+  ],
   "SymbolChildUis": [],
   "OutputUis": [
     {

@@ -462,7 +462,7 @@ internal static class AppMenuBar
 
             CustomComponents.SeparatorLine();
 
-            WindowManager.SettingsWindow.DrawMenuItemToggle();
+            WindowManager.SettingsWindow.DrawMenuItemToggle(UserActions.OpenSettings.ListShortcuts());
             {
                 var hasSettings = ProjectView.Focused?.CompositionInstance?.Symbol.CompositionSettings is { Enabled: true };
                 var window = WindowManager.ProjectSettingsWindow;

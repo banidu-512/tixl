@@ -48,7 +48,10 @@ internal sealed class Draw : Instance<Draw>, IRenderStatsProvider
 
         _complainedOnce = false;
 
-        deviceContext.Draw(vertexCount, startVertexLocation);
+        // During a geometry capture pass the draw is replaced by its registration (below): the
+        // capture reads buffers, and rasterizing would paint into whatever target is bound.
+        if (!context.CaptureOnlyDraws)
+            deviceContext.Draw(vertexCount, startVertexLocation);
 
         // While a geometry capture pass is active (e.g. the laser camera rendering its scene),
         // register the geometry wired for capture. This op re-runs every frame even in cached

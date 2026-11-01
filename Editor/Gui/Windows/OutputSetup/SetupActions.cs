@@ -304,11 +304,6 @@ internal static class SetupActions
                                                                             Kind = kind,
                                                                         };
 
-                                                       // A laser output is driven by its scanner camera from the
-                                                       // start — the manual look-at is how it is aimed before a solve.
-                                                       if (kind == OutputDefinition.Kinds.Laser && output.Camera == null)
-                                                           output.Camera = new OutputDefinition.ProjectorCamera();
-
                                                        setup.Outputs.Add(output);
                                                        selection.Select(SetupEntityKinds.Output, output.Id);
                                                    });
@@ -936,9 +931,11 @@ internal static class SetupActions
         }
     }
 
-    // Deleting an output cascades: drop every surface's mapping onto it, unbind the display, and stop
-    // presenting it. Surfaces left without a mapping simply have no output — not lost. (The display binding
-    // lives in the per-machine config outside the setup file, so an undo restores the output unbound.)
+    // Deleting an output cascades: drop every surface's mapping onto it, unbind the display, release
+    // cameras routed to it (their OutputRef would dangle forever — cleared so the routing sync can
+    // attach them to another laser output), and stop presenting it. Surfaces left without a mapping
+    // simply have no output — not lost. (The display binding lives in the per-machine config outside
+    // the setup file, so an undo restores the output unbound.)
     private static void DeleteOutputInternal(Setup setup, MachineConfig machineConfig, Guid outputId)
     {
         setup.Outputs.RemoveAll(o => o.Id == outputId);
@@ -947,6 +944,13 @@ internal static class SetupActions
             surface.OutputMappings.RemoveAll(m => m.OutputId == outputId);
 
         machineConfig.Unbind(outputId);
+
+        var cameras = LaserContent.Cameras;
+        for (var i = 0; i < cameras.Count; i++)
+        {
+            if (cameras[i] is T3.Core.Operator.Instance instance && LaserContent.OutputRefOf(instance) == outputId)
+                LaserContent.SetOutputRef(instance, Guid.Empty);
+        }
     }
 
     /// <summary>The duplicate cascades, one per kind, side by side.</summary>

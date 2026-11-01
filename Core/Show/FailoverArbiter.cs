@@ -96,13 +96,18 @@ public static class FailoverArbiter
     private const int FailoverPort = 44910;
     private const int MaxDatagramSize = 512;
 
+    /// <summary>A show has a handful of nodes; anything beyond this is a flood of forged ids.</summary>
+    private const int MaxTrackedPeers = 64;
+
     /// <summary>Link-local multicast block (224.0.0.0/24); flooded by switches, never routed.</summary>
     private static readonly IPAddress GroupAddress = IPAddress.Parse("224.0.0.157");
 
     private static readonly object Gate = new();
 
     private static FailoverConfig _config = new();
-    private static NodeRole _role = NodeRole.Disabled;
+
+    /// <summary>Written under <see cref="Gate"/>; volatile so the per-frame suppression check needs no lock.</summary>
+    private static volatile NodeRole _role = NodeRole.Disabled;
     private static readonly string NodeId = Guid.NewGuid().ToString("N");
 
     /// <summary>
@@ -141,10 +146,8 @@ public static class FailoverArbiter
     {
         get
         {
-            lock (Gate)
-            {
-                return _role is not (NodeRole.Active or NodeRole.Disabled);
-            }
+            var role = _role;
+            return role is not (NodeRole.Active or NodeRole.Disabled);
         }
     }
 
@@ -194,6 +197,21 @@ public static class FailoverArbiter
                     return null;
 
                 return (bestActive.Address, bestActive.CollabPort);
+            }
+        }
+    }
+
+    /// <summary>Source addresses of the peers whose heartbeats are currently heard.</summary>
+    public static void GetLivePeerAddresses(List<string> addresses)
+    {
+        lock (Gate)
+        {
+            var now = Environment.TickCount64;
+            var timeout = TimeoutMs;
+            foreach (var peer in _peers.Values)
+            {
+                if (now - peer.LastHeardTicks <= timeout && peer.Address.Length > 0)
+                    addresses.Add(peer.Address);
             }
         }
     }
@@ -507,9 +525,10 @@ public static class FailoverArbiter
 
             try
             {
-                Task.Delay(delay, token).Wait(token);
+                if (token.WaitHandle.WaitOne(delay))
+                    break;
             }
-            catch (OperationCanceledException)
+            catch (ObjectDisposedException)
             {
                 break;
             }
@@ -572,6 +591,13 @@ public static class FailoverArbiter
             {
                 length = listenSocket.ReceiveFrom(buffer, ref remote);
             }
+            catch (SocketException e) when (e.SocketErrorCode is SocketError.MessageSize or SocketError.ConnectionReset
+                                                 && !token.IsCancellationRequested)
+            {
+                // A foreign oversized datagram, or an ICMP reset echoed back to this UDP socket, must not
+                // end the listener: a deaf node promotes itself against a live master.
+                continue;
+            }
             catch (Exception e) when (e is SocketException or ObjectDisposedException)
             {
                 break;
@@ -601,6 +627,9 @@ public static class FailoverArbiter
                 {
                     if (!_peers.TryGetValue(heartbeat.Id, out var peer))
                     {
+                        if (_peers.Count >= MaxTrackedPeers)
+                            continue;
+
                         peer = new PeerInfo();
                         _peers[heartbeat.Id] = peer;
                         RecordEvent($"Peer discovered (priority {heartbeat.Prio}, {(heartbeat.Active ? "active" : "standby")})");

@@ -52,30 +52,6 @@
       "Description": "Minimum confidence score for hand presence to be considered successful."
     },
     {
-      "InputId": "abcdef12-3456-7890-abcd-ef1234567890"/*Debug*/,
-      "Position": {
-        "X": -200.0,
-        "Y": 450.0
-      },
-      "Description": "Enables debug visualization with debug texture output showing hand landmarks and connections."
-    },
-    {
-      "InputId": "bcdef123-4567-890a-bcde-f1234567890a"/*CorrectAspectRatio*/,
-      "Position": {
-        "X": -200.0,
-        "Y": 525.0
-      },
-      "Description": "Whether to correct aspect ratio for non-square inputs."
-    },
-    {
-      "InputId": "cdef1234-5678-90ab-cdef-1234567890ab"/*ZScale*/,
-      "Position": {
-        "X": -200.0,
-        "Y": 600.0
-      },
-      "Description": "Scale factor for Z coordinate of points."
-    },
-    {
       "InputId": "a1b2c3d4-0001-4a9b-8c2d-101010101010"/*Acceleration*/,
       "Position": {
         "X": -200.0,
@@ -106,8 +82,32 @@
         "Y": 900.0
       },
       "Description": "Target wrist-to-middle-knuckle distance (in centered, +/-0.5 image units) when ConstantSize is on."
+    },
+    {
+      "InputId": "abcdef12-3456-7890-abcd-ef1234567890"/*Debug*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 450.0
+      },
+      "Description": "Enables debug visualization with debug texture output showing hand landmarks and connections."
+    },
+    {
+      "InputId": "bcdef123-4567-890a-bcde-f1234567890a"/*CorrectAspectRatio*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 525.0
+      },
+      "Description": "Whether to correct aspect ratio for non-square inputs."
+    },
+    {
+      "InputId": "cdef1234-5678-90ab-cdef-1234567890ab"/*ZScale*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 600.0
+      },
+      "Description": "Scale factor for Z coordinate of points."
     }
-],
+  ],
   "SymbolChildUis": [],
   "OutputUis": [
     {

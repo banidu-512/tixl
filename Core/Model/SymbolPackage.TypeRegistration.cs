@@ -12,6 +12,7 @@ using T3.Core.DataTypes;
 using T3.Core.DataTypes.DataSet;
 using T3.Core.DataTypes.ShaderGraph;
 using T3.Core.DataTypes.Vector;
+using T3.Core.DataTypes.Volume;
 using T3.Core.Operator.Slots;
 using T3.Core.Rendering.Material;
 using T3.Serialization;
@@ -436,6 +437,15 @@ public partial class SymbolPackage
         RegisterType(typeof(ParticleSystem), "ParticleSystem",
                      () => new InputValue<ParticleSystem>(null));
 
+        // Rigid-body descriptions passed from body/joint operators into Lib.physics.PhysicsWorld.
+        // Simulation state lives inside the world, so these are plain references and null means
+        // "unconnected". Unregistered slot types make the operator unresolvable at load time.
+        RegisterType(typeof(PhysicsBody), "PhysicsBody",
+                     () => new InputValue<PhysicsBody>(null));
+
+        RegisterType(typeof(PhysicsJoint), "PhysicsJoint",
+                     () => new InputValue<PhysicsJoint>(null));
+
         RegisterType(typeof(T3.Core.Operator.GizmoVisibility), "GizmoVisibility",
                      InputDefaultValueCreator<T3.Core.Operator.GizmoVisibility>,
                      (writer, obj) => writer.WriteValue(obj.ToString()),
@@ -485,6 +495,11 @@ public partial class SymbolPackage
 
         RegisterType(typeof(MeshGeometry), "MeshGeometry",
                      () => new InputValue<MeshGeometry>(null));
+
+        // Sparse OpenVDB volume. Connections pass the instance through by reference;
+        // null means "no volume yet", which every Lib.volume operator handles.
+        RegisterType(typeof(VdbVolume), "VdbVolume",
+                     () => new InputValue<VdbVolume>(null));
 
         RegisterType(typeof(CurveGeometry), "CurveGeometry",
                      () => new InputValue<CurveGeometry>(null));

@@ -6,6 +6,7 @@ using System.Text;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using T3.Core.Logging;
+using T3.Core.Utils;
 using T3.Serialization;
 
 namespace T3.Core.Output;
@@ -44,6 +45,34 @@ public sealed class MachineConfig
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Re-homes laser plugs whose LocalAddress names an adapter this machine does not own — what a
+    /// project folder cloned from another computer carries. The file is per-machine by design, but a
+    /// folder copy (unlike a boygroup deploy or a collab download, which exclude it) brings the
+    /// source machine's copy along, and streams would then keep retrying a bind to an address that
+    /// is not ours. The plug moves to the local adapter that reaches its device (same subnet), or to
+    /// "any" when nothing pins the subnet down. Returns the number of plugs changed; the caller
+    /// persists when it is above zero.
+    /// </summary>
+    public int ReconcileLocalInterfaces()
+    {
+        var changed = 0;
+        foreach (var plug in LaserPlugs)
+        {
+            var replacement = LanInterfaces.ReconcileLocalAddress(plug.LocalAddress, plug.Address);
+            if (string.Equals(replacement, plug.LocalAddress, StringComparison.Ordinal))
+                continue;
+
+            Log.Info($"Laser plug \"{plug.Name}\": cloned local address {plug.LocalAddress} "
+                     + (replacement.Length > 0 ? $"re-homed to this machine's adapter {replacement}."
+                                               : "cleared to any interface (no local adapter in the device's subnet)."));
+            plug.LocalAddress = replacement;
+            changed++;
+        }
+
+        return changed;
     }
 
     public LaserPlug? FindLaserPlug(Guid plugId)

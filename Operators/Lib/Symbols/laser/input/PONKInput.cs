@@ -129,6 +129,15 @@ internal sealed class PONKInput : Instance<PONKInput>, IStatusProvider, ICustomD
     private volatile string _lastCompletedSenderName = string.Empty;
     private long _lastFrameTicks;
 
+    /** Frames waiting for their remaining chunks; beyond this the table is dropped. */
+    private const int MaxPendingFrames = 1024;
+
+    /** Distinct sender names kept for the filter dropdown. */
+    private const int MaxKnownStreams = 256;
+
+    private readonly List<(int SenderId, byte FrameNumber)> _staleFrameKeys = [];
+    private readonly List<string> _staleStreamKeys = [];
+
     // Live stream discovery: every valid packet header updates the sender's last-seen stamp.
     // The FilterSenderName dropdown lists these.
     private sealed record StreamInfo(string SenderName, string RemoteIp, DateTime LastSeen);
@@ -214,6 +223,14 @@ internal sealed class PONKInput : Instance<PONKInput>, IStatusProvider, ICustomD
         if (_disposed) return;
         _disposed = true;
         StopListening();
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+            Dispose();
+
+        base.Dispose(disposing);
     }
     #endregion
 
@@ -483,6 +500,12 @@ internal sealed class PONKInput : Instance<PONKInput>, IStatusProvider, ICustomD
             if (!string.IsNullOrEmpty(nameFilter) && !string.Equals(senderName, nameFilter, StringComparison.Ordinal)) return;
 
             // Get or create the per-frame buffer
+            if (_frameBuffers.Count > MaxPendingFrames)
+            {
+                _chunksOrphaned += _frameBuffers.Count;
+                _frameBuffers.Clear();
+            }
+
             var frameKey = (senderId, frameNumber);
             var frame = _frameBuffers.GetOrAdd(frameKey, _ => new FrameBuffer
             {
@@ -583,6 +606,9 @@ internal sealed class PONKInput : Instance<PONKInput>, IStatusProvider, ICustomD
     {
         var remoteIp = remoteAddress.ToString();
         var key = string.IsNullOrEmpty(senderName) ? remoteIp : senderName;
+        if (_knownStreams.Count > MaxKnownStreams)
+            _knownStreams.Clear();
+
         _knownStreams[key] = new StreamInfo(string.IsNullOrEmpty(senderName) ? key : senderName, remoteIp, DateTime.UtcNow);
     }
 
@@ -716,12 +742,12 @@ internal sealed class PONKInput : Instance<PONKInput>, IStatusProvider, ICustomD
     {
         if (timeoutSeconds <= 0) return;
         var cutoff = DateTime.UtcNow.AddSeconds(-timeoutSeconds);
-        var stale = new List<(int SenderId, byte FrameNumber)>();
+        _staleFrameKeys.Clear();
         foreach (var kvp in _frameBuffers)
         {
-            if (kvp.Value.FirstChunkTime < cutoff) stale.Add(kvp.Key);
+            if (kvp.Value.FirstChunkTime < cutoff) _staleFrameKeys.Add(kvp.Key);
         }
-        foreach (var key in stale)
+        foreach (var key in _staleFrameKeys)
         {
             if (_frameBuffers.TryRemove(key, out var frame))
             {
@@ -730,7 +756,12 @@ internal sealed class PONKInput : Instance<PONKInput>, IStatusProvider, ICustomD
         }
 
         // Streams that went quiet drop out of the FilterSenderName dropdown
-        foreach (var key in _knownStreams.Where(kv => kv.Value.LastSeen < cutoff).Select(kv => kv.Key).ToList())
+        _staleStreamKeys.Clear();
+        foreach (var kvp in _knownStreams)
+        {
+            if (kvp.Value.LastSeen < cutoff) _staleStreamKeys.Add(kvp.Key);
+        }
+        foreach (var key in _staleStreamKeys)
         {
             _knownStreams.TryRemove(key, out _);
         }

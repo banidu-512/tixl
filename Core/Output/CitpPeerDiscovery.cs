@@ -26,8 +26,16 @@ public static class CitpPeerDiscovery
     private const uint PLocCookie = 0x504C6F63; // "PLoc"
 
     private static readonly ConcurrentDictionary<string, Peer> PeersByKey = new();
+    private static readonly ConcurrentDictionary<string, long> LastSeenByKey = new();
     private static UdpClient? _listener;
     private static int _started;
+
+    /// <summary>Peers stop announcing when they leave; entries older than this are dropped, so a
+    /// session that changed address does not linger in the dropdown (and a direct-connect target
+    /// is never picked from a peer that is no longer there).</summary>
+    private const int PeerLifetimeMs = 30_000;
+
+    private const int PruneIntervalMs = 2000;
 
     /// <summary>Raised for every PLoc announcement seen - subscribers (CITP streams) decide
     /// whether the peer is interesting; the registry keeps everything for the dropdown.</summary>
@@ -35,7 +43,11 @@ public static class CitpPeerDiscovery
 
     public static IReadOnlyCollection<Peer> Peers => PeersByKey.Values.OrderBy(p => p.Name).ToArray();
 
-    public static void ForgetPeers() => PeersByKey.Clear();
+    public static void ForgetPeers()
+    {
+        PeersByKey.Clear();
+        LastSeenByKey.Clear();
+    }
 
     /// <summary>Starts the shared listener once; safe to call from anywhere, any number of times.</summary>
     public static void EnsureStarted()
@@ -68,6 +80,8 @@ public static class CitpPeerDiscovery
         catch (Exception e)
         {
             Log.Debug($"CITP peer discovery not started ({e.Message})");
+            _listener?.Dispose();
+            _listener = null;
             _started = 0;
         }
     }
@@ -76,10 +90,18 @@ public static class CitpPeerDiscovery
     {
         var listener = _listener!;
         var remoteEndPoint = new IPEndPoint(IPAddress.Any, 0);
+        var lastPrune = Environment.TickCount64;
         while (true)
         {
             try
             {
+                // Steady traffic keeps the receive from ever timing out, so the sweep cannot hang off the timeout alone.
+                if (Environment.TickCount64 - lastPrune > PruneIntervalMs)
+                {
+                    lastPrune = Environment.TickCount64;
+                    PruneStalePeers();
+                }
+
                 var bytes = listener.Receive(ref remoteEndPoint);
                 if (bytes.Length < 16 || ReadBigEndianUint(bytes, 0) != CitpCookie)
                     continue;
@@ -92,12 +114,16 @@ public static class CitpPeerDiscovery
                     continue;
 
                 var peer = new Peer(name, type, remoteIp.ToString(), port);
-                PeersByKey[$"{peer.Ip}:{peer.TcpPort}"] = peer;
+                var key = $"{peer.Ip}:{peer.TcpPort}";
+                PeersByKey[key] = peer;
+                LastSeenByKey[key] = Environment.TickCount64;
                 RaisePeerAnnounced(peer);
             }
             catch (SocketException ex) when (ex.SocketErrorCode == SocketError.TimedOut)
             {
-                // loop - the receive timeout just bounds the shutdown check
+                // loop - the receive timeout just bounds the shutdown check; it is also the
+                // heartbeat of the stale-peer sweep.
+                PruneStalePeers();
             }
             catch (ObjectDisposedException)
             {
@@ -107,6 +133,22 @@ public static class CitpPeerDiscovery
             {
                 Thread.Sleep(100);
             }
+        }
+    }
+
+    /// <summary>Drops peers whose last announcement is older than <see cref="PeerLifetimeMs"/> —
+    /// a Capture session that shut down or changed address disappears from the dropdown instead
+    /// of accumulating until restart.</summary>
+    private static void PruneStalePeers()
+    {
+        var now = Environment.TickCount64;
+        foreach (var pair in PeersByKey)
+        {
+            if (LastSeenByKey.TryGetValue(pair.Key, out var seen) && now - seen <= PeerLifetimeMs)
+                continue;
+
+            if (PeersByKey.TryRemove(pair.Key, out _))
+                LastSeenByKey.TryRemove(pair.Key, out _);
         }
     }
 

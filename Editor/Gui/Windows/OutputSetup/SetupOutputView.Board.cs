@@ -208,14 +208,21 @@ internal sealed partial class SetupOutputView
             if (!TryGetBoardBounds(setup, SetupEntityKinds.Output, output.Id, out var min, out var max))
                 continue;
 
-            var composite = OutputCompositor.RenderPreview(output.Id);
+            // Only canvas outputs composite here. A laser output has no composite - and asking for
+            // one would retry a "first fill" every frame forever (a null composite invalidates
+            // itself, so the rationer keeps re-attempting), one wasted render pass per laser card
+            // per frame. Its card shows what streams instead: the laser frame after the output's
+            // pipeline, drawn onto the ILDA scan field.
+            Texture2D? composite = null;
+            var isLaser = output.Kind == OutputDefinition.Kinds.Laser;
+            if (!isLaser)
+                composite = OutputCompositor.RenderPreview(output.Id);
+
             var srv = composite is { IsDisposed: false } ? SrvManager.GetSrvForTexture(composite) : null;
             DrawBoardCard(setup, selection, dl, SetupEntityKinds.Output, output.Id, min, max,
                           output.Name, BoardMeta(output.Id), srv, true);
 
-            // A laser output has no canvas composite; its card shows what streams instead — the laser
-            // frame after the output's pipeline, drawn onto the ILDA scan field.
-            if (output.Kind == OutputDefinition.Kinds.Laser)
+            if (isLaser)
             {
                 var frameMin = _boardProjection.CanvasToScreen(new Vector2(min.X, max.Y));
                 var frameMax = _boardProjection.CanvasToScreen(new Vector2(max.X, min.Y));

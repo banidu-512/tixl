@@ -321,15 +321,13 @@ internal static class BoygroupDeployer
                 }
 
                 var fullPath = SafeProjectPath(_projectFolder, RelativePath);
+                // Old file may be read-only or open by a watcher; a replace attempt surfaces that
+                // as the deploy error instead of silently corrupting. The move replaces in one step,
+                // so a failure leaves the previous file intact instead of none.
                 if (File.Exists(fullPath))
-                {
-                    // Old file may be read-only or open by a watcher; a replace attempt surfaces that
-                    // as the deploy error instead of silently corrupting.
                     File.SetAttributes(fullPath, FileAttributes.Normal);
-                    File.Delete(fullPath);
-                }
 
-                File.Move(_tempPath!, fullPath);
+                File.Move(_tempPath!, fullPath, overwrite: true);
 
                 // Restore the server's write time so the next inventory diff sees the file as equal
                 // (SetLastWriteTimeUtc is supported on all platforms).
@@ -425,8 +423,11 @@ internal static class BoygroupDeployer
     private static string SafeRelativePath(JObject message)
     {
         var path = message["path"]?.Value<string>() ?? "";
-        if (path.Contains(".."))
-            throw new IOException($"Refusing unsafe path: {path}");
+        foreach (var segment in path.Split('/', '\\'))
+        {
+            if (segment == "..")
+                throw new IOException($"Refusing unsafe path: {path}");
+        }
 
         return path;
     }

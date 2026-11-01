@@ -21,18 +21,25 @@ namespace T3.Editor.Gui.Windows.OutputSetup;
 internal static class LaserOutputPreview
 {
     /// <summary>
-    /// The frame this output streams right now (see <see cref="LaserDriver.GetFrame"/>).
+    /// The frame this output streams right now (see <see cref="LaserDriver.GetFrame"/>). The buffer
+    /// belongs to the output's pipeline session — draw it now, don't keep it.
     /// </summary>
-    public static LaserPoint[] GetFrame(OutputDefinition output) => LaserDriver.GetFrame(output);
+    public static LaserFrame GetFrame(OutputDefinition output) => LaserDriver.GetFrame(output);
+
+    /// <summary>Upper bound on drawn points per preview. The Board shows one card per output and
+    /// a frame can carry the transport cap (~12k points): drawing all of them pushed ~100k
+    /// draw-list primitives per frame through ImGui just for the cards. A card is not the wall -
+    /// every Nth sample of a run reads identically at this size.</summary>
+    private const int MaxDrawnPoints = 2000;
 
     /// <summary>
     /// Draws a laser frame onto the ILDA scan field inscribed in the rect. The field stays square —
     /// it is the scanner's field, not the card's aspect: a circle previews as a circle. Lit runs draw
-    /// as colored polylines, the jumps between them as faint straight lines (invisible on the wall,
-    /// but they show where the beam travels), and dwell dots as dots. A dark laser master dims the
-    /// frame to a hint: nothing is leaving for the laser.
+    /// as colored polylines (decimated to <see cref="MaxDrawnPoints"/>), the jumps between them as
+    /// faint straight lines (invisible on the wall, but they show where the beam travels), and dwell
+    /// dots as dots. A dark laser master dims the frame to a hint: nothing is leaving for the laser.
     /// </summary>
-    public static void DrawFrame(ImDrawListPtr dl, Vector2 min, Vector2 max, LaserPoint[] frame, float fade = 1f)
+    public static void DrawFrame(ImDrawListPtr dl, Vector2 min, Vector2 max, LaserFrame frame, float fade = 1f)
     {
         var uiScale = T3Ui.UiScaleFactor;
         var inset = 3f * uiScale;
@@ -49,43 +56,55 @@ internal static class LaserOutputPreview
         dl.PushClipRect(min, max, true);
         dl.AddRect(fieldMin, fieldMax, UiColors.TextMuted.Fade(0.22f * fade), 2f * uiScale);
 
-        if (frame.Length > 0)
+        // Count, not Length: the buffer is a reused capacity-sized array whose tail is padding.
+        var points = frame.Points;
+        var count = frame.Count;
+        if (points != null && count > 0)
         {
             var posScale = half / 32767f;
             var lineThickness = MathF.Max(1.2f * uiScale, side / 220f);
             var dotRadius = MathF.Max(1.5f * uiScale, lineThickness * 0.8f);
+            var stride = 1 + count / MaxDrawnPoints;
             Vector2 Map(in LaserPoint p) => new(center.X + p.X * posScale, center.Y - p.Y * posScale);
 
-            Vector2? lastLit = null; // the previous lit run's end, where the next jump starts
-            for (var i = 0; i < frame.Length; i++)
+            Vector2? lastLit = null; // the last drawn point of the current run - where lines and jumps start
+            var previousWasLit = false;
+            for (var i = 0; i < count; i++)
             {
-                if (!IsLit(frame[i]))
+                if (!IsLit(points[i]))
+                {
+                    previousWasLit = false;
+                    continue;
+                }
+
+                var isRunStart = !previousWasLit;
+                var draw = stride == 1 || isRunStart || i % stride == 0;
+                previousWasLit = true;
+                if (!draw)
                     continue;
 
-                var pos = Map(frame[i]);
-                var color = PointColor(frame[i], alpha);
-                if (i > 0 && IsLit(frame[i - 1]))
+                var pos = Map(points[i]);
+                var color = PointColor(points[i], alpha);
+
+                if (!isRunStart && lastLit is { } from && Vector2.DistanceSquared(from, pos) > 0.01f)
                 {
-                    var prev = Map(frame[i - 1]);
-                    if (Vector2.DistanceSquared(prev, pos) > 0.01f)
-                    {
-                        dl.AddLine(prev, pos, color, lineThickness);
-                    }
-                    else
-                    {
-                        // Dwell: consecutive points parked on one spot draw as a dot — a zero-length
-                        // line would draw nothing, and a dwell run is how dots are sent.
-                        dl.AddCircleFilled(pos, dotRadius, color);
-                    }
+                    dl.AddLine(from, pos, color, lineThickness);
+                }
+                else if (!isRunStart)
+                {
+                    // Dwell: consecutive drawn points parked on one spot draw as a dot — a
+                    // zero-length line would draw nothing, and a dwell run is how dots are sent.
+                    dl.AddCircleFilled(pos, dotRadius, color);
                 }
                 else
                 {
-                    if (lastLit is { } from)
-                        dl.AddLine(from, pos, UiColors.TextMuted.Fade(0.10f * fade), uiScale);
+                    // A run starts: a faint jump hint from the previous run (invisible on the
+                    // wall, but it shows where the beam travels) plus a dot, which also covers
+                    // single-point runs.
+                    if (lastLit is { } jump)
+                        dl.AddLine(jump, pos, UiColors.TextMuted.Fade(0.10f * fade), uiScale);
 
-                    // A run of one point is a dwell dot — no segment to draw, so the point itself.
-                    if (i + 1 >= frame.Length || !IsLit(frame[i + 1]))
-                        dl.AddCircleFilled(pos, dotRadius, color);
+                    dl.AddCircleFilled(pos, dotRadius, color);
                 }
 
                 lastLit = pos;

@@ -43,6 +43,12 @@ internal static partial class WindowManager
             ToggleWindowTypeVisibility<ConsoleLogWindow>();
         }
 
+        if (UserActions.OpenSettings.Triggered())
+        {
+            SettingsWindow.Config.Visible = true;
+            SettingsWindow.RequestWindowFocus();
+        }
+
         UpdateAppWindowSize();
 
         foreach (var windowType in _windows)
