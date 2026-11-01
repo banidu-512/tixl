@@ -115,6 +115,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "StreamDiffusion", "Operator
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "StreamDiffusion.Tests", "StreamDiffusion.Tests\StreamDiffusion.Tests.csproj", "{29321716-D3FF-4EC8-BE6B-726E66BB027E}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Lib.Tests", "Tests\Lib.Tests\Lib.Tests.csproj", "{95CC2E2F-E21E-4EAF-9ED1-CABB7DBB53E6}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -593,6 +595,18 @@ Global
 		{29321716-D3FF-4EC8-BE6B-726E66BB027E}.Release|x64.Build.0 = Release|Any CPU
 		{29321716-D3FF-4EC8-BE6B-726E66BB027E}.Release|x86.ActiveCfg = Release|Any CPU
 		{29321716-D3FF-4EC8-BE6B-726E66BB027E}.Release|x86.Build.0 = Release|Any CPU
+		{95CC2E2F-E21E-4EAF-9ED1-CABB7DBB53E6}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{95CC2E2F-E21E-4EAF-9ED1-CABB7DBB53E6}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{95CC2E2F-E21E-4EAF-9ED1-CABB7DBB53E6}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{95CC2E2F-E21E-4EAF-9ED1-CABB7DBB53E6}.Debug|x64.Build.0 = Debug|Any CPU
+		{95CC2E2F-E21E-4EAF-9ED1-CABB7DBB53E6}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{95CC2E2F-E21E-4EAF-9ED1-CABB7DBB53E6}.Debug|x86.Build.0 = Debug|Any CPU
+		{95CC2E2F-E21E-4EAF-9ED1-CABB7DBB53E6}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{95CC2E2F-E21E-4EAF-9ED1-CABB7DBB53E6}.Release|Any CPU.Build.0 = Release|Any CPU
+		{95CC2E2F-E21E-4EAF-9ED1-CABB7DBB53E6}.Release|x64.ActiveCfg = Release|Any CPU
+		{95CC2E2F-E21E-4EAF-9ED1-CABB7DBB53E6}.Release|x64.Build.0 = Release|Any CPU
+		{95CC2E2F-E21E-4EAF-9ED1-CABB7DBB53E6}.Release|x86.ActiveCfg = Release|Any CPU
+		{95CC2E2F-E21E-4EAF-9ED1-CABB7DBB53E6}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -606,6 +620,7 @@ Global
 		{C6F5E343-6F4A-4CEA-96D7-05B9E676CAFE} = {674B3D0D-B3C1-BDFD-64ED-056E74CE37B3}
 		{A0ADCA94-BEE0-49C3-8C6D-1CA6657DC30B} = {04A5C107-B2C6-66F1-BA02-7BBFC40411F4}
 		{9AE285CF-2F7A-4BD8-8D9C-DB31F75429D0} = {04A5C107-B2C6-66F1-BA02-7BBFC40411F4}
+		{95CC2E2F-E21E-4EAF-9ED1-CABB7DBB53E6} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
 		SolutionGuid = {A4762274-0254-404B-AFAC-B99D8CCD7D31}
