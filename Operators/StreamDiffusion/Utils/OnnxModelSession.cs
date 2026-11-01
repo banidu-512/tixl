@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
 using T3.Core.Logging;
+using T3.Core.Utils;
 
 namespace t3.streamdiffusion.Onnx;
 
@@ -76,10 +77,25 @@ internal sealed class OnnxModelSession : IDisposable
 
         PreloadCudaRuntimes(modelPath);
 
+        // Windows has a CUDA and a DirectML ONNX Runtime native; the first request of the process binds one
+        var wantedBuild = provider == ExecutionProvider.DirectMl ? OnnxNativeSelector.Build.DirectMl : OnnxNativeSelector.Build.Gpu;
+        var build = OnnxNativeSelector.Select(typeof(InferenceSession).Assembly, wantedBuild);
+        if (OperatingSystem.IsWindows() && provider is ExecutionProvider.DirectMl or ExecutionProvider.Cuda or ExecutionProvider.TensorRt && build != wantedBuild)
+        {
+            Log.Warning($"[StreamDiffusion] {name}: {OnnxNativeSelector.Describe(wantedBuild)} needs its own ONNX Runtime build, but this session already loaded " +
+                        $"the {OnnxNativeSelector.Describe(build)} one - restart TiXL to switch.");
+        }
+
         foreach (var candidate in chain)
         {
-            if (!IsProviderAvailableOnThisPlatform(candidate))
+            if (!IsProviderAvailableOnThisPlatform(candidate, build))
                 continue;
+
+            if (candidate is ExecutionProvider.Cuda or ExecutionProvider.TensorRt && OperatingSystem.IsLinux() && !LinuxCudaRuntime.TryPrepare(out var cudaMissing))
+            {
+                Log.Info($"[StreamDiffusion] {name}: {EpLabel(candidate)} unavailable ({cudaMissing}), trying next provider");
+                continue;
+            }
 
             SessionOptions? options = null;
             try
@@ -114,7 +130,8 @@ internal sealed class OnnxModelSession : IDisposable
     {
         var options = new SessionOptions
         {
-            GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL,
+            // ORT 1.24 fails to initialize fp16 transformer graphs (SimplifiedLayerNormFusion) on the CPU at ENABLE_ALL; EXTENDED costs nothing measurable
+            GraphOptimizationLevel = provider == ExecutionProvider.Cpu ? GraphOptimizationLevel.ORT_ENABLE_EXTENDED : GraphOptimizationLevel.ORT_ENABLE_ALL,
             IntraOpNumThreads = provider == ExecutionProvider.Cpu ? Math.Max(4, Environment.ProcessorCount) : 2,
         };
 
@@ -156,14 +173,14 @@ internal sealed class OnnxModelSession : IDisposable
         return options;
     }
 
-    /** DirectML exists only on Windows, CUDA and TensorRT only in the Windows and Linux GPU builds. */
-    private static bool IsProviderAvailableOnThisPlatform(ExecutionProvider provider)
+    /** DirectML exists only in the Windows DirectML build, CUDA and TensorRT in the Windows GPU build and on Linux. */
+    private static bool IsProviderAvailableOnThisPlatform(ExecutionProvider provider, OnnxNativeSelector.Build build)
     {
         return provider switch
         {
-            ExecutionProvider.DirectMl => OperatingSystem.IsWindows(),
+            ExecutionProvider.DirectMl => OperatingSystem.IsWindows() && build == OnnxNativeSelector.Build.DirectMl,
             ExecutionProvider.CoreMl => OperatingSystem.IsMacOS(),
-            ExecutionProvider.Cuda or ExecutionProvider.TensorRt => OperatingSystem.IsWindows() || OperatingSystem.IsLinux(),
+            ExecutionProvider.Cuda or ExecutionProvider.TensorRt => (OperatingSystem.IsWindows() && build == OnnxNativeSelector.Build.Gpu) || OperatingSystem.IsLinux(),
             _ => true
         };
     }

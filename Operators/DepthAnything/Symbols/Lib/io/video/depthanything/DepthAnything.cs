@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
 using T3.Core.Logging;
+using T3.Core.Utils;
 using T3.Graphics.Compat;
 using T3.Core.Resource;
 using T3.Core.Resource.Assets;
@@ -695,6 +696,15 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
             LogGpuAdapters();
         }
 
+        // Windows has a CUDA and a DirectML ONNX Runtime native; the first request of the process binds one
+        var wantedBuild = provider == ExecutionProvider.DirectMl ? OnnxNativeSelector.Build.DirectMl : OnnxNativeSelector.Build.Gpu;
+        var build = OnnxNativeSelector.Select(typeof(InferenceSession).Assembly, wantedBuild);
+        if (OperatingSystem.IsWindows() && provider is ExecutionProvider.DirectMl or ExecutionProvider.Cuda && build != wantedBuild)
+        {
+            Log.Warning($"[DepthAnything] {OnnxNativeSelector.Describe(wantedBuild)} needs its own ONNX Runtime build, but this session already loaded " +
+                        $"the {OnnxNativeSelector.Describe(build)} one - restart TiXL to switch.", this);
+        }
+
         // Without a thread cap the CPU provider saturates all cores during inference
         // and starves the render thread
         int intraOpThreads = Math.Min(4, Math.Max(1, Environment.ProcessorCount));
@@ -702,8 +712,14 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
         // Walk the chain and keep the first provider that initializes; CPU is always last and always works
         foreach (var candidate in GetProviderChain(provider))
         {
-            if (!IsProviderAvailableOnThisPlatform(candidate))
+            if (!IsProviderAvailableOnThisPlatform(candidate, build))
             {
+                continue;
+            }
+
+            if (candidate == ExecutionProvider.Cuda && OperatingSystem.IsLinux() && !LinuxCudaRuntime.TryPrepare(out var cudaMissing))
+            {
+                Log.Info($"[DepthAnything] CUDA unavailable, trying next provider: {cudaMissing}", this);
                 continue;
             }
 
@@ -712,7 +728,8 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
             {
                 options = new SessionOptions
                 {
-                    GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL,
+                    // ORT 1.24 fails to initialize fp16 transformer graphs (SimplifiedLayerNormFusion) on the CPU at ENABLE_ALL; EXTENDED costs nothing measurable
+                    GraphOptimizationLevel = candidate == ExecutionProvider.Cpu ? GraphOptimizationLevel.ORT_ENABLE_EXTENDED : GraphOptimizationLevel.ORT_ENABLE_ALL,
                     IntraOpNumThreads = intraOpThreads
                 };
 
@@ -754,13 +771,13 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
         };
     }
 
-    /** DirectML exists only on Windows, CUDA in the Windows and Linux GPU builds, CoreML only on macOS. */
-    private static bool IsProviderAvailableOnThisPlatform(ExecutionProvider provider)
+    /** DirectML exists only in the Windows DirectML build, CUDA in the Windows GPU build and on Linux, CoreML only on macOS. */
+    private static bool IsProviderAvailableOnThisPlatform(ExecutionProvider provider, OnnxNativeSelector.Build build)
     {
         return provider switch
         {
-            ExecutionProvider.DirectMl => OperatingSystem.IsWindows(),
-            ExecutionProvider.Cuda => OperatingSystem.IsWindows() || OperatingSystem.IsLinux(),
+            ExecutionProvider.DirectMl => OperatingSystem.IsWindows() && build == OnnxNativeSelector.Build.DirectMl,
+            ExecutionProvider.Cuda => (OperatingSystem.IsWindows() && build == OnnxNativeSelector.Build.Gpu) || OperatingSystem.IsLinux(),
             ExecutionProvider.CoreMl => OperatingSystem.IsMacOS(),
             _ => true
         };

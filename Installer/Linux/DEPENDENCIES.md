@@ -47,7 +47,12 @@ compile differently — that is what the pin is about — so prefer the pinned l
 | Component | Enables | Arch | Debian / Ubuntu | Fedora | nixpkgs |
 |---|---|---|---|---|---|
 | NDI runtime (`libndi.so.6`) | Ndi operators and NDI output streams. Found via `NDI_RUNTIME_DIR_V6` or the system library path; source discovery needs `avahi-daemon` | AUR `ndi-sdk` | vendor download (ndi.video) | vendor download | `ndi` (unfree) |
+| CUDA 12 runtime + cuDNN 9 (`libcudart.so.12`, `libcublas.so.12`, `libcublasLt.so.12`, `libcurand.so.10`, `libcufft.so.11`, `libcudnn.so.9`) | CUDA execution provider of the DepthAnything and StreamDiffusion operators (NVIDIA driver 525+, Pascal or newer GPU). Found via ld.so, `CUDA_PATH`/`CUDA_HOME`, `/usr/local/cuda-12*` or a `CudaRuntime` folder next to the operator. Without it the operators log the missing library and run on the CPU | NVIDIA packages (`cuda`, `cudnn`) | NVIDIA CUDA repo (`cuda-runtime-12-4`, `cudnn9-cuda-12`) | NVIDIA CUDA repo | `cudaPackages_12` |
 | Vulkan validation layers | GPU debugging | `vulkan-validation-layers` | `vulkan-validationlayers` | `vulkan-validation-layers` | `vulkan-validation-layers` |
+
+The CUDA 12 runtime must not be newer than the driver supports: on a GTX 1070 with driver 550 (CUDA 12.4), cuDNN 9.1 with
+CUDA 12.4 ran Depth Anything at 16 ms per frame, while CUDA 12.9 with cuDNN 9.27 loaded but failed on the first convolution.
+`nvidia-smi` shows the highest CUDA version the driver supports.
 
 ## Bundled in the tarball
 
@@ -70,7 +75,7 @@ License texts for everything bundled are in `Dependencies/licenses/`.
 
 These are feature gaps, not packaging issues. The affected operators are expected to fail when used.
 
-- **Emgu CV** (`cvextern`) and **Mediapipe**: only Windows natives are vendored.
+- **Emgu CV** (`cvextern`): only Windows natives are vendored.
 - **Loopback audio capture**: BASS on Linux only enumerates real inputs, so microphones and line inputs
   work but capturing the system's own output doesn't. (WASAPI loopback is Windows-only.)
 - **Spout**: Windows-only by design.
