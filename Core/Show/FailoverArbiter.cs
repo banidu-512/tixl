@@ -185,6 +185,9 @@ public static class FailoverArbiter
     private static readonly List<Socket> _heartbeatSockets = new();
     private static CancellationTokenSource? _cancellation;
 
+    /** TickCount64 at which a simulated crash ends; 0 when none is running. */
+    private static long _simulatedCrashEndTicks;
+
     private sealed class PeerInfo
     {
         public int Priority;
@@ -298,6 +301,18 @@ public static class FailoverArbiter
         }
     }
 
+    /// <summary>True while <see cref="SimulateCrash"/> keeps this node silent.</summary>
+    public static bool IsSimulatingCrash => Volatile.Read(ref _simulatedCrashEndTicks) != 0;
+
+    public static int SimulatedCrashRemainingMs
+    {
+        get
+        {
+            var end = Volatile.Read(ref _simulatedCrashEndTicks);
+            return end == 0 ? 0 : (int)Math.Max(0, end - Environment.TickCount64);
+        }
+    }
+
     public static NodeRole Role
     {
         get
@@ -370,7 +385,9 @@ public static class FailoverArbiter
                                NodeRole.Active    => "ACTIVE (streaming)",
                                NodeRole.Standby   => "Standby",
                                NodeRole.Contested => "Handover",
-                               NodeRole.Faulted   => "FAULT (output suppressed)",
+                               NodeRole.Faulted   => IsSimulatingCrash
+                                                         ? $"FAULT: simulated crash, back in {(SimulatedCrashRemainingMs + 999) / 1000} s"
+                                                         : "FAULT (output suppressed)",
                                NodeRole.Fenced    => "FENCED (partner unreachable)",
                                _                  => "?",
                            };
@@ -640,6 +657,42 @@ public static class FailoverArbiter
         }
 
         FlushPendingSend();
+    }
+
+    /// <summary>
+    /// Acts like a crashed process for the given time: no heartbeats, no goodbye, no acks and muted output, so the
+    /// partner has to notice on its own. Afterwards the node rejoins as if freshly started. For rehearsing a takeover.
+    /// </summary>
+    public static void SimulateCrash(int seconds)
+    {
+        lock (Gate)
+        {
+            if (!_config.Enabled || IsSimulatingCrash || seconds < 1)
+                return;
+
+            Stop(isCrash: true);
+            _role = NodeRole.Faulted;
+            _faultReason = "simulated crash";
+            Volatile.Write(ref _simulatedCrashEndTicks, Environment.TickCount64 + seconds * 1000L);
+            RecordEvent($"Simulated crash for {seconds} s - silent, output muted");
+        }
+
+        _ = Task.Delay(seconds * 1000).ContinueWith(_ => EndSimulatedCrash());
+    }
+
+    private static void EndSimulatedCrash()
+    {
+        lock (Gate)
+        {
+            Volatile.Write(ref _simulatedCrashEndTicks, 0);
+
+            // Disabling and re-enabling failover during the crash already restarted the node.
+            if (!_config.Enabled || _cancellation != null)
+                return;
+
+            Start();
+            RecordEvent("Simulated crash over - rejoining");
+        }
     }
 
     /// <summary>Operator: step down as the active node. The standby promotes on the next heartbeat.</summary>
@@ -1101,16 +1154,20 @@ public static class FailoverArbiter
         Log.Info("Failover: heartbeat sockets re-bound");
     }
 
-    private static void Stop()
+    private static void Stop(bool isCrash = false)
     {
-        SendBye();
+        if (!isCrash)
+            SendBye();
+
         _role = NodeRole.Disabled;
         _peers.Clear();
         _armedPartnerPresent = false;
         _consecutiveSendFailures = 0;
         _nextSocketCheckTicks = 0;
         Volatile.Write(ref _leaseExpired, 0);
-        RecordEvent("Disabled — output resumed");
+        if (!isCrash)
+            RecordEvent("Disabled — output resumed");
+
         _cancellation?.Cancel();
         _cancellation = null;
         Socket[] sockets;
@@ -1546,7 +1603,7 @@ public static class FailoverArbiter
     /// <summary>Caller holds <see cref="Gate"/>. Early returns are fine: the caller flushes any pending heartbeat.</summary>
     private static void EvaluateStateLocked()
     {
-        if (_role == NodeRole.Disabled)
+        if (_role == NodeRole.Disabled || IsSimulatingCrash)
             return;
 
         var now = Environment.TickCount64;
