@@ -5,6 +5,7 @@ using System.IO;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading;
+using System.Threading.Tasks;
 using NAudio.Midi;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -158,6 +159,14 @@ internal sealed class BoygroupManager
 
     private const string DefaultGroup = "Main";
     private readonly ConcurrentQueue<(string Host, int Port)> _pendingInvites = new();
+
+    /** Results of background dials, applied on the UI thread by <see cref="Update"/>. */
+    private readonly ConcurrentQueue<Action> _uiThreadActions = new();
+
+    /** Bumped whenever a session ends or a new join starts, so a dial that finishes late can tell it is stale. */
+    private int _joinGeneration;
+
+    private bool _joinPending;
 
     // Input replication. Hardware callbacks enqueue from their own threads; the UI thread batches them
     // into one message per frame.
@@ -371,6 +380,10 @@ internal sealed class BoygroupManager
     /// <summary>Slave action: connect to the master that invited this node.</summary>
     private void JoinMaster(string host, int port)
     {
+        // A dial is already running; a second one would race it for the same session.
+        if (_joinPending)
+            return;
+
         // A join while already connected (a second invitation or the debug bridge) must replace the
         // old link, not run beside it: two sessions would receive every input event twice.
         if (_transport != null)
@@ -398,18 +411,52 @@ internal sealed class BoygroupManager
         _waitingSinceTicks = 0;
         ResetClockSync();
 
+        // Name resolution and the connect (which waits out its timeout when the master is down) run off the UI
+        // thread: doing them here froze the frame loop for seconds on every retry.
+        var generation = ++_joinGeneration;
+        _joinPending = true;
+        StatusText = $"Connecting to master at {host}:{port}...";
+        _ = Task.Run(() => DialMasterInBackground(host, port, generation));
+    }
+
+    private void DialMasterInBackground(string host, int port, int generation)
+    {
+        BoygroupClientTransport? transport = null;
         try
         {
             var address = ResolveHost(host);
             if (address == null)
                 throw new ArgumentException($"'{host}' is not a valid address");
 
-            var transport = BoygroupClientTransport.Connect(new IPEndPoint(address, port));
+            transport = BoygroupClientTransport.Connect(new IPEndPoint(address, port));
+            var connected = transport;
+            _uiThreadActions.Enqueue(() => OnMasterDialed(generation, address, connected));
+        }
+        catch (Exception e)
+        {
+            transport?.Dispose();
+            var message = e.Message;
+            _uiThreadActions.Enqueue(() => OnMasterDialFailed(generation, message));
+        }
+    }
+
+    private void OnMasterDialed(int generation, IPAddress address, BoygroupClientTransport transport)
+    {
+        // The session was left or replaced while the dial ran; its result is not wanted anymore.
+        if (generation != _joinGeneration)
+        {
+            transport.Dispose();
+            return;
+        }
+
+        _joinPending = false;
+        try
+        {
             _masterAddress = address;
             _transport = transport;
             transport.PeerDisconnected += OnPeerDisconnected;
             State = BoygroupState.Client;
-            StatusText = $"Connecting to master at {host}:{port}...";
+            StatusText = $"Connected to master at {address}";
             // Subscribe first, then start reading: a link that dies right now must report.
             transport.StartReading();
             SendJson(transport.ServerPeer,
@@ -430,6 +477,16 @@ internal sealed class BoygroupManager
         }
     }
 
+    private void OnMasterDialFailed(int generation, string message)
+    {
+        if (generation != _joinGeneration)
+            return;
+
+        _joinPending = false;
+        ErrorText = $"Boygroup connection failed: {message}";
+        ReturnToWaiting();
+    }
+
     /// <summary>Public entry used by the debug bridge and tests; the UI adds nodes by invitation.</summary>
     public void JoinServer(string host, int port, string group, string password)
     {
@@ -448,6 +505,8 @@ internal sealed class BoygroupManager
     /// <summary>Releases everything a role/session owns without changing the enabled setting.</summary>
     private void TearDownSession()
     {
+        _joinGeneration++;
+        _joinPending = false;
         if (_transport != null)
         {
             _transport.PeerDisconnected -= OnPeerDisconnected;
@@ -546,6 +605,18 @@ internal sealed class BoygroupManager
 
     public void Update()
     {
+        while (_uiThreadActions.TryDequeue(out var uiThreadAction))
+        {
+            try
+            {
+                uiThreadAction();
+            }
+            catch (Exception e)
+            {
+                Log.Warning($"Boygroup: applying a connection result failed: {e.Message}");
+            }
+        }
+
         // Auto-enable shortly after startup (give the project time to load first).
         if (State == BoygroupState.Off)
         {
