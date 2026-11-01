@@ -8,7 +8,7 @@ using T3.Core.Rendering;
 using T3.Core.Rendering.Material;
 using T3.Core.Utils;
 using T3.Core.Utils.Geometry;
-using Buffer = SharpDX.Direct3D11.Buffer;
+using Buffer = T3.Graphics.Compat.Buffer;
 using Texture2D = T3.Core.DataTypes.Texture2D;
 
 namespace T3.Core.Operator;
@@ -55,6 +55,7 @@ public sealed class EvaluationContext
         StringVariables.Clear();
             
         PbrContextSettings.SetDefaultToContext(this);
+        GeometryCapture = null;
     }
 
     /// <summary>
@@ -175,4 +176,18 @@ public sealed class EvaluationContext
 
     public LegacyParticleSystem LegacyParticleSystem;
     public ParticleSystem ParticleSystem;
+
+    /// <summary>
+    /// Set while a consumer (e.g. the laser camera) captures the geometry drawn inside its subtree.
+    /// Null when no capture pass is active, so draw ops can register through it with a cheap null check.
+    /// </summary>
+    public GeometryCapture GeometryCapture;
+
+    /// <summary>
+    /// Set for the duration of a capture pass: draw ops then REGISTER their geometry without
+    /// rasterizing it. Capture only needs the vertex/index buffers, and rasterizing would repaint
+    /// whatever render target happens to be bound - during the laser pump that is the visible
+    /// viewport, which made the scene flash between its own render and the capture pass's.
+    /// </summary>
+    public bool CaptureOnlyDraws { get; set; }
 }
