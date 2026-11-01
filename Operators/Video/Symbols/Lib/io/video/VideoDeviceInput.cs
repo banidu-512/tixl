@@ -259,12 +259,25 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
     private void Update(EvaluationContext context)
     {
         var configuredDevice = InputDeviceName.GetValue(context);
+        var waitingForPeerMachine = ResolvePeerSelection(ref configuredDevice);
         if (!string.IsNullOrWhiteSpace(configuredDevice))
             _relayDisplayName = configuredDevice;
 
         // A boygroup render node presents the master's stream instead of opening a local camera.
         if (UpdateRemoteFrames())
             return;
+
+        // A camera of another TiXL client is selected but its stream has not arrived yet: keep the local camera closed.
+        if (waitingForPeerMachine != null)
+        {
+            StopCaptureThread();
+            _controlWorker?.Dispose();
+            _controlWorker = null;
+            var waiting = $"Waiting for the camera on {waitingForPeerMachine}";
+            SetStatus(waiting);
+            Status.Value = waiting;
+            return;
+        }
 
         WebcamScan.Scan();
 
@@ -432,6 +445,43 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
     /// Presents the frame a boygroup master sent for this operator. Returns true while remote control is
     /// active, in which case the local camera must stay closed.
     /// </summary>
+    /// <summary>
+    /// "Camera @ Machine" selects a camera of another TiXL client: the stream is requested through
+    /// <see cref="PeerCameraBus"/>. A reference to this machine resolves to its own camera. Returns the machine
+    /// being waited for, or null when the selection is a local camera.
+    /// </summary>
+    private string? ResolvePeerSelection(ref string? configuredDevice)
+    {
+        if (!PeerCameraDirectory.TryParse(configuredDevice, out var camera, out var machine))
+        {
+            if (_peerWantSet)
+            {
+                _peerWantSet = false;
+                PeerCameraBus.ClearWant(RelayKey);
+            }
+
+            return null;
+        }
+
+        if (string.Equals(machine, PeerCameraDirectory.LocalMachine, StringComparison.OrdinalIgnoreCase))
+        {
+            configuredDevice = camera;
+            if (_peerWantSet)
+            {
+                _peerWantSet = false;
+                PeerCameraBus.ClearWant(RelayKey);
+            }
+
+            return null;
+        }
+
+        _peerWantSet = true;
+        PeerCameraBus.SetWant(RelayKey, machine, camera);
+        return machine;
+    }
+
+    private bool _peerWantSet;
+
     private bool UpdateRemoteFrames()
     {
         if (!_remoteActive)
@@ -794,7 +844,7 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
                                            lowLatency: true);
     }
 
-    private static string BuildCaptureUrl(WebcamWithIndex device, out string inputFormat)
+    internal static string BuildCaptureUrl(WebcamWithIndex device, out string inputFormat)
     {
         if (OperatingSystem.IsWindows())
         {
@@ -845,7 +895,7 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
     /// the pixel format stays at its default (yuv420p, auto-overridden by the demuxer if the device
     /// cannot deliver it).
     /// </summary>
-    private static Dictionary<string, string>? BuildDefaultDemuxerOptions()
+    internal static Dictionary<string, string>? BuildDefaultDemuxerOptions()
     {
         return OperatingSystem.IsMacOS()
                    ? new Dictionary<string, string> { ["framerate"] = DefaultMacFramerate }
@@ -1025,6 +1075,9 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
         if (disposing)
         {
             RemoteVideoInputBus.UnregisterInput(this);
+            if (_peerWantSet && _relayKey != null)
+                PeerCameraBus.ClearWant(_relayKey);
+
             StopCaptureThread();
             _controlWorker?.Dispose();
             _controlWorker = null;
@@ -1124,7 +1177,9 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
     {
         if (inputId == InputDeviceName.Id)
         {
-            if (WebcamScan.Devices.Count == 0)
+            var peerCameras = new List<string>();
+            PeerCameraDirectory.AppendReferences(peerCameras);
+            if (WebcamScan.Devices.Count == 0 && peerCameras.Count == 0)
             {
                 yield return "No devices found";
                 yield break;
@@ -1132,6 +1187,10 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
 
             foreach (var (webcam, _) in WebcamScan.Devices)
                 yield return webcam;
+
+            // Cameras of the other TiXL clients in a collab, boygroup or failover session.
+            foreach (var reference in peerCameras)
+                yield return reference;
         }
         else if (inputId == CustomResolution.Id)
         {

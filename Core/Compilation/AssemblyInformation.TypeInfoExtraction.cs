@@ -28,7 +28,7 @@ public sealed partial class AssemblyInformation
     /// <param name="operatorTypeInfo"></param>
     private static void LoadTypes(Type[] types, Assembly assembly, out bool shouldShareResources, ConcurrentDictionary<Guid, OperatorTypeInfo> operatorTypeInfo,
                                   HashSet<string> namespaces, Dictionary<string, Type> typesByName, List<IOutputStreamProvider> streamProviders,
-                                  List<IRemoteVideoInputProvider> remoteVideoProviders)
+                                  List<IRemoteVideoInputProvider> remoteVideoProviders, List<IPeerCameraProvider> peerCameraProviders)
     {
         if (!operatorTypeInfo.IsEmpty)
         {
@@ -110,7 +110,7 @@ public sealed partial class AssemblyInformation
                                          return false;
                                      }).Any();
 
-        RegisterStreamProviders(nonOperatorTypes, streamProviders, remoteVideoProviders);
+        RegisterStreamProviders(nonOperatorTypes, streamProviders, remoteVideoProviders, peerCameraProviders);
     }
 
     /// <summary>
@@ -120,13 +120,14 @@ public sealed partial class AssemblyInformation
     /// kept on the assembly so an unload can take them out of the registries again.
     /// </summary>
     private static void RegisterStreamProviders(IEnumerable<Type> candidates, List<IOutputStreamProvider> streamProviders,
-                                                List<IRemoteVideoInputProvider> remoteVideoProviders)
+                                                List<IRemoteVideoInputProvider> remoteVideoProviders, List<IPeerCameraProvider> peerCameraProviders)
     {
         foreach (var type in candidates)
         {
             var isStreamProvider = type.IsAssignableTo(typeof(IOutputStreamProvider));
             var isRemoteVideoProvider = type.IsAssignableTo(typeof(IRemoteVideoInputProvider));
-            if (type.IsAbstract || type.IsInterface || (!isStreamProvider && !isRemoteVideoProvider))
+            var isPeerCameraProvider = type.IsAssignableTo(typeof(IPeerCameraProvider));
+            if (type.IsAbstract || type.IsInterface || (!isStreamProvider && !isRemoteVideoProvider && !isPeerCameraProvider))
                 continue;
 
             try
@@ -142,6 +143,12 @@ public sealed partial class AssemblyInformation
                 {
                     remoteVideoProviders.Add(remoteVideoProvider);
                     RemoteVideoInputRegistry.Register(remoteVideoProvider);
+                }
+
+                if (obj is IPeerCameraProvider peerCameraProvider)
+                {
+                    peerCameraProviders.Add(peerCameraProvider);
+                    PeerCameraRegistry.Register(peerCameraProvider);
                 }
             }
             catch (Exception e)

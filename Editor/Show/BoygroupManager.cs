@@ -49,6 +49,11 @@ internal sealed class BoygroupManager
     }
 
     public BoygroupState State { get; private set; } = BoygroupState.Off;
+
+    /// <summary>The live session transport, for services that share data between the clients of a session.</summary>
+    internal CollabTransport? PeerSessionTransport => State is BoygroupState.Server or BoygroupState.Client ? _transport : null;
+
+    internal bool PeerSessionIsHost => State == BoygroupState.Server;
     public string StatusText { get; private set; } = "Boygrouping is off";
     public string ErrorText { get; private set; } = "";
     public string GroupName { get; private set; } = "";
@@ -1154,6 +1159,12 @@ internal sealed class BoygroupManager
         {
             case "hello" when State == BoygroupState.Server:
                 HandleHello(peer, json);
+                break;
+
+            case PeerCameraService.AnnounceType:
+            case PeerCameraService.RequestType:
+            case PeerCameraService.SourceType:
+                PeerCameraService.Instance.HandleMessage(_transport, State == BoygroupState.Server, peer, type!, json);
                 break;
 
             case "welcome":

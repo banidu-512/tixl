@@ -789,6 +789,10 @@ internal static class DebugServer
                 HandleFailoverControl(request, context);
                 break;
 
+            case "peerCameras":
+                context.SendOk(Show.PeerCameraService.Instance.Describe());
+                break;
+
             case null:
                 context.SendError("MISSING_METHOD", "Request has no 'method' field");
                 break;
