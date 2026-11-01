@@ -6,7 +6,6 @@ using T3.Core.DataTypes.Volume;
 using T3.Core.DataTypes.Volume.Tools;
 using T3.Core.DataTypes.Volume.IO;
 using T3.Core.Logging;
-using Lib.Utils;
 
 namespace Lib.volume.convert;
 
@@ -16,15 +15,13 @@ namespace Lib.volume.convert;
 [Guid("5bc7d656-8a0f-5834-88da-14c3048d760c")]
 internal sealed class VolumeToMesh : Instance<VolumeToMesh>
 {
-    private readonly record struct Key(VdbVolume Volume, float Isovalue);
-
     [Output(Guid = "362c33b2-88c6-537e-ad87-035c85afd29d")]
     public readonly Slot<MeshGeometry> Geometry = new();
+
 
     public VolumeToMesh()
     {
         Geometry.UpdateAction = Update;
-        _job = new BackgroundJob<Key, MeshGeometry>(this, nameof(VolumeToMesh), Compute, Geometry);
     }
 
     private void Update(EvaluationContext context)
@@ -32,30 +29,37 @@ internal sealed class VolumeToMesh : Instance<VolumeToMesh>
         var volume = Volume.GetValue(context);
         var isovalue = Isovalue.GetValue(context);
 
-        if (volume?.GetFloatGrid() == null || !float.IsFinite(isovalue))
+        var grid = volume?.GetFloatGrid();
+        if (grid == null)
         {
-            _job.Reset();
             Geometry.Value = null;
+            _last = default;
             return;
         }
 
-        // Marching cubes over a large band is the slowest step of most volume chains; it runs on a worker.
-        var key = new Key(volume, isovalue);
-        switch (_job.Poll(context, key, out var result))
+        var key = (volume, isovalue);
+        if (key == _last)
+            return;
+
+        try
         {
-            case BackgroundJobOutcome.Ready:
-                Geometry.Value = result;
-                break;
-            case BackgroundJobOutcome.Failed:
-                Geometry.Value = null;
-                break;
+            Geometry.Value = T3.Core.DataTypes.Volume.VolumeToMesh.Extract(grid, isovalue);
+            _last = key;
+            _lastError = null;
+        }
+        catch (Exception e)
+        {
+            // An exception escaping an update is fatal to the editor; degrade to an empty output.
+            Geometry.Value = null;
+            _last = default;
+            if (_lastError != e.Message)
+                Log.Warning($"VolumeToMesh failed: {e.Message}", this);
+            _lastError = e.Message;
         }
     }
 
-    private static MeshGeometry Compute(Key key)
-        => T3.Core.DataTypes.Volume.VolumeToMesh.Extract(key.Volume.GetFloatGrid(), key.Isovalue);
-
-    private readonly BackgroundJob<Key, MeshGeometry> _job;
+    private (VdbVolume?, float) _last = (null, float.NaN);
+    private string? _lastError;
 
     [Input(Guid = "19c6ca3f-d7ff-507f-8d28-2490f0edb66e")]
     public readonly InputSlot<VdbVolume> Volume = new();

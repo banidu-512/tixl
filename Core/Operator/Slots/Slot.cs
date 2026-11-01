@@ -1,4 +1,4 @@
-﻿#nullable enable
+#nullable enable
 using System;
 using System.Linq;
 using System.Runtime.CompilerServices;
@@ -263,7 +263,7 @@ public class Slot<T> : ISlot, ITimeClipRemapTarget
 
         Value = InputConnections[0].GetValue(context)!;
     }
-
+        
     protected void ByPassUpdate(EvaluationContext context)
     {
         Value = _targetInputForBypass!.GetValue(context)!;
@@ -310,7 +310,6 @@ public class Slot<T> : ISlot, ITimeClipRemapTarget
     }
 
     private Action<EvaluationContext>? _actionBeforeAddingConnecting;
-    private bool _reportedEmptyConnection;
 
     public void RemoveConnection(int index = 0)
     {
@@ -358,6 +357,7 @@ public class Slot<T> : ISlot, ITimeClipRemapTarget
     }
 
     protected Slot<T>[] InputConnections = [];
+    private bool _reportedEmptyConnection;
 
     public int InvalidateGraph()
     {

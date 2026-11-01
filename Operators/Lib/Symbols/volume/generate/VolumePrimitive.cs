@@ -6,7 +6,6 @@ using T3.Core.DataTypes.Volume;
 using T3.Core.DataTypes.Volume.Tools;
 using T3.Core.DataTypes.Volume.IO;
 using T3.Core.Logging;
-using Lib.Utils;
 
 namespace Lib.volume.generate;
 
@@ -14,10 +13,9 @@ namespace Lib.volume.generate;
 [Guid("6583bddb-034b-5ff0-b12e-6e5c38bdba64")]
 internal sealed class VolumePrimitive : Instance<VolumePrimitive>
 {
-    private readonly record struct Key(VolumePrimitives.Shape Shape, Vector3 Size, Vector3 Center, float VoxelSize, int Band);
-
     [Output(Guid = "1c2a036f-72e1-5cb0-a787-f8a5e06defe7")]
     public readonly Slot<VdbVolume> Volume = new();
+
 
     private enum Shapes
     {
@@ -35,7 +33,6 @@ internal sealed class VolumePrimitive : Instance<VolumePrimitive>
     public VolumePrimitive()
     {
         Volume.UpdateAction = Update;
-        _job = new BackgroundJob<Key, VdbVolume>(this, nameof(VolumePrimitive), Compute, Volume);
     }
 
     private void Update(EvaluationContext context)
@@ -46,32 +43,38 @@ internal sealed class VolumePrimitive : Instance<VolumePrimitive>
         var voxelSize = VoxelSize.GetValue(context);
         var band = (int)BandWidth.GetValue(context);
 
-        // Negated comparisons so NaN inputs are rejected too.
-        if (!(size.X > 0) || !(size.Y > 0) || !(size.Z > 0) || !(voxelSize > 0)
-            || !float.IsFinite(size.X + size.Y + size.Z + voxelSize) || !float.IsFinite(center.X + center.Y + center.Z))
+        if (size.X <= 0 || size.Y <= 0 || size.Z <= 0 || voxelSize <= 0)
         {
-            _job.Reset();
             Volume.Value = null;
+            _last = default;
             return;
         }
 
-        // The core rejects primitives too large for the voxel size; that error is reported once per input change.
-        var key = new Key(shape, size, center, voxelSize, band);
-        switch (_job.Poll(context, key, out var result))
+        var key = (shape, size, center, voxelSize, band);
+        if (key == _last)
+            return;
+
+        try
         {
-            case BackgroundJobOutcome.Ready:
-                Volume.Value = result;
-                break;
-            case BackgroundJobOutcome.Failed:
-                Volume.Value = null;
-                break;
+            var grid = VolumePrimitives.Create(shape, size, voxelSize, center, band);
+            Volume.Value = new VdbVolume(grid);
+            _last = key;
+            _lastError = null;
+        }
+        catch (Exception e)
+        {
+            Volume.Value = null;
+            if (_lastError != e.Message)
+                Log.Warning($"VolumePrimitive failed: {e.Message}", this);
+            _lastError = e.Message;
+
+            // Remember the failing inputs so an impossible voxel size does not retry every frame.
+            _last = key;
         }
     }
 
-    private static VdbVolume Compute(Key key)
-        => new(VolumePrimitives.Create(key.Shape, key.Size, key.VoxelSize, key.Center, key.Band));
-
-    private readonly BackgroundJob<Key, VdbVolume> _job;
+    private (VolumePrimitives.Shape, Vector3, Vector3, float, int) _last = ((VolumePrimitives.Shape)(-1), Vector3.Zero, Vector3.Zero, -1, -1);
+    private string? _lastError;
 
     [Input(Guid = "d2cf0b36-bd51-5f39-9ae4-ea24893f1222", MappedType = typeof(Shapes))]
     public readonly InputSlot<int> Shape = new();

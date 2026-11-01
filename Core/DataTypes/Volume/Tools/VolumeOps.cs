@@ -39,7 +39,6 @@ public static class PointsToVolume
                                         + "increase VoxelSize or reduce Radius.");
         }
         var transform = new VdbTransform(voxelSize, Vector3.Zero);
-        var radiusSq = radius * radius;
 
         var grid = new VdbGrid<float>(0f, voxelSize, "density", VdbGridClass.FogVolume);
 
@@ -47,10 +46,6 @@ public static class PointsToVolume
         var leafGroups = new Dictionary<VdbCoord, List<int>>();
         for (var i = 0; i < positions.Length; i++)
         {
-            // A NaN position (a body that blew up) would floor to int.MinValue and loop over the whole index range.
-            if (!float.IsFinite(positions[i].X + positions[i].Y + positions[i].Z))
-                continue;
-
             var center = transform.WorldToIndexf(positions[i]);
             var minCoord = new VdbCoord((int)MathF.Floor(center.X - radiusVoxels), (int)MathF.Floor(center.Y - radiusVoxels), (int)MathF.Floor(center.Z - radiusVoxels));
             var maxCoord = new VdbCoord((int)MathF.Floor(center.X + radiusVoxels), (int)MathF.Floor(center.Y + radiusVoxels), (int)MathF.Floor(center.Z + radiusVoxels));
@@ -77,7 +72,7 @@ public static class PointsToVolume
         foreach (var origin in leafList)
             leafNodes.Add(grid.Tree.AddLeaf(origin));
 
-        Parallel.For(0, leafList.Count, VolumeParallelism.Options, leafIndex =>
+        Parallel.For(0, leafList.Count, leafIndex =>
         {
             var group = new KeyValuePair<VdbCoord, List<int>>(leafList[leafIndex], leafGroups[leafList[leafIndex]]);
             var values = new float[VdbLeafNode<float>.Size];
@@ -89,35 +84,27 @@ public static class PointsToVolume
                 var center = transform.WorldToIndexf(positions[pointIndex]);
                 var weight = weights != null ? weights[pointIndex] : 1f;
 
-                // Only the part of the kernel box inside this leaf: the full box is up to (2r+1)^3 voxels,
-                // a leaf holds 512, and every point is visited once per leaf its kernel touches.
-                var minX = Math.Max((int)MathF.Floor(center.X - radiusVoxels), group.Key.X);
-                var minY = Math.Max((int)MathF.Floor(center.Y - radiusVoxels), group.Key.Y);
-                var minZ = Math.Max((int)MathF.Floor(center.Z - radiusVoxels), group.Key.Z);
-                var maxX = Math.Min((int)MathF.Floor(center.X + radiusVoxels), group.Key.X + 7);
-                var maxY = Math.Min((int)MathF.Floor(center.Y + radiusVoxels), group.Key.Y + 7);
-                var maxZ = Math.Min((int)MathF.Floor(center.Z + radiusVoxels), group.Key.Z + 7);
-                var position = positions[pointIndex];
-                if (!float.IsFinite(position.X + position.Y + position.Z))
-                    continue;
-
-                for (var z = minZ; z <= maxZ; z++)
+                for (var dz = -radiusVoxels; dz <= radiusVoxels; dz++)
                 {
-                    for (var y = minY; y <= maxY; y++)
+                    for (var dy = -radiusVoxels; dy <= radiusVoxels; dy++)
                     {
-                        for (var x = minX; x <= maxX; x++)
+                        for (var dx = -radiusVoxels; dx <= radiusVoxels; dx++)
                         {
-                            var coord = new VdbCoord(x, y, z);
-                            var world = transform.IndexToWorld(coord);
-                            var distSq = Vector3.DistanceSquared(world, position);
-                            if (distSq > radiusSq)
+                            var local = center + new Vector3(dx, dy, dz);
+                            var coord = new VdbCoord((int)MathF.Floor(local.X), (int)MathF.Floor(local.Y), (int)MathF.Floor(local.Z));
+                            var offsetIndex = coord - group.Key;
+                            if (offsetIndex.X < 0 || offsetIndex.X > 7 || offsetIndex.Y < 0 || offsetIndex.Y > 7 || offsetIndex.Z < 0 || offsetIndex.Z > 7)
                                 continue;
 
-                            var dist = MathF.Sqrt(distSq);
+                            var world = transform.IndexToWorld(coord);
+                            var dist = Vector3.Distance(world, positions[pointIndex]);
+                            if (dist > radius)
+                                continue;
+
                             var t = 1f - dist / radius;
                             var contribution = falloff switch
                             {
-                                Falloff.Gaussian => MathF.Exp(-6f * distSq / radiusSq),
+                                Falloff.Gaussian => MathF.Exp(-6f * dist * dist / (radius * radius)),
                                 Falloff.Smoothstep => t * t * (3f - 2f * t),
                                 Falloff.Constant => 1f,
                                 _ => t,
@@ -182,9 +169,7 @@ public static class VolumePrimitives
                          voxelSize, translation, halfWidthVoxels);
     }
 
-    /// <summary>World-space bounds of a primitive (pre-translation), for band rasterization. Each
-    /// case must match the extent its <see cref="LocalSdf"/> actually evaluates — the box is the
-    /// only region that gets rasterized, so a smaller box clips the shape.</summary>
+    /// <summary>World-space bounds of a primitive (pre-translation), for band rasterization.</summary>
     public static (Vector3 Min, Vector3 Max) BoundingBoxOf(Shape shape, Vector3 size)
     {
         var half = size * 0.5f;
@@ -194,19 +179,13 @@ public static class VolumePrimitives
             Shape.Box => new(-half, half),
             Shape.RoundedBox => new(-half - new Vector3(0.1f * MathF.Min(size.X, MathF.Min(size.Y, size.Z))),
                                     half + new Vector3(0.1f * MathF.Min(size.X, MathF.Min(size.Y, size.Z)))),
-            // The torus ring lies in the XY plane (see LocalSdf): the ring reaches ±(R+r) in X and
-            // Y, the tube only ±r in Z. The old box swapped those, clipping the ring top/bottom.
-            Shape.Torus => new(new Vector3(-(half.X + half.Y), -(half.X + half.Y), -half.Y),
-                               new Vector3(half.X + half.Y, half.X + half.Y, half.Y)),
-            // A capsule with a Y size below its diameter degenerates into a sphere of the tube
-            // radius (LocalSdf clamps the segment to zero length), so Y must reach the tube radius.
-            Shape.Capsule => new(new Vector3(-half.X, -MathF.Max(half.X, half.Y), -half.X),
-                                 new Vector3(half.X, MathF.Max(half.X, half.Y), half.X)),
+            Shape.Torus => new(new Vector3(-(half.X + half.Y), -half.Y, -(half.X + half.Y)),
+                               new Vector3(half.X + half.Y, half.Y, half.X + half.Y)),
+            Shape.Capsule => new(new Vector3(-half.X, -half.Y, -half.X), new Vector3(half.X, half.Y, half.X)),
             Shape.Cylinder => new(new Vector3(-half.X, -half.Y, -half.X), new Vector3(half.X, half.Y, half.X)),
             Shape.Cone => new(new Vector3(-half.X, -half.Y, -half.X), new Vector3(half.X, half.Y, half.X)),
-            // The octahedron SDF scales all axes by size.X (see LocalSdf); per-axis halves clip it.
-            Shape.Octahedron => new(new Vector3(-size.X * 0.5f), new Vector3(size.X * 0.5f)),
-            Shape.Plane => new(new Vector3(-half.X, -half.Y, -half.Z), new Vector3(half.X, half.Y, half.Z)),
+            Shape.Octahedron => new(-half, half),
+            Shape.Plane => new(new Vector3(-half.X, -half.Y, -half.X), new Vector3(half.X, half.Y, half.X)),
             _ => new(-half, half),
         };
     }
@@ -245,50 +224,30 @@ public static class VolumePrimitives
         if (leafCount > 262_144)
             throw new ArgumentException($"Primitive too large for voxel size {voxelSize} ({leafCount} leaves, limit 262144)");
 
-        // Leaves are rasterized in parallel into plain arrays (the SDF is a pure function), then added to the tree
-        // serially in a fixed order because the tree is not thread-safe.
-        var count = (int)leafCount;
-        var leafValues = new float[count][];
-        var leafActive = new ulong[count][];
-        // Every SDF here is at most 1-Lipschitz, so a leaf whose centre is further outside than the band plus the
-        // leaf's half diagonal has no voxel in the band and is skipped without evaluating its 512 voxels.
-        var skipDistance = bandWorld + 0.5f * MathF.Sqrt(3f) * VdbLeafNode<float>.Dim * t.VoxelSize;
-        Parallel.For(0, count, VolumeParallelism.Options, leafIndex =>
+        for (var lz = leafMin.Z >> 3; lz <= leafMax.Z >> 3; lz++)
         {
-            var lx = leafIndex % leafCountX;
-            var ly = leafIndex / leafCountX % leafCountY;
-            var lz = leafIndex / (leafCountX * leafCountY);
-            var leafOrigin = new VdbCoord(leafMin.X + (lx << 3), leafMin.Y + (ly << 3), leafMin.Z + (lz << 3));
-            var centre = t.IndexToWorld(leafOrigin.ToVector3() + new Vector3(3.5f));
-            if (worldSdf(centre) > skipDistance)
-                return;
-
-            RasterizeLeaf(worldSdf, leafOrigin, t, bandWorld, background, out leafValues[leafIndex], out leafActive[leafIndex]);
-        });
-
-        for (var leafIndex = 0; leafIndex < count; leafIndex++)
-        {
-            if (leafActive[leafIndex] is not { } activeWords)
-                continue;
-
-            var lx = leafIndex % leafCountX;
-            var ly = leafIndex / leafCountX % leafCountY;
-            var lz = leafIndex / (leafCountX * leafCountY);
-            var leaf = grid.Tree.AddLeaf(new VdbCoord(leafMin.X + (lx << 3), leafMin.Y + (ly << 3), leafMin.Z + (lz << 3)));
-            Array.Copy(leafValues[leafIndex], leaf.Values, VdbLeafNode<float>.Size);
-            activeWords.AsSpan().CopyTo(leaf.ValueMask.Words);
+            for (var ly = leafMin.Y >> 3; ly <= leafMax.Y >> 3; ly++)
+            {
+                for (var lx = leafMin.X >> 3; lx <= leafMax.X >> 3; lx++)
+                {
+                    RasterizeLeaf(grid, worldSdf, new VdbCoord(lx << 3, ly << 3, lz << 3), t, bandWorld, background);
+                }
+            }
         }
 
         grid.Tree.Prune();
         return grid;
     }
 
-    private static void RasterizeLeaf(SdfFn worldSdf, VdbCoord leafOrigin, VdbTransform t, float bandWorld, float background,
-                                      out float[] values, out ulong[] activeWords)
+    private static void RasterizeLeaf(VdbGrid<float> grid, SdfFn worldSdf, VdbCoord leafOrigin,
+                                      VdbTransform t, float bandWorld, float background)
     {
         // Voxels outside the band keep the background value, so inactive reads stay consistent.
-        values = null!;
-        activeWords = null!;
+        var values = new float[VdbLeafNode<float>.Size];
+        Array.Fill(values, background);
+        var active = new bool[VdbLeafNode<float>.Size];
+        var anyActive = false;
+
         for (var i = 0; i < VdbLeafNode<float>.Size; i++)
         {
             var local = VdbCoord.LocalFromOffset(i);
@@ -297,15 +256,20 @@ public static class VolumePrimitives
             if (d > bandWorld)
                 continue;
 
-            if (values == null)
-            {
-                values = new float[VdbLeafNode<float>.Size];
-                Array.Fill(values, background);
-                activeWords = new ulong[VdbLeafNode<float>.Size / 64];
-            }
-
             values[i] = d;
-            activeWords[i >> 6] |= 1ul << (i & 63);
+            active[i] = true;
+            anyActive = true;
+        }
+
+        if (!anyActive)
+            return;
+
+        var leaf = grid.Tree.AddLeaf(leafOrigin);
+        Array.Copy(values, leaf.Values, values.Length);
+        for (var i = 0; i < active.Length; i++)
+        {
+            if (active[i])
+                leaf.ValueMask.SetOn(i);
         }
     }
 
@@ -390,6 +354,8 @@ public static class VolumeMath
                         && a.Transform.Translation == b.Transform.Translation;
 
         var leafCoords = new SortedSet<VdbCoord>();
+        VdbSampler? samplerA = null;
+        VdbSampler? samplerB = null;
         foreach (var leaf in a.Tree.Leaves)
             leafCoords.Add(leaf.Origin);
         if (sameSpace)
@@ -400,9 +366,51 @@ public static class VolumeMath
         else
         {
             VolumeCsg.CollectLeafCoordsMapped(b, a.Transform, leafCoords);
+            samplerA = new VdbSampler(a);
+            samplerB = new VdbSampler(b);
         }
 
-        VolumeCsg.CombineInto(result, a, b, leafCoords, (va, vb) => Apply(op, va, vb));
+        foreach (var coord in leafCoords)
+        {
+            var values = new float[VdbLeafNode<float>.Size];
+            var active = new bool[VdbLeafNode<float>.Size];
+            var anyActive = false;
+            for (var i = 0; i < VdbLeafNode<float>.Size; i++)
+            {
+                var voxelCoord = coord + VdbCoord.LocalFromOffset(i);
+                float va, vb;
+                bool onA, onB;
+                if (sameSpace)
+                {
+                    va = a.Tree.GetValue(voxelCoord);
+                    vb = b.Tree.GetValue(voxelCoord);
+                    onA = a.Tree.IsValueOn(voxelCoord);
+                    onB = b.Tree.IsValueOn(voxelCoord);
+                }
+                else
+                {
+                    var world = a.Transform.IndexToWorld(voxelCoord);
+                    va = VolumeCsg.SampleWorld(a, samplerA!, world, out onA);
+                    vb = VolumeCsg.SampleWorld(b, samplerB!, world, out onB);
+                }
+
+                values[i] = Apply(op, va, vb);
+                active[i] = onA || onB;
+                anyActive |= active[i];
+            }
+
+            if (!anyActive)
+                continue;
+
+            var leaf = result.Tree.AddLeaf(coord);
+            Array.Copy(values, leaf.Values, values.Length);
+            for (var i = 0; i < active.Length; i++)
+            {
+                if (active[i])
+                    leaf.ValueMask.SetOn(i);
+            }
+        }
+
         return result;
     }
 
@@ -458,80 +466,42 @@ public static class VolumeNoise
         {
             Transform = input.Transform,
         };
+        var scale = frequency / input.Transform.VoxelSize;
 
-        // A voxel's world position is translation + index * voxelSize, so the noise input
-        // p = world * (frequency / voxelSize) + offset is affine in the index:
-        // p = translation * (frequency / voxelSize) + offset + index * frequency.
-        // Stepping p by frequency per voxel instead of transforming each voxel removes a matrix
-        // multiply per sample - the bulk of the cost when an animated noise rebuilds a 24k-voxel
-        // band every frame.
-        var voxelSize = input.Transform.VoxelSize;
-        var baseP = input.Transform.Translation * (frequency / voxelSize) + offset;
-        var displacementScale = mode == Mode.Displace ? amplitude * voxelSize : amplitude;
-        var isReplace = mode == Mode.Replace;
-
-        // Leaves are allocated serially (the tree is not thread-safe), then filled in parallel: the noise is a pure
-        // function of the position, so the result is the same on any number of threads.
-        var sources = new List<VdbLeafNode<float>>(input.Tree.Leaves);
-        var targets = new VdbLeafNode<float>[sources.Count];
-        for (var leafIndex = 0; leafIndex < sources.Count; leafIndex++)
-            targets[leafIndex] = result.Tree.AddLeaf(sources[leafIndex].Origin);
-
-        Parallel.For(0, sources.Count, VolumeParallelism.Options, leafIndex =>
+        foreach (var leaf in input.Tree.Leaves)
         {
-            var leaf = sources[leafIndex];
-            var origin = leaf.Origin;
-            var newLeaf = targets[leafIndex];
-            var values = newLeaf.Values;
-
             // Inactive voxels keep their values: for a level set they carry the interior fill.
-            if (!isReplace)
-                Array.Copy(leaf.Values, values, VdbLeafNode<float>.Size);
-
-            var words = leaf.ValueMask.Words;
-            for (var x = 0; x < 8; x++)
+            var values = new float[VdbLeafNode<float>.Size];
+            Array.Copy(leaf.Values, values, values.Length);
+            for (var i = 0; i < VdbLeafNode<float>.Size; i++)
             {
-                var word = isReplace ? ulong.MaxValue : words[x];
-                if (word == 0)
+                var v = leaf.Values[i];
+                var isActive = leaf.ValueMask.IsOn(i);
+                if (!isActive && mode != Mode.Replace)
                     continue;
 
-                var px = baseP.X + (origin.X + x) * frequency;
-                for (var y = 0; y < 8; y++)
+                var coord = leaf.Origin + VdbCoord.LocalFromOffset(i);
+                var world = input.Transform.IndexToWorld(coord);
+                var p = world * scale + offset;
+                var n = noise.Fractal(noiseType, fractal, p.X, p.Y, p.Z, octaves);
+
+                values[i] = mode switch
                 {
-                    // Leaf offsets are x * 64 + y * 8 + z, so one mask word holds the
-                    // 8 z-voxels of an (x, y) row.
-                    var bits = (uint)((word >> (y * 8)) & 0xFF);
-                    if (bits == 0)
-                        continue;
-
-                    var py = baseP.Y + (origin.Y + y) * frequency;
-                    var rowOffset = (x << 6) + (y << 3);
-                    for (var z = 0; z < 8; z++)
-                    {
-                        if ((bits & (1u << z)) == 0)
-                            continue;
-
-                        var pz = baseP.Z + (origin.Z + z) * frequency;
-                        var n = noise.Fractal(noiseType, fractal, px, py, pz, octaves);
-                        var i = rowOffset + z;
-                        var v = leaf.Values[i];
-                        values[i] = mode switch
-                        {
-                            Mode.Add => v + n * amplitude,
-                            Mode.Multiply => v * (1f + n * amplitude),
-                            Mode.Displace => v + n * displacementScale,
-                            Mode.Replace => n * amplitude,
-                            _ => v,
-                        };
-                    }
-                }
+                    Mode.Add => v + n * amplitude,
+                    Mode.Multiply => v * (1f + n * amplitude),
+                    Mode.Displace => v + n * amplitude * input.Transform.VoxelSize,
+                    Mode.Replace => n * amplitude,
+                    _ => v,
+                };
             }
 
-            if (isReplace)
+            var newLeaf = result.Tree.AddLeaf(leaf.Origin);
+            Array.Copy(values, newLeaf.Values, values.Length);
+            if (mode == Mode.Replace)
                 newLeaf.ValueMask.SetAll();
             else
                 newLeaf.ValueMask.Words.AsSpan().CopyFrom(leaf.ValueMask.Words);
-        });
+        }
 
         result.Tree.Prune();
         return result;

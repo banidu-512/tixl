@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Numerics;
 using BepuPhysics;
 using BepuPhysics.Collidables;
@@ -49,6 +50,10 @@ internal sealed class PhysicsSimulation : IDisposable
 
     /// <summary>Number of live Bepu constraints, which differs from the joint count if a constraint leaks or is added twice.</summary>
     public int ConstraintCount => _simulation?.Solver.CountConstraints() ?? 0;
+
+    /// <summary>Wall-clock time one <see cref="Update"/> may spend stepping before the remaining simulated time is dropped.
+    /// At least one step always runs. Hitting the limit makes a replay differ from an unloaded machine's, so it only matters for scenes too heavy to run in real time.</summary>
+    public float StepBudgetSec { get; set; } = 0.012f;
 
     public int RenderCount(bool includeStatics) => includeStatics ? _renderOrder.Count : _dynamicRenderCount;
 
@@ -113,11 +118,16 @@ internal sealed class PhysicsSimulation : IDisposable
         var dt = 1.0 / _fixedRate;
         var maxSteps = Math.Max(1, (int)MathF.Ceiling(MaxFrameDelta / (float)dt));
         var steps = 0;
+        var stepStart = Stopwatch.GetTimestamp();
         while (_accumulator >= dt && steps < maxSteps)
         {
             Step((float)dt);
             _accumulator -= dt;
             steps++;
+
+            // Stepping runs on the evaluation thread, so a heavy scene must slow the simulation down instead of the editor.
+            if (Stopwatch.GetElapsedTime(stepStart).TotalSeconds > StepBudgetSec)
+                break;
         }
 
         // Never let a slow frame build a debt that turns into slow motion forever.
@@ -176,6 +186,13 @@ internal sealed class PhysicsSimulation : IDisposable
 
         if (multithreaded && _dispatcher == null)
             _dispatcher = new ThreadDispatcher(Math.Max(1, Environment.ProcessorCount - 1));
+        else if (!multithreaded && _dispatcher != null)
+        {
+            // Single-threaded mode never passes the dispatcher to Timestep, so keeping its worker
+            // threads alive would leak them for as long as the operator exists.
+            _dispatcher.Dispose();
+            _dispatcher = null;
+        }
 
         _pool = new BufferPool();
         _materials.Clear();
@@ -504,55 +521,72 @@ internal sealed class PhysicsSimulation : IDisposable
     /// </summary>
     private void ApplyBounce()
     {
+        _pendingBounces.Clear();
         foreach (var requests in _bounceRequests)
         {
-            for (var index = 0; index < requests.Count; index++)
-            {
-                var request = requests[index];
-                var inverseMassA = 0f;
-                var inverseMassB = 0f;
-                var velocityA = Vector3.Zero;
-                var velocityB = Vector3.Zero;
-
-                if (request.BodyA != NoBody)
-                {
-                    var body = _simulation.Bodies[new BodyHandle(request.BodyA)];
-                    velocityA = body.Velocity.Linear;
-                    inverseMassA = body.LocalInertia.InverseMass;
-                }
-
-                if (request.BodyB != NoBody)
-                {
-                    var body = _simulation.Bodies[new BodyHandle(request.BodyB)];
-                    velocityB = body.Velocity.Linear;
-                    inverseMassB = body.LocalInertia.InverseMass;
-                }
-
-                var approachSpeed = Vector3.Dot(velocityA - velocityB, request.Normal);
-                var wasStopped = approachSpeed < request.ApproachSpeed * 0.5f;
-                var missingSeparation = request.Bounciness * request.ApproachSpeed + approachSpeed;
-                var totalInverseMass = inverseMassA + inverseMassB;
-                if (!wasStopped || missingSeparation <= 0f || totalInverseMass <= 0f)
-                    continue;
-
-                var impulse = request.Normal * (missingSeparation / totalInverseMass);
-                if (inverseMassA > 0f)
-                {
-                    var body = _simulation.Bodies[new BodyHandle(request.BodyA)];
-                    body.Velocity.Linear -= impulse * inverseMassA;
-                    body.Awake = true;
-                }
-
-                if (inverseMassB > 0f)
-                {
-                    var body = _simulation.Bodies[new BodyHandle(request.BodyB)];
-                    body.Velocity.Linear += impulse * inverseMassB;
-                    body.Awake = true;
-                }
-            }
-
+            _pendingBounces.AddRange(requests);
             requests.Clear();
         }
+
+        // Worker threads record in whatever order they finish; each request reads the velocities the previous ones
+        // left behind, so a fixed order is what keeps Deterministic replays identical.
+        if (_pendingBounces.Count > 1)
+            _pendingBounces.Sort(CompareBounceRequests);
+
+        ApplyPendingBounces();
+    }
+
+    private void ApplyPendingBounces()
+    {
+        for (var index = 0; index < _pendingBounces.Count; index++)
+        {
+            var request = _pendingBounces[index];
+            var inverseMassA = 0f;
+            var inverseMassB = 0f;
+            var velocityA = Vector3.Zero;
+            var velocityB = Vector3.Zero;
+
+            if (request.BodyA != NoBody)
+            {
+                var body = _simulation.Bodies[new BodyHandle(request.BodyA)];
+                velocityA = body.Velocity.Linear;
+                inverseMassA = body.LocalInertia.InverseMass;
+            }
+
+            if (request.BodyB != NoBody)
+            {
+                var body = _simulation.Bodies[new BodyHandle(request.BodyB)];
+                velocityB = body.Velocity.Linear;
+                inverseMassB = body.LocalInertia.InverseMass;
+            }
+
+            var approachSpeed = Vector3.Dot(velocityA - velocityB, request.Normal);
+            var wasStopped = approachSpeed < request.ApproachSpeed * 0.5f;
+            var missingSeparation = request.Bounciness * request.ApproachSpeed + approachSpeed;
+            var totalInverseMass = inverseMassA + inverseMassB;
+            if (!wasStopped || missingSeparation <= 0f || totalInverseMass <= 0f)
+                continue;
+
+            var impulse = request.Normal * (missingSeparation / totalInverseMass);
+            if (inverseMassA > 0f)
+            {
+                var body = _simulation.Bodies[new BodyHandle(request.BodyA)];
+                body.Velocity.Linear -= impulse * inverseMassA;
+                body.Awake = true;
+            }
+
+            if (inverseMassB > 0f)
+            {
+                var body = _simulation.Bodies[new BodyHandle(request.BodyB)];
+                body.Velocity.Linear += impulse * inverseMassB;
+                body.Awake = true;
+            }
+        }
+    }
+
+    private static int CompareBounceRequests(BounceRequest a, BounceRequest b)
+    {
+        return a.BodyA != b.BodyA ? a.BodyA.CompareTo(b.BodyA) : a.BodyB.CompareTo(b.BodyB);
     }
 
     private void ApplyDampingAndGravityScale(float dt)
@@ -1008,6 +1042,7 @@ internal sealed class PhysicsSimulation : IDisposable
     private BufferPool _pool;
     private ThreadDispatcher _dispatcher;
     private List<BounceRequest>[] _bounceRequests = [];
+    private readonly List<BounceRequest> _pendingBounces = new();
     private readonly PhysicsSettings _settings = new();
     private readonly PhysicsMaterials _materials = new();
     private readonly Dictionary<Guid, BodyEntry> _bodies = new();

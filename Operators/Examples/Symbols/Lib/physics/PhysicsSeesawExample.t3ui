@@ -1,0 +1,175 @@
+{
+  "FormatVersion": 3,
+  "Id": "a31926dd-defb-5980-9e21-f16e77cd0a56"/*PhysicsSeesawExample*/,
+  "Description": "A heavy crate drops onto a seesaw and launches the crate on its other end.\n\nThe plank is hinged to a kinematic pivot with a hinge [RigidJoint] around the Z axis. It starts tilted, with the small crate resting on its low end.\n\nAKA: hinge, lever, catapult\n\nTips\n- The hinge point sits below the plank so the joint partners do not overlap.\n- HingeAxisA and HingeAxisB are given in the local space of each body.",
+  "InputUis": [],
+  "SymbolChildUis": [
+    {
+      "ChildId": "0868bf4b-9366-5091-a5fe-a2ac21493156",
+      "SymbolName": "Lib.image.generate.basic.RenderTarget",
+      "Position": {
+        "X": 2700.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "20f20667-6d9d-5448-901b-97c22fb98d58",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 0.0,
+        "Y": 900.0
+      }
+    },
+    {
+      "ChildId": "2a49ef54-4e81-53e7-9b1c-c02aea34cc85",
+      "SymbolName": "Lib.mesh.generate.CubeMesh",
+      "Position": {
+        "X": 1200.0,
+        "Y": -300.0
+      }
+    },
+    {
+      "ChildId": "2b13b488-fe8d-5b8a-9dda-13cca9400825",
+      "SymbolName": "Lib.mesh.generate.CubeMesh",
+      "Position": {
+        "X": 1200.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "3778da5d-e39a-5e4f-8da1-64971b61a3e6",
+      "SymbolName": "Lib.render.transform.Group",
+      "Position": {
+        "X": 2100.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "48db355e-99d3-5ac5-86f8-7004db5127f0",
+      "SymbolName": "Lib.physics.PhysicsWorld",
+      "Position": {
+        "X": 1200.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "555df7da-95da-584c-9706-5bed228b1f72",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 0.0,
+        "Y": 1200.0
+      }
+    },
+    {
+      "ChildId": "6b2614ad-5eea-5e12-95b6-642568d0232c",
+      "SymbolName": "Lib.mesh.modify.TransformMesh",
+      "Position": {
+        "X": 1500.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "86da1ab1-3773-58d0-81bd-dbee13e19b33",
+      "SymbolName": "Lib.mesh.draw.DrawMeshUnlit",
+      "Position": {
+        "X": 1800.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "8d69b8a8-2316-5587-b1a2-b55fb0f96ac8",
+      "SymbolName": "Lib.mesh.draw.DrawMeshAtPoints",
+      "Position": {
+        "X": 1500.0,
+        "Y": -150.0
+      }
+    },
+    {
+      "ChildId": "9bf7d311-d3c3-5046-8a93-df570cee554d",
+      "SymbolName": "Lib.physics.RigidJoint",
+      "Position": {
+        "X": 600.0,
+        "Y": 450.0
+      }
+    },
+    {
+      "ChildId": "b5048a18-98fc-5d9e-ac86-5a903f095483",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 0.0,
+        "Y": 600.0
+      }
+    },
+    {
+      "ChildId": "e3b5958a-e4c2-5aa2-bbda-77ba2dacd23f",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 0.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "ec1a6290-afd4-554e-9a5d-6e5154e25f3a",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 0.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "fa724cad-6539-5e10-a8ac-25a911e510f1",
+      "SymbolName": "Lib.render.camera.Camera",
+      "Position": {
+        "X": 2400.0,
+        "Y": 0.0
+      }
+    }
+  ],
+  "OutputUis": [
+    {
+      "OutputId": "e200945b-35bc-554b-84ea-0969b756b5a6"/*Output*/,
+      "Position": {
+        "X": 3000.0,
+        "Y": 0.0
+      }
+    }
+  ],
+  "Settings": {
+    "OutputWindows": [
+      {
+  "ShowGizmos": "On",
+  "TransformGizmoMode": "Move",
+  "BackgroundColor": [
+    0.1,
+    0.1,
+    0.1,
+    1.0
+  ],
+  "CameraControlMode": "AutoUseFirstCam",
+  "CameraPosition": [
+    0.0,
+    0.0,
+    2.4142134
+  ],
+  "CameraTarget": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "CameraRoll": 0.0,
+  "CameraSpeed": 1.0,
+  "ResolutionTitle": "Fill",
+  "ResolutionWidth": 0,
+  "ResolutionHeight": 0,
+  "ResolutionUseAsAspectRatio": true,
+  "IsPinned": true,
+  "PinnedInstancePath": [
+    "e45fcfbe-b18f-8861-f3b3-cc6758dd4ec1"
+  ],
+  "PinnedOutputId": "00000000-0000-0000-0000-000000000000",
+  "PinnedEntityKind": "None",
+  "PinnedEntityId": "00000000-0000-0000-0000-000000000000"
+}
+    ]
+  }
+}

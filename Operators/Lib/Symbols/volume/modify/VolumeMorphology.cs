@@ -6,7 +6,6 @@ using T3.Core.DataTypes.Volume;
 using T3.Core.DataTypes.Volume.Tools;
 using T3.Core.DataTypes.Volume.IO;
 using T3.Core.Logging;
-using Lib.Utils;
 
 namespace Lib.volume.modify;
 
@@ -14,10 +13,9 @@ namespace Lib.volume.modify;
 [Guid("f3b93568-90a7-5119-a0a9-fcd9f1ee60e0")]
 internal sealed class VolumeMorphology : Instance<VolumeMorphology>
 {
-    private readonly record struct Key(VdbVolume Volume, T3.Core.DataTypes.Volume.Tools.VolumeMorphology.Operation Operation, float Radius);
-
     [Output(Guid = "e385bebb-b9e7-576f-9c3a-f794d84d5d48")]
     public readonly Slot<VdbVolume> Result = new();
+
 
     private enum Operations
     {
@@ -30,7 +28,6 @@ internal sealed class VolumeMorphology : Instance<VolumeMorphology>
     public VolumeMorphology()
     {
         Result.UpdateAction = Update;
-        _job = new BackgroundJob<Key, VdbVolume>(this, nameof(VolumeMorphology), Compute, Result);
     }
 
     private void Update(EvaluationContext context)
@@ -40,30 +37,36 @@ internal sealed class VolumeMorphology : Instance<VolumeMorphology>
         var radius = Radius.GetValue(context);
 
         var grid = volume?.GetFloatGrid();
-        // Written as a negated comparison so a NaN radius passes the volume through instead of computing.
-        if (grid == null || !(radius > 0) || !float.IsFinite(radius))
+        if (grid == null || radius <= 0)
         {
-            _job.Reset();
             Result.Value = volume;
+            _last = default;
             return;
         }
 
-        var key = new Key(volume, operation, radius);
-        switch (_job.Poll(context, key, out var result))
+        var key = (volume, operation, radius);
+        if (key == _last)
+            return;
+
+        try
         {
-            case BackgroundJobOutcome.Ready:
-                Result.Value = result;
-                break;
-            case BackgroundJobOutcome.Failed:
-                Result.Value = null;
-                break;
+            Result.Value = new VdbVolume(T3.Core.DataTypes.Volume.Tools.VolumeMorphology.Apply(grid, operation, radius));
+            _last = key;
+            _lastError = null;
+        }
+        catch (Exception e)
+        {
+            // An exception escaping an update is fatal to the editor; degrade to an empty output.
+            Result.Value = null;
+            _last = default;
+            if (_lastError != e.Message)
+                Log.Warning($"VolumeMorphology failed: {e.Message}", this);
+            _lastError = e.Message;
         }
     }
 
-    private static VdbVolume Compute(Key key)
-        => new(T3.Core.DataTypes.Volume.Tools.VolumeMorphology.Apply(key.Volume.GetFloatGrid(), key.Operation, key.Radius));
-
-    private readonly BackgroundJob<Key, VdbVolume> _job;
+    private (VdbVolume?, T3.Core.DataTypes.Volume.Tools.VolumeMorphology.Operation, float) _last = (null, (T3.Core.DataTypes.Volume.Tools.VolumeMorphology.Operation)(-1), -1);
+    private string? _lastError;
 
     [Input(Guid = "f762b0d3-0f82-5660-9169-c94524c5a414")]
     public readonly InputSlot<VdbVolume> Volume = new();

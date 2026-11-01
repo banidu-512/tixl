@@ -283,7 +283,7 @@ public class VolumeNoiseTests
                                           octaves: 2, VdbNoiseType.Perlin, VdbNoiseFractalType.Fbm,
                                           VolumeNoise.Mode.Displace);
 
-        Assert.NotEqual(0, grid.ActiveVoxelCount);
+        Assert.NotEqual(grid.ActiveVoxelCount, 0);
         Assert.True(displaced.ActiveVoxelCount > 0);
     }
 }
@@ -656,108 +656,5 @@ public class VolumeRegressionTests
         Assert.True(union.Tree.GetValue(union.Transform.WorldToIndex(new Vector3(-0.6f, 0, 0))) < 0);
         Assert.True(union.Tree.GetValue(union.Transform.WorldToIndex(new Vector3(0.6f, 0, 0))) < 0);
         Assert.True(union.Tree.GetValue(union.Transform.WorldToIndex(new Vector3(0f, 0.9f, 0))) > 0);
-    }
-}
-
-public class VdbVectorSamplerTests
-{
-    [Fact]
-    public void VectorGridIsSampledTrilinearly()
-    {
-        var grid = new VdbGrid<Vector3>(Vector3.Zero, 1f);
-        grid.Tree.SetValueOn(new VdbCoord(0, 0, 0), new Vector3(0, 2, 0));
-        grid.Tree.SetValueOn(new VdbCoord(1, 0, 0), new Vector3(4, 2, 0));
-
-        var sampler = new VdbVectorSampler(grid);
-        var middle = sampler.SampleWorld(new Vector3(0.5f, 0, 0));
-        Assert.Equal(2f, middle.X, 0.0001f);
-        Assert.Equal(2f, middle.Y, 0.0001f);
-        Assert.Equal(new Vector3(4, 2, 0), sampler.SampleWorld(new Vector3(1, 0, 0)));
-    }
-
-    [Fact]
-    public void FloatGridGivesItsGradient()
-    {
-        // value = 3 x, so the slope is 3 along X whatever the voxel size.
-        var grid = new VdbGrid<float>(0f, 0.25f);
-        for (var x = -4; x <= 4; x++)
-        for (var y = -2; y <= 2; y++)
-        for (var z = -2; z <= 2; z++)
-            grid.Tree.SetValueOn(new VdbCoord(x, y, z), 3f * x * 0.25f);
-
-        var gradient = new VdbVectorSampler(grid).SampleWorld(new Vector3(0.1f, 0.05f, -0.1f));
-        Assert.Equal(3f, gradient.X, 0.001f);
-        Assert.Equal(0f, gradient.Y, 0.001f);
-        Assert.Equal(0f, gradient.Z, 0.001f);
-    }
-
-    [Fact]
-    public void LevelSetGradientPointsAwayFromTheSurface()
-    {
-        var sphere = VolumePrimitives.Create(VolumePrimitives.Shape.Sphere, new Vector3(1f, 1f, 1f), 0.05f, Vector3.Zero, 3);
-        var gradient = new VdbVectorSampler(sphere).SampleWorld(new Vector3(0, 0.5f, 0));
-
-        Assert.True(gradient.Y > 0.8f, $"expected the outward normal at the top of the sphere, got {gradient}");
-        Assert.InRange(MathF.Abs(gradient.X), 0f, 0.1f);
-    }
-}
-
-public class SdfSamplesTests
-{
-    /// <summary>A lattice of points carrying the distance to a sphere, as SampleFieldPoints would write it.</summary>
-    private static Point[] SphereSamples(int count, float spacing, Vector3 center, float radius, Vector3 origin)
-    {
-        var points = new Point[count * count * count];
-        for (var index = 0; index < points.Length; index++)
-        {
-            var position = origin + new Vector3(index % count, index / count % count, index / (count * count)) * spacing;
-            points[index] = new Point { Position = position, F1 = Vector3.Distance(position, center) - radius, F2 = 99f };
-        }
-
-        return points;
-    }
-
-    [Fact]
-    public void SpacingIsFoundFromTheLattice()
-    {
-        var points = SphereSamples(6, 0.25f, Vector3.Zero, 0.5f, new Vector3(-3.1f, 2f, 7f));
-        Assert.Equal(0.25f, SdfSamples.FindSpacing(points), 0.0001f);
-    }
-
-    [Fact]
-    public void SampledSphereMeshesToASphereWhereverTheLatticeSits()
-    {
-        var center = new Vector3(4.3f, -2.1f, 9.7f);
-        var points = SphereSamples(24, 0.125f, center, 1f, center - new Vector3(1.44f));
-        var grid = SdfSamples.ToGrid(points, 0f);
-        Assert.NotNull(grid);
-
-        var mesh = VolumeToMesh.Extract(grid!, 0f);
-        Assert.True(mesh.FaceCount > 500, $"{mesh.FaceCount} faces");
-        foreach (var position in mesh.Positions)
-            Assert.InRange(Vector3.Distance(position, center), 0.97f, 1.03f);
-    }
-
-    [Fact]
-    public void ShuffledSamplesGiveTheSameSurface()
-    {
-        var points = SphereSamples(16, 0.2f, Vector3.Zero, 1f, new Vector3(-1.5f));
-        var ordered = VolumeToMesh.Extract(SdfSamples.ToGrid(points, 0.2f)!, 0f).FaceCount;
-        new Random(3).Shuffle(points);
-        Assert.Equal(ordered, VolumeToMesh.Extract(SdfSamples.ToGrid(points, 0.2f)!, 0f).FaceCount);
-    }
-
-    [Fact]
-    public void BadSamplesAreLeftOutAndTooFewGiveNothing()
-    {
-        var points = SphereSamples(16, 0.2f, Vector3.Zero, 1f, new Vector3(-1.5f));
-        points[100].F1 = float.NaN;
-        points[200].Position = new Vector3(float.PositiveInfinity, 0, 0);
-        points[300].Position = new Vector3(1e30f, 0, 0);
-        Assert.True(VolumeToMesh.Extract(SdfSamples.ToGrid(points, 0.2f)!, 0f).FaceCount > 100);
-
-        Assert.Null(SdfSamples.ToGrid(points.AsSpan(0, 4), 0.2f));
-        Assert.Null(SdfSamples.ToGrid(new Point[64], 0f));
-        Assert.Equal(99f, SdfSamples.ToGrid(points, 0.2f, useF2: true)!.Tree.GetValue(new VdbCoord(0, 0, 0)));
     }
 }

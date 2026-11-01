@@ -1,6 +1,5 @@
 #nullable enable
 using System;
-using T3.Core.DataTypes.Volume.Tools;
 using System.Collections.Generic;
 using System.Numerics;
 using System.Threading;
@@ -468,9 +467,6 @@ public static class MeshToVolume
         return ConvertCorners(positions, corners.ToArray(), voxelSize, halfWidthVoxels, volumeType, translation);
     }
 
-    /// <summary>About 600 MB of voxel data, the same bound the primitives use.</summary>
-    private const int MaxLeaves = 262_144;
-
     public static VdbGrid<float> ConvertCorners(Vector3[] positions, int[] triangles,
                                                  float voxelSize, int band, VdbVolumeType volumeType,
                                                  Vector3? translation)
@@ -487,16 +483,9 @@ public static class MeshToVolume
         var max = new Vector3(float.MinValue);
         foreach (var p in positions)
         {
-            // A NaN or infinite point (a broken upstream mesh) would stretch the bounds over the whole index range.
-            if (!float.IsFinite(p.X + p.Y + p.Z))
-                continue;
-
             min = Vector3.Min(min, p);
             max = Vector3.Max(max, p);
         }
-
-        if (min.X > max.X)
-            throw new ArgumentException("The mesh has no finite points.");
 
         var offset = translation ?? Vector3.Zero;
         min -= offset;
@@ -523,20 +512,12 @@ public static class MeshToVolume
             var a = (positions[triangles[t]] - offset) / voxelSize;
             var b = (positions[triangles[t + 1]] - offset) / voxelSize;
             var c = (positions[triangles[t + 2]] - offset) / voxelSize;
-            if (!float.IsFinite(a.X + a.Y + a.Z + b.X + b.Y + b.Z + c.X + c.Y + c.Z))
-                continue;
-
             var triMin = Vector3.Min(a, Vector3.Min(b, c));
             var triMax = Vector3.Max(a, Vector3.Max(b, c));
             var lo = new VdbCoord((int)MathF.Floor(triMin.X) - band - 1, (int)MathF.Floor(triMin.Y) - band - 1, (int)MathF.Floor(triMin.Z) - band - 1);
             var hi = new VdbCoord((int)MathF.Ceiling(triMax.X) + band + 1, (int)MathF.Ceiling(triMax.Y) + band + 1, (int)MathF.Ceiling(triMax.Z) + band + 1);
             lo = VdbCoord.Max(lo, iMin);
             hi = VdbCoord.Min(hi, iMax);
-
-            // A large triangle on a fine grid touches millions of leaves; stop before the set exhausts memory.
-            var boxLeaves = ((long)(hi.X - (lo.X & ~7)) / 8 + 1) * ((long)(hi.Y - (lo.Y & ~7)) / 8 + 1) * ((long)(hi.Z - (lo.Z & ~7)) / 8 + 1);
-            if (boxLeaves > MaxLeaves || leafCoords.Count > MaxLeaves)
-                throw new ArgumentException($"Mesh too large for voxel size {voxelSize} (over {MaxLeaves} leaves); increase VoxelSize.");
 
             // Scan leaf-aligned origins so every candidate leaf intersects the triangle's band box.
             for (var z = lo.Z & ~7; z <= hi.Z; z += 8)
@@ -559,7 +540,7 @@ public static class MeshToVolume
         foreach (var origin in orderedLeaves)
             leafNodes.Add(grid.Tree.AddLeaf(origin));
 
-        Parallel.For(0, orderedLeaves.Count, VolumeParallelism.Options, leafIndex =>
+        Parallel.For(0, orderedLeaves.Count, leafIndex =>
         {
             var leafOrigin = orderedLeaves[leafIndex];
             var leaf = leafNodes[leafIndex];

@@ -1,0 +1,143 @@
+{
+  "FormatVersion": 3,
+  "Id": "426795c0-91a4-5e3e-ade4-c8116322ab35"/*VolumeNanoVdbCsgExample*/,
+  "Description": "A sphere with a box carved out of it, rendered as a NanoVDB liquid surface.\n\n[VolumeCsg] subtracts a box from a sphere. The result goes through [VolumeToNanoVdb] to [NanoVdbRender], which shades the zero level as a reflective surface. A slow noise ripple keeps the surface moving.\n\nAKA: boolean, solid geometry, difference\n\nTips\n- Change the Operation on [VolumeCsg] to Union or Intersection to see the other booleans.",
+  "InputUis": [],
+  "SymbolChildUis": [
+    {
+      "ChildId": "2ce79f5d-66fa-5113-a303-f1d2b0cabde9",
+      "SymbolName": "Lib.volume.generate.VolumePrimitive",
+      "Position": {
+        "X": 600.0,
+        "Y": 600.0
+      }
+    },
+    {
+      "ChildId": "3fda1d52-8901-54ef-b1fe-361548cb7ebb",
+      "SymbolName": "Types.Values.Vector3",
+      "Position": {
+        "X": 300.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "475188e1-f52d-5929-9ca5-d858e15cff89",
+      "SymbolName": "Lib.volume.generate.VolumePrimitive",
+      "Position": {
+        "X": 600.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "5997aae0-23f4-5511-a963-f30b6e3d58dd",
+      "SymbolName": "Lib.volume.modify.VolumeCsg",
+      "Position": {
+        "X": 1000.0,
+        "Y": 450.0
+      }
+    },
+    {
+      "ChildId": "66590ebe-f342-5579-a88c-f93383b05dde",
+      "SymbolName": "Lib.image.generate.basic.RenderTarget",
+      "Position": {
+        "X": 2600.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "67b0ff21-d528-5b5f-aadc-9debb0833b02",
+      "SymbolName": "Lib.numbers.anim.time.Time",
+      "Position": {
+        "X": 0.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "8e83e7dc-2d5a-5737-9cbd-82ce7a33c451",
+      "SymbolName": "Lib.volume.gpu.VolumeToNanoVdb",
+      "Position": {
+        "X": 1700.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "ab4bcfd3-2f00-58ba-ba43-28f6259356ca",
+      "SymbolName": "Lib.volume.render.NanoVdbRender",
+      "Position": {
+        "X": 2000.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "ae2e66ef-c3d3-5d02-afce-023e2abb789e",
+      "SymbolName": "Lib.numbers.anim.time.Time",
+      "Position": {
+        "X": 0.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "b49b6464-a111-55f7-8777-194c9bcb74de",
+      "SymbolName": "Lib.render.camera.OrbitCamera",
+      "Position": {
+        "X": 2300.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "bd19c7f1-2789-5904-845d-e265b1f612bb",
+      "SymbolName": "Lib.volume.modify.VolumeNoise",
+      "Position": {
+        "X": 1300.0,
+        "Y": 450.0
+      }
+    }
+  ],
+  "OutputUis": [
+    {
+      "OutputId": "e77d6987-d6bc-5114-bf5a-03f5c6e6c466"/*ColorBuffer*/,
+      "Position": {
+        "X": 2900.0,
+        "Y": 300.0
+      }
+    }
+  ],
+  "Settings": {
+    "OutputWindows": [
+      {
+  "ShowGizmos": "On",
+  "TransformGizmoMode": "Move",
+  "BackgroundColor": [
+    0.1,
+    0.1,
+    0.1,
+    1.0
+  ],
+  "CameraControlMode": "AutoUseFirstCam",
+  "CameraPosition": [
+    0.0,
+    0.0,
+    2.4142134
+  ],
+  "CameraTarget": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "CameraRoll": 0.0,
+  "CameraSpeed": 1.0,
+  "ResolutionTitle": "Fill",
+  "ResolutionWidth": 0,
+  "ResolutionHeight": 0,
+  "ResolutionUseAsAspectRatio": true,
+  "IsPinned": true,
+  "PinnedInstancePath": [
+    "2c5f20ba-1bdd-5179-afcc-3107618b4cce"
+  ],
+  "PinnedOutputId": "00000000-0000-0000-0000-000000000000",
+  "PinnedEntityKind": "None",
+  "PinnedEntityId": "00000000-0000-0000-0000-000000000000"
+}
+    ]
+  }
+}

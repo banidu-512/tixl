@@ -73,10 +73,7 @@ public static class VolumeFilter
         return kernel;
     }
 
-    /// <summary>
-    /// Separable 3D convolution over the active voxels, parallel per leaf. Each leaf is convolved inside a dense
-    /// copy of its neighbourhood, one axis at a time: 3 x (2r+1) reads per voxel instead of (2r+1)^3 tree lookups.
-    /// </summary>
+    /// <summary>Naive (non-separable) 3D convolution over active voxels, parallel per leaf.</summary>
     private static VdbGrid<float> Convolve(VdbGrid<float> input, float[] kernel1D)
     {
         var radius = kernel1D.Length / 2;
@@ -86,100 +83,40 @@ public static class VolumeFilter
         };
 
         var (sources, targets) = MirrorLeaves(input, result);
-        Parallel.For(0, sources.Count, VolumeParallelism.Options,
-                     () => new ConvolveScratch(radius),
-                     (leafIndex, _, scratch) =>
-                     {
-                         ConvolveLeaf(input.Tree, sources[leafIndex], targets[leafIndex], kernel1D, scratch);
-                         return scratch;
-                     },
-                     _ => { });
+        Parallel.For(0, sources.Count, leafIndex =>
+        {
+            var leaf = sources[leafIndex];
+            var target = targets[leafIndex];
+
+            for (var i = 0; i < VdbLeafNode<float>.Size; i++)
+            {
+                if (!leaf.ValueMask.IsOn(i))
+                    continue;
+
+                var coord = leaf.Origin + VdbCoord.LocalFromOffset(i);
+                var sum = 0f;
+                var weightSum = 0f;
+                for (var dz = -radius; dz <= radius; dz++)
+                {
+                    for (var dy = -radius; dy <= radius; dy++)
+                    {
+                        for (var dx = -radius; dx <= radius; dx++)
+                        {
+                            var weight = kernel1D[dx + radius] * kernel1D[dy + radius] * kernel1D[dz + radius];
+                            var sample = input.Tree.GetValue(coord + new VdbCoord(dx, dy, dz));
+                            sum += weight * sample;
+                            weightSum += weight;
+                        }
+                    }
+                }
+
+                target.Values[i] = weightSum > 0 ? sum / weightSum : input.Background;
+            }
+        });
 
         result.Tree.Prune();
 
         return result;
-    }
-
-    /** Per-thread state of <see cref="ConvolveLeaf"/>: the neighbourhood and the results of the first two passes, in its layout. */
-    private sealed class ConvolveScratch
-    {
-        public ConvolveScratch(int radius)
-        {
-            Block = new VdbNeighbourhood(radius);
-            AlongX = new float[Block.Values.Length];
-            AlongY = new float[Block.Values.Length];
-        }
-
-        public readonly VdbNeighbourhood Block;
-        public readonly float[] AlongX;
-        public readonly float[] AlongY;
-    }
-
-    private static void ConvolveLeaf(VdbTree<float> tree, VdbLeafNode<float> leaf, VdbLeafNode<float> target, float[] kernel, ConvolveScratch scratch)
-    {
-        if (leaf.ValueMask.IsEmpty())
-            return;
-
-        const int dim = VdbLeafNode<float>.Dim;
-        var block = scratch.Block;
-        block.Fill(tree, leaf.Origin);
-        var radius = block.Margin;
-        var values = block.Values;
-        var alongX = scratch.AlongX;
-        var alongY = scratch.AlongY;
-        var strideX = block.Side * block.Side;
-        var strideY = block.Side;
-
-        // X pass over the leaf's x range and the full margin in y and z, which the later passes read.
-        for (var x = 0; x < dim; x++)
-        {
-            for (var y = -radius; y < dim + radius; y++)
-            {
-                for (var z = -radius; z < dim + radius; z++)
-                {
-                    var center = block.Index(x, y, z);
-                    var sum = 0f;
-                    for (var d = -radius; d <= radius; d++)
-                        sum += kernel[d + radius] * values[center + d * strideX];
-                    alongX[center] = sum;
-                }
-            }
-        }
-
-        for (var x = 0; x < dim; x++)
-        {
-            for (var y = 0; y < dim; y++)
-            {
-                for (var z = -radius; z < dim + radius; z++)
-                {
-                    var center = block.Index(x, y, z);
-                    var sum = 0f;
-                    for (var d = -radius; d <= radius; d++)
-                        sum += kernel[d + radius] * alongX[center + d * strideY];
-                    alongY[center] = sum;
-                }
-            }
-        }
-
-        // The kernel sums to 1, so the weighted sum needs no normalisation. Inactive voxels keep their value.
-        for (var x = 0; x < dim; x++)
-        {
-            for (var y = 0; y < dim; y++)
-            {
-                for (var z = 0; z < dim; z++)
-                {
-                    var offset = VdbCoord.LeafOffset(x, y, z);
-                    if (!leaf.ValueMask.IsOn(offset))
-                        continue;
-
-                    var center = block.Index(x, y, z);
-                    var sum = 0f;
-                    for (var d = -radius; d <= radius; d++)
-                        sum += kernel[d + radius] * alongY[center + d];
-                    target.Values[offset] = sum;
-                }
-            }
-        }
     }
 
     private static VdbGrid<float> Median(VdbGrid<float> input, int radius)
@@ -191,41 +128,34 @@ public static class VolumeFilter
         };
 
         var (sources, targets) = MirrorLeaves(input, result);
-        Parallel.For(0, sources.Count, VolumeParallelism.Options,
-                     () => (Block: new VdbNeighbourhood(radius), Window: new float[(2 * radius + 1) * (2 * radius + 1) * (2 * radius + 1)]),
-                     (leafIndex, _, scratch) =>
-                     {
-                         var leaf = sources[leafIndex];
-                         var target = targets[leafIndex];
-                         if (leaf.ValueMask.IsEmpty())
-                             return scratch;
+        Parallel.For(0, sources.Count, leafIndex =>
+        {
+            var leaf = sources[leafIndex];
+            var target = targets[leafIndex];
+            var scratch = new float[(2 * radius + 1) * (2 * radius + 1) * (2 * radius + 1)];
 
-                         var block = scratch.Block;
-                         block.Fill(input.Tree, leaf.Origin);
-                         for (var i = 0; i < VdbLeafNode<float>.Size; i++)
-                         {
-                             if (!leaf.ValueMask.IsOn(i))
-                                 continue;
+            for (var i = 0; i < VdbLeafNode<float>.Size; i++)
+            {
+                if (!leaf.ValueMask.IsOn(i))
+                    continue;
 
-                             var local = VdbCoord.LocalFromOffset(i);
-                             var count = 0;
-                             for (var dx = -radius; dx <= radius; dx++)
-                             {
-                                 for (var dy = -radius; dy <= radius; dy++)
-                                 {
-                                     var index = block.Index(local.X + dx, local.Y + dy, local.Z - radius);
-                                     for (var dz = -radius; dz <= radius; dz++, index++)
-                                         scratch.Window[count++] = block.Values[index];
-                                 }
-                             }
+                var coord = leaf.Origin + VdbCoord.LocalFromOffset(i);
+                var count = 0;
+                for (var dz = -radius; dz <= radius; dz++)
+                {
+                    for (var dy = -radius; dy <= radius; dy++)
+                    {
+                        for (var dx = -radius; dx <= radius; dx++)
+                        {
+                            scratch[count++] = input.Tree.GetValue(coord + new VdbCoord(dx, dy, dz));
+                        }
+                    }
+                }
 
-                             Array.Sort(scratch.Window, 0, count);
-                             target.Values[i] = scratch.Window[count / 2];
-                         }
-
-                         return scratch;
-                     },
-                     _ => { });
+                Array.Sort(scratch, 0, count);
+                target.Values[i] = scratch[count / 2];
+            }
+        });
 
         result.Tree.Prune();
 

@@ -1,13 +1,11 @@
 using System;
 using System.Collections.Generic;
 using System.Numerics;
-using System.Threading;
 using T3.Core.DataTypes;
 using T3.Core.DataTypes.Volume;
 using T3.Core.DataTypes.Volume.Tools;
 using T3.Core.DataTypes.Volume.IO;
 using T3.Core.Logging;
-using Lib.Utils;
 
 namespace Lib.volume.io;
 
@@ -25,12 +23,6 @@ internal sealed class SaveNanoVdb : Instance<SaveNanoVdb>
     }
 
     private void Update(EvaluationContext context)
-    {
-        UpdateCore(context);
-        BackgroundPolling.Set(_saveTask != null, Saved);
-    }
-
-    private void UpdateCore(EvaluationContext context)
     {
         var volume = Volume.GetValue(context);
         var path = PathSaved.GetValue(context)?.Trim();
@@ -71,7 +63,7 @@ internal sealed class SaveNanoVdb : Instance<SaveNanoVdb>
                                      SaveResult result;
                                      try
                                      {
-                                         NanoVdbBuffer buffer = volume.GetFloatGrid() is { } floatGrid ? NanoVdbBuffer.FromGrid(floatGrid)
+                                         NanoVdbBuffer? buffer = volume.GetFloatGrid() is { } floatGrid ? NanoVdbBuffer.FromGrid(floatGrid)
                                                                      : volume.GetVectorGrid() is { } vecGrid ? NanoVdbBuffer.FromGrid(vecGrid)
                                                                      : null;
 
@@ -95,10 +87,7 @@ internal sealed class SaveNanoVdb : Instance<SaveNanoVdb>
                                          result = new SaveResult { Error = e.Message, Path = path };
                                      }
 
-                                     // Bump the version atomically rather than calling Invalidate():
-                                     // see LoadVdb for why the pass-scoped tick must stay on the
-                                     // evaluation thread.
-                                     Interlocked.Increment(ref Saved.DirtyFlag.SourceVersion);
+                                     Saved.DirtyFlag.Invalidate();
                                      return result;
                                  });
     }
@@ -127,12 +116,12 @@ internal sealed class SaveNanoVdb : Instance<SaveNanoVdb>
     private sealed class SaveResult
     {
         public long VoxelCount;
-        public string Error;
+        public string? Error;
         public string Path = string.Empty;
     }
 
     private bool _wasSave;
-    private Task<SaveResult> _saveTask;
+    private Task<SaveResult>? _saveTask;
 
     [Input(Guid = "7ddbba10-4371-5f6e-ba1f-ce3f26c47d6e")]
     public readonly InputSlot<VdbVolume> Volume = new();
