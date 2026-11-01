@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
@@ -60,22 +60,12 @@ public static class OnnxNativeSelector
             }
             catch (InvalidOperationException)
             {
-                // A resolver is already set for this assembly: the default probing stays in charge and the
-                // requested build may differ, so say so instead of pretending the choice took effect.
-                Log.Warning($"[ONNX] A native resolver is already set for {Path.GetFileName(ortAssembly.Location)}; " +
-                            $"the requested {(chosen == Build.Gpu ? "CUDA" : "DirectML")} build may not be the one that loads.");
+                // A resolver is already set for this assembly: the default probing stays in charge
             }
 
             Selected[ortAssembly] = chosen;
             return chosen;
         }
-    }
-
-    /// <summary>True when this build's native runtime folder is shipped next to the given ONNX Runtime assembly.</summary>
-    public static bool IsShipped(Assembly ortAssembly, Build build)
-    {
-        var assemblyDir = Path.GetDirectoryName(ortAssembly.Location) ?? AppContext.BaseDirectory;
-        return HasNative(assemblyDir, build);
     }
 
     public static string Describe(Build build) => build == Build.Gpu ? "CUDA" : "DirectML";

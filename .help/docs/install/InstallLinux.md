@@ -234,7 +234,10 @@ operators show "NDI runtime not found" in their status and produce no output.
 
 A few features rely on Windows-only libraries:
 
-- The MediaPipe operators. The OpenCV operators ([CameraCalibrator], the DMX point scanner and
+- GPU depth estimation without the CUDA libraries. [DepthAnything] and StreamDiffusion use the CUDA 12 build of ONNX
+  Runtime, which needs the CUDA 12 runtime and cuDNN 9 installed, driver 525 or newer, and a Pascal or newer GPU.
+  Without them the operators log why and run on the CPU. MediaPipe works; its GPU delegate falls back to the CPU
+  when no GL context is available. The OpenCV operators ([CameraCalibrator], the DMX point scanner and
   [OnvifCamera]) work — each system ships its own OpenCV build. Webcam capture works too:
   `[VideoDeviceInput]` opens cameras through FFmpeg's V4L2 backend.
 - Hardware-accelerated video export on AMD and Intel GPUs (NVIDIA's NVENC works). The software

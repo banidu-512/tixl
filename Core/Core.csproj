@@ -23,12 +23,17 @@
     <ItemGroup>
         <PackageReference Include="Delaunator" Version="1.0.11" />
         <PackageReference Include="JeremyAnsel.Media.Dds" Version="2.0.7" />
+        <PackageReference Include="LaserCore.EtherDream.Net" Version="2.0.0" />
+        <PackageReference Include="ManagedBass" Version="4.0.2" />
+        <PackageReference Include="ManagedBass.Flac" Version="4.0.2" />
+        <PackageReference Include="ManagedBass.Mix" Version="4.0.2" />
+        <PackageReference Include="ManagedBass.Wasapi" Version="4.0.2" />
         <PackageReference Include="Microsoft.CodeAnalysis.Common" Version="5.6.0" />
         <PackageReference Include="Microsoft.Extensions.DependencyModel" Version="10.0.10" />
         <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
         <PackageReference Include="NuGet.Configuration" Version="7.6.0" />
         <PackageReference Include="Microsoft.NETCore.Platforms" Version="7.0.4" />
-        <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.30.0" />
+        <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.24.4" />
         <PackageReference Include="SharpDX.D3DCompiler" Version="4.2.0" />
         <PackageReference Include="SharpDX.Direct2D1" Version="4.2.0" />
         <PackageReference Include="SharpDX.Direct3D11" Version="4.2.0" />

@@ -116,13 +116,14 @@ already carries the name TiXL.
 
 | Feature | Windows | Linux | macOS |
 |---|---|---|---|
-| MediaPipe (pose, hands, face) | Works | Planned | Planned |
+| MediaPipe (pose, hands, face) | Works | Works | Planned |
+| DepthAnything depth estimation | Works (DirectML, CUDA, CPU) | Works (CUDA needs the CUDA 12 runtime and cuDNN 9, otherwise CPU) | Works (CoreML, CPU) |
 | OpenCV operators (camera calibration, point scanning) | Works | Works | Works |
 | Beat and bar detection from audio | Works | Works | Works |
 
 The OpenCV operators ([CameraCalibrator], the DMX point scanner and [OnvifCamera]) run on all three
 systems; each ships its own OpenCV build. The macOS build runs as part of TiXL's CI on Apple Silicon.
-MediaPipe still needs its Windows library.
+MediaPipe runs on Windows and Linux; the macOS library is still to come.
 
 ## Editor and system integration
 

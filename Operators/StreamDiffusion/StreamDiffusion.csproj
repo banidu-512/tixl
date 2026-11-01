@@ -113,11 +113,25 @@
     <ProjectReference Include="../../Logging/Logging.csproj" Private="false" PrivateAssets="all" />
   </ItemGroup>
   <ItemGroup>
-    <!-- The GPU build carries the CUDA/TensorRT providers for Windows and Linux; macOS has no such
-         build and uses the CPU package that Core already ships. -->
-    <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="1.30.0" Condition="$([MSBuild]::IsOSPlatform('Windows')) Or $([MSBuild]::IsOSPlatform('Linux'))" />
-    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.30.0" Condition="$([MSBuild]::IsOSPlatform('OSX'))" />
+    <!-- 1.24.4 is the last ONNX Runtime with a DirectML build, and the last whose GPU build targets CUDA 12 (Pascal and
+         newer, driver 525+); 1.28 and up need CUDA 13. The managed assembly must not be newer than any native it loads.
+         Windows carries two natives: the GPU build (CUDA/TensorRT) under runtimes/win-x64 and the DirectML build under
+         runtimes/win-x64-directml; OnnxNativeSelector in Core picks one per process. Linux has CUDA and CPU, macOS CoreML and CPU. -->
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="1.24.4" Condition="$([MSBuild]::IsOSPlatform('Windows')) Or $([MSBuild]::IsOSPlatform('Linux'))" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.24.4" Condition="$([MSBuild]::IsOSPlatform('OSX'))" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.DirectML" Version="1.24.4" GeneratePathProperty="true" ExcludeAssets="all" Condition="'$(TixlOnnxDirectMl)' == 'true'" />
+    <PackageReference Include="Microsoft.AI.DirectML" Version="1.15.4" GeneratePathProperty="true" ExcludeAssets="all" Condition="'$(TixlOnnxDirectMl)' == 'true'" />
   </ItemGroup>
+  <PropertyGroup>
+    <TixlOnnxDirectMl Condition="'$(TixlOnnxDirectMl)' == '' And $([MSBuild]::IsOSPlatform('Windows'))">true</TixlOnnxDirectMl>
+  </PropertyGroup>
+  <!-- The DirectML build has the same file names as the GPU build, so it cannot share runtimes/win-x64. -->
+  <Target Name="CopyOnnxDirectMlNatives" AfterTargets="Build" Condition="'$(TixlOnnxDirectMl)' == 'true'">
+    <ItemGroup>
+      <DirectMlNative Include="$(PkgMicrosoft_ML_OnnxRuntime_DirectML)/runtimes/win-x64/native/onnxruntime.dll;$(PkgMicrosoft_ML_OnnxRuntime_DirectML)/runtimes/win-x64/native/onnxruntime_providers_shared.dll;$(PkgMicrosoft_AI_DirectML)/bin/x64-win/DirectML.dll" />
+    </ItemGroup>
+    <Copy SourceFiles="@(DirectMlNative)" DestinationFolder="$(OutDir)runtimes/win-x64-directml/native" SkipUnchangedFiles="true" />
+  </Target>
   <ItemGroup>
     <None Remove="Examples\**" />
   </ItemGroup>
