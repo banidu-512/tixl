@@ -286,6 +286,7 @@ internal sealed partial class TixlAssemblyLoadContext : AssemblyLoadContext
             if (Directory.Exists(stagingDirectory))
                 Directory.Delete(stagingDirectory, true);
 
+            FileLocations.EnsureCacheDirectory();
             Directory.CreateDirectory(stagingDirectory);
 
             foreach (var (relativePath, file) in EnumerateShadowCopyFiles(mainDirectory))
@@ -352,6 +353,10 @@ internal sealed partial class TixlAssemblyLoadContext : AssemblyLoadContext
                fileName.EndsWith(".exe") ||
                fileName.EndsWith(".pdb") ||
                fileName.EndsWith(".so") ||
+               fileName.EndsWith(".dylib") ||
+               // A versioned soname ("libavcodec.so.61") has no usable extension, and leaving it behind
+               // would strand the native half of a package whose managed half was copied.
+               fileName.Contains(".so.") ||
                fileName.EndsWith(".xml") ||
                fileName.EndsWith(".json");
     }
@@ -532,6 +537,9 @@ internal sealed partial class TixlAssemblyLoadContext : AssemblyLoadContext
             return handle;
         }
 
+        if (TryLoadFromExplicitPaths(libraryName, assembly, out handle))
+            return handle;
+
         Log.Error($"{assembly.FullName!}: Failed to resolve native dll {libraryName} relative to assembly '{assembly.Location}'");
         return IntPtr.Zero;
     }
@@ -554,6 +562,9 @@ internal sealed partial class TixlAssemblyLoadContext : AssemblyLoadContext
         {
             return handle;
         }
+
+        if (TryLoadFromExplicitPaths(libraryName, assembly, out handle))
+            return handle;
 
         Log.Error($"{assembly.FullName!}: Failed to resolve native dll {libraryName} relative to assembly '{assembly.Location}'");
         return IntPtr.Zero;
@@ -578,42 +589,236 @@ internal sealed partial class TixlAssemblyLoadContext : AssemblyLoadContext
             fullPath = Path.Combine(MainDirectory, unmanagedDllName);
         }
 
-        if (File.Exists(fullPath))
+        if (File.Exists(fullPath) && TryLoadUnmanagedPath(fullPath, unmanagedDllName, out var handle))
         {
-            try
-            {
-                return LoadUnmanagedDllFromPath(fullPath);
-            }
-            catch (Exception e)
-            {
-                Log.Error($"{Name!}: Failed to load unmanaged dll {unmanagedDllName} from path {fullPath}: {e}");
-                return IntPtr.Zero;
-            }
+            return handle;
         }
 
-        // check for the .so extension on linux/mac
+        // check for the platform's native extension on linux/mac
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux) || RuntimeInformation.IsOSPlatform(OSPlatform.OSX) ||
             RuntimeInformation.IsOSPlatform(OSPlatform.FreeBSD))
         {
-            var unixPath = pathFullyQualified
-                               ? Path.ChangeExtension(fullPath, ".so")
-                               : Path.Combine(MainDirectory, unmanagedDllName + ".so");
+            var extension = RuntimeInformation.IsOSPlatform(OSPlatform.OSX) ? ".dylib" : ".so";
 
-            if (File.Exists(unixPath))
+            // Both spellings: P/Invoke names are bare ("mediapipe_c"), while the shipped unix libraries are
+            // almost always prefixed ("libmediapipe_c.so").
+            foreach (var fileName in new[] { unmanagedDllName + extension, "lib" + unmanagedDllName + extension })
             {
+                var unixPath = pathFullyQualified
+                                   ? Path.ChangeExtension(fullPath, extension)
+                                   : Path.Combine(MainDirectory, fileName);
+
+                if (File.Exists(unixPath) && TryLoadUnmanagedPath(unixPath, unmanagedDllName, out handle))
+                    return handle;
+
+                if (pathFullyQualified)
+                    break;
+            }
+        }
+
+        // NuGet keeps native dependencies under runtimes/<rid>/native/ rather than beside the managed dll, so
+        // a package like SkiaSharp resolves nowhere by the probes above. Checking the layout here makes any
+        // operator package's native dependency work, and works the same way on every platform.
+        var fromRuntimes = TryLoadFromRuntimesFolder(unmanagedDllName);
+        if (fromRuntimes != IntPtr.Zero)
+            return fromRuntimes;
+
+        return TryLoadFromExplicitPaths(unmanagedDllName, Root?.Assembly, out handle) ? handle : IntPtr.Zero;
+    }
+
+    private bool TryLoadUnmanagedPath(string path, string unmanagedDllName, out IntPtr handle)
+    {
+        try
+        {
+            handle = LoadUnmanagedDllFromPath(path);
+            return true;
+        }
+        catch (Exception e)
+        {
+            // Not terminal: another candidate (the platform's own file name, the runtimes layout) may still work.
+            Log.Debug($"{Name!}: Could not load unmanaged dll {unmanagedDllName} from {path}: {e.Message}");
+            handle = IntPtr.Zero;
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Resolves a bare P/Invoke name against the folders that ship our natives, using the platform's file name.
+    ///
+    /// Windows' LoadLibrary searches the application directory for a bare name, so a package that already
+    /// resolved through <see cref="NativeLibrary.TryLoad(string, Assembly, DllImportSearchPath?, out IntPtr)"/>
+    /// needs nothing more. Linux and macOS do not: dlopen only consults the loader configuration, and
+    /// DllImportSearchPath.ApplicationDirectory does not add the application folder (on .NET 10
+    /// NATIVE_DLL_SEARCH_DIRECTORIES holds just the shared framework). A package loaded from a shadow copy
+    /// therefore could not find a native that ships next to the editor - MediaPipe's libmediapipe_c.so threw
+    /// DllNotFoundException inside UnsafeNativeMethods' static constructor, which surfaced as "The type
+    /// initializer for 'Mediapipe.PInvoke.UnsafeNativeMethods' threw an exception".
+    /// </summary>
+    private static bool TryLoadFromExplicitPaths(string libraryName, Assembly? assembly, out IntPtr handle)
+    {
+        handle = IntPtr.Zero;
+        if (Path.IsPathFullyQualified(libraryName))
+            return false;
+
+        var bare = Path.GetFileName(libraryName);
+        foreach (var extension in new[] { ".dll", ".so", ".dylib" })
+        {
+            if (bare.EndsWith(extension, StringComparison.OrdinalIgnoreCase))
+            {
+                bare = bare[..^extension.Length];
+                break;
+            }
+        }
+
+        if (bare.StartsWith("lib", StringComparison.Ordinal) && bare.Length > 3)
+            bare = bare[3..];
+
+        foreach (var directory in NativeProbeDirectories(assembly))
+        {
+            foreach (var fileName in NativeFileNames(bare))
+            {
+                var path = Path.Combine(directory, fileName);
+                if (!File.Exists(path))
+                    continue;
+
                 try
                 {
-                    return LoadUnmanagedDllFromPath(unixPath);
+                    handle = NativeLibrary.Load(path);
+                    return true;
                 }
                 catch (Exception e)
                 {
-                    Log.Error($"{Name!}: Failed to load unmanaged dll {unmanagedDllName} from unix path {unixPath}: {e}");
+                    // A same-named file that is not a loadable library for this platform - e.g. the Windows
+                    // mediapipe_c.dll that sits beside libmediapipe_c.so in a cross-platform output folder.
+                    Log.Debug($"Could not load native candidate '{path}': {e.Message}");
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private static IEnumerable<string> NativeProbeDirectories(Assembly? assembly)
+    {
+        var assemblyDirectory = GetDirectorySafely(assembly);
+        var applicationDirectory = AppContext.BaseDirectory;
+
+        foreach (var root in new[] { assemblyDirectory, applicationDirectory })
+        {
+            if (string.IsNullOrEmpty(root))
+                continue;
+
+            yield return root;
+
+            foreach (var rid in NativeRuntimeIdentifiers())
+            {
+                yield return Path.Combine(root, "runtimes", rid, "native");
+                yield return Path.Combine(root, "runtimes", rid);
+            }
+        }
+    }
+
+    private static string? GetDirectorySafely(Assembly? assembly)
+    {
+        if (assembly == null)
+            return null;
+
+        try
+        {
+            return Path.GetDirectoryName(assembly.Location);
+        }
+        catch
+        {
+            // Dynamic and single-file assemblies have no location.
+            return null;
+        }
+    }
+
+    /// <summary>Probes the NuGet runtimes layout, most specific identifier first.</summary>
+    private IntPtr TryLoadFromRuntimesFolder(string unmanagedDllName)
+    {
+        var runtimesRoot = Path.Combine(MainDirectory, "runtimes");
+        if (!Directory.Exists(runtimesRoot))
+            return IntPtr.Zero;
+
+        var bare = Path.GetFileNameWithoutExtension(unmanagedDllName);
+
+        foreach (var rid in NativeRuntimeIdentifiers())
+        {
+            var nativeDir = Path.Combine(runtimesRoot, rid, "native");
+            if (!Directory.Exists(nativeDir))
+                continue;
+
+            foreach (var candidate in NativeFileNames(bare))
+            {
+                var path = Path.Combine(nativeDir, candidate);
+                if (!File.Exists(path))
+                    continue;
+
+                try
+                {
+                    return LoadUnmanagedDllFromPath(path);
+                }
+                catch (Exception e)
+                {
+                    Log.Error($"{Name!}: Failed to load unmanaged dll {unmanagedDllName} from {path}: {e}");
                     return IntPtr.Zero;
                 }
             }
         }
 
         return IntPtr.Zero;
+    }
+
+    private static IEnumerable<string> NativeRuntimeIdentifiers()
+    {
+        var architecture = RuntimeInformation.ProcessArchitecture switch
+                               {
+                                   Architecture.X64   => "x64",
+                                   Architecture.X86   => "x86",
+                                   Architecture.Arm64 => "arm64",
+                                   Architecture.Arm   => "arm",
+                                   _                  => null,
+                               };
+
+        if (architecture == null)
+            yield break;
+
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            yield return $"win-{architecture}";
+        }
+        else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+        {
+            yield return $"osx-{architecture}";
+
+            // Universal binaries (SkiaSharp's, for one) are published without an architecture.
+            yield return "osx";
+        }
+        else
+        {
+            // musl builds are published under their own identifier and are not interchangeable with glibc ones.
+            yield return $"linux-{architecture}";
+            yield return $"linux-musl-{architecture}";
+        }
+    }
+
+    private static IEnumerable<string> NativeFileNames(string bare)
+    {
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            yield return bare + ".dll";
+        }
+        else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+        {
+            yield return bare + ".dylib";
+            yield return "lib" + bare + ".dylib";
+        }
+        else
+        {
+            yield return bare + ".so";
+            yield return "lib" + bare + ".so";
+        }
     }
 
     private void AddDependency(AssemblyTreeNode node)

@@ -1,0 +1,139 @@
+{
+  "FormatVersion": 3,
+  "Id": "c8f7d6e5-4b3a-2c1d-9f8e-7a6b5c4d3e2f"/*DepthAnything*/,
+  "Description": "Estimates a depth map from an image using Depth Anything V2 with ONNX Runtime.\n\nRuns the Depth Anything V2 model on the input texture and outputs the raw depth, a visualized depth image and the depth range. Models are loaded from the package Assets folder; use the scripts in the package Scripts folder to download them.\n\nOutputs:\n- OutputTexture: The input texture, passed through.\n- DepthTexture: Raw depth as a single float channel.\n- NormalizedDepthTexture: Depth normalized to 0..1 and visualized according to OutputFormat.\n- UpdateCount: Increments each time a new depth frame was processed.\n- MinDepth, MaxDepth: Depth range of the latest frame.\n- Status: Current model and execution provider state.\n\nTips:\n- Small is the fastest model; Large gives the most detail.\n- A lower InputResolution trades depth detail for speed.\n\nAKA: depth estimation, depth anything, monocular depth, z-depth, ai",
+  "InputUis": [
+    {
+      "InputId": "012345ab-cdef-0123-4567-89abcdef0123"/*ExecutionProviderParam*/,
+      "Position": {
+        "X": -250.0,
+        "Y": -150.0
+      },
+      "Description": "Hardware used for inference."
+    },
+    {
+      "InputId": "12345678-1234-1234-1234-123456789012"/*InputTexture*/,
+      "Position": {
+        "X": -250.0,
+        "Y": -350.0
+      },
+      "Description": "The image to estimate depth for."
+    },
+    {
+      "InputId": "23456789-2345-2345-2345-234567890123"/*Enabled*/,
+      "Position": {
+        "X": -250.0,
+        "Y": -300.0
+      },
+      "Description": "Enables or disables depth estimation."
+    },
+    {
+      "InputId": "234567cd-8912-9012-3456-6789012345ab"/*MatchInputResolution*/,
+      "Position": {
+        "X": -250.0,
+        "Y": -100.0
+      },
+      "Description": "Scales the depth outputs to the input resolution."
+    },
+    {
+      "InputId": "34567890-3456-3456-3456-345678901234"/*ModelSizeParam*/,
+      "Position": {
+        "X": -250.0,
+        "Y": -250.0
+      },
+      "Description": "Depth Anything V2 model variant. Larger models are more detailed and slower."
+    },
+    {
+      "InputId": "45678901-4567-4567-4567-456789012345"/*OutputFormat*/,
+      "Position": {
+        "X": -250.0,
+        "Y": -50.0
+      },
+      "Description": "Visualization of NormalizedDepthTexture."
+    },
+    {
+      "InputId": "56789012-5678-5678-5678-567890123456"/*EnhanceContrast*/,
+      "Position": {
+        "X": -250.0,
+        "Y": 0.0
+      },
+      "Description": "Stretches the depth range of the visualization."
+    },
+    {
+      "InputId": "67890123-6789-6789-6789-678901234567"/*InvertDepth*/,
+      "Position": {
+        "X": -250.0,
+        "Y": 50.0
+      },
+      "Description": "Flips near and far."
+    },
+    {
+      "InputId": "78901234-7890-7890-7890-789012345678"/*Debug*/,
+      "Position": {
+        "X": -250.0,
+        "Y": 100.0
+      },
+      "Description": "Logs detailed timing and state information."
+    },
+    {
+      "InputId": "90123456-9012-9012-9012-901234567890"/*InputResolution*/,
+      "Position": {
+        "X": -250.0,
+        "Y": -200.0
+      },
+      "Description": "Resolution the image is scaled to before inference. Auto uses the model default."
+    }
+  ],
+  "SymbolChildUis": [],
+  "OutputUis": [
+    {
+      "OutputId": "d9e8f7a6-5c4b-3d2e-0f9e-8b7a6c5d4e3f"/*OutputTexture*/,
+      "Position": {
+        "X": 200.0,
+        "Y": -350.0
+      }
+    },
+    {
+      "OutputId": "e0f9e8b7-6d5c-4e3f-1a0f-9c8b7a6d5e4f"/*DepthTexture*/,
+      "Position": {
+        "X": 200.0,
+        "Y": -300.0
+      }
+    },
+    {
+      "OutputId": "f1a0f9c8-7e6d-5f4e-2b1a-0d9c8b7a6e5f"/*NormalizedDepthTexture*/,
+      "Position": {
+        "X": 200.0,
+        "Y": -250.0
+      }
+    },
+    {
+      "OutputId": "a2b1c0d9-8f7e-6d5c-3c2b-1e0d9c8b7f6a"/*UpdateCount*/,
+      "Position": {
+        "X": 200.0,
+        "Y": -200.0
+      }
+    },
+    {
+      "OutputId": "b3c2d1e0-0f9f-8e7d-4d3c-2f1e0d9c8a7b"/*MinDepth*/,
+      "Position": {
+        "X": 200.0,
+        "Y": -150.0
+      }
+    },
+    {
+      "OutputId": "c4d3e2f1-1a0b-9f8e-5e4d-3f2e1d0b9a8c"/*MaxDepth*/,
+      "Position": {
+        "X": 200.0,
+        "Y": -100.0
+      }
+    },
+    {
+      "OutputId": "d5e6f7a2-1b2c-0d9e-8f7a-6b5c4d3e2f1a"/*Status*/,
+      "Position": {
+        "X": 200.0,
+        "Y": -50.0
+      }
+    }
+  ]
+}
