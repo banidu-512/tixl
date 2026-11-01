@@ -4,6 +4,7 @@ using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.IO;
 using System.Numerics;
+using System.Runtime.InteropServices;
 
 namespace T3.Core.DataTypes.Volume;
 
@@ -128,6 +129,29 @@ public sealed class NanoVdbBuffer
     {
         for (var i = 0; i < bytes; i++)
             w.Write((byte)0);
+    }
+
+    /// <summary>
+    /// Fills an internal-node slot table with [background][4 zero bytes] per 8-byte slot.
+    /// Bulk span writes instead of five BinaryWriter calls per slot: an upper node alone has
+    /// 32768 slots, which made a per-frame rebuild spend most of its time here.
+    /// Float grids only; other value types keep the per-slot path.
+    /// </summary>
+    private static void FillFloatSlotTable(BinaryWriter w, int slotCount, float background)
+    {
+        const int slotsPerChunk = 4096;                          // 32 KB per write
+        var chunk = new byte[slotsPerChunk * 8];
+        BitConverter.TryWriteBytes(chunk.AsSpan(0, 4), background);
+        for (var i = 1; i < slotsPerChunk; i++)
+            chunk.AsSpan(0, 8).CopyTo(chunk.AsSpan(i * 8, 8));
+
+        var remaining = slotCount;
+        while (remaining > 0)
+        {
+            var n = Math.Min(remaining, slotsPerChunk);
+            w.Write(chunk.AsSpan(0, n * 8));
+            remaining -= n;
+        }
     }
 
     private static void WriteBBox(BinaryWriter w, VdbCoordBBox bbox)
@@ -299,13 +323,39 @@ public sealed class NanoVdbBuffer
     private static NodeStats StatsOfLeaf<T>(VdbLeafNode<T> leaf)
     {
         var stats = new NodeStats();
-        foreach (var i in leaf.ValueMask.OnBits())
+        var words = leaf.ValueMask.Words;
+
+        // Word-wise scan: OnBits() is an iterator, and the leaf stats are the hottest loop in the
+        // build (every node above merges them), so a 24k-voxel band pays this per rebuild.
+        if (leaf.Values is float[] floats)
         {
-            var v = leaf.Values[i];
-            if (v is float f)
-                stats.Add(f);
-            else if (v is Vector3 v3)
-                stats.Add(v3);
+            for (var w = 0; w < words.Length; w++)
+            {
+                var word = words[w];
+                while (word != 0)
+                {
+                    var bit = System.Numerics.BitOperations.TrailingZeroCount(word);
+                    stats.Add(floats[(w << 6) + bit]);
+                    word &= word - 1;
+                }
+            }
+
+            return stats;
+        }
+
+        for (var w = 0; w < words.Length; w++)
+        {
+            var word = words[w];
+            while (word != 0)
+            {
+                var bit = System.Numerics.BitOperations.TrailingZeroCount(word);
+                var v = leaf.Values[(w << 6) + bit];
+                if (v is float f)
+                    stats.Add(f);
+                else if (v is Vector3 v3)
+                    stats.Add(v3);
+                word &= word - 1;
+            }
         }
 
         return stats;
@@ -540,19 +590,46 @@ public sealed class NanoVdbBuffer
             var written = ms.Position - nodeStart;
             WriteZeroed(w, (int)(upperHeaderPadded - written));
 
-            for (var slot = 0; slot < UpperSlots; slot++)
+            // The slot table is 32k entries of [value][padding]. Writing it entry by entry was
+            // 80% of the whole build (measured 9 ms per rebuild on a 100-leaf grid), so float
+            // grids fill it with the background in bulk and patch the handful of real children.
+            var slotsStart = ms.Position;
+            if (typeof(T) == typeof(float))
             {
-                var node1 = node2.Children[slot];
-                if (node1 != null)
+                FillFloatSlotTable(w, UpperSlots, (float)(object)tree.Root.Background);
+                for (var slot = 0; slot < UpperSlots; slot++)
                 {
-                    var lowerPos = lowerOffset + lowerIndex[node1.Origin] * lowerStride;
-                    w.Write(lowerPos - nodeStart);
+                    var node1 = node2.Children[slot];
+                    if (node1 != null)
+                    {
+                        ms.Position = slotsStart + slot * 8;
+                        w.Write(lowerOffset + lowerIndex[node1.Origin] * lowerStride - nodeStart);
+                    }
+                    else if (node2.ValueMask.IsOn(slot))
+                    {
+                        // Union slot: tile value in the first bytes, zero child id.
+                        ms.Position = slotsStart + slot * 8;
+                        WriteValue(w, node2.Values[slot]);
+                    }
                 }
-                else
+
+                ms.Position = slotsStart + UpperSlots * 8;
+            }
+            else
+            {
+                for (var slot = 0; slot < UpperSlots; slot++)
                 {
-                    // Union slot: tile value in the first bytes, zero child id.
-                    WriteValue(w, node2.ValueMask.IsOn(slot) ? node2.Values[slot] : tree.Root.Background);
-                    WriteZeroed(w, 8 - valueBytes);
+                    var node1 = node2.Children[slot];
+                    if (node1 != null)
+                    {
+                        var lowerPos = lowerOffset + lowerIndex[node1.Origin] * lowerStride;
+                        w.Write(lowerPos - nodeStart);
+                    }
+                    else
+                    {
+                        WriteValue(w, node2.ValueMask.IsOn(slot) ? node2.Values[slot] : tree.Root.Background);
+                        WriteZeroed(w, 8 - valueBytes);
+                    }
                 }
             }
         }
@@ -571,18 +648,42 @@ public sealed class NanoVdbBuffer
             var written = ms.Position - nodeStart;
             WriteZeroed(w, (int)(lowerHeaderPadded - written));
 
-            for (var slot = 0; slot < LowerSlots; slot++)
+            var lowerSlotsStart = ms.Position;
+            if (typeof(T) == typeof(float))
             {
-                var leaf = node1.Children[slot];
-                if (leaf != null)
+                FillFloatSlotTable(w, LowerSlots, (float)(object)tree.Root.Background);
+                for (var slot = 0; slot < LowerSlots; slot++)
                 {
-                    var leafPos = leafOffset + leafIndex[leaf.Origin] * leafSize;
-                    w.Write(leafPos - nodeStart);
+                    var leaf = node1.Children[slot];
+                    if (leaf != null)
+                    {
+                        ms.Position = lowerSlotsStart + slot * 8;
+                        w.Write(leafOffset + leafIndex[leaf.Origin] * leafSize - nodeStart);
+                    }
+                    else if (node1.ValueMask.IsOn(slot))
+                    {
+                        ms.Position = lowerSlotsStart + slot * 8;
+                        WriteValue(w, node1.Values[slot]);
+                    }
                 }
-                else
+
+                ms.Position = lowerSlotsStart + LowerSlots * 8;
+            }
+            else
+            {
+                for (var slot = 0; slot < LowerSlots; slot++)
                 {
-                    WriteValue(w, node1.ValueMask.IsOn(slot) ? node1.Values[slot] : tree.Root.Background);
-                    WriteZeroed(w, 8 - valueBytes);
+                    var leaf = node1.Children[slot];
+                    if (leaf != null)
+                    {
+                        var leafPos = leafOffset + leafIndex[leaf.Origin] * leafSize;
+                        w.Write(leafPos - nodeStart);
+                    }
+                    else
+                    {
+                        WriteValue(w, node1.ValueMask.IsOn(slot) ? node1.Values[slot] : tree.Root.Background);
+                        WriteZeroed(w, 8 - valueBytes);
+                    }
                 }
             }
         }
@@ -603,8 +704,9 @@ public sealed class NanoVdbBuffer
             StatsOfLeaf(leaf).Write(w, typeof(T) == typeof(Vector3));
             if (leaf.Values is float[] floats)
             {
-                for (var i = 0; i < VdbLeafNode<T>.Size; i++)
-                    w.Write(floats[i]);
+                // One bulk write per leaf instead of 4096 BinaryWriter calls: for a 100-leaf
+                // grid that is 400k virtual calls turning into 100 memcpys.
+                w.Write(MemoryMarshal.AsBytes(floats.AsSpan(0, VdbLeafNode<T>.Size)));
             }
             else if (leaf.Values is Vector3[] vectors)
             {
@@ -625,7 +727,10 @@ public sealed class NanoVdbBuffer
         sectionEnds[3] = ms.Position;
         WriteZeroed(w, (int)(gridSize - ms.Length));
         w.Flush();
-        var result = ms.ToArray();
+
+        // The stream was created with the exact capacity, so its buffer is the result. Avoids
+        // copying the whole (multi-MB) grid once more, which mattered on per-frame rebuilds.
+        var result = ms.Length == ms.Capacity ? ms.GetBuffer() : ms.ToArray();
         if (result.Length != gridSize)
             throw new InvalidOperationException($"NanoVDB buffer size {result.Length} != planned {gridSize}");
         return (result, sectionEnds);
