@@ -57,7 +57,7 @@ internal static class FailoverMirror
         collab.BroadcastJson(message);
     }
 
-    /// <summary>Active side, called every frame: sends the playback clock about once a second.</summary>
+    /// <summary>Active side, called every frame: sends the playback clock four times a second.</summary>
     public static void TickTime(CollabManager collab)
     {
         var now = Environment.TickCount64;
@@ -73,13 +73,15 @@ internal static class FailoverMirror
                                  {
                                      t = TimeMessageType,
                                      bars = playback.TimeInBars,
+                                     fx = playback.FxTimeInBars,
+                                     idle = UserSettings.Config.EnableIdleMotion,
                                      speed = playback.PlaybackSpeed,
                                      bpm = playback.Bpm,
                                  });
     }
 
     /// <summary>Standby side: follows the active machine's playback clock; the small drift between messages is not corrected.</summary>
-    public static void ApplyTime(JObject message)
+    public static void ApplyTime(JObject message, CollabManager collab)
     {
         if (!T3.Core.Show.FailoverArbiter.IsEnabled || T3.Core.Show.FailoverArbiter.Role != T3.Core.Show.FailoverArbiter.NodeRole.Standby)
             return;
@@ -97,9 +99,23 @@ internal static class FailoverMirror
         playback.PlaybackSpeed = speed;
         playback.Bpm = bpm;
 
-        // A running timeline only needs a nudge once it drifted by more than a frame or two.
-        if (speed == 0 || Math.Abs(playback.TimeInBars - bars) > MaxTimeDriftBars)
+        // The message was sent half a round trip ago; a running timeline has moved on by that much since.
+        var rttMs = collab.GetPeerRttMs(0);
+        var latencyBars = rttMs > 0 ? speed * bpm / 240.0 * (rttMs / 2000.0) : 0;
+        bars += latencyBars;
+
+        // A running timeline only needs a nudge once it drifted by a few milliseconds; a paused one is set
+        // only when it differs, because every change of the timeline time also resets the effect time.
+        if (Math.Abs(playback.TimeInBars - bars) > (speed == 0 ? MinPausedDifferenceBars : MaxTimeDriftBars))
             playback.TimeInBars = bars;
+
+        // Effect time (what noise and idle motion animate on) runs on its own while the timeline is paused, so
+        // idle motion has to match too or it would stand still between messages.
+        if (message["idle"] != null)
+            UserSettings.Config.EnableIdleMotion = message.Value<bool>("idle");
+
+        if (message["fx"] != null)
+            playback.FxTimeOverride = message.Value<double>("fx") + latencyBars;
     }
 
     /// <summary>Standby side, on the UI thread: writes the received setup files and applies layout and output window states.</summary>
@@ -283,8 +299,9 @@ internal static class FailoverMirror
     }
 
     private const long CheckIntervalMs = 1000;
-    private const long TimeIntervalMs = 1000;
-    private const double MaxTimeDriftBars = 0.02;
+    private const long TimeIntervalMs = 250;
+    private const double MaxTimeDriftBars = 0.002;
+    private const double MinPausedDifferenceBars = 0.000001;
     private const long ResendIntervalMs = 5000;
 
     private static long _nextCheckTicks;

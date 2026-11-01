@@ -1567,6 +1567,7 @@ internal static class DebugServer
                              ["time"] = new JObject
                                             {
                                                 ["timeInBars"] = playback.TimeInBars,
+                                                ["fxTimeInBars"] = playback.FxTimeInBars,
                                                 ["timeInSecs"] = playback.TimeInSecs,
                                                 ["playbackSpeed"] = playback.PlaybackSpeed,
                                                 ["isPlaying"] = Math.Abs(playback.PlaybackSpeed) > 0.001,
