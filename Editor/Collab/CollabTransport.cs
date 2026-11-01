@@ -1,13 +1,16 @@
 #nullable enable
+using System.Buffers;
 using System.Collections.Concurrent;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Threading;
+using System.Threading.Channels;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using T3.Core.Logging;
 using T3.Core.Utils;
 using T3.Editor.Gui.Interaction;
 
@@ -43,6 +46,8 @@ internal readonly struct InboundMessage
 /// </summary>
 internal sealed class CollabPeerConnection
 {
+    private readonly record struct OutboundFrame(CollabProtocol.FrameType Type, byte[] Buffer, int Length);
+
     public CollabPeerConnection(TcpClient client, int assignedId)
     {
         Client = client;
@@ -72,6 +77,9 @@ internal sealed class CollabPeerConnection
     public volatile bool SessionClosed;
     public volatile bool IsAuthenticated;
 
+    /// <summary>Round trip of the last heartbeat echo in milliseconds; -1 until the first echo arrives.</summary>
+    public volatile int LastRttMs = -1;
+
     public Guid UserId { get; set; }
     public string Name { get; set; } = "";
     public byte PresencePeerId => (byte)AssignedId;
@@ -84,8 +92,16 @@ internal sealed class CollabPeerConnection
 
     private long _lastHeardFromTicks = Environment.TickCount64;
     private readonly object _writeLock = new();
+    private Channel<OutboundFrame>? _outbound;
+    private int _queuedBytes;
+
+    private const int MaxQueuedBytes = 32 * 1024 * 1024;
+    private const int MaxQueuedPresenceBytes = 64 * 1024;
 
     public void MarkHeardFrom() => Interlocked.Exchange(ref _lastHeardFromTicks, Environment.TickCount64);
+
+    /// <summary>Last frame received on any path, for a transport that checks its own liveness.</summary>
+    public long LastHeardFromTicks => Interlocked.Read(ref _lastHeardFromTicks);
 
     /// <summary>
     /// Silence after which this peer is considered gone. Collaboration tolerates a slow link; a
@@ -95,8 +111,129 @@ internal sealed class CollabPeerConnection
 
     public bool IsTimedOut => Environment.TickCount64 - Interlocked.Read(ref _lastHeardFromTicks) > TimeoutMs;
 
-    /// <summary>Thread-safe framed write. Callers must pass a payload already encoded for the frame type.</summary>
+    /// <summary>
+    /// A path that can carry frames without the stream, e.g. a WebRTC data channel. The transport
+    /// offers every frame here first; false means "not available", and the stream is used instead.
+    /// </summary>
+    public delegate bool FrameSender(CollabProtocol.FrameType type, ReadOnlySpan<byte> payload);
+
+    /// <summary>
+    /// Set while a peer has a lower-latency path than its relay stream. Cleared when that path dies,
+    /// so the peer silently falls back to the relay instead of losing the session.
+    /// </summary>
+    public volatile FrameSender? PreferredSender;
+
+    public bool TrySendPreferred(CollabProtocol.FrameType type, ReadOnlySpan<byte> payload)
+    {
+        var sender = PreferredSender;
+        if (sender == null)
+            return false;
+
+        try
+        {
+            return sender(type, payload);
+        }
+        catch
+        {
+            // A dying data channel must not take the peer down; the relay path still works.
+            return false;
+        }
+    }
+
+    /// <summary>Bytes accepted by <see cref="Write"/> that are not on the wire yet; bulk senders pace themselves on it.</summary>
+    public int QueuedBytes => Volatile.Read(ref _queuedBytes);
+
+    /// <summary>
+    /// Thread-safe framed write that never blocks the caller: a TCP peer copies the frame into an outbound queue
+    /// that a background writer drains in order, so a stalled partner cannot freeze the editor's frame loop.
+    /// Callers must pass a payload already encoded for the frame type.
+    /// </summary>
     public void Write(CollabProtocol.FrameType type, ReadOnlySpan<byte> payload)
+    {
+        if (SessionClosed)
+            return;
+
+        // A relay peer shares one stream with every other peer, which its transport writes and flushes itself.
+        if (Client == null)
+        {
+            WriteNow(type, payload);
+            return;
+        }
+
+        var queued = Volatile.Read(ref _queuedBytes);
+        if (type == CollabProtocol.FrameType.Presence)
+        {
+            // Presence is best-effort and superseded by the next packet: never let it pile up behind a slow link.
+            if (queued > MaxQueuedPresenceBytes)
+                return;
+        }
+        else if (queued > MaxQueuedBytes)
+        {
+            // Dropping a reliable frame would desynchronise the stream; a peer this far behind is gone for our purposes.
+            Log.Warning($"Collab: {this} is not keeping up ({queued} bytes waiting) - disconnecting it");
+            Close();
+            return;
+        }
+
+        var buffer = ArrayPool<byte>.Shared.Rent(Math.Max(1, payload.Length));
+        payload.CopyTo(buffer);
+        var frame = new OutboundFrame(type, buffer, payload.Length);
+        Interlocked.Add(ref _queuedBytes, payload.Length);
+
+        var outbound = EnsureOutbound();
+        if (!outbound.Writer.TryWrite(frame))
+            Release(frame);
+    }
+
+    private Channel<OutboundFrame> EnsureOutbound()
+    {
+        var existing = _outbound;
+        if (existing != null)
+            return existing;
+
+        var created = Channel.CreateUnbounded<OutboundFrame>(new UnboundedChannelOptions { SingleReader = true });
+        existing = Interlocked.CompareExchange(ref _outbound, created, null);
+        if (existing != null)
+            return existing;
+
+        _ = Task.Run(() => WriteLoopAsync(created.Reader));
+        return created;
+    }
+
+    private async Task WriteLoopAsync(ChannelReader<OutboundFrame> reader)
+    {
+        try
+        {
+            while (await reader.WaitToReadAsync().ConfigureAwait(false))
+            {
+                while (reader.TryRead(out var frame))
+                {
+                    try
+                    {
+                        if (!SessionClosed)
+                            WriteNow(frame.Type, frame.Buffer.AsSpan(0, frame.Length));
+                    }
+                    finally
+                    {
+                        Release(frame);
+                    }
+                }
+            }
+        }
+        catch (Exception e)
+        {
+            Log.Debug($"Collab: writer for {this} stopped: {e.Message}");
+            Close();
+        }
+    }
+
+    private void Release(OutboundFrame frame)
+    {
+        Interlocked.Add(ref _queuedBytes, -frame.Length);
+        ArrayPool<byte>.Shared.Return(frame.Buffer);
+    }
+
+    private void WriteNow(CollabProtocol.FrameType type, ReadOnlySpan<byte> payload)
     {
         if (SessionClosed)
             return;
@@ -122,6 +259,9 @@ internal sealed class CollabPeerConnection
     public void Close()
     {
         SessionClosed = true;
+
+        // Lets the writer finish: it returns what is still queued to the pool without writing it.
+        _outbound?.Writer.TryComplete();
         try
         {
             Client?.Close();
@@ -170,9 +310,31 @@ internal abstract class CollabTransport : IDisposable
     /// </summary>
     public virtual CollabPeerConnection? HostLink => null;
 
+    /// <summary>
+    /// Called by the session once a peer is authenticated and the handshake has finished. A transport
+    /// with a faster path may switch the peer to it now; doing it earlier could put handshake messages
+    /// on a second path and let them overtake the session messages still in flight on the first.
+    /// </summary>
+    public virtual void EnablePeerToPeer(CollabPeerConnection peer)
+    {
+    }
+
+    /// <summary>A short label for the path a peer currently uses, for the participant list.</summary>
+    public virtual string DescribePeerLink(CollabPeerConnection peer) => "";
+
     public abstract void SendToPeer(CollabPeerConnection peer, CollabProtocol.FrameType type, ReadOnlySpan<byte> payload);
 
     public void SendJson(CollabPeerConnection peer, object message)
+    {
+        SendToPeer(peer, CollabProtocol.FrameType.Json, CollabProtocol.EncodeJson(message));
+    }
+
+    /// <summary>
+    /// Sends a control message that must not be lost while a faster path is preferred. The base
+    /// implementation uses the reliable socket; a relay host overrides it to bypass the data channel,
+    /// so the write is flushed before the connection is closed.
+    /// </summary>
+    public virtual void SendJsonOverRelay(CollabPeerConnection peer, object message)
     {
         SendToPeer(peer, CollabProtocol.FrameType.Json, CollabProtocol.EncodeJson(message));
     }
@@ -202,10 +364,30 @@ internal abstract class CollabTransport : IDisposable
     /// </summary>
     protected void ReadLoop(CollabPeerConnection peer)
     {
+        ReadFrameLoop(peer, peer.Stream);
+
+        // A transport that keeps the peer on another path (the WebRTC data channel) can keep it
+        // alive after its original stream dies.
+        if (!ShouldReportLostPeer(peer))
+            return;
+
+        peer.Close();
+        CleanupPeer(peer);
+        OnPeerDisconnected(peer);
+    }
+
+    /// <summary>Whether an ended read stream means the peer is gone, or another path still carries it.</summary>
+    protected virtual bool ShouldReportLostPeer(CollabPeerConnection peer) => true;
+
+    /// <summary>
+    /// Reads and dispatches frames from one stream until it ends. Shared by the socket transports
+    /// and a peer's WebRTC data channel; the caller decides what a dead stream means.
+    /// </summary>
+    protected void ReadFrameLoop(CollabPeerConnection peer, Stream stream)
+    {
         var buffer = new byte[CollabProtocol.MaxFrameSize];
         try
         {
-            var stream = peer.Stream;
             while (!peer.SessionClosed)
             {
                 if (!CollabProtocol.TryReadFrameLength(stream, out var length))
@@ -222,7 +404,7 @@ internal abstract class CollabTransport : IDisposable
 
                 // Any frame counts as a life sign, not just heartbeats.
                 peer.MarkHeardFrom();
-                DispatchFrame(peer, buffer.AsSpan(0, length));
+                DispatchFrame(peer, buffer.AsSpan(0, length), stream);
             }
         }
         catch (Exception e) when (e is IOException or SocketException or ObjectDisposedException)
@@ -235,10 +417,6 @@ internal abstract class CollabTransport : IDisposable
         {
             Log.Warning($"Collab: unexpected error reading from {peer}: {e.Message}");
         }
-
-        peer.Close();
-        CleanupPeer(peer);
-        OnPeerDisconnected(peer);
     }
 
     /// <summary>Removes a dead peer from this transport's list. Called from the network thread.</summary>
@@ -246,7 +424,16 @@ internal abstract class CollabTransport : IDisposable
     {
     }
 
-    private void DispatchFrame(CollabPeerConnection peer, ReadOnlySpan<byte> frame)
+    /// <summary>
+    /// Dispatches one frame from a specific stream. A transport can carry two paths for the same
+    /// peer (relay and WebRTC) and needs the source to decide whether a frame is still authoritative.
+    /// </summary>
+    protected virtual void DispatchFrame(CollabPeerConnection peer, ReadOnlySpan<byte> frame, Stream source)
+    {
+        DispatchFrame(peer, frame);
+    }
+
+    protected virtual void DispatchFrame(CollabPeerConnection peer, ReadOnlySpan<byte> frame)
     {
         var type = (CollabProtocol.FrameType)frame[0];
         var payload = frame[1..];
@@ -275,6 +462,13 @@ internal abstract class CollabTransport : IDisposable
                     payload.CopyTo(answer);
                     answer[CollabProtocol.HeartbeatPingSize] = 0; // explicit: stackalloc is not guaranteed zeroed
                     EchoHeartbeat(peer, answer);
+                }
+                else if (payload.Length == CollabProtocol.HeartbeatPingSize + 1)
+                {
+                    // An echo of our own ping: its payload is still our TickCount64.
+                    var rtt = CollabProtocol.MeasureHeartbeatRtt(payload);
+                    if (rtt >= 0)
+                        peer.LastRttMs = rtt;
                 }
 
                 break;
@@ -543,6 +737,9 @@ internal sealed class CollabClientTransport : CollabTransport
     private readonly UdpClient _udp;
     private readonly IPEndPoint _hostEndPoint;
     private CollabPeerConnection? _hostPeer;
+
+    /** Cached so the per-frame Peers access does not allocate a one-element array every time. */
+    private IReadOnlyList<CollabPeerConnection> _hostPeerList = [];
     private readonly CancellationTokenSource _cancellation = new();
 
     public CollabClientTransport(IPEndPoint hostEndPoint)
@@ -562,12 +759,13 @@ internal sealed class CollabClientTransport : CollabTransport
         var client = CollabProtocol.ConnectWithTimeout(_hostEndPoint);
         client.NoDelay = true;
         _hostPeer = new CollabPeerConnection(client, 0);
+        _hostPeerList = [_hostPeer];
         _ = Task.Run(() => ReadLoop(_hostPeer));
         _ = Task.Run(() => UdpLoopAsync(_cancellation.Token));
         Log.Info($"Collab: connected to {_hostEndPoint}");
     }
 
-    public override IReadOnlyList<CollabPeerConnection> Peers => _hostPeer == null ? [] : [_hostPeer];
+    public override IReadOnlyList<CollabPeerConnection> Peers => _hostPeer == null ? [] : _hostPeerList;
 
     public override CollabPeerConnection? HostLink => _hostPeer;
 

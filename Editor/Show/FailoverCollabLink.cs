@@ -88,7 +88,7 @@ internal sealed class FailoverCollabLink
             {
                 Log.Info("Failover: the pending session dial never completed — abandoning it");
                 collab.Leave();
-                _dialedHost = "";
+                _dialedAddress = "";
                 _connectWatchTicks = 0;
                 _nextActionTicks = Environment.TickCount64 + RetryCooldownMs;
             }
@@ -202,16 +202,16 @@ internal sealed class FailoverCollabLink
         var endpoint = FailoverArbiter.ActivePeerEndpoint;
         if (endpoint == null)
         {
-            StatusText = $"{rolePrefix} — no active master heard yet";
+            SetStatus(rolePrefix, "", 0, " — no active master heard yet");
             return;
         }
 
         var (address, port) = endpoint.Value;
 
         // Already following the current master: nothing to do.
-        if (collab.State == CollabManager.SessionState.Connected && _dialedHost == $"{address}:{port}")
+        if (collab.State == CollabManager.SessionState.Connected && _dialedAddress == address && _dialedPort == port)
         {
-            StatusText = $"{rolePrefix} — following {address}:{port}";
+            SetStatus(rolePrefix, address, port, " — following ");
             return;
         }
 
@@ -228,7 +228,7 @@ internal sealed class FailoverCollabLink
             // the current one.
             StatusText = "Stepping down to follow the master...";
             collab.Leave();
-            _dialedHost = "";
+            _dialedAddress = "";
             _nextActionTicks = Environment.TickCount64 + TransitionCooldownMs;
             return;
         }
@@ -236,15 +236,36 @@ internal sealed class FailoverCollabLink
         Log.Info($"Failover: this node is {rolePrefix.ToLowerInvariant()} — joining the master's session at {address}:{port}");
         collab.JoinDirect(address, port, UserSettings.Config.CollabPassword);
         var dialSucceeded = collab.State == CollabManager.SessionState.Connecting;
-        _dialedHost = dialSucceeded ? $"{address}:{port}" : "";
+        _dialedAddress = dialSucceeded ? address : "";
+        _dialedPort = dialSucceeded ? port : 0;
         StatusText = dialSucceeded
                          ? $"{rolePrefix} — connecting to {address}:{port}"
                          : "Join failed — retrying";
         _nextActionTicks = Environment.TickCount64 + (dialSucceeded ? TransitionCooldownMs : RetryCooldownMs);
     }
 
-    /// <summary>host:port the link itself last dialed, so a live session can be matched against the current active peer.</summary>
-    private string _dialedHost = "";
+    /// <summary>Endpoint the link itself last dialed, so a live session can be matched against the current active peer.</summary>
+    private string _dialedAddress = "";
+
+    private int _dialedPort;
+
+    /// <summary>Rebuilds the status text only when its inputs changed: this runs every frame while following.</summary>
+    private void SetStatus(string rolePrefix, string address, int port, string middle)
+    {
+        if (ReferenceEquals(_statusRole, rolePrefix) && _statusAddress == address && _statusPort == port && _statusMiddle == middle)
+            return;
+
+        _statusRole = rolePrefix;
+        _statusAddress = address;
+        _statusPort = port;
+        _statusMiddle = middle;
+        StatusText = port == 0 ? rolePrefix + middle : $"{rolePrefix}{middle}{address}:{port}";
+    }
+
+    private string _statusRole = "";
+    private string _statusAddress = "";
+    private int _statusPort;
+    private string _statusMiddle = "";
 
     /// <summary>True while this node is a collab client, to notice the host session closing.</summary>
     private bool _wasConnected;

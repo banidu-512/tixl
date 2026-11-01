@@ -157,17 +157,17 @@ internal static class FailoverMirror
 
         var setupsFolder = SetupFiles.FolderIn(folder);
         var machinePath = Path.Combine(setupsFolder, MachineConfig.FileName);
-        if (File.Exists(machinePath))
-            message["machine"] = File.ReadAllText(machinePath);
+        if (TryReadCached(_machineFile, machinePath, out var machineText))
+            message["machine"] = machineText;
 
         if (OutputSetupHandling.TryGetActiveSetup(out var setup, out _))
         {
             var setupFile = setup.Name + Setup.FileSuffix;
             var setupPath = Path.Combine(setupsFolder, setupFile);
-            if (File.Exists(setupPath))
+            if (TryReadCached(_setupFile, setupPath, out var setupText))
             {
                 message["setupFile"] = setupFile;
-                message["setup"] = File.ReadAllText(setupPath);
+                message["setup"] = setupText;
             }
         }
 
@@ -196,6 +196,28 @@ internal static class FailoverMirror
         return message;
     }
 
+    /// <summary>Re-reads the file only when its timestamp or size changed; this runs once a second on the active machine.</summary>
+    private static bool TryReadCached(CachedFile cache, string path, out string text)
+    {
+        var info = new FileInfo(path);
+        if (!info.Exists)
+        {
+            text = "";
+            return false;
+        }
+
+        if (cache.Path != path || cache.LastWriteUtc != info.LastWriteTimeUtc || cache.Length != info.Length)
+        {
+            cache.Text = File.ReadAllText(path);
+            cache.Path = path;
+            cache.LastWriteUtc = info.LastWriteTimeUtc;
+            cache.Length = info.Length;
+        }
+
+        text = cache.Text;
+        return true;
+    }
+
     private static void ApplySetupFiles(JObject message)
     {
         var project = message.Value<string>("project") ?? "";
@@ -209,12 +231,18 @@ internal static class FailoverMirror
         var changed = false;
         var setupFile = message.Value<string>("setupFile");
         var setup = message.Value<string>("setup");
-        if (!string.IsNullOrEmpty(setupFile) && setup != null)
+        if (!string.IsNullOrEmpty(setupFile) && setup != null && setup != _lastAppliedSetup)
+        {
+            _lastAppliedSetup = setup;
             changed |= WriteIfDifferent(Path.Combine(setupsFolder, Path.GetFileName(setupFile)), setup);
+        }
 
         var machine = message.Value<string>("machine");
-        if (machine != null)
+        if (machine != null && machine != _lastAppliedMachine)
+        {
+            _lastAppliedMachine = machine;
             changed |= WriteIfDifferent(Path.Combine(setupsFolder, MachineConfig.FileName), machine);
+        }
 
         if (changed)
         {
@@ -304,6 +332,18 @@ internal static class FailoverMirror
     private const double MinPausedDifferenceBars = 0.000001;
     private const long ResendIntervalMs = 5000;
 
+    private sealed class CachedFile
+    {
+        public string Path = "";
+        public DateTime LastWriteUtc;
+        public long Length;
+        public string Text = "";
+    }
+
+    private static readonly CachedFile _machineFile = new();
+    private static readonly CachedFile _setupFile = new();
+    private static string? _lastAppliedMachine;
+    private static string? _lastAppliedSetup;
     private static long _nextCheckTicks;
     private static long _nextTimeSendTicks;
     private static string? _lastAppliedComposition;
