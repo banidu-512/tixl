@@ -1,7 +1,7 @@
 {
   "FormatVersion": 3,
   "Id": "0102bb5f-f874-4f4b-a833-c610c9e7fdf3"/*RaymarchToCubeMap*/,
-  "Description": "Raymarches an SDF field into a cube map, e.g. for [DrawStageCanvas] or [SetEnvironment].\n\nEvery texel casts its own ray from Position, so the faces need no camera. With EquiAngular the texels are spaced evenly by angle, which evens out the resolution across each face; the cube map is marked as such, and consumers that support it decode it automatically.\n\nThe field is shaded like in [RaymarchField]. Material overrides the material from the context; lights and fog come from where the cube map is used.\n\nAKA: cubemap, environment map, skybox, reflection probe, 360, EAC\n\nSee also: [RaymarchField], [RenderToCubeMap], [TextureToCubeMap]",
+  "Description": "Raymarches an SDF field into a cube map, e.g. for [ProjectOntoStage] or [SetEnvironment].\n\nEvery texel casts its own ray from Position, so the faces need no camera. With EquiAngular the texels are spaced evenly by angle, which evens out the resolution across each face; the cube map is marked as such, and consumers that support it decode it automatically.\n\nThe field is shaded like in [RaymarchField]. Material overrides the material from the context; lights and fog come from where the cube map is used.\n\nAKA: cubemap, environment map, skybox, reflection probe, 360, EAC\n\nSee also: [RaymarchField], [RenderToCubeMap], [TextureToCubeMap]",
   "SymbolTags": "1",
   "InputUis": [
     {
