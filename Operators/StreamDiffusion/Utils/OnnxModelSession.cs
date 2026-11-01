@@ -37,6 +37,7 @@ internal sealed class OnnxModelSession : IDisposable
     // then satisfies the provider's imports from these already-loaded modules.
     private static readonly string[] CudaRuntimeDlls =
     {
+        "cudart64_13.dll", "cublas64_13.dll", "cublasLt64_13.dll", "cufft64_12.dll",
         "cudart64_12.dll", "cublas64_12.dll", "cublasLt64_12.dll", "cufft64_11.dll", "curand64_10.dll",
         "cudnn_ops64_9.dll", "cudnn_cnn64_9.dll", "cudnn_adv64_9.dll", "cudnn_graph64_9.dll",
         "cudnn_heuristic64_9.dll", "cudnn_engines_precompiled64_9.dll", "cudnn_engines_runtime_compiled64_9.dll",
@@ -229,7 +230,7 @@ internal sealed class OnnxModelSession : IDisposable
             string? primaryCudaDir = null;
             foreach (var dir in candidateDirs)
             {
-                if (File.Exists(Path.Combine(dir, "cublas64_12.dll")))
+                if (File.Exists(Path.Combine(dir, "cublas64_13.dll")) || File.Exists(Path.Combine(dir, "cublas64_12.dll")))
                 {
                     primaryCudaDir = dir;
                     break;

@@ -77,6 +77,14 @@
     {
       "Id": "C5D6E7F8-A9B0-1234-8901-345678901234"/*AutoGenerate*/,
       "DefaultValue": false
+    },
+    {
+      "Id": "A4B5C6D7-E8F9-0123-4567-890123456789"/*StreamStrength*/,
+      "DefaultValue": 0.6
+    },
+    {
+      "Id": "D2E3F4A5-B6C7-8901-2345-678901234567"/*Debug*/,
+      "DefaultValue": false
     }
   ],
   "Children": [],
