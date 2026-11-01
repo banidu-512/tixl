@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
     <Import Project="$(SolutionDir)/Tixl.props" />
     <PropertyGroup>
-        <TargetFramework>$(TixlNetFrameworkVersion)</TargetFramework>
+        <TargetFramework>$(TixlNetCoreFrameworkVersion)</TargetFramework>
         <VersionPrefix>$(TixlVersion)</VersionPrefix>
         <VersionSuffix>$(TixlVersionSuffix)</VersionSuffix>
         <InformationalVersion>$(Version)</InformationalVersion>
@@ -16,7 +16,7 @@
         <ApplicationIcon>..\EditorResources\images\t3.ico</ApplicationIcon>
         <RootNamespace>T3.Editor</RootNamespace>
         <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
-        <RuntimeIdentifiers>win-x64;linux-x64;osx-x64</RuntimeIdentifiers>
+        <RuntimeIdentifiers>win-x64;linux-x64;osx-arm64</RuntimeIdentifiers>
         <EnableUnsafeBinaryFormatterSerialization>true</EnableUnsafeBinaryFormatterSerialization>
         <Deterministic>true</Deterministic>
         <Configurations>Debug;Release</Configurations>
@@ -48,6 +48,14 @@
     <PackageOutputPath>$(SolutionDir)packages\$(Configuration)</PackageOutputPath> -->
     </PropertyGroup>
 
+    <!-- Release tarballs pass TixlEditorRuntime (e.g. linux-x64) to bundle the .NET runtime: the editor then starts on
+         systems without .NET and can explain which dependencies are missing instead of failing silently. -->
+    <PropertyGroup Condition="'$(TixlEditorRuntime)' != ''">
+        <RuntimeIdentifier>$(TixlEditorRuntime)</RuntimeIdentifier>
+        <SelfContained>true</SelfContained>
+        <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+    </PropertyGroup>
+
     <PropertyGroup Condition="'$(Configuration)' == 'Debug'">
         <DefineConstants>TRACE</DefineConstants>
         <DebugType>full</DebugType>
@@ -55,6 +63,7 @@
 
     <!-- ======================= Nuget References =========================== -->
     <ItemGroup>
+        <PackageReference Include="DataChannelDotnet" Version="1.3.1" />
         <PackageReference Include="ImGui.NET" Version="1.91.6.1" />
         <PackageReference Include="Microsoft.Build" Version="18.8.2" />
         <PackageReference Include="Microsoft.CodeAnalysis.Common" Version="5.6.0" />
@@ -66,9 +75,7 @@
             <NoWarn>NU1701</NoWarn>
         </PackageReference>
         <PackageReference Include="Sentry" Version="6.8.0" />
-        <PackageReference Include="SharpDX.Desktop" Version="4.2.0">
-            <NoWarn>NU1701</NoWarn>
-        </PackageReference>
+        <PackageReference Include="StbImageWriteSharp" Version="1.16.7" />
         <PackageReference Include="System.Management" Version="10.0.10" />
         <PackageReference Include="System.Runtime.Serialization.Formatters" Version="10.0.10" />
     </ItemGroup>
@@ -77,10 +84,22 @@
     <!-- ======================= Project References =========================== -->
     <ItemGroup>
         <ProjectReference Include="..\Core\Core.csproj" />
+    <ProjectReference Include="..\Graphics\Graphics.csproj" />
+    <ProjectReference Include="..\Graphics.D3D11\Graphics.D3D11.csproj" />
+    <ProjectReference Include="..\Graphics.Vulkan\Graphics.Vulkan.csproj" />
+    <ProjectReference Include="..\Graphics.Compat\Graphics.Compat.csproj" />
+    <ProjectReference Include="..\SdlPlatform\SdlPlatform.csproj" />
         <ProjectReference Include="..\IoServices\IoServices.csproj" />
         <ProjectReference Include="..\Logging\Logging.csproj" />
-        <ProjectReference Include="..\MsForms\MsForms.csproj" />
         <ProjectReference Include="..\SilkWindows\SilkWindows.csproj" />
+        <!-- Not used by the editor itself: building it here produces the VideoServices ref assembly that the
+             Video operator package's runtime compile (with the "no dependencies" flag) resolves. Without
+             this, a machine that only ever built the editor has no Debug VideoServices and the Video
+             package fails (CS0006). ExcludeAssets="runtime" + Private="false" keep it compile-only: with
+             runtime assets flowing, Sdcb.FFmpeg.dll lands in the editor output, gets loaded by the default
+             context ahead of the Video package's copy, and its FFmpeg P/Invokes then resolve to a
+             system-wide GPL libavcodec instead of the bundled LGPL one (rejected by FfmpegLibrary). -->
+        <ProjectReference Include="..\VideoServices\VideoServices.csproj" Private="false" ExcludeAssets="runtime" />
     </ItemGroup>
     <!-- ===============================//======================================= -->
 
@@ -89,11 +108,37 @@
     <!--This
     copies all files in the `dependencies` folder *directly* into the output directory-->
     <ItemGroup>
-        <Content Include="../Dependencies/**/*" Visible="false">
+        <Content Include="../Dependencies/**/*" Exclude="../Dependencies/linux-x64/**/*;../Dependencies/osx/**/*" Visible="false">
             <Link>%(RecursiveDir)%(Filename)%(Extension)</Link>
             <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
         </Content>
     </ItemGroup>
+
+    <!-- BASS ships one native per platform under the same managed name, so the Linux and macOS libraries live
+         in their own folders and are copied only there - the flat copy above would otherwise drop them into a
+         Windows build as dead weight. BASSWASAPI is Windows-only; audio input is gated on it at runtime. -->
+    <ItemGroup Condition="$([MSBuild]::IsOSPlatform('Linux'))">
+        <Content Include="../Dependencies/linux-x64/*.so" Visible="false">
+            <Link>%(Filename)%(Extension)</Link>
+            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        </Content>
+    </ItemGroup>
+    <ItemGroup Condition="$([MSBuild]::IsOSPlatform('OSX'))">
+        <Content Include="../Dependencies/osx/*.dylib" Visible="false">
+            <Link>%(Filename)%(Extension)</Link>
+            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        </Content>
+    </ItemGroup>
+
+    <!-- macOS: libmediapipe_c.dylib resolves its OpenCL imports by dynamic lookup and Apple Silicon
+         ships no OpenCL, so a no-op stub must be in the process before the first P/Invoke
+         (MediapipeNativeLibrary loads it from the app directory). Build it for dev builds too -
+         previously only the packaged DMG and the test host produced one, so a plain `dotnet run`
+         of the editor failed with "symbol not found in flat namespace". Needs clang. -->
+    <Target Name="BuildMediapipeOpenClStub" BeforeTargets="BeforeBuild" Condition="$([MSBuild]::IsOSPlatform('OSX'))">
+        <MakeDir Directories="$(OutputPath)" />
+        <Exec Command="clang -arch x86_64 -arch arm64 -shared -o &quot;$(OutputPath)libmediapipe_opencl_stub.dylib&quot; &quot;$(MSBuildThisFileDirectory)../Dependencies/osx/mediapipe-opencl-stub.c&quot;" />
+    </Target>
     <!-- =================================//===================================== -->
 
 
@@ -178,8 +223,11 @@
         <PackageNames Include="Skills" />
         <PackageNames Include="Spout" />
         <PackageNames Include="Ndi" />
+        <PackageNames Include="Omt" />
         <PackageNames Include="Video" />
         <PackageNames Include="Io" />
+        <PackageNames Include="DepthAnything" />
+        <PackageNames Include="StreamDiffusion" />
         <PackageNames Include="Mediapipe">
             <Name>t3.mediapipe</Name>
         </PackageNames>
@@ -206,19 +254,16 @@
 
         <Message Importance="high" Text="Attempting to copy $(PackageName)..." />
 
-        <!-- Use XmlPeek to extract the version from the csproj file of the package -->
-        <!-- Left here as an example in case we need to use it for extracting the target framework
-        in the future -->
-        <!-- <XmlPeek XmlInputPath="$(SourceDir)/$(PackageName).csproj"
-        Query="//VersionPrefix/text()">
-             <Output TaskParameter="Result" ItemName="projVersion"/>
-         </XmlPeek>
-        <Message Importance="high" Text="Found version for $(PackageName): @(projVersion)"/>-->
+        <!-- Packages don't share one target framework (platform-neutral ones target net10.0), so read each
+             package's own to find its build folder. -->
+        <XmlPeek XmlInputPath="$(SourceDir)/$(PackageName).csproj" Query="//TargetFramework/text()" Condition="Exists('$(SourceDir)/$(PackageName).csproj')">
+            <Output TaskParameter="Result" PropertyName="PackageTargetFramework" />
+        </XmlPeek>
 
-        <!-- Define the package build directory based on the version found
-            This should match the OutputPath defined by the project -->
+        <!-- This should match the OutputPath defined by the project -->
         <PropertyGroup>
-            <PackageBuildDirectory>$(SourceDir)/.temp/bin/$(Configuration)/$(TixlNetFrameworkVersion)</PackageBuildDirectory>
+            <PackageTargetFramework Condition="'$(PackageTargetFramework)' == ''">$(TixlNetFrameworkVersion)</PackageTargetFramework>
+            <PackageBuildDirectory>$(SourceDir)/.temp/bin/$(Configuration)/$(PackageTargetFramework)</PackageBuildDirectory>
         </PropertyGroup>
 
         <Message Importance="high" Text="Path for $(PackageName): $(PackageBuildDirectory)" />
