@@ -41,6 +41,14 @@ internal sealed class FailoverCollabLink
             return;
         }
 
+        // Failover hosts and follows through collaboration, which is switched off.
+        if (!CollabManager.Instance.IsEnabled)
+        {
+            StatusText = "Idle (collaboration is turned off)";
+            _connectWatchTicks = 0;
+            return;
+        }
+
         // The user left the session on purpose. Failover would otherwise host/join again within a tick,
         // making the Leave button look broken. Hosting or joining from the UI clears the latch.
         if (collab.LeftManually)

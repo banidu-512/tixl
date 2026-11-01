@@ -85,6 +85,9 @@ internal static class ProjectsPanel
     private static void DrawCollabSessions()
     {
         var collab = CollabManager.Instance;
+        if (!collab.IsEnabled)
+            return;
+
         collab.RefreshDiscoveryFromHub();
 
         var hasOwnSession = collab.State != CollabManager.SessionState.Off;
@@ -387,7 +390,11 @@ internal static class ProjectsPanel
             // Collab: host a session that shares exactly this project (pick the project first,
             // then share it — instead of sharing whatever happens to be focused).
             var collab = CollabManager.Instance;
-            if (collab.State == CollabManager.SessionState.Off)
+            if (!collab.IsEnabled)
+            {
+                // Collaboration is off in the settings: no host or join entries.
+            }
+            else if (collab.State == CollabManager.SessionState.Off)
             {
                 if (CustomComponents.DrawMenuItem(_hostSessionId, "Host Collaboration Session", reserveIconColumn: false))
                 {

@@ -25,19 +25,6 @@ internal sealed partial class SettingsWindow
         FormInputs.AddSectionSubHeader("Boygrouping");
         FormInputs.AddVerticalSpace();
 
-        changed |= FormInputs.AddStringInput("Node name",
-                                             ref config.BoygroupClientName,
-                                             null,
-                                             null,
-                                             """
-                                             This machine's name on the network and in the master's client list.
-                                             Defaults to the OS machine name.
-                                             """);
-
-        FormInputs.AddVerticalSpace();
-        DrawNetworkInterface(ref changed);
-        FormInputs.AddVerticalSpace();
-
         var enabled = config.BoygroupEnabled;
         if (FormInputs.AddCheckBox("Enable",
                                    ref enabled,
@@ -58,6 +45,20 @@ internal sealed partial class SettingsWindow
             DrawBoygroupError(manager);
             return;
         }
+
+        FormInputs.AddVerticalSpace();
+        changed |= FormInputs.AddStringInput("Node name",
+                                             ref config.BoygroupClientName,
+                                             null,
+                                             null,
+                                             """
+                                             This machine's name on the network and in the master's client list.
+                                             Defaults to the OS machine name.
+                                             """);
+
+        FormInputs.AddVerticalSpace();
+        DrawNetworkInterface(ref changed);
+        FormInputs.AddVerticalSpace();
 
         var role = config.BoygroupRole;
         if (FormInputs.AddEnumDropdown(ref role, "Role",
@@ -287,7 +288,7 @@ internal sealed partial class SettingsWindow
 
     /// <summary>Per-node presentation delay. Positive runs the node later, which is how projector or
     /// capture latency differences between machines are lined up.</summary>
-    private static void DrawDelayButtons(BoygroupManager manager, BoygroupManager.ClientInfo client)
+    internal static void DrawDelayButtons(BoygroupManager manager, BoygroupManager.ClientInfo client)
     {
         if (ImGui.SmallButton("-10"))
             manager.SetClientDelay(client, client.DelayMs - 10);

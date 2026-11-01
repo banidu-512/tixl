@@ -4,6 +4,7 @@ using T3.Core.DataTypes.Vector;
 using T3.Core.Output;
 using T3.Core.Output.Streaming;
 using T3.Core.Utils;
+using T3.Editor.Show;
 using T3.Editor.UiModel.ProjectHandling;
 
 namespace T3.Editor.Gui.Windows.OutputSetup;
@@ -48,9 +49,36 @@ internal static class Plugs
         if (TryGetDisplayIndex(plugId, out var displayIndex))
             return DisplayLabel(displayIndex);
 
+        if (TryGetRemoteDisplayName(plugId, out var remoteName))
+            return remoteName;
+
         return machineConfig.FindStreamPlug(plugId)?.Name
                ?? machineConfig.FindLaserPlug(plugId)?.Name
                ?? "Output";
+    }
+
+    /// <summary>A display of a connected render node, listed under Local Bindings next to this machine's own.</summary>
+    public static bool IsRemoteDisplay(Guid plugId) => BoygroupManager.Instance.TryGetRemoteDisplayPlug(plugId, out _, out _);
+
+    /// <summary>The "node / display" name of a render node's display; false for any other plug.</summary>
+    public static bool TryGetRemoteDisplayName(Guid plugId, out string name)
+    {
+        name = "";
+        if (!BoygroupManager.Instance.TryGetRemoteDisplayPlug(plugId, out var client, out var displayIndex))
+            return false;
+
+        var screenName = $"Display {displayIndex + 1}";
+        foreach (var screen in client.Screens)
+        {
+            if (screen.Index != displayIndex)
+                continue;
+
+            screenName = screen.Name;
+            break;
+        }
+
+        name = $"{client.Name} / {screenName}";
+        return true;
     }
 
     /// <summary>Whether a plug id still names an attached display, a stream or a laser this machine offers.</summary>
@@ -58,6 +86,9 @@ internal static class Plugs
     {
         if (TryGetDisplayIndex(plugId, out var displayIndex))
             return displayIndex < EditorUi.Instance.AllScreens.Count;
+
+        if (IsRemoteDisplay(plugId))
+            return true;
 
         return machineConfig.FindStreamPlug(plugId) != null || machineConfig.FindLaserPlug(plugId) != null;
     }

@@ -99,7 +99,7 @@ internal sealed class BoygroupManager
     }
 
     /// <summary>One display of a connected render node, as that machine enumerated it.</summary>
-    public sealed record RemoteScreen(int Index, string Name, int Width, int Height);
+    public sealed record RemoteScreen(int Index, string Name, int Width, int Height, int X = 0, int Y = 0, bool Primary = false);
 
     private readonly List<ClientInfo> _clients = [];
     public IReadOnlyList<ClientInfo> Clients => _clients;
@@ -1527,7 +1527,10 @@ internal sealed class BoygroupManager
             screens.Add(new RemoteScreen(index,
                                          screen.Value<string>("name") ?? $"Display {index + 1}",
                                          screen["width"]?.Value<int>() ?? 0,
-                                         screen["height"]?.Value<int>() ?? 0));
+                                         screen["height"]?.Value<int>() ?? 0,
+                                         screen["x"]?.Value<int>() ?? 0,
+                                         screen["y"]?.Value<int>() ?? 0,
+                                         screen["primary"]?.Value<bool>() ?? false));
         }
 
         return screens;
@@ -1655,6 +1658,9 @@ internal sealed class BoygroupManager
                                ["name"] = screens[i].DeviceName,
                                ["width"] = screens[i].Bounds.Width,
                                ["height"] = screens[i].Bounds.Height,
+                               ["x"] = screens[i].Bounds.X,
+                               ["y"] = screens[i].Bounds.Y,
+                               ["primary"] = screens[i].Primary,
                            });
         }
 

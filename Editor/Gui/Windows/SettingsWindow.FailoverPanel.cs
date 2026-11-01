@@ -19,7 +19,7 @@ internal sealed partial class SettingsWindow
     {
         var config = UserSettings.Config;
 
-        changed |= FormInputs.AddCheckBox("Enable show failover",
+        changed |= FormInputs.AddCheckBox("Enable",
                                           ref config.FailoverEnabled,
                                           """
                                           Two machines run the same composition; exactly one (ACTIVE) streams network
@@ -31,6 +31,9 @@ internal sealed partial class SettingsWindow
                                           local display windows keep rendering on both machines.
                                           """,
                                           false);
+
+        if (!config.FailoverEnabled)
+            return;
 
         changed |= FormInputs.AddStringInput("Show Id",
                                              ref config.FailoverShowId,

@@ -15,6 +15,7 @@ using T3.Editor.Gui.InputUi.ListInputs;
 using T3.Editor.Gui.Interaction;
 using T3.Editor.Gui.Styling;
 using T3.Editor.Gui.UiHelpers;
+using T3.Editor.Show;
 using T3.Editor.UiModel.Commands;
 using T3.Editor.UiModel.Commands.Graph;
 using T3.Editor.UiModel.Commands.Setup;
@@ -1884,6 +1885,12 @@ internal static partial class SetupParameterView
     /// </summary>
     private static void DrawPlugCard(Setup setup, MachineConfig machineConfig, Guid id)
     {
+        if (BoygroupManager.Instance.TryGetRemoteDisplayPlug(id, out var client, out var remoteDisplayIndex))
+        {
+            DrawRemoteDisplayCard(setup, client, remoteDisplayIndex);
+            return;
+        }
+
         var boundOutput = Plugs.TryGetBoundOutput(setup, machineConfig, id);
         var boundLabel = boundOutput == null ? "nothing bound" : $"presenting {SetupLabels.OutputLabel(boundOutput)}";
 
@@ -1969,6 +1976,71 @@ internal static partial class SetupParameterView
             FormInputs.ApplyIndent();
             CustomComponents.StylizedText(streamError, Fonts.FontSmall, UiColors.StatusAttention);
         }
+    }
+
+    /// <summary>
+    /// A display of a connected render node: like a local display it is read-only, with the node it belongs to
+    /// and how well that node keeps up, so a bound output can be judged without leaving the setup.
+    /// </summary>
+    private static void DrawRemoteDisplayCard(Setup setup, BoygroupManager.ClientInfo client, int displayIndex)
+    {
+        BoygroupManager.RemoteScreen? screen = null;
+        foreach (var candidate in client.Screens)
+        {
+            if (candidate.Index != displayIndex)
+                continue;
+
+            screen = candidate;
+            break;
+        }
+
+        Span<int> mode = [screen?.Width ?? 0, screen?.Height ?? 0];
+        DrawIntsRow("Resolution (px)", mode, "The render node display's current mode (read-only).", readOnly: true);
+
+        var boundOutput = client.MachineConfig == null
+                              ? null
+                              : Plugs.TryGetBoundOutput(setup, client.MachineConfig, Plugs.DisplayPlugId(displayIndex));
+        FormInputs.AddHint(boundOutput == null ? "nothing bound" : $"presenting {SetupLabels.OutputLabel(boundOutput)}");
+
+        FormInputs.AddHint($"Display {displayIndex + 1}{(screen == null ? "" : $" · {screen.Name}")}");
+
+        FormInputs.AddVerticalSpace(6);
+        FormInputs.AddSectionSubHeader("Render node");
+        DrawInfoRow("Name", client.Name);
+        DrawInfoRow("Address", client.Address);
+        DrawInfoRow("Status", client.IsDeployed ? $"{client.StatusText} · project deployed" : client.StatusText);
+        if (!string.IsNullOrEmpty(client.Group))
+            DrawInfoRow("Group", client.Group);
+
+        if (!string.IsNullOrEmpty(client.ClientVersion))
+            DrawInfoRow("Version", client.ClientVersion);
+
+        FormInputs.AddVerticalSpace(6);
+        FormInputs.AddSectionSubHeader("Network");
+        DrawInfoRow("Round trip", client.RttMs >= 0 ? $"{client.RttMs:0.#} ms" : "—");
+        var heardAgoMs = Environment.TickCount64 - client.LastSeenTicks;
+        DrawInfoRow("Last heard", heardAgoMs < 1000 ? "just now" : $"{heardAgoMs / 1000.0:0.#} s ago");
+
+        FormInputs.AddVerticalSpace(6);
+        FormInputs.AddSectionSubHeader("Timing");
+        DrawInfoRow("Clock offset", $"{client.ClockOffsetMs:+0.0;-0.0;0} ms (master minus node)");
+        DrawInfoRow("Sync error", client.SyncErrorMs > -0.5 ? $"{client.SyncErrorMs:+0.0;-0.0;0} ms" : "—");
+        DrawInfoRow("Last synced", client.SyncAgeMs < 0 ? "—" : client.SyncAgeMs < 1000 ? $"{client.SyncAgeMs:0} ms ago" : $"{client.SyncAgeMs / 1000:0.#} s ago");
+
+        FormInputs.DrawInputLabel("Presentation delay");
+        SettingsWindow.DrawDelayButtons(BoygroupManager.Instance, client);
+
+        FormInputs.AddVerticalSpace(6);
+        FormInputs.AddSectionSubHeader("Performance");
+        DrawInfoRow("Frame rate", client.ClientFps > 0 ? $"{client.ClientFps:0.#} fps" : "—");
+    }
+
+    /// <summary>A read-only label and value, aligned with the editable rows above and below it.</summary>
+    private static void DrawInfoRow(string label, string value)
+    {
+        FormInputs.DrawInputLabel(label);
+        ImGui.AlignTextToFramePadding();
+        ImGui.TextUnformatted(value);
     }
 
     /// <summary>Edits one of the send op's inputs as a regular parameter change: undoable, and it dirties the symbol.</summary>

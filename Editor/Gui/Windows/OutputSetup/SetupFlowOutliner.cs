@@ -39,6 +39,7 @@ internal sealed class SetupFlowOutliner
         _requestAddPlugMenu = _ => _addPlugMenuRequested = true;
         _requestAddOutputMenu = _ => _addOutputMenuRequested = true;
         _drawDisplayTooltip = DrawDisplayTooltip;
+        _drawRemoteDisplayTooltip = DrawRemoteDisplayTooltip;
         _drawSendParentTooltip = DrawSendParentTooltip;
     }
 
@@ -830,6 +831,8 @@ internal sealed class SetupFlowOutliner
                 var bound = client.MachineConfig == null
                                 ? null
                                 : Plugs.TryGetBoundOutput(setup, client.MachineConfig, Plugs.DisplayPlugId(screen.Index));
+                _tooltipRemoteClient = client;
+                _tooltipRemoteDisplayIndex = screen.Index;
                 var args = new OutlinerItem.Args
                                {
                                    Kind = SetupEntityKinds.Plug,
@@ -838,6 +841,7 @@ internal sealed class SetupFlowOutliner
                                    Status = $"{screen.Width}×{screen.Height}",
                                    LeadingIcon = Icon.ConnectedOutput,
                                    IsMuted = bound == null,
+                                   DrawTooltip = _drawRemoteDisplayTooltip,
                                };
                 DrawItem(selection, setup, ref args);
             }
@@ -864,6 +868,13 @@ internal sealed class SetupFlowOutliner
     private void DrawDisplayTooltip()
     {
         DisplayLayoutView.DrawTooltip(_tooltipDisplayIndex);
+    }
+
+    /// <summary>A render node's displays are displays too: the same arrangement hover, from what that node reported.</summary>
+    private void DrawRemoteDisplayTooltip()
+    {
+        if (_tooltipRemoteClient != null)
+            DisplayLayoutView.DrawRemoteTooltip(_tooltipRemoteClient, _tooltipRemoteDisplayIndex);
     }
 
     /// <summary>
@@ -1263,7 +1274,10 @@ internal sealed class SetupFlowOutliner
     // The display whose row is being drawn, read by the tooltip; a field rather than a captured lambda, which
     // would allocate a closure for every plug row every frame.
     private int _tooltipDisplayIndex;
+    private BoygroupManager.ClientInfo? _tooltipRemoteClient;
+    private int _tooltipRemoteDisplayIndex;
     private readonly Action _drawDisplayTooltip;
+    private readonly Action _drawRemoteDisplayTooltip;
 
     // The parent op of the content row being drawn, read by its tooltip — a field for the same reason as above.
     private Instance? _tooltipSendParent;

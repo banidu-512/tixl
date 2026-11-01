@@ -29,6 +29,24 @@ internal sealed partial class SettingsWindow
         if (!manager.IsSessionActive)
             _pendingKickPeerId = -1;
 
+        var enabled = config.CollabEnabled;
+        if (FormInputs.AddCheckBox("Enable",
+                                   ref enabled,
+                                   """
+                                   Turns collaboration on. When off, no session is hosted or joined, nothing is
+                                   discovered on the network, and a running session ends.
+                                   """,
+                                   true))
+        {
+            config.CollabEnabled = enabled;
+            changed = true;
+        }
+
+        if (!config.CollabEnabled)
+            return;
+
+        FormInputs.AddVerticalSpace();
+
         // -------------------------------------------------------------------------------------
         // Identity
         // -------------------------------------------------------------------------------------
