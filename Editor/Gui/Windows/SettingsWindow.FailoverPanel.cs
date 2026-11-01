@@ -17,6 +17,54 @@ internal sealed partial class SettingsWindow
 {
     private const int SimulatedCrashSeconds = 10;
 
+    /// <summary>Shared by every session type: the cameras of the other TiXL clients show up in a video input's device list.</summary>
+    private static void DrawCameraSharing(ref bool changed)
+    {
+        var config = UserSettings.Config;
+        FormInputs.AddVerticalSpace();
+        FormInputs.AddSectionSubHeader("Camera Sharing");
+        FormInputs.AddVerticalSpace();
+
+        changed |= FormInputs.AddCheckBox("Share my cameras",
+                                          ref config.ShareCamerasInSessions,
+                                          """
+                                          Lets the other TiXL clients of a collaboration, boygroup or failover session
+                                          open the cameras connected to this machine. A video input lists them in its
+                                          device dropdown as "Camera @ Machine". Turn this off when you collaborate
+                                          with people you do not want to see your cameras.
+                                          """,
+                                          true);
+
+        var overview = PeerCameraService.Instance.GetOverview();
+        if (overview.SessionCount == 0)
+        {
+            ImGui.TextDisabled("No session running - cameras are shared once a collaboration, boygroup or failover session is up.");
+            return;
+        }
+
+        ImGui.Bullet();
+        ImGui.TextUnformatted(overview.LocalCameras.Count == 0
+                                  ? "This machine: no cameras found"
+                                  : $"This machine: {string.Join(", ", overview.LocalCameras)}");
+
+        ImGui.Bullet();
+        ImGui.TextUnformatted(overview.PeerCameras.Count == 0
+                                  ? "Other clients: no cameras announced"
+                                  : $"Other clients: {string.Join(", ", overview.PeerCameras)}");
+
+        foreach (var line in overview.Streaming)
+        {
+            ImGui.Bullet();
+            ImGui.TextUnformatted($"Streaming {line}");
+        }
+
+        foreach (var line in overview.Receiving)
+        {
+            ImGui.Bullet();
+            ImGui.TextUnformatted($"Receiving {line}");
+        }
+    }
+
     private static void DrawFailoverPanel(ref bool changed)
     {
         var config = UserSettings.Config;
@@ -35,7 +83,10 @@ internal sealed partial class SettingsWindow
                                           false);
 
         if (!config.FailoverEnabled)
+        {
+            DrawCameraSharing(ref changed);
             return;
+        }
 
         changed |= FormInputs.AddStringInput("Show Id",
                                              ref config.FailoverShowId,
@@ -174,6 +225,9 @@ internal sealed partial class SettingsWindow
                 ImGui.TextDisabled($"  {failoverEvent}");
             }
         }
+
+        FormInputs.AddVerticalSpace();
+        DrawCameraSharing(ref changed);
 
         FormInputs.AddVerticalSpace();
         CustomComponents.HelpText("""

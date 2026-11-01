@@ -6,6 +6,7 @@ using T3.Core.Logging;
 using T3.Core.Output.Streaming;
 using T3.Core.Video;
 using T3.Editor.Collab;
+using T3.Editor.Gui.UiHelpers;
 
 namespace T3.Editor.Show;
 
@@ -35,6 +36,17 @@ internal sealed class PeerCameraService
 
         _wasInSession = true;
         var now = Environment.TickCount64;
+
+        var sharing = UserSettings.Config.ShareCamerasInSessions;
+        if (sharing != _wasSharing)
+        {
+            _wasSharing = sharing;
+            _camerasChanged = true;
+        }
+
+        if (!sharing && (_shares.Count > 0 || _requests.Count > 0))
+            StopSharing();
+
         RefreshLocalCameras(now);
         Announce(now);
 
@@ -93,7 +105,10 @@ internal sealed class PeerCameraService
             {
                 var target = Text(json, "to");
                 if (string.Equals(target, localMachine, StringComparison.OrdinalIgnoreCase))
-                    RegisterRequest(Text(json, "camera"), Text(json, "from"));
+                {
+                    if (UserSettings.Config.ShareCamerasInSessions)
+                        RegisterRequest(Text(json, "camera"), Text(json, "from"));
+                }
                 else if (isHost)
                     RouteTo(target, json);
 
@@ -141,6 +156,40 @@ internal sealed class PeerCameraService
                        ["peerSources"] = _peerSources.Count,
                        ["shares"] = shares,
                    };
+    }
+
+    /// <summary>What the settings panel shows. Rebuilt at most twice a second and only read on the UI thread.</summary>
+    public sealed class Overview
+    {
+        public int SessionCount;
+        public readonly List<string> LocalCameras = [];
+        public readonly List<string> PeerCameras = [];
+        public readonly List<string> Streaming = [];
+        public readonly List<string> Receiving = [];
+    }
+
+    public Overview GetOverview()
+    {
+        var now = Environment.TickCount64;
+        if (now < _nextOverviewTicks)
+            return _overview;
+
+        _nextOverviewTicks = now + 500;
+        _overview.SessionCount = _sessions.Count;
+        _overview.LocalCameras.Clear();
+        _overview.LocalCameras.AddRange(_localCameras);
+        _overview.PeerCameras.Clear();
+        PeerCameraDirectory.AppendReferences(_overview.PeerCameras);
+
+        _overview.Streaming.Clear();
+        foreach (var (camera, share) in _shares)
+            _overview.Streaming.Add($"{camera}: {share.Status} ({share.RequesterCount} viewer{(share.RequesterCount == 1 ? "" : "s")})");
+
+        _overview.Receiving.Clear();
+        foreach (var state in _wantStates.Values)
+            _overview.Receiving.Add($"{state.Camera} from {state.Machine}");
+
+        return _overview;
     }
 
     private void CollectSessions()
@@ -243,7 +292,7 @@ internal sealed class PeerCameraService
                               {
                                   ["t"] = AnnounceType,
                                   ["machine"] = PeerCameraDirectory.LocalMachine,
-                                  ["cameras"] = new JArray(_localCameras),
+                                  ["cameras"] = new JArray(UserSettings.Config.ShareCamerasInSessions ? _localCameras : []),
                               };
             SendToAll(session.Transport, session.IsHost, message);
         }
@@ -541,6 +590,15 @@ internal sealed class PeerCameraService
             _routes.Remove(machine);
     }
 
+    private void StopSharing()
+    {
+        foreach (var share in _shares.Values)
+            share.Dispose();
+
+        _shares.Clear();
+        _requests.Clear();
+    }
+
     /// <summary>The session ended: everything that depended on it goes.</summary>
     private void Reset()
     {
@@ -548,11 +606,7 @@ internal sealed class PeerCameraService
             return;
 
         _wasInSession = false;
-        foreach (var share in _shares.Values)
-            share.Dispose();
-
-        _shares.Clear();
-        _requests.Clear();
+        StopSharing();
         _answers.Clear();
         _routes.Clear();
         _wantStates.Clear();
@@ -636,6 +690,9 @@ internal sealed class PeerCameraService
     private volatile string[] _localCameras = [];
     private volatile bool _scanning;
     private volatile bool _camerasChanged;
+    private bool _wasSharing = true;
+    private readonly Overview _overview = new();
+    private long _nextOverviewTicks;
     private bool _wasInSession;
     private long _nextCameraScanTicks;
     private long _nextPruneTicks;

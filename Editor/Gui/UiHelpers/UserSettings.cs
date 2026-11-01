@@ -318,6 +318,9 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         /// <summary>Fence the outputs when the standby stops acknowledging: no two masters on a partition.</summary>
         public bool FailoverFencing = true;
 
+        /// <summary>Lets the other TiXL clients of a collab, boygroup or failover session open this machine's cameras.</summary>
+        public bool ShareCamerasInSessions = true;
+
         public float GizmoSize = 100;
 
 
