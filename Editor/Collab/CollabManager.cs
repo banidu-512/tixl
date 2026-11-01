@@ -158,6 +158,11 @@ internal sealed class CollabManager
     /// <summary>The link back to the session host on client transports, direct or relay.</summary>
     private CollabPeerConnection? HostLink => _transport?.HostLink;
 
+    /// <summary>The live session transport, for services that share data between the clients of a session.</summary>
+    internal CollabTransport? PeerSessionTransport => State is SessionState.Hosting or SessionState.Connected ? _transport : null;
+
+    internal bool PeerSessionIsHost => State == SessionState.Hosting;
+
     public IReadOnlyList<DiscoveredSession> DiscoveredSessions => _discovered;
 
     private CollabUserIdentity _localIdentity = new();
@@ -1150,6 +1155,12 @@ internal sealed class CollabManager
 
             case FailoverMirror.TimeMessageType when State == SessionState.Connected:
                 FailoverMirror.ApplyTime(json, this);
+                break;
+
+            case PeerCameraService.AnnounceType:
+            case PeerCameraService.RequestType:
+            case PeerCameraService.SourceType:
+                PeerCameraService.Instance.HandleMessage(_transport, State == SessionState.Hosting, peer, type, json);
                 break;
 
             // The failover lease/liveness channel: no-op unless show failover is enabled.

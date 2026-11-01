@@ -154,7 +154,7 @@ public static class RemoteVideoInputBus
         {
             lock (_lock)
             {
-                return _sources.Count;
+                return _masterSources.Count;
             }
         }
     }
@@ -164,44 +164,80 @@ public static class RemoteVideoInputBus
     {
         lock (_lock)
         {
-            var next = new Dictionary<string, RemoteVideoSource>(StringComparer.Ordinal);
-            foreach (var source in sources)
-            {
-                if (!string.IsNullOrEmpty(source.Key))
-                    next[source.Key] = source;
-            }
-
-            foreach (var key in _states.Keys.ToArray())
-            {
-                if (next.TryGetValue(key, out var source) && _states[key].Address == source.Address)
-                    continue;
-
-                _states[key].Dispose();
-                _states.Remove(key);
-            }
-
-            _sources.Clear();
-            foreach (var (key, source) in next)
-                _sources[key] = source;
+            Fill(_masterSources, sources);
+            ApplySources();
         }
     }
 
-    /// <summary>Drops every remote source, e.g. when the master disconnects.</summary>
+    /// <summary>
+    /// Replaces the sources of inputs that selected a camera on another TiXL client. A master's source for the
+    /// same input wins over it.
+    /// </summary>
+    public static void SetPeerSources(IEnumerable<RemoteVideoSource> sources)
+    {
+        lock (_lock)
+        {
+            Fill(_peerSources, sources);
+            ApplySources();
+        }
+    }
+
+    /// <summary>Drops the master's sources, e.g. when the master disconnects; peer camera selections stay.</summary>
     public static void ClearRemoteSources()
     {
         lock (_lock)
         {
-            foreach (var state in _states.Values)
-                state.Dispose();
-
-            _states.Clear();
-            _sources.Clear();
-
-            foreach (var input in _activeInputs)
-                input.EndRemoteFrames();
-
-            _activeInputs.Clear();
+            _masterSources.Clear();
+            ApplySources();
         }
+    }
+
+    private static void Fill(Dictionary<string, RemoteVideoSource> target, IEnumerable<RemoteVideoSource> sources)
+    {
+        target.Clear();
+        foreach (var source in sources)
+        {
+            if (!string.IsNullOrEmpty(source.Key))
+                target[source.Key] = source;
+        }
+    }
+
+    /// <summary>Merges both layers into the active list, releases receivers that lost their source and ends inputs that lost theirs.</summary>
+    private static void ApplySources()
+    {
+        _sources.Clear();
+        foreach (var (key, source) in _masterSources)
+            _sources[key] = source;
+
+        foreach (var (key, source) in _peerSources)
+            _sources.TryAdd(key, source);
+
+        foreach (var key in _states.Keys.ToArray())
+        {
+            if (_sources.TryGetValue(key, out var source) && _states[key].Address == source.Address)
+                continue;
+
+            _states[key].Dispose();
+            _states.Remove(key);
+        }
+
+        if (_activeInputs.Count == 0)
+            return;
+
+        _endedScratch.Clear();
+        foreach (var input in _activeInputs)
+        {
+            if (!_sources.ContainsKey(input.RelayKey))
+                _endedScratch.Add(input);
+        }
+
+        foreach (var input in _endedScratch)
+        {
+            input.EndRemoteFrames();
+            _activeInputs.Remove(input);
+        }
+
+        _endedScratch.Clear();
     }
 
     /// <summary>Updates every active receiver and feeds the matching inputs. Call once per frame on a render node.</summary>
@@ -242,22 +278,35 @@ public static class RemoteVideoInputBus
                 if (created)
                     state.Update();
 
-                input.ApplyRemoteFrame(state.Texture, state.FrameCounter, state.Status);
+                try
+                {
+                    input.ApplyRemoteFrame(state.Texture, state.FrameCounter, state.Status);
+                }
+                catch (Exception e)
+                {
+                    // One misbehaving input must not starve the others of their frames.
+                    Log.Debug($"Applying a remote video frame to '{input.RelayKey}' failed: {e.Message}");
+                }
+
                 _activeInputs.Add(input);
             }
 
             if (_activeInputs.Count > 0)
             {
-                var stillActive = _activeInputs.Where(input => _sources.ContainsKey(input.RelayKey)).ToArray();
-                if (stillActive.Length != _activeInputs.Count)
+                _endedScratch.Clear();
+                foreach (var input in _activeInputs)
                 {
-                    foreach (var input in _activeInputs.Except(stillActive))
-                        input.EndRemoteFrames();
-
-                    _activeInputs.Clear();
-                    foreach (var input in stillActive)
-                        _activeInputs.Add(input);
+                    if (!_sources.ContainsKey(input.RelayKey))
+                        _endedScratch.Add(input);
                 }
+
+                foreach (var input in _endedScratch)
+                {
+                    input.EndRemoteFrames();
+                    _activeInputs.Remove(input);
+                }
+
+                _endedScratch.Clear();
             }
         }
     }
@@ -404,8 +453,11 @@ public static class RemoteVideoInputBus
 
     private static readonly object _lock = new();
     private static readonly List<IRemoteVideoInput> _inputs = [];
-    private static IRemoteVideoInput[] _inputsSnapshot = [];
+    private static volatile IRemoteVideoInput[] _inputsSnapshot = [];
+    private static readonly List<IRemoteVideoInput> _endedScratch = [];
     private static readonly HashSet<IRemoteVideoInput> _activeInputs = [];
+    private static readonly Dictionary<string, RemoteVideoSource> _masterSources = new(StringComparer.Ordinal);
+    private static readonly Dictionary<string, RemoteVideoSource> _peerSources = new(StringComparer.Ordinal);
     private static readonly Dictionary<string, RemoteVideoSource> _sources = new(StringComparer.Ordinal);
     private static readonly Dictionary<string, RemoteSourceState> _states = new(StringComparer.Ordinal);
     private static int _inputsVersion;

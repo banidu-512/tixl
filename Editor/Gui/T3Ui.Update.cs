@@ -50,6 +50,7 @@ public static partial class T3Ui
         T3.Core.Show.FailoverArbiter.ApplyConfig(_failoverConfig);
         Show.BoygroupManager.Instance.Update();
         Show.FailoverCollabLink.Instance.Update();
+        Show.PeerCameraService.Instance.Update();
         //ImGui.PushStyleColor(ImGuiCol.Text, UiColors.Text.Rgba);
         DragAndDropHandling.Update();
         MagGraph.Ui.DropHandling.DrawDragIndicator();
