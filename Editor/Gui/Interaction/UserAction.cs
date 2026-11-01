@@ -104,6 +104,7 @@ internal enum UserActions
     ToggleFocusMode,
     ToggleManualTestWindow,
     ToggleConsoleLogWindow,
+    OpenSettings,
 
     // Layouts (0-9)
     LoadLayout0, LoadLayout1, LoadLayout2, LoadLayout3, LoadLayout4,

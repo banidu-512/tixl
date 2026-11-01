@@ -939,6 +939,21 @@ internal static class FormInputs
         _widthRatio = 1;
     }
 
+    /// <summary>
+    /// Caps fill-width inputs (string fields, dropdowns) at a readable column width. Settings panels use
+    /// this so a wide window doesn't stretch every row across the whole screen; parameter editors keep
+    /// their own layout.
+    /// </summary>
+    public static void PushMaxContentWidth(float unscaledWidth)
+    {
+        _maxContentWidth = unscaledWidth;
+    }
+
+    public static void PopMaxContentWidth()
+    {
+        _maxContentWidth = 0;
+    }
+
     public static void DrawInputLabel(string? label)
     {
         if (string.IsNullOrEmpty(label) || label.StartsWith("##"))
@@ -1114,6 +1129,8 @@ internal static class FormInputs
         var sizeForTooltip = !string.IsNullOrEmpty(tooltip) ? toolWidth : 0;
 
         var requestedWidth = fillWidth ? ImGui.GetContentRegionAvail().X * _widthRatio : 200 * T3Ui.UiScaleFactor;
+        if (fillWidth && _maxContentWidth > 0)
+            requestedWidth = MathF.Min(requestedWidth, _maxContentWidth * T3Ui.UiScaleFactor);
         if (maxWidth > 0)
             requestedWidth = MathF.Min(requestedWidth, maxWidth * T3Ui.UiScaleFactor);
         var availableWidth = MathF.Min(requestedWidth, ImGui.GetContentRegionAvail().X + 20);
@@ -1218,6 +1235,7 @@ internal static class FormInputs
     private const float DefaultParameterIndent = 150;
     private static float _paramIndent = DefaultParameterIndent;
     private static float _widthRatio = 1;
+    private static float _maxContentWidth;
     private static float LeftParameterPadding => _paramIndent * T3Ui.UiScaleFactor;
     public static float ParameterSpacing => 20 * T3Ui.UiScaleFactor;
 }

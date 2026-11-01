@@ -4,6 +4,7 @@ using ImGuiNET;
 using T3.Core.Operator;
 using T3.Core.Operator.Interfaces;
 using T3.Core.Operator.Slots;
+using T3.Core.Output;
 using T3.Core.Resource;
 using T3.Core.Utils;
 using T3.Core.Utils.Geometry;
@@ -137,7 +138,11 @@ internal static class TransformGizmoHandling
 
         if (!_selectedTransformables.Contains(_transformable))
         {
-            Log.Warning("transform-callback from non-selected node?" + _transformable);
+            // The camera overlay pulls every camera's definition each frame, so callbacks from
+            // non-selected camera ops are expected (their pyramid is drawn by the overlay) -
+            // anything else is still a wiring mistake worth reporting.
+            if (instance is not ICameraViewGizmo)
+                Log.Warning("transform-callback from non-selected node?" + _transformable);
             return;
         }
 
@@ -182,6 +187,11 @@ internal static class TransformGizmoHandling
 
                 break;
         }
+
+        // Camera operators draw a view gizmo in every mode: a handle at the aim target plus the
+        // frame of what the camera sees (implemented by ICameraViewGizmo).
+        if (_instance is ICamera camera)
+            HandleCameraViewGizmo(camera);
     }
 
     // Extract position gizmo handling into separate method
@@ -239,7 +249,7 @@ internal static class TransformGizmoHandling
         // Don't draw gizmo behind camera (view plane)
         _renderGizmo = Math.Abs(_originInClipSpace.Z) <= 1 && Math.Abs(_originInClipSpace.X) <= 2 && Math.Abs(_originInClipSpace.Y) <= 2;
 
-        var viewports = ResourceManager.Device.ImmediateContext.Rasterizer.GetViewports<SharpDX.Mathematics.Interop.RawViewportF>();
+        var viewports = ResourceManager.Device.ImmediateContext.Rasterizer.GetViewports<T3.Graphics.Viewport>();
         _viewport = viewports[0];
         var originInViewport = new Vector2(_viewport.Width * (_originInClipSpace.X * 0.5f + 0.5f),
                                            _viewport.Height * (1.0f - (_originInClipSpace.Y * 0.5f + 0.5f)));
@@ -1085,6 +1095,362 @@ internal static class TransformGizmoHandling
     #endregion
     
     
+    #region camera view -----------------------------------------------------
+
+    /// <summary>
+    /// Draws the view pyramid of every camera view gizmo in the focused project into an output
+    /// window - not just the selected op's. Camera operators whose output is not part of the
+    /// rendered chain never evaluate, so their gizmos would otherwise stay invisible and a rig's
+    /// cameras could not be seen next to each other. The caller scopes by the project ROOT, not
+    /// the shown instance: a rig's cameras usually feed a composition from the outside (as
+    /// siblings of it), so scoping by the pinned op would hide them all. Runs after the window's
+    /// own draw with the view matrices captured before evaluation (the rendered chain may point
+    /// them elsewhere). Each camera's definition is pulled through its cheap Reference output (no
+    /// scene evaluation), which as a transform-callback slot also runs the selected camera's
+    /// interactive gizmo.
+    /// </summary>
+    public static void DrawCameraOverlays(EvaluationContext context, Matrix4x4 worldToCamera, Matrix4x4 cameraToClipSpace, Instance? scopeRoot)
+    {
+        if (scopeRoot == null || context.ShowGizmos == GizmoVisibility.Off)
+            return;
+
+        SetDrawList(ImGui.GetWindowDrawList());
+        _canvas = ImageOutputCanvas.Current;
+        if (_canvas == null)
+        {
+            RestoreDrawList();
+            return;
+        }
+
+        var viewports = ResourceManager.Device.ImmediateContext.Rasterizer.GetViewports<T3.Graphics.Viewport>();
+        _viewport = viewports[0];
+        _topLeftOnScreen = _canvas.TransformPosition(Vector2.Zero);
+
+        // The overlay (and any gizmo callback it triggers) must project with the window's view,
+        // not whatever the rendered chain left in the context.
+        context.ObjectToWorld = Matrix4x4.Identity;
+        context.WorldToCamera = worldToCamera;
+        context.CameraToClipSpace = cameraToClipSpace;
+        _objectToWorld = Matrix4x4.Identity;
+        _objectToClipSpace = worldToCamera * cameraToClipSpace;
+
+        var rootPath = scopeRoot.InstancePath;
+        var suppliers = LaserContentRegistry.Suppliers;
+        for (var i = 0; i < suppliers.Count; i++)
+        {
+            if (suppliers[i] is not Instance camera || camera is not ICamera viewCamera || camera is not ICameraViewGizmo)
+                continue;
+
+            var path = camera.InstancePath;
+            if (path.Count <= rootPath.Count)
+                continue;
+
+            var underScope = true;
+            for (var depth = 0; depth < rootPath.Count; depth++)
+            {
+                if (path[depth] != rootPath[depth])
+                {
+                    underScope = false;
+                    break;
+                }
+            }
+
+            if (!underScope)
+                continue;
+
+            // Force the cheap camera-definition update (position/target/lens math only) so the
+            // pyramid - and the selected camera's own gizmo callback - reflect this frame's values.
+            var reference = FindReferenceOutput(camera);
+            if (reference == null)
+                continue;
+
+            reference.DirtyFlag.ForceInvalidate();
+            reference.GetValue(context);
+
+            var isSelectedCamera = ReferenceEquals(camera, _instance);
+            DrawCameraViewFrame(viewCamera, isSelectedCamera ? UiColors.StatusAnimated : CameraGizmoTint(camera),
+                                drawFrustumEdges: isSelectedCamera);
+        }
+
+        RestoreDrawList();
+    }
+
+    private static Slot<Object>? FindReferenceOutput(Instance camera)
+    {
+        // The Reference output is the op's only Object-typed output (it carries the instance itself
+        // for the camera dropdown), so the type identifies it without needing a name lookup.
+        foreach (var output in camera.Outputs)
+        {
+            if (output is Slot<Object> reference)
+                return reference;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Aim-target handle and view frame for camera operators (ITransformable + ICameraViewGizmo):
+    /// a line from the camera to its aim target with a draggable handle, and the rectangle of what
+    /// the camera sees at the target's depth - so a laser camera shows where it is looking.
+    /// </summary>
+    private static bool HandleCameraViewGizmo(ICamera camera)
+    {
+        var target = camera.CameraTarget;
+        var targetScreen = WorldPosToScreenPos(target);
+        var positionScreen = WorldPosToScreenPos(camera.CameraPosition);
+
+        var isHovering = false;
+        const float handleRadius = 7f;
+
+        // A camera that borrows its aim from a reference (the laser camera's CameraReference) has
+        // no target input to write: its frame is still drawn, the handle is not draggable.
+        var canDragTarget = _instance is ICameraViewGizmo { TargetInput: not null };
+
+        if (_draggedGizmoPart == GizmoParts.None)
+        {
+            isHovering = canDragTarget && Vector2.Distance(_mousePosInScreen, targetScreen) < handleRadius * 1.6f;
+            if (isHovering && ImGui.IsMouseClicked(ImGuiMouseButton.Left))
+                StartTargetDragging(camera);
+        }
+        else if (_draggedGizmoPart == GizmoParts.CameraTarget
+                 && _draggedTransformable == _transformable
+                 && _dragInteractionWindowId == ImGui.GetID(""))
+        {
+            isHovering = true;
+            UpdateTargetDragging(camera);
+
+            if (ImGui.IsMouseReleased(ImGuiMouseButton.Left))
+                CompleteTargetDragging();
+        }
+
+        var isActive = _draggedGizmoPart == GizmoParts.CameraTarget;
+        var viewColor = UiColors.StatusAnimated;
+        viewColor.Rgba.W = isActive ? 1f : isHovering ? 0.9f : 0.6f;
+        _drawList.AddLine(positionScreen, targetScreen, viewColor, isActive || isHovering ? 2.5f : 1.5f);
+        _drawList.AddCircle(targetScreen, handleRadius, viewColor, 24, isActive || isHovering ? 2.5f : 1.5f);
+
+        DrawCameraViewFrame(camera, viewColor, drawFrustumEdges: true);
+        return isHovering;
+    }
+
+    /// <summary>How far along the view direction the frustum wireframe is drawn, as a fraction of
+    /// the camera-to-target distance. Keeps a rig's pyramids compact instead of covering the scene.</summary>
+    private const float FrameDepthFraction = 0.3f;
+
+    /// <summary>Bounds on the frustum wireframe's length: it stays attached to its camera instead
+    /// of drifting towards a far-away aim point, and never collapses to nothing up close.</summary>
+    private const float MinFrameLength = 0.12f;
+    private const float MaxFrameLength = 0.8f;
+
+    /// <summary>Size cap of the frame drawn at the aim point (half-extent, world units). A marker,
+    /// not a projection: it shows WHERE the laser lands and the view's shape, at a fixed scale.</summary>
+    private const float TargetFrameHalfExtent = 0.45f;
+
+    /// <summary>Per-camera tint, so a rig of overlapping view pyramids can be told apart. Indexed by
+    /// the camera instance's path, which is stable for the session.</summary>
+    private static readonly Color[] CameraGizmoPalette =
+        [
+            new(0.30f, 0.70f, 1.00f), // blue
+            new(0.45f, 0.95f, 0.55f), // green
+            new(1.00f, 0.82f, 0.30f), // amber
+            new(0.95f, 0.45f, 0.75f), // pink
+            new(0.62f, 0.55f, 1.00f), // violet
+            new(0.30f, 0.90f, 0.88f), // teal
+            new(1.00f, 0.58f, 0.35f), // orange
+            new(0.82f, 0.95f, 0.40f), // lime
+        ];
+
+    private static Color CameraGizmoTint(Instance camera)
+    {
+        var path = camera.InstancePath;
+        var hash = 17;
+        for (var i = 0; i < path.Count; i++)
+            hash = hash * 31 + path[i].GetHashCode();
+
+        return CameraGizmoPalette[(hash & 0x7FFFFFFF) % CameraGizmoPalette.Length];
+    }
+
+    /// <summary>
+    /// The camera's view gizmo, in three parts that stay readable with a rig of eight cameras:
+    /// a small frustum marker AT the camera (its icon - it moves with the op), a thin aim line to
+    /// the target, and a small fixed-size frame at the target showing where the laser lands. The
+    /// frame's shape follows the lens (field of view, aspect, roll) but its SIZE is capped, so a
+    /// far aim point can never balloon it across the scene.
+    /// </summary>
+    private static void DrawCameraViewFrame(ICamera camera, Color tint, bool drawFrustumEdges)
+    {
+        if (_canvas == null)
+            return;
+
+        var definition = camera.CameraDefinition;
+        var cameraPosition = definition.Position;
+        var target = definition.Target;
+
+        var forward = target - cameraPosition;
+        if (forward.LengthSquared() < 1e-8f)
+        {
+            forward = -Vector3.UnitZ;
+            target = cameraPosition + forward;
+        }
+
+        forward = Vector3.Normalize(forward);
+        var up = MathF.Abs(Vector3.Dot(forward, Vector3.UnitY)) > 0.99f ? Vector3.UnitZ : Vector3.UnitY;
+        var right = Vector3.Normalize(Vector3.Cross(forward, up));
+        var upVector = Vector3.Cross(right, forward);
+
+        var roll = definition.Roll.ToRadians();
+        var rightRolled = right * MathF.Cos(roll) + upVector * MathF.Sin(roll);
+        var upRolled = upVector * MathF.Cos(roll) - right * MathF.Sin(roll);
+
+        var fov = MathF.Max(0.001f, definition.FieldOfView);
+        var aspect = MathF.Max(0.01f, definition.AspectRatio);
+        var tanHalfFov = MathF.Tan(fov * 0.5f);
+
+        if (!TryWorldPosToScreenPos(cameraPosition, out var cameraScreen))
+            return;
+
+        // 1) Marker at the camera: a short frustum along the aim, so the op always shows where it
+        // looks and the marker stays attached to the node the user manipulates.
+        var distance = Vector3.Distance(cameraPosition, target);
+        var markerLength = Math.Clamp(distance * FrameDepthFraction, MinFrameLength, MaxFrameLength);
+        var markerHalfHeight = tanHalfFov * markerLength;
+        var markerCenter = cameraPosition + forward * markerLength;
+
+        var markerColor = tint.Fade(0.6f);
+        DrawFrameQuad(markerCenter, upRolled, rightRolled, markerHalfHeight, markerHalfHeight * aspect, markerColor, 1.5f);
+
+        // 2) Aim line to where the laser actually lands.
+        if (TryWorldPosToScreenPos(target, out var targetScreen))
+            _drawList.AddLine(cameraScreen, targetScreen, tint.Fade(0.35f), 1f);
+
+        // 3) Small frame AT the target: the view's shape where it lands, capped in size so a far
+        // aim point cannot balloon it across the scene.
+        var targetHalfHeight = MathF.Min(tanHalfFov * distance, TargetFrameHalfExtent);
+        if (targetHalfHeight > 0.01f && TryWorldPosToScreenPos(target, out _))
+        {
+            DrawFrameQuad(target, upRolled, rightRolled, targetHalfHeight, targetHalfHeight * aspect, tint.Fade(0.5f), 1.25f);
+        }
+
+        // Frustum edges from the marker to the target frame: only for the camera being manipulated,
+        // the full view volume of every camera at once turns the viewport into a tangle.
+        if (!drawFrustumEdges)
+            return;
+
+        var edgeColor = tint.Fade(0.22f);
+        for (var i = 0; i < 4; i++)
+        {
+            var corner = target + upRolled * targetHalfHeight * (i == 0 || i == 1 ? 1f : -1f)
+                                  + rightRolled * targetHalfHeight * aspect * (i == 0 || i == 3 ? 1f : -1f);
+            if (TryWorldPosToScreenPos(corner, out var cornerScreen))
+                _drawList.AddLine(cameraScreen, cornerScreen, edgeColor, 1f);
+        }
+    }
+
+    /// <summary>Draws a camera-facing rectangle: four edges through the given half-extents.</summary>
+    private static void DrawFrameQuad(Vector3 center, Vector3 up, Vector3 right, float halfHeight, float halfWidth,
+                                      Color color, float thickness)
+    {
+        Span<Vector2> screen = stackalloc Vector2[4];
+        for (var i = 0; i < 4; i++)
+        {
+            var corner = center
+                         + up * halfHeight * (i == 0 || i == 1 ? 1f : -1f)
+                         + right * halfWidth * (i == 0 || i == 3 ? 1f : -1f);
+
+            if (!TryWorldPosToScreenPos(corner, out screen[i]))
+                return;
+        }
+
+        for (var i = 0; i < 4; i++)
+            _drawList.AddLine(screen[i], screen[(i + 1) % 4], color, thickness);
+    }
+
+    private static void StartTargetDragging(ICamera camera)
+    {
+        Debug.Assert(_instance?.Parent != null);
+        Debug.Assert(_transformable is ICameraViewGizmo);
+
+        var targetInput = ((ICameraViewGizmo)_transformable!).TargetInput;
+        if (targetInput == null)
+            return;
+
+        _draggedGizmoPart = GizmoParts.CameraTarget;
+        _inputCommandInFlight = new ChangeInputValueCommand(_instance.Parent.Symbol,
+                                                            _instance.SymbolChildId,
+                                                            targetInput.Input,
+                                                            targetInput.Input.Value,
+                                                            _instance);
+
+        _draggedTransformable = _transformable;
+        _dragInteractionWindowId = ImGui.GetID("");
+
+        var target = camera.CameraTarget;
+        var planeNormal = camera.CameraPosition - target;
+        _cameraTargetPlaneNormal = planeNormal.LengthSquared() > 1e-8f ? Vector3.Normalize(planeNormal) : -Vector3.UnitZ;
+        _initialTargetPoint = target;
+    }
+
+    /// <summary>Drags the aim target within the plane facing the camera through the initial target.
+    /// Writes through <see cref="ICamera.CameraTarget"/> so ops that reinterpret their aim input
+    /// (the laser camera's Rotation aim mode) convert to their own representation.</summary>
+    private static void UpdateTargetDragging(ICamera camera)
+    {
+        Debug.Assert(_inputCommandInFlight != null);
+        Debug.Assert(_transformable is ICameraViewGizmo);
+
+        var ray = GetPickRayInObject(_mousePosInScreen);
+        var plane = new Plane(_cameraTargetPlaneNormal, -Vector3.Dot(_cameraTargetPlaneNormal, _initialTargetPoint));
+        if (!PlaneIntersectRay(plane, ray, out var intersection))
+            return;
+
+        camera.CameraTarget = intersection;
+
+        var targetInput = ((ICameraViewGizmo)_transformable!).TargetInput;
+        _inputCommandInFlight.AssignNewValue(targetInput.Input.Value);
+    }
+
+    private static void CompleteTargetDragging()
+    {
+        Debug.Assert(_inputCommandInFlight != null);
+        UndoRedoStack.Add(_inputCommandInFlight);
+        _inputCommandInFlight = null;
+
+        _draggedGizmoPart = GizmoParts.None;
+        _draggedTransformable = null;
+        _dragInteractionWindowId = 0;
+        _dragNotStopped = false;
+    }
+
+    /// <summary>Projects a world-space point (camera operators keep their position/target in
+    /// world space, so unlike <see cref="LocalPosToScreenPos"/> no gizmo-local offset applies).</summary>
+    private static Vector2 WorldPosToScreenPos(Vector3 posInWorld)
+    {
+        return TryWorldPosToScreenPos(posInWorld, out var screenPos) ? screenPos : default;
+    }
+
+    private static bool TryWorldPosToScreenPos(Vector3 posInWorld, out Vector2 screenPos)
+    {
+        screenPos = default;
+        if (_canvas == null)
+            return false;
+
+        var homogeneous = new Vector4(posInWorld.X, posInWorld.Y, posInWorld.Z, 1);
+        var inClip = Vector4.Transform(homogeneous, _objectToClipSpace);
+        if (inClip.W <= 0.0001f)
+            return false;
+
+        var ndc = new Vector3(inClip.X, inClip.Y, inClip.Z) / inClip.W;
+        var viewports = ResourceManager.Device.ImmediateContext.Rasterizer.GetViewports<T3.Graphics.Viewport>();
+        var viewport = viewports[0];
+        var inViewport = new Vector2(viewport.Width * (ndc.X * 0.5f + 0.5f),
+                                     viewport.Height * (1.0f - (ndc.Y * 0.5f + 0.5f)));
+
+        screenPos = _topLeftOnScreen + _canvas.TransformDirection(inViewport);
+        return true;
+    }
+
+    #endregion
+
     #region setting helpers -----------------------------------------
     
     private static Vector3 TryGetVectorFromInput(IInputSlot input, float defaultValue = 0f)
@@ -1152,7 +1518,7 @@ internal static class TransformGizmoHandling
         var homogenousPosInLocal = new Vector4(posInLocal.X, posInLocal.Y, posInLocal.Z, 1);
         Vector4 originInClipSpace = Vector4.Transform(homogenousPosInLocal, _localToClipSpace);
         Vector3 posInNdc = new Vector3(originInClipSpace.X, originInClipSpace.Y, originInClipSpace.Z) / originInClipSpace.W;
-        var viewports = ResourceManager.Device.ImmediateContext.Rasterizer.GetViewports<SharpDX.Mathematics.Interop.RawViewportF>();
+        var viewports = ResourceManager.Device.ImmediateContext.Rasterizer.GetViewports<T3.Graphics.Viewport>();
         var viewport = viewports[0];
         var originInViewport = new Vector2(viewport.Width * (posInNdc.X * 0.5f + 0.5f),
                                            viewport.Height * (1.0f - (posInNdc.Y * 0.5f + 0.5f)));
@@ -1295,6 +1661,9 @@ internal static class TransformGizmoHandling
         RotationYAxis,
         RotationZAxis,
         RotationScreen,
+
+        // Camera view gizmo
+        CameraTarget,
     }
     
     #endregion
@@ -1317,7 +1686,7 @@ internal static class TransformGizmoHandling
 
     private static readonly HashSet<ITransformable> _selectedTransformables = [];
 
-    private static SharpDX.Mathematics.Interop.RawViewportF _viewport;
+    private static T3.Graphics.Viewport _viewport;
     private static Vector2 _mousePosInScreen;
     private static ImageOutputCanvas? _canvas;
     private static Vector2 _topLeftOnScreen;
@@ -1349,4 +1718,8 @@ internal static class TransformGizmoHandling
     private static Vector3 _initialRotationVector;
     private static Vector3 _draggedRotationAxis;
     private static Vector2 _initialMousePos;
+
+    // Camera view gizmo state
+    private static Vector3 _cameraTargetPlaneNormal;
+    private static Vector3 _initialTargetPoint;
 }

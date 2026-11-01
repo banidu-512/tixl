@@ -5,10 +5,13 @@ using System.Runtime.InteropServices;
 using ImGuiNET;
 using SilkWindows;
 using T3.Core.Resource;
+using T3.Core.SystemUi;
 using T3.Editor.App;
 using T3.Editor.Gui;
 using T3.Editor.Gui.Styling;
 using T3.Editor.Gui.UiHelpers;
+using T3.Editor.SystemUi;
+using T3.SdlPlatform;
 
 namespace T3.Editor.UiContentDrawing;
 
@@ -16,38 +19,29 @@ internal static class UiContentUpdate
 {
     public static void SetupResourcesAndFontsWithScaling()
     {
-        if (_hasSetScaling && Math.Abs(UserSettings.Config.UiScaleFactor - _lastUiScale) <= 0.005f)
-            return;
-
-        Log.Debug("Setup editor resources...");
         // Prevent scale factor from being "actually" 0.0
         if (UserSettings.Config.UiScaleFactor < 0.1f)
             UserSettings.Config.UiScaleFactor = 0.1f;
 
-        // Update font atlas texture if UI-Scale changed
-        GenerateFontsWithScaleFactor(UserSettings.Config.UiScaleFactor);
+        // See https://stackoverflow.com/a/5977638
+        // Read every frame: the display scale changes when the window is dragged onto a display with another scale.
+        var displayScaleFactor = ProgramWindows.Main.GetDpi().X / 96f;
+        var dpiAwareScale = UserSettings.Config.UiScaleFactor * displayScaleFactor * _platformScale;
+        if (_hasSetScaling && Math.Abs(dpiAwareScale - _lastDpiAwareScale) <= 0.005f)
+            return;
+
+        Log.Debug("Setup editor resources...");
+        GenerateFontsWithScaleFactor(dpiAwareScale);
 
         Program.UiContentContentDrawer?.CreateDeviceObjectsAndFonts();
 
-        _lastUiScale = UserSettings.Config.UiScaleFactor;
+        _lastDpiAwareScale = dpiAwareScale;
         _hasSetScaling = true;
     }
 
-    /// <summary>
-    /// Rebuilds fonts and scaling on the next frame, e.g. after the window moved to a monitor with a different
-    /// display scale or the Windows scale setting changed.
-    /// </summary>
-    public static void RequestFontRebuild()
+    /// <param name="dpiAwareScale">The user's UI scale multiplied by the display and platform scale.</param>
+    private static void GenerateFontsWithScaleFactor(float dpiAwareScale)
     {
-        _hasSetScaling = false;
-    }
-
-    private static void GenerateFontsWithScaleFactor(float scaleFactor)
-    {
-        // See https://stackoverflow.com/a/5977638
-        var displayScaleFactor = ProgramWindows.Main.Dpi / 96f;
-        var dpiAwareScale = scaleFactor * displayScaleFactor;
-
         T3Ui.UiScaleFactor = dpiAwareScale;
 
         var fontAtlasPtr = ImGui.GetIO().Fonts;
@@ -74,8 +68,14 @@ internal static class UiContentUpdate
         var codeFont = new TtfFont(codeFontPath, 18f * dpiAwareScale);
         Fonts.Code = fontAtlasPtr.AddFontFromFileTTF(codeFont.Path, codeFont.PixelSize, default, ranges);
 
-        ImGuiWindowService.Instance.SetFonts(new FontPack(normalFont, boldFont, smallFont, largeFont));
+        var fontPack = new FontPack(normalFont, boldFont, smallFont, largeFont);
+        ImGuiWindowService.Instance.SetFonts(fontPack);
+        (BlockingWindow.Instance as SdlDialogProvider)?.ShareFonts(fontAtlasPtr,
+                                                                       new ImFonts([Fonts.FontSmall, Fonts.FontNormal, Fonts.FontBold, Fonts.FontLarge]),
+                                                                       _messageBoxLook);
     }
+
+    private static readonly EditorMessageBoxLook _messageBoxLook = new();
 
     /// <summary>
     /// Extended glyph ranges for the editor's TTF fonts. Default ImGui only
@@ -120,7 +120,10 @@ internal static class UiContentUpdate
     private static long _lastElapsedTicks;
     private static readonly Stopwatch _stopwatch = new();
 
-    private static float _lastUiScale = 1;
+    /** Native macOS text is 13pt, so sizes that suit Windows and Linux desktops look oversized beside Mac chrome. */
+    private static readonly float _platformScale = OperatingSystem.IsMacOS() ? 16f / 18f : 1f;
+
+    private static float _lastDpiAwareScale = 1;
 
     private static bool _hasSetScaling;
 

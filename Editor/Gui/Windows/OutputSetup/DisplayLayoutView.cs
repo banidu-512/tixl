@@ -3,11 +3,12 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
-using System.Windows.Forms;
 using ImGuiNET;
-using Microsoft.Win32;
 using T3.Editor.Gui.Styling;
 using T3.Editor.Gui.UiHelpers;
+using T3.Editor.Show;
+using T3.Editor.SystemUi;
+using T3.SystemUi;
 using Vector2 = System.Numerics.Vector2;
 
 namespace T3.Editor.Gui.Windows.OutputSetup;
@@ -26,22 +27,65 @@ internal static class DisplayLayoutView
     public static void DrawTooltip(int highlightedIndex)
     {
         RefreshCache();
-        if (_screens.Length == 0)
+        DrawDiagram(_boxes, _overallBounds, highlightedIndex);
+    }
+
+    /// <summary>
+    /// The same hover body for a display of a connected render node, drawn from the arrangement that node
+    /// reported. Built on hover only, so the small lists it allocates are not a per-frame cost.
+    /// </summary>
+    public static void DrawRemoteTooltip(BoygroupManager.ClientInfo client, int highlightedIndex)
+    {
+        if (client.Screens.Count == 0)
             return;
 
-        var scale = ScaleToFit();
+        ImGui.TextDisabled(client.Name);
+
+        var boxes = new List<ScreenBox>(client.Screens.Count);
+        var overall = Rectangle.Empty;
+        var highlighted = -1;
+        var fallbackX = 0;
+
+        // A node on an older build reports no positions: its displays are lined up side by side instead.
+        var hasPositions = false;
+        foreach (var screen in client.Screens)
+            hasPositions |= screen.X != 0 || screen.Y != 0;
+
+        foreach (var screen in client.Screens)
+        {
+            var bounds = hasPositions
+                             ? new Rectangle(screen.X, screen.Y, screen.Width, screen.Height)
+                             : new Rectangle(fallbackX, 0, screen.Width, screen.Height);
+            fallbackX += screen.Width;
+
+            if (screen.Index == highlightedIndex)
+                highlighted = boxes.Count;
+
+            overall = boxes.Count == 0 ? bounds : Rectangle.Union(overall, bounds);
+            boxes.Add(new ScreenBox($"Display {screen.Index + 1}", Resolution(screen.Width, screen.Height), bounds, screen.Primary));
+        }
+
+        DrawDiagram(boxes, overall, highlighted);
+    }
+
+    private static void DrawDiagram(IReadOnlyList<ScreenBox> boxes, Rectangle overallBounds, int highlightedIndex)
+    {
+        if (boxes.Count == 0)
+            return;
+
+        var scale = ScaleToFit(overallBounds);
         var drawList = ImGui.GetWindowDrawList();
 
         // A quarter of a display's own width as the margin, so the diagram breathes at whatever size it lands.
-        var padding = _screens[0].Bounds.Width * scale * 0.25f;
+        var padding = boxes[0].Bounds.Width * scale * 0.25f;
         var canvasPos = ImGui.GetCursorScreenPos() + new Vector2(padding);
-        var area = new Vector2(_overallBounds.Width, _overallBounds.Height) * scale;
+        var area = new Vector2(overallBounds.Width, overallBounds.Height) * scale;
         ImGui.Dummy(area + new Vector2(padding * 2));
 
-        for (var i = 0; i < _screens.Length; i++)
+        for (var i = 0; i < boxes.Count; i++)
         {
-            var bounds = _screens[i].Bounds;
-            var min = canvasPos + new Vector2((bounds.X - _overallBounds.X) * scale, (bounds.Y - _overallBounds.Y) * scale);
+            var bounds = boxes[i].Bounds;
+            var min = canvasPos + new Vector2((bounds.X - overallBounds.X) * scale, (bounds.Y - overallBounds.Y) * scale);
             var max = min + new Vector2(bounds.Width * scale, bounds.Height * scale);
             var isHighlighted = i == highlightedIndex;
 
@@ -50,9 +94,9 @@ internal static class DisplayLayoutView
 
             // Name, the primary marker and the resolution stack as their own lines: a wide display box is
             // still only as wide as its screen is, and one long line spills straight out of it.
-            var label = Label(i);
-            var resolution = Resolution(bounds.Width, bounds.Height);
-            var isPrimary = _screens[i].Primary;
+            var label = boxes[i].Label;
+            var resolution = boxes[i].Resolution;
+            var isPrimary = boxes[i].IsPrimary;
 
             var labelSize = ImGui.CalcTextSize(label);
             ImGui.PushFont(Fonts.FontSmall);
@@ -94,47 +138,44 @@ internal static class DisplayLayoutView
     }
 
     /// <summary>
-    /// Re-reads the arrangement when it changed. Screen.AllScreens allocates on every call, so the result is
-    /// held and only swapped when the OS says the displays moved or a count differs.
+    /// Re-measures the arrangement when the screen list is a new one — it is replaced, not changed, when the
+    /// displays do.
     /// </summary>
     private static void RefreshCache()
     {
-        var frame = ImGui.GetFrameCount();
-        if (frame == _cachedFrame && !_isDirty)
+        var screens = EditorUi.Instance.AllScreens;
+        if (ReferenceEquals(screens, _screens))
             return;
 
-        _cachedFrame = frame;
-        if (!_isDirty && _screens.Length > 0)
-            return;
+        _screens = screens;
+        _boxes.Clear();
 
-        _isDirty = false;
-        _screens = Screen.AllScreens;
-        _labels.Clear();
-        _resolutions.Clear();
-
-        if (_screens.Length == 0)
+        if (_screens.Count == 0)
         {
             _overallBounds = Rectangle.Empty;
             return;
         }
 
         var bounds = _screens[0].Bounds;
-        for (var i = 1; i < _screens.Length; i++)
+        for (var i = 0; i < _screens.Count; i++)
         {
-            bounds = Rectangle.Union(bounds, _screens[i].Bounds);
+            if (i > 0)
+                bounds = Rectangle.Union(bounds, _screens[i].Bounds);
+
+            _boxes.Add(new ScreenBox(Label(i), Resolution(_screens[i].Bounds.Width, _screens[i].Bounds.Height), _screens[i].Bounds, _screens[i].Primary));
         }
 
         _overallBounds = bounds;
     }
 
     /// <summary>Small enough to take in at a glance — the diagram says where a screen is, not what is on it.</summary>
-    private static float ScaleToFit()
+    private static float ScaleToFit(Rectangle overallBounds)
     {
-        if (_overallBounds.Width <= 0 || _overallBounds.Height <= 0)
+        if (overallBounds.Width <= 0 || overallBounds.Height <= 0)
             return DiagramScale;
 
         // A wall of displays still has to fit a tooltip, so the arrangement's longer side sets the limit.
-        return MathF.Min(DiagramScale, MaxDiagramSize * T3Ui.UiScaleFactor / Math.Max(_overallBounds.Width, _overallBounds.Height));
+        return MathF.Min(DiagramScale, MaxDiagramSize * T3Ui.UiScaleFactor / Math.Max(overallBounds.Width, overallBounds.Height));
     }
 
     private static string Label(int index)
@@ -160,19 +201,15 @@ internal static class DisplayLayoutView
         return resolution;
     }
 
-    static DisplayLayoutView()
-    {
-        SystemEvents.DisplaySettingsChanged += (_, _) => _isDirty = true;
-    }
-
     private const string PrimaryMarker = "(Primary)";
     private const float DiagramScale = 0.06f;
     private const float MaxDiagramSize = 260f;
 
-    private static Screen[] _screens = [];
+    private readonly record struct ScreenBox(string Label, string Resolution, Rectangle Bounds, bool IsPrimary);
+
+    private static readonly List<ScreenBox> _boxes = [];
+    private static IReadOnlyList<IScreen> _screens = [];
     private static Rectangle _overallBounds;
-    private static bool _isDirty = true;
-    private static int _cachedFrame = -1;
     private static readonly Dictionary<int, string> _labels = [];
     private static readonly Dictionary<(int, int), string> _resolutions = [];
 }

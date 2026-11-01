@@ -1,8 +1,8 @@
 #nullable enable
+using System.Runtime.InteropServices;
 using SharpDX.DXGI;
 using T3.Core.Animation;
 using T3.Core.Logging;
-using Device = SharpDX.Direct3D11.Device;
 
 namespace T3.Editor.App;
 
@@ -20,11 +20,17 @@ internal static class GpuMemoryBudget
     public static long UsageBytes { get; private set; }
     public static long BudgetBytes { get; private set; }
 
-    public static void Initialize(Device device)
+    public static void Initialize(T3.Graphics.Compat.Device device)
     {
+        // DXGI only knows the D3D11 device; the Vulkan backend would report its budget via VK_EXT_memory_budget.
+        if (ProgramWindows.UseVulkanBackend)
+            return;
+
         try
         {
-            using var dxgiDevice = device.QueryInterface<SharpDX.DXGI.Device>();
+            using var nativeDevice = new SharpDX.Direct3D11.Device(device.NativePointer);
+            Marshal.AddRef(device.NativePointer);
+            using var dxgiDevice = nativeDevice.QueryInterface<SharpDX.DXGI.Device>();
             using var adapter = dxgiDevice.Adapter;
             _adapter = adapter.QueryInterface<Adapter3>();
         }

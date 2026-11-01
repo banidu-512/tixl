@@ -128,6 +128,13 @@ internal sealed class OutputSetupModeView
         return true;
     }
 
+    /// <summary>The "Show Flow Outliner" toggle — hung inside the output window's breadcrumb menu.</summary>
+    public void DrawOutlinerMenuItem()
+    {
+        if (CustomComponents.DrawMenuItem(1, "Show Flow Outliner", UserActions.ToggleOutputSetup.ListShortcuts(), isChecked: IsSetupMode))
+            _viewMode = IsSetupMode ? ViewModes.Operator : ViewModes.Setup;
+    }
+
     /// <summary>The "Output Setup" button for the output toolbar. Only drawn while the strip is hidden — the
     /// open strip's own header carries the way back, and showing the control twice reads as two different
     /// buttons.</summary>
