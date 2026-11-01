@@ -1,7 +1,5 @@
 #nullable enable
-using SharpDX;
-using SharpDX.Direct3D11;
-using SharpDX.Mathematics.Interop;
+using T3.Graphics.Compat;
 using T3.Core.Rendering;
 using T3.Core.Utils;
 using Utilities = T3.Core.Utils.Utilities;
@@ -65,9 +63,8 @@ internal sealed class _SpecularPrefilter : Instance<_SpecularPrefilter>
             return;
         }
         
-        _prevVsConstantBuffers = vsStage.GetConstantBuffers(0, 1);
-        _prevVsShaderResourceViews = vsStage.GetShaderResources(0, _shaderResourceViews.Length);
-        _prevVertexShader = vsStage.Get();
+        // Saved in one go; the facade tracks the state, so there is nothing to read back.
+        deviceContext.PushState(StateGroups.All);
 
         if (vs == null)
         {
@@ -82,9 +79,6 @@ internal sealed class _SpecularPrefilter : Instance<_SpecularPrefilter>
         // Geometry shader stage
         var gsStage = deviceContext.GeometryShader;
 
-        _prevGsConstantBuffers = gsStage.GetConstantBuffers(0, 1);
-        _prevGsShaderResourceViews = gsStage.GetShaderResources(0, _shaderResourceViews.Length);
-        _prevGeometryShader = gsStage.Get();
 
         if (gs == null)
         {
@@ -99,10 +93,6 @@ internal sealed class _SpecularPrefilter : Instance<_SpecularPrefilter>
         // Pixel shader stage
         var psStage = deviceContext.PixelShader;
 
-        _prevPixelShader = psStage.Get();
-        _prevPsConstantBuffers = psStage.GetConstantBuffers(0, 1);
-        _prevPsShaderResourceViews = psStage.GetShaderResources(0, _shaderResourceViews.Length);
-        _prevPsSamplerStates = psStage.GetSamplers(0, _samplerStates.Length);
 
         if (ps == null)
         {
@@ -131,15 +121,23 @@ internal sealed class _SpecularPrefilter : Instance<_SpecularPrefilter>
                                   ArraySize = 6
                               };
 
-        Utilities.Dispose(ref _prefilteredCubeMap);
-        try
+        // Kept across updates: with live update this runs every frame, and building the cube map means a new
+        // image with all its mips and faces each time — which costs far more than the filtering itself.
+        if (_prefilteredCubeMap == null || _prefilteredCubeMap.IsDisposed || !MatchesDescription(_prefilteredCubeMap, cubeMapDesc))
         {
-            _prefilteredCubeMap = Texture2D.CreateTexture2D(cubeMapDesc);
-        }
-        catch(SharpDXException e)
-        {
-            Log.Debug($"can't create CubeMap target {e.Message}", this);
-            return;
+            T3.Graphics.Compat.GraphicsUtilities.Dispose(ref _prefilteredCubeMap);
+            DisposeMipTargets();
+
+            try
+            {
+                _prefilteredCubeMap = Texture2D.CreateTexture2D(cubeMapDesc);
+            }
+            catch (Exception e)
+            {
+                Log.Debug($"can't create CubeMap target {e.Message}", this);
+                Restore();
+                return;
+            }
         }
 
         var rastDesc = new RasterizerStateDescription
@@ -151,16 +149,13 @@ internal sealed class _SpecularPrefilter : Instance<_SpecularPrefilter>
         _rasterizerState ??= new RasterizerState(device, rastDesc);
 
         // Input Assembler
-        _prevTopology = device.ImmediateContext.InputAssembler.PrimitiveTopology;
+        //var previousTopology = device.ImmediateContext.InputAssembler.PrimitiveTopology;
         device.ImmediateContext.InputAssembler.PrimitiveTopology = PrimitiveTopology.TriangleList;
 
-        _prevBlendState = device.ImmediateContext.OutputMerger.GetBlendState(out _prevBlendFactor, out _prevSampleMask);
-        _prevDepthStencilState = device.ImmediateContext.OutputMerger.GetDepthStencilState(out _prevStencilReference);
+        //_prevBlendState = device.ImmediateContext.OutputMerger.GetBlendState(out _prevBlendFactor, out _prevSampleMask);
         device.ImmediateContext.OutputMerger.BlendState = DefaultRenderingStates.DisabledBlendState;
         device.ImmediateContext.OutputMerger.DepthStencilState = DefaultRenderingStates.DisabledDepthStencilState;
             
-        _prevRenderTargetViews = device.ImmediateContext.OutputMerger.GetRenderTargets(OutputMergerStage.SimultaneousRenderTargetCount);
-        device.ImmediateContext.OutputMerger.GetRenderTargets(out _prevDepthStencilView);
                 
         var rtvDesc = new RenderTargetViewDescription()
                           {
@@ -176,8 +171,6 @@ internal sealed class _SpecularPrefilter : Instance<_SpecularPrefilter>
 
         var size = _prefilteredCubeMap.Description.Width;
             
-        _prevViewports = device.ImmediateContext.Rasterizer.GetViewports<RawViewportF>();
-        _prevRasterizerState = device.ImmediateContext.Rasterizer.State;
             
         device.ImmediateContext.Rasterizer.State = _rasterizerState;
 
@@ -195,20 +188,30 @@ internal sealed class _SpecularPrefilter : Instance<_SpecularPrefilter>
         while (mipSlice < numMipLevels)
         {
             // Log.Debug($"Update mipmap level {mipSlice} size: {size}", this);
-            var viewport = new RawViewportF { X = 0, Y = 0, Width = size, Height = size , MinDepth = 0, MaxDepth = 1};
+            var viewport = new Viewport { X = 0, Y = 0, Width = size, Height = size , MinDepth = 0, MaxDepth = 1};
             device.ImmediateContext.Rasterizer.SetViewports([viewport]);
                 
                 
-            Utilities.Dispose(ref _cubeMapRtv);
-            rtvDesc.Texture2DArray.MipSlice = mipSlice;
-            _cubeMapRtv = new RenderTargetView(device, _prefilteredCubeMap, rtvDesc);
-            device.ImmediateContext.OutputMerger.SetTargets(_cubeMapRtv, null);
+            // One view per mip, kept with the cube map they point into.
+            if (_mipTargets.Length != numMipLevels)
+            {
+                DisposeMipTargets();
+                _mipTargets = new RenderTargetView[numMipLevels];
+            }
+
+            if (_mipTargets[mipSlice] == null)
+            {
+                rtvDesc.Texture2DArray.MipSlice = mipSlice;
+                _mipTargets[mipSlice] = new RenderTargetView(device, _prefilteredCubeMap, rtvDesc);
+            }
+
+            device.ImmediateContext.OutputMerger.SetTargets(_mipTargets[mipSlice], null);
 
             var roughness = (float)mipSlice / (_prefilteredCubeMap.Description.MipLevels - 1);
                 
             // Is this required?
             if (_settingsBuffer != null)
-                Utilities.Dispose(ref _settingsBuffer);
+                T3.Graphics.Compat.GraphicsUtilities.Dispose(ref _settingsBuffer);
 
             for (var i = 0; i < samplingParameters.Length; ++i)
             {
@@ -239,14 +242,15 @@ internal sealed class _SpecularPrefilter : Instance<_SpecularPrefilter>
             vsStage.SetConstantBuffers(0, 1, constantBuffers);
             gsStage.SetConstantBuffers(0, 1, constantBuffers);
 
-            device.ImmediateContext.Draw(3, 0);
+            // A full-screen triangle per cube face; the shader picks the face from the vertex id.
+            device.ImmediateContext.Draw(18, 0);
             size /= 2;
             ++mipSlice;
         }
 
         FilteredCubeMap.Value = _prefilteredCubeMap;
-        Utilities.Dispose(ref _cubeMapRtv);
 
+        //device.ImmediateContext.InputAssembler.PrimitiveTopology = previousTopology;
         Restore();
         _updatedOnce = true;
     }
@@ -254,51 +258,7 @@ internal sealed class _SpecularPrefilter : Instance<_SpecularPrefilter>
         
     private void Restore()
     {
-        var deviceContext = ResourceManager.Device.ImmediateContext;
-
-        deviceContext.Rasterizer.SetViewports(_prevViewports, _prevViewports.Length);
-        deviceContext.Rasterizer.State = _prevRasterizerState;
-        Utilities.Dispose(ref _prevRasterizerState);
-        deviceContext.InputAssembler.PrimitiveTopology = _prevTopology;
-
-        deviceContext.OutputMerger.SetBlendState(_prevBlendState, _prevBlendFactor, _prevSampleMask);
-        Utilities.Dispose(ref _prevBlendState);
-        deviceContext.OutputMerger.SetDepthStencilState(_prevDepthStencilState, _prevStencilReference);
-        Utilities.Dispose(ref _prevDepthStencilState);
-            
-        // Vertex shader
-        var vsStage = deviceContext.VertexShader;
-        vsStage.Set(_prevVertexShader);
-        vsStage.SetConstantBuffers(0, _prevVsConstantBuffers.Length, _prevVsConstantBuffers);
-        vsStage.SetShaderResources(0, _prevVsShaderResourceViews.Length, _prevVsShaderResourceViews);
-        Utilities.Dispose(ref _prevVertexShader);
-            
-        // Vertex shader
-        var gsStage = deviceContext.GeometryShader;
-        gsStage.Set(_prevGeometryShader);
-        gsStage.SetConstantBuffers(0, _prevGsConstantBuffers.Length, _prevGsConstantBuffers);
-        gsStage.SetShaderResources(0, _prevGsShaderResourceViews.Length, _prevGsShaderResourceViews);
-        Utilities.Dispose(ref _prevGeometryShader);
-
-        // Pixel shader
-        var psStage = deviceContext.PixelShader;
-        psStage.Set(_prevPixelShader);
-        psStage.SetConstantBuffers(0, _prevPsConstantBuffers.Length, _prevPsConstantBuffers);
-        psStage.SetShaderResources(0, _prevPsShaderResourceViews.Length, _prevPsShaderResourceViews);
-        psStage.SetSamplers(0, _prevPsSamplerStates.Length, _prevPsSamplerStates);
-        Utilities.Dispose(ref _prevPixelShader);
-            
-        //deviceContext.OutputMerger.SetTargets(_previousRtv, null);
-            
-        if (_prevRenderTargetViews.Length > 0)
-            deviceContext.OutputMerger.SetRenderTargets(_prevDepthStencilView, _prevRenderTargetViews);
-
-        foreach (var rtv in _prevRenderTargetViews)
-        {
-            rtv?.Dispose();
-        }
-
-        Utilities.Dispose(ref _prevDepthStencilView);
+        ResourceManager.Device.ImmediateContext.PopState();
     }        
 
         
@@ -370,28 +330,40 @@ internal sealed class _SpecularPrefilter : Instance<_SpecularPrefilter>
         
     protected override void Dispose(bool disposing)
     {
-        Utilities.Dispose(ref _prefilteredCubeMap);
-        Utilities.Dispose(ref _cubeMapRtv);
-        Utilities.Dispose(ref _rasterizerState);
+        T3.Graphics.Compat.GraphicsUtilities.Dispose(ref _prefilteredCubeMap);
+        DisposeMipTargets();
+        T3.Graphics.Compat.GraphicsUtilities.Dispose(ref _rasterizerState);
         base.Dispose(disposing);
     }
 
     private Texture2D? _prefilteredCubeMap;
         
-    private RawViewportF[] _prevViewports = [];
         
-    private RasterizerState? _prevRasterizerState;
-    private PrimitiveTopology _prevTopology;
-    private BlendState? _prevBlendState;
-    private RawColor4 _prevBlendFactor;
-    private int _prevSampleMask;
-    private DepthStencilState? _prevDepthStencilState;
-    private int _prevStencilReference;
+    //private BlendState _prevBlendState;
+    // private Vector4 _prevBlendFactor;
+    // private int _prevSampleMask;
         
-    private RenderTargetView[] _prevRenderTargetViews= [];
-    private DepthStencilView? _prevDepthStencilView;
         
-    private RenderTargetView? _cubeMapRtv;
+    private RenderTargetView?[] _mipTargets = [];
+
+    private static bool MatchesDescription(Texture2D texture, in Texture2DDescription description)
+    {
+        var current = texture.Description;
+        return current.Width == description.Width
+               && current.Height == description.Height
+               && current.Format == description.Format
+               && current.MipLevels == description.MipLevels;
+    }
+
+    private void DisposeMipTargets()
+    {
+        for (var i = 0; i < _mipTargets.Length; i++)
+        {
+            _mipTargets[i]?.Dispose();
+            _mipTargets[i] = null;
+        }
+    }
+
     private RasterizerState? _rasterizerState;
 
     //private Buffer[] _constantBuffers = new Buffer[0];
@@ -399,20 +371,10 @@ internal sealed class _SpecularPrefilter : Instance<_SpecularPrefilter>
     private SamplerState[] _samplerStates = [];
 
     // VS
-    private SharpDX.Direct3D11.VertexShader? _prevVertexShader;
-    private Buffer[] _prevVsConstantBuffers = [];
-    private ShaderResourceView[] _prevVsShaderResourceViews = [];
 
     // GS
-    private SharpDX.Direct3D11.GeometryShader? _prevGeometryShader;
-    private Buffer[] _prevGsConstantBuffers = [];
-    private ShaderResourceView[] _prevGsShaderResourceViews=[];
 
     // PS
-    private SharpDX.Direct3D11.PixelShader? _prevPixelShader;
-    private Buffer[] _prevPsConstantBuffers= [];
-    private ShaderResourceView[] _prevPsShaderResourceViews = [];
-    private SamplerState[] _prevPsSamplerStates = [];
 
     private static Buffer? _settingsBuffer;
         

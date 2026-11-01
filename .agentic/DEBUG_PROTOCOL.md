@@ -235,11 +235,12 @@ Operator packages hot-reload via `reload`, but Editor/Core changes need a restar
    editor (Debug incremental is safe once it exited).
 3. Relaunch with the flags above and wait for the port.
 
-**A Debug editor loads the *Release* operator packages.** Rebuilding an operator package
-(`Operators/Lib`, `Operators/Video`, …) in Debug alone leaves the editor running the previous
-code, and the obvious conclusion — "my change had no effect" — is wrong. Build operator
-packages with `-c Release`, or both. A stack trace from the running editor is the quickest
-check: its line numbers will match the old source.
+**A Debug editor loads the operator packages built in *Debug*.** Operator packages compile to
+`<Package>/.temp/bin/<BuildMode>/<tfm>/`, and `CsProjectFile.EditorBuildMode` is `Debug`, so
+rebuilding only `-c Release` leaves the editor running the previous code — the obvious
+conclusion, "my change had no effect", is wrong. Build operator packages with `-c Debug`
+(and `-c Release` for the Player and exports). A stack trace from the running editor is the
+quickest check: its line numbers will match the old source.
 
 ## Running the visual reference test suite
 
