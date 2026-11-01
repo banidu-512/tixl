@@ -19,6 +19,7 @@ namespace Lib.io.dmx
         public readonly Slot<Command> Result = new();
 
         private readonly ConnectionSettings _connectionSettings = new();
+        private readonly T3.Core.Show.LocalAdapterResolver _adapterResolver = new();
         private readonly object _dataLock = new();
         private readonly object _connectionLock = new();
         private readonly ConcurrentDictionary<string, string> _discoveredNodes = new();
@@ -67,7 +68,6 @@ namespace Lib.io.dmx
         private IPAddress? _selectedSubnetMask;
         private CancellationTokenSource? _senderCts;
         private double _lastRetryTime;
-        private double _lastNetworkRefreshTime;
 
         private Thread? _senderThread;
         private Socket? _socket;
@@ -86,17 +86,11 @@ namespace Lib.io.dmx
             var localIpString = LocalIpAddress.GetValue(context);
             var targetIpString = TargetIpAddress.GetValue(context);
 
-            if (_selectedSubnetMask == null && !string.IsNullOrEmpty(localIpString))
-            {
-                var adapter = _networkInterfaces.FirstOrDefault(ni => ni.IpAddress.ToString() == localIpString);
-                if (adapter == null && context.LocalTime - _lastNetworkRefreshTime > 2.0)
-                {
-                    _lastNetworkRefreshTime = context.LocalTime;
-                    _networkInterfaces = GetNetworkInterfaces();
-                    adapter = _networkInterfaces.FirstOrDefault(ni => ni.IpAddress.ToString() == localIpString);
-                }
-                if (adapter != null) _selectedSubnetMask = adapter.SubnetMask;
-            }
+            // The stored address may belong to another machine (a failover pair or boygroup shares one project),
+            // so each machine binds to its own matching adapter instead of the stored address.
+            _adapterResolver.Update(localIpString, targetIpString, context.LocalTime);
+            localIpString = _adapterResolver.EffectiveIp;
+            _selectedSubnetMask = _adapterResolver.SubnetMask;
 
             _connectionSettings.Update(localIpString ?? string.Empty, _selectedSubnetMask, targetIpString ?? string.Empty, SendUnicast.GetValue(context), out bool needsSocketRebind);
 
@@ -444,6 +438,7 @@ namespace Lib.io.dmx
                                 {
                                     lock (_connectionLock) _connected = false;
                                     consecutiveErrors = 0;
+                                    T3.Core.Show.FailoverArbiter.ReportOutputFault("Art-Net send failing");
                                 }
                             }
 
@@ -459,7 +454,12 @@ namespace Lib.io.dmx
                 {
                     if (_printToLog) Log.Warning($"ArtNet Sender survived error: {e.Message}", this);
                     consecutiveErrors++;
-                    if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) { lock (_connectionLock) _connected = false; consecutiveErrors = 0; }
+                    if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS)
+                    {
+                        lock (_connectionLock) _connected = false;
+                        consecutiveErrors = 0;
+                        T3.Core.Show.FailoverArbiter.ReportOutputFault("Art-Net sender error");
+                    }
                     Thread.Sleep(10);
                 }
             }
@@ -723,7 +723,7 @@ namespace Lib.io.dmx
         public string? GetStatusMessage() => _lastErrorMessage;
         public void SetStatus(string m, IStatusProvider.StatusLevel l) { _lastErrorMessage = m; _lastStatusLevel = l; }
 
-        string ICustomDropdownHolder.GetValueForInput(Guid inputId) { if (inputId == LocalIpAddress.Id) return LocalIpAddress.Value ?? string.Empty; if (inputId == TargetIpAddress.Id) return TargetIpAddress.Value ?? string.Empty; return string.Empty; }
+        string ICustomDropdownHolder.GetValueForInput(Guid inputId) { if (inputId == LocalIpAddress.Id) return _adapterResolver.EffectiveIp ?? LocalIpAddress.Value ?? string.Empty; if (inputId == TargetIpAddress.Id) return TargetIpAddress.Value ?? string.Empty; return string.Empty; }
         IEnumerable<string> ICustomDropdownHolder.GetOptionsForInput(Guid inputId) { if (inputId == LocalIpAddress.Id) { _networkInterfaces = GetNetworkInterfaces(); foreach (var adapter in _networkInterfaces) yield return adapter.DisplayName; } else if (inputId == TargetIpAddress.Id) { if (!_isPolling && _discoveredNodes.IsEmpty) yield return "Enable 'Discover Nodes' to search..."; else if (_isPolling && _discoveredNodes.IsEmpty) yield return "Searching for nodes..."; else foreach (var nodeName in _discoveredNodes.Values.OrderBy(name => name)) yield return nodeName; } }
         void ICustomDropdownHolder.HandleResultForInput(Guid inputId, string? selected, bool isAListItem) { if (string.IsNullOrEmpty(selected) || !isAListItem) return; if (inputId == LocalIpAddress.Id) { var foundAdapter = _networkInterfaces.FirstOrDefault(i => i.DisplayName == selected); if (foundAdapter == null) return; LocalIpAddress.SetTypedInputValue(foundAdapter.IpAddress.ToString()); _selectedSubnetMask = foundAdapter.SubnetMask; } else if (inputId == TargetIpAddress.Id) { var finalIp = selected; var match = Regex.Match(selected, @"\(([^)]*)\)"); if (match.Success) finalIp = match.Groups[1].Value; TargetIpAddress.SetTypedInputValue(finalIp); } }
 

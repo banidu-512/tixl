@@ -93,6 +93,10 @@ internal sealed class SacnOutput : Instance<SacnOutput>, IStatusProvider, ICusto
             _networkInterfaces = GetNetworkInterfaces();
         }
 
+        // The stored address may belong to another machine (a failover pair or boygroup shares one project).
+        _adapterResolver.Update(localIpString, TargetIpAddress.GetValue(context), context.LocalTime);
+        localIpString = _adapterResolver.EffectiveIp;
+
         var settingsChanged = _connectionSettings.Update(
                                                          localIpString,
                                                          TargetIpAddress.GetValue(context),
@@ -329,6 +333,7 @@ internal sealed class SacnOutput : Instance<SacnOutput>, IStatusProvider, ICusto
                             {
                                 lock (_connectionLock) _connected = false;
                                 consecutiveErrors = 0;
+                                T3.Core.Show.FailoverArbiter.ReportOutputFault("sACN send failing");
                             }
                         }
 
@@ -347,7 +352,12 @@ internal sealed class SacnOutput : Instance<SacnOutput>, IStatusProvider, ICusto
             catch (Exception)
             {
                 consecutiveErrors++;
-                if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) { lock (_connectionLock) _connected = false; consecutiveErrors = 0; }
+                if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS)
+                {
+                    lock (_connectionLock) _connected = false;
+                    consecutiveErrors = 0;
+                    T3.Core.Show.FailoverArbiter.ReportOutputFault("sACN sender error");
+                }
                 Thread.Sleep(10);
             }
         }
@@ -555,6 +565,7 @@ internal sealed class SacnOutput : Instance<SacnOutput>, IStatusProvider, ICusto
         return new IPAddress(new byte[] { 239, 255, (byte)(u >> 8), (byte)(u & 0xFF) });
     }
 
+    private readonly T3.Core.Show.LocalAdapterResolver _adapterResolver = new();
     private static List<NetworkAdapterInfo> _networkInterfaces = GetNetworkInterfaces();
 
     private static List<NetworkAdapterInfo> GetNetworkInterfaces()
@@ -601,7 +612,7 @@ internal sealed class SacnOutput : Instance<SacnOutput>, IStatusProvider, ICusto
     public void SetStatus(string m, IStatusProvider.StatusLevel l) { _lastErrorMessage = m; _lastStatusLevel = l; }
     string ICustomDropdownHolder.GetValueForInput(Guid inputId)
     {
-        if (inputId == LocalIpAddress.Id) return LocalIpAddress.Value ?? string.Empty;
+        if (inputId == LocalIpAddress.Id) return _adapterResolver.EffectiveIp ?? LocalIpAddress.Value ?? string.Empty;
         if (inputId == TargetIpAddress.Id) return TargetIpAddress.Value ?? string.Empty;
         return string.Empty;
     }
