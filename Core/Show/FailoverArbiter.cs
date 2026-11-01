@@ -135,6 +135,7 @@ public static class FailoverArbiter
     }
 
     private static readonly Dictionary<string, PeerInfo> _peers = new(); // key: node id
+    private static string _lastPeerHost = "";
 
     private static long _lastStateChangeTicks = Environment.TickCount64;
     private static int _takeoverCount;
@@ -259,7 +260,9 @@ public static class FailoverArbiter
                         best = peer;
                 }
 
-                return best?.Host;
+                // A partner that is gone right now is still the one to fail over to: a node that took over from
+                // a dead master must point its receivers back at it, so they return when the master comes back.
+                return best?.Host ?? (_lastPeerHost.Length > 0 ? _lastPeerHost : null);
             }
         }
     }
@@ -671,6 +674,8 @@ public static class FailoverArbiter
                     peer.Address = senderAddress;
                     peer.CollabPort = heartbeat.Port;
                     peer.Host = heartbeat.Host ?? "";
+                    if (!string.IsNullOrEmpty(peer.Host))
+                        _lastPeerHost = peer.Host;
                 }
             }
             catch
