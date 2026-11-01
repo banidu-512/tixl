@@ -1,0 +1,34 @@
+{
+  "FormatVersion": 3,
+  "Id": "608acba9-f310-4876-981b-ade0664c5c66"/*OmtInput*/,
+  "Description": "Open Media Transport live video input. Pick a discovered source; the operator keeps waiting for it if the sender is not up yet, and reconnects on its own.",
+  "InputUis": [
+    {
+      "InputId": "6988eb41-8866-43b8-a6aa-124e413cecc4"/*SourceName*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 90.0
+      },
+      "Usage": "CustomDropdown"
+    },
+    {
+      "InputId": "b1e6d486-3e33-4147-b03b-c30f8cd6caab"/*TriggerReconnect*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 135.0
+      },
+      "GroupTitle": "Additional Options",
+      "Description": "Drops the current connection and connects to the selected source again."
+    }
+  ],
+  "SymbolChildUis": [],
+  "OutputUis": [
+    {
+      "OutputId": "786f11e0-1e13-42f1-bcb0-1c07c8659be6"/*Texture*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 200.0
+      }
+    }
+  ]
+}
