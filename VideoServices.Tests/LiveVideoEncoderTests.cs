@@ -19,7 +19,7 @@ public class LiveVideoEncoderTests
         encoder.Encode(SolidFrame(320, 240, 220, 40, 40), 320 * 4, forceKeyFrame: true);
         encoder.Encode(SolidFrame(320, 240, 40, 220, 40), 320 * 4, forceKeyFrame: false);
 
-        Assert.NotEmpty(accessUnits);
+        Assert.True(accessUnits.Count > 0, $"encoder '{encoder.EncoderName}' produced no access units");
 
         // Every stream needs SPS (7) and PPS (8); without the global-header flag they arrive in-band.
         var first = accessUnits[0];
@@ -39,7 +39,7 @@ public class LiveVideoEncoderTests
         encoder.Encode(frame, 320 * 4, forceKeyFrame: true);
         encoder.Encode(frame, 320 * 4, forceKeyFrame: false);
         encoder.Encode(frame, 320 * 4, forceKeyFrame: false);
-        Assert.NotEmpty(accessUnits);
+        Assert.True(accessUnits.Count > 0, $"encoder '{encoder.EncoderName}' produced no access units");
 
         using var decoder = new LiveH264Decoder();
         foreach (var accessUnit in accessUnits)
@@ -69,7 +69,7 @@ public class LiveVideoEncoderTests
         encoder.EncodeScaled(frame, 640 * 4, 640, 480, forceKeyFrame: true);
         encoder.EncodeScaled(frame, 640 * 4, 640, 480, forceKeyFrame: false);
         encoder.EncodeScaled(frame, 640 * 4, 640, 480, forceKeyFrame: false);
-        Assert.NotEmpty(accessUnits);
+        Assert.True(accessUnits.Count > 0, $"encoder '{encoder.EncoderName}' produced no access units");
 
         using var decoder = new LiveH264Decoder();
         foreach (var accessUnit in accessUnits)
