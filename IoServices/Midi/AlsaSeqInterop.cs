@@ -31,6 +31,9 @@ internal static class AlsaSeqInterop
         [FieldOffset(14)] public byte DestClient;
         [FieldOffset(15)] public byte DestPort;
         [FieldOffset(16)] public uint ExtLen;
+
+        /// <summary>For announcements, the client that started, exited or changed.</summary>
+        [FieldOffset(16)] public byte AnnouncedClient;
         [FieldOffset(20)] public IntPtr ExtPtr;
     }
 
@@ -39,13 +42,29 @@ internal static class AlsaSeqInterop
     internal const uint TypeMidiGeneric = 2, TypeApplication = 1048576;
     internal const byte EventSysex = 130, QueueDirect = 253;
 
+    /// <summary>
+    /// Announcements from SND_SEQ_EVENT_CLIENT_START to SND_SEQ_EVENT_PORT_CHANGE. The subscription events
+    /// that follow are left out: every connection TiXL makes itself would trigger them.
+    /// </summary>
+    internal const byte EventClientStart = 60, EventPortChange = 65;
+
+    /// <summary>Negated errno values as libasound returns them.</summary>
+    internal const int ErrorInterrupted = -4, ErrorTryAgain = -11, ErrorNoSpace = -28;
+
+    /** The largest input pool the kernel grants a client (SNDRV_SEQ_MAX_CLIENT_EVENTS). */
+    internal const int MaxClientInputPoolSize = 2000;
+
     /// <summary>ALSA's own client, which owns the Timer and Announce ports rather than any instrument.</summary>
     internal const int SystemClientId = 0;
+
+    /** The System client's port that announces clients and ports starting, exiting or changing. */
+    internal const int AnnouncePort = 1;
 
     [DllImport(Lib)] internal static extern int snd_seq_open(out IntPtr handle, string name, int streams, int mode);
     [DllImport(Lib)] internal static extern int snd_seq_close(IntPtr handle);
     [DllImport(Lib)] internal static extern int snd_seq_set_client_name(IntPtr handle, string name);
     [DllImport(Lib)] internal static extern int snd_seq_client_id(IntPtr handle);
+    [DllImport(Lib)] internal static extern int snd_seq_set_client_pool_input(IntPtr handle, UIntPtr size);
     [DllImport(Lib)] internal static extern int snd_seq_create_simple_port(IntPtr handle, string name, uint caps, uint type);
     [DllImport(Lib)] internal static extern int snd_seq_delete_simple_port(IntPtr handle, int port);
     [DllImport(Lib)] internal static extern int snd_seq_connect_to(IntPtr handle, int myPort, int destClient, int destPort);

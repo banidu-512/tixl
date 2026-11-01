@@ -172,6 +172,10 @@ internal sealed class MidiAliasDialog : ModalDialog
                 ImGui.CloseCurrentPopup();
             }
 
+            ImGui.SameLine();
+            if (CustomComponents.DrawCtaButton("Cancel", Icon.None, CustomComponents.ButtonStates.Default))
+                ImGui.CloseCurrentPopup();
+
             EndDialogContent();
         }
 
