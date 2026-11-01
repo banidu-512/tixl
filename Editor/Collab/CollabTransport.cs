@@ -637,7 +637,11 @@ internal sealed class CollabClientTransport : CollabTransport
     public CollabClientTransport(IPEndPoint hostEndPoint)
     {
         _hostEndPoint = hostEndPoint;
-        _udp = new UdpClient();
+
+        // Bound up front: the receive loop starts before the first presence send, and receiving on an
+        // unbound socket fails on Linux, which left the host's presence unread in the socket queue.
+        var anyAddress = hostEndPoint.AddressFamily == AddressFamily.InterNetworkV6 ? IPAddress.IPv6Any : IPAddress.Any;
+        _udp = new UdpClient(new IPEndPoint(anyAddress, 0));
         _udp.Client.EnableBroadcast = false;
     }
 
