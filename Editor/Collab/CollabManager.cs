@@ -538,6 +538,20 @@ internal sealed class CollabManager
         State = SessionState.Connecting;
         StatusText = $"Connecting to {hostAddress}:{tcpPort}...";
 
+        _password = password ?? "";
+        _sessionLog.Clear();
+
+        // The dial (name resolution plus a connect that waits out its timeout when the host is down) runs off the
+        // UI thread: blocking here froze the frame loop for seconds, which a failover standby cannot afford.
+        var generation = _sessionGeneration;
+        var displayName = _localIdentity.DisplayName;
+        var userId = _localIdentity.UserId;
+        _ = Task.Run(() => ConnectDirectInBackground(hostAddress, tcpPort, generation, displayName, userId));
+    }
+
+    private void ConnectDirectInBackground(string hostAddress, int tcpPort, int generation, string displayName, Guid userId)
+    {
+        CollabClientTransport? transport = null;
         try
         {
             if (!IPAddress.TryParse(hostAddress, out var address))
@@ -546,29 +560,50 @@ internal sealed class CollabManager
             if (address == null)
                 throw new ArgumentException($"'{hostAddress}' is not a valid address");
 
-            _password = password ?? "";
-            _sessionLog.Clear();
-            var transport = new CollabClientTransport(new IPEndPoint(address, tcpPort));
-            _transport = transport;
-            _transport.PeerDisconnected += OnPeerDisconnectedTransport;
+            transport = new CollabClientTransport(new IPEndPoint(address, tcpPort));
+            transport.PeerDisconnected += OnPeerDisconnectedTransport;
             transport.Connect();
             transport.SendJson(transport.HostPeer, new
                                                        {
                                                            t = "hello",
                                                            proto = CollabProtocol.ProtocolVersion,
-                                                           name = _localIdentity.DisplayName,
-                                                           userId = _localIdentity.UserId,
+                                                           name = displayName,
+                                                           userId,
                                                        });
-            State = SessionState.Connecting;
+
+            var connected = transport;
+            _uiThreadActions.Enqueue(() => OnDirectConnected(generation, connected));
         }
         catch (Exception e)
         {
-            ErrorText = $"Connection failed: {e.Message}";
-            StatusText = "Connection failed";
-            _transport?.Dispose();
-            _transport = null;
-            State = SessionState.Off;
+            transport?.Dispose();
+            var message = e.Message;
+            _uiThreadActions.Enqueue(() => OnDirectConnectFailed(generation, message));
         }
+    }
+
+    private void OnDirectConnected(int generation, CollabClientTransport transport)
+    {
+        // The session was left or replaced while the dial was running; its result is not wanted anymore.
+        if (generation != _sessionGeneration)
+        {
+            transport.PeerDisconnected -= OnPeerDisconnectedTransport;
+            transport.Dispose();
+            return;
+        }
+
+        _transport = transport;
+        State = SessionState.Connecting;
+    }
+
+    private void OnDirectConnectFailed(int generation, string message)
+    {
+        if (generation != _sessionGeneration)
+            return;
+
+        ErrorText = $"Connection failed: {message}";
+        StatusText = "Connection failed";
+        State = SessionState.Off;
     }
 
     private static IPAddress? ResolveHostName(string host)
@@ -1116,6 +1151,15 @@ internal sealed class CollabManager
 
             case FailoverMirror.TimeMessageType when State == SessionState.Connected:
                 FailoverMirror.ApplyTime(json);
+                break;
+
+            // The failover lease/liveness channel: no-op unless show failover is enabled.
+            case FailoverHealthLink.PingMessageType when State == SessionState.Connected:
+                FailoverHealthLink.ApplyPing(json, this);
+                break;
+
+            case FailoverHealthLink.AckMessageType when State == SessionState.Hosting:
+                FailoverHealthLink.ApplyAck(json);
                 break;
 
             case "undoRequest" when State == SessionState.Hosting:
@@ -2162,6 +2206,13 @@ internal sealed class CollabManager
             if (peer.IsAuthenticated)
                 SendJson(peer, message);
         }
+    }
+
+    /// <summary>Client side: sends one JSON message to the host.</summary>
+    internal void SendToHost(object message)
+    {
+        if (State == SessionState.Connected && HostLink is { } host)
+            SendJson(host, message);
     }
 
     private void BroadcastSystemMessage(object message, CollabPeerConnection? except = null) => _transport?.BroadcastJson(Peers, message, except);

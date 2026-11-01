@@ -24,6 +24,11 @@ internal static class OutputPresentation
     /// </summary>
     public static void UpdatePresentation()
     {
+        // The failover arbiter sees every rendered frame here. A node that comes back from a freeze
+        // longer than the stall window demotes itself before the first output is evaluated, so a zombie
+        // master can never send a frame while a standby already took over.
+        T3.Core.Show.FailoverArbiter.NotifyFrameAdvanced();
+
         // One token per frame for everything the compositing path memoises, advanced before anything asks.
         OutputFrame.Advance();
         OutputWindowHandling.BeginFrame();
@@ -42,7 +47,12 @@ internal static class OutputPresentation
         // every stream-bound (network) output. Disposing the senders matters — NDI/Spout senders
         // would otherwise keep re-sending their last frame from their own loops.
         var failoverSuppressed = T3.Core.Show.FailoverArbiter.IsOutputSuppressed;
-        if (failoverSuppressed)
+
+        // A settled standby keeps warm-capable senders open (nothing is sent), so their sources are already there
+        // when the active machine fails. In any other muted state - a handover, a fence, a fault - they go.
+        var warmStandby = failoverSuppressed
+                          && T3.Core.Show.FailoverArbiter.Role == T3.Core.Show.FailoverArbiter.NodeRole.Standby;
+        if (failoverSuppressed && !warmStandby)
             OutputStreaming.DisposeAll();
 
         foreach (var output in setup.Outputs)
@@ -74,7 +84,12 @@ internal static class OutputPresentation
             if (binding.IsStream)
             {
                 if (failoverSuppressed)
+                {
+                    if (warmStandby)
+                        OutputStreaming.Standby(machineConfig, output, binding);
+
                     continue;
+                }
 
                 OutputStreaming.Send(machineConfig, output, binding);
             }

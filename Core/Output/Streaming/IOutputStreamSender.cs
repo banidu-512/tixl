@@ -24,4 +24,9 @@ public interface IOutputStreamSender : IDisposable
     /// transports that are found by name only, and before the sender has opened.
     /// </summary>
     string? AdvertisedAddress => null;
+
+    /// <summary>Opens the sender's endpoint without sending a frame; called each frame on a warm failover standby.</summary>
+    void KeepWarm()
+    {
+    }
 }

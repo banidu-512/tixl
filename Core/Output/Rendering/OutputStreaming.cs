@@ -106,6 +106,57 @@ public static class OutputStreaming
         return lines.Count == 0 ? "no stream plugs" : string.Join(" | ", lines);
     }
 
+    /// <summary>
+    /// A failover standby: keeps the sender of a transport that supports it open without sending, so its source is
+    /// already on the network when the active machine fails. Other transports are left unclaimed and close at
+    /// <see cref="EndFrame"/>.
+    /// </summary>
+    public static void Standby(MachineConfig machineConfig, OutputDefinition output, PlugBinding binding)
+    {
+        var stream = machineConfig.FindStreamPlug(binding.PlugId);
+        if (stream == null)
+            return;
+
+        var provider = OutputStreamRegistry.TryGetProvider(stream.Kind);
+        if (provider is not { SupportsWarmStandby: true })
+            return;
+
+        if (!_activeStreamPlugs.Add(stream.Id))
+            return;
+
+        if (_senders.TryGetValue(stream.Id, out var slot)
+            && (slot.Provider != provider || slot.Name != stream.Name))
+        {
+            slot.Sender.Dispose();
+            _senders.Remove(stream.Id);
+            slot = null;
+        }
+
+        if (_failedProviders.TryGetValue(stream.Id, out var failedProvider) && failedProvider == provider)
+            return;
+
+        try
+        {
+            if (slot == null)
+            {
+                slot = new OpenStream(stream.Name, provider, provider.CreateSender(stream.Name));
+                _senders[stream.Id] = slot;
+            }
+
+            slot.Sender.Configure(stream.ToSettings());
+            slot.Sender.KeepWarm();
+            _lastOutcome[stream.Id] = "standby: source advertised, not sending";
+        }
+        catch (Exception e)
+        {
+            _failedProviders[stream.Id] = provider;
+            if (_senders.Remove(stream.Id, out var broken))
+                TryDispose(broken.Sender);
+
+            Log.Error($"Stream \"{stream.Name}\" ({stream.Kind}) stopped: {e.Message}");
+        }
+    }
+
     /// <summary>Closes the senders no output sent to this frame (binding dropped, output paused or deleted).</summary>
     public static void EndFrame()
     {

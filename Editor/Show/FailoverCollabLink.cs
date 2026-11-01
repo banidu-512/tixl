@@ -49,6 +49,12 @@ internal sealed class FailoverCollabLink
             return;
         }
 
+        // Session state feeds the arbiter twice: a session that closes while the partner's heartbeats also
+        // stopped means that process exited (promote now, disarm the lease); a session that closes while
+        // the heartbeats continue means only collab broke (do nothing).
+        TrackSession(collab);
+        FailoverHealthLink.Tick(collab);
+
         // The user left the session on purpose. Failover would otherwise host/join again within a tick,
         // making the Leave button look broken. Hosting or joining from the UI clears the latch.
         if (collab.LeftManually)
@@ -100,11 +106,36 @@ internal sealed class FailoverCollabLink
                 break;
 
             case FailoverArbiter.NodeRole.Standby:
+            case FailoverArbiter.NodeRole.Faulted:
+            case FailoverArbiter.NodeRole.Fenced:
                 DriveFollowing(collab);
                 break;
 
             // Probing / Contested: an election or handover is in flight — wait it out.
         }
+    }
+
+    /// <summary>Notifies the arbiter when the session (or its last participant) goes away.</summary>
+    private void TrackSession(CollabManager collab)
+    {
+        if (collab.State == CollabManager.SessionState.Connected)
+        {
+            _wasConnected = true;
+            _lastPeerCount = 0;
+            return;
+        }
+
+        if (_wasConnected)
+        {
+            _wasConnected = false;
+            FailoverArbiter.NotifyPeerSessionLost(iAmHost: false);
+        }
+
+        var peers = collab.State == CollabManager.SessionState.Hosting ? collab.Peers.Count : 0;
+        if (peers == 0 && _lastPeerCount > 0)
+            FailoverArbiter.NotifyPeerSessionLost(iAmHost: true);
+
+        _lastPeerCount = peers;
     }
 
     private void DriveHosting(CollabManager collab)
@@ -117,7 +148,9 @@ internal sealed class FailoverCollabLink
 
         if (collab.State == CollabManager.SessionState.Connecting)
         {
-            StatusText = "Waiting for a pending connection to settle...";
+            // A dial to the master that just went away must not hold up hosting; leaving discards its result.
+            StatusText = "Dropping a pending dial to take over...";
+            collab.Leave();
             return;
         }
 
@@ -148,10 +181,17 @@ internal sealed class FailoverCollabLink
 
     private void DriveFollowing(CollabManager collab)
     {
+        var rolePrefix = FailoverArbiter.Role switch
+                             {
+                                 FailoverArbiter.NodeRole.Faulted => "Faulted",
+                                 FailoverArbiter.NodeRole.Fenced  => "Fenced",
+                                 _                                => "Standby",
+                             };
+
         var endpoint = FailoverArbiter.ActivePeerEndpoint;
         if (endpoint == null)
         {
-            StatusText = "Standby — no active master heard yet";
+            StatusText = $"{rolePrefix} — no active master heard yet";
             return;
         }
 
@@ -160,7 +200,7 @@ internal sealed class FailoverCollabLink
         // Already following the current master: nothing to do.
         if (collab.State == CollabManager.SessionState.Connected && _dialedHost == $"{address}:{port}")
         {
-            StatusText = $"Standby — following {address}:{port}";
+            StatusText = $"{rolePrefix} — following {address}:{port}";
             return;
         }
 
@@ -182,18 +222,24 @@ internal sealed class FailoverCollabLink
             return;
         }
 
-        Log.Info($"Failover: this node is standby — joining the master's session at {address}:{port}");
+        Log.Info($"Failover: this node is {rolePrefix.ToLowerInvariant()} — joining the master's session at {address}:{port}");
         collab.JoinDirect(address, port, UserSettings.Config.CollabPassword);
         var dialSucceeded = collab.State == CollabManager.SessionState.Connecting;
         _dialedHost = dialSucceeded ? $"{address}:{port}" : "";
         StatusText = dialSucceeded
-                         ? $"Standby — connecting to {address}:{port}"
+                         ? $"{rolePrefix} — connecting to {address}:{port}"
                          : "Join failed — retrying";
         _nextActionTicks = Environment.TickCount64 + (dialSucceeded ? TransitionCooldownMs : RetryCooldownMs);
     }
 
     /// <summary>host:port the link itself last dialed, so a live session can be matched against the current active peer.</summary>
     private string _dialedHost = "";
+
+    /// <summary>True while this node is a collab client, to notice the host session closing.</summary>
+    private bool _wasConnected;
+
+    /// <summary>Participants in the session we host, to notice the standby leaving.</summary>
+    private int _lastPeerCount;
 
     private long _nextActionTicks;
 

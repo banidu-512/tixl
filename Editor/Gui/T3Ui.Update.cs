@@ -44,6 +44,8 @@ public static partial class T3Ui
         _failoverConfig.TimeoutFactor = UserSettings.Config.FailoverTimeoutFactor;
         _failoverConfig.NetworkInterfaceName = UserSettings.Config.NetworkInterface;
         _failoverConfig.Preempt = UserSettings.Config.FailoverPreempt;
+        _failoverConfig.StallMs = UserSettings.Config.FailoverStallMs;
+        _failoverConfig.Fencing = UserSettings.Config.FailoverFencing;
         _failoverConfig.CollabPort = UserSettings.Config.CollabPort;
         T3.Core.Show.FailoverArbiter.ApplyConfig(_failoverConfig);
         Show.BoygroupManager.Instance.Update();
