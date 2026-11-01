@@ -858,6 +858,10 @@ internal static class DebugServer
                                       ["right"] = display.RightButtonDown,
                                       ["middle"] = display.MiddleButtonDown,
                                       ["wheel"] = display.WheelSpin,
+                                      ["doubleClick"] = display.IsDoubleClick,
+                                      ["addingOperator"] = display.IsAddingOperator,
+                                      ["keys"] = new JArray(display.PressedKeys.Select(k => (int)k)),
+                                      ["color"] = $"#{(int)(display.AccentColor.X * 255):X2}{(int)(display.AccentColor.Y * 255):X2}{(int)(display.AccentColor.Z * 255):X2}",
                                   });
                 }
 

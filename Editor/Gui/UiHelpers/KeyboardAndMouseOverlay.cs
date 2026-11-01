@@ -63,6 +63,22 @@ public static class KeyboardAndMouseOverlay
         DrawDoubleClickIndicator(center + new Vector2(-22 - 12, -11) * T3Ui.UiScaleFactor, dl);
     }
 
+    /// <summary>The label the overlay shows for a key code; false for keys it doesn't display.</summary>
+    internal static bool TryGetKeyLabel(int keyCode, out string label)
+    {
+        if (keyCode >= 0 && keyCode < KeyLookupCount && _keyStates[keyCode] is { } status)
+        {
+            label = status.Label;
+            return true;
+        }
+
+        label = "";
+        return false;
+    }
+
+    /// <summary>Number of key codes the overlay and collab presence track.</summary>
+    internal const int TrackedKeyCodeCount = KeyLookupCount;
+
     private static void DrawKeys(Vector2 pos, ImDrawListPtr dl)
     {
         var keyPos = pos + new Vector2(4, 4);

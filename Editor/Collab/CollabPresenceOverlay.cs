@@ -1,7 +1,9 @@
 #nullable enable
 using ImGuiNET;
+using T3.SystemUi;
 using T3.Editor.Gui;
 using T3.Editor.Gui.Interaction;
+using T3.Editor.Gui.MagGraph.States;
 using T3.Editor.Gui.MagGraph.Ui;
 using T3.Editor.Gui.UiHelpers;
 using T3.Editor.UiModel;
@@ -36,7 +38,7 @@ internal static class CollabPresenceOverlay
         var canvas = graphView.Canvas;
         var compositionId = projectView.InstView.Symbol.Id;
 
-        SampleLocalPresence(manager, projectView, canvas, compositionId);
+        SampleLocalPresence(manager, projectView, graphView, canvas, compositionId);
         DrawRemotePresence(manager, projectView, graphView, canvas, compositionId, drawList);
         CollabSpectator.Update(manager, canvas, compositionId, drawList);
         DrawLockBadges(manager, projectView, graphView, canvas, compositionId, drawList);
@@ -46,7 +48,7 @@ internal static class CollabPresenceOverlay
     // Local sampling
     // ---------------------------------------------------------------------------------------
 
-    private static void SampleLocalPresence(CollabManager manager, ProjectView projectView, ScalableCanvas canvas, Guid compositionId)
+    private static void SampleLocalPresence(CollabManager manager, ProjectView projectView, IGraphView graphView, ScalableCanvas canvas, Guid compositionId)
     {
         // The graph canvas lives in a child window (ScalableCanvas uses the same flags), so a plain
         // IsWindowHovered() is false whenever the pointer is over the canvas — which left the remote
@@ -77,6 +79,9 @@ internal static class CollabPresenceOverlay
             }
         }
 
+        if (hovering && ImGui.IsMouseDoubleClicked(ImGuiMouseButton.Left))
+            _doubleClickUntil = ImGui.GetTime() + DoubleClickSendSec;
+
         manager.SetLocalPresence(compositionId,
                                  cursorOnCanvas,
                                  hovering,
@@ -84,9 +89,48 @@ internal static class CollabPresenceOverlay
                                  ImGui.IsMouseDown(ImGuiMouseButton.Left),
                                  ImGui.IsMouseDown(ImGuiMouseButton.Right),
                                  ImGui.IsMouseDown(ImGuiMouseButton.Middle),
-                                 _wheelSpin);
+                                 _wheelSpin,
+                                 ImGui.GetTime() < _doubleClickUntil,
+                                 SamplePressedKeys(),
+                                 graphView is MagGraphView magGraphView
+                                 && magGraphView.Context.StateMachine.CurrentState == GraphStates.Placeholder);
     }
 
+    /// <summary>
+    /// The keys held right now, as the interaction overlay labels them. Nothing is shared while a text
+    /// field has focus, so typed text and passwords never reach other participants.
+    /// </summary>
+    private static byte[] SamplePressedKeys()
+    {
+        var count = 0;
+        if (!ImGui.GetIO().WantTextInput)
+        {
+            var pressed = KeyHandler.PressedKeys;
+            var codeCount = Math.Min(KeyboardAndMouseOverlay.TrackedKeyCodeCount, byte.MaxValue + 1);
+            for (var code = 0; code < codeCount && count < _keyScratch.Length; code++)
+            {
+                if (pressed[code] && KeyboardAndMouseOverlay.TryGetKeyLabel(code, out _))
+                    _keyScratch[count++] = (byte)code;
+            }
+        }
+
+        // The array only changes when the held keys do, so most frames reuse the one already sent.
+        var unchanged = count == _sentKeys.Length;
+        for (var i = 0; unchanged && i < count; i++)
+            unchanged = _sentKeys[i] == _keyScratch[i];
+
+        if (!unchanged)
+            _sentKeys = _keyScratch.AsSpan(0, count).ToArray();
+
+        return _sentKeys;
+    }
+
+    /** How long the double-click flag stays set, so the receiver's 20 Hz sampling cannot miss it. */
+    private const double DoubleClickSendSec = 0.6;
+
+    private static double _doubleClickUntil;
+    private static byte[] _sentKeys = [];
+    private static readonly byte[] _keyScratch = new byte[CollabProtocol.MaxPressedKeysPerPresence];
     private static float _wheelSpin;
 
     // ---------------------------------------------------------------------------------------
@@ -127,6 +171,18 @@ internal static class CollabPresenceOverlay
         public float Alpha;
         public readonly MouseInteractionGraphic Mouse = new();
 
+        /// <summary>Keys the peer holds or released within the fade-out, in the order they were pressed.</summary>
+        public readonly List<HeldKey> Keys = new();
+
+        public double LastDoubleClickTime = double.NegativeInfinity;
+
+        public struct HeldKey
+        {
+            public byte Code;
+            public bool IsPressed;
+            public double ReleaseTime;
+        }
+
         /// <summary>1 while the peer is pressing or scrolling, fading to 0 once they stop.</summary>
         public float InteractionFade => 1f - Math.Clamp((float)(ImGui.GetTime() - _lastInteractionTime) / InteractionFadeoutSec, 0f, 1f);
 
@@ -154,6 +210,62 @@ internal static class CollabPresenceOverlay
             Mouse.AddWheelTicks(display.WheelSpin * deltaTime * WheelTicksPerSpinSecond);
             if (display.LeftButtonDown || display.RightButtonDown || display.MiddleButtonDown || display.WheelSpin != 0)
                 _lastInteractionTime = ImGui.GetTime();
+
+            UpdateKeys(display.PressedKeys);
+            if (display.IsDoubleClick)
+            {
+                LastDoubleClickTime = ImGui.GetTime();
+                _lastInteractionTime = LastDoubleClickTime;
+            }
+        }
+
+        public float DoubleClickFade => 1f - Math.Clamp((float)(ImGui.GetTime() - LastDoubleClickTime) / InteractionFadeoutSec, 0f, 1f);
+
+        public float KeyFade(in HeldKey key)
+        {
+            return key.IsPressed ? 1f : MathF.Pow(1f - Math.Clamp((float)(ImGui.GetTime() - key.ReleaseTime) / InteractionFadeoutSec, 0f, 1f), 4);
+        }
+
+        private void UpdateKeys(byte[] pressedKeys)
+        {
+            var now = ImGui.GetTime();
+            for (var i = 0; i < Keys.Count; i++)
+            {
+                var key = Keys[i];
+                if (key.IsPressed)
+                {
+                    key.IsPressed = false;
+                    key.ReleaseTime = now;
+                    Keys[i] = key;
+                }
+            }
+
+            for (var p = 0; p < pressedKeys.Length; p++)
+            {
+                var index = -1;
+                for (var i = 0; i < Keys.Count; i++)
+                {
+                    if (Keys[i].Code == pressedKeys[p])
+                    {
+                        index = i;
+                        break;
+                    }
+                }
+
+                var held = new HeldKey { Code = pressedKeys[p], IsPressed = true, ReleaseTime = now };
+                if (index >= 0)
+                    Keys[index] = held;
+                else
+                    Keys.Add(held);
+
+                _lastInteractionTime = now;
+            }
+
+            for (var i = Keys.Count - 1; i >= 0; i--)
+            {
+                if (!Keys[i].IsPressed && now - Keys[i].ReleaseTime > InteractionFadeoutSec)
+                    Keys.RemoveAt(i);
+            }
         }
 
         private const float CursorFollowSpeed = 22f;
@@ -193,9 +305,24 @@ internal static class CollabPresenceOverlay
         drawList.AddRectFilled(tagMin, tagMax, Tint(color, alpha), rounding);
         drawList.AddText(tagMin + padding, Tint(new Vector4(0.06f, 0.06f, 0.08f, 1f), alpha), name);
 
+        if (display.IsAddingOperator)
+            DrawAddingOperatorChip(drawList, new Vector2(tagMax.X + 6 * scale, tagMin.Y), tagMax.Y - tagMin.Y, color, alpha);
+
         var interactionFade = visual.InteractionFade * alpha;
         if (interactionFade > 0.01f)
             DrawInteractionMouse(drawList, new Vector2(tagMin.X, tagMax.Y + 4 * scale), visual, display, color, interactionFade);
+    }
+
+    /// <summary>Beside the name tag while the peer has the operator search open, so others know a node is about to appear.</summary>
+    private static void DrawAddingOperatorChip(ImDrawListPtr drawList, Vector2 topLeft, float height, Vector4 color, float alpha)
+    {
+        var scale = T3Ui.UiScaleFactor;
+        const string label = "+ adding operator";
+        var padding = new Vector2(7, 2.5f) * scale;
+        var size = new Vector2(ImGui.CalcTextSize(label).X + padding.X * 2, height);
+        drawList.AddRectFilled(topLeft, topLeft + size, Black(0.7f * alpha), size.Y * 0.5f);
+        drawList.AddRect(topLeft, topLeft + size, Tint(color, alpha), size.Y * 0.5f, 0, 1.2f * scale);
+        drawList.AddText(topLeft + padding, Tint(color, alpha), label);
     }
 
     private static void DrawArrow(ImDrawListPtr drawList, Vector2 tip, float scale, uint fill, uint rim)
@@ -231,11 +358,43 @@ internal static class CollabPresenceOverlay
         var uiScale = T3Ui.UiScaleFactor;
         var mouseScale = MouseScale * uiScale;
 
+        topLeft.Y += DrawPressedKeys(drawList, topLeft, visual, color, fade);
+
         var plateSize = new Vector2(MouseExtent * 2, MouseExtent * 2 - 6) * mouseScale;
         drawList.AddRectFilled(topLeft, topLeft + plateSize, Black(0.6f * fade), 6 * uiScale);
 
         var center = topLeft + new Vector2(MouseExtent, MouseExtent - 3) * mouseScale;
         visual.Mouse.Draw(drawList, center, display.LeftButtonDown, display.RightButtonDown, display.MiddleButtonDown, color, fade, mouseScale);
+
+        var doubleClickFade = visual.DoubleClickFade;
+        if (doubleClickFade > 0.01f)
+            drawList.AddText(new Vector2(topLeft.X + plateSize.X + 4 * uiScale, topLeft.Y + 4 * uiScale), Tint(color, doubleClickFade * fade), "×2");
+    }
+
+    /// <summary>The keys the peer holds, labelled like the local interaction overlay; returns the height used.</summary>
+    private static float DrawPressedKeys(ImDrawListPtr drawList, Vector2 topLeft, PeerVisual visual, Vector4 color, float fade)
+    {
+        var uiScale = T3Ui.UiScaleFactor;
+        var keyPos = topLeft;
+        var rowHeight = 0f;
+        for (var i = 0; i < visual.Keys.Count; i++)
+        {
+            var key = visual.Keys[i];
+            if (!KeyboardAndMouseOverlay.TryGetKeyLabel(key.Code, out var label))
+                continue;
+
+            var keyFade = visual.KeyFade(key) * fade;
+            if (keyFade < 0.01f)
+                continue;
+
+            var size = ImGui.CalcTextSize(label) + new Vector2(8, 2) * uiScale;
+            drawList.AddRectFilled(keyPos, keyPos + size, Tint(color, keyFade), 3 * uiScale);
+            drawList.AddText(keyPos + new Vector2(4, 0) * uiScale, Tint(new Vector4(0.06f, 0.06f, 0.08f, 1f), keyFade), label);
+            keyPos.X += size.X + 3 * uiScale;
+            rowHeight = MathF.Max(rowHeight, size.Y);
+        }
+
+        return rowHeight > 0 ? rowHeight + 4 * uiScale : 0;
     }
 
     /** Half the width of the mouse drawing at scale 1, buttons and stroke included. */

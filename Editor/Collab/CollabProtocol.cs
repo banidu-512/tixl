@@ -50,7 +50,10 @@ internal static class CollabProtocol
     public const int MaxJsonPayload = 1024 * 1024;
 
     /// <summary>Expected size of one presence datagram with a full selection list (connId, flags, guid, 2 floats, count, 15 guids, wheel byte).</summary>
-    public const int MaxPresencePayload = 2 + 16 + 8 + 1 + 15 * 16 + 1;
+    public const int MaxPresencePayload = 2 + 16 + 8 + 1 + 15 * 16 + 1 + 3 + 1 + MaxPressedKeysPerPresence;
+
+    /// <summary>Keys shown next to a remote cursor; more held at once are dropped.</summary>
+    public const int MaxPressedKeysPerPresence = 4;
 
     public const int MaxPeers = 16;
     public const int MaxSelectionIdsPerPresence = 15;
@@ -303,20 +306,31 @@ internal sealed class PresencePacket
     /// scrolling. Zero for peers on an older build that doesn't send it.</summary>
     public sbyte WheelSpin;
 
+    /// <summary>The participant's chosen cursor color as 0xRRGGBB; 0 lets receivers derive one from the user id.</summary>
+    public int ColorRgb;
+
+    /// <summary>Key codes held right now, as the interaction overlay labels them.</summary>
+    public byte[] PressedKeys = [];
+
     public const byte FlagHoveringCanvas = 0x01;
     public const byte FlagLeftButton = 0x02;
     public const byte FlagRightButton = 0x04;
     public const byte FlagMiddleButton = 0x08;
+    public const byte FlagDoubleClick = 0x10;
+    public const byte FlagAddingOperator = 0x20;
 
     public bool IsHoveringCanvas => (Flags & FlagHoveringCanvas) != 0;
     public bool IsLeftButtonDown => (Flags & FlagLeftButton) != 0;
     public bool IsRightButtonDown => (Flags & FlagRightButton) != 0;
     public bool IsMiddleButtonDown => (Flags & FlagMiddleButton) != 0;
+    public bool IsDoubleClick => (Flags & FlagDoubleClick) != 0;
+    public bool IsAddingOperator => (Flags & FlagAddingOperator) != 0;
 
     public int Encode(Span<byte> target)
     {
         var selectionCount = Math.Min(SelectedChildIds.Length, CollabProtocol.MaxSelectionIdsPerPresence);
-        var size = 2 + 16 + 8 + 1 + selectionCount * 16 + 1;
+        var keyCount = Math.Min(PressedKeys.Length, CollabProtocol.MaxPressedKeysPerPresence);
+        var size = 2 + 16 + 8 + 1 + selectionCount * 16 + 1 + 3 + 1 + keyCount;
         if (target.Length < size)
             return 0;
 
@@ -333,7 +347,14 @@ internal sealed class PresencePacket
 
         // Appended rather than inserted: an older peer reads the selection list at the same offsets and
         // ignores the trailing byte, so mixed-version sessions keep exchanging cursors.
-        target[27 + selectionCount * 16] = unchecked((byte)WheelSpin);
+        var tail = 27 + selectionCount * 16;
+        target[tail] = unchecked((byte)WheelSpin);
+        target[tail + 1] = (byte)(ColorRgb >> 16);
+        target[tail + 2] = (byte)(ColorRgb >> 8);
+        target[tail + 3] = (byte)ColorRgb;
+        target[tail + 4] = (byte)keyCount;
+        for (var i = 0; i < keyCount; i++)
+            target[tail + 5 + i] = PressedKeys[i];
 
         return size;
     }
@@ -362,6 +383,14 @@ internal sealed class PresencePacket
                          SelectedChildIds = new Guid[selectionCount],
                          WheelSpin = payload.Length > wheelOffset ? unchecked((sbyte)payload[wheelOffset]) : (sbyte)0,
                      };
+
+        // Color and keys come after the wheel byte; peers on an older build stop before them.
+        if (payload.Length >= wheelOffset + 5)
+        {
+            packet.ColorRgb = (payload[wheelOffset + 1] << 16) | (payload[wheelOffset + 2] << 8) | payload[wheelOffset + 3];
+            var keyCount = Math.Min((int)payload[wheelOffset + 4], Math.Min(CollabProtocol.MaxPressedKeysPerPresence, payload.Length - wheelOffset - 5));
+            packet.PressedKeys = payload.Slice(wheelOffset + 5, keyCount).ToArray();
+        }
 
         for (var i = 0; i < selectionCount; i++)
         {

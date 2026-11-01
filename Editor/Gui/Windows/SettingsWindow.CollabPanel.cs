@@ -4,9 +4,11 @@ using Newtonsoft.Json.Linq;
 using T3.Core.DataTypes.Vector;
 using T3.Editor.Collab;
 using T3.Editor.Gui.Input;
+using T3.Editor.Gui.Interaction;
 using T3.Editor.Gui.Styling;
 using T3.Editor.Gui.UiHelpers;
 using T3.Editor.UiModel;
+using T3.Editor.UiModel.InputsAndTypes;
 
 namespace T3.Editor.Gui.Windows;
 
@@ -34,6 +36,9 @@ internal sealed partial class SettingsWindow
         FormInputs.AddVerticalSpace();
 
         DrawDiscordLoginButton();
+
+        FormInputs.AddVerticalSpace();
+        DrawCursorColor(manager);
 
         FormInputs.AddVerticalSpace();
 
@@ -740,6 +745,34 @@ internal sealed partial class SettingsWindow
             secret = input;
 
         return changed;
+    }
+
+    /// <summary>Everyone picks their own cursor color; other participants see it within a moment.</summary>
+    private static void DrawCursorColor(CollabManager manager)
+    {
+        FormInputs.DrawInputLabel("Cursor color");
+
+        var color = manager.LocalIdentity.AccentColor;
+        var buttonSize = new Vector2(ImGui.GetFrameHeight() * 1.6f, ImGui.GetFrameHeight());
+        var edited = ColorEditButton.Draw(ref color, buttonSize);
+        if ((edited & InputEditStateFlags.Modified) != 0)
+            UserSettings.Config.CollabCursorColor = CollabColors.ToPacked(color);
+
+        // Saved when the edit ends, not on every frame of a drag.
+        if ((edited & InputEditStateFlags.Finished) != 0)
+            UserSettings.Save();
+
+        CustomComponents.TooltipForLastItem("The color other participants see for your cursor, selections and edit badges.");
+
+        if (UserSettings.Config.CollabCursorColor != 0)
+        {
+            ImGui.SameLine();
+            if (ImGui.Button("Reset"))
+            {
+                UserSettings.Config.CollabCursorColor = 0;
+                UserSettings.Save();
+            }
+        }
     }
 
     // ---------------------------------------------------------------------------------------

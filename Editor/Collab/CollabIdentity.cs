@@ -1,4 +1,5 @@
 #nullable enable
+using T3.Editor.Gui.UiHelpers;
 
 namespace T3.Editor.Collab;
 
@@ -14,7 +15,8 @@ internal sealed class CollabUserIdentity
     public string Source { get; init; } = "local";
     public string AvatarUrl { get; init; } = "";
 
-    public Vector4 AccentColor => CollabColors.FromId(UserId);
+    /// <summary>The color this user picked in the Collab window, or the one derived from the id.</summary>
+    public Vector4 AccentColor => CollabColors.FromPacked(UserSettings.Config.CollabCursorColor, UserId);
 }
 
 internal static class CollabColors
@@ -29,6 +31,24 @@ internal static class CollabColors
         var hash = StableHash(id.ToByteArray());
         var hue = (hash & 0xffff) / 65535f;
         return HsvToRgb(hue, 0.72f, 0.98f);
+    }
+
+    /// <summary>The picked color from its 0xRRGGBB form; 0 means none was picked and the id decides.</summary>
+    public static Vector4 FromPacked(int rgb, Guid fallbackId)
+    {
+        if (rgb == 0)
+            return FromId(fallbackId);
+
+        return new Vector4(((rgb >> 16) & 0xff) / 255f, ((rgb >> 8) & 0xff) / 255f, (rgb & 0xff) / 255f, 1f);
+    }
+
+    /// <summary>Packs a picked color as 0xRRGGBB; never 0, which is reserved for "not picked".</summary>
+    public static int ToPacked(Vector4 color)
+    {
+        var r = (int)(Math.Clamp(color.X, 0f, 1f) * 255f + 0.5f);
+        var g = (int)(Math.Clamp(color.Y, 0f, 1f) * 255f + 0.5f);
+        var b = (int)(Math.Clamp(color.Z, 0f, 1f) * 255f + 0.5f);
+        return Math.Max((r << 16) | (g << 8) | b, 1);
     }
 
     public static uint ToUint(Vector4 color)

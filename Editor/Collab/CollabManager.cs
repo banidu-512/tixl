@@ -726,12 +726,15 @@ internal sealed class CollabManager
                        CompositionId = presence?.CompositionId ?? Guid.Empty,
                        IsHoveringCanvas = presence?.IsHoveringCanvas ?? false,
                        CursorOnCanvas = presence?.CursorOnCanvas ?? Vector2.Zero,
-                       AccentColor = CollabColors.FromId(userId),
+                       AccentColor = CollabColors.FromPacked(presence?.ColorRgb ?? 0, userId),
                        SelectedChildIds = presence?.SelectedChildIds ?? [],
                        LeftButtonDown = presence?.IsLeftButtonDown ?? false,
                        RightButtonDown = presence?.IsRightButtonDown ?? false,
                        MiddleButtonDown = presence?.IsMiddleButtonDown ?? false,
                        WheelSpin = presence?.WheelSpin ?? 0,
+                       IsDoubleClick = presence?.IsDoubleClick ?? false,
+                       IsAddingOperator = presence?.IsAddingOperator ?? false,
+                       PressedKeys = presence?.PressedKeys ?? [],
                    };
     }
 
@@ -766,6 +769,9 @@ internal sealed class CollabManager
         public bool RightButtonDown;
         public bool MiddleButtonDown;
         public int WheelSpin;
+        public bool IsDoubleClick;
+        public bool IsAddingOperator;
+        public byte[] PressedKeys = [];
     }
 
     // ---------------------------------------------------------------------------------------
@@ -1056,7 +1062,11 @@ internal sealed class CollabManager
                 var kickReason = CollabProtocol.GetString(json, "reason", "Removed by the host");
                 ErrorText = kickReason;
                 Log.Info($"Collab: removed by the host: {kickReason}");
+
+                // Leave clears the project name; the shared project closes so the kicked user lands in the project hub.
+                var sharedProject = _hostProjectName;
                 Leave(manual: true);
+                CloseSharedProject(sharedProject);
                 break;
             }
 
@@ -1424,6 +1434,16 @@ internal sealed class CollabManager
         return paren > 0 ? displayName[..paren] : displayName;
     }
 
+    /// <summary>Closes the focused project when it is the shared one, which brings the graph window back to the project hub.</summary>
+    private static void CloseSharedProject(string projectName)
+    {
+        if (string.IsNullOrEmpty(projectName) || ProjectView.Focused is not { } view)
+            return;
+
+        if (MatchesProjectName(view.OpenedProject.Package.DisplayName, projectName))
+            view.Close();
+    }
+
     /// <summary>Opens a local project by display name (short form accepted) into the visible graph window.</summary>
     internal static bool TryOpenProjectByName(string name)
     {
@@ -1758,7 +1778,7 @@ internal sealed class CollabManager
                                  ChildId = key.ChildId,
                                  PeerId = peerId,
                                  HolderName = _roster.TryGetValue(peerId, out var name) ? name : "peer",
-                                 Color = CollabColors.FromId(userId),
+                                 Color = GetPresence(peerId)?.AccentColor ?? CollabColors.FromId(userId),
                              };
         }
     }
@@ -1886,7 +1906,8 @@ internal sealed class CollabManager
 
     /// <summary>Called by the graph overlay each frame; only the latest snapshot is kept.</summary>
     public void SetLocalPresence(Guid compositionId, Vector2 cursorOnCanvas, bool hoveringCanvas, Guid[] selectedChildIds,
-                                 bool leftButtonDown, bool rightButtonDown, bool middleButtonDown, float wheelSpin)
+                                 bool leftButtonDown, bool rightButtonDown, bool middleButtonDown, float wheelSpin,
+                                 bool doubleClick, byte[] pressedKeys, bool addingOperator)
     {
         _localPresence.CompositionId = compositionId;
         _localPresence.CursorOnCanvas = cursorOnCanvas;
@@ -1901,7 +1922,12 @@ internal sealed class CollabManager
             flags |= PresencePacket.FlagRightButton;
         if (middleButtonDown)
             flags |= PresencePacket.FlagMiddleButton;
+        if (doubleClick)
+            flags |= PresencePacket.FlagDoubleClick;
+        if (addingOperator)
+            flags |= PresencePacket.FlagAddingOperator;
         _localPresence.Flags = flags;
+        _localPresence.PressedKeys = pressedKeys;
 
         // Decaying spin rather than a per-interval delta: presence arrives at 20 Hz, so the receiver can
         // draw it directly and it fades out on its own when the peer stops scrolling.
@@ -1915,6 +1941,7 @@ internal sealed class CollabManager
             return;
 
         _nextPresenceSendTicks = now + CollabProtocol.PresenceSendIntervalMs;
+        _localPresence.ColorRgb = UserSettings.Config.CollabCursorColor;
 
         var buffer = new byte[CollabProtocol.MaxPresencePayload];
         var size = _localPresence.Encode(buffer);

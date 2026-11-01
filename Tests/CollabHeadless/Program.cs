@@ -204,16 +204,18 @@ internal static class Program
         var packet = new PresencePacket
                          {
                              PeerId = 7,
-                             Flags = PresencePacket.FlagHoveringCanvas | PresencePacket.FlagLeftButton,
+                             Flags = PresencePacket.FlagHoveringCanvas | PresencePacket.FlagLeftButton | PresencePacket.FlagDoubleClick,
                              CompositionId = Guid.NewGuid(),
                              CursorOnCanvas = new Vector2(-123.5f, 88.25f),
                              SelectedChildIds = [Guid.NewGuid(), Guid.NewGuid()],
                              WheelSpin = -42,
+                             ColorRgb = 0x336699,
+                             PressedKeys = [65, 17],
                          };
 
         var buffer = new byte[128];
         var size = packet.Encode(buffer);
-        Check(size == 2 + 16 + 8 + 1 + 2 * 16 + 1, $"encoded size {size} unexpected");
+        Check(size == 2 + 16 + 8 + 1 + 2 * 16 + 1 + 3 + 1 + 2, $"encoded size {size} unexpected");
         Check(PresencePacket.TryDecode(buffer.AsSpan(0, size), out var decoded), "decode failed");
         Check(decoded.PeerId == 7 && decoded.Flags == packet.Flags, "header fields mismatch");
         Check(decoded.CompositionId == packet.CompositionId, "composition id mismatch");
@@ -221,8 +223,14 @@ internal static class Program
         Check(decoded.SelectedChildIds.SequenceEqual(packet.SelectedChildIds), "selection mismatch");
         Check(decoded.WheelSpin == -42 && decoded.IsLeftButtonDown && !decoded.IsRightButtonDown, "button/wheel fields mismatch");
 
-        // A peer on an older build sends no trailing wheel byte: the packet still decodes, with no spin.
-        Check(PresencePacket.TryDecode(buffer.AsSpan(0, size - 1), out var older) && older.WheelSpin == 0
+        Check(decoded.ColorRgb == 0x336699 && decoded.IsDoubleClick && decoded.PressedKeys.SequenceEqual(packet.PressedKeys), "color/keys/double-click fields mismatch");
+
+        // A peer on an older build stops after the wheel byte: the packet still decodes, with no color or keys.
+        Check(PresencePacket.TryDecode(buffer.AsSpan(0, size - 6), out var beforeColor) && beforeColor.WheelSpin == -42
+              && beforeColor.ColorRgb == 0 && beforeColor.PressedKeys.Length == 0, "older-build packet without color/keys rejected");
+
+        // An even older one sends no trailing wheel byte: the packet still decodes, with no spin.
+        Check(PresencePacket.TryDecode(buffer.AsSpan(0, size - 7), out var older) && older.WheelSpin == 0
               && older.SelectedChildIds.SequenceEqual(packet.SelectedChildIds), "older-build packet without wheel byte rejected");
 
         Check(!PresencePacket.TryDecode(buffer.AsSpan(0, 26), out _), "truncated packet accepted");

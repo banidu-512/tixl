@@ -232,6 +232,9 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         /// <summary>Persistent participant id; also seeds the per-user accent color.</summary>
         public string CollabUserId = "";
 
+        /// <summary>The cursor color this user picked, as 0xRRGGBB. 0 uses the color derived from the user id.</summary>
+        public int CollabCursorColor = 0;
+
         public int CollabPort = CollabProtocol.DefaultTcpPort;
         public bool CollabLanDiscovery = true;
         public string CollabPassword = "";
