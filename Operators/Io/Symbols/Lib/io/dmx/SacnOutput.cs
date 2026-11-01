@@ -11,7 +11,7 @@ using T3.Core.Utils;
 namespace Lib.io.dmx;
 
 [Guid("e5a8d9e6-3c5a-4bbb-9da3-737b6330b9c3")]
-internal sealed class SacnOutput : Instance<SacnOutput>, IStatusProvider, ICustomDropdownHolder, IDisposable
+internal sealed class SacnOutput : Instance<SacnOutput>, IStatusProvider, ICustomDropdownHolder
 {
     private const int SacnPort = 5568;
     private const string SacnDiscoveryIp = "239.255.250.214";
@@ -93,6 +93,10 @@ internal sealed class SacnOutput : Instance<SacnOutput>, IStatusProvider, ICusto
             _networkInterfaces = GetNetworkInterfaces();
         }
 
+        // The stored address may belong to another machine (a failover pair or boygroup shares one project).
+        _adapterResolver.Update(localIpString, TargetIpAddress.GetValue(context), context.LocalTime);
+        localIpString = _adapterResolver.EffectiveIp;
+
         var settingsChanged = _connectionSettings.Update(
                                                          localIpString,
                                                          TargetIpAddress.GetValue(context),
@@ -132,6 +136,13 @@ internal sealed class SacnOutput : Instance<SacnOutput>, IStatusProvider, ICusto
         if (!enableSending)
         {
             SetStatus("Sending is disabled. Enable 'Send Trigger'.", IStatusProvider.StatusLevel.Notice);
+            return;
+        }
+
+        // Show failover: suppress all DMX sends while this machine is the failover Standby.
+        if (T3.Core.Show.FailoverArbiter.IsOutputSuppressed)
+        {
+            SetStatus("Standby — the failover active node is streaming.", IStatusProvider.StatusLevel.Notice);
             return;
         }
 
@@ -322,6 +333,7 @@ internal sealed class SacnOutput : Instance<SacnOutput>, IStatusProvider, ICusto
                             {
                                 lock (_connectionLock) _connected = false;
                                 consecutiveErrors = 0;
+                                T3.Core.Show.FailoverArbiter.ReportOutputFault("sACN send failing");
                             }
                         }
 
@@ -340,7 +352,12 @@ internal sealed class SacnOutput : Instance<SacnOutput>, IStatusProvider, ICusto
             catch (Exception)
             {
                 consecutiveErrors++;
-                if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) { lock (_connectionLock) _connected = false; consecutiveErrors = 0; }
+                if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS)
+                {
+                    lock (_connectionLock) _connected = false;
+                    consecutiveErrors = 0;
+                    T3.Core.Show.FailoverArbiter.ReportOutputFault("sACN sender error");
+                }
                 Thread.Sleep(10);
             }
         }
@@ -491,7 +508,18 @@ internal sealed class SacnOutput : Instance<SacnOutput>, IStatusProvider, ICusto
         finally { _discoveryUdpClient?.Close(); _discoveryUdpClient = null; }
     }
 
-    public void Dispose() { StopSenderThread(); StopSacnDiscovery(); CloseSocket(); }
+    /// <summary>The framework only calls this hook; a plain Dispose() would never run on delete.</summary>
+    protected override void Dispose(bool isDisposing)
+    {
+        if (isDisposing)
+        {
+            StopSenderThread();
+            StopSacnDiscovery();
+            CloseSocket();
+        }
+
+        base.Dispose(isDisposing);
+    }
 
     private void CloseSocket()
     {
@@ -537,6 +565,7 @@ internal sealed class SacnOutput : Instance<SacnOutput>, IStatusProvider, ICusto
         return new IPAddress(new byte[] { 239, 255, (byte)(u >> 8), (byte)(u & 0xFF) });
     }
 
+    private readonly T3.Core.Show.LocalAdapterResolver _adapterResolver = new();
     private static List<NetworkAdapterInfo> _networkInterfaces = GetNetworkInterfaces();
 
     private static List<NetworkAdapterInfo> GetNetworkInterfaces()
@@ -583,7 +612,7 @@ internal sealed class SacnOutput : Instance<SacnOutput>, IStatusProvider, ICusto
     public void SetStatus(string m, IStatusProvider.StatusLevel l) { _lastErrorMessage = m; _lastStatusLevel = l; }
     string ICustomDropdownHolder.GetValueForInput(Guid inputId)
     {
-        if (inputId == LocalIpAddress.Id) return LocalIpAddress.Value ?? string.Empty;
+        if (inputId == LocalIpAddress.Id) return _adapterResolver.EffectiveIp ?? LocalIpAddress.Value ?? string.Empty;
         if (inputId == TargetIpAddress.Id) return TargetIpAddress.Value ?? string.Empty;
         return string.Empty;
     }
