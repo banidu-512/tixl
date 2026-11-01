@@ -1,5 +1,5 @@
 #nullable enable
-using SharpDX.Direct3D11;
+using T3.Graphics.Compat;
 using T3.Editor.Gui.Windows.OutputSetup;
 using SilkWindows;
 using System.Diagnostics;
@@ -29,7 +29,8 @@ using T3.Editor.Skills.Training;
 using T3.Editor.SystemUi;
 using T3.Editor.UiContentDrawing;
 using T3.Editor.UiModel.Helpers;
-using T3.MsForms;
+using SDL;
+using T3.SdlPlatform;
 using T3.Editor.UiModel.ProjectHandling;
 using T3.SystemUi;
 using ShaderCompiler = T3.Core.Resource.ShaderCompiling.ShaderCompiler;
@@ -85,6 +86,34 @@ internal static class Program
     }
 
     [STAThread]
+    /// <summary>
+    /// An app started from the Finder gets only the system's PATH (/usr/bin:/bin:/usr/sbin:/sbin), not the
+    /// shell's, so the SDK's dotnet is invisible to Process.Start. The installer's and Homebrew's locations are
+    /// added to this process's PATH, which every child process inherits.
+    /// </summary>
+    private static void AddDotnetToPathOnMac()
+    {
+        if (!OperatingSystem.IsMacOS())
+            return;
+
+        var path = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
+        var folders = path.Split(':', StringSplitOptions.RemoveEmptyEntries);
+        if (folders.Any(folder => File.Exists(Path.Combine(folder, "dotnet"))))
+            return;
+
+        string[] candidates =
+            [
+                Environment.GetEnvironmentVariable("DOTNET_ROOT") ?? string.Empty,
+                "/usr/local/share/dotnet",
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".dotnet"),
+                "/opt/homebrew/bin",
+            ];
+
+        var found = candidates.FirstOrDefault(folder => folder.Length > 0 && File.Exists(Path.Combine(folder, "dotnet")));
+        if (found != null)
+            Environment.SetEnvironmentVariable("PATH", path.Length > 0 ? found + ":" + path : found);
+    }
+
     private static void Main(string[] args)
     {
         // Must run before any code that may trigger assembly resolution.
@@ -100,18 +129,50 @@ internal static class Program
         // instance's save-on-quit writes otherwise.
         WaitForPredecessorArg(args);
 
+        // Before anything starts dotnet: operator compilation and the SDK check call it by name.
+        AddDotnetToPathOnMac();
+
+        // Crash-restart supervision: a --watchdog launch is the supervisor itself — it runs the
+        // restart loop (spawning the real editor as a child) and never gets here.
+        if (App.Startup.CrashWatchdog.TryRunWatchdogMode(args))
+            return;
+
+        // Minimal early settings read (no save-on-quit registration): when crash restart is
+        // enabled, hand over to the supervisor before any splash screen or window appears.
+        _ = new UserSettings(saveOnQuit: false);
+        if (App.Startup.CrashWatchdog.TryHandOffToWatchdog(args))
+            return;
+
+        // Before anything awaits: continuations started on this thread come back to it, as under WinForms.
+        MainThreadSynchronizationContext.Install();
+
         // Not calling this first will cause exceptions...
         Console.WriteLine("Starting T3 Editor");
         Console.WriteLine("Creating EditorUi");
-        EditorUi.Instance = new MsFormsEditor();
+        EditorUi.Instance = new SdlEditorUi();
             
         var windowProvider = new SilkWindowProvider();
         var imguiContextLock = windowProvider.ContextLock;
         ImGuiWindowService.Instance = windowProvider;
-        BlockingWindow.Instance = windowProvider;
+        BlockingWindow.Instance = new SdlDialogProvider
+                                      {
+                                          WindowIconPath = Path.Combine(SharedResources.EditorResourcesDirectory, "images", "t3.ico"),
+                                      };
 
-        Console.WriteLine("Creating DX11ShaderCompiler");
-        ShaderCompiler.Instance = new DX11ShaderCompiler();
+        // Before SDL_Init: on Wayland the id is the app_id, which the desktop shell matches to the installed
+        // app.tixl.TiXL.desktop for the icon and taskbar grouping.
+        SDL3.SDL_SetAppMetadata("TiXL", VersionText, "app.tixl.TiXL");
+
+        // SDL swallows the click that focuses a window, which under click-to-focus desktops (Wayland especially)
+        // drops the first interaction after working in another application. A tool wants that click.
+        SDL3.SDL_SetHint(SDL3.SDL_HINT_MOUSE_FOCUS_CLICKTHROUGH, "1");
+
+        SdlSurface.SetVulkanLibraryPath(T3.Graphics.Vulkan.VulkanLoader.FindLibraryPath());
+        if (!SDL3.SDL_Init(SDL_InitFlags.SDL_INIT_VIDEO))
+        {
+            BlockingWindow.Instance.ShowMessageBox($"Failed to initialize SDL: {SDL3.SDL_GetError()}");
+            return;
+        }
 
         // Console.WriteLine("Validating startup location");
         // StartupValidation.ValidateNotRunningFromSystemFolder();
@@ -151,11 +212,21 @@ internal static class Program
             
         Log.Info($"Starting {FormattedEditorVersion}");
 
+        // Named on every start, not just when overridden: the folder carries the version
+        // (TiXL4.4-alpha), so it moves with every release and neither a tester reading their own log nor
+        // anyone reading a pasted one can safely guess which of several it is.
+        Log.Info($"Settings folder: {FileLocations.SettingsDirectory}");
+
+        PendingCrashReports.LogPending();
+
+        if (!DependencyCheck.Run())
+            EditorUi.Instance.ExitApplication();
+
         if (TryGetDebugServerPortArg(args, out var debugServerPort))
             App.DebugProtocol.DebugServer.Start(debugServerPort);
 
         if (FileLocations.VersionIdOverride != null)
-            Log.Info($"Settings folder overridden via '{FileLocations.VersionIdOverrideEnvVar}': {FileLocations.SettingsDirectory}");
+            Log.Info($"Settings folder overridden via '{FileLocations.VersionIdOverrideEnvVar}'.");
 
         CrashReporting.LogPath = logPath;
         //if (IsStandAlone)
@@ -186,6 +257,11 @@ internal static class Program
             UserSettings.Config.ProjectDirectories.Add(FileLocations.DefaultProjectFolder);
         }
 
+        // Keep the login autostart entry pointing at this build while it is enabled — the path
+        // moves with every checkout/update otherwise.
+        if (UserSettings.Config.AutostartWithSystem && !App.Startup.OsAutostart.TrySetEnabled(true, out var autostartError))
+            Log.Warning($"Could not update the autostart entry: {autostartError}");
+
         // Run after UserSettings is initialized — the crash-recovery dialog needs
         // ProjectDirectories to locate per-project backups under .temp/Backup/.
         StartUp.FlagBeginStartupSequence();
@@ -198,20 +274,25 @@ internal static class Program
         
         Device = device;
 
-        if (ShaderCompiler.Instance is not DX11ShaderCompiler shaderCompiler)
-            throw new Exception("ShaderCompiler is not DX11ShaderCompiler");
-
-        shaderCompiler.Device = device;
+        // Follows the backend, not the OS: FXC emits DXBC that only D3D11 reads, so a Vulkan run needs
+        // slang even on Windows.
+        ShaderCompiler.Instance = ProgramWindows.UseVulkanBackend
+                                      ? new SlangShaderCompiler(device)
+                                      : new DX11ShaderCompiler { Device = device };
 
         Log.Debug("Initializing UiContentContentDrawer...");
         var contentDrawer = new WindowsUiContentDrawer();
         UiContentContentDrawer = contentDrawer;
         contentDrawer.Initialize(device, ProgramWindows.Main.Width, ProgramWindows.Main.Height, imguiContextLock, out var context);
 
-        Log.Debug("Initialize Camera Interaction...");
-        var spaceMouse = new SpaceMouse(ProgramWindows.Main.HwndHandle);
-        CameraInteraction.ManipulationDevices = [spaceMouse];
-        ProgramWindows.SetInteractionDevices(spaceMouse);
+        // The SpaceMouse is read through Win32 raw input, so it only exists on Windows.
+        if (OperatingSystem.IsWindows())
+        {
+            Log.Debug("Initialize Camera Interaction...");
+            var spaceMouse = new SpaceMouse(ProgramWindows.Main.HwndHandle);
+            CameraInteraction.ManipulationDevices = [spaceMouse];
+            ProgramWindows.SetInteractionDevices(spaceMouse);
+        }
 
         Log.Debug("Initialize Resource Manager...");
         ResourceManager.Init(device);
@@ -312,6 +393,7 @@ internal static class Program
             Log.Warning("Exception freeing resources: " + e.Message);
         }
 
+        SDL3.SDL_Quit();
         Log.Debug("Shutdown complete");
     }
 
@@ -324,19 +406,45 @@ internal static class Program
     /// <summary>Set via <c>--no-reopen</c> — starts in the project hub, so scripted sessions get a predictable start.</summary>
     internal static bool SkipProjectReopen { get; private set; }
 
+    /// <summary>Set via <c>--autostart</c>: this launch came from the OS login entry, not a manual start.</summary>
+    internal static bool StartedByOsAutostart { get; private set; }
+
+    /// <summary>Set via <c>--project &lt;folder&gt;</c>: open this project after startup (used by a boygroup
+    /// client restarting into the project the master just deployed, so the deployed layout applies).</summary>
+    internal static string? ProjectFolderArgument { get; private set; }
+
     /// <summary>
     /// Honors <c>--window=&lt;w&gt;x&lt;h&gt;</c> (or <c>--window &lt;w&gt;x&lt;h&gt;</c>) for a predictable
-    /// non-maximized window, <c>--no-splash</c> and <c>--no-reopen</c>.
+    /// non-maximized window, <c>--no-splash</c>, <c>--autostart</c>, <c>--project &lt;folder&gt;</c> and <c>--no-reopen</c>.
     /// </summary>
     private static void ApplyWindowArgs(string[] args)
     {
         const string windowFlag = "--window";
+        const string projectFlag = "--project";
         for (var i = 0; i < args.Length; i++)
         {
             var arg = args[i];
             if (arg.Equals("--no-splash", StringComparison.OrdinalIgnoreCase))
             {
                 SkipSplash = true;
+                continue;
+            }
+
+            if (arg.Equals(App.Startup.OsAutostart.ArgMarker, StringComparison.OrdinalIgnoreCase))
+            {
+                StartedByOsAutostart = true;
+                continue;
+            }
+
+            if (arg.StartsWith(projectFlag + "=", StringComparison.OrdinalIgnoreCase))
+            {
+                ProjectFolderArgument = arg[(projectFlag.Length + 1)..];
+                continue;
+            }
+
+            if (arg.Equals(projectFlag, StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+            {
+                ProjectFolderArgument = args[i + 1];
                 continue;
             }
 
