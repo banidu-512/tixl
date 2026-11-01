@@ -1,5 +1,7 @@
 #nullable enable
 using System;
+using System.Buffers;
+using System.Text.Json;
 using Newtonsoft.Json.Linq;
 using T3.Core.Show;
 using T3.Editor.Collab;
@@ -34,20 +36,23 @@ internal static class FailoverHealthLink
             return;
 
         var snapshot = FailoverArbiter.GetSnapshot();
-        collab.BroadcastJson(new
-                                 {
-                                     t = PingMessageType,
-                                     id = snapshot.NodeId,
-                                     prio = snapshot.Priority,
-                                     active = snapshot.AdvertisesActive,
-                                     epoch = snapshot.Epoch,
-                                     seq = snapshot.Seq,
-                                     frame = snapshot.Frame,
-                                     health = snapshot.Health,
-                                     armed = snapshot.Armed,
-                                     standdown = snapshot.Standdown,
-                                     mute = snapshot.Mute,
-                                 });
+        _pingBuffer.Clear();
+        _pingWriter.Reset(_pingBuffer);
+        _pingWriter.WriteStartObject();
+        _pingWriter.WriteString("t", PingMessageType);
+        _pingWriter.WriteString("id", snapshot.NodeId);
+        _pingWriter.WriteNumber("prio", snapshot.Priority);
+        _pingWriter.WriteBoolean("active", snapshot.AdvertisesActive);
+        _pingWriter.WriteNumber("epoch", snapshot.Epoch);
+        _pingWriter.WriteNumber("seq", snapshot.Seq);
+        _pingWriter.WriteNumber("frame", snapshot.Frame);
+        _pingWriter.WriteNumber("health", snapshot.Health);
+        _pingWriter.WriteBoolean("armed", snapshot.Armed);
+        _pingWriter.WriteBoolean("standdown", snapshot.Standdown);
+        _pingWriter.WriteNumber("mute", snapshot.Mute);
+        _pingWriter.WriteEndObject();
+        _pingWriter.Flush();
+        collab.BroadcastEncodedJson(_pingBuffer.WrittenSpan);
     }
 
     /// <summary>Standby side: the active node's liveness/lease ping.</summary>
@@ -70,7 +75,17 @@ internal static class FailoverHealthLink
 
         // The ack is the active node's lease: it proves this machine can hear it.
         if (collab.State == CollabManager.SessionState.Connected)
-            collab.SendToHost(new { t = AckMessageType, seq = snapshot.Seq, id = FailoverArbiter.NodeIdText });
+        {
+            _ackBuffer.Clear();
+            _ackWriter.Reset(_ackBuffer);
+            _ackWriter.WriteStartObject();
+            _ackWriter.WriteString("t", AckMessageType);
+            _ackWriter.WriteNumber("seq", snapshot.Seq);
+            _ackWriter.WriteString("id", FailoverArbiter.NodeIdText);
+            _ackWriter.WriteEndObject();
+            _ackWriter.Flush();
+            collab.SendEncodedToHost(_ackBuffer.WrittenSpan);
+        }
     }
 
     /// <summary>Active side: a standby acknowledged a ping (or a UDP heartbeat) over the session.</summary>
@@ -84,4 +99,11 @@ internal static class FailoverHealthLink
 
     private const long PingIntervalMs = 50;
     private static long _nextPingTicks;
+
+    /** Reused on the UI thread: the ping runs 20 times a second and must not feed the garbage collector. */
+    private static readonly ArrayBufferWriter<byte> _pingBuffer = new(256);
+
+    private static readonly Utf8JsonWriter _pingWriter = new(_pingBuffer);
+    private static readonly ArrayBufferWriter<byte> _ackBuffer = new(128);
+    private static readonly Utf8JsonWriter _ackWriter = new(_ackBuffer);
 }

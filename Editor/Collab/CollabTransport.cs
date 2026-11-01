@@ -1,13 +1,16 @@
 #nullable enable
+using System.Buffers;
 using System.Collections.Concurrent;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Threading;
+using System.Threading.Channels;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using T3.Core.Logging;
 using T3.Core.Utils;
 using T3.Editor.Gui.Interaction;
 
@@ -43,6 +46,8 @@ internal readonly struct InboundMessage
 /// </summary>
 internal sealed class CollabPeerConnection
 {
+    private readonly record struct OutboundFrame(CollabProtocol.FrameType Type, byte[] Buffer, int Length);
+
     public CollabPeerConnection(TcpClient client, int assignedId)
     {
         Client = client;
@@ -87,6 +92,11 @@ internal sealed class CollabPeerConnection
 
     private long _lastHeardFromTicks = Environment.TickCount64;
     private readonly object _writeLock = new();
+    private Channel<OutboundFrame>? _outbound;
+    private int _queuedBytes;
+
+    private const int MaxQueuedBytes = 32 * 1024 * 1024;
+    private const int MaxQueuedPresenceBytes = 64 * 1024;
 
     public void MarkHeardFrom() => Interlocked.Exchange(ref _lastHeardFromTicks, Environment.TickCount64);
 
@@ -130,8 +140,100 @@ internal sealed class CollabPeerConnection
         }
     }
 
-    /// <summary>Thread-safe framed write. Callers must pass a payload already encoded for the frame type.</summary>
+    /// <summary>Bytes accepted by <see cref="Write"/> that are not on the wire yet; bulk senders pace themselves on it.</summary>
+    public int QueuedBytes => Volatile.Read(ref _queuedBytes);
+
+    /// <summary>
+    /// Thread-safe framed write that never blocks the caller: a TCP peer copies the frame into an outbound queue
+    /// that a background writer drains in order, so a stalled partner cannot freeze the editor's frame loop.
+    /// Callers must pass a payload already encoded for the frame type.
+    /// </summary>
     public void Write(CollabProtocol.FrameType type, ReadOnlySpan<byte> payload)
+    {
+        if (SessionClosed)
+            return;
+
+        // A relay peer shares one stream with every other peer, which its transport writes and flushes itself.
+        if (Client == null)
+        {
+            WriteNow(type, payload);
+            return;
+        }
+
+        var queued = Volatile.Read(ref _queuedBytes);
+        if (type == CollabProtocol.FrameType.Presence)
+        {
+            // Presence is best-effort and superseded by the next packet: never let it pile up behind a slow link.
+            if (queued > MaxQueuedPresenceBytes)
+                return;
+        }
+        else if (queued > MaxQueuedBytes)
+        {
+            // Dropping a reliable frame would desynchronise the stream; a peer this far behind is gone for our purposes.
+            Log.Warning($"Collab: {this} is not keeping up ({queued} bytes waiting) - disconnecting it");
+            Close();
+            return;
+        }
+
+        var buffer = ArrayPool<byte>.Shared.Rent(Math.Max(1, payload.Length));
+        payload.CopyTo(buffer);
+        var frame = new OutboundFrame(type, buffer, payload.Length);
+        Interlocked.Add(ref _queuedBytes, payload.Length);
+
+        var outbound = EnsureOutbound();
+        if (!outbound.Writer.TryWrite(frame))
+            Release(frame);
+    }
+
+    private Channel<OutboundFrame> EnsureOutbound()
+    {
+        var existing = _outbound;
+        if (existing != null)
+            return existing;
+
+        var created = Channel.CreateUnbounded<OutboundFrame>(new UnboundedChannelOptions { SingleReader = true });
+        existing = Interlocked.CompareExchange(ref _outbound, created, null);
+        if (existing != null)
+            return existing;
+
+        _ = Task.Run(() => WriteLoopAsync(created.Reader));
+        return created;
+    }
+
+    private async Task WriteLoopAsync(ChannelReader<OutboundFrame> reader)
+    {
+        try
+        {
+            while (await reader.WaitToReadAsync().ConfigureAwait(false))
+            {
+                while (reader.TryRead(out var frame))
+                {
+                    try
+                    {
+                        if (!SessionClosed)
+                            WriteNow(frame.Type, frame.Buffer.AsSpan(0, frame.Length));
+                    }
+                    finally
+                    {
+                        Release(frame);
+                    }
+                }
+            }
+        }
+        catch (Exception e)
+        {
+            Log.Debug($"Collab: writer for {this} stopped: {e.Message}");
+            Close();
+        }
+    }
+
+    private void Release(OutboundFrame frame)
+    {
+        Interlocked.Add(ref _queuedBytes, -frame.Length);
+        ArrayPool<byte>.Shared.Return(frame.Buffer);
+    }
+
+    private void WriteNow(CollabProtocol.FrameType type, ReadOnlySpan<byte> payload)
     {
         if (SessionClosed)
             return;
@@ -157,6 +259,9 @@ internal sealed class CollabPeerConnection
     public void Close()
     {
         SessionClosed = true;
+
+        // Lets the writer finish: it returns what is still queued to the pool without writing it.
+        _outbound?.Writer.TryComplete();
         try
         {
             Client?.Close();
@@ -632,6 +737,9 @@ internal sealed class CollabClientTransport : CollabTransport
     private readonly UdpClient _udp;
     private readonly IPEndPoint _hostEndPoint;
     private CollabPeerConnection? _hostPeer;
+
+    /** Cached so the per-frame Peers access does not allocate a one-element array every time. */
+    private IReadOnlyList<CollabPeerConnection> _hostPeerList = [];
     private readonly CancellationTokenSource _cancellation = new();
 
     public CollabClientTransport(IPEndPoint hostEndPoint)
@@ -651,12 +759,13 @@ internal sealed class CollabClientTransport : CollabTransport
         var client = CollabProtocol.ConnectWithTimeout(_hostEndPoint);
         client.NoDelay = true;
         _hostPeer = new CollabPeerConnection(client, 0);
+        _hostPeerList = [_hostPeer];
         _ = Task.Run(() => ReadLoop(_hostPeer));
         _ = Task.Run(() => UdpLoopAsync(_cancellation.Token));
         Log.Info($"Collab: connected to {_hostEndPoint}");
     }
 
-    public override IReadOnlyList<CollabPeerConnection> Peers => _hostPeer == null ? [] : [_hostPeer];
+    public override IReadOnlyList<CollabPeerConnection> Peers => _hostPeer == null ? [] : _hostPeerList;
 
     public override CollabPeerConnection? HostLink => _hostPeer;
 

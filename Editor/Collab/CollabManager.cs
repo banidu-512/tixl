@@ -1077,10 +1077,9 @@ internal sealed class CollabManager
             if (other.UdpEndpoint != null)
                 continue;
 
-            var buffer = new byte[CollabProtocol.MaxPresencePayload];
-            var size = presence.Encode(buffer);
+            var size = presence.Encode(_presenceScratch);
             if (size > 0)
-                _transport?.SendToPeer(other, CollabProtocol.FrameType.Presence, buffer.AsSpan(0, size));
+                _transport?.SendToPeer(other, CollabProtocol.FrameType.Presence, _presenceScratch.AsSpan(0, size));
         }
     }
 
@@ -2031,7 +2030,7 @@ internal sealed class CollabManager
         _nextPresenceSendTicks = now + CollabProtocol.PresenceSendIntervalMs;
         _localPresence.ColorRgb = UserSettings.Config.CollabCursorColor;
 
-        var buffer = new byte[CollabProtocol.MaxPresencePayload];
+        var buffer = _presenceScratch;
         var size = _localPresence.Encode(buffer);
         if (size <= 0)
             return;
@@ -2165,7 +2164,7 @@ internal sealed class CollabManager
 
     private void RefreshDiscoveredFrom(LanDiscoveryScanner scanner)
     {
-        var cutoff = DateTime.UtcNow - TimeSpan.FromSeconds(3);
+        var cutoff = DateTime.UtcNow - DiscoveryStaleAfter;
         while (scanner.Results.TryDequeue(out var result))
         {
             var announcement = result.Announcement;
@@ -2179,15 +2178,35 @@ internal sealed class CollabManager
                                   Project = CollabProtocol.GetString(announcement, "project", ""),
                               };
 
-            if (_discovered.Any(d => d.Address == session.Address && d.Port == session.Port))
+            if (IsDiscovered(session.Address, session.Port))
                 continue;
 
             _discovered.Add(session);
             Log.Debug($"Collab: discovered session '{session.Name}' at {session.Address}:{session.Port}");
         }
 
-        _discovered.RemoveAll(d => d.Seen < cutoff);
+        for (var index = _discovered.Count - 1; index >= 0; index--)
+        {
+            if (_discovered[index].Seen < cutoff)
+                _discovered.RemoveAt(index);
+        }
     }
+
+    private bool IsDiscovered(string address, int port)
+    {
+        for (var index = 0; index < _discovered.Count; index++)
+        {
+            if (_discovered[index].Address == address && _discovered[index].Port == port)
+                return true;
+        }
+
+        return false;
+    }
+
+    private static readonly TimeSpan DiscoveryStaleAfter = TimeSpan.FromSeconds(3);
+
+    /** UI-thread scratch for encoding presence, so a 20 Hz send does not allocate. */
+    private readonly byte[] _presenceScratch = new byte[CollabProtocol.MaxPresencePayload];
 
     // ---------------------------------------------------------------------------------------
     // Helpers shared with transports
@@ -2206,6 +2225,27 @@ internal sealed class CollabManager
             if (peer.IsAuthenticated)
                 SendJson(peer, message);
         }
+    }
+
+    /// <summary>Host side: sends already-encoded JSON to every participant, for hot paths that skip the serializer.</summary>
+    internal void BroadcastEncodedJson(ReadOnlySpan<byte> payload)
+    {
+        if (State != SessionState.Hosting || _transport == null)
+            return;
+
+        var peers = Peers;
+        for (var index = 0; index < peers.Count; index++)
+        {
+            if (peers[index].IsAuthenticated)
+                _transport.SendToPeer(peers[index], CollabProtocol.FrameType.Json, payload);
+        }
+    }
+
+    /// <summary>Client side: sends already-encoded JSON to the host, for hot paths that skip the serializer.</summary>
+    internal void SendEncodedToHost(ReadOnlySpan<byte> payload)
+    {
+        if (State == SessionState.Connected && HostLink is { } host)
+            _transport?.SendToPeer(host, CollabProtocol.FrameType.Json, payload);
     }
 
     /// <summary>Client side: sends one JSON message to the host.</summary>
@@ -2395,6 +2435,10 @@ internal sealed class CollabManager
                     continue;
                 }
 
+                // The writer queue fills when the partner is slow; reading ahead would only pile the file into memory.
+                if (upload.Peer.QueuedBytes > UploadQueueLimitBytes)
+                    break;
+
                 JObject? message;
                 try
                 {
@@ -2429,6 +2473,8 @@ internal sealed class CollabManager
                 _projectUploads.Remove(peer);
         }
     }
+
+    private const int UploadQueueLimitBytes = 512 * 1024;
 
     private BoygroupDeployer.FileReceiver? _projectDownload;
     private string _projectDownloadFolder = "";

@@ -171,6 +171,9 @@ public static class FailoverArbiter
 
     private static FailoverConfig _config = new();
 
+    /** Mirror of the config's Enabled flag, written under the gate, so per-frame checks need no lock. */
+    private static volatile bool _enabled;
+
     /// <summary>Written under <see cref="Gate"/>; volatile so the per-frame suppression check needs no lock.</summary>
     private static volatile NodeRole _role = NodeRole.Disabled;
     private static readonly string NodeId = Guid.NewGuid().ToString("N");
@@ -292,14 +295,7 @@ public static class FailoverArbiter
         }
     }
 
-    public static bool IsEnabled
-    {
-        get
-        {
-            lock (Gate)
-                return _config.Enabled;
-        }
-    }
+    public static bool IsEnabled => _enabled;
 
     /// <summary>True while <see cref="SimulateCrash"/> keeps this node silent.</summary>
     public static bool IsSimulatingCrash => Volatile.Read(ref _simulatedCrashEndTicks) != 0;
@@ -313,14 +309,7 @@ public static class FailoverArbiter
         }
     }
 
-    public static NodeRole Role
-    {
-        get
-        {
-            lock (Gate)
-                return _role;
-        }
-    }
+    public static NodeRole Role => _role;
 
     public static string NodeIdText => NodeId;
 
@@ -581,6 +570,7 @@ public static class FailoverArbiter
 
             var wasEnabled = _config.Enabled;
             _config = config.Copy();
+            _enabled = _config.Enabled;
 
             if (!wasEnabled && _config.Enabled)
             {
