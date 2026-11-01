@@ -31,6 +31,7 @@ using T3.Core.Model;
 using T3.Core.Operator;
 using T3.Core.Resource.ShaderCompiling;
 using T3.Core.Operator.Slots;
+using T3.Core.Output;
 using System.Diagnostics.CodeAnalysis;
 using System.Numerics;
 using T3.Editor.Compilation;
@@ -358,12 +359,22 @@ internal static class DebugServer
                 var litOnly = litOnlyToken is { Type: Newtonsoft.Json.Linq.JTokenType.Boolean } && litOnlyToken.Value<bool>();
                 var rawToken = request["raw"];
                 var raw = rawToken is { Type: Newtonsoft.Json.Linq.JTokenType.Boolean } && rawToken.Value<bool>();
-                var points = raw ? T3.Editor.Gui.Windows.OutputSetup.LaserDriver.GetRawFrame(wanted) : T3.Editor.Gui.Windows.OutputSetup.LaserDriver.GetFrame(wanted);
+                T3.Core.Output.LaserFrame points;
+                if (raw)
+                {
+                    var rawPoints = T3.Editor.Gui.Windows.OutputSetup.LaserDriver.GetRawFrame(wanted);
+                    points = new T3.Core.Output.LaserFrame(rawPoints, rawPoints.Length);
+                }
+                else
+                {
+                    points = T3.Editor.Gui.Windows.OutputSetup.LaserDriver.GetFrame(wanted);
+                }
+
                 var arr = new Newtonsoft.Json.Linq.JArray();
                 var sent = 0;
-                for (var i = 0; i < points.Length && sent < maxPoints; i++)
+                for (var i = 0; i < points.Count && sent < maxPoints; i++)
                 {
-                    var p = points[i];
+                    var p = points.Points[i];
                     if (litOnly && p.I == 0)
                         continue;
                     arr.Add(new Newtonsoft.Json.Linq.JArray { p.X, p.Y, p.I });
@@ -373,10 +384,18 @@ internal static class DebugServer
                 context.SendOk(new JObject
                                    {
                                        ["output"] = wanted.Name,
-                                       ["totalPoints"] = points.Length,
+                                       ["totalPoints"] = points.Count,
                                        ["returned"] = sent,
                                        ["points"] = arr,
                                    });
+                break;
+            }
+
+            case "getLaserPump":
+            {
+                // What one laser pump interval costs and how many outputs fit in its budget -
+                // the numbers behind preview/stream update rate.
+                context.SendOk(JObject.FromObject(T3.Editor.Gui.Windows.OutputSetup.LaserDriver.GetPumpStats()));
                 break;
             }
 
@@ -386,6 +405,10 @@ internal static class DebugServer
 
             case "getShaderErrors":
                 HandleGetShaderErrors(request, context);
+                break;
+
+            case "getFrameSamples":
+                HandleGetFrameSamples(context);
                 break;
 
             case "screenshot":
@@ -514,6 +537,83 @@ internal static class DebugServer
                 break;
             }
 
+            case "setLaserCalibrated":
+            {
+                if (ActiveSetup.Current is not { } calibratedSetup)
+                {
+                    context.SendError("NO_SETUP", "No active setup");
+                    break;
+                }
+
+                var on = request["calibrated"]?.Value<bool>() ?? true;
+                var changed = 0;
+                foreach (var output in calibratedSetup.Outputs)
+                {
+                    if (output.Kind != OutputDefinition.Kinds.Laser)
+                        continue;
+
+                    output.LaserProcessing ??= new LaserProcessingSettings();
+                    output.LaserProcessing.Safety.Calibrated = on;
+                    changed++;
+                }
+
+                OutputSetupHandling.SaveActive();
+                context.SendOk(new JObject { ["outputs"] = changed, ["calibrated"] = on });
+                break;
+            }
+
+            case "addLaserOutputs":
+            {
+                // Adds laser outputs to the active setup, so an agent can stand up a multi-camera
+                // rig without clicking. LaserRoutingSync then attaches un-routed cameras to them.
+                if (ActiveSetup.Current is not { } setup)
+                {
+                    context.SendError("NO_SETUP", "No active setup");
+                    break;
+                }
+
+                var wanted = Math.Clamp(request["count"]?.Value<int>() ?? 1, 1, 32);
+                var created = new JArray();
+                for (var i = 0; i < wanted; i++)
+                {
+                    var number = 1;
+                    foreach (var existing in setup.Outputs)
+                    {
+                        if (existing.Kind == OutputDefinition.Kinds.Laser)
+                            number++;
+                    }
+
+                    var output = new OutputDefinition
+                                     {
+                                         Name = $"L{number}",
+                                         Kind = OutputDefinition.Kinds.Laser,
+                                     };
+
+                    setup.Outputs.Add(output);
+                    created.Add(new JObject { ["name"] = output.Name, ["id"] = output.Id.ToString() });
+                }
+
+                // A test rig wants content, not the uncalibrated alignment rectangle.
+                if (request["calibrated"]?.Value<bool>() == true)
+                {
+                    foreach (var output in setup.Outputs)
+                    {
+                        if (output.Kind != OutputDefinition.Kinds.Laser)
+                            continue;
+
+                        output.LaserProcessing ??= new LaserProcessingSettings();
+                        output.LaserProcessing.Safety.Calibrated = true;
+                    }
+                }
+
+                // The setup lives in .meta/Setups, outside the symbol files T3Ui.Save writes, so it
+                // is persisted through its own path - otherwise a freshly added output vanishes on
+                // the next project load.
+                OutputSetupHandling.SaveActive();
+                context.SendOk(new JObject { ["outputs"] = created });
+                break;
+            }
+
             case "resetView":
             {
                 if (!OutputWindow.TryGetPrimaryOutputWindow(out var window))
@@ -576,6 +676,17 @@ internal static class DebugServer
                 break;
             }
 
+            case "setFrameLatency":
+            {
+                // 1 or 2 frames in flight; without a value it only reports.
+                var value = request["value"]?.Value<int>();
+                if (value != null)
+                    UserSettings.Config.FrameLatency = Math.Clamp(value.Value, 1, 2);
+
+                context.SendOk(new JObject { ["frameLatency"] = UserSettings.Config.FrameLatency });
+                break;
+            }
+
             case "layoutSelection":
             {
                 var view = ProjectView.Focused;
@@ -593,6 +704,27 @@ internal static class DebugServer
                 }
 
                 context.SendOk(new JObject { ["changed"] = changed, ["selectedIds"] = selectedIds });
+                break;
+            }
+
+            case "deleteSelection":
+            {
+                var view = ProjectView.Focused;
+                if (view?.GraphView is not MagGraphView magGraphView)
+                {
+                    context.SendError("NO_COMPOSITION", "No graph view focused");
+                    break;
+                }
+
+                var keepConnections = request["disconnect"]?.Value<bool>() != true;
+                var deleted = magGraphView.DeleteSelection(keepConnections);
+                var selectedIds = new JArray();
+                foreach (var selectable in view.NodeSelection.Selection)
+                {
+                    selectedIds.Add(selectable.Id.ToString());
+                }
+
+                context.SendOk(new JObject { ["deleted"] = deleted, ["selectedIds"] = selectedIds });
                 break;
             }
 
@@ -692,19 +824,97 @@ internal static class DebugServer
                 break;
 
             case "leave":
-                collab.Leave();
+                collab.Leave(manual: true);
                 break;
 
             case "chat":
                 collab.SendChat(request["text"]?.Value<string>() ?? "");
                 break;
 
+            // Per-peer cursor/selection telemetry, for headless verification that presence actually
+            // reaches this editor (the graph overlay is the only other consumer).
+            case "presence":
+            {
+                var peers = new JArray();
+                foreach (var (peerId, name) in collab.Roster)
+                {
+                    var display = collab.GetPresence(peerId);
+                    if (display == null)
+                    {
+                        peers.Add(new JObject { ["peerId"] = peerId, ["name"] = name, ["known"] = false });
+                        continue;
+                    }
+
+                    peers.Add(new JObject
+                                  {
+                                      ["peerId"] = peerId,
+                                      ["name"] = name,
+                                      ["known"] = true,
+                                      ["compositionId"] = display.CompositionId.ToString(),
+                                      ["hovering"] = display.IsHoveringCanvas,
+                                      ["x"] = display.CursorOnCanvas.X,
+                                      ["y"] = display.CursorOnCanvas.Y,
+                                      ["left"] = display.LeftButtonDown,
+                                      ["right"] = display.RightButtonDown,
+                                      ["middle"] = display.MiddleButtonDown,
+                                      ["wheel"] = display.WheelSpin,
+                                      ["doubleClick"] = display.IsDoubleClick,
+                                      ["addingOperator"] = display.IsAddingOperator,
+                                      ["keys"] = new JArray(display.PressedKeys.Select(k => (int)k)),
+                                      ["color"] = $"#{(int)(display.AccentColor.X * 255):X2}{(int)(display.AccentColor.Y * 255):X2}{(int)(display.AccentColor.Z * 255):X2}",
+                                  });
+                }
+
+                context.SendOk(new JObject { ["myPeerId"] = collab.MyPeerId, ["peers"] = peers });
+                break;
+            }
+
             case "status":
                 break;
 
+            case "kick":
+                if (!collab.KickParticipant(request["peerId"]?.Value<int>() ?? -1))
+                {
+                    context.SendError("INVALID_PARAM", "kick requires a hosting session and an authenticated participant");
+                    return;
+                }
+
+                break;
+
             default:
-                context.SendError("INVALID_PARAM", "collab requires op = host | join | hostRelay | joinRelay | leave | status");
+                context.SendError("INVALID_PARAM", "collab requires op = host | join | hostRelay | joinRelay | leave | kick | status");
                 return;
+        }
+
+        var links = new JArray();
+        foreach (var peer in collab.Peers)
+        {
+            links.Add(new JObject
+                          {
+                              ["id"] = peer.AssignedId,
+                              ["name"] = peer.Name,
+                              ["link"] = collab.DescribePeerLink(peer),
+                              ["rttMs"] = collab.GetPeerRttMs(peer.AssignedId),
+                          });
+        }
+
+        var video = new JObject();
+        if (collab.VideoStreamer is { } streamer)
+        {
+            video["role"] = "host";
+            video["streaming"] = streamer.IsEncoding;
+            video["encoder"] = streamer.EncoderName;
+            video["viewers"] = streamer.ViewerCount;
+            video["encoded"] = streamer.EncodedFrames;
+            video["checksum"] = streamer.FrameChecksum;
+        }
+        else if (collab.VideoReceiver is { } receiver)
+        {
+            video["role"] = "client";
+            video["decoded"] = receiver.DecodedFrames;
+            video["width"] = receiver.Width;
+            video["height"] = receiver.Height;
+            video["checksum"] = receiver.FrameChecksum;
         }
 
         context.SendOk(new JObject
@@ -716,6 +926,8 @@ internal static class DebugServer
                                ["peers"] = collab.Peers.Count,
                                ["chatLines"] = collab.ChatLog.Count,
                                ["project"] = collab.SharedProjectName,
+                               ["peerLinks"] = links,
+                               ["video"] = video,
                            });
     }
 
@@ -1603,6 +1815,21 @@ internal static class DebugServer
         result["gpuMemory"] = TryGetGpuMemoryInfo();
         result["liveGpuResources"] = Program.Device?.Backend.LiveResourceCount ?? 0;
         context.SendOk(result);
+    }
+
+    /// <summary>The Performance window's rolling frame, CPU and present durations (oldest first), the data of its CSV export.</summary>
+    private static void HandleGetFrameSamples(RequestContext context)
+    {
+        var frames = PerformanceMetrics.FrameDuration.AsOrderedSpan(new float[PerformanceMetrics.WindowSize]);
+        var cpus = PerformanceMetrics.CpuFrameDuration.AsOrderedSpan(new float[PerformanceMetrics.WindowSize]);
+        var presents = PerformanceMetrics.PresentDuration.AsOrderedSpan(new float[PerformanceMetrics.WindowSize]);
+        context.SendOk(new JObject
+                           {
+                               ["totalFrames"] = PerformanceMetrics.TotalFrameCount,
+                               ["frameMs"] = new JArray(frames.ToArray().Select(v => Math.Round(v, 2))),
+                               ["cpuMs"] = new JArray(cpus.ToArray().Select(v => Math.Round(v, 2))),
+                               ["presentMs"] = new JArray(presents.ToArray().Select(v => Math.Round(v, 2))),
+                           });
     }
 
     private static JToken TryGetGpuMemoryInfo()

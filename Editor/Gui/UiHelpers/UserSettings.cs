@@ -78,12 +78,24 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
 
         public readonly Dictionary<string, Guid> LastOpsForWindows = new();
 
+        /// <summary>
+        /// Operator bookmarks per project, keyed by the project's root symbol. The index is the digit key; each entry
+        /// is an instance path of Guids joined by '/', stored as text because Guid lists don't deserialize reliably.
+        /// </summary>
+        public readonly Dictionary<Guid, string?[]> OperatorBookmarks = new();
+
         [JsonConverter(typeof(StringEnumConverter))]
         public GraphHoverModes HoverMode = GraphHoverModes.LastValue;
 
         // Projects
         public List<string> ProjectDirectories = [];
         public bool EnableUsbProjectDetection = true;
+        public bool ReopenLastProjectOnStartup = true;
+
+        /// <summary>Folder of the project that was open when the editor closed; empty if it closed in the project hub.</summary>
+        public string LastOpenProjectFolder = string.Empty;
+
+        public readonly ToastSettings Toasts = new();
 
         // Startup & recovery
         /// <summary>Project folder that opens automatically on the next launch. Empty starts with the Hub.</summary>
@@ -123,6 +135,9 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
 
         /** Frames per second to render at with vsync; 0 renders every refresh of the pacing display. */
         public int TargetFrameRate = 0;
+
+        /** Frames the loop may run ahead of the display: 1 for the lowest input latency, 2 to absorb late frames. */
+        public int FrameLatency = 1;
 
         /** Windows' implementation of mirroring a display is extremely slow and can
         * take up to 50% of the GPU time. Enabling this work around will copy the Main window
@@ -217,8 +232,8 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         /// <summary>Persistent participant id; also seeds the per-user accent color.</summary>
         public string CollabUserId = "";
 
-        /// <summary>Display name override. Falls back to the Discord name, then the OS user name.</summary>
-        public string CollabDisplayName = "";
+        /// <summary>The cursor color this user picked, as 0xRRGGBB. 0 uses the color derived from the user id.</summary>
+        public int CollabCursorColor = 0;
 
         public int CollabPort = CollabProtocol.DefaultTcpPort;
         public bool CollabLanDiscovery = true;
@@ -237,6 +252,18 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
 
         /// <summary>Room code of the last joined relay session, for auto-rejoin after a restart.</summary>
         public string CollabLastRelayRoom = "";
+
+        /// <summary>
+        /// Comma-separated STUN/TURN URLs for the peer-to-peer data path of relay sessions. Empty
+        /// uses a public STUN server; peers that cannot connect fall back to the relay automatically.
+        /// </summary>
+        public string CollabWebRtcIceServers = "";
+
+        /// <summary>When false, relay sessions stay on the relay even if a direct path is possible.</summary>
+        public bool CollabWebRtcEnabled = true;
+
+        /// <summary>Whether a hosting member streams its rendered preview to the participants.</summary>
+        public bool CollabSharePreview = true;
 
         /// <summary>
         /// The project hosted when starting a session. Empty shares the focused project; a name opens
@@ -330,6 +357,7 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public bool LogAudioDetails = false;
         public bool LogAudioRenderingDetails = false;
         public bool LogVideoRenderingDetails = false;
+        public bool LogPresentationModeChanges = false;
 
         public CompilerOptions.Verbosity CompileCsVerbosity = CompilerOptions.Verbosity.Minimal;
 

@@ -125,6 +125,8 @@ internal sealed class CollabWindow : Window
 
         var dl = ImGui.GetWindowDrawList();
         var isHost = collab.State == CollabManager.SessionState.Hosting;
+        if (!isHost)
+            _pendingKickPeerId = -1;
 
         DrawNameChip(dl, "You" + (isHost ? "  (host)" : ""), UiColors.StatusActivated, true);
 
@@ -133,7 +135,8 @@ internal sealed class CollabWindow : Window
             var link = collab.DescribePeerLink(peerId);
             var suffix = link.Length > 0 ? $"  · {link}" : "";
             var isSpectated = CollabSpectator.IsSpectatingPeer(peerId);
-            DrawNameChip(dl, name + suffix + (!isHost ? "  (host)" : "") + (isSpectated ? "  · spectating" : ""),
+            var isAddingOperator = collab.GetPresence(peerId)?.IsAddingOperator ?? false;
+            DrawNameChip(dl, name + suffix + (!isHost ? "  (host)" : "") + (isSpectated ? "  · following" : "") + (isAddingOperator ? "  · adding operator" : ""),
                          isSpectated ? UiColors.StatusAutomated : UiColors.Text, false);
 
             _menuPeerId = peerId;
@@ -141,20 +144,52 @@ internal sealed class CollabWindow : Window
             CustomComponents.ContextMenuForItem(DrawPeerMenu, name, "##peerMenu");
             ImGui.PopID();
         }
+
+        DrawKickConfirmation(collab);
+    }
+
+    private static void DrawKickConfirmation(CollabManager collab)
+    {
+        if (_pendingKickPeerId < 0)
+            return;
+
+        if (!collab.Roster.TryGetValue(_pendingKickPeerId, out var name))
+        {
+            _pendingKickPeerId = -1;
+            return;
+        }
+
+        FormInputs.AddVerticalSpace(4);
+        ImGui.TextUnformatted($"Remove {name} from the session?");
+        if (ImGui.Button("Kick"))
+        {
+            collab.KickParticipant(_pendingKickPeerId);
+            _pendingKickPeerId = -1;
+        }
+
+        ImGui.SameLine();
+        if (ImGui.Button("Cancel"))
+            _pendingKickPeerId = -1;
     }
 
     private static void DrawPeerMenu()
     {
         if (CollabSpectator.IsSpectatingPeer(_menuPeerId))
         {
-            if (CustomComponents.DrawMenuItem(1, "Stop Spectating"))
+            if (CustomComponents.DrawMenuItem(1, "Unfollow"))
                 CollabSpectator.Stop();
         }
-        else if (CustomComponents.DrawMenuItem(2, "Spectate"))
+        else if (CustomComponents.DrawMenuItem(2, "Follow"))
         {
             CollabSpectator.Start(_menuPeerId);
         }
+
+        // Only the host can remove someone; the confirmation follows below the chips.
+        if (CollabManager.Instance.State == CollabManager.SessionState.Hosting && CustomComponents.DrawMenuItem(3, "Kick"))
+            _pendingKickPeerId = _menuPeerId;
     }
+
+    private static int _pendingKickPeerId = -1;
 
     /** The participant whose chip opened the context menu, read by the menu's static draw callback. */
     private static int _menuPeerId;

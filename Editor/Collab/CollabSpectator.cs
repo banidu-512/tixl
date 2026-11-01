@@ -53,8 +53,8 @@ internal static class CollabSpectator
     private static void DrawBanner(ImDrawListPtr drawList, ScalableCanvas canvas, string name, Vector4 accentColor, bool isInSameComposition)
     {
         var label = isInSameComposition
-                        ? $"Spectating {name}  ·  Esc to stop"
-                        : $"Spectating {name}  ·  in another operator  ·  Esc to stop";
+                        ? $"Following {name}  ·  Esc to stop"
+                        : $"Following {name}  ·  in another operator  ·  Esc to stop";
 
         var scale = T3Ui.UiScaleFactor;
         var padding = new Vector2(10, 4) * scale;

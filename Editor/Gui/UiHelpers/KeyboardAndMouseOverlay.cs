@@ -1,4 +1,4 @@
-﻿using ImGuiNET;
+using ImGuiNET;
 using T3.Core.Animation;
 using T3.Core.Utils;
 using T3.Editor.Gui.Interaction.Keyboard;
@@ -183,8 +183,6 @@ public static class KeyboardAndMouseOverlay
     }
 
     private const float FadeoutDuration = 2;
-
-
     private const int KeyLookupCount = 512;
 
     private static readonly KeyStatus[] _keyStates = new KeyStatus[KeyLookupCount];
