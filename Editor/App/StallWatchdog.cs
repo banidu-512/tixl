@@ -1,16 +1,16 @@
 #nullable enable
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Threading;
 using ImGuiNET;
-using SharpDX.Direct3D;
-using SharpDX.Direct3D11;
-using SharpDX.DXGI;
+using T3.Graphics.Compat;
+using T3.Graphics;
 using T3.Editor.Gui.UiHelpers;
 using T3.Editor.UiContentDrawing;
-using Buffer = SharpDX.Direct3D11.Buffer;
-using Device = SharpDX.Direct3D11.Device;
+using Buffer = T3.Graphics.Compat.Buffer;
+using Device = T3.Graphics.Compat.Device;
 using Vector2 = System.Numerics.Vector2;
 
 namespace T3.Editor.App;
@@ -39,6 +39,15 @@ internal static class StallWatchdog
         if (_thread != null)
             return;
 
+        // Presenting from a second thread needs D3D11's thread-safe immediate context, and telling a stall from
+        // a busy window needs Win32 messages. Vulkan records a frame into one command buffer, so there is no
+        // equivalent yet - and drawing from this thread would corrupt the main thread's recording.
+        if (!OperatingSystem.IsWindows() || ProgramWindows.UseVulkanBackend)
+        {
+            Log.Debug("Stall overlay is only available with Direct3D 11 on Windows.");
+            return;
+        }
+
         _device = device;
         _mainWindow = mainWindow;
         _contentDrawer = contentDrawer;
@@ -48,8 +57,7 @@ internal static class StallWatchdog
 
         try
         {
-            using var multithread = device.QueryInterface<Multithread>();
-            multithread.SetMultithreadProtected(true);
+            device.SetMultithreadProtected(true);
         }
         catch (Exception e)
         {
@@ -198,14 +206,14 @@ internal static class StallWatchdog
 
             InitDeviceObjects();
 
-            var context = _deferredContext!;
-            context.MapSubresource(_vertexBuffer, MapMode.WriteDiscard, SharpDX.Direct3D11.MapFlags.None, out var vertexStream);
+            var context = _deferredContext;
+            context.MapSubresource(_vertexBuffer, MapMode.WriteDiscard, T3.Graphics.Compat.MapFlags.None, out var vertexStream);
             vertexStream.WriteRange(StallOverlay.Vertices, 0, vertexCount);
             vertexStream.Dispose();
             context.UnmapSubresource(_vertexBuffer, 0);
 
             var projection = Matrix4x4.CreateOrthographicOffCenter(0, size.X, size.Y, 0, -1, 1);
-            context.MapSubresource(_projectionBuffer, MapMode.WriteDiscard, SharpDX.Direct3D11.MapFlags.None, out var projectionStream);
+            context.MapSubresource(_projectionBuffer, MapMode.WriteDiscard, T3.Graphics.Compat.MapFlags.None, out var projectionStream);
             projectionStream.Write(projection);
             projectionStream.Dispose();
             context.UnmapSubresource(_projectionBuffer, 0);
@@ -221,7 +229,7 @@ internal static class StallWatchdog
             context.VertexShader.SetConstantBuffer(0, _projectionBuffer);
 
             // The captured frame carries arbitrary alpha and must replace the discarded back buffer.
-            context.OutputMerger.SetBlendState(null, null, -1);
+            context.OutputMerger.SetBlendState(null, null, 0xffffffff);
             context.PixelShader.SetShaderResource(0, capturedFrameSrv);
             context.Draw(StallOverlay.ScreenVertexCount, 0);
 
@@ -235,35 +243,36 @@ internal static class StallWatchdog
 
             context.PixelShader.SetShaderResource(0, null);
 
-            using var commandList = context.FinishCommandList(false);
-            _device!.ImmediateContext.ExecuteCommandList(commandList, true);
+            // The overlay was recorded on a deferred context and replayed from this thread. The backend API
+            // has no second recording context yet — Vulkan would need its own command buffer and pool — so
+            // the frozen-application overlay stays dark until it does. Detection is unaffected.
+            GraphicsLog.WarnOnce("The stall overlay needs a second recording context, which the backend does not provide yet.");
 
-            // The overlay is in the back buffer now, so the main thread must redraw even if this doesn't present.
+            // Every present must be matched by one wait on the frame-latency waitable. An unmatched one lets the
+            // main loop run ahead by a frame for good, and each stall would deepen the queue and the input lag.
+            _mainWindow.WaitForFrameLatency();
+            _mainWindow.SwapChain.Present(0);
             _hasPresentedSinceLastFrame = true;
-
-            // Like every present on Main's swap chain, the overlay's takes a frame-latency signal first. Without it
-            // each overlay present would leave a signal behind and let the frame loop run ahead once the stall is over.
-            if (!_mainWindow.TryWaitForFrameLatency(OverlayFrameLatencyTimeoutMs))
-                return;
-
-            _mainWindow.SwapChain.Present(0, PresentFlags.None);
         }
     }
 
+    [MemberNotNull(nameof(_deferredContext), nameof(_vertexBuffer), nameof(_projectionBuffer))]
     private static void InitDeviceObjects()
     {
-        if (_deferredContext != null)
+        if (_deferredContext != null && _vertexBuffer != null && _projectionBuffer != null)
             return;
 
-        _deferredContext = new DeviceContext(_device);
-        _vertexBuffer = new Buffer(_device, new BufferDescription
+        // Only reached from the watchdog thread, which Start launches after assigning the device.
+        var device = _device!;
+        _deferredContext = device.ImmediateContext;
+        _vertexBuffer = new Buffer(device, new BufferDescription
                                                 {
                                                     SizeInBytes = StallOverlay.Vertices.Length * Unsafe.SizeOf<ImDrawVert>(),
                                                     Usage = ResourceUsage.Dynamic,
                                                     BindFlags = BindFlags.VertexBuffer,
                                                     CpuAccessFlags = CpuAccessFlags.Write
                                                 });
-        _projectionBuffer = new Buffer(_device, new BufferDescription
+        _projectionBuffer = new Buffer(device, new BufferDescription
                                                     {
                                                         SizeInBytes = Unsafe.SizeOf<Matrix4x4>(),
                                                         Usage = ResourceUsage.Dynamic,
@@ -278,7 +287,6 @@ internal static class StallWatchdog
         _vertexBuffer = null;
         _projectionBuffer?.Dispose();
         _projectionBuffer = null;
-        _deferredContext?.Dispose();
         _deferredContext = null;
     }
 

@@ -267,7 +267,7 @@
                 "End": 630.0876
               },
               "LayerIndex": 0,
-              "SourceUnit": "Bars"
+              "SourceUnit": "Seconds"
             }
           }
         }

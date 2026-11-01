@@ -4,6 +4,7 @@ using System.Threading;
 using T3.Core.DataTypes.DataSet;
 using T3.Core.IO;
 using T3.Core.Settings;
+using T3.Core.Audio.Input;
 
 namespace T3.Core.Audio.Timing;
 
@@ -82,7 +83,7 @@ public static class BeatSynchronizer
         _currentBpm = Math.Clamp(initialBpm, MinBpm, MaxBpm);
         _barTime = (int)(_barTime / 4) * 4; // Reset to beginning of last measure
         _pendingPhaseCorrection = 0;
-        PublishBarClock(WasapiAudioInput.LastUpdateTime);
+        PublishBarClock(AudioInput.LastUpdateTime);
         _detectedOnsets.Clear();
 
         for (var index = 0; index < _lastAnyOnsetDetectionTimes.Length; index++)
@@ -111,14 +112,14 @@ public static class BeatSynchronizer
         }
         finally
         {
-            PublishBarClock(WasapiAudioInput.LastUpdateTime);
+            PublishBarClock(AudioInput.LastUpdateTime);
         }
     }
 
     private static void AdvanceAndCorrectBarClock()
     {
-        var currentTimeMs = WasapiAudioInput.LastUpdateTime * 1000;
-        var deltaTimeMs = WasapiAudioInput.TimeSinceLastUpdate * 1000;
+        var currentTimeMs = AudioInput.LastUpdateTime * 1000;
+        var deltaTimeMs = AudioInput.TimeSinceLastUpdate * 1000;
 
         // Advance time...
         _barTime += _currentBpm / 60.0 / 1000.0 / 4.0 * deltaTimeMs;

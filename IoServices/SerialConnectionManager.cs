@@ -149,11 +149,20 @@ public static class SerialConnectionManager
 
     private static List<string> QueryPortListBlocking()
     {
+        // Only WMI knows the friendly device names ("USB Serial Device (COM3)"); elsewhere the ports are /dev paths.
+        if (!OperatingSystem.IsWindows())
+            return SerialPort.GetPortNames().OrderBy(s => s).ToList();
+
         var portList = new List<string>();
         try
         {
-            var searcher = new ManagementObjectSearcher("root\\CIMV2", "SELECT * FROM Win32_PnPEntity WHERE Name LIKE '%(COM%)'");
-            portList.AddRange(searcher.Get().Cast<ManagementObject>().Select(p => p["Name"]?.ToString()).Where(s => s != null)!);
+            using var searcher = new ManagementObjectSearcher("root\\CIMV2", "SELECT * FROM Win32_PnPEntity WHERE Name LIKE '%(COM%)'");
+            foreach (var entry in searcher.Get())
+            {
+                // A lambda here would hide the platform check above from the analyzer.
+                if (entry["Name"]?.ToString() is { } name)
+                    portList.Add(name);
+            }
         }
         catch (Exception ex)
         {

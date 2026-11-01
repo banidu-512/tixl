@@ -8,7 +8,6 @@ using ImGuiNET;
 using T3.Editor.Gui.Styling;
 using T3.Editor.Gui.UiHelpers;
 using T3.Editor.App;
-using System.Windows.Forms;
 using T3.Core.Resource;
 using System.Reflection;
 using T3.Editor.Gui.Input;
@@ -36,7 +35,7 @@ internal sealed class AboutDialog : ModalDialog
             );
             
             var logoPos = ImGui.GetCursorScreenPos();
-            ImGui.Image((IntPtr)SharedResources.T3LogoAlphaTextureImageSrv, new Vector2(64, 64));
+            ImGui.Image((IntPtr)SharedResources.T3LogoAlphaTextureImageSrv.ImGuiTextureId, new Vector2(64, 64));
             
             // SNiXL Easter Egg: Shift+LeftClick on logo
             var logoMin = logoPos;
@@ -217,13 +216,19 @@ internal sealed class AboutDialog : ModalDialog
         }
     }
 
+    [DllImport("user32.dll", EntryPoint = "GetKeyboardLayout")]
+    private static extern IntPtr GetKeyboardLayoutHandle(uint threadId);
+
     private static string GetKeyboardLayout()
     {
+        if (!OperatingSystem.IsWindows())
+            return "Unknown";
+
         try
         {
-            var currentInputLanguage = InputLanguage.CurrentInputLanguage;
-
-            return $"{currentInputLanguage.Culture.Name} {currentInputLanguage.LayoutName} ";
+            // The low word of the layout handle is the input language.
+            var languageId = (int)((long)GetKeyboardLayoutHandle(0) & 0xffff);
+            return CultureInfo.GetCultureInfo(languageId).Name;
         }
         catch (Exception)
         {
@@ -282,6 +287,10 @@ internal sealed class AboutDialog : ModalDialog
         var gpuList = new List<string>();
         var activeGpu = ProgramWindows.ActiveGpu;
 
+        // WMI is Windows-only; elsewhere the adapter the backend picked is all there is to report.
+        if (!OperatingSystem.IsWindows())
+            return infoType.ToLower() == "driver" ? "Unknown" : activeGpu;
+
         try
         {
             using (var searcher = new ManagementObjectSearcher("SELECT * FROM Win32_VideoController"))
@@ -318,6 +327,10 @@ internal sealed class AboutDialog : ModalDialog
 
     private static string GetIdeName()
     {
+        // The parent process is looked up through WMI.
+        if (!OperatingSystem.IsWindows())
+            return "Unknown";
+
         try
         {
             // Get the current process

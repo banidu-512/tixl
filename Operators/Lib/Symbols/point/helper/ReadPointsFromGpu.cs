@@ -1,4 +1,4 @@
-using SharpDX.Direct3D11;
+using T3.Graphics.Compat;
 using T3.Core.Resource;
 using T3.Core.Utils;
 using Utilities = T3.Core.Utils.Utilities;
@@ -66,7 +66,7 @@ internal sealed class ReadPointsFromGpu : Instance<ReadPointsFromGpu>
                 try
                 {
                     if (_bufferWithViewsCpuAccess != null)
-                        Utilities.Dispose(ref _bufferWithViewsCpuAccess.Buffer);
+                        T3.Graphics.Compat.GraphicsUtilities.Dispose(ref _bufferWithViewsCpuAccess.Buffer);
 
                     _bufferWithViewsCpuAccess ??= new BufferWithViews();
 
@@ -76,8 +76,8 @@ internal sealed class ReadPointsFromGpu : Instance<ReadPointsFromGpu>
                         _bufferWithViewsCpuAccess.Buffer?.Dispose();
                         var bufferDesc = new BufferDescription
                                              {
-                                                 Usage = ResourceUsage.Default,
-                                                 BindFlags = BindFlags.UnorderedAccess | BindFlags.ShaderResource,
+                                                 Usage = ResourceUsage.Staging,
+                                                 BindFlags = BindFlags.None,
                                                  SizeInBytes = pointBuffer.Buffer.Description.SizeInBytes,
                                                  OptionFlags = ResourceOptionFlags.BufferStructured,
                                                  StructureByteStride = pointBuffer.Buffer.Description.StructureByteStride,
@@ -91,8 +91,6 @@ internal sealed class ReadPointsFromGpu : Instance<ReadPointsFromGpu>
                     Log.Error("Failed to setup structured buffer " + e.Message, this);
                     return;
                 }
-
-                ResourceManager.CreateStructuredBufferSrv(_bufferWithViewsCpuAccess.Buffer, ref _bufferWithViewsCpuAccess.Srv);
 
                 // Keep a copy of the texture which can be accessed by CPU
                 immediateContext.CopyResource(pointBuffer.Buffer, _bufferWithViewsCpuAccess.Buffer);
@@ -143,7 +141,7 @@ internal sealed class ReadPointsFromGpu : Instance<ReadPointsFromGpu>
     }
 
 
-    private void OnAsyncReadComplete(StructuredBufferReadAccess.ReadRequestItem item, IntPtr dataPointer, SharpDX.DataStream stream)
+    private void OnAsyncReadComplete(StructuredBufferReadAccess.ReadRequestItem item, IntPtr dataPointer, T3.Graphics.Compat.DataStream stream)
     {
         using (stream)
         {

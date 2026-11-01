@@ -90,16 +90,55 @@ internal static partial class ProjectXml
         var itemGroup = project.AddItemGroup();
         foreach (var use in _defaultUsingStatements)
         {
-            var item = itemGroup.AddItem("Using", use.Name);
-            if (use.Static)
-                item.AddMetadata("Static", "True");
-
-            if (use.Alias != null)
-            {
-                item.AddMetadata("Alias", use.Alias);
-            }
+            itemGroup.AddUsing(use);
         }
     }
+
+    /// <summary>
+    /// Adds the graphics facade aliases of the default usings that a project lacks, next to its
+    /// existing usings. Returns whether any were added.
+    /// </summary>
+    internal static bool AddMissingGraphicsFacadeUsings(this ProjectRootElement project, HashSet<string> existingIncludes)
+    {
+        ProjectItemGroupElement? usingGroup = null;
+        foreach (var item in project.Items)
+        {
+            if (item.ItemType != UsingItemName)
+                continue;
+
+            usingGroup = item.Parent as ProjectItemGroupElement;
+            break;
+        }
+
+        usingGroup ??= project.AddItemGroup();
+
+        var added = false;
+        foreach (var use in _defaultUsingStatements)
+        {
+            if (!use.Name.StartsWith("T3.Graphics", StringComparison.Ordinal) || existingIncludes.Contains(use.Name))
+                continue;
+
+            usingGroup.AddUsing(use);
+            existingIncludes.Add(use.Name);
+            added = true;
+        }
+
+        return added;
+    }
+
+    private static void AddUsing(this ProjectItemGroupElement itemGroup, Using use)
+    {
+        var item = itemGroup.AddItem(UsingItemName, use.Name);
+        if (use.Static)
+            item.AddMetadata("Static", "True");
+
+        if (use.Alias != null)
+        {
+            item.AddMetadata("Alias", use.Alias);
+        }
+    }
+
+    internal const string UsingItemName = "Using";
 
     private static void AddDefaultPropertyGroup(this ProjectRootElement project, string projectNamespace, Guid homeGuid, Guid packageId)
     {
@@ -135,11 +174,50 @@ internal static partial class ProjectXml
         var itemGroup = project.AddItemGroup();
         foreach (var reference in _defaultReferences)
         {
-            var item = itemGroup.AddItem(reference.Type.GetItemName(), reference.Include);
-            foreach (var tag in reference.Tags)
-            {
-                item.AddMetadata(tag.Tag.GetItemName(), tag.Value, tag.AddAsAttribute);
-            }
+            itemGroup.AddReference(reference);
+        }
+    }
+
+    /// <summary>
+    /// Adds the editor assembly references a project lacks, matched by file name because the
+    /// path separator after the assembly path variable differs between platforms. Returns whether
+    /// any were added.
+    /// </summary>
+    internal static bool AddMissingDefaultReferences(this ProjectRootElement project)
+    {
+        var referenceItemName = ItemType.EditorReference.GetItemName();
+        var existingFileNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        ProjectItemGroupElement? referenceGroup = null;
+        foreach (var item in project.Items)
+        {
+            if (item.ItemType != referenceItemName)
+                continue;
+
+            referenceGroup ??= item.Parent as ProjectItemGroupElement;
+            existingFileNames.Add(Path.GetFileName(item.Include.Replace('\\', '/')));
+        }
+
+        referenceGroup ??= project.AddItemGroup();
+
+        var added = false;
+        foreach (var reference in _defaultReferences)
+        {
+            if (existingFileNames.Contains(Path.GetFileName(reference.Include.Replace('\\', '/'))))
+                continue;
+
+            referenceGroup.AddReference(reference);
+            added = true;
+        }
+
+        return added;
+    }
+
+    private static void AddReference(this ProjectItemGroupElement itemGroup, Reference reference)
+    {
+        var item = itemGroup.AddItem(reference.Type.GetItemName(), reference.Include);
+        foreach (var tag in reference.Tags)
+        {
+            item.AddMetadata(tag.Tag.GetItemName(), tag.Value, tag.AddAsAttribute);
         }
     }
 
@@ -388,10 +466,8 @@ internal static partial class ProjectXml
         [
             new Reference(type: ItemType.EditorReference, include: "Core.dll", tags: _defaultReferenceTags),
             new Reference(type: ItemType.EditorReference, include: "Logging.dll", tags: _defaultReferenceTags),
-            new Reference(type: ItemType.EditorReference, include: "SharpDX.dll", tags: _defaultReferenceTags),
-            new Reference(type: ItemType.EditorReference, include: "SharpDX.Direct3D11.dll", tags: _defaultReferenceTags),
-            new Reference(type: ItemType.EditorReference, include: "SharpDX.DXGI.dll", tags: _defaultReferenceTags),
-            new Reference(type: ItemType.EditorReference, include: "SharpDX.Direct2D1.dll", tags: _defaultReferenceTags),
+            new Reference(type: ItemType.EditorReference, include: "Graphics.dll", tags: _defaultReferenceTags),
+            new Reference(type: ItemType.EditorReference, include: "Graphics.Compat.dll", tags: _defaultReferenceTags),
         ];
 
     // Note : we are trying to stay platform-agnostic with directories, and so we use unix path separators
@@ -454,37 +530,38 @@ internal static partial class ProjectXml
             new(Name: "T3.Core.Operator.Interfaces"),
             new(Name: "T3.Core.Resource"),
 
-            // SharpDX types
-            new(Name: "SharpDX.Direct3D11.Buffer", Alias: "Buffer"),
-            new(Name: "SharpDX.Direct3D11.ShaderResourceView", Alias: "ShaderResourceView"),
-            new(Name: "SharpDX.Direct3D11.UnorderedAccessView", Alias: "UnorderedAccessView"),
-            new(Name: "SharpDX.Direct3D11.CullMode", Alias: "CullMode"),
-            new(Name: "SharpDX.Direct3D11.FillMode", Alias: "FillMode"),
-            new(Name: "SharpDX.Direct3D11.TextureAddressMode", Alias: "TextureAddressMode"),
-            new(Name: "SharpDX.Direct3D11.Filter", Alias: "Filter"),
-            new(Name: "SharpDX.DXGI.Format", Alias: "Format"),
-            new(Name: "SharpDX.Direct3D11.Texture2DDescription", Alias: "Texture2DDescription"),
-            new(Name: "SharpDX.Direct3D11.Texture3DDescription", Alias: "Texture3DDescription"),
-            new(Name: "SharpDX.Direct3D11.RenderTargetBlendDescription", Alias: "RenderTargetBlendDescription"),
-            new(Name: "SharpDX.Direct3D11.SamplerState", Alias: "SamplerState"),
-            new(Name: "SharpDX.Direct3D11.UnorderedAccessViewBufferFlags", Alias: "UnorderedAccessViewBufferFlags"),
-            new(Name: "SharpDX.Mathematics.Interop.RawRectangle", Alias: "RawRectangle"),
-            new(Name: "SharpDX.Mathematics.Interop.RawViewportF", Alias: "RawViewportF"),
-            new(Name: "SharpDX.Direct3D11.ResourceUsage", Alias: "ResourceUsage"),
-            new(Name: "SharpDX.Direct3D11.ResourceOptionFlags", Alias: "ResourceOptionFlags"),
-            new(Name: "SharpDX.Direct3D11.InputLayout", Alias: "InputLayout"),
-            new(Name: "SharpDX.Direct3D.PrimitiveTopology", Alias: "PrimitiveTopology"),
-            new(Name: "SharpDX.Direct3D11.BlendState", Alias: "BlendState"),
-            new(Name: "SharpDX.Direct3D11.Comparison", Alias: "Comparison"),
-            new(Name: "SharpDX.Direct3D11.BlendOption", Alias: "BlendOption"),
-            new(Name: "SharpDX.Direct3D11.BlendOperation", Alias: "BlendOperation"),
-            new(Name: "SharpDX.Direct3D11.BindFlags", Alias: "BindFlags"),
-            new(Name: "SharpDX.Direct3D11.ColorWriteMaskFlags", Alias: "ColorWriteMaskFlags"),
-            new(Name: "SharpDX.Direct3D11.CpuAccessFlags", Alias: "CpuAccessFlags"),
-            new(Name: "SharpDX.Direct3D11.DepthStencilView", Alias: "DepthStencilView"),
-            new(Name: "SharpDX.Direct3D11.DepthStencilState", Alias: "DepthStencilState"),
-            new(Name: "SharpDX.Direct3D11.RenderTargetView", Alias: "RenderTargetView"),
-            new(Name: "SharpDX.Direct3D11.RasterizerState", Alias: "RasterizerState"),
+            // The graphics facade's types, which replaced SharpDX's
+            new(Name: "T3.Graphics.Compat.Buffer", Alias: "Buffer"),
+            new(Name: "T3.Graphics.Compat.ShaderResourceView", Alias: "ShaderResourceView"),
+            new(Name: "T3.Graphics.Compat.UnorderedAccessView", Alias: "UnorderedAccessView"),
+            new(Name: "T3.Graphics.Compat.CullMode", Alias: "CullMode"),
+            new(Name: "T3.Graphics.Compat.FillMode", Alias: "FillMode"),
+            new(Name: "T3.Graphics.Compat.TextureAddressMode", Alias: "TextureAddressMode"),
+            new(Name: "T3.Graphics.Compat.Filter", Alias: "Filter"),
+            new(Name: "T3.Graphics.Format", Alias: "Format"),
+            new(Name: "T3.Graphics.Compat.Texture2DDescription", Alias: "Texture2DDescription"),
+            new(Name: "T3.Graphics.Compat.Texture3DDescription", Alias: "Texture3DDescription"),
+            new(Name: "T3.Graphics.Compat.RenderTargetBlendDescription", Alias: "RenderTargetBlendDescription"),
+            new(Name: "T3.Graphics.Compat.SamplerState", Alias: "SamplerState"),
+            new(Name: "T3.Graphics.Compat.UnorderedAccessViewBufferFlags", Alias: "UnorderedAccessViewBufferFlags"),
+            new(Name: "T3.Graphics.ScissorRect", Alias: "ScissorRect"),
+            new(Name: "T3.Graphics.Viewport", Alias: "Viewport"),
+            new(Name: "T3.Graphics.Compat.ResourceUsage", Alias: "ResourceUsage"),
+            new(Name: "T3.Graphics.Compat.ResourceOptionFlags", Alias: "ResourceOptionFlags"),
+            new(Name: "T3.Graphics.Compat.InputLayout", Alias: "InputLayout"),
+            new(Name: "T3.Graphics.Compat.PrimitiveTopology", Alias: "PrimitiveTopology"),
+            new(Name: "T3.Graphics.Compat.BlendState", Alias: "BlendState"),
+            new(Name: "T3.Graphics.Compat.StateGroups", Alias: "StateGroups"),
+            new(Name: "T3.Graphics.Compat.Comparison", Alias: "Comparison"),
+            new(Name: "T3.Graphics.Compat.BlendOption", Alias: "BlendOption"),
+            new(Name: "T3.Graphics.Compat.BlendOperation", Alias: "BlendOperation"),
+            new(Name: "T3.Graphics.Compat.BindFlags", Alias: "BindFlags"),
+            new(Name: "T3.Graphics.Compat.ColorWriteMaskFlags", Alias: "ColorWriteMaskFlags"),
+            new(Name: "T3.Graphics.Compat.CpuAccessFlags", Alias: "CpuAccessFlags"),
+            new(Name: "T3.Graphics.Compat.DepthStencilView", Alias: "DepthStencilView"),
+            new(Name: "T3.Graphics.Compat.DepthStencilState", Alias: "DepthStencilState"),
+            new(Name: "T3.Graphics.Compat.RenderTargetView", Alias: "RenderTargetView"),
+            new(Name: "T3.Graphics.Compat.RasterizerState", Alias: "RasterizerState"),
 
             // T3 types
             new(Name: "T3.Core.DataTypes.Point", Alias: "Point"),

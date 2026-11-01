@@ -22,6 +22,21 @@ internal sealed class LoadSvgAsTexture2D : Instance<LoadSvgAsTexture2D>, IDescri
 
     private void UpdateTexture(EvaluationContext context)
     {
+        // The SVG library draws through System.Drawing, which is Windows-only since .NET 7 and fails
+        // while this method is being prepared - no try inside it can catch that. Hence the split.
+        if (!T3.Core.Utils.WindowsOnlyFeature.IsAvailable("SVG rasterizing"))
+        {
+            Texture.Value = null;
+            return;
+        }
+
+        UpdateTextureFromSvg(context);
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+    private void UpdateTextureFromSvg(EvaluationContext context)
+    {
         if (_svgResource.TryGetValue(context, out var svgDocument))
         {
             var resolution = Resolution.GetValue(context);
@@ -268,6 +283,7 @@ internal sealed class LoadSvgAsTexture2D : Instance<LoadSvgAsTexture2D>, IDescri
         return merged;
     }
 
+    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
     private static Texture2D ConvertBitmapToTexture2D(System.Drawing.Bitmap bitmap)
     {
         using var memoryStream = new MemoryStream();

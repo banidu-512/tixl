@@ -1,8 +1,7 @@
 ﻿#nullable enable
 using System.Globalization;
 using System.Text.Json;
-using SharpDX;
-using SharpDX.Direct3D11;
+using T3.Graphics.Compat;
 using T3.Core.Resource.Assets;
 using T3.Core.Utils;
 
@@ -168,7 +167,7 @@ public sealed class DataPointImportExport : Instance<DataPointImportExport>
                                                       UnorderedAccessViewBufferFlags.None,
                                                       ref buffer.Uav);
         }
-        else
+        else if (array != null)
         {
             // Simple sub‑resource update – fast path.
             ResourceManager.Device.ImmediateContext.UpdateSubresource(array, buffer.Buffer);

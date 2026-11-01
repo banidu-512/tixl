@@ -1,8 +1,7 @@
 #nullable enable
 using System;
 using System.Collections.Generic;
-using System.Windows.Forms;
-using SharpDX.Direct3D11;
+using T3.Graphics.Compat;
 using T3.Core.Resource;
 using Texture2D = T3.Core.DataTypes.Texture2D;
 
@@ -27,8 +26,9 @@ internal static class OutputWindowHandling
 
         /// <summary>
         /// The current composite as a shader resource, or null while nothing has been shown yet. It is rebuilt
-        /// only when a different texture arrives; the texture's pointer is remembered rather than read back from
-        /// the view, because reading a view's resource hands out a COM reference that would have to be released.
+        /// only when a different texture arrives. The texture's resource id is remembered rather than read back
+        /// from the view, because reading a view's resource hands out a COM reference that would have to be
+        /// released; the native pointer is no identity, since Vulkan reports none.
         /// </summary>
         public ShaderResourceView? EnsureTextureView()
         {
@@ -36,25 +36,22 @@ internal static class OutputWindowHandling
             if (texture == null || texture.IsDisposed)
                 return null;
 
-            if (_textureView == null || _textureView.IsDisposed || _viewedTexture != texture.NativePointer)
+            if (_textureView == null || _textureView.IsDisposed || _viewedTextureId != texture.Id)
             {
                 _textureView?.Dispose();
                 _textureView = new ShaderResourceView(ResourceManager.Device, texture);
-                _viewedTexture = texture.NativePointer;
+                _viewedTextureId = texture.Id;
             }
 
             return _textureView;
         }
 
-        /// <summary>
-        /// Forgets the composite and its view. The texture is about to be freed, and a later one can land on the
-        /// same address, where the remembered pointer would match and hand out a view of the wrong resource.
-        /// </summary>
+        /// <summary>Forgets the composite and its view; the texture is about to be freed.</summary>
         public void ReleaseTexture()
         {
             _textureView?.Dispose();
             _textureView = null;
-            _viewedTexture = IntPtr.Zero;
+            _viewedTextureId = 0;
             Window.Texture = null;
         }
 
@@ -69,7 +66,7 @@ internal static class OutputWindowHandling
 
         internal bool IsClaimed;
         private ShaderResourceView? _textureView;
-        private IntPtr _viewedTexture;
+        private ulong _viewedTextureId;
         private bool _isVisible;
     }
 
@@ -146,8 +143,8 @@ internal static class OutputWindowHandling
         if (_windows.TryGetValue(displayIndex, out var existing))
             return existing;
 
-        // Screen.AllScreens allocates, so it is consulted only when a window is actually being opened.
-        if (displayIndex < 0 || displayIndex >= Screen.AllScreens.Length)
+        // Listing the displays allocates, so it is consulted only when a window is actually being opened.
+        if (displayIndex < 0 || displayIndex >= AppWindow.DisplayCount)
             return null;
 
         var window = ProgramWindows.CreateViewerWindow($"TiXL Output {displayIndex + 1}", 640, 360);

@@ -2,18 +2,23 @@
 using System;
 using System.Diagnostics;
 using SharpDX.D3DCompiler;
-using SharpDX.Direct3D11;
+using T3.Graphics.Compat;
 using T3.Core.DataTypes.Vector;
 
 namespace T3.Core.DataTypes;
 
 // for some bytecode access convenience (reflection) and to avoid direct SharpDX references for later
-public sealed class ComputeShader(SharpDX.Direct3D11.ComputeShader shader, byte[] compiledBytecode)
-    : Shader<SharpDX.Direct3D11.ComputeShader>(shader, compiledBytecode)
+public sealed class ComputeShader(T3.Graphics.Compat.ComputeShader shader, byte[] compiledBytecode)
+    : Shader<T3.Graphics.Compat.ComputeShader>(shader, compiledBytecode)
 {
+    /// <summary>
+    /// The group size the shader declares, which dispatching operators divide their work by. It comes from
+    /// the compiler's reflection for SPIR-V, and out of the bytecode itself for DXBC.
+    /// </summary>
     public bool TryGetThreadGroups(out Int3 threadGroups)
     {
-        threadGroups = default;
+        if (T3.Core.Resource.ShaderCompiling.SpirvBlob.IsSpirvBlob(CompiledBytecode))
+            return T3.Core.Resource.ShaderCompiling.SpirvBlob.TryGetThreadGroups(CompiledBytecode, out threadGroups);
 
         using var reflection = new ShaderReflection(CompiledBytecode);
         _ = reflection.GetThreadGroupSize(out var x, out var y, out var z);
@@ -23,19 +28,19 @@ public sealed class ComputeShader(SharpDX.Direct3D11.ComputeShader shader, byte[
     }
 }
 
-public sealed class PixelShader(SharpDX.Direct3D11.PixelShader shader, byte[] compiledBytecode)
-    : Shader<SharpDX.Direct3D11.PixelShader>(shader, compiledBytecode);
+public sealed class PixelShader(T3.Graphics.Compat.PixelShader shader, byte[] compiledBytecode)
+    : Shader<T3.Graphics.Compat.PixelShader>(shader, compiledBytecode);
 
-public sealed class VertexShader(SharpDX.Direct3D11.VertexShader shader, byte[] compiledBytecode)
-    : Shader<SharpDX.Direct3D11.VertexShader>(shader, compiledBytecode);
+public sealed class VertexShader(T3.Graphics.Compat.VertexShader shader, byte[] compiledBytecode)
+    : Shader<T3.Graphics.Compat.VertexShader>(shader, compiledBytecode);
 
-public sealed class GeometryShader(SharpDX.Direct3D11.GeometryShader shader, byte[] compiledBytecode)
-    : Shader<SharpDX.Direct3D11.GeometryShader>(shader, compiledBytecode);
+public sealed class GeometryShader(T3.Graphics.Compat.GeometryShader shader, byte[] compiledBytecode)
+    : Shader<T3.Graphics.Compat.GeometryShader>(shader, compiledBytecode);
 
 public abstract class Shader<TShader> : AbstractShader where TShader : DeviceChild
 {
     private readonly TShader _shader;
-    public sealed override string Name { get => _shader.DebugName; set => _shader.DebugName = value; }
+    public sealed override string Name { get => _shader.DebugName ?? string.Empty; set => _shader.DebugName = value; }
 
     public static implicit operator TShader?(Shader<TShader>? shader) => shader?._shader;
 

@@ -1,9 +1,8 @@
 #nullable enable
 
-using SharpDX;
-using SharpDX.IO;
-using SharpDX.WIC;
-using T3.Core.Animation;
+using T3.Graphics.Compat;
+using System.IO;
+using StbImageWriteSharp;
 using T3.Core.DataTypes;
 using T3.Core.Resource;
 
@@ -30,14 +29,17 @@ internal static class ScreenshotWriter
 
     internal static void Update()
     {
-        if (Playback.FrameCount == _lastUpdateFrame) 
+        // Once per UI frame. Counted in UI frames rather than playback frames, which stand still while no
+        // project is focused and would hold a capture of the editor's own window forever.
+        var frame = ImGuiNET.ImGui.GetFrameCount();
+        if (frame == _lastUpdateFrame)
             return;
-        
+
         _textureBgraReadAccess?.Update();
-        _lastUpdateFrame = Playback.FrameCount;
+        _lastUpdateFrame = frame;
     }
 
-    internal static bool InitiateConvertAndReadBack2(Texture2D gpuTexture, TextureBgraReadAccess.OnReadComplete saveSampleAfterReadback)
+    internal static bool InitiateConvertAndReadBack2(T3.Core.DataTypes.Texture2D gpuTexture, TextureBgraReadAccess.OnReadComplete saveSampleAfterReadback)
     {
         if (_textureBgraReadAccess == null)
             _textureBgraReadAccess = new TextureBgraReadAccess();
@@ -49,7 +51,7 @@ internal static class ScreenshotWriter
 
     /// <param name="opaque">Write alpha as fully opaque — for a UI back-buffer capture, whose alpha is
     /// render residue that makes the PNG see-through in viewers.</param>
-    internal static bool StartSavingToFile(Texture2D gpuTexture, string filepath, FileFormats format, Action<string?>? onComplete = null, bool logErrors=true, bool opaque = false)
+    internal static bool StartSavingToFile(T3.Core.DataTypes.Texture2D gpuTexture, string filepath, FileFormats format, Action<string?>? onComplete = null, bool logErrors=true, bool opaque = false)
     {
         _textureBgraReadAccess ??= new TextureBgraReadAccess();
         _useFormats = format;
@@ -57,13 +59,13 @@ internal static class ScreenshotWriter
         
         return _textureBgraReadAccess.InitiateConvertAndReadBack(gpuTexture, request => 
                                                                              {
-                                                                                 OnReadComplete(request, logErrors);
+                                                                                 OnReadComplete(request, filepath, logErrors);
                                                                                  onComplete?.Invoke(request.Filepath);
                                                                              }, filepath);        
     }
     
     
-    private static void OnReadComplete(TextureBgraReadAccess.ReadRequestItem request, bool logErrors)
+    private static void OnReadComplete(TextureBgraReadAccess.ReadRequestItem request, string filepath, bool logErrors)
     {
         var immediateContext = ResourceManager.Device.ImmediateContext;
         if (request.CpuAccessTexture.IsDisposed)
@@ -76,99 +78,61 @@ internal static class ScreenshotWriter
         var dataBox = immediateContext.MapSubresource(request.CpuAccessTexture,
                                                       0,
                                                       0,
-                                                      SharpDX.Direct3D11.MapMode.Read,
-                                                      SharpDX.Direct3D11.MapFlags.None,
+                                                      T3.Graphics.Compat.MapMode.Read,
+                                                      T3.Graphics.Compat.MapFlags.None,
                                                       out var imageStream);
         using var dataStream = imageStream;
-        
+
         var width = request.CpuAccessTexture.Description.Width;
         var height = request.CpuAccessTexture.Description.Height;
-        var factory = new ImagingFactory();
-        
-        WICStream stream;
+
+        // Rows are copied out one by one: the mapped row pitch is padded and can exceed width * 4. JPEG has no
+        // alpha, so it gets three bytes per pixel.
+        var isPng = _useFormats == FileFormats.Png;
+        var bytesPerPixel = isPng ? 4 : 3;
+        var pixels = new byte[width * height * bytesPerPixel];
+        var row = new byte[width * 4];
+
         try
         {
-            stream = new WICStream(factory, request.Filepath, NativeFileAccess.Write);
-        }
-        catch (Exception e)
-        {
-            if(logErrors)
-                Log.Warning("Failed to export image: " + e.Message);
-            
-            return;
-        }
-
-        // Initialize a Jpeg encoder with this stream
-        BitmapEncoder encoder = _useFormats == FileFormats.Png
-                                    ? new PngBitmapEncoder(factory)
-                                    : new JpegBitmapEncoder(factory);
-        encoder.Initialize(stream);
-
-        // Create a Frame encoder
-        var bitmapFrameEncode = new BitmapFrameEncode(encoder);
-        bitmapFrameEncode.Initialize();
-        bitmapFrameEncode.SetSize(width, height);
-        var formatId = PixelFormat.Format32bppRGBA;
-        bitmapFrameEncode.SetPixelFormat(ref formatId);
-
-        var rowStride = PixelFormat.GetStride(formatId, width);
-        var outBufferSize = height * rowStride;
-        var outDataStream = new DataStream(outBufferSize, true, true);
-        
-        try
-        {
-            if (_useFormats == FileFormats.Png)
+            for (var y = 0; y < height; y++)
             {
-                // Note: dataBox.RowPitch and outputStream.RowPitch can diverge if width is not divisible by 16.
-                for (var loopY = 0; loopY < height; loopY++)
+                System.Runtime.InteropServices.Marshal.Copy(dataBox.DataPointer + y * dataBox.RowPitch, row, 0, row.Length);
+                var target = y * width * bytesPerPixel;
+                for (var x = 0; x < width; x++)
                 {
-                    imageStream.Position = (long)(loopY) * dataBox.RowPitch;
-                    var row = imageStream.ReadRange<byte>(rowStride);
-                    if (_forceOpaque)
-                    {
-                        for (var i = 3; i < row.Length; i += 4)
-                            row[i] = 255;
-                    }
-
-                    outDataStream.WriteRange(row);
+                    // The readback converts to BGRA, and a PNG wants RGB.
+                    var source = x * 4;
+                    pixels[target++] = row[source + 2];
+                    pixels[target++] = row[source + 1];
+                    pixels[target++] = row[source];
+                    if (isPng)
+                        pixels[target++] = _forceOpaque ? (byte)255 : row[source + 3];
                 }
+            }
+
+            using var file = File.Create(filepath);
+            var writer = new ImageWriter();
+            if (isPng)
+            {
+                writer.WritePng(pixels, width, height, ColorComponents.RedGreenBlueAlpha, file);
             }
             else
             {
-                // We need to skip bytes for alpha channel from stream... 
-                for (var y1 = 0; y1 < height; y1++)
-                {
-                    imageStream.Position = (long)(y1) * dataBox.RowPitch;
-                    for (var x1 = 0; x1 < width; x1++)
-                    {
-                        outDataStream.WriteRange(imageStream.ReadRange<byte>(3));
-                        imageStream.ReadByte();
-                    }
-                }
-            }            
-            
-            // Copy the pixels from the buffer to the Wic Bitmap Frame encoder
-            bitmapFrameEncode.WritePixels(height, new DataRectangle(outDataStream.DataPointer, rowStride));
+                writer.WriteJpg(pixels, width, height, ColorComponents.RedGreenBlue, file, JpegQuality);
+            }
 
-            // Commit changes
-            bitmapFrameEncode.Commit();
-            encoder.Commit();
+            LastFilename = filepath;
         }
         catch (Exception e)
         {
-            Log.Error($"Screenshot internal image copy failed : {e.Message}");
-        }
-        finally
-        {
-            imageStream.Dispose();
-            outDataStream.Dispose();
-            bitmapFrameEncode.Dispose();
-            encoder.Dispose();
-            stream.Dispose();
-            LastFilename = request.Filepath;
+            if (logErrors)
+                Log.Warning("Failed to export image: " + e.Message);
         }
     }
-    
+
+    private const int JpegQuality = 90;
+
     /// <summary>
     /// Save the requested format for later use by callback.
     /// This is not ideal, but beats the alternative to moving file formats to
