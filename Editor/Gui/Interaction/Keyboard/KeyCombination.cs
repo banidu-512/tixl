@@ -15,6 +15,9 @@ internal  struct KeyCombination(Key key, bool ctrl = false, bool alt = false, bo
 
     /// <summary>What the Ctrl modifier is called on this platform: Cmd on macOS, where the Cmd key acts as Ctrl.</summary>
     internal static readonly string CtrlLabel = OperatingSystem.IsMacOS() ? "Cmd" : "Ctrl";
+
+    /// <summary>What the Alt key is labeled on this platform.</summary>
+    internal static readonly string AltLabel = OperatingSystem.IsMacOS() ? "Option" : "Alt";
     
     internal bool ModifiersMatch(ImGuiIOPtr io)
     {
@@ -54,8 +57,8 @@ internal  struct KeyCombination(Key key, bool ctrl = false, bool alt = false, bo
     public override string ToString()
     {
         var parts = new List<string>();
-        if (Ctrl) parts.Add("Ctrl");
-        if (Alt) parts.Add("Alt");
+        if (Ctrl) parts.Add(CtrlLabel);
+        if (Alt) parts.Add(AltLabel);
         if (Shift) parts.Add("Shift");
         parts.Add(Key.ToString());
 
