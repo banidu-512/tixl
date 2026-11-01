@@ -132,9 +132,32 @@ internal sealed class CollabWindow : Window
         {
             var link = collab.DescribePeerLink(peerId);
             var suffix = link.Length > 0 ? $"  · {link}" : "";
-            DrawNameChip(dl, name + suffix + (!isHost ? "  (host)" : ""), UiColors.Text, false);
+            var isSpectated = CollabSpectator.IsSpectatingPeer(peerId);
+            DrawNameChip(dl, name + suffix + (!isHost ? "  (host)" : "") + (isSpectated ? "  · spectating" : ""),
+                         isSpectated ? UiColors.StatusAutomated : UiColors.Text, false);
+
+            _menuPeerId = peerId;
+            ImGui.PushID(peerId);
+            CustomComponents.ContextMenuForItem(DrawPeerMenu, name, "##peerMenu");
+            ImGui.PopID();
         }
     }
+
+    private static void DrawPeerMenu()
+    {
+        if (CollabSpectator.IsSpectatingPeer(_menuPeerId))
+        {
+            if (CustomComponents.DrawMenuItem(1, "Stop Spectating"))
+                CollabSpectator.Stop();
+        }
+        else if (CustomComponents.DrawMenuItem(2, "Spectate"))
+        {
+            CollabSpectator.Start(_menuPeerId);
+        }
+    }
+
+    /** The participant whose chip opened the context menu, read by the menu's static draw callback. */
+    private static int _menuPeerId;
 
     /// <summary>Draws a chip after the previous one, wrapping to a new line when the row is full.</summary>
     private static void DrawNameChip(ImDrawListPtr dl, string label, Color color, bool isFirst)

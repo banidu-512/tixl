@@ -26,6 +26,7 @@ internal static class CollabPresenceOverlay
         if (!manager.IsSessionActive)
         {
             _peerVisuals.Clear();
+            CollabSpectator.Stop();
             return;
         }
 
@@ -37,6 +38,7 @@ internal static class CollabPresenceOverlay
 
         SampleLocalPresence(manager, projectView, canvas, compositionId);
         DrawRemotePresence(manager, projectView, graphView, canvas, compositionId, drawList);
+        CollabSpectator.Update(manager, canvas, compositionId, drawList);
         DrawLockBadges(manager, projectView, graphView, canvas, compositionId, drawList);
     }
 
