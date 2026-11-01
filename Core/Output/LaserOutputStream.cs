@@ -247,6 +247,22 @@ public sealed class LaserOutputStream : IDisposable
         return trimmed;
     }
 
+    /// <summary>
+    /// The buffer capacity to hand the device library. Its default is the original Ether Dream's
+    /// 1799 points; newer hardware advertises a larger buffer in its discovery broadcast, and a
+    /// DAC that is already connected stops broadcasting - so the fill level from its own status is
+    /// the fallback proof that the buffer is bigger than the assumption. The library paces its
+    /// sends against this number, so the stream must never use a different one.
+    /// </summary>
+    internal static ushort ResolveBufferCapacity(ushort advertisedCapacity, ushort observedFullness = 0)
+    {
+        var capacity = advertisedCapacity > 0 ? advertisedCapacity : DefaultBufferCapacity;
+        return observedFullness > capacity ? observedFullness : capacity;
+    }
+
+    /// <summary>The library's own default for hardware that never advertised its capacity.</summary>
+    internal const ushort DefaultBufferCapacity = 1799;
+
     /// <summary>Queue bookkeeping shared by both transports: bounds the queue, copies the frame
     /// out of the upstream buffer (producers reuse their allocation every frame) and resets the
     /// watchdog clock.</summary>
@@ -296,10 +312,12 @@ public sealed class LaserOutputStream : IDisposable
     #region EtherDream transport
     /// <summary>
     /// Streams to an Ether Dream DAC over TCP, lifted from the former [EtherDreamOutput] operator.
-    /// The two unkillable rules of the send loop carry over unchanged: StreamPoints is only called
-    /// once a status poll confirmed buffer room (a full buffer blocks inside the library's socket
-    /// lock forever when the engine has halted), and a halted engine is recovered IN PLACE
-    /// (Prepare discards the stuck queue; reconnect churn is what wedges this DAC's firmware).
+    /// The unkillable rules of the send loop carry over unchanged: StreamPoints is only called once
+    /// a status poll confirmed buffer room (a full buffer blocks inside the library's socket lock
+    /// forever when the engine has halted), that room is computed from the SAME capacity the
+    /// library was constructed with (otherwise the two disagree and a healthy link looks stalled),
+    /// and a halted engine is recovered IN PLACE (Prepare discards the stuck queue; reconnect churn
+    /// is what wedges this DAC's firmware).
     /// </summary>
     private sealed class EtherDreamStream : IStream
     {
@@ -339,8 +357,9 @@ public sealed class LaserOutputStream : IDisposable
         private const int MaxWarmupRetries = 120;      // ~60s for the light engine to become ready
         private const int MaxConsecutiveSendErrors = 5;
         private const int SendStallTimeoutMs = 3000;   // StreamPoints spins on a full, stopped buffer — abandon and reconnect
-        private const int PlaybackStallDelayMs = 1000; // not-playing for this long while streaming → explicit re-begin
+        private const int PlaybackStallDelayMs = 400;  // not-playing for this long while streaming → explicit re-begin
         private const int RebeginMinIntervalMs = 1000;
+        private const int PendingDisposeWaitMs = 2000; // bounded wait for a previous session's socket to close
         private const int MaxQueuedFrames = 2;
         private const int MinChunkPoints = 32;
         private const int DiscoveryPollDelayMs = 500;
@@ -467,6 +486,39 @@ public sealed class LaserOutputStream : IDisposable
 
         private volatile string? _autoSelectedIp;
 
+        /// <summary>
+        /// Teardowns in flight, keyed by DAC address. The socket close runs on the thread pool
+        /// because it can block on the library's socket lock while an abandoned send unwinds;
+        /// without the gate a stream rebuilt onto the same DAC would dial it while the old
+        /// session still holds it, and the old session's Stop could halt the new show.
+        /// </summary>
+        private static readonly ConcurrentDictionary<string, Task> PendingDisposals = new(StringComparer.OrdinalIgnoreCase);
+
+        private static async Task WaitForPreviousSessionAsync(string ipAddress, CancellationToken token)
+        {
+            if (!PendingDisposals.TryGetValue(ipAddress, out var pending))
+                return;
+
+            // Bounded: a teardown stuck on a dead socket must not keep the laser dark.
+            await Task.WhenAny(pending, Task.Delay(PendingDisposeWaitMs, token));
+            token.ThrowIfCancellationRequested();
+        }
+
+        /// <summary>The discovery entry for an address, if the listener heard the DAC while it was idle.</summary>
+        private static bool TryGetDiscoveredDevice(string ipAddress, out DacDto device)
+        {
+            device = default;
+            try
+            {
+                return DeviceDiscovery.DiscoveredDevices.TryGetValue(ipAddress, out device);
+            }
+            catch
+            {
+                // The discovery loop mutates the table concurrently
+                return false;
+            }
+        }
+
         private void TearDown()
         {
             var cts = Interlocked.Exchange(ref _connectionCts, null);
@@ -479,18 +531,60 @@ public sealed class LaserOutputStream : IDisposable
             var dac = Interlocked.Exchange(ref _dac, null);
             if (dac != null)
             {
-                _ = Task.Run(() =>
-                                 {
-                                     try { DisposeDacQuietly(dac); }
-                                     catch { }
-                                 });
-                LaserPlugDiscovery.ClearConnectedDevice(_lastConnectIp ?? string.Empty);
+                var ip = _lastConnectIp ?? string.Empty;
+                var disposal = Task.Run(() =>
+                                            {
+                                                try { DisposeDacQuietly(dac); }
+                                                catch { }
+                                            });
+
+                // A new stream to the same DAC must wait for this teardown: the device serves one
+                // host at a time, and the stop below would otherwise land on the new session.
+                if (ip.Length > 0)
+                {
+                    PendingDisposals[ip] = disposal;
+                    _ = disposal.ContinueWith(_ =>
+                    {
+                        if (PendingDisposals.TryGetValue(ip, out var current) && ReferenceEquals(current, disposal))
+                            PendingDisposals.TryRemove(ip, out var removed);
+                    }, TaskContinuationOptions.ExecuteSynchronously);
+                }
+
+                LaserPlugDiscovery.ClearConnectedDevice(ip);
             }
 
             _isConnected = false;
             _isPlaying = false;
             _pointQueue.Clear();
             _lastFrame = null;
+        }
+
+        /// <summary>
+        /// A session that ended while its queue was still full greets the next connect with points
+        /// on an idle engine - a Stop (our own <see cref="DisposeDacQuietly"/> among them) leaves
+        /// them in place. Prepare is the protocol's own reset: it discards the queue, so the stream
+        /// starts empty instead of waiting for the send loop's in-place recovery at every reconnect.
+        /// </summary>
+        private static void DiscardStalePoints(Dac dac, DacStatusDto status, string ipAddress)
+        {
+            if (status.BufferFullness == 0 || status.PlayBackState == PlayBackEngineState.Playing)
+                return;
+
+            try
+            {
+                // 'p' is only accepted from Idle; a session that stopped after a begin reports
+                // Prepared, where a Stop is the valid step back to Idle first.
+                if (status.PlayBackState != PlayBackEngineState.Idle)
+                    dac.Stop();
+
+                var ack = DacResponse.ParseAckCode(dac.Prepare().Response);
+                Log.Debug($"EtherDream stream: discarded {status.BufferFullness} stale points at {ipAddress} ({ack})");
+            }
+            catch (Exception e)
+            {
+                // The send loop's in-place recovery still covers a failed clear
+                Log.Debug($"EtherDream stream: clearing stale points at {ipAddress} failed - {e.Message}");
+            }
         }
 
         /// <summary>
@@ -514,26 +608,39 @@ public sealed class LaserOutputStream : IDisposable
                                   ? $"Connecting to {ipAddress}..."
                                   : $"Connecting to {ipAddress} (attempt {attempt})...", IStatusProvider.StatusLevel.Notice);
 
-                    dac = new Dac(ipAddress);
+                    await WaitForPreviousSessionAsync(ipAddress, token);
+
+                    var discovered = TryGetDiscoveredDevice(ipAddress, out var device);
+                    var capacity = ResolveBufferCapacity(discovered ? device.Identity.BufferCapacity : (ushort)0);
+                    var maxPointRate = discovered ? device.Identity.MaxPointRate : 0u;
+
+                    dac = new Dac(ipAddress, capacity, maxPointRate);
                     if (token.IsCancellationRequested)
                     {
                         DisposeDacQuietly(dac);
                         return;
                     }
 
-                    // A DAC whose point buffer comes back nearly full while idle is wedged: a
-                    // previous session was killed mid-write and the firmware kept the stale data,
-                    // rejecting new sessions until it is power-cycled. Say so instead of looping
-                    // connect/stall/recycle silently.
                     try
                     {
                         var helloStatus = dac.Ping().DacStatus;
-                        if (helloStatus.BufferFullness > 1700 && helloStatus.PlayBackState != PlayBackEngineState.Playing)
+
+                        // The status reports the fill level but never the capacity. A DAC that
+                        // discovery never heard (a connected device stops broadcasting) leaves the
+                        // library on its default 1799-point assumption - its own fullness is the
+                        // proof that the buffer is bigger, and the number to pace against.
+                        var observedFullness = helloStatus.BufferFullness;
+                        var resolved = ResolveBufferCapacity(capacity, observedFullness);
+                        if (resolved != capacity)
                         {
-                            Log.Warning($"EtherDream stream: DAC at {ipAddress} reports its buffer full ({helloStatus.BufferFullness}) while idle - "
-                                        + "a previous session was interrupted mid-write. Power-cycle the DAC to clear it.");
-                            SetStatus("DAC wedged (buffer full, idle) - power-cycle the DAC", IStatusProvider.StatusLevel.Error);
+                            DisposeDacQuietly(dac);
+                            dac = new Dac(ipAddress, resolved, maxPointRate);
+                            helloStatus = dac.Ping().DacStatus;
+                            Log.Debug($"EtherDream stream: DAC at {ipAddress} reported {observedFullness} buffered points - "
+                                      + $"using {resolved} as its buffer capacity instead of {capacity}");
                         }
+
+                        DiscardStalePoints(dac, helloStatus, ipAddress);
                     }
                     catch { /* the normal send path reports connection failures */ }
 
@@ -588,8 +695,24 @@ public sealed class LaserOutputStream : IDisposable
                         return;
 
                     SetStatus($"Connection lost: {e.Message} - retrying...", IStatusProvider.StatusLevel.Warning);
-                    if (attempt == 1)
+
+                    // Name every dropped session, not only the first failed connect: the next
+                    // connect reports the stale full queue this drop left behind, and without a
+                    // line here the log only ever shows that symptom.
+                    var heldFor = DateTime.UtcNow - connectedAtUtc;
+                    if (heldFor > TimeSpan.FromSeconds(30))
+                    {
+                        Log.Warning($"EtherDream stream: connection to {ipAddress} dropped after {heldFor.TotalSeconds:0}s - "
+                                    + $"{e.GetType().Name}: {e.Message}");
+                    }
+                    else if (attempt == 1)
+                    {
                         Log.Warning($"EtherDream stream: connection to {ipAddress} failed - {e.Message}");
+                    }
+                    else
+                    {
+                        Log.Debug($"EtherDream stream: connection to {ipAddress} attempt {attempt} failed - {e.Message}");
+                    }
 
                     // A connection that held for a while earns a fresh ladder - it served the
                     // show and its death is a new incident, not more of the same failure.
@@ -620,7 +743,13 @@ public sealed class LaserOutputStream : IDisposable
         {
             var consecutiveErrors = 0;
             var warmupRetries = 0;
-            var capacity = dac.BufferCapacity > 0 ? (int)dac.BufferCapacity : 1800;
+
+            // The same capacity the library paces its own sends against. Growing it from observed
+            // fullness (as an earlier version did) made the two disagree: the stream then handed
+            // StreamPoints chunks the library considered too big for the buffer, and it pinged
+            // inside its socket lock until the send watchdog recycled a healthy connection.
+            var capacity = dac.BufferCapacity > 0 ? (int)dac.BufferCapacity : DefaultBufferCapacity;
+
             var recoverEscalation = 0;              // 0 = soft Prepare, 1+ = full Stop+ClearEStop+Prepare
             var lastRecoverUtc = DateTime.MinValue; // rate-limits the in-place recovery
             var lastPingUtc = DateTime.MinValue;
@@ -633,6 +762,11 @@ public sealed class LaserOutputStream : IDisposable
             // partial frame and the loop frame its approach would ramp from, so the next frame
             // starts with a dark approach from center (the same state a fresh stream has).
             ResetSessionStreamingState();
+
+            // Seed the buffer state from the device before the first send: after a connect that
+            // found (or failed to clear) a full queue, a zero fullness would compute room the
+            // device does not have.
+            PollDac(dac, ref lastPingUtc, ref pingFailures);
 
             while (!token.IsCancellationRequested)
             {
@@ -768,12 +902,9 @@ public sealed class LaserOutputStream : IDisposable
                     _sendOffset = 0;
                 }
 
-                // The DAC's real capacity can exceed the library's default (1799) - grow the
-                // estimate from observed fullness so the chunk sizing never throttles early.
-                if (_bufferFullness > capacity)
-                    capacity = _bufferFullness;
-
-                var room = capacity - _bufferFullness;
+                // The library paces against this very number: a fullness above it can only be a
+                // transient reading between commands, never extra room to spend.
+                var room = capacity - Math.Min(_bufferFullness, capacity);
 
                 // In-place playback recovery: after a halt the engine sits idle while the buffer
                 // stays full. Prepare() discards the stuck queue; the chunk sends then re-run the
@@ -815,11 +946,6 @@ public sealed class LaserOutputStream : IDisposable
                     _needsDarkApproach = true;
                     continue;
                 }
-
-                // The DAC's real capacity can exceed the library's default (1799) - grow the
-                // estimate from observed fullness so the chunk sizing never throttles early.
-                if (_bufferFullness > capacity)
-                    capacity = _bufferFullness;
 
                 // Chunked streaming: push exactly as many points as the DAC reports room for,
                 // in one data command each - the socket lock is held only for milliseconds.
@@ -1017,13 +1143,15 @@ public sealed class LaserOutputStream : IDisposable
             if (dac == null)
                 return;
 
-            // Ask the DAC to stop and discard its queue BEFORE the socket dies. Killing the
-            // connection mid-data leaves the firmware holding a stale full buffer - the
-            // soft-wedge state this DAC family then needs a power-cycle to clear. The stop
-            // travels on the still-open socket; the grace lets it flush.
+            // Ask the DAC to stop, then discard its queue BEFORE the socket dies. Stop alone
+            // returns to Idle with the points still buffered - the state the next session then
+            // reports as "buffer full while idle"; Prepare clears it. Killing the connection
+            // mid-data is what leaves stale points behind in the first place. The stop travels
+            // on the still-open socket; the grace lets both commands flush.
             try
             {
                 dac.Stop();
+                dac.Prepare();
                 Thread.Sleep(50);
             }
             catch
