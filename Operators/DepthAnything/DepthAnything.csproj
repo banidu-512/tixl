@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <Import Project="$(SolutionDir)/Tixl.props" />
   <PropertyGroup>
-    <TargetFramework>net10.0-windows</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <UserSecretsId>4ddcedc9-2c55-476d-9aeb-8e069ecd278b</UserSecretsId>
@@ -110,7 +110,10 @@
     <ProjectReference Include="../../Logging/Logging.csproj" Private="false" PrivateAssets="all" />
   </ItemGroup>
   <ItemGroup>
-    <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu.Windows" Version="1.30.0" />
+    <!-- The GPU build carries the CUDA/TensorRT providers for Windows and Linux; macOS has no such
+         build and uses the CPU package that Core already ships. -->
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="1.30.0" Condition="$([MSBuild]::IsOSPlatform('Windows')) Or $([MSBuild]::IsOSPlatform('Linux'))" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.30.0" Condition="$([MSBuild]::IsOSPlatform('OSX'))" />
   </ItemGroup>
   <ItemGroup>
     <None Remove="Examples\**" />
