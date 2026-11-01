@@ -51,7 +51,7 @@ internal sealed class CollabManager
     public bool IsSessionActive => State is SessionState.Hosting or SessionState.Connected;
 
     /// <summary>False when collaboration is switched off in the settings; nothing is hosted, joined or discovered then.</summary>
-    public bool IsEnabled => UserSettings.Config.CollabEnabled;
+    public bool IsEnabled => UserSettings.Config.CollabEnabled || T3.Core.Show.FailoverArbiter.IsEnabled;
 
     /// <summary>True while a join waits for the user to enter the host's session password.</summary>
     public bool IsPasswordRequested => _rejoinWithPassword != null;
@@ -1110,6 +1110,14 @@ internal sealed class CollabManager
                 HandleOp(peer, json);
                 break;
 
+            case FailoverMirror.MessageType when State == SessionState.Connected:
+                FailoverMirror.Apply(json);
+                break;
+
+            case FailoverMirror.TimeMessageType when State == SessionState.Connected:
+                FailoverMirror.ApplyTime(json);
+                break;
+
             case "undoRequest" when State == SessionState.Hosting:
                 PerformGlobalUndo();
                 break;
@@ -2142,6 +2150,19 @@ internal sealed class CollabManager
     // ---------------------------------------------------------------------------------------
 
     private void SendJson(CollabPeerConnection peer, object message) => _transport?.SendJson(peer, message);
+
+    /// <summary>Host side: sends one JSON message to every authenticated participant.</summary>
+    internal void BroadcastJson(object message)
+    {
+        if (State != SessionState.Hosting)
+            return;
+
+        foreach (var peer in Peers)
+        {
+            if (peer.IsAuthenticated)
+                SendJson(peer, message);
+        }
+    }
 
     private void BroadcastSystemMessage(object message, CollabPeerConnection? except = null) => _transport?.BroadcastJson(Peers, message, except);
 

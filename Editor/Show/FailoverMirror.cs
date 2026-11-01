@@ -1,0 +1,298 @@
+#nullable enable
+using System.IO;
+using ImGuiNET;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
+using T3.Core.Animation;
+using T3.Core.Logging;
+using T3.Core.Output;
+using T3.Editor.Collab;
+using T3.Editor.Gui.UiHelpers;
+using T3.Editor.Gui.Windows;
+using T3.Editor.Gui.Windows.Output;
+using T3.Editor.UiModel.ProjectHandling;
+
+namespace T3.Editor.Show;
+
+/// <summary>
+/// Failover is a 1:1 copy of the higher-priority machine: the standby shows what the active one shows. The
+/// active sends its output setup and machine bindings, its window layout and the state of its output windows
+/// (pinned outputs and view settings) over the failover collaboration session; the standby applies them, so
+/// a takeover continues with the same outputs, streams and window arrangement. The composition itself
+/// already follows through the collab sync.
+/// </summary>
+internal static class FailoverMirror
+{
+    public const string MessageType = "failoverMirror";
+    public const string TimeMessageType = "failoverTime";
+
+    /// <summary>Active side, called every frame: sends the mirror when it changed, and periodically for late joiners.</summary>
+    public static void Tick(CollabManager collab)
+    {
+        var now = Environment.TickCount64;
+        if (now < _nextCheckTicks)
+            return;
+
+        _nextCheckTicks = now + CheckIntervalMs;
+
+        var peerCount = collab.Peers.Count;
+        if (peerCount == 0)
+        {
+            _lastSentJson = null;
+            return;
+        }
+
+        var message = BuildMessage(collab);
+        if (message == null)
+            return;
+
+        var json = message.ToString(Formatting.None);
+        var peersChanged = peerCount != _lastPeerCount;
+        if (json == _lastSentJson && !peersChanged && now < _resendAtTicks)
+            return;
+
+        _lastSentJson = json;
+        _lastPeerCount = peerCount;
+        _resendAtTicks = now + ResendIntervalMs;
+        collab.BroadcastJson(message);
+    }
+
+    /// <summary>Active side, called every frame: sends the playback clock about once a second.</summary>
+    public static void TickTime(CollabManager collab)
+    {
+        var now = Environment.TickCount64;
+        if (now < _nextTimeSendTicks || collab.Peers.Count == 0)
+            return;
+
+        _nextTimeSendTicks = now + TimeIntervalMs;
+        var playback = Playback.Current;
+        if (playback == null)
+            return;
+
+        collab.BroadcastJson(new
+                                 {
+                                     t = TimeMessageType,
+                                     bars = playback.TimeInBars,
+                                     speed = playback.PlaybackSpeed,
+                                     bpm = playback.Bpm,
+                                 });
+    }
+
+    /// <summary>Standby side: follows the active machine's playback clock; the small drift between messages is not corrected.</summary>
+    public static void ApplyTime(JObject message)
+    {
+        if (!T3.Core.Show.FailoverArbiter.IsEnabled || T3.Core.Show.FailoverArbiter.Role != T3.Core.Show.FailoverArbiter.NodeRole.Standby)
+            return;
+
+        var playback = Playback.Current;
+        if (playback == null)
+            return;
+
+        var bars = message.Value<double>("bars");
+        var speed = message.Value<double>("speed");
+        var bpm = message.Value<double>("bpm");
+        if (bpm <= 0)
+            return;
+
+        playback.PlaybackSpeed = speed;
+        playback.Bpm = bpm;
+
+        // A running timeline only needs a nudge once it drifted by more than a frame or two.
+        if (speed == 0 || Math.Abs(playback.TimeInBars - bars) > MaxTimeDriftBars)
+            playback.TimeInBars = bars;
+    }
+
+    /// <summary>Standby side, on the UI thread: writes the received setup files and applies layout and output window states.</summary>
+    public static void Apply(JObject message)
+    {
+        if (!T3.Core.Show.FailoverArbiter.IsEnabled || T3.Core.Show.FailoverArbiter.Role != T3.Core.Show.FailoverArbiter.NodeRole.Standby)
+            return;
+
+        try
+        {
+            ApplySetupFiles(message);
+            ApplyWindowLayout(message);
+            ApplyOutputWindowStates(message);
+            ApplyComposition(message);
+        }
+        catch (Exception e)
+        {
+            Log.Warning($"Failover: could not apply the mirrored state: {e.Message}");
+        }
+    }
+
+    private static JObject? BuildMessage(CollabManager collab)
+    {
+        var view = ProjectView.Focused;
+        if (view == null)
+            return null;
+
+        var folder = CollabManager.FindProjectFolder(collab.SharedProjectName) ?? view.OpenedProject.Package.Folder;
+        if (string.IsNullOrEmpty(folder))
+            return null;
+
+        var message = new JObject
+                          {
+                              ["t"] = MessageType,
+                              ["project"] = string.IsNullOrEmpty(collab.SharedProjectName)
+                                                ? view.OpenedProject.Package.DisplayName
+                                                : collab.SharedProjectName,
+                          };
+
+        var setupsFolder = SetupFiles.FolderIn(folder);
+        var machinePath = Path.Combine(setupsFolder, MachineConfig.FileName);
+        if (File.Exists(machinePath))
+            message["machine"] = File.ReadAllText(machinePath);
+
+        if (OutputSetupHandling.TryGetActiveSetup(out var setup, out _))
+        {
+            var setupFile = setup.Name + Setup.FileSuffix;
+            var setupPath = Path.Combine(setupsFolder, setupFile);
+            if (File.Exists(setupPath))
+            {
+                message["setupFile"] = setupFile;
+                message["setup"] = File.ReadAllText(setupPath);
+            }
+        }
+
+        ProjectView.CaptureWindowLayout(out var imGuiSettings, out var windowVisibility);
+        message["layout"] = imGuiSettings;
+        message["layoutVersion"] = ImGui.GetVersion();
+        message["visibility"] = JObject.FromObject(windowVisibility);
+
+        var outputWindows = new JArray();
+        foreach (var window in OutputWindow.OutputWindowInstances)
+        {
+            if (window is OutputWindow outputWindow)
+                outputWindows.Add(JObject.FromObject(outputWindow.CaptureState()));
+        }
+
+        message["outputWindows"] = outputWindows;
+
+        // The composition the active machine has open, so the standby shows the same graph.
+        if (view.CompositionInstance != null)
+        {
+            var path = new List<Guid>();
+            Structure.PopulateInstancePath(view.CompositionInstance, path);
+            message["composition"] = new JArray(path.Select(id => id.ToString()));
+        }
+
+        return message;
+    }
+
+    private static void ApplySetupFiles(JObject message)
+    {
+        var project = message.Value<string>("project") ?? "";
+        var folder = CollabManager.FindProjectFolder(project);
+        if (folder == null)
+            return;
+
+        var setupsFolder = SetupFiles.FolderIn(folder);
+        Directory.CreateDirectory(setupsFolder);
+
+        var changed = false;
+        var setupFile = message.Value<string>("setupFile");
+        var setup = message.Value<string>("setup");
+        if (!string.IsNullOrEmpty(setupFile) && setup != null)
+            changed |= WriteIfDifferent(Path.Combine(setupsFolder, Path.GetFileName(setupFile)), setup);
+
+        var machine = message.Value<string>("machine");
+        if (machine != null)
+            changed |= WriteIfDifferent(Path.Combine(setupsFolder, MachineConfig.FileName), machine);
+
+        if (changed)
+        {
+            Log.Info("Failover: mirrored the output setup of the active machine");
+            OutputSetupHandling.OnSetupFilesChanged(folder);
+        }
+    }
+
+    private static bool WriteIfDifferent(string path, string content)
+    {
+        if (File.Exists(path) && File.ReadAllText(path) == content)
+            return false;
+
+        File.WriteAllText(path, content);
+        return true;
+    }
+
+    private static void ApplyWindowLayout(JObject message)
+    {
+        var layout = message.Value<string>("layout");
+        if (string.IsNullOrEmpty(layout) || layout == _lastAppliedLayout)
+            return;
+
+        _lastAppliedLayout = layout;
+        var visibility = message["visibility"]?.ToObject<Dictionary<string, bool>>();
+        ProjectView.ApplyWindowLayout(layout, message.Value<string>("layoutVersion"), visibility);
+    }
+
+    private static void ApplyOutputWindowStates(JObject message)
+    {
+        if (message["outputWindows"] is not JArray states)
+            return;
+
+        var index = 0;
+        foreach (var window in OutputWindow.OutputWindowInstances)
+        {
+            if (window is not OutputWindow outputWindow)
+                continue;
+
+            if (index >= states.Count)
+                break;
+
+            var stateJson = states[index].ToString(Formatting.None);
+            index++;
+
+            if (_lastAppliedWindowStates.TryGetValue(index, out var last) && last == stateJson)
+                continue;
+
+            _lastAppliedWindowStates[index] = stateJson;
+            var state = JsonConvert.DeserializeObject<OutputWindowState>(stateJson);
+            if (state != null)
+                outputWindow.ApplyState(state);
+        }
+    }
+
+    private static void ApplyComposition(JObject message)
+    {
+        if (message["composition"] is not JArray array || ProjectView.Focused is not { } view)
+            return;
+
+        var path = new List<Guid>(array.Count);
+        foreach (var token in array)
+        {
+            if (!Guid.TryParse(token.Value<string>(), out var id))
+                return;
+
+            path.Add(id);
+        }
+
+        var key = string.Join('/', path);
+        if (key == _lastAppliedComposition)
+            return;
+
+        _lastAppliedComposition = key;
+        if (path.Count == 0 || view.CompositionInstance == null)
+            return;
+
+        var current = new List<Guid>();
+        Structure.PopulateInstancePath(view.CompositionInstance, current);
+        if (!current.SequenceEqual(path))
+            view.TrySetCompositionOp(path);
+    }
+
+    private const long CheckIntervalMs = 1000;
+    private const long TimeIntervalMs = 1000;
+    private const double MaxTimeDriftBars = 0.02;
+    private const long ResendIntervalMs = 5000;
+
+    private static long _nextCheckTicks;
+    private static long _nextTimeSendTicks;
+    private static string? _lastAppliedComposition;
+    private static long _resendAtTicks;
+    private static int _lastPeerCount;
+    private static string? _lastSentJson;
+    private static string? _lastAppliedLayout;
+    private static readonly Dictionary<int, string> _lastAppliedWindowStates = new();
+}

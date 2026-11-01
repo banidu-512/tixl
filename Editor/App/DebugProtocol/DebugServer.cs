@@ -1240,6 +1240,9 @@ internal static class DebugServer
                                ["suppressed"] = Core.Show.FailoverArbiter.IsOutputSuppressed,
                                ["peer"] = Core.Show.FailoverArbiter.PeerSummary,
                                ["takeovers"] = Core.Show.FailoverArbiter.TakeoverCount,
+                               ["link"] = T3.Editor.Show.FailoverCollabLink.Instance.StatusText,
+                               ["collabEnabled"] = CollabManager.Instance.IsEnabled,
+                               ["leftManually"] = CollabManager.Instance.LeftManually,
                            });
     }
 
