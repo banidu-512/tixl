@@ -45,19 +45,28 @@ public sealed class NanoVdbBuffer
     public VdbValueType ValueType { get; }
     public VdbGridClass GridClass { get; }
 
-    /// <summary>Actual section end offsets of the last built buffer (diagnostics/testing): root, upper, lower, leaf.</summary>
-    internal static long[] LastSectionEnds = new long[4];
+    /// <summary>Actual section end offsets of this buffer (diagnostics/testing): root, upper, lower, leaf.</summary>
+    internal long[] SectionEnds { get; }
 
-    private NanoVdbBuffer(byte[] buffer, VdbValueType valueType, VdbGridClass gridClass)
+    private NanoVdbBuffer(byte[] buffer, VdbValueType valueType, VdbGridClass gridClass, long[] sectionEnds)
     {
         Buffer = buffer;
         ValueType = valueType;
         GridClass = gridClass;
+        SectionEnds = sectionEnds;
     }
 
-    public static NanoVdbBuffer FromGrid(VdbGrid<float> grid) => new(Build(grid), VdbValueType.Float, grid.GridClass);
+    public static NanoVdbBuffer FromGrid(VdbGrid<float> grid)
+    {
+        var (buffer, sectionEnds) = Build(grid);
+        return new NanoVdbBuffer(buffer, VdbValueType.Float, grid.GridClass, sectionEnds);
+    }
 
-    public static NanoVdbBuffer FromGrid(VdbGrid<Vector3> grid) => new(Build(grid), VdbValueType.Vec3Float, grid.GridClass);
+    public static NanoVdbBuffer FromGrid(VdbGrid<Vector3> grid)
+    {
+        var (buffer, sectionEnds) = Build(grid);
+        return new NanoVdbBuffer(buffer, VdbValueType.Vec3Float, grid.GridClass, sectionEnds);
+    }
 
     private static int AlignUp(int bytes) => (bytes + Alignment - 1) / Alignment * Alignment;
 
@@ -366,9 +375,10 @@ public sealed class NanoVdbBuffer
         return stats;
     }
 
-    private static byte[] Build<T>(VdbGrid<T> grid)
+    private static (byte[] Buffer, long[] SectionEnds) Build<T>(VdbGrid<T> grid)
     {
         var tree = grid.Tree;
+        var sectionEnds = new long[4];
 
         // Deterministic breadth-first ordering: sorted uppers, lowers, leaves.
         var upperOrigins = new List<VdbCoord>(tree.Root.Children.Count);
@@ -515,7 +525,7 @@ public sealed class NanoVdbBuffer
             WriteZeroed(w, RootTileSize - 20 - valueBytes);         // key+child+state+value then pad to 32
         }
 
-        LastSectionEnds[0] = ms.Position;
+        sectionEnds[0] = ms.Position;
 
         // ---------- Upper (level-2) nodes
         foreach (var origin in upperOrigins)
@@ -547,7 +557,7 @@ public sealed class NanoVdbBuffer
             }
         }
 
-        LastSectionEnds[1] = ms.Position;
+        sectionEnds[1] = ms.Position;
 
         // ---------- Lower (level-1) nodes
         foreach (var (_, node1) in lowers)
@@ -577,7 +587,7 @@ public sealed class NanoVdbBuffer
             }
         }
 
-        LastSectionEnds[2] = ms.Position;
+        sectionEnds[2] = ms.Position;
 
         // ---------- Leaves
         foreach (var (_, leaf) in leaves)
@@ -612,13 +622,13 @@ public sealed class NanoVdbBuffer
             }
         }
 
-        LastSectionEnds[3] = ms.Position;
+        sectionEnds[3] = ms.Position;
         WriteZeroed(w, (int)(gridSize - ms.Length));
         w.Flush();
         var result = ms.ToArray();
         if (result.Length != gridSize)
             throw new InvalidOperationException($"NanoVDB buffer size {result.Length} != planned {gridSize}");
-        return result;
+        return (result, sectionEnds);
     }
 
     private static int CountTiles<T>(VdbTree<T> tree, bool upper)
@@ -730,7 +740,7 @@ public sealed class NanoVdbBuffer
         if (BinaryPrimitives.ReadUInt64LittleEndian(grid) == MagicGrid)
             BinaryPrimitives.WriteUInt64LittleEndian(grid, MagicNumber);
 
-        return new NanoVdbBuffer(grid, valueType, gridClass);
+        return new NanoVdbBuffer(grid, valueType, gridClass, new long[4]);
     }
 
     /// <summary>Parsed header fields for UI/diagnostics.</summary>

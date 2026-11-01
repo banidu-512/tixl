@@ -43,8 +43,7 @@
       "Position": {
         "X": 300.0,
         "Y": 0.0
-      },
-      "Description": "The converted volume, or empty when the mesh has no faces."
+      }
     }
   ]
 }

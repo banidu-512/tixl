@@ -141,15 +141,46 @@ public sealed class VdbGrid<T> : IVdbGrid
         {
             Transform = Transform
         };
-        foreach (var leaf in Tree.Leaves)
-        {
-            var newLeaf = copy.Tree.AddLeaf(leaf.Origin);
-            Array.Copy(leaf.Values, newLeaf.Values, VdbLeafNode<T>.Size);
-            newLeaf.ValueMask.Words.AsSpan().CopyFrom(leaf.ValueMask.Words);
-        }
 
+        // Deep-copy the whole structure, including the tile values that pruning stores on the
+        // internal nodes. Iterating only leaves would silently drop every collapsed uniform
+        // region, so a cloned (e.g. offset) volume would read as background there.
         foreach (var (coord, tile) in Tree.Root.Tiles)
             copy.Tree.Root.Tiles[coord] = new VdbRootTile<T> { Value = tile.Value, Active = tile.Active };
+
+        foreach (var (coord, node2) in Tree.Root.Children)
+        {
+            var new2 = new VdbInternalNode2<T>(node2.Origin);
+            new2.ChildMask.FillFrom(node2.ChildMask);
+            new2.ValueMask.FillFrom(node2.ValueMask);
+            Array.Copy(node2.Values, new2.Values, node2.Values.Length);
+            copy.Tree.Root.Children[coord] = new2;
+
+            for (var slot2 = 0; slot2 < node2.Children.Length; slot2++)
+            {
+                var node1 = node2.Children[slot2];
+                if (node1 == null)
+                    continue;
+
+                var new1 = new VdbInternalNode1<T>(node1.Origin);
+                new1.ChildMask.FillFrom(node1.ChildMask);
+                new1.ValueMask.FillFrom(node1.ValueMask);
+                Array.Copy(node1.Values, new1.Values, node1.Values.Length);
+                new2.Children[slot2] = new1;
+
+                for (var slot1 = 0; slot1 < node1.Children.Length; slot1++)
+                {
+                    var leaf = node1.Children[slot1];
+                    if (leaf == null)
+                        continue;
+
+                    var newLeaf = new VdbLeafNode<T>(leaf.Origin);
+                    Array.Copy(leaf.Values, newLeaf.Values, VdbLeafNode<T>.Size);
+                    newLeaf.ValueMask.FillFrom(leaf.ValueMask);
+                    new1.Children[slot1] = newLeaf;
+                }
+            }
+        }
 
         return copy;
     }

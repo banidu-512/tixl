@@ -30,6 +30,7 @@ internal sealed class LoadVdb : Instance<LoadVdb>
 
         if (string.IsNullOrEmpty(address))
         {
+            CancelPending();
             Volume.Value = null;
             _lastPath = null;
             return;
@@ -47,47 +48,108 @@ internal sealed class LoadVdb : Instance<LoadVdb>
 
         if (!File.Exists(path))
         {
+            CancelPending();
             Volume.Value = null;
             _lastPath = null;
             return;
         }
 
         var lastWrite = File.GetLastWriteTimeUtc(path);
-        if (path == _lastPath && gridName == _lastGridName && lastWrite == _lastWriteTime)
+        if (path != _lastPath || gridName != _lastGridName || lastWrite != _lastWriteTime)
+        {
+            // Remembered before loading so a broken file schedules once instead of on every evaluation.
+            _lastPath = path;
+            _lastGridName = gridName;
+            _lastWriteTime = lastWrite;
+            StartLoad(path);
+        }
+
+        PublishCompletedLoad(gridName);
+    }
+
+    /// <summary>
+    /// Parsing a large .vdb can take seconds. The file is read on a worker thread and the finished
+    /// volume is published on the next evaluation, so the render thread never stalls on disk IO.
+    /// </summary>
+    private void StartLoad(string path)
+    {
+        CancelPending();
+        _loadTask = Task.Run(() =>
+                                 {
+                                     LoadResult result;
+                                     try
+                                     {
+                                         result = new LoadResult { Volume = VdbFile.Load(path), Path = path };
+                                     }
+                                     catch (Exception e)
+                                     {
+                                         // Logged on the evaluation thread when the result is consumed.
+                                         result = new LoadResult { Error = e.Message, Path = path };
+                                     }
+
+                                     // Wake the graph: the slot itself is clean, so without this the
+                                     // finished volume would only be published if something else
+                                     // invalidated the chain. The next frame's invalidation pass
+                                     // picks this up and runs Update again.
+                                     Volume.DirtyFlag.Invalidate();
+                                     return result;
+                                 });
+    }
+
+    private void PublishCompletedLoad(string? gridName)
+    {
+        if (_loadTask is not { IsCompleted: true })
             return;
 
-        // Remembered before loading so a broken file warns once instead of on every evaluation.
-        _lastPath = path;
-        _lastGridName = gridName;
-        _lastWriteTime = lastWrite;
+        var task = _loadTask;
+        _loadTask = null;
 
-        try
+        var result = task.Result;
+        if (result.Error != null)
         {
-            var volume = VdbFile.Load(path);
-            if (!string.IsNullOrEmpty(gridName))
-            {
-                var filtered = new VdbVolume();
-                var match = volume.GetGrid(gridName);
-                if (match != null)
-                    filtered.Grids.Add(match);
-                volume = filtered;
-            }
-
-            if (volume.Grids.Count == 0)
-            {
-                Log.Warning($"No supported grids found in {path}", this);
-                Volume.Value = null;
-            }
-            else
-            {
-                Volume.Value = volume;
-            }
+            Log.Warning($"LoadVdb failed for {result.Path}: {result.Error}", this);
+            Volume.Value = null;
+            return;
         }
-        catch (Exception e)
+
+        var volume = result.Volume;
+        if (volume == null)
         {
-            Log.Warning($"LoadVdb failed for {path}: {e.Message}", this);
+            Volume.Value = null;
+            return;
+        }
+
+        if (!string.IsNullOrEmpty(gridName))
+        {
+            var filtered = new VdbVolume();
+            var match = volume.GetGrid(gridName);
+            if (match != null)
+                filtered.Grids.Add(match);
+            volume = filtered;
+        }
+
+        if (volume.Grids.Count == 0)
+        {
+            Log.Warning($"No supported grids found in {result.Path}", this);
             Volume.Value = null;
         }
+        else
+        {
+            Volume.Value = volume;
+        }
+    }
+
+    private void CancelPending()
+    {
+        // A running read cannot be aborted mid-parse; dropping the task discards its result.
+        _loadTask = null;
+    }
+
+    private sealed class LoadResult
+    {
+        public VdbVolume? Volume;
+        public string? Error;
+        public string Path = string.Empty;
     }
 
     /// <summary>Windows drive paths are plain disk paths, never package addresses.</summary>
@@ -97,6 +159,7 @@ internal sealed class LoadVdb : Instance<LoadVdb>
     private string? _lastPath;
     private string? _lastGridName;
     private DateTime _lastWriteTime;
+    private Task<LoadResult>? _loadTask;
 
     [Input(Guid = "e16c0dad-a228-5a6f-964b-82986746836e")]
     public readonly InputSlot<string> Path = new();

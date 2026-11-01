@@ -48,11 +48,25 @@ internal sealed class VolumeMorphology : Instance<VolumeMorphology>
         if (key == _last)
             return;
 
-        Result.Value = new VdbVolume(T3.Core.DataTypes.Volume.Tools.VolumeMorphology.Apply(grid, operation, radius));
-        _last = key;
+        try
+        {
+            Result.Value = new VdbVolume(T3.Core.DataTypes.Volume.Tools.VolumeMorphology.Apply(grid, operation, radius));
+            _last = key;
+            _lastError = null;
+        }
+        catch (Exception e)
+        {
+            // An exception escaping an update is fatal to the editor; degrade to an empty output.
+            Result.Value = null;
+            _last = default;
+            if (_lastError != e.Message)
+                Log.Warning($"VolumeMorphology failed: {e.Message}", this);
+            _lastError = e.Message;
+        }
     }
 
     private (VdbVolume?, T3.Core.DataTypes.Volume.Tools.VolumeMorphology.Operation, float) _last = (null, (T3.Core.DataTypes.Volume.Tools.VolumeMorphology.Operation)(-1), -1);
+    private string? _lastError;
 
     [Input(Guid = "f762b0d3-0f82-5660-9169-c94524c5a414")]
     public readonly InputSlot<VdbVolume> Volume = new();

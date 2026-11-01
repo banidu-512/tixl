@@ -70,11 +70,22 @@ internal sealed class VolumeFromPoints : Instance<VolumeFromPoints>
             _lastRadius = radius;
             _lastDensity = density;
             _lastFalloff = falloff;
+            _lastError = null;
         }
         catch (Exception e)
         {
-            Log.Warning($"VolumeFromPoints failed: {e.Message}", this);
             Volume.Value = null;
+            if (_lastError != e.Message)
+                Log.Warning($"VolumeFromPoints failed: {e.Message}", this);
+            _lastError = e.Message;
+
+            // Remember the failing inputs so a bad radius does not retry (and log) every frame.
+            _lastPositionsHash = positionsHash;
+            _lastCount = points.NumElements;
+            _lastVoxelSize = voxelSize;
+            _lastRadius = radius;
+            _lastDensity = density;
+            _lastFalloff = falloff;
         }
     }
 
@@ -98,6 +109,7 @@ internal sealed class VolumeFromPoints : Instance<VolumeFromPoints>
     private float _lastRadius = -1;
     private float _lastDensity = -1;
     private PointsToVolume.Falloff _lastFalloff = (PointsToVolume.Falloff)(-1);
+    private string? _lastError;
 
     [Input(Guid = "51935275-be34-555d-a9dc-7fbc6a55db39")]
     public readonly InputSlot<StructuredList> Points = new();

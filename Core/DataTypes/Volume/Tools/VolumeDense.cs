@@ -59,6 +59,18 @@ public sealed class VdbSampler
 public static class VolumeDense
 {
     /// <summary>
+    /// Upper bound for one dense bake: 64M floats = 256 MB on the CPU and on the GPU. A larger
+    /// request is shrunk proportionally instead of overflowing the array length or exhausting memory.
+    /// </summary>
+    public const long MaxDenseVoxels = 64L << 20;
+
+    /// <summary>
+    /// Upper bound for a resample result (~512 MB of leaf data). Beyond it the operator reports the
+    /// requested voxel size instead of exhausting memory.
+    /// </summary>
+    public const long MaxResampleLeaves = 262_144;
+
+    /// <summary>
     /// Samples the grid's active index bbox into a dense float buffer (linear, clamped outside).
     /// Returns null when the grid has no active voxels.
     /// </summary>
@@ -71,6 +83,17 @@ public static class VolumeDense
         var sizeX = Math.Clamp(bbox.Max.X - bbox.Min.X + 2, 1, maxSize);
         var sizeY = Math.Clamp(bbox.Max.Y - bbox.Min.Y + 2, 1, maxSize);
         var sizeZ = Math.Clamp(bbox.Max.Z - bbox.Min.Z + 2, 1, maxSize);
+
+        // Three individually clamped axes can still multiply past int.MaxValue (2048^3 is 8.6e9),
+        // which would overflow the array length. Shrink all axes proportionally to the budget.
+        var totalVoxels = (long)sizeX * sizeY * sizeZ;
+        if (totalVoxels > MaxDenseVoxels)
+        {
+            var scale = MathF.Cbrt(MaxDenseVoxels / (float)totalVoxels);
+            sizeX = Math.Max(1, (int)(sizeX * scale));
+            sizeY = Math.Max(1, (int)(sizeY * scale));
+            sizeZ = Math.Max(1, (int)(sizeZ * scale));
+        }
 
         var data = new float[sizeX * sizeY * sizeZ];
         for (var z = 0; z < sizeZ; z++)
@@ -104,10 +127,30 @@ public static class VolumeDense
             Transform = source.Transform.WithVoxelSize(newVoxelSize),
         };
 
-        var bandWorld = MathF.Abs(source.Background) * 3f;
-        var bandVoxels = (int)MathF.Ceiling(bandWorld / newVoxelSize) + 1;
-        var min = source.Transform.WorldToIndex(worldBBox.Min - new Vector3(bandWorld));
-        var max = source.Transform.WorldToIndex(worldBBox.Max + new Vector3(bandWorld));
+        // Level sets carry a band of exact distances around the surface; outside it only the sign
+        // matters. Fog volumes hold density only near their active region and have no band (their
+        // background is 0), so they just need a small margin.
+        var isLevelSet = source.GridClass == VdbGridClass.LevelSet;
+        var bandWorld = isLevelSet ? MathF.Abs(source.Background) : 0f;
+        var marginWorld = isLevelSet ? bandWorld : source.Transform.VoxelSize * 2f;
+
+        // A tiny voxel size over a large volume would allocate billions of voxels and freeze the
+        // editor. Check the leaf count in double precision before converting to index space.
+        var extent = (worldBBox.Max - worldBBox.Min) + new Vector3(2f * marginWorld);
+        var leafCount = ((double)extent.X / 8 / newVoxelSize + 2)
+                        * ((double)extent.Y / 8 / newVoxelSize + 2)
+                        * ((double)extent.Z / 8 / newVoxelSize + 2);
+        if (leafCount > MaxResampleLeaves)
+        {
+            throw new ArgumentException($"Resampling to voxel size {newVoxelSize} would need about {(long)leafCount} leaves "
+                                        + $"(limit {MaxResampleLeaves}); use a larger voxel size.");
+        }
+
+        // Bounds must be expressed in the *target* index space. The source's indices describe a
+        // different world region once the voxel size changes; reusing them clipped finer resamples
+        // to a fraction of the volume.
+        var min = target.Transform.WorldToIndex(worldBBox.Min - new Vector3(marginWorld));
+        var max = target.Transform.WorldToIndex(worldBBox.Max + new Vector3(marginWorld));
 
         var leafMin = new VdbCoord(min.X & ~7, min.Y & ~7, min.Z & ~7);
         var leafMax = new VdbCoord(max.X & ~7, max.Y & ~7, max.Z & ~7);
@@ -128,17 +171,27 @@ public static class VolumeDense
                         var coord = leafOrigin + VdbCoord.LocalFromOffset(i);
                         var world = target.Transform.IndexToWorld(coord);
 
-                        // Only keep samples near the source's band; outside stays background.
-                        var approx = source.Tree.GetValue(source.Transform.WorldToIndex(world));
-                        var dist = MathF.Abs(approx);
-                        if (dist > bandWorld)
+                        // Sample the source trilinearly at the world position, so the surface keeps
+                        // its sub-voxel placement instead of moving to the nearest source voxel.
+                        var value = sampler.SampleWorld(world);
+
+                        if (isLevelSet)
                         {
-                            // Beyond the band only the sign survives, as +-background, so a solid's interior stays inside.
-                            values[i] = approx < 0 ? -source.Background : source.Background;
+                            if (MathF.Abs(value) > bandWorld)
+                            {
+                                // Beyond the band only the sign survives, as +-background, so a solid's
+                                // interior stays inside.
+                                values[i] = value < 0 ? -source.Background : source.Background;
+                                continue;
+                            }
+                        }
+                        else if (value == source.Background)
+                        {
+                            // Fog: background density stays inactive instead of allocating empty leaves.
                             continue;
                         }
 
-                        values[i] = sampler.SampleWorld(world);
+                        values[i] = value;
                         active[i] = true;
                         anyActive = true;
                     }

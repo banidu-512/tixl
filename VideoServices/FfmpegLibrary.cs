@@ -196,13 +196,25 @@ public static class FfmpegLibrary
         // Some libav* messages are logged at error level but are harmless metadata notices that recur on every
         // file open — keep them out of the warning stream (they land at Debug). Substring match keeps it cheap.
         static bool IsBenignNotice(string text)
-            => text.Contains("Referenced QT chapter track not found");
+            => text.Contains("Referenced QT chapter track not found")
+               || text.Contains("unable to decode APP fields");
 
         FFmpegLogger.LogWriter = static (level, message) =>
                                  {
                                      var text = message?.TrimEnd();
                                      if (string.IsNullOrEmpty(text))
                                          return;
+
+                                     // Webcams emit MJPEG frames with a malformed APPn segment; the decoder still outputs
+                                     // the image, but the notice repeats per frame, so only the first of a burst is kept.
+                                     if (text.Contains("unable to decode APP fields"))
+                                     {
+                                         var now = Environment.TickCount64;
+                                         if (now - _lastAppFieldNoticeTick < AppFieldNoticeIntervalMs)
+                                             return;
+
+                                         _lastAppFieldNoticeTick = now;
+                                     }
 
                                      if (level <= SdcbLogLevel.Error && !IsBenignNotice(text)) // Panic, Fatal, Error
                                          Log.Warning("FFmpeg: " + text);
@@ -491,4 +503,7 @@ public static class FfmpegLibrary
 
     /// <summary>The one folder every native FFmpeg library is loaded from; set once by the preload.</summary>
     private static volatile string? _nativeFolder;
+
+    private const long AppFieldNoticeIntervalMs = 10_000;
+    private static long _lastAppFieldNoticeTick = -AppFieldNoticeIntervalMs;
 }

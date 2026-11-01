@@ -50,13 +50,27 @@ internal sealed class VolumeFilter : Instance<VolumeFilter>
         if (key == _last)
             return;
 
-        Result.Value = new VdbVolume(T3.Core.DataTypes.Volume.Tools.VolumeFilter.Apply(grid, filterType,
-                                                        (int)MathF.Round(radius / grid.Transform.VoxelSize),
-                                                        offset, iterations));
-        _last = key;
+        try
+        {
+            Result.Value = new VdbVolume(T3.Core.DataTypes.Volume.Tools.VolumeFilter.Apply(grid, filterType,
+                                                            (int)MathF.Round(radius / grid.Transform.VoxelSize),
+                                                            offset, iterations));
+            _last = key;
+            _lastError = null;
+        }
+        catch (Exception e)
+        {
+            // An exception escaping an update is fatal to the editor; degrade to an empty output.
+            Result.Value = null;
+            _last = default;
+            if (_lastError != e.Message)
+                Log.Warning($"VolumeFilter failed: {e.Message}", this);
+            _lastError = e.Message;
+        }
     }
 
     private (VdbVolume?, T3.Core.DataTypes.Volume.Tools.VolumeFilter.FilterType, float, int, float) _last = (null, (T3.Core.DataTypes.Volume.Tools.VolumeFilter.FilterType)(-1), -1, -1, 0);
+    private string? _lastError;
 
     [Input(Guid = "0241402e-4fae-5ca3-98be-eb4bcd4fc339")]
     public readonly InputSlot<VdbVolume> Volume = new();

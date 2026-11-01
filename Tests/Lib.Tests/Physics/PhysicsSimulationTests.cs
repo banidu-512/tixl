@@ -574,6 +574,55 @@ public class PhysicsSimulationTests
     }
 
     [Fact]
+    public void StepBudgetLimitsHowMuchOneUpdateSimulates()
+    {
+        using var harness = new Harness();
+        harness.AddBody(Sphere(new Vector3(0, 100, 0)));
+        harness.Step(FrameSec);
+        harness.Sim.StepBudgetSec = 0f;
+        var simTimeBefore = harness.Sim.SimTime;
+
+        harness.Step(0.1f, 0.1f);
+
+        // Six fixed steps were due; with no budget left only the mandatory one runs and the rest is dropped.
+        Assert.InRange(harness.Sim.SimTime - simTimeBefore, 0.01f, 0.02f);
+    }
+
+    [Fact]
+    public void DeterministicMultithreadedBouncingReplaysBitIdentically()
+    {
+        var first = RunPile();
+        var second = RunPile();
+
+        Assert.Equal(first, second);
+
+        static Vector3[] RunPile()
+        {
+            using var harness = new Harness();
+            harness.Settings.Deterministic = true;
+            harness.Settings.Multithreaded = true;
+            harness.AddBody(Box(new Vector3(0, -0.5f, 0), new Vector3(40, 1, 40), PhysicsBodyKind.Static));
+            var balls = new PhysicsBody[40];
+            for (var index = 0; index < balls.Length; index++)
+            {
+                var ball = Sphere(new Vector3((index % 5) * 0.9f - 1.8f, 2f + (index / 5) * 0.9f, (index % 3) * 0.2f), radius: 0.4f);
+                ball.Bounciness = 0.8f;
+                balls[index] = harness.AddBody(ball);
+            }
+
+            harness.Step(4f);
+
+            var positions = new Vector3[balls.Length];
+            for (var index = 0; index < balls.Length; index++)
+            {
+                harness.Sim.TryGetBodyPosition(balls[index].Id, out positions[index]);
+            }
+
+            return positions;
+        }
+    }
+
+    [Fact]
     public void WritePointsSkipsStaticsUnlessRequested()
     {
         using var harness = new Harness();

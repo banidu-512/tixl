@@ -247,4 +247,22 @@ public class VdbTreeTests
         clone.Tree.SetValueOn(new VdbCoord(3, 1, 9), 42f);
         Assert.Equal(-0.5f, grid.Tree.GetValue(new VdbCoord(3, 1, 9))); // original untouched
     }
+
+    [Fact]
+    public void CloneGridKeepsTilesCollapsedByPrune()
+    {
+        var grid = new VdbGrid<float>(0f, 0.1f);
+        var leaf = grid.Tree.AddLeaf(new VdbCoord(0, 0, 0));
+        leaf.Fill(2f);
+        grid.Tree.Prune();
+
+        // The uniform leaf is now an active 8^3 tile in its parent, not a leaf.
+        Assert.Equal(0, grid.Tree.LeafCount);
+        Assert.Equal(2f, grid.Tree.GetValue(new VdbCoord(3, 3, 3)));
+
+        var clone = (VdbGrid<float>)grid.CloneGrid();
+        Assert.Equal(2f, clone.Tree.GetValue(new VdbCoord(3, 3, 3)));
+        Assert.True(clone.Tree.IsValueOn(new VdbCoord(3, 3, 3)));
+        Assert.Equal(grid.Tree.ActiveVoxelCount, clone.Tree.ActiveVoxelCount);
+    }
 }

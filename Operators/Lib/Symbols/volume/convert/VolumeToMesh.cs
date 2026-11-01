@@ -41,11 +41,25 @@ internal sealed class VolumeToMesh : Instance<VolumeToMesh>
         if (key == _last)
             return;
 
-        Geometry.Value = T3.Core.DataTypes.Volume.VolumeToMesh.Extract(grid, isovalue);
-        _last = key;
+        try
+        {
+            Geometry.Value = T3.Core.DataTypes.Volume.VolumeToMesh.Extract(grid, isovalue);
+            _last = key;
+            _lastError = null;
+        }
+        catch (Exception e)
+        {
+            // An exception escaping an update is fatal to the editor; degrade to an empty output.
+            Geometry.Value = null;
+            _last = default;
+            if (_lastError != e.Message)
+                Log.Warning($"VolumeToMesh failed: {e.Message}", this);
+            _lastError = e.Message;
+        }
     }
 
     private (VdbVolume?, float) _last = (null, float.NaN);
+    private string? _lastError;
 
     [Input(Guid = "19c6ca3f-d7ff-507f-8d28-2490f0edb66e")]
     public readonly InputSlot<VdbVolume> Volume = new();

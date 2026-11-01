@@ -51,8 +51,7 @@
       "Position": {
         "X": 300.0,
         "Y": 0.0
-      },
-      "Description": "The filtered volume."
+      }
     }
   ]
 }

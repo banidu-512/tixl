@@ -40,7 +40,8 @@ internal sealed class VolumeToTexture3D : Instance<VolumeToTexture3D>
         var grid = volume?.GetFloatGrid();
         if (grid == null)
         {
-            Texture.Value = null;
+            ReleaseTexture();
+            ClearOutputs();
             _last = default;
             return;
         }
@@ -52,10 +53,14 @@ internal sealed class VolumeToTexture3D : Instance<VolumeToTexture3D>
         var dense = VolumeDense.ExtractDense(grid, maxResolution);
         if (dense == null)
         {
-            Texture.Value = null;
+            ReleaseTexture();
+            ClearOutputs();
+            _last = default;
             return;
         }
 
+        Texture3D? texture = null;
+        Texture3dWithViews? withViews = null;
         try
         {
             var description = new Texture3DDescription
@@ -71,7 +76,7 @@ internal sealed class VolumeToTexture3D : Instance<VolumeToTexture3D>
                                       OptionFlags = ResourceOptionFlags.None,
                                   };
 
-            var texture = Texture3D.CreateTexture3D(description);
+            texture = Texture3D.CreateTexture3D(description);
             var handle = GCHandle.Alloc(dense.Data, GCHandleType.Pinned);
             try
             {
@@ -93,10 +98,10 @@ internal sealed class VolumeToTexture3D : Instance<VolumeToTexture3D>
                 handle.Free();
             }
 
-            var withViews = new Texture3dWithViews
-                                {
-                                    Texture = texture,
-                                };
+            withViews = new Texture3dWithViews
+                            {
+                                Texture = texture,
+                            };
             texture.CreateShaderResourceView(ref withViews.Srv, "VolumeTexture3D");
 
             Texture.Value = withViews;
@@ -106,19 +111,60 @@ internal sealed class VolumeToTexture3D : Instance<VolumeToTexture3D>
             BoundsMin.Value = Vector3.Min(worldMin, worldMax);
             BoundsMax.Value = Vector3.Max(worldMin, worldMax);
 
-            _lastTexture?.Texture.Dispose();
+            ReleaseTexture();
             _lastTexture = withViews;
+            withViews = null; // ownership moved to _lastTexture
+            texture = null;
             _last = key;
+            _lastError = null;
         }
         catch (Exception e)
         {
-            Log.Warning($"VolumeToTexture3D failed: {e.Message}", this);
-            Texture.Value = null;
+            // Dispose the bake that never made it into _lastTexture, and the previous one.
+            withViews?.Srv?.Dispose();
+            if (withViews != null)
+                withViews.Texture?.Dispose();
+            else
+                texture?.Dispose();
+            ReleaseTexture();
+            ClearOutputs();
+            _last = default;
+            if (_lastError != e.Message)
+                Log.Warning($"VolumeToTexture3D failed: {e.Message}", this);
+            _lastError = e.Message;
         }
+    }
+
+    private void ClearOutputs()
+    {
+        Texture.Value = null;
+        BoundsMin.Value = Vector3.Zero;
+        BoundsMax.Value = Vector3.Zero;
+    }
+
+    private void ReleaseTexture()
+    {
+        if (_lastTexture == null)
+            return;
+
+        _lastTexture.Srv?.Dispose();
+        _lastTexture.Srv = null;
+        _lastTexture.Texture?.Dispose();
+        _lastTexture.Texture = null;
+        _lastTexture = null;
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+            ReleaseTexture();
+
+        base.Dispose(disposing);
     }
 
     private Texture3dWithViews? _lastTexture;
     private (VdbVolume?, int) _last = (null, -1);
+    private string? _lastError;
 
     [Input(Guid = "208b3d98-a7d7-5453-96cc-b29c89d1141b")]
     public readonly InputSlot<VdbVolume> Volume = new();

@@ -51,8 +51,7 @@
       "Position": {
         "X": 300.0,
         "Y": 0.0
-      },
-      "Description": "The sampled volume, or empty if the input is invalid or too large."
+      }
     }
   ]
 }

@@ -1,7 +1,7 @@
 {
   "FormatVersion": 3,
   "Id": "df34163c-3dca-5de3-aabf-225dc08162a9"/*SaveVdb*/,
-  "Description": "Writes the volume's grids to an OpenVDB file.\n\nThe file is readable by Houdini, Blender, Maya and TiXL. It is written once whenever Save switches from off to on.\n\nAKA: export vdb, write openvdb\n\nTips\n- Toggle Save from a button or trigger operator. The output pulses true for one evaluation after a successful write.",
+  "Description": "Writes the volume's grids to an OpenVDB file.\n\nThe file is readable by Houdini, Blender, Maya and TiXL. It is written once whenever Save switches from off to on. The write runs on a background thread, so large volumes do not stall the renderer.\n\nAKA: export vdb, write openvdb\n\nTips\n- Toggle Save from a button or trigger operator. The output pulses true for one evaluation after a successful write.",
   "InputUis": [
     {
       "InputId": "0266ff85-52d7-59fb-a4e1-6b8c0557a3b9"/*Save*/,
@@ -44,8 +44,7 @@
       "Position": {
         "X": 300.0,
         "Y": 0.0
-      },
-      "Description": "True for one evaluation after the file was written."
+      }
     }
   ]
 }

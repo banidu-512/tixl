@@ -14,6 +14,13 @@ namespace T3.Core.DataTypes.Volume;
 /// </summary>
 public static class VolumeToMesh
 {
+    /// <summary>
+    /// Upper bound for an extracted surface. Eight million vertices already need roughly 300 MB
+    /// (positions, normals and corner indices); beyond that a runaway volume is reported instead
+    /// of exhausting memory.
+    /// </summary>
+    public const int MaxVertices = 8_000_000;
+
     public static MeshGeometry Extract(VdbGrid<float> grid, float isovalue = 0f)
     {
         var tree = grid.Tree;
@@ -152,6 +159,9 @@ public static class VolumeToMesh
     private static int InterpolateEdge(VdbGrid<float> grid, VdbCoord coord, float[] cornerValues, int edge,
                                        float isovalue, List<Vector3> positions, List<Vector3> normals)
     {
+        if (positions.Count >= MaxVertices)
+            throw new InvalidOperationException($"Extracted surface exceeds {MaxVertices} vertices; raise the voxel size or Isovalue.");
+
         var (cornerA, cornerB) = EdgeCorners(edge);
         var va = cornerValues[cornerA];
         var vb = cornerValues[cornerB];

@@ -20,12 +20,24 @@ public static class PointsToVolume
         Constant,
     }
 
+    /// <summary>
+    /// Radius in voxels is bounded: the splat cost grows with its cube and touches every leaf in
+    /// the kernel box, so a large world radius on a fine grid would allocate millions of leaves.
+    /// </summary>
+    public const int MaxRadiusVoxels = 64;
+
     public static VdbGrid<float> Splat(Vector3[] positions, float[]? weights,
                                        float voxelSize, float radius, float density,
                                        Falloff falloff, int seed)
     {
         radius = MathF.Max(radius, 1e-5f);
+        voxelSize = MathF.Max(voxelSize, 1e-5f);
         var radiusVoxels = (int)MathF.Ceiling(radius / voxelSize);
+        if (radiusVoxels > MaxRadiusVoxels)
+        {
+            throw new ArgumentException($"Splat radius is {radiusVoxels} voxels (limit {MaxRadiusVoxels}); "
+                                        + "increase VoxelSize or reduce Radius.");
+        }
         var transform = new VdbTransform(voxelSize, Vector3.Zero);
 
         var grid = new VdbGrid<float>(0f, voxelSize, "density", VdbGridClass.FogVolume);
@@ -207,8 +219,10 @@ public static class VolumePrimitives
         var leafCountY = (leafMax.Y - leafMin.Y >> 3) + 1;
         var leafCountZ = (leafMax.Z - leafMin.Z >> 3) + 1;
         var leafCount = (long)leafCountX * leafCountY * leafCountZ;
-        if (leafCount > 2_000_000)
-            throw new ArgumentException($"Primitive too large for voxel size {voxelSize} ({leafCount} leaves)");
+        // 262k leaves is about 512 MB of voxel data; beyond that a typo in VoxelSize turns into an
+        // out-of-memory crash instead of a warning.
+        if (leafCount > 262_144)
+            throw new ArgumentException($"Primitive too large for voxel size {voxelSize} ({leafCount} leaves, limit 262144)");
 
         for (var lz = leafMin.Z >> 3; lz <= leafMax.Z >> 3; lz++)
         {
@@ -403,12 +417,8 @@ public static class VolumeMath
     public static VdbGrid<float> Constant(VdbGrid<float> a, float constant, BinaryOp op)
     {
         var result = (VdbGrid<float>)a.CloneGrid();
-        foreach (var leaf in result.Tree.Leaves)
-        {
-            for (var i = 0; i < VdbLeafNode<float>.Size; i++)
-                leaf.Values[i] = Apply(op, leaf.Values[i], constant);
-        }
-
+        // Includes the tiles that pruning collapsed uniform leaves into.
+        result.Tree.TransformValues(v => Apply(op, v, constant));
         return result;
     }
 
@@ -417,12 +427,7 @@ public static class VolumeMath
         var result = (VdbGrid<float>)a.CloneGrid();
         var bg = float.IsNaN(background) ? function(a.Background) : background;
         result.Tree.Root.Background = bg;
-        foreach (var leaf in result.Tree.Leaves)
-        {
-            for (var i = 0; i < VdbLeafNode<float>.Size; i++)
-                leaf.Values[i] = function(leaf.Values[i]);
-        }
-
+        result.Tree.TransformValues(function);
         return result;
     }
 

@@ -471,6 +471,11 @@ public static class MeshToVolume
                                                  float voxelSize, int band, VdbVolumeType volumeType,
                                                  Vector3? translation)
     {
+        // A zero or negative voxel size would divide the bounds to infinity; an unbounded band
+        // would rasterize a huge shell around the mesh. Both are user inputs.
+        voxelSize = Math.Clamp(voxelSize, 1e-5f, 1e4f);
+        band = Math.Clamp(band, 1, 64);
+
         var bvh = new MeshBvh(positions, triangles);
 
         // Surface bounds in index space.

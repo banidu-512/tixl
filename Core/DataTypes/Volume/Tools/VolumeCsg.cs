@@ -215,12 +215,8 @@ public static class VolumeMorphology
     public static VdbGrid<float> OffsetLevelSet(VdbGrid<float> input, float offsetVoxels)
     {
         var result = (VdbGrid<float>)input.CloneGrid();
-        foreach (var leaf in result.Tree.Leaves)
-        {
-            for (var i = 0; i < VdbLeafNode<float>.Size; i++)
-                leaf.Values[i] += offsetVoxels;
-        }
-
+        // Includes the tiles that pruning collapsed uniform leaves into.
+        result.Tree.TransformValues(v => v + offsetVoxels);
         return result;
     }
 

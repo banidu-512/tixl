@@ -17,7 +17,7 @@
         "X": 0.0,
         "Y": -30.0
       },
-      "Description": "Largest number of texels along any axis (8 to 2048). Larger volumes are clamped to this size."
+      "Description": "Largest number of texels along any axis (8 to 2048). Larger volumes are clamped to this size. The total is additionally capped at 64M texels (256 MB), so extreme settings shrink evenly instead of exhausting memory."
     }
   ],
   "SymbolChildUis": [],
@@ -27,24 +27,21 @@
       "Position": {
         "X": 300.0,
         "Y": 0.0
-      },
-      "Description": "The dense 3D texture holding the values (R32 float)."
+      }
     },
     {
       "OutputId": "1449308e-6d89-52eb-9ce2-124c4a972dab"/*BoundsMin*/,
       "Position": {
         "X": 300.0,
         "Y": 30.0
-      },
-      "Description": "World-space position of the texture corner with the lowest coordinates."
+      }
     },
     {
       "OutputId": "ca612cd0-3d23-59a1-912e-cad23f75d645"/*BoundsMax*/,
       "Position": {
         "X": 300.0,
         "Y": 60.0
-      },
-      "Description": "World-space position of the texture corner with the highest coordinates."
+      }
     }
   ]
 }

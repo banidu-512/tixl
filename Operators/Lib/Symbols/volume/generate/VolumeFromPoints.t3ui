@@ -1,7 +1,7 @@
 {
   "FormatVersion": 3,
   "Id": "c698dc60-e135-5cc0-8346-31eb7ee77637"/*VolumeFromPoints*/,
-  "Description": "Splats a point list into a sparse density volume.\n\nEvery point contributes a falloff kernel over its radius, and overlapping contributions add up. This is OpenVDB's particles-to-volume conversion and is the first step of a liquid surface: points become density, a filter smooths it, and [VolumeToMesh] extracts the surface.\n\nAKA: particles to volume, splat, metaballs, point cloud to density\n\nTips\n- Feed GPU points through [ReadPointsFromGpu] first.\n- Pick the Radius around two to four voxel sizes. Smaller radii make separate beads, larger ones merge into a blob.\n- Extract the surface with an isovalue between 0 and the peak density, and smooth the volume first with [VolumeFilter].",
+  "Description": "Splats a point list into a sparse density volume.\n\nEvery point contributes a falloff kernel over its radius, and overlapping contributions add up. This is OpenVDB's particles-to-volume conversion and is the first step of a liquid surface: points become density, a filter smooths it, and [VolumeToMesh] extracts the surface.\n\nAKA: particles to volume, splat, metaballs, point cloud to density\n\nTips\n- Feed GPU points through [ReadPointsFromGpu] first.\n- Pick the Radius around two to four voxel sizes. Smaller radii make separate beads, larger ones merge into a blob.\n- Radius is limited to 64 voxels; increase VoxelSize for a wider kernel.\n- Extract the surface with an isovalue between 0 and the peak density, and smooth the volume first with [VolumeFilter].",
   "InputUis": [
     {
       "InputId": "234a9c82-72f4-5388-9473-8bff628ba0fe"/*VoxelSize*/,
@@ -51,8 +51,7 @@
       "Position": {
         "X": 300.0,
         "Y": 0.0
-      },
-      "Description": "The density volume. Empty when there are no points."
+      }
     }
   ]
 }

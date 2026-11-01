@@ -1,7 +1,7 @@
 {
   "FormatVersion": 3,
   "Id": "70b83837-48fa-53ad-8b68-504bceff2848"/*LoadVdb*/,
-  "Description": "Loads grids from an OpenVDB file.\n\nReads uncompressed, zip and blosc-compressed data as written by Houdini, Blender or TiXL. Float grids become the primary data of the volume; vector grids such as velocity or color ride along in the same set. The file is reloaded when it changes and the operator is evaluated.\n\nAKA: import vdb, read openvdb\n\nTips\n- Leave GridName empty to load every supported grid.",
+  "Description": "Loads grids from an OpenVDB file.\n\nReads uncompressed, zip and blosc-compressed data as written by Houdini, Blender or TiXL. Float grids become the primary data of the volume; vector grids such as velocity or color ride along in the same set. The file is reloaded when it changes and the operator is evaluated. Parsing runs on a background thread, so a large file does not stall the renderer; the output appears once the read has finished.\n\nAKA: import vdb, read openvdb\n\nTips\n- Leave GridName empty to load every supported grid.\n- While a file is being read the previous value is kept; the output turns null only if the file is missing or invalid.",
   "InputUis": [
     {
       "InputId": "1e3dcc23-489a-5a54-b1af-c04d85ac3b8a"/*GridName*/,
@@ -29,8 +29,7 @@
       "Position": {
         "X": 300.0,
         "Y": 0.0
-      },
-      "Description": "The loaded volume, or empty when the file is missing or unreadable."
+      }
     }
   ]
 }

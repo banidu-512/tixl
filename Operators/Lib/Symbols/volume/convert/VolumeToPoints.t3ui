@@ -51,8 +51,7 @@
       "Position": {
         "X": 300.0,
         "Y": 0.0
-      },
-      "Description": "The points as a CPU list with the voxel value stored in F1."
+      }
     },
     {
       "OutputId": "82b8dcdf-9ae0-5c62-8cde-c14eae985660"/*GPoints*/,

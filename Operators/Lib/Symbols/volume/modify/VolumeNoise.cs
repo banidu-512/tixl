@@ -69,13 +69,27 @@ internal sealed class VolumeNoise : Instance<VolumeNoise>
         if (key == _last)
             return;
 
-        var noise = new VdbNoise(seed);
-        Result.Value = new VdbVolume(T3.Core.DataTypes.Volume.Tools.VolumeNoise.Apply(grid, noise, frequency, amplitude, offset, octaves, noiseType, fractal, mode));
-        _last = key;
+        try
+        {
+            var noise = new VdbNoise(seed);
+            Result.Value = new VdbVolume(T3.Core.DataTypes.Volume.Tools.VolumeNoise.Apply(grid, noise, frequency, amplitude, offset, octaves, noiseType, fractal, mode));
+            _last = key;
+            _lastError = null;
+        }
+        catch (Exception e)
+        {
+            // An exception escaping an update is fatal to the editor; degrade to an empty output.
+            Result.Value = null;
+            _last = default;
+            if (_lastError != e.Message)
+                Log.Warning($"VolumeNoise failed: {e.Message}", this);
+            _lastError = e.Message;
+        }
     }
 
     private (VdbVolume?, int, VdbNoiseType, VdbNoiseFractalType, int, float, float, Vector3, T3.Core.DataTypes.Volume.Tools.VolumeNoise.Mode) _last
         = (null, -1, (VdbNoiseType)(-1), (VdbNoiseFractalType)(-1), -1, -1, -1, Vector3.Zero, (T3.Core.DataTypes.Volume.Tools.VolumeNoise.Mode)(-1));
+    private string? _lastError;
 
     [Input(Guid = "20af828b-f18e-5822-95e1-e9708aa8fd01")]
     public readonly InputSlot<VdbVolume> Volume = new();

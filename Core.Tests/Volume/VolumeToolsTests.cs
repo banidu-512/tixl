@@ -455,6 +455,38 @@ public class VolumeDenseTests
         Assert.True(coarse.ActiveVoxelCount > 0);
         Assert.True(coarse.Tree.GetValue(coarse.Transform.WorldToIndex(Vector3.Zero)) < 0, "center should stay inside after resample");
     }
+
+    [Fact]
+    public void ResampleToFinerVoxelSizeKeepsFullExtent()
+    {
+        var source = VolumePrimitives.Create(VolumePrimitives.Shape.Sphere, new Vector3(2f, 2f, 2f), 0.2f, Vector3.Zero, 3);
+        var fine = VolumeDense.Resample(source, 0.05f);
+
+        var sourceBox = source.ActiveWorldBBox();
+        var fineBox = fine.ActiveWorldBBox();
+        Assert.True(fine.ActiveVoxelCount > 0, "resampling to a finer voxel size must produce voxels");
+
+        // The source is active out to its band (radius 1 + 3 voxels of 0.2); the finer grid must cover
+        // at least the same world region instead of being clipped to the source's index range.
+        Assert.True(fineBox.Min.X <= sourceBox.Min.X + 0.15f, $"fine min {fineBox.Min.X} vs source {sourceBox.Min.X}");
+        Assert.True(fineBox.Max.X >= sourceBox.Max.X - 0.15f, $"fine max {fineBox.Max.X} vs source {sourceBox.Max.X}");
+        Assert.True(fineBox.Min.Z <= sourceBox.Min.Z + 0.15f, $"fine min {fineBox.Min.Z} vs source {sourceBox.Min.Z}");
+        Assert.True(fineBox.Max.Z >= sourceBox.Max.Z - 0.15f, $"fine max {fineBox.Max.Z} vs source {sourceBox.Max.Z}");
+    }
+
+    [Fact]
+    public void ResampleFogVolumeKeepsDensity()
+    {
+        var (positions, triangles) = TestMeshes.UvSphere(1f, 16, 8);
+        var fog = MeshToVolume.ConvertCorners(positions, triangles, 0.05f, 3, VdbVolumeType.Fog, Vector3.Zero);
+        Assert.True(fog.ActiveVoxelCount > 0);
+
+        var resampled = VolumeDense.Resample(fog, 0.1f);
+        Assert.True(resampled.ActiveVoxelCount > 0, "resampling a fog volume must not produce an empty grid");
+
+        var surface = resampled.Tree.GetValue(resampled.Transform.WorldToIndex(new Vector3(1f, 0f, 0f)));
+        Assert.True(surface > 0.1f, $"density at the surface should survive the resample, got {surface}");
+    }
 }
 
 public class VolumeDiagnoseTests
@@ -503,6 +535,19 @@ public class VdbSamplerTests
 
 public class VolumeRegressionTests
 {
+    [Fact]
+    public void ConstantMathAppliesToTilesCollapsedByPrune()
+    {
+        var grid = new VdbGrid<float>(0f, 0.1f);
+        var leaf = grid.Tree.AddLeaf(new VdbCoord(0, 0, 0));
+        leaf.Fill(2f);
+        grid.Tree.Prune();
+        Assert.Equal(0, grid.Tree.LeafCount); // collapsed into an internal 8^3 tile
+
+        var result = T3.Core.DataTypes.Volume.Tools.VolumeMath.Constant(grid, 3f, T3.Core.DataTypes.Volume.Tools.VolumeMath.BinaryOp.Add);
+        Assert.Equal(5f, result.Tree.GetValue(new VdbCoord(3, 3, 3)));
+    }
+
     [Fact]
     public void PrimitiveVoxelsOutsideTheBandReadBackground()
     {

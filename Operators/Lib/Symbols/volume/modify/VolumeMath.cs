@@ -53,21 +53,35 @@ internal sealed class VolumeMath : Instance<VolumeMath>
         if (key == _last)
             return;
 
-        VdbGrid<float> result;
-        if (gridB != null)
+        try
         {
-            result = T3.Core.DataTypes.Volume.Tools.VolumeMath.Combine(gridA, gridB, operation);
-        }
-        else
-        {
-            result = T3.Core.DataTypes.Volume.Tools.VolumeMath.Constant(gridA, constant, operation);
-        }
+            VdbGrid<float> result;
+            if (gridB != null)
+            {
+                result = T3.Core.DataTypes.Volume.Tools.VolumeMath.Combine(gridA, gridB, operation);
+            }
+            else
+            {
+                result = T3.Core.DataTypes.Volume.Tools.VolumeMath.Constant(gridA, constant, operation);
+            }
 
-        Result.Value = new VdbVolume(result);
-        _last = key;
+            Result.Value = new VdbVolume(result);
+            _last = key;
+            _lastError = null;
+        }
+        catch (Exception e)
+        {
+            // An exception escaping an update is fatal to the editor; degrade to an empty output.
+            Result.Value = null;
+            _last = default;
+            if (_lastError != e.Message)
+                Log.Warning($"VolumeMath failed: {e.Message}", this);
+            _lastError = e.Message;
+        }
     }
 
     private (VdbVolume?, VdbVolume?, T3.Core.DataTypes.Volume.Tools.VolumeMath.BinaryOp, bool, float) _last = (null, null, (T3.Core.DataTypes.Volume.Tools.VolumeMath.BinaryOp)(-1), false, 0);
+    private string? _lastError;
 
     [Input(Guid = "db65839e-a02b-58a2-b1f7-341ea1b5b390")]
     public readonly InputSlot<VdbVolume> VolumeA = new();

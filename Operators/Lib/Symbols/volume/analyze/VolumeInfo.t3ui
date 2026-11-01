@@ -27,48 +27,42 @@
       "Position": {
         "X": 300.0,
         "Y": 0.0
-      },
-      "Description": "Number of active voxels."
+      }
     },
     {
       "OutputId": "de88bdf5-4ceb-5a38-99fc-cc3c9e6275fa"/*MemoryMB*/,
       "Position": {
         "X": 300.0,
         "Y": 30.0
-      },
-      "Description": "Approximate memory used by the tree in megabytes."
+      }
     },
     {
       "OutputId": "5ef2ebae-279f-51ab-95f1-afd2f912d408"/*HasNaN*/,
       "Position": {
         "X": 300.0,
         "Y": 60.0
-      },
-      "Description": "True when the grid contains NaN or Inf values."
+      }
     },
     {
       "OutputId": "78a262b1-42e9-5ead-86e5-182f28a31c5a"/*Min*/,
       "Position": {
         "X": 300.0,
         "Y": 90.0
-      },
-      "Description": "Smallest active value."
+      }
     },
     {
       "OutputId": "4eff0f63-d9a5-50b9-a60f-f00a5a593cf2"/*Max*/,
       "Position": {
         "X": 300.0,
         "Y": 120.0
-      },
-      "Description": "Largest active value."
+      }
     },
     {
       "OutputId": "fb4a6683-b5db-5e6d-981e-248d8b715c0c"/*Average*/,
       "Position": {
         "X": 300.0,
         "Y": 150.0
-      },
-      "Description": "Average of the active values."
+      }
     }
   ]
 }

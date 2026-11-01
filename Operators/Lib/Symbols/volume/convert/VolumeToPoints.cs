@@ -60,92 +60,119 @@ internal sealed class VolumeToPoints : Instance<VolumeToPoints>
 
         // Scatter keeps a uniform random subset (reservoir sampling) so the whole volume is covered;
         // ActiveVoxels keeps the highest values in a min-heap. Both stay bounded by maxPoints.
-        var candidates = new List<(Vector3 World, float Value)>();
-        var highest = mode == Modes.Scatter ? null : new PriorityQueue<(Vector3 World, float Value), float>();
-        var random = new Random(seed);
-        var seen = 0L;
-        foreach (var leaf in grid.Tree.Leaves)
+        try
         {
-            foreach (var offset in leaf.ValueMask.OnBits())
+            var candidates = new List<(Vector3 World, float Value)>();
+            var highest = mode == Modes.Scatter ? null : new PriorityQueue<(Vector3 World, float Value), float>();
+            var random = new Random(seed);
+            var seen = 0L;
+            foreach (var leaf in grid.Tree.Leaves)
             {
-                var value = leaf.Values[offset];
-                if (value <= isovalue)
-                    continue;
-
-                var candidate = (grid.Transform.IndexToWorld(leaf.Origin + VdbCoord.LocalFromOffset(offset)), value);
-                if (highest != null)
+                foreach (var offset in leaf.ValueMask.OnBits())
                 {
-                    if (highest.Count < maxPoints)
+                    var value = leaf.Values[offset];
+                    if (value <= isovalue)
+                        continue;
+
+                    var candidate = (grid.Transform.IndexToWorld(leaf.Origin + VdbCoord.LocalFromOffset(offset)), value);
+                    if (highest != null)
                     {
-                        highest.Enqueue(candidate, value);
+                        if (highest.Count < maxPoints)
+                        {
+                            highest.Enqueue(candidate, value);
+                        }
+                        else if (highest.TryPeek(out _, out var lowestKept) && value > lowestKept)
+                        {
+                            highest.EnqueueDequeue(candidate, value);
+                        }
+
+                        continue;
                     }
-                    else if (highest.TryPeek(out _, out var lowestKept) && value > lowestKept)
+
+                    seen++;
+                    if (candidates.Count < maxPoints)
                     {
-                        highest.EnqueueDequeue(candidate, value);
+                        candidates.Add(candidate);
                     }
-
-                    continue;
-                }
-
-                seen++;
-                if (candidates.Count < maxPoints)
-                {
-                    candidates.Add(candidate);
-                }
-                else
-                {
-                    var slot = random.NextInt64(seen);
-                    if (slot < maxPoints)
-                        candidates[(int)slot] = candidate;
+                    else
+                    {
+                        var slot = random.NextInt64(seen);
+                        if (slot < maxPoints)
+                            candidates[(int)slot] = candidate;
+                    }
                 }
             }
+
+            if (highest != null)
+            {
+                // The heap pops the lowest value first; the list holds the highest values first.
+                while (highest.TryDequeue(out var kept, out _))
+                    candidates.Add(kept);
+
+                candidates.Reverse();
+            }
+
+            _lastWasEmpty = candidates.Count == 0;
+            if (_lastWasEmpty)
+            {
+                _last = key;
+                Points.Value = null;
+                GPoints.Value = null;
+                return;
+            }
+
+            if (_pointList == null)
+                _pointList = new StructuredList<Point>(Math.Max(candidates.Count, 1));
+            if (_pointList.NumElements != candidates.Count)
+                _pointList.SetLength(Math.Max(candidates.Count, 1));
+
+            for (var i = 0; i < candidates.Count; i++)
+            {
+                _pointList[i] = new Point
+                                    {
+                                        Position = candidates[i].World,
+                                        F1 = candidates[i].Value,
+                                        F2 = 0,
+                                        Scale = Vector3.One,
+                                        Orientation = Quaternion.Identity,
+                                        Color = Vector4.One,
+                                    };
+            }
+
+            Points.Value = _pointList;
+            ResourceManager.SetupBufferWithViews(_pointList.TypedElements, ref _pointsBuffer);
+            GPoints.Value = _pointsBuffer;
+            _last = key;
+            _lastError = null;
         }
-
-        if (highest != null)
+        catch (Exception e)
         {
-            // The heap pops the lowest value first; the list holds the highest values first.
-            while (highest.TryDequeue(out var kept, out _))
-                candidates.Add(kept);
-
-            candidates.Reverse();
-        }
-
-        _lastWasEmpty = candidates.Count == 0;
-        _last = key;
-        if (_lastWasEmpty)
-        {
+            // An exception escaping an update is fatal to the editor; degrade to an empty output.
             Points.Value = null;
             GPoints.Value = null;
-            return;
+            _last = default;
+            if (_lastError != e.Message)
+                Log.Warning($"VolumeToPoints failed: {e.Message}", this);
+            _lastError = e.Message;
         }
+    }
 
-        if (_pointList == null)
-            _pointList = new StructuredList<Point>(Math.Max(candidates.Count, 1));
-        if (_pointList.NumElements != candidates.Count)
-            _pointList.SetLength(Math.Max(candidates.Count, 1));
-
-        for (var i = 0; i < candidates.Count; i++)
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
         {
-            _pointList[i] = new Point
-                                {
-                                    Position = candidates[i].World,
-                                    F1 = candidates[i].Value,
-                                    F2 = 0,
-                                    Scale = Vector3.One,
-                                    Orientation = Quaternion.Identity,
-                                    Color = Vector4.One,
-                                };
+            _pointsBuffer?.Dispose();
+            _pointsBuffer = null;
         }
 
-        Points.Value = _pointList;
-        ResourceManager.SetupBufferWithViews(_pointList.TypedElements, ref _pointsBuffer);
-        GPoints.Value = _pointsBuffer;
+        base.Dispose(disposing);
     }
 
     private bool _lastWasEmpty;
     private StructuredList<Point>? _pointList;
     private BufferWithViews? _pointsBuffer;
     private (VdbVolume?, Modes, float, int, int) _last = (null, (Modes)(-1), float.NaN, -1, -1);
+    private string? _lastError;
 
     [Input(Guid = "a82acc1d-bacb-5839-90b5-53b2ae36ca7d")]
     public readonly InputSlot<VdbVolume> Volume = new();

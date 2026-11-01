@@ -48,15 +48,31 @@ internal sealed class VolumeCsg : Instance<VolumeCsg>
         if (ReferenceEquals(a, _lastA) && ReferenceEquals(b, _lastB) && operation == _lastOp)
             return;
 
-        Volume.Value = new VdbVolume(T3.Core.DataTypes.Volume.Tools.VolumeCsg.Combine(gridA, gridB, operation));
-        _lastA = a;
-        _lastB = b;
-        _lastOp = operation;
+        try
+        {
+            Volume.Value = new VdbVolume(T3.Core.DataTypes.Volume.Tools.VolumeCsg.Combine(gridA, gridB, operation));
+            _lastA = a;
+            _lastB = b;
+            _lastOp = operation;
+            _lastError = null;
+        }
+        catch (Exception e)
+        {
+            // An exception escaping an update is fatal to the editor, so a broken input volume
+            // must degrade to an empty output instead.
+            Volume.Value = null;
+            _lastA = null;
+            _lastB = null;
+            if (_lastError != e.Message)
+                Log.Warning($"VolumeCsg failed: {e.Message}", this);
+            _lastError = e.Message;
+        }
     }
 
     private VdbVolume? _lastA;
     private VdbVolume? _lastB;
     private T3.Core.DataTypes.Volume.Tools.VolumeCsg.Operation _lastOp = (T3.Core.DataTypes.Volume.Tools.VolumeCsg.Operation)(-1);
+    private string? _lastError;
 
     [Input(Guid = "c8eda1a2-1379-572e-92d1-ea640a6b9e61")]
     public readonly InputSlot<VdbVolume> VolumeA = new();

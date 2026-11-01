@@ -39,11 +39,26 @@ internal sealed class VolumeResample : Instance<VolumeResample>
         if (key == _last)
             return;
 
-        Result.Value = new VdbVolume(T3.Core.DataTypes.Volume.Tools.VolumeDense.Resample(grid, voxelSize));
-        _last = key;
+        try
+        {
+            Result.Value = new VdbVolume(T3.Core.DataTypes.Volume.Tools.VolumeDense.Resample(grid, voxelSize));
+            _last = key;
+            _lastError = null;
+        }
+        catch (Exception e)
+        {
+            // An exception escaping an update is fatal to the editor. The core rejects results that
+            // would exhaust memory, so report that instead of passing a broken volume downstream.
+            Result.Value = null;
+            _last = default;
+            if (_lastError != e.Message)
+                Log.Warning($"VolumeResample failed: {e.Message}", this);
+            _lastError = e.Message;
+        }
     }
 
     private (VdbVolume?, float) _last = (null, -1);
+    private string? _lastError;
 
     [Input(Guid = "3b90bbbd-0607-5c2b-8e65-61c8a7e04030")]
     public readonly InputSlot<VdbVolume> Volume = new();

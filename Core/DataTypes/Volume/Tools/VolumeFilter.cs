@@ -185,12 +185,8 @@ public static class VolumeFilter
     private static VdbGrid<float> OffsetValues(VdbGrid<float> input, float offset)
     {
         var result = (VdbGrid<float>)input.CloneGrid();
-        foreach (var leaf in result.Tree.Leaves)
-        {
-            for (var i = 0; i < VdbLeafNode<float>.Size; i++)
-                leaf.Values[i] += offset;
-        }
-
+        // Includes the tiles that pruning collapsed uniform leaves into.
+        result.Tree.TransformValues(v => v + offset);
         return result;
     }
 }

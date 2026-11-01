@@ -71,7 +71,7 @@
         {
           "Id": "e16c0dad-a228-5a6f-964b-82986746836e"/*Path*/,
           "Type": "System.String",
-          "Value": "Examples:volumes/bunny.vdb"
+          "Value": "artonurban.VDB:waterfall_points.vdb"
         }
       ],
       "Outputs": []

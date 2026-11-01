@@ -268,14 +268,6 @@
       }
     },
     {
-      "ChildId": "75268f34-5013-4490-a4d3-001517bd40bf",
-      "SymbolName": "Lib.image.generate.load.LoadImage",
-      "Position": {
-        "X": 2215.0034,
-        "Y": 4401.4136
-      }
-    },
-    {
       "ChildId": "7cebca8d-e3c7-449d-a9df-02e123bf7987",
       "SymbolName": "Lib.render._dx11.api.Draw",
       "Position": {

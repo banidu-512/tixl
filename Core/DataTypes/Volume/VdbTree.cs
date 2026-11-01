@@ -420,6 +420,47 @@ public sealed class VdbTree<T>
         return true;
     }
 
+    /// <summary>
+    /// Applies a function to every stored value: root tiles, active internal tiles and all leaf
+    /// voxels (active and inactive). Pruning collapses uniform leaf regions into internal tiles,
+    /// so walking only <see cref="Leaves"/> would leave those regions unmodified.
+    /// </summary>
+    public void TransformValues(Func<T, T> transform)
+    {
+        foreach (var tile in Root.Tiles.Values)
+            tile.Value = transform(tile.Value);
+
+        foreach (var node2 in Root.Children.Values)
+        {
+            foreach (var slot in node2.ValueMask.OnBits())
+            {
+                if (!node2.ChildMask.IsOn(slot))
+                    node2.Values[slot] = transform(node2.Values[slot]);
+            }
+
+            foreach (var node1 in node2.Children)
+            {
+                if (node1 == null)
+                    continue;
+
+                foreach (var slot in node1.ValueMask.OnBits())
+                {
+                    if (!node1.ChildMask.IsOn(slot))
+                        node1.Values[slot] = transform(node1.Values[slot]);
+                }
+
+                foreach (var leaf in node1.Children)
+                {
+                    if (leaf == null)
+                        continue;
+
+                    for (var i = 0; i < VdbLeafNode<T>.Size; i++)
+                        leaf.Values[i] = transform(leaf.Values[i]);
+                }
+            }
+        }
+    }
+
     /// <summary>Total leaf voxels allocated (active + inactive), for memory diagnostics.</summary>
     public long AllocatedVoxelCount
     {

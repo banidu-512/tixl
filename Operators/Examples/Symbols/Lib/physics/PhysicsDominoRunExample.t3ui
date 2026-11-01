@@ -1,0 +1,247 @@
+{
+  "FormatVersion": 3,
+  "Id": "299a07d5-54ef-570a-897b-50c617da3b7d"/*PhysicsDominoRunExample*/,
+  "Description": "A row of fourteen dominoes toppled by the first one.\n\nThe first [RigidBody] starts tilted past its tipping point, falls onto its neighbour and sets off the chain. The dominoes only touch each other and the static ground.\n\nAKA: toppling, chain reaction, stacking\n\nTips\n- Rotation on a [RigidBody] sets the starting orientation.\n- Reduce the spacing to make the chain faster, or enlarge it until the chain stops.",
+  "InputUis": [],
+  "SymbolChildUis": [
+    {
+      "ChildId": "1240ea72-4611-5458-be2a-a30ed929a915",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 0.0,
+        "Y": 2940.0
+      }
+    },
+    {
+      "ChildId": "157a113a-8220-5924-8783-e04131d1f5f7",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 0.0,
+        "Y": 2280.0
+      }
+    },
+    {
+      "ChildId": "1f4f5ceb-6452-5871-9ca5-276110194bc5",
+      "SymbolName": "Lib.mesh.draw.DrawMeshAtPoints",
+      "Position": {
+        "X": 1500.0,
+        "Y": -150.0
+      }
+    },
+    {
+      "ChildId": "2245f8b4-88da-5933-904b-4af9c5e33a93",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 0.0,
+        "Y": 1620.0
+      }
+    },
+    {
+      "ChildId": "2b942964-d3c9-5a32-a0a2-579ad9f2b2c1",
+      "SymbolName": "Lib.render.transform.Group",
+      "Position": {
+        "X": 2100.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "37787d01-ff1d-58a1-83f6-b8a8808c4d0a",
+      "SymbolName": "Lib.mesh.draw.DrawMeshUnlit",
+      "Position": {
+        "X": 1800.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "43d2e03e-9bb7-5134-a8f9-24621936be39",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 0.0,
+        "Y": 1400.0
+      }
+    },
+    {
+      "ChildId": "4b91f63c-aab9-563c-9eb2-b3d844dd0f23",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 0.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "4c9396c8-4f8a-5a82-ad5e-49c79d4c47d7",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 0.0,
+        "Y": 1180.0
+      }
+    },
+    {
+      "ChildId": "5e476789-1d5f-515c-83cd-20029344956e",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 0.0,
+        "Y": 740.0
+      }
+    },
+    {
+      "ChildId": "6773d78a-cb23-5cdb-a4d9-ccaaa41d245f",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 0.0,
+        "Y": 3160.0
+      }
+    },
+    {
+      "ChildId": "6d25773b-703c-5748-b3cc-7c9a7f53f513",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 0.0,
+        "Y": 2060.0
+      }
+    },
+    {
+      "ChildId": "87799b3a-24c6-556e-825b-fce93d42b906",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 0.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "b482dd38-61ca-5704-a18f-12c8dfce4cc0",
+      "SymbolName": "Lib.mesh.generate.CubeMesh",
+      "Position": {
+        "X": 1200.0,
+        "Y": -300.0
+      }
+    },
+    {
+      "ChildId": "c272cf0a-c989-5d05-b330-c515e14ce76e",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 0.0,
+        "Y": 520.0
+      }
+    },
+    {
+      "ChildId": "c7e660e3-d12d-5936-91ce-f3539648785e",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 0.0,
+        "Y": 1840.0
+      }
+    },
+    {
+      "ChildId": "cae26ba6-c400-5c7d-ac31-2cd982cfafd9",
+      "SymbolName": "Lib.physics.PhysicsWorld",
+      "Position": {
+        "X": 1200.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "cde41892-6504-57dd-9291-a1693b6a5825",
+      "SymbolName": "Lib.render.camera.Camera",
+      "Position": {
+        "X": 2400.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "d43da1d2-13b4-58c1-b68e-9b0b1688b497",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 0.0,
+        "Y": 2500.0
+      }
+    },
+    {
+      "ChildId": "dcb498c6-b4bd-5636-818c-b8106068d382",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 0.0,
+        "Y": 2720.0
+      }
+    },
+    {
+      "ChildId": "e53892f7-2a85-5441-b3bd-7bc2870f6424",
+      "SymbolName": "Lib.image.generate.basic.RenderTarget",
+      "Position": {
+        "X": 2700.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "e6af1e78-450c-5090-8c94-1878ba297200",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 0.0,
+        "Y": 960.0
+      }
+    },
+    {
+      "ChildId": "ecf3f04d-fa43-592f-b377-38db435d6bcf",
+      "SymbolName": "Lib.mesh.generate.CubeMesh",
+      "Position": {
+        "X": 1200.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "ffdd9868-bdce-5523-b54a-b6cd2e63026b",
+      "SymbolName": "Lib.mesh.modify.TransformMesh",
+      "Position": {
+        "X": 1500.0,
+        "Y": 300.0
+      }
+    }
+  ],
+  "OutputUis": [
+    {
+      "OutputId": "7e1d8084-aac9-5250-864d-a0bb11a7d7fc"/*Output*/,
+      "Position": {
+        "X": 3000.0,
+        "Y": 0.0
+      }
+    }
+  ],
+  "Settings": {
+    "OutputWindows": [
+      {
+  "ShowGizmos": "On",
+  "TransformGizmoMode": "Move",
+  "BackgroundColor": [
+    0.1,
+    0.1,
+    0.1,
+    1.0
+  ],
+  "CameraControlMode": "AutoUseFirstCam",
+  "CameraPosition": [
+    0.0,
+    0.0,
+    2.4142134
+  ],
+  "CameraTarget": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "CameraRoll": 0.0,
+  "CameraSpeed": 1.0,
+  "ResolutionTitle": "Fill",
+  "ResolutionWidth": 0,
+  "ResolutionHeight": 0,
+  "ResolutionUseAsAspectRatio": true,
+  "IsPinned": true,
+  "PinnedInstancePath": [
+    "149ffe63-eb3a-a32c-7b37-4430a5a2c115"
+  ],
+  "PinnedOutputId": "00000000-0000-0000-0000-000000000000",
+  "PinnedEntityKind": "None",
+  "PinnedEntityId": "00000000-0000-0000-0000-000000000000"
+}
+    ]
+  }
+}

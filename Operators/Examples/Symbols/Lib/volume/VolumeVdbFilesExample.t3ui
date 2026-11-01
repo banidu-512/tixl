@@ -8,7 +8,6 @@
       "ChildId": "13f4e167-6b70-57df-ace0-f5182ba7a83f",
       "SymbolName": "Lib.volume.io.SaveVdb",
       "SectionId": "960f45a7-2a50-546c-8c28-de35a15dbb3a",
-      "Comment": "Set Save to true to write a re-saved copy next to the project.",
       "Position": {
         "X": 380.0,
         "Y": 430.0
@@ -17,7 +16,6 @@
     {
       "ChildId": "73761d62-4033-5776-a587-229f4d69d143",
       "SymbolName": "Lib.image.generate.basic.RenderTarget",
-      "Comment": "Renders the command stream into an image.",
       "Position": {
         "X": 1980.0,
         "Y": 160.0
@@ -27,7 +25,6 @@
       "ChildId": "7b20cf03-0f4e-5881-a367-ddeb547c3dba",
       "SymbolName": "Lib.geometry.GeometryToMesh",
       "SectionId": "5b84795a-4e3a-5440-8454-52afd35ebebf",
-      "Comment": "Uploads a mesh to the GPU as a drawable buffer.",
       "Position": {
         "X": 940.0,
         "Y": 160.0
@@ -37,7 +34,6 @@
       "ChildId": "afb0f9b2-4949-5b2b-a1a0-b7f8a43fec2a",
       "SymbolName": "Lib.mesh.draw.DrawMeshUnlit",
       "SectionId": "5b84795a-4e3a-5440-8454-52afd35ebebf",
-      "Comment": "Draws a mesh with a flat colour.",
       "Position": {
         "X": 1200.0,
         "Y": 160.0
@@ -47,7 +43,6 @@
       "ChildId": "b8072ce2-2849-590a-9d4a-06f43a1c4897",
       "SymbolName": "Lib.volume.io.LoadVdb",
       "SectionId": "960f45a7-2a50-546c-8c28-de35a15dbb3a",
-      "Comment": "Change this path to any .vdb on your machine. Empty GridName loads the first supported grid.",
       "Position": {
         "X": 60.0,
         "Y": 160.0
@@ -57,7 +52,6 @@
       "ChildId": "c2ed723d-a5d8-5574-b602-42ed4ba7759a",
       "SymbolName": "Lib.render.camera.OrbitCamera",
       "SectionId": "5b84795a-4e3a-5440-8454-52afd35ebebf",
-      "Comment": "Camera that orbits its target.",
       "Position": {
         "X": 1720.0,
         "Y": 160.0
@@ -67,7 +61,6 @@
       "ChildId": "ebf97806-d21b-5ba7-940e-8f7cb4cfe4e3",
       "SymbolName": "Lib.volume.convert.VolumeToMesh",
       "SectionId": "843dec31-af68-5440-bdf0-dfb69c3abb2e",
-      "Comment": "Works best on level sets. For fog volumes lower the isovalue or use VolumeToPoints.",
       "Position": {
         "X": 660.0,
         "Y": 160.0
@@ -77,7 +70,6 @@
       "ChildId": "f5a8e848-645b-543a-8944-e01975ce5d4b",
       "SymbolName": "Lib.volume.analyze.VolumeInfo",
       "SectionId": "960f45a7-2a50-546c-8c28-de35a15dbb3a",
-      "Comment": "Reports active voxels, bounds and memory. Connect LogToConsole to inspect in the log.",
       "Position": {
         "X": 380.0,
         "Y": 160.0

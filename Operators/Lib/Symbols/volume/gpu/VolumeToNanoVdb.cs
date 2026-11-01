@@ -46,8 +46,7 @@ internal sealed class VolumeToNanoVdb : Instance<VolumeToNanoVdb>
         var grid = volume?.GetFloatGrid();
         if (grid == null)
         {
-            Buffer.Value = null;
-            ShaderResourceView.Value = null;
+            ClearOutputs();
             _lastVolume = null;
             return;
         }
@@ -68,10 +67,10 @@ internal sealed class VolumeToNanoVdb : Instance<VolumeToNanoVdb>
             data.Write(nanoBuffer.Buffer, 0, nanoBuffer.Buffer.Length);
             data.Position = 0;
 
-            var withViews = new BufferWithViews();
-            ResourceManager.SetupStructuredBuffer(data, byteCount, sizeof(uint), ref _buffer);
-            withViews.Buffer = _buffer;
-            ResourceManager.CreateStructuredBufferSrv(_buffer, ref withViews.Srv);
+            // Reuse one BufferWithViews so the SRV and UAV are only recreated when the buffer
+            // itself is replaced; a fresh object every evaluation leaked one view per rebuild.
+            ResourceManager.SetupStructuredBuffer(data, byteCount, sizeof(uint), ref _bufferWithViews.Buffer);
+            ResourceManager.CreateStructuredBufferSrv(_bufferWithViews.Buffer, ref _bufferWithViews.Srv);
 
             // Tree node offsets, relative to the tree data start (first 32 bytes of TreeData).
             var treeStart = NanoVdbBuffer.GridDataSize;
@@ -80,8 +79,8 @@ internal sealed class VolumeToNanoVdb : Instance<VolumeToNanoVdb>
             var upperOffset = BitConverter.ToUInt64(nanoBuffer.Buffer, treeStart + 16);
             var rootOffset = BitConverter.ToUInt64(nanoBuffer.Buffer, treeStart + 24);
 
-            Buffer.Value = withViews;
-            ShaderResourceView.Value = withViews.Srv;
+            Buffer.Value = _bufferWithViews;
+            ShaderResourceView.Value = _bufferWithViews.Srv;
             TreeOffsets.Value = new Vector4(leafOffset, lowerOffset, upperOffset, rootOffset);
             VoxelCount.Value = summary.VoxelCount;
             VoxelSize.Value = grid.Transform.VoxelSize;
@@ -89,13 +88,29 @@ internal sealed class VolumeToNanoVdb : Instance<VolumeToNanoVdb>
         catch (Exception e)
         {
             Log.Warning($"VolumeToNanoVdb failed: {e.Message}", this);
-            Buffer.Value = null;
-            ShaderResourceView.Value = null;
+            ClearOutputs();
         }
     }
 
+    private void ClearOutputs()
+    {
+        Buffer.Value = null;
+        ShaderResourceView.Value = null;
+        TreeOffsets.Value = Vector4.Zero;
+        VoxelCount.Value = 0;
+        VoxelSize.Value = 0;
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+            _bufferWithViews.Dispose();
+
+        base.Dispose(disposing);
+    }
+
     private VdbVolume? _lastVolume;
-    private Buffer? _buffer;
+    private readonly BufferWithViews _bufferWithViews = new();
 
     [Input(Guid = "8a677502-fd4d-5284-ab06-fd659490a4fa")]
     public readonly InputSlot<VdbVolume> Volume = new();

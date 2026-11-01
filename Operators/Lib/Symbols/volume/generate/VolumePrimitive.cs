@@ -59,15 +59,22 @@ internal sealed class VolumePrimitive : Instance<VolumePrimitive>
             var grid = VolumePrimitives.Create(shape, size, voxelSize, center, band);
             Volume.Value = new VdbVolume(grid);
             _last = key;
+            _lastError = null;
         }
         catch (Exception e)
         {
-            Log.Warning($"VolumePrimitive failed: {e.Message}", this);
             Volume.Value = null;
+            if (_lastError != e.Message)
+                Log.Warning($"VolumePrimitive failed: {e.Message}", this);
+            _lastError = e.Message;
+
+            // Remember the failing inputs so an impossible voxel size does not retry every frame.
+            _last = key;
         }
     }
 
     private (VolumePrimitives.Shape, Vector3, Vector3, float, int) _last = ((VolumePrimitives.Shape)(-1), Vector3.Zero, Vector3.Zero, -1, -1);
+    private string? _lastError;
 
     [Input(Guid = "d2cf0b36-bd51-5f39-9ae4-ea24893f1222", MappedType = typeof(Shapes))]
     public readonly InputSlot<int> Shape = new();

@@ -41,21 +41,35 @@ internal sealed class VolumeToField : Instance<VolumeToField>
         if (key == _last)
             return;
 
-        var sampler = new VdbSampler(grid);
-        var worldBBox = grid.ActiveWorldBBox();
-        Field.Value = new ScalarField((in FieldSample sample) =>
-                                          {
-                                              var p = sample.Position;
-                                              if (p.X < worldBBox.Min.X || p.X > worldBBox.Max.X
-                                                  || p.Y < worldBBox.Min.Y || p.Y > worldBBox.Max.Y
-                                                  || p.Z < worldBBox.Min.Z || p.Z > worldBBox.Max.Z)
-                                                  return outsideValue;
-                                              return sampler.SampleWorld(p) * scale + offset;
-                                          });
-        _last = key;
+        try
+        {
+            var sampler = new VdbSampler(grid);
+            var worldBBox = grid.ActiveWorldBBox();
+            Field.Value = new ScalarField((in FieldSample sample) =>
+                                              {
+                                                  var p = sample.Position;
+                                                  if (p.X < worldBBox.Min.X || p.X > worldBBox.Max.X
+                                                      || p.Y < worldBBox.Min.Y || p.Y > worldBBox.Max.Y
+                                                      || p.Z < worldBBox.Min.Z || p.Z > worldBBox.Max.Z)
+                                                      return outsideValue;
+                                                  return sampler.SampleWorld(p) * scale + offset;
+                                              });
+            _last = key;
+            _lastError = null;
+        }
+        catch (Exception e)
+        {
+            // An exception escaping an update is fatal to the editor; degrade to an empty output.
+            Field.Value = null;
+            _last = default;
+            if (_lastError != e.Message)
+                Log.Warning($"VolumeToField failed: {e.Message}", this);
+            _lastError = e.Message;
+        }
     }
 
     private (VdbVolume?, float, float, float) _last = (null, float.NaN, float.NaN, float.NaN);
+    private string? _lastError;
 
     [Input(Guid = "b878129b-860f-5060-97e3-7ac2d09b3b9d")]
     public readonly InputSlot<VdbVolume> Volume = new();

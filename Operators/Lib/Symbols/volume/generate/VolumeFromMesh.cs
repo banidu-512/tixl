@@ -65,11 +65,21 @@ internal sealed class VolumeFromMesh : Instance<VolumeFromMesh>
             _lastVoxelSize = voxelSize;
             _lastBand = bandWidth;
             _lastMode = mode;
+            _lastError = null;
         }
         catch (Exception e)
         {
-            Log.Warning($"VolumeFromMesh failed: {e.Message}", this);
             Volume.Value = null;
+            if (_lastError != e.Message)
+                Log.Warning($"VolumeFromMesh failed: {e.Message}", this);
+            _lastError = e.Message;
+
+            // Remember the failing inputs so a bad mesh does not retry (and log) every frame.
+            _lastMesh = mesh;
+            _lastMeshVersion = mesh.Version;
+            _lastVoxelSize = voxelSize;
+            _lastBand = bandWidth;
+            _lastMode = mode;
         }
     }
 
@@ -78,6 +88,7 @@ internal sealed class VolumeFromMesh : Instance<VolumeFromMesh>
     private float _lastVoxelSize = -1;
     private int _lastBand = -1;
     private VolumeModes _lastMode = (VolumeModes)(-1);
+    private string? _lastError;
 
     [Input(Guid = "e4c8434c-5d4a-57b7-996e-5006785e8cf8")]
     public readonly InputSlot<MeshGeometry?> Geometry = new();

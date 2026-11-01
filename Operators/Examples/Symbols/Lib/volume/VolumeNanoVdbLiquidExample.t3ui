@@ -1,0 +1,127 @@
+{
+  "FormatVersion": 3,
+  "Id": "4a32ffa9-1654-5ffd-accc-46a58b58faa7"/*VolumeNanoVdbLiquidExample*/,
+  "Description": "A sloshing liquid rendered from a NanoVDB level set in a glass box.\n\nA box-shaped [VolumePrimitive] is displaced by an animated [VolumeNoise], flattened by [VolumeToNanoVdb] and raymarched by [NanoVdbRender]. Only the liquid is visible: SmokeDensity and FireIntensity are 0, and the renderer still gets the grid on all three inputs.\n\nAKA: water, level set, fluid surface\n\nTips\n- Increase VoxelSize on the primitive for faster rebuilds of an animated surface.",
+  "InputUis": [],
+  "SymbolChildUis": [
+    {
+      "ChildId": "0f9c0996-ce12-5336-be4f-f622366aa48c",
+      "SymbolName": "Lib.volume.modify.VolumeNoise",
+      "Position": {
+        "X": 1100.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "1c3eff39-fa73-55cf-8e9c-3db37b513c97",
+      "SymbolName": "Lib.volume.render.NanoVdbRender",
+      "Position": {
+        "X": 2000.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "2b5d59f9-cfa6-504c-8526-d55d3dadbbad",
+      "SymbolName": "Lib.volume.gpu.VolumeToNanoVdb",
+      "Position": {
+        "X": 1700.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "57329582-1d27-522a-a113-910f5b11a18b",
+      "SymbolName": "Lib.numbers.anim.time.Time",
+      "Position": {
+        "X": 0.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "5c83e394-a6d7-5a0d-af9b-721a01de1d4f",
+      "SymbolName": "Lib.image.generate.basic.RenderTarget",
+      "Position": {
+        "X": 2600.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "651541b1-c2cc-513e-965c-494c124fedd9",
+      "SymbolName": "Lib.numbers.anim.time.Time",
+      "Position": {
+        "X": 0.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "78c90b78-07bb-5213-ad9b-952e31600b44",
+      "SymbolName": "Lib.volume.generate.VolumePrimitive",
+      "Position": {
+        "X": 600.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "aba09aee-9b1f-5d7d-9d30-687be74bc254",
+      "SymbolName": "Types.Values.Vector3",
+      "Position": {
+        "X": 300.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "eb03dee4-d74d-57c9-8efd-13116826a1df",
+      "SymbolName": "Lib.render.camera.OrbitCamera",
+      "Position": {
+        "X": 2300.0,
+        "Y": 300.0
+      }
+    }
+  ],
+  "OutputUis": [
+    {
+      "OutputId": "e3ef9cf1-0e7a-512b-a295-0b2ac2449fac"/*ColorBuffer*/,
+      "Position": {
+        "X": 2900.0,
+        "Y": 300.0
+      }
+    }
+  ],
+  "Settings": {
+    "OutputWindows": [
+      {
+  "ShowGizmos": "On",
+  "TransformGizmoMode": "Move",
+  "BackgroundColor": [
+    0.1,
+    0.1,
+    0.1,
+    1.0
+  ],
+  "CameraControlMode": "AutoUseFirstCam",
+  "CameraPosition": [
+    0.0,
+    0.0,
+    2.4142134
+  ],
+  "CameraTarget": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "CameraRoll": 0.0,
+  "CameraSpeed": 1.0,
+  "ResolutionTitle": "Fill",
+  "ResolutionWidth": 0,
+  "ResolutionHeight": 0,
+  "ResolutionUseAsAspectRatio": true,
+  "IsPinned": true,
+  "PinnedInstancePath": [
+    "2da0afaf-bde5-dfc3-0988-ffe6c0b4038a"
+  ],
+  "PinnedOutputId": "00000000-0000-0000-0000-000000000000",
+  "PinnedEntityKind": "None",
+  "PinnedEntityId": "00000000-0000-0000-0000-000000000000"
+}
+    ]
+  }
+}

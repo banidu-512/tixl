@@ -29,6 +29,10 @@ internal sealed class SaveVdb : Instance<SaveVdb>
         var save = Save.GetValue(context);
         var zip = ZipCompression.GetValue(context);
 
+        // Report a finished write first, so its one-frame Saved pulse is not cleared below.
+        if (PublishCompletedSave())
+            return;
+
         if (!save)
         {
             _wasSave = false;
@@ -48,23 +52,66 @@ internal sealed class SaveVdb : Instance<SaveVdb>
         if (volume == null || volume.Grids.Count == 0 || string.IsNullOrEmpty(path))
             return;
 
-        try
+        if (_saveTask != null)
         {
-            var directory = System.IO.Path.GetDirectoryName(path);
-            if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
-                Directory.CreateDirectory(directory);
+            Log.Warning("SaveVdb: the previous save is still running; trigger again when it is done.", this);
+            return;
+        }
 
-            VdbFile.Save(volume, path, zip);
-            Log.Debug($"Saved {volume.Grids.Count} grid(s) to {path}", this);
-            Saved.Value = true;
-        }
-        catch (Exception e)
+        // Volumes are immutable, so serializing one on a worker thread is safe and keeps a large
+        // write from stalling the render thread.
+        _saveTask = Task.Run(() =>
+                                 {
+                                     SaveResult result;
+                                     try
+                                     {
+                                         var directory = System.IO.Path.GetDirectoryName(path);
+                                         if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
+                                             Directory.CreateDirectory(directory);
+
+                                         VdbFile.Save(volume, path, zip);
+                                         result = new SaveResult { GridCount = volume.Grids.Count, Path = path };
+                                     }
+                                     catch (Exception e)
+                                     {
+                                         result = new SaveResult { Error = e.Message, Path = path };
+                                     }
+
+                                     Saved.DirtyFlag.Invalidate();
+                                     return result;
+                                 });
+    }
+
+    private bool PublishCompletedSave()
+    {
+        if (_saveTask is not { IsCompleted: true })
+            return false;
+
+        var task = _saveTask;
+        _saveTask = null;
+
+        var result = task.Result;
+        if (result.Error != null)
         {
-            Log.Warning($"SaveVdb failed for {path}: {e.Message}", this);
+            Log.Warning($"SaveVdb failed for {result.Path}: {result.Error}", this);
+            Saved.Value = false;
+            return true;
         }
+
+        Log.Debug($"Saved {result.GridCount} grid(s) to {result.Path}", this);
+        Saved.Value = true;
+        return true;
+    }
+
+    private sealed class SaveResult
+    {
+        public int GridCount;
+        public string? Error;
+        public string Path = string.Empty;
     }
 
     private bool _wasSave;
+    private Task<SaveResult>? _saveTask;
 
     [Input(Guid = "6db4a395-2245-58f4-9db8-3e6e5ae814e1")]
     public readonly InputSlot<VdbVolume> Volume = new();
