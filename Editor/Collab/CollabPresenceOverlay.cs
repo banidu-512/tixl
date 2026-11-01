@@ -25,6 +25,15 @@ internal static class CollabPresenceOverlay
     public static void Draw(ProjectView projectView, IGraphView graphView, ImDrawListPtr drawList)
     {
         var manager = CollabManager.Instance;
+
+        // A failover session mirrors a machine 1:1; cursors, selections and badges would only add noise.
+        if (T3.Core.Show.FailoverArbiter.IsEnabled)
+        {
+            _peerVisuals.Clear();
+            CollabSpectator.Stop();
+            return;
+        }
+
         if (!manager.IsSessionActive)
         {
             _peerVisuals.Clear();

@@ -81,6 +81,13 @@ internal sealed class FailoverCollabLink
             _connectWatchTicks = 0;
         }
 
+        // The active machine is mirrored 1:1 onto the standby over the session it hosts.
+        if (FailoverArbiter.Role == FailoverArbiter.NodeRole.Active && collab.State == CollabManager.SessionState.Hosting)
+        {
+            FailoverMirror.Tick(collab);
+            FailoverMirror.TickTime(collab);
+        }
+
         // Cooldown between transitions: TCP teardown, the leaving session's cleanup and the
         // returning master opening its own listener all need a beat. One transition per tick.
         if (Environment.TickCount64 < _nextActionTicks)
