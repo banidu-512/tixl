@@ -72,35 +72,6 @@ cleanup before thresholding or normal generation.
 ![Filtered depth](shots/DepthFilter-output.png)
 *The filtered float depth (shown in the red channel, as float textures are).*
 
-## DepthToPosition
-
-Unprojects a depth map into camera-space positions on the GPU: red, green and blue hold x, y and
-the distance in front of the camera, alpha marks usable pixels. `FieldOfView` is the vertical angle
-(`DepthAnything.VerticalFov` provides the model's estimate), `DepthScale` sets the size of the
-reconstruction and `DepthIsDisparity` handles V2 output.
-
-**Output:** `PositionTexture` (RGBA32F).
-
-![DepthToPosition selected in the depth chain](shots/DepthToPosition-ui.png)
-*The unprojection parameters next to the position texture.*
-
-![Position texture](shots/DepthToPosition-output.png)
-*Camera-space positions; the blue channel grows with distance.*
-
-## DepthParallax
-
-Shifts an image by its depth as if the camera moved sideways, for 2.5D camera moves on stills or live
-video. `Offset` is the move, `FocalPlane` the depth that stays put, `MinDepth` and `MaxDepth` the depth
-range (wire them from `DepthAnything`) and `Steps` the search quality at depth edges.
-
-**Output:** `ResultTexture` (RGBA16F).
-
-![DepthParallax selected in the depth chain](shots/DepthParallax-ui.png)
-*The parallax inputs wired from DepthAnything, with a small horizontal offset.*
-
-![Parallax result](shots/DepthParallax-output.png)
-*The frog shifted against its background; the gather keeps depth edges from opening holes.*
-
 ## DepthThreshold
 
 Turns a depth range into a binary mask. With `UseNormalized` on, the thresholds refer to the frame's
@@ -144,61 +115,6 @@ setups that expect world- or view-space normals.
 
 ![Normal map](shots/DepthToNormal-output.png)
 *Normals reconstructed from the depth map.*
-
-## DepthScanBuffer
-
-A LiDAR-style scan buffer for depth: while `Capture` is on, every incoming depth frame is
-merged into one persistent map that is held on the outputs until `Reset` - the held scan
-survives a disconnected input, which is what makes "scan, then keep working with it"
-possible. `Mode` picks the merge: `Latest` freezes the most recent frame, `Average`
-averages all captures (per-pixel sample counts, so it is a true multi-frame average -
-the LiDAR-style denoiser for a still camera), `Min` keeps the nearest surface and `Max`
-the farthest. Merging runs on the CPU from a single in-flight readback, the same
-back-pressured pattern the other depth readers use.
-
-- `DepthMap` is the raw depth to scan (`DepthAnything.DepthTexture`, R32_Float).
-- `Confidence` (optional) gates samples below `ConfidenceThreshold` out of the merge.
-- `ColorMap` (optional) is held alongside the scan; it colors `PointCloud` and fills `HeldColor`.
-- `Capture` merges every new frame while on; `CaptureOnce` merges exactly one; `Reset` clears.
-- `Mode` picks Latest / Average / Min / Max; `MaxCaptures` stops merging after N frames (0 = keep going).
-- `Save` + `SaveFolder`/`SaveFileName`/`SaveFormat` write the scan: 16-bit PNG (`depth x SaveScale`, 1000 = millimeters) or exact raw float32 with a small `T3DS` header.
-- `FieldOfView`, `PointScale`, `PixelStride`, `MaxPoints` shape the `PointCloud` unprojection.
-- `CameraReference` (wire `DepthAnything.CamReference`) unprojects the cloud into the camera's world space (pose + frustum from `ICamera`); without it the cloud stays in DA3-style camera space (+Z forward, like `DepthToPoints`).
-
-**Output:** `HeldDepth` (R32_Float), `HeldColor` (RGBA8), `MaskTexture` (R8),
-`PointCloud` + `PointCount` (CPU-built point buffer - draws on D3D11 and Vulkan, unlike
-the compute-written buffer of `DepthToPoints` which needs Vulkan), `Coverage`, `Captures`,
-`SavedPath`.
-
-`StartRecord` / `StopRecord` latch a recording run (with a `Recording` output), so scanning
-can be driven like a LiDAR session instead of holding a bool. `SampleLifetime` gives every
-sample a lifetime in seconds: pixels not re-observed within that time are dropped, so the
-scan fades like a decaying sweep and `Coverage` / masks / point cloud follow. For stable
-points on a live scan, `PointGrid` picks Square or Hexagonal sampling (hex = offset rows at
-sqrt(3)/2 spacing, even neighbor distances) and `PointStability` blends rebuilt point
-positions toward their previous spots to minimize jitter.
-
-*Note:* the held outputs keep publishing the last scan even when the input stops; a size
-change of the incoming depth resets the buffer and starts a fresh scan.
-
-## DepthScan3D
-
-The 3D sibling of `DepthScanBuffer`: depth is unprojected into a persistent **world-space
-point cloud** instead of a held 2D map. The camera pose comes from
-`DepthAnything.CamReference` (DA3 estimates pose and vertical FOV per frame); without it,
-points stay in DA3 camera space like `DepthToPoints`.
-
-- Every valid pixel is unprojected and inserted into a voxel grid of `VoxelSize` (the min-distance knob: points never sit closer than that).
-- Overlapping observations merge: `Mode: Average` keeps a weighted running mean per voxel (true multi-frame denoising), `Mode: Replace` lets the latest observation win.
-- `Confidence` gating, `ColorMap` coloring and `SampleLifetime` aging work like in `DepthScanBuffer` - the cloud follows what the camera keeps seeing.
-- `StartRecord`/`StopRecord` latch a hands-free recording run; `MaxPoints` caps the cloud.
-
-**Output:** `Points` + `PointCount` (CPU-built Point buffer - draws on D3D11 and
-Vulkan), `Captures`, `PointsAdded`, `SavedPath`, `Recording`. Save writes a **PLY**
-(binary or ASCII) that opens in MeshLab, CloudCompare or Blender.
-
-*Note:* pixel-wise fusion assumes the pose source is consistent; DA3's monocular pose
-drifts over long hand scans, so slow scans or a turntable give the cleanest clouds.
 
 ## StreamDiffusion
 
