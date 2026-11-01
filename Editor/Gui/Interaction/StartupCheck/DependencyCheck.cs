@@ -1,0 +1,273 @@
+#nullable enable
+using System.ComponentModel;
+using System.Linq;
+using System.Diagnostics;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
+using T3.Core.Resource.ShaderCompiling;
+using T3.Core.SystemUi;
+using T3.Editor.App;
+
+namespace T3.Editor.Gui.Interaction.StartupCheck;
+
+/// <summary>
+/// Checks for the system dependencies TiXL can't bundle and explains what's missing, with the install command
+/// for the user's distribution (or Homebrew on macOS), before the main window is created.
+/// </summary>
+internal static class DependencyCheck
+{
+    private enum PackageFamily
+    {
+        Other,
+        Arch,
+        Debian,
+        Fedora,
+        Nix,
+    }
+
+    /// <param name="Install">
+    /// Installs the dependency without a package manager, where that is possible at all. Returns null on
+    /// success, otherwise why it failed.
+    /// </param>
+    private readonly record struct MissingDependency(string Description, string InstallHint, bool PreventsStart,
+                                                     Func<string?>? Install = null);
+
+    /// <summary>Returns false if TiXL should quit: the user chose to, or a missing dependency prevents starting.</summary>
+    public static bool Run()
+    {
+        // One retry: after installing, what was missing should now be found, and anything still missing is
+        // reported the ordinary way rather than offered again.
+        return Run(offerToInstall: true);
+    }
+
+    private static bool Run(bool offerToInstall)
+    {
+        var missing = new List<MissingDependency>();
+        CheckDotNetSdk(missing);
+
+        if (ProgramWindows.UseVulkanBackend)
+        {
+            CheckVulkanLoader(missing);
+            CheckSlangCompiler(missing);
+        }
+
+        if (missing.Count == 0)
+            return true;
+
+        var message = new StringBuilder();
+        var preventsStart = false;
+        foreach (var dependency in missing)
+        {
+            Log.Warning($"Missing dependency: {dependency.Description} {dependency.InstallHint}");
+            message.Append(dependency.Description).Append('\n').Append(dependency.InstallHint).Append("\n\n");
+            preventsStart |= dependency.PreventsStart;
+        }
+
+        if (preventsStart)
+        {
+            message.Append("TiXL can't start without it.");
+            BlockingWindow.Instance.ShowMessageBox(message.ToString(), "Missing Dependencies", "Quit");
+            return false;
+        }
+
+        message.Append("TiXL can start, but the features that need it may not work correctly.");
+
+        const string installChoice = "Download and install";
+        var canInstallSomething = offerToInstall && missing.Any(d => d.Install != null);
+        var buttons = canInstallSomething
+                          ? new[] { installChoice, "Continue", "Quit" }
+                          : new[] { "Continue", "Quit" };
+
+        var choice = BlockingWindow.Instance.ShowMessageBox(message.ToString(), "Missing Dependencies", buttons);
+
+        if (choice == installChoice)
+        {
+            InstallWhatWeCan(missing);
+            return Run(offerToInstall: false);
+        }
+
+        return choice != "Quit";
+    }
+
+    private static void InstallWhatWeCan(List<MissingDependency> missing)
+    {
+        var failures = new StringBuilder();
+        foreach (var dependency in missing)
+        {
+            var failure = dependency.Install?.Invoke();
+            if (failure == null)
+                continue;
+
+            Log.Warning($"Could not install: {dependency.Description} {failure}");
+            failures.Append(dependency.Description).Append('\n').Append(failure).Append("\n\n");
+        }
+
+        if (failures.Length > 0)
+        {
+            BlockingWindow.Instance.ShowMessageBox(failures.ToString(), "Installation failed");
+        }
+    }
+
+    /** User projects and package updates are compiled with the dotnet CLI, the same way <c>Compiler</c> calls it. */
+    private static void CheckDotNetSdk(List<MissingDependency> missing)
+    {
+        string sdkList;
+        try
+        {
+            using var process = Process.Start(new ProcessStartInfo("dotnet", "--list-sdks")
+                                                  {
+                                                      RedirectStandardOutput = true,
+                                                      UseShellExecute = false,
+                                                      CreateNoWindow = true,
+                                                  });
+            sdkList = process?.StandardOutput.ReadToEnd() ?? string.Empty;
+            process?.WaitForExit(SdkQueryTimeoutMs);
+        }
+        catch (Win32Exception)
+        {
+            sdkList = string.Empty;
+        }
+
+        // Each line reads "10.0.112 [/usr/share/dotnet/sdk]".
+        foreach (var line in sdkList.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var majorEnd = line.IndexOf('.');
+            if (majorEnd > 0 && int.TryParse(line.AsSpan(0, majorEnd), out var major) && major >= RequiredSdkMajorVersion)
+                return;
+        }
+
+        missing.Add(new MissingDependency($"The .NET {RequiredSdkMajorVersion} SDK was not found.",
+                                          InstallHint(arch: "sudo pacman -S dotnet-sdk",
+                                                      debian: $"sudo apt install dotnet-sdk-{RequiredSdkMajorVersion}.0",
+                                                      fedora: $"sudo dnf install dotnet-sdk-{RequiredSdkMajorVersion}.0",
+                                                      nix: $"dotnetCorePackages.sdk_{RequiredSdkMajorVersion}_0",
+                                                      other: $"https://dotnet.microsoft.com/download/dotnet/{RequiredSdkMajorVersion}.0",
+                                                      mac: $"the Arm64 installer from https://dotnet.microsoft.com/download/dotnet/{RequiredSdkMajorVersion}.0"),
+                                          PreventsStart: false));
+    }
+
+    private static void CheckVulkanLoader(List<MissingDependency> missing)
+    {
+        var loaderName = OperatingSystem.IsWindows() ? "vulkan-1.dll"
+                         : OperatingSystem.IsMacOS() ? T3.Graphics.Vulkan.VulkanLoader.FindLibraryPath() ?? "libvulkan.1.dylib"
+                         : "libvulkan.so.1";
+        if (NativeLibrary.TryLoad(loaderName, out var handle))
+        {
+            NativeLibrary.Free(handle);
+            return;
+        }
+
+        missing.Add(new MissingDependency("The Vulkan loader was not found.",
+                                          InstallHint(arch: "sudo pacman -S vulkan-icd-loader",
+                                                      debian: "sudo apt install libvulkan1 mesa-vulkan-drivers",
+                                                      fedora: "sudo dnf install vulkan-loader mesa-vulkan-drivers",
+                                                      nix: "vulkan-loader, and hardware.graphics.enable = true",
+                                                      other: "Install your GPU driver's Vulkan support.",
+                                                      mac: "brew install molten-vk vulkan-loader, or the Vulkan SDK from https://vulkan.lunarg.com/sdk/home#mac"),
+                                          PreventsStart: true));
+    }
+
+    /** Also flags a slangc of another version: it can generate different code than the shaders were checked against. */
+    private static void CheckSlangCompiler(List<MissingDependency> missing)
+    {
+        const string pinned = SlangShaderCompiler.PinnedVersion;
+        var compiler = SlangShaderCompiler.FindCompiler();
+
+        if (compiler == null)
+        {
+            missing.Add(new MissingDependency($"The Slang shader compiler (slangc {pinned}) was not found.",
+                                              SlangInstaller.CanInstall
+                                                  ? $"TiXL can download it into {SlangInstaller.TargetDirectory}."
+                                                  : InstallHint(arch: $"sudo pacman -S shader-slang, if it is at version {pinned}. Otherwise: {SlangReleaseHint}",
+                                                                debian: SlangReleaseHint,
+                                                                fedora: SlangReleaseHint,
+                                                                nix: "shader-slang",
+                                                                other: SlangReleaseHint),
+                                              PreventsStart: false,
+                                              Install: SlangInstaller.CanInstall ? SlangInstaller.TryInstall : null));
+            return;
+        }
+
+        var version = SlangShaderCompiler.QueryVersion(compiler);
+
+        // Patch releases (2026.18.3) only fix bugs on the pinned line.
+        if (version == pinned || version?.StartsWith(pinned + ".", StringComparison.Ordinal) == true)
+            return;
+
+        // A package that ships its distribution's Slang says so with TIXL_SLANGC_UNPINNED, and then the
+        // version belongs in the log rather than in a dialog its users can do nothing about.
+        if (SlangShaderCompiler.AcceptsUnpinnedVersion)
+        {
+            Log.Info($"TIXL_SLANGC_UNPINNED: compiling shaders with {compiler}, version {version ?? "unknown"} instead of the pinned {pinned}.");
+            return;
+        }
+
+        missing.Add(new MissingDependency($"{compiler} reports version {version ?? "unknown"}, but TiXL expects Slang {pinned}.",
+                                          $"Install: {SlangReleaseHint}",
+                                          PreventsStart: false));
+    }
+
+    private static string InstallHint(string arch, string debian, string fedora, string nix, string other, string? mac = null)
+    {
+        if (OperatingSystem.IsWindows())
+            return $"Install: {other}";
+
+        if (OperatingSystem.IsMacOS())
+            return $"Install: {mac ?? other}";
+
+        return DetectPackageFamily() switch
+                   {
+                       PackageFamily.Arch   => $"Install: {arch}",
+                       PackageFamily.Debian => $"Install: {debian}",
+                       PackageFamily.Fedora => $"Install: {fedora}",
+                       PackageFamily.Nix    => $"Add to your Nix packages: {nix}",
+                       _                    => $"Install: {other}",
+                   };
+    }
+
+    /** Derivatives (Manjaro, Mint, Nobara, ...) name their parent in ID_LIKE. */
+    private static PackageFamily DetectPackageFamily()
+    {
+        string[] lines;
+        try
+        {
+            lines = File.ReadAllLines("/etc/os-release");
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            return PackageFamily.Other;
+        }
+
+        var ids = new StringBuilder();
+        foreach (var line in lines)
+        {
+            if (line.StartsWith("ID=", StringComparison.Ordinal) || line.StartsWith("ID_LIKE=", StringComparison.Ordinal))
+                ids.Append(line.AsSpan(line.IndexOf('=') + 1).Trim('"')).Append(' ');
+        }
+
+        foreach (var id in ids.ToString().Split(' ', StringSplitOptions.RemoveEmptyEntries))
+        {
+            switch (id)
+            {
+                case "arch":
+                    return PackageFamily.Arch;
+                case "debian" or "ubuntu":
+                    return PackageFamily.Debian;
+                case "fedora" or "rhel":
+                    return PackageFamily.Fedora;
+                case "nixos":
+                    return PackageFamily.Nix;
+            }
+        }
+
+        return PackageFamily.Other;
+    }
+
+    private const int RequiredSdkMajorVersion = 10;
+    private const int SdkQueryTimeoutMs = 5000;
+
+    private static string SlangReleaseHint =>
+        $"Extract the release from https://github.com/shader-slang/slang/releases/tag/v{SlangShaderCompiler.PinnedVersion} "
+        + $"into {SlangShaderCompiler.PinnedInstallDirectory}, so slangc ends up in its bin folder. Or point TIXL_SLANGC at slangc.";
+}

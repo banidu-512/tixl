@@ -304,8 +304,10 @@ Resources/user/pixtur/VJ/agingCombined
 Resources/user/pixtur/VJ/CatMadness
 Resources/user/pixtur/VJ/meshes
 ImageSequence
-Installer/Output
-Installer/dependencies/downloads
+Installer/Windows/Output
+Installer/macOS/Output
+Installer/Linux/Output
+Installer/Windows/dependencies/downloads
 
 shadertoolsconfig.json
 .temp/
@@ -324,4 +326,9 @@ shadertoolsconfig.json
 **/swiftcam.dll
 # Generated video proxies — regenerable, machine-local (suffix from VideoPlayback.ProxySuffix)
 *.proxy.mov
+.DS_Store
+
+# Nix build symlinks
+result
+result-*
 /Installer/Linux/Output
