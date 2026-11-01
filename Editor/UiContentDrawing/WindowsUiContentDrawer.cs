@@ -3,10 +3,9 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Threading;
 using ImGuiNET;
-using SharpDX.D3DCompiler;
-using SharpDX.Direct3D11;
-using SharpDX.DXGI;
-using SharpDX.Mathematics.Interop;
+using T3.Graphics.Compat;
+using T3.Graphics;
+using System.Numerics;
 using T3.Editor.Gui.Windows.OutputSetup;
 using T3.Core.Operator.Slots;
 using T3.Core.Rendering;
@@ -14,6 +13,7 @@ using T3.Core.Resource;
 using T3.Core.SystemUi;
 using T3.Editor.App;
 using T3.Editor.Gui;
+using T3.Editor.Gui.Styling;
 using T3.Editor.Gui.UiHelpers;
 using T3.Editor.Gui.Windows;
 using T3.Editor.Gui.Windows.Analyze;
@@ -21,9 +21,10 @@ using T3.Editor.Gui.Windows.Output;
 using T3.Editor.SystemUi;
 using T3.Editor.UiModel.ProjectHandling;
 using T3.SystemUi;
-using Buffer = SharpDX.Direct3D11.Buffer;
-using Device = SharpDX.Direct3D11.Device;
+using Buffer = T3.Graphics.Compat.Buffer;
+using Device = T3.Graphics.Compat.Device;
 using Vector2 = System.Numerics.Vector2;
+using ShaderCompiler = T3.Core.Resource.ShaderCompiling.ShaderCompiler;
 
 namespace T3.Editor.UiContentDrawing;
 
@@ -34,7 +35,7 @@ internal sealed class WindowsUiContentDrawer : IUiContentDrawer<Device>
 {
     private IntPtr _imguiContext;
     private object _contextLock;
-    private readonly ShaderResourceView _customImageView = new ShaderResourceView(IntPtr.Zero);
+    private ShaderResourceView? _customImageView;
 
     #region Init
     public void Initialize(Device device, int width, int height, object contextLock, out IntPtr imguiContext)
@@ -78,6 +79,11 @@ internal sealed class WindowsUiContentDrawer : IUiContentDrawer<Device>
                              | ImGuiBackendFlags.RendererHasVtxOffset;
             io.ConfigFlags |= ImGuiConfigFlags.DockingEnable;
 
+            // SdlKeyMap already turns Cmd into Ctrl on macOS; ImGui's own swap would turn it back.
+            io.ConfigMacOSXBehaviors = false;
+            SdlImGuiInput.InstallClipboard();
+            SdlImGuiInput.InstallGestures();
+
             // ImGui 1.91 error-recovery: stack imbalances (Push/Pop, Begin/End, etc.)
             // are auto-fixed and logged. Recoverable errors appear as:
             //   - Red warning bar in the editor (ConfigErrorRecoveryEnableTooltip)
@@ -113,12 +119,25 @@ internal sealed class WindowsUiContentDrawer : IUiContentDrawer<Device>
         if (Program.IsShuttingDown)
             return;
 
-        // Frame-pacing wait via DXGI's FrameLatencyWaitableObject. Must run *before* any other
-        // per-frame work so the loop is locked to the swap chain's signalled cadence rather than
-        // queueing up speculatively. No-op if the waitable wasn't enabled at swap-chain creation.
-        ProgramWindows.WaitForFrameLatency();
+        // The frame-latency wait already happened in the render loop, before this frame's input was read.
         StallWatchdog.NotifyFrameStarted();
 
+        // Vulkan records a frame into one command buffer and submits it after the swap chains are presented;
+        // under D3D11 the bracket costs nothing.
+        var device = Program.Device!;
+        device.BeginFrame();
+        try
+        {
+            RenderFrame();
+        }
+        finally
+        {
+            device.EndFrame();
+        }
+    }
+
+    private void RenderFrame()
+    {
         lock (_contextLock)
         {
             ImGui.SetCurrentContext(_imguiContext);
@@ -126,6 +145,14 @@ internal sealed class WindowsUiContentDrawer : IUiContentDrawer<Device>
 
             if (ProgramWindows.Main.IsMinimized && UserSettings.Config.SuspendRenderingWhenHidden)
             {
+                // A minimized editor must keep the show alive: laser outputs stream from the
+                // setup, and skipping their pump stops fresh frames — the streams' frame
+                // watchdog blanks the beam after its grace period. The laser pump is pure
+                // graph evaluation (no ImGui), so it runs here at the sleep cadence (~10 Hz);
+                // the streams loop their last frame in between.
+                if (T3.Core.Output.LaserDriverEnabled.Enabled)
+                    LaserDriver.Update();
+
                 Thread.Sleep(100);
                 return;
             }
@@ -148,7 +175,7 @@ internal sealed class WindowsUiContentDrawer : IUiContentDrawer<Device>
 
             // Release any modifier whose key-up we never saw (Alt+Tab between the main and viewer windows is
             // the usual culprit) before it can strand canvas interaction for the whole frame.
-            ImGuiDx11RenderForm.ReconcileStuckModifiers();
+            SdlImGuiInput.ReconcileStuckModifiers();
 
             ImGui.NewFrame();
 
@@ -156,11 +183,18 @@ internal sealed class WindowsUiContentDrawer : IUiContentDrawer<Device>
             // step with the live send ops — both independent of which windows are open.
             OutputSetupHandling.UpdateFrame();
             ContentSourceSync.UpdateFrame();
+            LaserRoutingSync.UpdateFrame();
 
             // Drive projection-mapping outputs: renders each bound output's composite every frame
             // (so its content evaluates even when nothing shows it) and hands it to that output's
             // display window. Must run before any viewer back buffer is bound below.
             OutputPresentation.UpdatePresentation();
+
+            // Laser outputs present no composite — their frame streams from the camera routed to
+            // them in the graph. Pump those streams here, every frame, so lasers stream whatever
+            // view the editor shows.
+            if (T3.Core.Output.LaserDriverEnabled.Enabled)
+                LaserDriver.Update();
 
             DrawOutputWindows();
 
@@ -210,10 +244,11 @@ internal sealed class WindowsUiContentDrawer : IUiContentDrawer<Device>
             try
             {
                 T3Ui.ProcessFrame();
+                ProgramWindows.Main.SyncTitleBarColor(UiColors.BackgroundGaps);
                 ProgramWindows.RefreshViewport();
 
                 ImGui.Render();
-                ProgramWindows.Main.Form.ApplyRequestedCursor();
+                SdlImGuiInput.ApplyRequestedCursor();
 
                 // Presenting the stall overlay discarded the cleared back buffer of this frame.
                 if (StallWatchdog.NotifyRenderingBackBuffer())
@@ -321,8 +356,8 @@ internal sealed class WindowsUiContentDrawer : IUiContentDrawer<Device>
         }
 
         // Copy and convert all vertices into a single contiguous buffer
-        _deviceContext.MapSubresource(_vb, MapMode.WriteDiscard, SharpDX.Direct3D11.MapFlags.None, out var vbStream);
-        _deviceContext.MapSubresource(_ib, MapMode.WriteDiscard, SharpDX.Direct3D11.MapFlags.None, out var ibStream);
+        _deviceContext.MapSubresource(_vb, MapMode.WriteDiscard, T3.Graphics.Compat.MapFlags.None, out var vbStream);
+        _deviceContext.MapSubresource(_ib, MapMode.WriteDiscard, T3.Graphics.Compat.MapFlags.None, out var ibStream);
         for (int n = 0; n < drawData.CmdListsCount; n++)
         {
             ImDrawListPtr cmdList = drawData.CmdLists[n];
@@ -336,10 +371,10 @@ internal sealed class WindowsUiContentDrawer : IUiContentDrawer<Device>
         _deviceContext.UnmapSubresource(_ib, 0);
     }
 
-    private readonly SharpDX.Mathematics.Interop.RawRectangle[] _prevScissorRects = new SharpDX.Mathematics.Interop.RawRectangle[16];
+    private readonly T3.Graphics.ScissorRect[] _prevScissorRects = new T3.Graphics.ScissorRect[16];
 
     //Note : mrvux : unless you use multi viewport, you can set to 1, I leave 16 for safety here since it's only called once per frame, better than accumulating GC
-    private readonly SharpDX.Mathematics.Interop.RawViewportF[] _prevViewports = new SharpDX.Mathematics.Interop.RawViewportF[16];
+    private readonly T3.Graphics.Viewport[] _prevViewports = new T3.Graphics.Viewport[16];
 
     private void DrawData(ImDrawDataPtr drawData)
     {
@@ -350,30 +385,9 @@ internal sealed class WindowsUiContentDrawer : IUiContentDrawer<Device>
 
         ResourceUtils.WriteDynamicBufferData<Matrix4x4>(_deviceContext, _vertexConstantBuffer, projectionMatrix);
 
-        // Backup DX state that will be modified to restore it afterwards (unfortunately this is very ugly looking and verbose. Close your eyes!)
-        _deviceContext.Rasterizer.GetScissorRectangles(_prevScissorRects);
-        _deviceContext.Rasterizer.GetViewports(_prevViewports);
-        var prevRasterizerState = _deviceContext.Rasterizer.State;
-        var prevBlendState = _deviceContext.OutputMerger.BlendState;
-        var prevBlendFactor = _deviceContext.OutputMerger.BlendFactor;
-        var prevSampleMask = _deviceContext.OutputMerger.BlendSampleMask;
-        var prevDepthStencilState = _deviceContext.OutputMerger.DepthStencilState;
-        var prevStencilRef = _deviceContext.OutputMerger.DepthStencilReference;
-        var prevPsShaderResource = _deviceContext.PixelShader.GetShaderResources(0, 1)[0];
-        var prevPsSampler = _deviceContext.PixelShader.GetSamplers(0, 1);
-        var prevPs = _deviceContext.PixelShader.Get();
-        var prevVs = _deviceContext.VertexShader.Get();
-        var prevHs = _deviceContext.HullShader.Get();
-        var prevGs = _deviceContext.GeometryShader.Get();
-        var prevDs = _deviceContext.DomainShader.Get();
-        var prevVsConstantBuffer = _deviceContext.VertexShader.GetConstantBuffers(0, 1);
-        var prevPrimitiveTopology = _deviceContext.InputAssembler.PrimitiveTopology;
-
-        _deviceContext.InputAssembler.GetIndexBuffer(out var prevIndexBuffer, out var prevIndexBufferFormat, out var prevIndexBufferOffset);
-        Buffer[] prevVertexBuffer = new Buffer[1];
-        int[] prevVertexBufferOffset = new int[1], prevVertexBufferStride = new int[1];
-        _deviceContext.InputAssembler.GetVertexBuffers(0, 1, prevVertexBuffer, prevVertexBufferOffset, prevVertexBufferStride);
-        var prevInputLayout = _deviceContext.InputAssembler.InputLayout;
+        // Everything ImGui touches is saved here and put back at the end of the method. This replaces two
+        // dozen reads from the driver, which is a thing Vulkan cannot do at all.
+        _deviceContext.PushState(StateGroups.All);
 
         // Setup viewport
         _deviceContext.Rasterizer.SetViewport(0, 0, drawData.DisplaySize.X, drawData.DisplaySize.Y);
@@ -384,7 +398,7 @@ internal sealed class WindowsUiContentDrawer : IUiContentDrawer<Device>
         _deviceContext.InputAssembler.InputLayout = _inputLayout;
         _deviceContext.InputAssembler.SetVertexBuffers(0, new VertexBufferBinding(_vb, stride, offset));
         _deviceContext.InputAssembler.SetIndexBuffer(_ib, Format.R16_UInt, 0);
-        _deviceContext.InputAssembler.PrimitiveTopology = SharpDX.Direct3D.PrimitiveTopology.TriangleList;
+        _deviceContext.InputAssembler.PrimitiveTopology = T3.Graphics.Compat.PrimitiveTopology.TriangleList;
         _deviceContext.VertexShader.SetShader(_vertexShader, null, 0);
         _deviceContext.VertexShader.SetConstantBuffer(0, _vertexConstantBuffer);
         _deviceContext.PixelShader.SetShader(_pixelShader, null, 0);
@@ -397,7 +411,7 @@ internal sealed class WindowsUiContentDrawer : IUiContentDrawer<Device>
 
         // Setup render state
         // Note : mrvux do not use properties for blend state / blend, since the native functions are packed with the 
-        _deviceContext.OutputMerger.SetBlendState(_blendState, new RawColor4(0.0f, 0.0f, 0.0f, 0.0f)); //sample mask to -1, no GC     
+        _deviceContext.OutputMerger.SetBlendState(_blendState, new Vector4(0.0f, 0.0f, 0.0f, 0.0f)); //sample mask to -1, no GC     
         _deviceContext.OutputMerger.SetDepthStencilState(_depthStencilState, 0);
         _deviceContext.Rasterizer.State = _rasterizerState;
 
@@ -434,7 +448,8 @@ internal sealed class WindowsUiContentDrawer : IUiContentDrawer<Device>
 
                     //This set native pointer without using QueryInterface or new, which allows a "GC free" cast
 
-                    _customImageView.NativePointer = cmd.TextureId;
+                    // The draw list carries an id, not a pointer: the view it names may already be gone.
+                    _customImageView = ShaderResourceView.FromImGuiTextureId((ulong)cmd.TextureId);
                     _deviceContext.PixelShader.SetShaderResource(0, _customImageView);
                     _deviceContext.DrawIndexed((int)cmd.ElemCount,
                                                idxOffset + (int)cmd.IdxOffset,
@@ -442,7 +457,7 @@ internal sealed class WindowsUiContentDrawer : IUiContentDrawer<Device>
 
                     //Set to IntPtr.Zero since that would create issue when disposing (on application Exit)
                     //Internally it only resets the pointer and deref the device if it was queried (which in this case, did not)
-                    _customImageView.NativePointer = IntPtr.Zero;
+                    _customImageView = null;
                 }
             }
 
@@ -451,26 +466,7 @@ internal sealed class WindowsUiContentDrawer : IUiContentDrawer<Device>
         }
 
         // Restore modified DX state
-        _deviceContext.Rasterizer.SetScissorRectangles(_prevScissorRects);
-        _deviceContext.Rasterizer.SetViewports(_prevViewports);
-        _deviceContext.Rasterizer.State = prevRasterizerState;
-        _deviceContext.OutputMerger.BlendState = prevBlendState;
-        _deviceContext.OutputMerger.BlendFactor = prevBlendFactor;
-        _deviceContext.OutputMerger.BlendSampleMask = prevSampleMask;
-        _deviceContext.OutputMerger.DepthStencilState = prevDepthStencilState;
-        _deviceContext.OutputMerger.DepthStencilReference = prevStencilRef;
-        _deviceContext.PixelShader.SetShaderResources(0, prevPsShaderResource);
-        _deviceContext.PixelShader.SetSamplers(0, prevPsSampler);
-        _deviceContext.PixelShader.Set(prevPs);
-        _deviceContext.VertexShader.Set(prevVs);
-        _deviceContext.DomainShader.Set(prevDs);
-        _deviceContext.HullShader.Set(prevHs);
-        _deviceContext.GeometryShader.Set(prevGs);
-        _deviceContext.VertexShader.SetConstantBuffers(0, prevVsConstantBuffer);
-        _deviceContext.InputAssembler.PrimitiveTopology = prevPrimitiveTopology;
-        _deviceContext.InputAssembler.SetIndexBuffer(prevIndexBuffer, prevIndexBufferFormat, prevIndexBufferOffset);
-        _deviceContext.InputAssembler.SetVertexBuffers(0, prevVertexBuffer, prevVertexBufferOffset, prevVertexBufferStride);
-        _deviceContext.InputAssembler.InputLayout = prevInputLayout;
+        _deviceContext.PopState();
     }
 
     private void SetPerFrameImGuiData(float deltaSeconds)
@@ -541,7 +537,7 @@ internal sealed class WindowsUiContentDrawer : IUiContentDrawer<Device>
         context.VertexShader.SetShader(_vertexShader, null, 0);
         context.PixelShader.SetShader(_pixelShader, null, 0);
         context.PixelShader.SetSampler(0, _imGuiSampler);
-        context.OutputMerger.SetBlendState(_blendState, new RawColor4(0.0f, 0.0f, 0.0f, 0.0f));
+        context.OutputMerger.SetBlendState(_blendState, new Vector4(0.0f, 0.0f, 0.0f, 0.0f));
         context.OutputMerger.SetDepthStencilState(_depthStencilState, 0);
         context.Rasterizer.State = _rasterizerState;
         return true;
@@ -573,11 +569,13 @@ internal sealed class WindowsUiContentDrawer : IUiContentDrawer<Device>
                 {
                 float4x4 ProjectionMatrix; 
                 };
+                // In the order of the input layout and of ImDrawVert. Vulkan binds vertex attributes by position
+                // rather than by semantic, so this order has to match; D3D11 matches semantics and does not mind.
                 struct VS_INPUT
                 {
                 float2 pos : POSITION;
-                float4 col : COLOR0;
                 float2 uv  : TEXCOORD0;
+                float4 col : COLOR0;
                 };
                 
                 struct PS_INPUT
@@ -596,16 +594,13 @@ internal sealed class WindowsUiContentDrawer : IUiContentDrawer<Device>
                 return output;
                 }";
 
-        _vertexShaderBlob = ShaderBytecode.Compile(vertexShader, "main", "vs_4_0", ShaderFlags.None, EffectFlags.None);
-        if (_vertexShaderBlob == null)
+        if (!TryCompile(vertexShader, "imgui-vs.hlsl", out _vertexShaderResource))
             return false;
 
-        _vertexShader = new VertexShader(_device, _vertexShaderBlob);
-        if (_vertexShader == null)
-            return false;
+        _vertexShader = _vertexShaderResource;
 
-        // Create the input layout
-        _inputLayout = new InputLayout(_device, ShaderSignature.GetInputSignature(_vertexShaderBlob),
+        // The backend matches the layout against the shader's own reflection, so it needs no bytecode here.
+        _inputLayout = new InputLayout(_device, [],
                                        new[]
                                            {
                                                new InputElement("POSITION", 0, Format.R32G32_Float, 0, 0),
@@ -624,8 +619,8 @@ internal sealed class WindowsUiContentDrawer : IUiContentDrawer<Device>
                 float4 col : COLOR0;
                 float2 uv  : TEXCOORD0;
                 };
-                sampler sampler0;
-                Texture2D texture0;
+                sampler sampler0 : register(s0);
+                Texture2D texture0 : register(t0);
                 
                 float4 main(PS_INPUT input) : SV_Target
                 {
@@ -633,13 +628,10 @@ internal sealed class WindowsUiContentDrawer : IUiContentDrawer<Device>
                 return out_col; 
                 }";
 
-        _pixelShaderBlob = ShaderBytecode.Compile(pixelShader, "main", "ps_4_0", ShaderFlags.None, EffectFlags.None);
-        if (_pixelShaderBlob == null)
+        if (!TryCompile(pixelShader, "imgui-ps.hlsl", out _pixelShaderResource))
             return false;
 
-        _pixelShader = new PixelShader(_device, _pixelShaderBlob);
-        if (_pixelShader == null)
-            return false;
+        _pixelShader = _pixelShaderResource;
 
         // Create the blending setup
         var blendDesc = new BlendStateDescription() { AlphaToCoverageEnable = false, IndependentBlendEnable = false };
@@ -686,6 +678,21 @@ internal sealed class WindowsUiContentDrawer : IUiContentDrawer<Device>
         DisposeDeviceObjects();
     }
 
+    /// <summary>
+    /// Compiles through the platform's shader compiler rather than FXC directly, which does not exist outside
+    /// Windows. These shaders have no includes and no operator behind them, so they are compiled without an owner.
+    /// </summary>
+    private static bool TryCompile<TShader>(string source, string name, [NotNullWhen(true)] out TShader shader)
+        where TShader : T3.Core.DataTypes.AbstractShader
+    {
+        var args = new ShaderCompiler.ShaderCompilationArgs(source, "main", null, name, null);
+        if (ShaderCompiler.TryCompileShaderFromSource(args, useCache: true, forceRecompile: false, out shader, out var reason))
+            return true;
+
+        Log.Error($"Could not compile the ImGui shader {name}: {reason}");
+        return false;
+    }
+
     private void DisposeObj<T>(ref T obj) where T : class, IDisposable
     {
         obj?.Dispose();
@@ -710,12 +717,12 @@ internal sealed class WindowsUiContentDrawer : IUiContentDrawer<Device>
             DisposeObj(ref _blendState);
             DisposeObj(ref _depthStencilState);
             DisposeObj(ref _rasterizerState);
-            DisposeObj(ref _pixelShader);
-            DisposeObj(ref _pixelShaderBlob);
+            DisposeObj(ref _pixelShaderResource);
+            _pixelShader = null;
             DisposeObj(ref _vertexConstantBuffer);
             DisposeObj(ref _inputLayout);
-            DisposeObj(ref _vertexShader);
-            DisposeObj(ref _vertexShaderBlob);
+            DisposeObj(ref _vertexShaderResource);
+            _vertexShader = null;
         }
         catch (Exception e)
         {
@@ -728,11 +735,11 @@ internal sealed class WindowsUiContentDrawer : IUiContentDrawer<Device>
     private DeviceContext _deviceContext;
     private Buffer _vb;
     private Buffer _ib;
-    private ShaderBytecode _vertexShaderBlob;
+    private T3.Core.DataTypes.VertexShader _vertexShaderResource;
     private VertexShader _vertexShader;
     private InputLayout _inputLayout;
     private Buffer _vertexConstantBuffer;
-    private ShaderBytecode _pixelShaderBlob;
+    private T3.Core.DataTypes.PixelShader _pixelShaderResource;
     private PixelShader _pixelShader;
     private SamplerState _imGuiSampler;
     private SamplerState _pixelSampler;

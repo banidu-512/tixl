@@ -23,6 +23,10 @@ internal sealed partial class SettingsWindow : Window
     internal SettingsWindow()
     {
         Config.Title = "Settings";
+
+        // The sidebar plus the 560px content column; tall enough that the Collaboration
+        // participant table (and its per-row actions) is visible without manual resizing.
+        WindowSizeOverride = new Vector2(700, 700);
     }
 
     private enum Categories
@@ -30,6 +34,10 @@ internal sealed partial class SettingsWindow : Window
         Interface,
         Theme,
         Projects,
+        Startup,
+        Collaboration,
+        Boygrouping,
+        Failover,
         Audio,
         Midi,
         SpaceMouse,
@@ -82,9 +90,10 @@ internal sealed partial class SettingsWindow : Window
         }
         NavigationSidebar.EndColumn();
 
-        NavigationSidebar.BeginContentPanel(CategoryTitle(_activeCategory), this);
+        NavigationSidebar.BeginContentPanel(CategoryTitle(_activeCategory), this, alwaysShowScrollbar: true);
         {
             FormInputs.SetIndentToParameters();
+            FormInputs.PushMaxContentWidth(560);
             switch (_activeCategory)
             {
                 case Categories.Interface:
@@ -216,11 +225,12 @@ internal sealed partial class SettingsWindow : Window
                     FormInputs.AddVerticalSpace();
                     FormInputs.AddSectionSubHeader("Input");
 
-                    changed |= FormInputs.AddCheckBox("Enable Touchpad Panning",
+                    changed |= FormInputs.AddCheckBox("Always use touchpad panning",
                                                       ref UserSettings.Config.UseTouchPadPanning,
                                                       """
-                                                      Use your trackpad for panning your graph and timeline views.
-                                                      Zooming in/out is possible with pinch zoom.
+                                                      Two fingers pan the graph and timeline views, and a pinch zooms them.
+                                                      A trackpad is recognized on its own, so this is only needed for a
+                                                      device that scrolls in whole steps and is not detected as one.
                                                       """,
                                                       UserSettings.Defaults.UseTouchPadPanning);
 
@@ -254,7 +264,7 @@ internal sealed partial class SettingsWindow : Window
                     changed |= FormInputs.AddFloat("Sequential screenshots",
                                                    ref UserSettings.Config.ContinuousScreenshotDelay,
                                                    0.1f, 60f, 0.1f, true, true,
-                                                   "Seconds between captures when continuous screenshot mode is active. Ctrl-click the screenshot icon in the output window to start it.",
+                                                   "Seconds between captures when continuous screenshot mode is active. " + KeyCombination.CtrlLabel + "-click the screenshot icon in the output window to start it.",
                                                    UserSettings.Defaults.ContinuousScreenshotDelay);
 
                     FormInputs.AddVerticalSpace();
@@ -276,9 +286,9 @@ internal sealed partial class SettingsWindow : Window
                     FormInputs.AddVerticalSpace();
                     FormInputs.AddSectionSubHeader("Advanced options");
 
-                    changed |= FormInputs.AddCheckBox("Editing values with mousewheel needs CTRL key",
+                    changed |= FormInputs.AddCheckBox("Editing values with mousewheel needs " + KeyCombination.CtrlLabel + " key",
                                                       ref UserSettings.Config.MouseWheelEditsNeedCtrlKey,
-                                                      "In parameter window you can edit numeric values by using the mouse wheel. This setting will prevent accidental modifications while scrolling because by using ctrl key for activation.",
+                                                      "In parameter window you can edit numeric values by using the mouse wheel. This setting will prevent accidental modifications while scrolling because by using " + KeyCombination.CtrlLabel + " key for activation.",
                                                       UserSettings.Defaults.MouseWheelEditsNeedCtrlKey);
 
                     changed |= FormInputs.AddCheckBox("Mousewheel adjust flight speed",
@@ -327,6 +337,26 @@ internal sealed partial class SettingsWindow : Window
                     FormInputs.AddVerticalSpace();
 
                     ColorThemeEditor.DrawEditor();
+                    break;
+
+                case Categories.Startup:
+                    FormInputs.AddVerticalSpace();
+                    DrawStartupPanel(ref changed);
+                    break;
+
+                case Categories.Collaboration:
+                    FormInputs.AddVerticalSpace();
+                    DrawCollabPanel(ref changed);
+                    break;
+
+                case Categories.Boygrouping:
+                    FormInputs.AddVerticalSpace();
+                    DrawBoygroupPanel(ref changed);
+                    break;
+
+                case Categories.Failover:
+                    FormInputs.AddVerticalSpace();
+                    DrawFailoverPanel(ref changed);
                     break;
 
                 case Categories.Projects:
@@ -512,6 +542,44 @@ internal sealed partial class SettingsWindow : Window
                                                       UserSettings.Defaults.EnableMidiDebugLogging);
                     FormInputs.AddVerticalSpace();
 
+                    // Debug bridge group
+                    FormInputs.SetIndentToLeft();
+                    FormInputs.AddSectionSubHeader("Debug Bridge");
+                    FormInputs.AddVerticalSpace();
+                    FormInputs.SetIndentToParameters();
+                    var isDebugServerRunning = App.DebugProtocol.DebugServer.IsRunning;
+                    if (isDebugServerRunning)
+                    {
+                        // Show the port in use, which differs from the setting when started with --debug-server.
+                        var activePort = App.DebugProtocol.DebugServer.Port;
+                        ImGui.BeginDisabled();
+                        FormInputs.AddInt("Port", ref activePort, 1, 65535, 0.1f, DebugServerPortTooltip);
+                        ImGui.EndDisabled();
+                    }
+                    else
+                    {
+                        changed |= FormInputs.AddInt("Port",
+                                                     ref UserSettings.Config.DebugServerPort,
+                                                     1, 65535, 0.1f,
+                                                     DebugServerPortTooltip,
+                                                     UserSettings.Defaults.DebugServerPort);
+                    }
+
+                    FormInputs.ApplyIndent();
+                    if (ImGui.Button(isDebugServerRunning ? "Stop Debug Bridge" : "Start Debug Bridge"))
+                    {
+                        if (isDebugServerRunning)
+                        {
+                            App.DebugProtocol.DebugServer.Stop();
+                        }
+                        else
+                        {
+                            App.DebugProtocol.DebugServer.Start(UserSettings.Config.DebugServerPort);
+                        }
+                    }
+
+                    FormInputs.AddVerticalSpace();
+
                     // Audio System group
                     FormInputs.SetIndentToLeft();
                     FormInputs.AddSectionSubHeader("Audio System");
@@ -604,6 +672,8 @@ internal sealed partial class SettingsWindow : Window
                 }
             }
 
+            FormInputs.PopMaxContentWidth();
+
             if (changed)
                 UserSettings.Save();
 
@@ -618,6 +688,10 @@ internal sealed partial class SettingsWindow : Window
                                                                         Categories.Interface  => "User Interface",
                                                                         Categories.Theme      => "Color Theme",
                                                                         Categories.Projects   => "Project specific settings",
+                                                                        Categories.Startup    => "Startup and Recovery",
+                                                                        Categories.Collaboration => "Collaboration",
+                                                                        Categories.Boygrouping => "Boygrouping",
+                                                                        Categories.Failover   => "Show Failover",
                                                                         Categories.Audio      => "Audio System",
                                                                         Categories.Midi       => "Midi & OSC",
                                                                         Categories.SpaceMouse => "Space Mouse",
@@ -630,6 +704,8 @@ internal sealed partial class SettingsWindow : Window
     {
         return new List<Window>();
     }
+
+    private const string DebugServerPortTooltip = "Local TCP port (127.0.0.1) for scripts and agents to drive the editor. Same as starting with --debug-server <port>.";
 
     private static bool _projectDirectoriesRequireRestart;
 }

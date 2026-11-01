@@ -1,5 +1,5 @@
 #nullable enable
-using SharpDX.Direct3D11;
+using T3.Graphics.Compat;
 using T3.Core.Stats;
 
 namespace T3.Editor.Gui.Windows.Analyze;

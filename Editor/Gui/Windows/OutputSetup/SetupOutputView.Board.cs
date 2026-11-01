@@ -208,16 +208,33 @@ internal sealed partial class SetupOutputView
             if (!TryGetBoardBounds(setup, SetupEntityKinds.Output, output.Id, out var min, out var max))
                 continue;
 
-            var composite = OutputCompositor.RenderPreview(output.Id);
+            // Only canvas outputs composite here. A laser output has no composite - and asking for
+            // one would retry a "first fill" every frame forever (a null composite invalidates
+            // itself, so the rationer keeps re-attempting), one wasted render pass per laser card
+            // per frame. Its card shows what streams instead: the laser frame after the output's
+            // pipeline, drawn onto the ILDA scan field.
+            Texture2D? composite = null;
+            var isLaser = output.Kind == OutputDefinition.Kinds.Laser;
+            if (!isLaser)
+                composite = OutputCompositor.RenderPreview(output.Id);
+
             var srv = composite is { IsDisposed: false } ? SrvManager.GetSrvForTexture(composite) : null;
             DrawBoardCard(setup, selection, dl, SetupEntityKinds.Output, output.Id, min, max,
                           SetupLabels.OutputLabel(output), BoardMeta(output.Id), srv, true);
+
+            if (isLaser)
+            {
+                var frameMin = _boardProjection.CanvasToScreen(new Vector2(min.X, max.Y));
+                var frameMax = _boardProjection.CanvasToScreen(new Vector2(max.X, min.Y));
+                SetupStrokes.SnapRect(ref frameMin, ref frameMax);
+                LaserOutputPreview.DrawFrame(dl, frameMin, frameMax, LaserOutputPreview.GetFrame(output), _boardLayerFade);
+            }
 
             // The pixel map over the card's composite, as on the output canvas, so patches are placed against it here too.
             var pixelMap = setup.FindReferenceImage(output.ReferenceImageId);
             if (pixelMap != null && output.ReferenceOpacity > 0f && TryGetReferenceSrv(pixelMap) is { IsDisposed: false } mapSrv)
             {
-                dl.AddImage(mapSrv.NativePointer, _boardProjection.CanvasToScreen(new Vector2(min.X, max.Y)), _boardProjection.CanvasToScreen(new Vector2(max.X, min.Y)),
+                dl.AddImage((IntPtr)mapSrv.ImGuiTextureId, _boardProjection.CanvasToScreen(new Vector2(min.X, max.Y)), _boardProjection.CanvasToScreen(new Vector2(max.X, min.Y)),
                             Vector2.Zero, Vector2.One, UiColors.ForegroundFull.Fade(output.ReferenceOpacity * _boardLayerFade));
             }
 
@@ -361,7 +378,7 @@ internal sealed partial class SetupOutputView
     /// <summary>A card: fill or thumbnail, outline by state, name chip with muted metadata, and its pick/grab area.</summary>
     private void DrawBoardCard(Setup setup, SetupEntitySelection? selection, ImDrawListPtr dl,
                                SetupEntityKinds kind, Guid id, Vector2 min, Vector2 max,
-                               string name, string? meta, SharpDX.Direct3D11.ShaderResourceView? srv, bool scalable,
+                               string name, string? meta, T3.Graphics.Compat.ShaderResourceView? srv, bool scalable,
                                Vector2 uvMin = default, Vector2? uvMax = null)
     {
         var scale = T3Ui.UiScaleFactor;
@@ -396,7 +413,7 @@ internal sealed partial class SetupOutputView
         // A reference image shows at its own opacity, so a backdrop can be dimmed under what is traced over it.
         var imageOpacity = kind == SetupEntityKinds.ReferenceImage && setup.FindReferenceImage(id) is { } shownImage ? shownImage.Opacity : 1f;
         if (srv is { IsDisposed: false })
-            dl.AddImage(srv.NativePointer, sMin, sMax, uvMin, uvMax ?? Vector2.One, UiColors.ForegroundFull.Fade(fade * imageOpacity));
+            dl.AddImage((IntPtr)srv.ImGuiTextureId, sMin, sMax, uvMin, uvMax ?? Vector2.One, UiColors.ForegroundFull.Fade(fade * imageOpacity));
         else
             dl.AddRectFilled(sMin, sMax, UiColors.BackgroundPopup.Fade(0.85f * fade));
 
@@ -407,7 +424,7 @@ internal sealed partial class SetupOutputView
         {
             var contentSrv = SrvManager.GetSrvForTexture(surfaceContent);
             if (contentSrv is { IsDisposed: false })
-                dl.AddImage(contentSrv.NativePointer, sMin, sMax, new Vector2(contentUv.X, contentUv.Y), new Vector2(contentUv.Z, contentUv.W),
+                dl.AddImage((IntPtr)contentSrv.ImGuiTextureId, sMin, sMax, new Vector2(contentUv.X, contentUv.Y), new Vector2(contentUv.Z, contentUv.W),
                             UiColors.ForegroundFull.Fade(preview * fade));
         }
         else if (kind == SetupEntityKinds.Surface && preview > 0.01f && setup.FindSurface(id) is { } canvasFedSurface
@@ -417,7 +434,7 @@ internal sealed partial class SetupOutputView
         {
             // No content of its own, but the surface has a place on an output's canvas: the wall shows what the
             // canvas holds there, which is what will land on it when the canvas is sent as one picture.
-            dl.AddImageQuad(compositeSrv.NativePointer, sMin, new Vector2(sMax.X, sMin.Y), sMax, new Vector2(sMin.X, sMax.Y),
+            dl.AddImageQuad((IntPtr)compositeSrv.ImGuiTextureId, sMin, new Vector2(sMax.X, sMin.Y), sMax, new Vector2(sMin.X, sMax.Y),
                             _canvasFedQuad[0], _canvasFedQuad[1], _canvasFedQuad[2], _canvasFedQuad[3],
                             UiColors.ForegroundFull.Fade(preview * fade));
         }
