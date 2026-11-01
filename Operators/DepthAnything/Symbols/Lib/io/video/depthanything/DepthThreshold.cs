@@ -136,7 +136,7 @@ public class DepthThreshold : Instance<DepthThreshold>
             var maskData = new byte[width * height];
             int passCount = 0;
 
-            Parallel.For(0, height * height, i =>
+            Parallel.For(0, width * height, i =>
             {
                 float depth = depthData[i];
                 bool inRange = depth >= actualMin && depth <= actualMax &&
