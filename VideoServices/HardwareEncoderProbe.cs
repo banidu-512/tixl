@@ -1,5 +1,6 @@
 using Sdcb.FFmpeg.Codecs;
 using Sdcb.FFmpeg.Raw;
+using Sdcb.FFmpeg.Utils;
 using T3.Core.Logging;
 
 namespace T3.VideoServices;
@@ -55,25 +56,65 @@ public static class HardwareEncoderProbe
         return null;
     }
 
-    // Opening with minimal CPU-input params is the only reliable availability test: hardware encoders accept
-    // system-memory frames (they upload internally), and a missing GPU/driver fails here at Open().
-    private static bool CanOpenEncoder(string encoderName)
+    // Opening is not proof of encoding: a headless VM can initialize VideoToolbox/QSV and then emit no
+    // packets at all. Encode a keyframe with the same settings the live encoder uses and require a packet
+    // before declaring the encoder usable; otherwise the caller falls back to the LGPL software codec.
+    private static unsafe bool CanOpenEncoder(string encoderName)
     {
         CodecContext? context = null;
         try
         {
             var codec = Codec.FindEncoderByName(encoderName);
+            var pixelFormat = EncoderInputFormat(encoderName);
             context = new CodecContext(codec)
                           {
                               Width = 320,
                               Height = 240,
                               TimeBase = new AVRational(1, 30),
                               Framerate = new AVRational(30, 1),
-                              PixelFormat = EncoderInputFormat(encoderName),
-                              BitRate = 1_000_000,
+                              PixelFormat = pixelFormat,
+                              BitRate = 1_500_000,
+                              MaxBFrames = 0,
+                              GopSize = 60,
+                              ColorRange = AVColorRange.Mpeg,
+                              ColorPrimaries = AVColorPrimaries.Bt709,
+                              ColorTrc = AVColorTransferCharacteristic.Bt709,
+                              Colorspace = AVColorSpace.Bt709,
                           };
+            context.Flags |= AV_CODEC_FLAG.LowDelay;
+            LiveH264Encoder.ApplyLowLatencyOptions(context, encoderName);
             context.Open();
-            return true;
+
+            using var frame = Frame.CreateVideo(320, 240, pixelFormat);
+            frame.EnsureBuffer(1);
+            frame.ColorRange = AVColorRange.Mpeg;
+            frame.ColorPrimaries = AVColorPrimaries.Bt709;
+            frame.ColorTrc = AVColorTransferCharacteristic.Bt709;
+            frame.Colorspace = AVColorSpace.Bt709;
+
+            using var packet = new Packet();
+            for (var i = 0; i < 2; i++)
+            {
+                frame.Pts = i;
+                frame.PictType = i == 0 ? AVPictureType.I : AVPictureType.None;
+                context.SendFrame(frame);
+                if (context.ReceivePacket(packet) != CodecResult.Success)
+                    continue;
+
+                packet.Unref();
+                return true;
+            }
+
+            // A delayed encoder may only emit after the flush.
+            ffmpeg.avcodec_send_frame(context, null);
+            if (context.ReceivePacket(packet) == CodecResult.Success)
+            {
+                packet.Unref();
+                return true;
+            }
+
+            Log.Debug($"Hardware video encoder {encoderName} opened but produced no packet");
+            return false;
         }
         catch (Exception e)
         {

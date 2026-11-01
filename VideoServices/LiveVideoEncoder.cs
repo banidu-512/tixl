@@ -79,7 +79,7 @@ public sealed class LiveH264Encoder : ILiveVideoEncoder
         // Low-delay is the one flag every H.264 encoder understands; the private options below vary by
         // encoder and are only set where the name guarantees them.
         _codecContext.Flags |= AV_CODEC_FLAG.LowDelay;
-        ApplyLowLatencyOptions(encoderName);
+        ApplyLowLatencyOptions(_codecContext, encoderName);
 
         try
         {
@@ -229,17 +229,26 @@ public sealed class LiveH264Encoder : ILiveVideoEncoder
         return false;
     }
 
-    private void ApplyLowLatencyOptions(string encoderName)
+    internal static void ApplyLowLatencyOptions(CodecContext context, string encoderName)
     {
+        if (encoderName.Contains("_videotoolbox", StringComparison.OrdinalIgnoreCase))
+        {
+            // VideoToolbox buffers frames for lookahead by default, so a short live stream can produce no
+            // packets at all. Realtime trades compression efficiency for immediate output and lets the
+            // forced keyframe come out as an IDR.
+            context.Options.Set("realtime", "1");
+            return;
+        }
+
         if (!encoderName.Contains("_nvenc", StringComparison.OrdinalIgnoreCase))
             return;
 
         // NVENC's universal low-latency preset; CBR keeps the rate steady for a call-like stream.
-        _codecContext.Options.Set("preset", "p1");
-        _codecContext.Options.Set("tune", "ull");
-        _codecContext.Options.Set("zerolatency", "1");
-        _codecContext.Options.Set("delay", "0");
-        _codecContext.Options.Set("rc", "cbr");
+        context.Options.Set("preset", "p1");
+        context.Options.Set("tune", "ull");
+        context.Options.Set("zerolatency", "1");
+        context.Options.Set("delay", "0");
+        context.Options.Set("rc", "cbr");
     }
 
     private static string FriendlyName(string encoderName) =>
