@@ -5,8 +5,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using OpenCvSharp;
-using SharpDX;
-using SharpDX.Direct3D11;
+using T3.Graphics.Compat;
 using T3.Core.DataTypes;
 using T3.Core.Logging;
 using T3.Core.Operator;
@@ -15,7 +14,6 @@ using T3.Core.Operator.Slots;
 using T3.Core.Resource;
 using Google.Protobuf;
 using Mediapipe;
-using SharpDX.Direct3D;
 #nullable enable
 using Mediapipe.Tasks.Vision.ObjectDetector;
 using Mediapipe.Tasks.Vision.Core;
@@ -34,8 +32,6 @@ internal class ObjectDetectionRequest
     public long Timestamp;
     public float MinDetectionConfidence;
     public int MaxObjects;
-    public string[]? CategoryAllowlist;
-    public string[]? CategoryDenylist;
 }
 
 internal class ObjectDetectionResultPacket
@@ -47,9 +43,11 @@ internal class ObjectDetectionResultPacket
 }
 
 [Guid("12345678-90ab-cdef-1234-567890abcdef")]
-[ExportDependencies("mediapipe_c.dll", "OpenCvSharpExtern.dll", "Emgu.CV.dll", "cvextern.dll", "OpenGL.Net.dll", "CppSharp.Runtime.dll", "Google.Protobuf.dll")]
+[ExportDependencies("mediapipe_c.dll", "libmediapipe_c.so", "libmediapipe_c.dylib", "libmediapipe_opencl_stub.dylib", "OpenCvSharpExtern.dll", "libOpenCvSharpExtern.so", "libOpenCvSharpExtern.dylib", "Emgu.CV.dll", "cvextern.dll", "OpenGL.Net.dll", "CppSharp.Runtime.dll", "Google.Protobuf.dll")]
 public class ObjectDetection : Instance<ObjectDetection>
 {
+    private const int MaxInferenceWidth = 640;
+
     [Output(Guid = "bcdef123-4567-890a-bcde-f1234567890a", DirtyFlagTrigger = DirtyFlagTrigger.Animated)]
     public readonly Slot<Texture2D?> OutputTexture = new();
 
@@ -106,14 +104,17 @@ public class ObjectDetection : Instance<ObjectDetection>
         OutputTexture.Value = inputTexture;
 
         bool paramsChanged = maxObjects != _activeMaxObjects || Math.Abs(minDetectionConfidence - _activeMinDetectionConfidence) > 0.001f;
+        bool accelerationChanged = Acceleration.GetValue(context) != _activeAcceleration || InferenceThreads.GetValue(context) != _activeInferenceThreads;
         bool taskDead = _processingTask == null || _processingTask.IsCompleted;
         bool detectorMissing = _objectDetector == null;
         bool modelChanged = model != _activeModel;
         bool allowlistChanged = categoryAllowlist != _activeCategoryAllowlist;
         bool denylistChanged = categoryDenylist != _activeCategoryDenylist;
 
-        if (taskDead || detectorMissing || paramsChanged || modelChanged || allowlistChanged || denylistChanged)
+        if (taskDead || detectorMissing || paramsChanged || modelChanged || allowlistChanged || denylistChanged || accelerationChanged)
         {
+            _activeAcceleration = Acceleration.GetValue(context);
+            _activeInferenceThreads = InferenceThreads.GetValue(context);
             InitializeWorker(maxObjects, minDetectionConfidence, debug, model, categoryAllowlist!, categoryDenylist!);
         }
 
@@ -123,9 +124,9 @@ public class ObjectDetection : Instance<ObjectDetection>
             return;
         }
 
-        if (_inputQueue.Count < 1)
+        if (_inputQueue.IsEmpty && !_workerBusy)
         {
-            var request = CreateRequestFromTexture(inputTexture, minDetectionConfidence, maxObjects, categoryAllowlist!, categoryDenylist!);
+            var request = CreateRequestFromTexture(inputTexture, minDetectionConfidence, maxObjects);
             if (request != null)
             {
                 _inputQueue.Enqueue(request);
@@ -167,7 +168,6 @@ public class ObjectDetection : Instance<ObjectDetection>
     private void ClearOutputs()
     {
         ObjectCount.Value = 0;
-        _detectionsArray = null;
         _currentResult = null;
         DebugTexture.Value = null;
         PointBuffer.Value = null;
@@ -177,24 +177,26 @@ public class ObjectDetection : Instance<ObjectDetection>
 
     #region MediaPipe Integration
     private ObjectDetector? _objectDetector;
-    private Detection[]? _detectionsArray;
     private long _frameTimestamp;
     private readonly object _objectDetectorLock = new object();
     private readonly object _timestampLock = new object();
 
     private Task? _processingTask;
+    private volatile bool _workerBusy;
     private CancellationTokenSource? _cancellationTokenSource;
     private readonly ConcurrentQueue<ObjectDetectionRequest> _inputQueue = new();
     private readonly ConcurrentQueue<ObjectDetectionResultPacket> _outputQueue = new();
     private ObjectDetectionResultPacket? _currentResult;
     private int _activeMaxObjects = -1;
+    private MediaPipeAcceleration? _activeAcceleration;
+    private int _activeInferenceThreads = -1;
     private float _activeMinDetectionConfidence = -1f;
     private DetectionModel _activeModel;
     private string _activeCategoryAllowlist = "";
     private string _activeCategoryDenylist = "";
     private readonly object _workerLock = new object();
 
-    private readonly ConcurrentDictionary<(int width, int height), SharpDX.Direct3D11.Texture2D> _cachedStagingTextures = new();
+    private readonly ConcurrentDictionary<(int width, int height), T3.Graphics.Compat.Texture2D> _cachedStagingTextures = new();
     private readonly object _textureCacheLock = new object();
 
     private readonly ConcurrentBag<Mat> _matPool = new();
@@ -252,9 +254,16 @@ public class ObjectDetection : Instance<ObjectDetection>
                     return;
                 }
 
+                var acceleration = _activeAcceleration ?? MediaPipeAcceleration.Cpu;
+                var wantsGpu = acceleration == MediaPipeAcceleration.Gpu;
+                var delegateCase = acceleration == MediaPipeAcceleration.Xnnpack ? Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.Xnnpack
+                                 : acceleration == MediaPipeAcceleration.Gpu ? Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.GPU
+                                 : Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU;
+                var inferenceThreads = _activeInferenceThreads;
                 var baseOptions = new Mediapipe.Tasks.Core.CoreBaseOptions(
                                                                            modelAssetPath: fullPath,
-                                                                           delegateCase: Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU
+                                                                           delegateCase: delegateCase,
+                                                                           numThreads: inferenceThreads
                                                                           );
 
                 var allowList = string.IsNullOrEmpty(categoryAllowlist)
@@ -273,14 +282,41 @@ public class ObjectDetection : Instance<ObjectDetection>
                                                     categoryDenyList: denyList
                                                    );
 
+                ObjectDetector? detector = null;
                 lock (_objectDetectorLock)
                 {
-                    _objectDetector = ObjectDetector.CreateFromOptions(options);
+                    try
+                    {
+                        detector = ObjectDetector.CreateFromOptions(options);
+                    }
+                    catch (Exception gpuEx) when (acceleration != MediaPipeAcceleration.Cpu)
+                    {
+                        Log.Warning($"[ObjectDetection] GPU acceleration not available ({gpuEx.Message}) - using CPU.", this);
+                        baseOptions = new Mediapipe.Tasks.Core.CoreBaseOptions(
+                                                                           modelAssetPath: fullPath,
+                                                                           delegateCase: Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU,
+                                                                           numThreads: inferenceThreads
+                                                                          );
+                        options = new ObjectDetectorOptions(
+                                                    baseOptions,
+                                                    VisionRunningMode.VIDEO,
+                                                    maxResults: maxObjects,
+                                                    scoreThreshold: minDetectionConfidence,
+                                                    categoryAllowList: allowList,
+                                                    categoryDenyList: denyList);
+                        detector = ObjectDetector.CreateFromOptions(options);
+                    }
+                    _objectDetector = detector;
                 }
 
-                _cancellationTokenSource = new CancellationTokenSource();
-                var token = _cancellationTokenSource.Token;
-                _processingTask = Task.Run(() => WorkerLoop(token, debug), token);
+                if (detector != null)
+                {
+                    _cancellationTokenSource = new CancellationTokenSource();
+                    var token = _cancellationTokenSource.Token;
+                    // The worker loop owns this instance; StopWorker closes it only after that task
+                    // has exited, so DetectForVideo can never run on a closed detector.
+                    _processingTask = Task.Run(() => WorkerLoop(token, detector, debug), token);
+                }
             }
         }
         catch (Exception ex)
@@ -293,17 +329,26 @@ public class ObjectDetection : Instance<ObjectDetection>
         }
     }
 
-    private void WorkerLoop(CancellationToken token, bool debug)
+    private void WorkerLoop(CancellationToken token, ObjectDetector detector, bool debug)
     {
         while (!token.IsCancellationRequested)
         {
             if (_inputQueue.TryDequeue(out var request))
             {
+                // Whatever piled up while the previous inference ran is stale by now - only the
+                // newest frame is worth its latency, the rest goes straight back to the pool.
+                while (_inputQueue.TryDequeue(out var newer))
+                {
+                    ReturnBufferToPool(request.PixelData);
+                    request = newer;
+                }
+
                 try
                 {
-                    if (_objectDetector != null && request.PixelData != null)
+                    if (request.PixelData != null)
                     {
-                        ProcessFrame(request, debug);
+                        _workerBusy = true;
+                        ProcessFrame(request, detector, debug);
                     }
                 }
                 catch (Exception ex)
@@ -312,6 +357,7 @@ public class ObjectDetection : Instance<ObjectDetection>
                 }
                 finally
                 {
+                    _workerBusy = false;
                     ReturnBufferToPool(request.PixelData);
                 }
             }
@@ -322,21 +368,15 @@ public class ObjectDetection : Instance<ObjectDetection>
         }
     }
 
-    private void ProcessFrame(ObjectDetectionRequest request, bool debug)
+    private void ProcessFrame(ObjectDetectionRequest request, ObjectDetector detector, bool debug)
     {
         using var image = new Image(Mediapipe.ImageFormat.Types.Format.Srgb, request.Width, request.Height, request.Width * 3, request.PixelData!);
 
-        ObjectDetector? detector;
-        lock (_objectDetectorLock)
-        {
-            detector = _objectDetector;
-        }
+        var result = detector.DetectForVideo(image, request.Timestamp);
 
-        var result = detector?.DetectForVideo(image, request.Timestamp);
-
-        if (result != null && result.Value.Detections != null && result.Value.Detections.Count > 0)
+        if (result.Detections != null && result.Detections.Count > 0)
         {
-            var detections = ConvertDetectionResultToDetections(result.Value, request.MinDetectionConfidence, request.MaxObjects, debug);
+            var detections = ConvertDetectionResultToDetections(result, request.MinDetectionConfidence, request.MaxObjects, debug);
             var packet = new ObjectDetectionResultPacket
                              {
                                  Detections = detections,
@@ -365,29 +405,38 @@ public class ObjectDetection : Instance<ObjectDetection>
             if (_objectDetector == null && (_processingTask == null || _processingTask.IsCompleted)) return;
 
             _cancellationTokenSource?.Cancel();
-            try
+            var task = _processingTask;
+            _processingTask = null;
+
+            ObjectDetector? detector;
+            lock (_objectDetectorLock)
             {
-                if (_processingTask != null && !_processingTask.IsCompleted)
-                {
-                    _processingTask.Wait(200);
-                }
-            }
-            catch (Exception ex)
-            {
-                if (debug) Log.Error($"[ObjectDetection] THREAD SAFETY: Error waiting for worker task: {ex.Message}", this);
+                detector = _objectDetector;
+                _objectDetector = null;
             }
 
-            try
+            if (detector != null)
             {
-                lock (_objectDetectorLock)
+                // DetectForVideo cannot be interrupted and runs on the worker outside every lock, so
+                // Close() must wait until that task has fully exited or it is a use-after-free in
+                // native code. The worker loop holds its own reference, making the hand-off safe
+                // without ever blocking the eval thread on an in-flight inference.
+                Task.Run(async () =>
                 {
-                    _objectDetector?.Close();
-                    _objectDetector = null;
-                }
-            }
-            catch (Exception ex)
-            {
-                if (debug) Log.Error($"[ObjectDetection] RESOURCE MANAGEMENT: Error closing ObjectDetector: {ex.Message}", this);
+                    if (task != null)
+                    {
+                        try { await task; }
+                        catch (Exception) { }
+                    }
+                    try
+                    {
+                        detector.Close();
+                    }
+                    catch (Exception ex)
+                    {
+                        if (debug) Log.Error($"[ObjectDetection] Error closing ObjectDetector: {ex.Message}", this);
+                    }
+                });
             }
 
             while (_inputQueue.TryDequeue(out var req))
@@ -403,7 +452,7 @@ public class ObjectDetection : Instance<ObjectDetection>
     #endregion Worker Thread
 
     #region Memory Management
-    private SharpDX.Direct3D11.Texture2D GetOrCreateStagingTexture(int width, int height, SharpDX.DXGI.Format format)
+    private T3.Graphics.Compat.Texture2D GetOrCreateStagingTexture(int width, int height, T3.Graphics.Format format)
     {
         var key = (width, height);
 
@@ -420,10 +469,10 @@ public class ObjectDetection : Instance<ObjectDetection>
             }
 
             var device = ResourceManager.Device;
-            var newTexture = new SharpDX.Direct3D11.Texture2D(device, new Texture2DDescription
+            var newTexture = new T3.Graphics.Compat.Texture2D(device, new Texture2DDescription
                                                                           {
                                                                               Width = width, Height = height, MipLevels = 1, ArraySize = 1,
-                                                                              Format = format, SampleDescription = new SharpDX.DXGI.SampleDescription(1, 0),
+                                                                              Format = format, SampleDescription = new T3.Graphics.SampleDescription(1, 0),
                                                                               Usage = ResourceUsage.Staging, BindFlags = BindFlags.None,
                                                                               CpuAccessFlags = CpuAccessFlags.Read, OptionFlags = ResourceOptionFlags.None
                                                                           });
@@ -461,7 +510,10 @@ public class ObjectDetection : Instance<ObjectDetection>
     private byte[] GetBuffer(int size)
     {
         if (_bufferPool.TryTake(out var b) && b.Length == size) return b;
-        return new byte[size];
+
+        // Pinned on the POH: the native Image keeps this pointer and reads it during
+        // DetectForVideo, after the wrapper's own pin over the constructor has been released.
+        return GC.AllocateUninitializedArray<byte>(size, pinned: true);
     }
 
     private void ReturnBufferToPool(byte[]? b)
@@ -512,8 +564,7 @@ public class ObjectDetection : Instance<ObjectDetection>
         }
     }
 
-    private ObjectDetectionRequest? CreateRequestFromTexture(Texture2D texture, float minDetectionConfidence, int maxObjects, string categoryAllowlist,
-                                                             string categoryDenylist)
+    private ObjectDetectionRequest? CreateRequestFromTexture(Texture2D texture, float minDetectionConfidence, int maxObjects)
     {
         if (texture == null || texture.IsDisposed) return null;
 
@@ -535,7 +586,13 @@ public class ObjectDetection : Instance<ObjectDetection>
 
         try
         {
-            byte[] buffer = GetBuffer(width * height * 3);
+            // MediaPipe resizes to its model input (~256px) internally; feeding the full camera
+            // image only burns downsample/memcpy time before hitting that resize.
+            var downscale = Math.Min(1.0f, (float)MaxInferenceWidth / width);
+            var inferenceWidth = Math.Max(1, (int)(width * downscale));
+            var inferenceHeight = Math.Max(1, (int)(height * downscale));
+
+            byte[] buffer = GetBuffer(inferenceWidth * inferenceHeight * 3);
             unsafe
             {
                 IntPtr srcPtr = dataBox.DataPointer;
@@ -544,16 +601,20 @@ public class ObjectDetection : Instance<ObjectDetection>
                 fixed (byte* dst = buffer)
                 {
                     IntPtr dstPtr = (IntPtr)dst;
-                    Parallel.For(0, height, y =>
-                                            {
-                                                byte* rowSrc = (byte*)srcPtr + (y * rowPitch);
-                                                byte* rowDst = (byte*)dstPtr + (y * width * 3);
+                    float sourceXStep = (float)width / inferenceWidth;
+                    float sourceYStep = (float)height / inferenceHeight;
 
-                                                for (int x = 0; x < width; x++)
+                    Parallel.For(0, inferenceHeight, iy =>
+                                            {
+                                                byte* rowSrc = (byte*)srcPtr + ((int)(iy * sourceYStep)) * rowPitch;
+                                                byte* rowDst = (byte*)dstPtr + iy * inferenceWidth * 3;
+
+                                                for (int ix = 0; ix < inferenceWidth; ix++)
                                                 {
-                                                    rowDst[x * 3] = rowSrc[x * 4 + 2]; // R
-                                                    rowDst[x * 3 + 1] = rowSrc[x * 4 + 1]; // G
-                                                    rowDst[x * 3 + 2] = rowSrc[x * 4]; // B
+                                                    int sx = (int)(ix * sourceXStep);
+                                                    rowDst[ix * 3] = rowSrc[sx * 4]; // R
+                                                    rowDst[ix * 3 + 1] = rowSrc[sx * 4 + 1]; // G
+                                                    rowDst[ix * 3 + 2] = rowSrc[sx * 4 + 2]; // B
                                                 }
                                             });
                 }
@@ -569,13 +630,11 @@ public class ObjectDetection : Instance<ObjectDetection>
             return new ObjectDetectionRequest
                        {
                            PixelData = buffer,
-                           Width = width,
-                           Height = height,
+                           Width = inferenceWidth,
+                           Height = inferenceHeight,
                            Timestamp = ts,
                            MinDetectionConfidence = minDetectionConfidence,
                            MaxObjects = maxObjects,
-                           CategoryAllowlist = string.IsNullOrEmpty(categoryAllowlist) ? null : categoryAllowlist.Split(','),
-                           CategoryDenylist = string.IsNullOrEmpty(categoryDenylist) ? null : categoryDenylist.Split(',')
                        };
         }
         finally
@@ -599,7 +658,6 @@ public class ObjectDetection : Instance<ObjectDetection>
         }
 
         ObjectCount.Value = result.ObjectCount;
-        _detectionsArray = result.Detections;
 
         var points = new StructuredList<T3.Core.DataTypes.Point>(result.ObjectCount * 5);
         var objectData = new Dict<float>(0f);
@@ -674,7 +732,7 @@ public class ObjectDetection : Instance<ObjectDetection>
                 _pointBufferWithViews.Srv = new ShaderResourceView(ResourceManager.Device, _pointBufferWithViews.Buffer,
                                                                    new ShaderResourceViewDescription
                                                                        {
-                                                                           Format = SharpDX.DXGI.Format.Unknown,
+                                                                           Format = T3.Graphics.Format.Unknown,
                                                                            Dimension = ShaderResourceViewDimension.Buffer,
                                                                            Buffer = new ShaderResourceViewDescription.BufferResource
                                                                                         {
@@ -690,7 +748,7 @@ public class ObjectDetection : Instance<ObjectDetection>
                 _pointBufferWithViews.Uav = new UnorderedAccessView(ResourceManager.Device, _pointBufferWithViews.Buffer,
                                                                     new UnorderedAccessViewDescription
                                                                         {
-                                                                            Format = SharpDX.DXGI.Format.Unknown,
+                                                                            Format = T3.Graphics.Format.Unknown,
                                                                             Dimension = UnorderedAccessViewDimension.Buffer,
                                                                             Buffer = new UnorderedAccessViewDescription.BufferResource
                                                                                          {
@@ -720,10 +778,12 @@ public class ObjectDetection : Instance<ObjectDetection>
         foreach (var detection in detections)
         {
             var bbox = detection.BoundingBox;
-            int x = (int)(bbox!.CenterX - bbox.Width / 2);
-            int y = (int)(bbox.CenterY - bbox.Height / 2);
-            int w = (int)(bbox.Width);
-            int h = (int)(bbox.Height);
+            // MediaPipe boxes are normalized to the source image (origin top-left, same as the mat);
+            // drawing the raw values as pixels collapsed every box into the top-left corner.
+            int x = (int)((bbox!.CenterX - bbox.Width / 2) * matWidth);
+            int y = (int)((bbox.CenterY - bbox.Height / 2) * matHeight);
+            int w = (int)(bbox.Width * matWidth);
+            int h = (int)(bbox.Height * matHeight);
 
             Cv2.Rectangle(mat, new OpenCvSharp.Rect(x, y, w, h), boxColor, 2);
 
@@ -756,13 +816,13 @@ public class ObjectDetection : Instance<ObjectDetection>
                                Height = mat.Height,
                                MipLevels = 1,
                                ArraySize = 1,
-                               Format = SharpDX.DXGI.Format.B8G8R8A8_UNorm,
+                               Format = T3.Graphics.Format.B8G8R8A8_UNorm,
                                SampleDescription = new SampleDescription(1, 0),
                                Usage = ResourceUsage.Default,
                                BindFlags = BindFlags.ShaderResource | BindFlags.RenderTarget,
                                OptionFlags = ResourceOptionFlags.None
                            };
-            _debugTexture = new Texture2D(new SharpDX.Direct3D11.Texture2D(ResourceManager.Device, desc));
+            _debugTexture = new Texture2D(new T3.Graphics.Compat.Texture2D(ResourceManager.Device, desc));
         }
 
         var context = ResourceManager.Device.ImmediateContext;
@@ -823,6 +883,13 @@ public class ObjectDetection : Instance<ObjectDetection>
     protected override void Dispose(bool isDisposing)
     {
         if (!isDisposing) return;
+
+        // Stops the worker task and hands the detector to its deferred closer - closing it here
+        // directly could hit a frame still running on the worker thread.
+        StopWorker(false);
+
+        _debugTexture?.Dispose();
+        _debugTexture = null;
 
         try
         {
@@ -911,6 +978,16 @@ public class ObjectDetection : Instance<ObjectDetection>
     [Input(Guid = "0abcdef1-2345-6789-0abc-def123456789")]
     public readonly InputSlot<bool> CorrectAspectRatio = new(false);
 
+    /// <summary>Inference acceleration: Cpu = plain single-threaded TF Lite (works everywhere),
+    /// Xnnpack = multithreaded CPU (the fast default; see InferenceThreads), Gpu = OpenGL/EGL
+    /// delegate (Linux native has it; the CPU-only Windows/macOS natives fall back to Cpu).</summary>
+    [Input(Guid = "a1b2c3d4-0006-4a9b-8c2d-101010101010")]
+    public readonly InputSlot<MediaPipeAcceleration> Acceleration = new(MediaPipeAcceleration.Xnnpack);
+
+    /// <summary>Worker threads for the Xnnpack acceleration (0 = library default). Ignored by Cpu and Gpu.</summary>
+    [Input(Guid = "a1b2c3d4-1006-4a9b-8c2d-101010101010")]
+    public readonly InputSlot<int> InferenceThreads = new(0);
+
     [Input(Guid = "abcdef12-3456-7890-abcd-ef1234567890")]
     public readonly InputSlot<float> ZScale = new(1.0f);
     #endregion
@@ -940,13 +1017,14 @@ public class ObjectDetection : Instance<ObjectDetection>
         var mat = GetMat(desc.Height, desc.Width, MatType.CV_8UC4);
         try
         {
-            Utilities.CopyMemory(mat.Data, dataBox.DataPointer, (int)mat.Total() * mat.ElemSize());
+            T3.Graphics.Compat.GraphicsUtilities.CopyMemory(mat.Data, dataBox.DataPointer, (int)mat.Total() * mat.ElemSize());
         }
         finally
         {
             device.ImmediateContext.UnmapSubresource(stagingTexture, 0);
         }
 
+        Cv2.CvtColor(mat, mat, ColorConversionCodes.RGBA2BGRA);
         return mat;
     }
     #endregion
