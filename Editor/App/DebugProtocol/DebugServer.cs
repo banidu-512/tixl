@@ -518,6 +518,15 @@ internal static class DebugServer
                 break;
             }
 
+            case "getStreamStatus":
+            {
+                var status = OutputSetupHandling.TryGetActiveSetup(out _, out var streamMachineConfig)
+                                 ? T3.Core.Output.Rendering.OutputStreaming.Describe(streamMachineConfig)
+                                 : "no active output setup";
+                context.SendOk(new JObject { ["streams"] = status });
+                break;
+            }
+
             case "outputSetup":
             {
                 // Drives the output-setup UI the way clicks would: select an entity by name, enter a mode.
