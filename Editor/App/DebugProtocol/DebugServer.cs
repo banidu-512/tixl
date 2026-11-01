@@ -1245,6 +1245,10 @@ internal static class DebugServer
                 Core.Show.FailoverArbiter.ReportOutputFault(request["reason"]?.Value<string>() ?? "debug request");
                 break;
 
+            case "crash":
+                Core.Show.FailoverArbiter.SimulateCrash(request["seconds"]?.Value<int>() ?? 10);
+                break;
+
             case "disable":
                 UserSettings.Config.FailoverEnabled = false;
                 UserSettings.Save();
@@ -1259,7 +1263,7 @@ internal static class DebugServer
                 break;
 
             default:
-                context.SendError("INVALID_PARAM", "failover requires op = enable | disable | status | stepdown | takeover | resume | fault");
+                context.SendError("INVALID_PARAM", "failover requires op = enable | disable | status | stepdown | takeover | resume | fault | crash");
                 return;
         }
 

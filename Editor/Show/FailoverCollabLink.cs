@@ -41,6 +41,17 @@ internal sealed class FailoverCollabLink
             return;
         }
 
+        // A crashed process takes its session down with it and stays away until it restarts.
+        if (FailoverArbiter.IsSimulatingCrash)
+        {
+            if (collab.State != CollabManager.SessionState.Off)
+                collab.Leave();
+
+            StatusText = "Simulated crash - session dropped";
+            _connectWatchTicks = 0;
+            return;
+        }
+
         // Failover hosts and follows through collaboration, which is switched off.
         if (!CollabManager.Instance.IsEnabled)
         {

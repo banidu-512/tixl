@@ -15,6 +15,8 @@ namespace T3.Editor.Gui.Windows;
 /// </summary>
 internal sealed partial class SettingsWindow
 {
+    private const int SimulatedCrashSeconds = 10;
+
     private static void DrawFailoverPanel(ref bool changed)
     {
         var config = UserSettings.Config;
@@ -138,6 +140,21 @@ internal sealed partial class SettingsWindow
             if (ImGui.Button("Resume solo (override)"))
                 FailoverArbiter.RequestResumeSolo("operator override");
         }
+
+        if (FailoverArbiter.IsSimulatingCrash)
+        {
+            ImGui.TextDisabled($"Simulated crash, back in {(FailoverArbiter.SimulatedCrashRemainingMs + 999) / 1000} s");
+        }
+        else if (ImGui.Button($"Simulate Crash ({SimulatedCrashSeconds} s)"))
+        {
+            FailoverArbiter.SimulateCrash(SimulatedCrashSeconds);
+        }
+
+        CustomComponents.TooltipForLastItem("""
+                                            Makes this machine act like a crashed process: no heartbeats, no goodbye,
+                                            the collaboration session drops and all network output stops. The partner
+                                            has to notice on its own. Afterwards this machine rejoins as if freshly started.
+                                            """);
 
         ImGui.Bullet();
         ImGui.TextUnformatted($"Sync: {FailoverCollabLink.Instance.StatusText}");
