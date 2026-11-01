@@ -29,10 +29,28 @@ namespace T3.Editor.Gui;
 
 public static partial class T3Ui
 {
+    private static readonly T3.Core.Show.FailoverConfig _failoverConfig = new();
+
     internal static void ProcessFrame()
     {
         Profiling.KeepFrameData();
         App.DebugProtocol.DebugServer.ProcessMainThreadQueue();
+        Collab.CollabManager.Instance.Update();
+        // Reused instance: this runs every frame, and the arbiter only copies what actually changed.
+        _failoverConfig.Enabled = UserSettings.Config.FailoverEnabled;
+        _failoverConfig.ShowId = UserSettings.Config.FailoverShowId;
+        _failoverConfig.Priority = UserSettings.Config.FailoverPriority;
+        _failoverConfig.HeartbeatMs = UserSettings.Config.FailoverHeartbeatMs;
+        _failoverConfig.TimeoutFactor = UserSettings.Config.FailoverTimeoutFactor;
+        _failoverConfig.NetworkInterfaceName = UserSettings.Config.NetworkInterface;
+        _failoverConfig.Preempt = UserSettings.Config.FailoverPreempt;
+        _failoverConfig.StallMs = UserSettings.Config.FailoverStallMs;
+        _failoverConfig.Fencing = UserSettings.Config.FailoverFencing;
+        _failoverConfig.CollabPort = UserSettings.Config.CollabPort;
+        T3.Core.Show.FailoverArbiter.ApplyConfig(_failoverConfig);
+        Show.BoygroupManager.Instance.Update();
+        Show.FailoverCollabLink.Instance.Update();
+        Show.PeerCameraService.Instance.Update();
         //ImGui.PushStyleColor(ImGuiCol.Text, UiColors.Text.Rgba);
         DragAndDropHandling.Update();
         MagGraph.Ui.DropHandling.DrawDragIndicator();
@@ -41,7 +59,7 @@ public static partial class T3Ui
         FormInputs.BeginFrame();
         InitializeAfterAppWindowReady();
 
-        MouseWheelPanning.ProcessFrame(120);
+        App.Gestures.PointerGestures.ProcessFrame(ImGui.GetIO().DeltaTime);
         
         // Prepare the current frame 
         RenderStatsCollector.StartNewFrame();
@@ -81,6 +99,7 @@ public static partial class T3Ui
         SrvManager.RemoveForDisposedTextures();
         KeyActionHandling.InitializeFrame();
 
+        CompatibleMidiDeviceHandling.RescanIfDevicesChanged();
         CompatibleMidiDeviceHandling.UpdateConnectedDevices();
 
         var nodeSelection = ProjectView.Focused?.NodeSelection;
@@ -122,8 +141,10 @@ public static partial class T3Ui
         RestoreBackupDialog.Draw();
         _couldNotLoadProjectDialog.Draw();
         _missingOperatorsDialog.Draw();
+        _sendCrashReportsDialog.Draw();
         CreateFromTemplateDialog.Draw();
         _userNameDialog.Draw();
+        _collabPasswordDialog.Draw();
         Windows.AssetLib.FolderImportDialog.Instance.Draw();
         AboutDialog.Draw();
         ExitDialog.Draw();
@@ -141,6 +162,9 @@ public static partial class T3Ui
         // user-name prompt. They must not overlap — the user-name dialog waits until the
         // welcome window is closed (see the IsVisible guard below).
         CheckForVersionWelcome();
+
+        // Once the layout is up, load the project configured in Settings → Startup.
+        App.Startup.StartupProjectLoader.CheckOncePerLaunch();
 
         if (IsWindowLayoutComplete() && _versionWelcomeChecked && !WindowManager.WelcomeWindow.IsVisible)
         {
@@ -160,6 +184,11 @@ public static partial class T3Ui
             {
                 _missingOperatorsChecked = true;
                 _missingOperatorsDialog.ShowIfOperatorsAreMissing();
+            }
+            else if (!_crashReportsChecked && !IsAnyPopupOpen)
+            {
+                _crashReportsChecked = true;
+                _sendCrashReportsDialog.ShowIfReportsArePending();
             }
         }
 
@@ -203,7 +232,9 @@ public static partial class T3Ui
         if (isNewVersion)
             AutoBackup.PreUpgradeSnapshot.CreateForExistingProjects();
 
-        if (UserSettings.Config.ShowWelcomeOnStartup || isNewVersion)
+        // An OS-autostarted launch is a show machine booting — don't pop the welcome over the
+        // startup project; just record the version as seen.
+        if (!Program.StartedByOsAutostart && (UserSettings.Config.ShowWelcomeOnStartup || isNewVersion))
             WindowManager.WelcomeWindow.Open();
         else
             VersionMarker.MarkCurrentVersionSeen();
@@ -213,6 +244,7 @@ public static partial class T3Ui
     private static bool _lastProjectReopened;
     private static bool _blockedProjectsChecked;
     private static bool _missingOperatorsChecked;
+    private static bool _crashReportsChecked;
 
     private static void UpdateModifiedProjects()
     {

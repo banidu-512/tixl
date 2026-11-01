@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <Import Project="$(SolutionDir)/Tixl.props" />
   <PropertyGroup>
-    <TargetFramework>net10.0-windows</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>disable</ImplicitUsings>
     <Nullable>disable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
@@ -49,36 +49,37 @@
     <Using Include="T3.Core.DataTypes" />
     <Using Include="T3.Core.Operator.Interfaces" />
     <Using Include="T3.Core.Resource" />
-    <Using Alias="Buffer" Include="SharpDX.Direct3D11.Buffer" />
-    <Using Alias="ShaderResourceView" Include="SharpDX.Direct3D11.ShaderResourceView" />
-    <Using Alias="UnorderedAccessView" Include="SharpDX.Direct3D11.UnorderedAccessView" />
-    <Using Alias="CullMode" Include="SharpDX.Direct3D11.CullMode" />
-    <Using Alias="FillMode" Include="SharpDX.Direct3D11.FillMode" />
-    <Using Alias="TextureAddressMode" Include="SharpDX.Direct3D11.TextureAddressMode" />
-    <Using Alias="Filter" Include="SharpDX.Direct3D11.Filter" />
-    <Using Alias="Format" Include="SharpDX.DXGI.Format" />
-    <Using Alias="Texture2DDescription" Include="SharpDX.Direct3D11.Texture2DDescription" />
-    <Using Alias="Texture3DDescription" Include="SharpDX.Direct3D11.Texture3DDescription" />
-    <Using Alias="RenderTargetBlendDescription" Include="SharpDX.Direct3D11.RenderTargetBlendDescription" />
-    <Using Alias="SamplerState" Include="SharpDX.Direct3D11.SamplerState" />
-    <Using Alias="UnorderedAccessViewBufferFlags" Include="SharpDX.Direct3D11.UnorderedAccessViewBufferFlags" />
-    <Using Alias="RawRectangle" Include="SharpDX.Mathematics.Interop.RawRectangle" />
-    <Using Alias="RawViewportF" Include="SharpDX.Mathematics.Interop.RawViewportF" />
-    <Using Alias="ResourceUsage" Include="SharpDX.Direct3D11.ResourceUsage" />
-    <Using Alias="ResourceOptionFlags" Include="SharpDX.Direct3D11.ResourceOptionFlags" />
-    <Using Alias="InputLayout" Include="SharpDX.Direct3D11.InputLayout" />
-    <Using Alias="PrimitiveTopology" Include="SharpDX.Direct3D.PrimitiveTopology" />
-    <Using Alias="BlendState" Include="SharpDX.Direct3D11.BlendState" />
-    <Using Alias="Comparison" Include="SharpDX.Direct3D11.Comparison" />
-    <Using Alias="BlendOption" Include="SharpDX.Direct3D11.BlendOption" />
-    <Using Alias="BlendOperation" Include="SharpDX.Direct3D11.BlendOperation" />
-    <Using Alias="BindFlags" Include="SharpDX.Direct3D11.BindFlags" />
-    <Using Alias="ColorWriteMaskFlags" Include="SharpDX.Direct3D11.ColorWriteMaskFlags" />
-    <Using Alias="CpuAccessFlags" Include="SharpDX.Direct3D11.CpuAccessFlags" />
-    <Using Alias="DepthStencilView" Include="SharpDX.Direct3D11.DepthStencilView" />
-    <Using Alias="DepthStencilState" Include="SharpDX.Direct3D11.DepthStencilState" />
-    <Using Alias="RenderTargetView" Include="SharpDX.Direct3D11.RenderTargetView" />
-    <Using Alias="RasterizerState" Include="SharpDX.Direct3D11.RasterizerState" />
+    <Using Alias="Buffer" Include="T3.Graphics.Compat.Buffer" />
+    <Using Alias="ShaderResourceView" Include="T3.Graphics.Compat.ShaderResourceView" />
+    <Using Alias="UnorderedAccessView" Include="T3.Graphics.Compat.UnorderedAccessView" />
+    <Using Alias="CullMode" Include="T3.Graphics.Compat.CullMode" />
+    <Using Alias="FillMode" Include="T3.Graphics.Compat.FillMode" />
+    <Using Alias="TextureAddressMode" Include="T3.Graphics.Compat.TextureAddressMode" />
+    <Using Alias="Filter" Include="T3.Graphics.Compat.Filter" />
+    <Using Alias="Format" Include="T3.Graphics.Format" />
+    <Using Alias="Texture2DDescription" Include="T3.Graphics.Compat.Texture2DDescription" />
+    <Using Alias="Texture3DDescription" Include="T3.Graphics.Compat.Texture3DDescription" />
+    <Using Alias="RenderTargetBlendDescription" Include="T3.Graphics.Compat.RenderTargetBlendDescription" />
+    <Using Alias="SamplerState" Include="T3.Graphics.Compat.SamplerState" />
+    <Using Alias="UnorderedAccessViewBufferFlags" Include="T3.Graphics.Compat.UnorderedAccessViewBufferFlags" />
+    <Using Alias="ScissorRect" Include="T3.Graphics.ScissorRect" />
+    <Using Alias="Viewport" Include="T3.Graphics.Viewport" />
+    <Using Alias="ResourceUsage" Include="T3.Graphics.Compat.ResourceUsage" />
+    <Using Alias="ResourceOptionFlags" Include="T3.Graphics.Compat.ResourceOptionFlags" />
+    <Using Alias="InputLayout" Include="T3.Graphics.Compat.InputLayout" />
+    <Using Alias="PrimitiveTopology" Include="T3.Graphics.Compat.PrimitiveTopology" />
+    <Using Alias="BlendState" Include="T3.Graphics.Compat.BlendState" />
+    <Using Alias="Comparison" Include="T3.Graphics.Compat.Comparison" />
+    <Using Alias="BlendOption" Include="T3.Graphics.Compat.BlendOption" />
+    <Using Alias="BlendOperation" Include="T3.Graphics.Compat.BlendOperation" />
+    <Using Alias="BindFlags" Include="T3.Graphics.Compat.BindFlags" />
+    <Using Alias="StateGroups" Include="T3.Graphics.Compat.StateGroups" />
+    <Using Alias="ColorWriteMaskFlags" Include="T3.Graphics.Compat.ColorWriteMaskFlags" />
+    <Using Alias="CpuAccessFlags" Include="T3.Graphics.Compat.CpuAccessFlags" />
+    <Using Alias="DepthStencilView" Include="T3.Graphics.Compat.DepthStencilView" />
+    <Using Alias="DepthStencilState" Include="T3.Graphics.Compat.DepthStencilState" />
+    <Using Alias="RenderTargetView" Include="T3.Graphics.Compat.RenderTargetView" />
+    <Using Alias="RasterizerState" Include="T3.Graphics.Compat.RasterizerState" />
     <Using Alias="Point" Include="T3.Core.DataTypes.Point" />
     <Using Alias="Texture2D" Include="T3.Core.DataTypes.Texture2D" />
     <Using Alias="Texture3D" Include="T3.Core.DataTypes.Texture3D" />
@@ -95,10 +96,12 @@
     <Using Alias="PixelShader" Include="T3.Core.DataTypes.PixelShader" />
     <Using Alias="VertexShader" Include="T3.Core.DataTypes.VertexShader" />
     <Using Alias="GeometryShader" Include="T3.Core.DataTypes.GeometryShader" />
-    <Using Alias="SampleDescription" Include="SharpDX.DXGI.SampleDescription" />
+    <Using Alias="SampleDescription" Include="T3.Graphics.SampleDescription" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\Core\Core.csproj" Private="false" PrivateAssets="all" />
+    <ProjectReference Include="..\..\Graphics\Graphics.csproj" Private="false" PrivateAssets="all" />
+    <ProjectReference Include="..\..\Graphics.Compat\Graphics.Compat.csproj" Private="false" PrivateAssets="all" />
     <ProjectReference Include="..\..\Logging\Logging.csproj" Private="false" PrivateAssets="all" />
     <!-- FFmpeg video services (decode + encode). -->
     <ProjectReference Include="..\..\VideoServices\VideoServices.csproj" />
@@ -107,9 +110,16 @@
     <!-- FFmpeg natives for this package's video operators. Sdcb.FFmpeg = LGPL managed bindings; the native
          shared DLLs come from FFmpeg.LGPL (BtbN lgpl-shared, avcodec-61 = FFmpeg 7.x, no gpl/nonfree flags),
          NOT Sdcb.FFmpeg.runtime.windows-x64 (GPL, rejected by FfmpegLibrary's guardrail). Pinned to 20250329
-         (newest avcodec-61); 20250330 bumped to avcodec-62, which the Sdcb 7.0.0 bindings don't match. -->
+         (newest avcodec-61); 20250330 bumped to avcodec-62, which the Sdcb 7.0.0 bindings don't match.
+         Linux gets the same FFmpeg 7.1 from TqkLibrary's build of the same ffbuild recipe, since FFmpeg.LGPL
+         ships win-x64 only and the distro's own FFmpeg is long past avcodec-61. Each natives package is
+         restored only on the platform that can use it; the managed bindings are needed on both. -->
     <PackageReference Include="Sdcb.FFmpeg" Version="7.0.0" />
-    <PackageReference Include="FFmpeg.LGPL" Version="20250329.1.0" />
+    <PackageReference Include="FFmpeg.LGPL" Version="20250329.1.0" Condition="$([MSBuild]::IsOSPlatform('Windows'))" />
+    <PackageReference Include="TqkLibrary.FFmpeg.Lgpl3.Native.Linux.x64" Version="7.1.5.1" Condition="$([MSBuild]::IsOSPlatform('Linux'))" />
+    <!-- Managed-only DirectShow interop: [VideoDeviceInput] enumerates webcam names and capabilities on
+         Windows before opening them through FFmpeg's dshow demuxer. Loads (but is never called) elsewhere. -->
+    <PackageReference Include="DirectShowLib.Standard" Version="2.1.0" />
   </ItemGroup>
   <ItemGroup Label="OperatorPackages">
     <Operators Include="lib" Version="1.0.0" ResourcesOnly="False" />
@@ -132,7 +142,7 @@
   </Target>
   <Target Name="ClearBuildOutput" BeforeTargets="BeforeBuild" Condition="'$(Configuration)' == 'Release'">
     <ItemGroup>
-      <_StaleBuildOutput Include="$(BaseOutputPath)$(Configuration)/**/*" Exclude="$(BaseOutputPath)$(Configuration)/**/av*.dll;$(BaseOutputPath)$(Configuration)/**/sw*.dll;$(BaseOutputPath)$(Configuration)/**/postproc*.dll" />
+      <_StaleBuildOutput Include="$(BaseOutputPath)$(Configuration)/**/*" Exclude="$(BaseOutputPath)$(Configuration)/**/av*.dll;$(BaseOutputPath)$(Configuration)/**/sw*.dll;$(BaseOutputPath)$(Configuration)/**/postproc*.dll;$(BaseOutputPath)$(Configuration)/**/libav*.so*;$(BaseOutputPath)$(Configuration)/**/libsw*.so*;$(BaseOutputPath)$(Configuration)/**/libpostproc*.so*" />
     </ItemGroup>
     <Delete Files="@(_StaleBuildOutput)" ContinueOnError="true" />
   </Target>
@@ -162,12 +172,14 @@
     </PropertyGroup>
     <WriteLinesToFile File="$(OutputPath)/OperatorPackage.json" Lines="$(OperatorPackageInfoJson)" Overwrite="True" Encoding="UTF-8" />
   </Target>
-  <!-- TiXL's operator loader resolves native DLLs flat next to the operator assembly. FFmpeg.LGPL's .targets
-       already copies the av/sw DLLs flat; this backstop also flattens any left under runtimes/win-x64/native/. -->
+  <!-- TiXL's operator loader resolves native libraries flat next to the operator assembly. FFmpeg.LGPL's
+       .targets already copies the av/sw DLLs flat; this backstop also flattens any left under
+       runtimes/<rid>/native/, which is where the Linux package puts its shared objects. -->
   <Target Name="FlattenFFmpegNatives" AfterTargets="AfterBuild">
     <ItemGroup>
-      <_FFmpegNativeDlls Include="$(OutputPath)/runtimes/win-x64/native/av*.dll;$(OutputPath)/runtimes/win-x64/native/sw*.dll;$(OutputPath)/runtimes/win-x64/native/postproc*.dll" />
+      <_FFmpegNativeLibs Include="$(OutputPath)/runtimes/win-x64/native/av*.dll;$(OutputPath)/runtimes/win-x64/native/sw*.dll;$(OutputPath)/runtimes/win-x64/native/postproc*.dll" />
+      <_FFmpegNativeLibs Include="$(OutputPath)/runtimes/linux-x64/native/libav*.so*;$(OutputPath)/runtimes/linux-x64/native/libsw*.so*;$(OutputPath)/runtimes/linux-x64/native/libpostproc*.so*" />
     </ItemGroup>
-    <Copy SourceFiles="@(_FFmpegNativeDlls)" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(_FFmpegNativeLibs)" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" />
   </Target>
 </Project>
