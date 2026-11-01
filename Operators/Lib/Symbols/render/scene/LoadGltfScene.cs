@@ -1,6 +1,5 @@
 #nullable enable
-using SharpDX.Direct3D11;
-using SharpDX.WIC;
+using T3.Graphics.Compat;
 using SharpGLTF.Animations;
 using SharpGLTF.Schema2;
 using T3.Core.Rendering;
@@ -806,10 +805,7 @@ public class LoadGltfScene : Instance<LoadGltfScene>
         // TODO: create and test merge compute shader
 
         // Keep previous setup
-        var prevShader = csStage.Get();
-        var prevUavs = csStage.GetUnorderedAccessViews(0, 1);
-        var prevSrvs = csStage.GetShaderResources(0, 1);
-        var prevSamplers = csStage.GetSamplers(0, 1);
+        deviceContext.PushState(StateGroups.ComputeShader);
 
         // Set Shader
         if (_combineChannelsComputeShaderResource != null)
@@ -827,7 +823,7 @@ public class LoadGltfScene : Instance<LoadGltfScene>
         var resultTextureDescription = new Texture2DDescription
                                            {
                                                BindFlags = BindFlags.UnorderedAccess | BindFlags.RenderTarget | BindFlags.ShaderResource,
-                                               Format = SharpDX.DXGI.Format.R8G8B8A8_UNorm,
+                                               Format = T3.Graphics.Format.R8G8B8A8_UNorm,
                                                Width = width,
                                                Height = height,
                                                MipLevels = 1,
@@ -852,10 +848,7 @@ public class LoadGltfScene : Instance<LoadGltfScene>
         ResourceManager.Device.ImmediateContext.GenerateMips(resultSrv);
 
         // Restore prev setup
-        csStage.SetUnorderedAccessView(0, prevUavs[0]);
-        csStage.SetShaderResource(0, prevSrvs[0]);
-        csStage.SetSamplers(0, prevSamplers);
-        csStage.Set(prevShader);
+        deviceContext.PopState();
     }
 
     private static Resource<T3.Core.DataTypes.ComputeShader>? _combineChannelsComputeShaderResource;
@@ -879,22 +872,15 @@ public class LoadGltfScene : Instance<LoadGltfScene>
         {
             using var memStream = new MemoryStream(imageContent.ToArray());
             memStream.Position = 0;
-            using var imagingFactory = new ImagingFactory();
 
-            using var bitmapDecoder = new BitmapDecoder(imagingFactory, memStream, DecodeOptions.CacheOnDemand);
-            using var formatConverter = new FormatConverter(imagingFactory);
-            using var bitmapFrameDecode = bitmapDecoder.GetFrame(0);
-            formatConverter.Initialize(bitmapFrameDecode, SharpDX.WIC.PixelFormat.Format32bppRGBA, BitmapDitherType.None, null, 0.0,
-                                       BitmapPaletteType.Custom);
+            if (!Texture2D.TryCreateFromStream(memStream, out texture, out var failureReason))
+            {
+                Log.Error($"Failed to create texture from channel {gltfMaterial.Name}.{channel.Key} : {failureReason}");
+                return false;
+            }
 
-            texture = Texture2D.CreateFromBitmap(ResourceManager.Device, formatConverter);
             texture.Name = channel.Key;
-
             Log.Debug($" Created {gltfMaterial.Name}.{channel.Key} with {texture.Description.Width}×{texture.Description.Height}");
-            // bitmapFrameDecode.Dispose();
-            // bitmapDecoder.Dispose();
-            // formatConverter.Dispose();
-            // imagingFactory.Dispose();
 
             srv = new ShaderResourceView(ResourceManager.Device, texture);
             ResourceManager.Device.ImmediateContext.GenerateMips(srv);

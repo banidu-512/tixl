@@ -198,12 +198,12 @@ internal sealed partial class SetupOutputView
                 var sMin = _projection.CanvasToScreen(bboxMin);
                 var sMax = _projection.CanvasToScreen(bboxMax);
 
-                dl.AddImage(srv.NativePointer, sMin, sMax, Vector2.Zero, Vector2.One, UiColors.ForegroundFull.Fade(1f - 0.8f * t));
+                dl.AddImage((IntPtr)srv.ImGuiTextureId, sMin, sMax, Vector2.Zero, Vector2.One, UiColors.ForegroundFull.Fade(1f - 0.8f * t));
 
                 var rMin = _projection.CanvasToScreen(regionMin);
                 var rMax = _projection.CanvasToScreen(regionMax);
                 dl.PushClipRect(rMin, rMax, true);
-                dl.AddImage(srv.NativePointer, sMin, sMax);
+                dl.AddImage((IntPtr)srv.ImGuiTextureId, sMin, sMax);
                 dl.PopClipRect();
             }
 
@@ -236,7 +236,7 @@ internal sealed partial class SetupOutputView
         dl.AddRectFilled(min, max, UiColors.BackgroundFull.Fade(0.4f));
         var photoSrv = SrvManager.GetSrvForTexture(texture);
         if (photoSrv is { IsDisposed: false })
-            dl.AddImage(photoSrv.NativePointer, min, max);
+            dl.AddImage((IntPtr)photoSrv.ImGuiTextureId, min, max);
 
         SetupStrokes.SnapRect(ref min, ref max);
         SetupStrokes.DrawInlineRect(dl, min, max, UiColors.ForegroundFull.Fade(0.25f), isSelected: false);
@@ -374,12 +374,12 @@ internal sealed partial class SetupOutputView
     /// The straightened crop of the photo a traced surface stands for, for its Board card: the warp rendered
     /// small into the surface's own target, and the uv window of the rectified region inside it.
     /// </summary>
-    private bool TryGetTracedFragment(Setup setup, Surface surface, out SharpDX.Direct3D11.ShaderResourceView? srv, out Vector2 uvMin, out Vector2 uvMax)
+    private bool TryGetTracedFragment(Setup setup, Surface surface, out T3.Graphics.Compat.ShaderResourceView? srv, out Vector2 uvMin, out Vector2 uvMax)
     {
         return TryGetTracedFragment(setup, surface, out srv, out _, out uvMin, out uvMax);
     }
 
-    private bool TryGetTracedFragment(Setup setup, Surface surface, out SharpDX.Direct3D11.ShaderResourceView? srv, out Texture2D? warpedTexture,
+    private bool TryGetTracedFragment(Setup setup, Surface surface, out T3.Graphics.Compat.ShaderResourceView? srv, out Texture2D? warpedTexture,
                                       out Vector2 uvMin, out Vector2 uvMax)
     {
         srv = null;
@@ -469,7 +469,7 @@ internal sealed partial class SetupOutputView
         return texture;
     }
 
-    private SharpDX.Direct3D11.ShaderResourceView? TryGetReferenceSrv(ReferenceImage image)
+    private T3.Graphics.Compat.ShaderResourceView? TryGetReferenceSrv(ReferenceImage image)
     {
         var texture = TryGetReferenceTexture(image);
         return texture == null ? null : SrvManager.GetSrvForTexture(texture);

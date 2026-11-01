@@ -6,7 +6,7 @@ namespace Types.Gfx;
 public sealed class ComputeShaderStage : Instance<ComputeShaderStage>, IRenderStatsProvider
 {
     [Output(Guid = "{C382284F-7E37-4EB0-B284-BC735247F26B}")]
-    public readonly Slot<Command> Output = new();
+    public readonly Slot<Command> Output = new(new Command());
 
     public ComputeShaderStage()
     {
@@ -39,14 +39,16 @@ public sealed class ComputeShaderStage : Instance<ComputeShaderStage>, IRenderSt
         Uavs.GetValues(ref _uavs, context);
         int counter = UavBufferCounter.GetValue(context);
 
+        // Saved explicitly and popped in Restore, like the other shader stages. It has to happen before the
+        // early return below: Restore runs for every update, so a skipped push would pop the enclosing
+        // operator's snapshot instead and leave its render targets unbound.
+        device.ImmediateContext.PushState(StateGroups.ComputeShader | StateGroups.OutputMerger);
+
         if (_uavs.Length == 0 || _cs == null)
+        {
+            device.ImmediateContext.PopState();
             return;
-        
-        // TODO: SharpDX 4.2.0 does not expose the no-allocation 3-arg overload publicly,
-        // so this still allocates a fresh RenderTargetView[2] each frame. Worth a follow-up
-        // (P/Invoke OMGetRenderTargets directly, or upgrade SharpDX) — see allocation report.
-        _prevRenderTargetViews = device.ImmediateContext.OutputMerger.GetRenderTargets(2);
-        device.ImmediateContext.OutputMerger.GetRenderTargets(out _prevDepthStencilView);
+        }
         
         if (needAdditionalConstantBuffer && _constantBuffers.Length > 0)
         {
@@ -106,21 +108,9 @@ public sealed class ComputeShaderStage : Instance<ComputeShaderStage>, IRenderSt
             deviceContext.Dispatch(dispatchCount.X, dispatchCount.Y, dispatchCount.Z);
         }
         
-        if (_prevRenderTargetViews.Length > 0)
-            deviceContext.OutputMerger.SetRenderTargets(_prevDepthStencilView, _prevRenderTargetViews);
-
-        foreach (var rtv in _prevRenderTargetViews)
-        {
-            if (rtv == null || rtv.IsDisposed)
-                continue;
-            
-            rtv.Dispose();            
-        }
-            
-        Utilities.Dispose(ref _prevDepthStencilView);
         if (needAdditionalConstantBuffer)
         {
-            Utilities.Dispose(ref _dispatchCallParameterBuffer);
+            T3.Graphics.Compat.GraphicsUtilities.Dispose(ref _dispatchCallParameterBuffer);
         }
 
         
@@ -145,6 +135,11 @@ public sealed class ComputeShaderStage : Instance<ComputeShaderStage>, IRenderSt
             csStage.SetConstantBuffer(i, null);
         }
         
+        // Popped here, not from an enclosing command: the dispatch is finished by the time this returns, and
+        // this stage is usually pulled for its buffer rather than executed as a command - in that case nothing
+        // ever invokes RestoreAction, and every evaluation leaked a snapshot onto the state stack.
+        deviceContext.PopState();
+
         _statsUpdateCount++;
         _statsDispatchCount += dispatchCount.X * dispatchCount.Y * dispatchCount.Z;
     }
@@ -178,11 +173,11 @@ public sealed class ComputeShaderStage : Instance<ComputeShaderStage>, IRenderSt
     }
     
 
-    private SharpDX.Direct3D11.ComputeShader? _cs;
+    private T3.Graphics.Compat.ComputeShader? _cs;
     private Buffer?[] _constantBuffers = [];
     private ShaderResourceView[] _shaderResourceViews = [];
     private ShaderResourceView[] _additionalSrvs = [];
-    private SharpDX.Direct3D11.SamplerState[] _samplerStates = [];
+    private T3.Graphics.Compat.SamplerState[] _samplerStates = [];
     private UnorderedAccessView[] _uavs = [];
         
         
@@ -261,10 +256,8 @@ public sealed class ComputeShaderStage : Instance<ComputeShaderStage>, IRenderSt
     public readonly InputSlot<int> UavBufferCounter = new();
         
     [Input(Guid = "4047c9e7-1edb-4c71-b85c-c1b87058c81c")]
-    public readonly MultiInputSlot<SharpDX.Direct3D11.SamplerState> SamplerStates = new();
+    public readonly MultiInputSlot<T3.Graphics.Compat.SamplerState> SamplerStates = new();
 
-    private RenderTargetView?[]? _prevRenderTargetViews;
-    private DepthStencilView? _prevDepthStencilView;
 
     // Cached initial-counts arrays for SetUnorderedAccessViews, replacing per-call `[..]` literals.
     // Constant ones are static (never mutated). Mutating ones are per-instance.

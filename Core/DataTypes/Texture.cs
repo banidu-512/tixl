@@ -2,36 +2,72 @@
 using System;
 using System.Diagnostics.CodeAnalysis;
 using System.IO;
+using System.Runtime.Versioning;
 using JeremyAnsel.Media.Dds;
-using SharpDX;
-using SharpDX.Direct3D11;
-using SharpDX.DXGI;
+using StbImageSharp;
+using T3.Graphics.Compat;
+using T3.Graphics;
 using SharpDX.WIC;
 using T3.Core.Logging;
 using T3.Core.Resource;
 using T3.Core.Resource.Dds;
-using Device = SharpDX.Direct3D11.Device;
+using Device = T3.Graphics.Compat.Device;
 
 namespace T3.Core.DataTypes;
 
-public sealed class Texture2D(SharpDX.Direct3D11.Texture2D texture) : Texture<SharpDX.Direct3D11.Texture2D>(texture)
+public sealed class Texture2D(T3.Graphics.Compat.Texture2D texture) : Texture<T3.Graphics.Compat.Texture2D>(texture)
 {
-    public override string Name { get => TextureObject.DebugName; set => TextureObject.DebugName = value; }
+    /// <summary>
+    /// How the texels of a cube map map to directions.
+    /// </summary>
+    public enum CubeMapLayouts
+    {
+        Standard,
+
+        /** Texels are spaced evenly by angle, which evens out the resolution across a face. */
+        EquiAngular,
+    }
+
+    public override string Name { get => TextureObject.DebugName ?? string.Empty; set => TextureObject.DebugName = value; }
     public readonly Texture2DDescription Description = texture.Description;
 
+    /// <summary>
+    /// Set by the operator that renders the cube map and read by the ones sampling it. A cube map derived
+    /// from another one does not inherit it.
+    /// </summary>
+    public CubeMapLayouts CubeMapLayout { get; set; }
+
+    [SupportedOSPlatform("windows")]
     public static Texture2D CreateFromBitmap(Device device, BitmapSource bitmapSource)
     {
-        // Allocate DataStream to receive the WIC image pixels
         var stride = bitmapSource.Size.Width * 4;
-        using var buffer = new DataStream(bitmapSource.Size.Height * stride, true, true);
-
-        // Copy the content of the WIC to the buffer
+        // WIC writes into its own stream type, so this one stays SharpDX.
+        using var buffer = new SharpDX.DataStream(bitmapSource.Size.Height * stride, true, true);
         bitmapSource.CopyPixels(stride, buffer);
-        int mipLevels = (int)Math.Log(bitmapSource.Size.Width, 2.0) + 1;
+
+        return CreateFromRgba(device, bitmapSource.Size.Width, bitmapSource.Size.Height, buffer.DataPointer);
+    }
+
+    /// <summary>
+    /// Creates a texture from tightly packed RGBA8 pixels. The caller owns the memory; it is only read while
+    /// this runs.
+    /// </summary>
+    public static unsafe Texture2D CreateFromRgba(Device device, int width, int height, ReadOnlySpan<byte> rgba)
+    {
+        fixed (byte* pixels = rgba)
+        {
+            return CreateFromRgba(device, width, height, (IntPtr)pixels);
+        }
+    }
+
+    private static Texture2D CreateFromRgba(Device device, int width, int height, IntPtr rgba)
+    {
+        var stride = width * 4;
+        var mipLevels = (int)Math.Log(width, 2.0) + 1;
         var texDesc = new Texture2DDescription
                           {
-                              Width = bitmapSource.Size.Width,
-                              Height = bitmapSource.Size.Height,
+                              Width = width,
+                              Height = height,
                               ArraySize = 1,
                               BindFlags = BindFlags.ShaderResource | BindFlags.RenderTarget,
                               Usage = ResourceUsage.Default,
@@ -41,17 +77,17 @@ public sealed class Texture2D(SharpDX.Direct3D11.Texture2D texture) : Texture<Sh
                               OptionFlags = ResourceOptionFlags.GenerateMipMaps,
                               SampleDescription = new SampleDescription(1, 0),
                           };
-        
+
         // Only level 0 has pixels; the coarser levels are filtered down from it on the GPU right away, so
         // anything that samples the image small (a thumbnail, a card, a minifying shader) sees the picture.
         var dataRectangles = new DataRectangle[mipLevels];
         for (var i = 0; i < mipLevels; i++)
         {
-            dataRectangles[i] = new DataRectangle(buffer.DataPointer, stride);
+            dataRectangles[i] = new DataRectangle(rgba, stride);
             stride /= 2;
         }
 
-        var dxTexture = new SharpDX.Direct3D11.Texture2D(device, texDesc, dataRectangles);
+        var dxTexture = new T3.Graphics.Compat.Texture2D(device, texDesc, dataRectangles);
         if (mipLevels > 1)
         {
             using var srv = new ShaderResourceView(device, dxTexture);
@@ -63,7 +99,7 @@ public sealed class Texture2D(SharpDX.Direct3D11.Texture2D texture) : Texture<Sh
 
     public static Texture2D CreateTexture2D(Texture2DDescription description, DataRectangle[]? dataRectangles = null)
     {
-        var dxTexture = new SharpDX.Direct3D11.Texture2D(ResourceManager.Device, description, dataRectangles);
+        var dxTexture = new T3.Graphics.Compat.Texture2D(ResourceManager.Device, description, dataRectangles);
         return new Texture2D(dxTexture);
     }
 
@@ -78,7 +114,7 @@ public sealed class Texture2D(SharpDX.Direct3D11.Texture2D texture) : Texture<Sh
             {
                 DdsDirectX.CreateTexture(ddsFile, ResourceManager.Device, ResourceManager.Device.ImmediateContext, out var dxTextureResource, out var srv);
                 srv?.Dispose();
-                var dxTex = (SharpDX.Direct3D11.Texture2D)dxTextureResource;
+                var dxTex = (T3.Graphics.Compat.Texture2D)dxTextureResource;
                 texture = new Texture2D(dxTex);
             }
             catch (Exception e)
@@ -90,7 +126,7 @@ public sealed class Texture2D(SharpDX.Direct3D11.Texture2D texture) : Texture<Sh
         }
         else
         {
-            if (!TryCreate(stream, out texture, out failureReason))
+            if (!TryCreateFromStream(stream, out texture, out failureReason))
             {
                 failureReason = "Failed to create texture";
                 return false;
@@ -101,18 +137,23 @@ public sealed class Texture2D(SharpDX.Direct3D11.Texture2D texture) : Texture<Sh
         return true;
     }
 
-    private static bool TryCreate(Stream stream, [NotNullWhen(true)] out Texture2D? texture, [NotNullWhen(false)] out string? failureReason)
+    /// <summary>
+    /// Decodes an image of any format stb reads — png, jpg, bmp, tga, psd, gif — into a texture. Also used for
+    /// the images embedded in a glTF file, which arrive as bytes rather than as a file.
+    /// </summary>
+    public static bool TryCreateFromStream(Stream stream, [NotNullWhen(true)] out Texture2D? texture, [NotNullWhen(false)] out string? failureReason)
     {
         try
         {
-            using var factory = new ImagingFactory();
-            using var bitmapDecoder = new BitmapDecoder(factory, stream, DecodeOptions.CacheOnDemand);
-            using var formatConverter = new FormatConverter(factory);
-            using var bitmapFrameDecode = bitmapDecoder.GetFrame(0);
-            formatConverter.Initialize(bitmapFrameDecode, PixelFormat.Format32bppRGBA, BitmapDitherType.None, null, 0.0, BitmapPaletteType.Custom);
+            var image = ImageResult.FromStream(stream, StbImageSharp.ColorComponents.RedGreenBlueAlpha);
+            if (image.Width <= 0 || image.Height <= 0)
+            {
+                texture = null;
+                failureReason = "Image has no pixels";
+                return false;
+            }
 
-            
-            texture = CreateFromBitmap(ResourceManager.Device, formatConverter);
+            texture = CreateFromRgba(ResourceManager.Device, image.Width, image.Height, image.Data);
             failureReason = null;
             return true;
         }
@@ -125,38 +166,35 @@ public sealed class Texture2D(SharpDX.Direct3D11.Texture2D texture) : Texture<Sh
         }
     }
 }
-public sealed class Texture3D(SharpDX.Direct3D11.Texture3D texture) : Texture<SharpDX.Direct3D11.Texture3D>(texture)
+public sealed class Texture3D(T3.Graphics.Compat.Texture3D texture) : Texture<T3.Graphics.Compat.Texture3D>(texture)
 {
-    public override string Name { get => TextureObject.DebugName; set => TextureObject.DebugName = value; }
+    public override string Name { get => TextureObject.DebugName ?? string.Empty; set => TextureObject.DebugName = value; }
     public readonly Texture3DDescription Description = texture.Description;
 
     public static Texture3D CreateTexture3D(Texture3DDescription description)
     {
-        var dxTexture = new SharpDX.Direct3D11.Texture3D(ResourceManager.Device, description);
+        var dxTexture = new T3.Graphics.Compat.Texture3D(ResourceManager.Device, description);
         return new Texture3D(dxTexture);
     }
 }
 
 public abstract class Texture<T>(T texture) : AbstractTexture(texture)
-    where T : SharpDX.Direct3D11.Resource
+    where T : T3.Graphics.Compat.Resource
 {
     public static implicit operator T(Texture<T> texture) => texture.TextureObject;
-    public static implicit operator SharpDX.Direct3D11.Resource?(Texture<T>? texture) => texture?.TextureObject;
+    [return: NotNullIfNotNull(nameof(texture))]
+    public static implicit operator T3.Graphics.Compat.Resource?(Texture<T>? texture) => texture?.TextureObject;
     protected readonly T TextureObject = texture;
     public bool IsDisposed => TextureObject.IsDisposed;
 }
 
-public abstract class AbstractTexture(IDisposable disposable) : IDisposable
+public abstract class AbstractTexture(T3.Graphics.Compat.Resource resource) : IDisposable
 {
-    private IDisposable? _disposable = disposable;
+    private readonly T3.Graphics.Compat.Resource _resource = resource;
+    private IDisposable? _disposable = resource;
     public abstract string Name { get; set; }
 
-    public static implicit operator SharpDX.Direct3D11.Resource?(AbstractTexture texture)
-        => texture._disposable as SharpDX.Direct3D11.Resource;
-    
-    // The original implementation. Not sure, if the above is valid.
-    // public static implicit operator SharpDX.Direct3D11.Resource(AbstractTexture texture) 
-    //     => (SharpDX.Direct3D11.Resource)texture._disposable;
+    public static implicit operator T3.Graphics.Compat.Resource(AbstractTexture texture) => texture._resource;
 
     public void Dispose()
     {

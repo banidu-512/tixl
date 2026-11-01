@@ -196,7 +196,7 @@ internal sealed partial class SetupOutputView
         var pinIsUsable = float.IsFinite(bboxSize.X) && float.IsFinite(bboxSize.Y)
                           && bboxSize.X >= MinDiscWarpExtent && bboxSize.Y >= MinDiscWarpExtent;
 
-        SharpDX.Direct3D11.ShaderResourceView? srv = null;
+        T3.Graphics.Compat.ShaderResourceView? srv = null;
         if (pinIsUsable)
         {
             var scale = MathF.Min(1f, 2048f / MathF.Max(bboxSize.X, bboxSize.Y));
@@ -260,7 +260,7 @@ internal sealed partial class SetupOutputView
 
             var screenMin = _projection.CanvasToScreen(min);
             var screenMax = _projection.CanvasToScreen(max);
-            dl.AddImageRounded(srv.NativePointer, screenMin, screenMax, uv0, uv1, tint, (screenMax.X - screenMin.X) * 0.5f, ImDrawFlags.RoundCornersAll);
+            dl.AddImageRounded((IntPtr)srv.ImGuiTextureId, screenMin, screenMax, uv0, uv1, tint, (screenMax.X - screenMin.X) * 0.5f, ImDrawFlags.RoundCornersAll);
             dl.AddCircle((screenMin + screenMax) * 0.5f, (screenMax.X - screenMin.X) * 0.5f, UiColors.BackgroundFull.Fade(0.5f * fade), 0, 1f);
         }
     }

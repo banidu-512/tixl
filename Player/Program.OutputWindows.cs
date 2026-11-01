@@ -2,20 +2,18 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
-using System.Windows.Forms;
-using SharpDX;
-using SharpDX.Direct3D11;
-using SharpDX.DXGI;
-using SharpDX.Windows;
+using T3.Graphics.Compat;
+using T3.Graphics;
 using T3.Core.Logging;
 using T3.Core.Output;
 using T3.Core.Output.Rendering;
 using T3.SystemUi;
-using Device = SharpDX.Direct3D11.Device;
-using Resource = SharpDX.Direct3D11.Resource;
-using Rectangle = System.Drawing.Rectangle;
+using Device = T3.Graphics.Compat.Device;
 using Color = SharpDX.Color;
+using Viewport = T3.Graphics.Viewport;
 using Texture2D = T3.Core.DataTypes.Texture2D;
+
+using System.Numerics;
 
 namespace T3.Player;
 
@@ -57,18 +55,20 @@ internal static partial class Program
                 continue;
             }
 
-            var bounds = displays[binding.DisplayIndex].Bounds;
+            var display = displays[binding.DisplayIndex];
+            var displayId = _displayProvider.GetDisplayId(binding.DisplayIndex);
             if (_mainWindowOutputId == Guid.Empty)
             {
                 // The main window already exists and runs the render loop, so it carries the first binding.
                 _mainWindowOutputId = output.Id;
-                _renderForm.FormBorderStyle = FormBorderStyle.None;
-                _renderForm.Bounds = new Rectangle(bounds.X, bounds.Y, bounds.Width, bounds.Height);
+                _mainWindow.MoveToDisplay(displayId);
+                _isFullScreen = true;
+                _mainWindow.SetFullscreen(true);
                 Log.Info($"Output \"{output.Name}\" presents on display {binding.DisplayIndex + 1}.");
                 continue;
             }
 
-            var extra = TryOpenOutputWindow(output.Id, output.Name, bounds);
+            var extra = TryOpenOutputWindow(output.Id, output.Name, display, displayId);
             if (extra != null)
             {
                 _outputWindows.Add(extra);
@@ -77,42 +77,22 @@ internal static partial class Program
         }
     }
 
-    private static OutputWindow? TryOpenOutputWindow(Guid outputId, string outputName, Rectangle bounds)
+    private static OutputWindow? TryOpenOutputWindow(Guid outputId, string outputName, DisplayInfo display, SDL.SDL_DisplayID displayId)
     {
+        PlayerWindow? window = null;
         try
         {
-            var form = new RenderForm(outputName)
-                           {
-                               FormBorderStyle = FormBorderStyle.None,
-                               StartPosition = FormStartPosition.Manual,
-                               Bounds = bounds,
-                               AllowUserResizing = false,
-                           };
-            form.Show();
-
-            var description = new SwapChainDescription
-                                  {
-                                      BufferCount = 3,
-                                      ModeDescription = new ModeDescription(form.ClientSize.Width, form.ClientSize.Height,
-                                                                            new Rational(60, 1), Format.R8G8B8A8_UNorm),
-                                      IsWindowed = true,
-                                      OutputHandle = form.Handle,
-                                      SampleDescription = new SampleDescription(1, 0),
-                                      SwapEffect = SwapEffect.FlipDiscard,
-                                      Flags = SwapChainFlags.AllowModeSwitch,
-                                      Usage = Usage.RenderTargetOutput,
-                                  };
-
-            using var factory = _swapChain.GetParent<Factory>();
-            var swapChain = new SwapChain(factory, _device, description);
-            factory.MakeWindowAssociation(form.Handle, WindowAssociationFlags.IgnoreAll);
-
-            var backBuffer = Resource.FromSwapChain<SharpDX.Direct3D11.Texture2D>(swapChain, 0);
-            return new OutputWindow(outputId, form, swapChain, backBuffer, new RenderTargetView(_device, backBuffer));
+            var size = new Size(display.CurrentMode.Width, display.CurrentMode.Height);
+            window = new PlayerWindow(outputName, size, displayId, null);
+            window.SetFullscreen(true);
+            window.Show();
+            window.CreateSwapChain(_device);
+            return new OutputWindow(outputId, window);
         }
         catch (Exception e)
         {
             Log.Warning($"Could not open a window for output \"{outputName}\": {e.Message}");
+            window?.Dispose();
             return null;
         }
     }
@@ -126,6 +106,7 @@ internal static partial class Program
         for (var i = 0; i < _outputWindows.Count; i++)
         {
             var window = _outputWindows[i];
+            window.Window.EnsureBackBufferSize(_device, null);
             var composite = OutputCompositor.RenderOutput(window.OutputId);
             if (composite == null)
                 continue;
@@ -134,9 +115,10 @@ internal static partial class Program
             if (window.TextureView == null)
                 continue;
 
-            _deviceContext.Rasterizer.SetViewport(new Viewport(0, 0, window.Form.ClientSize.Width, window.Form.ClientSize.Height, 0f, 1f));
-            _deviceContext.OutputMerger.SetTargets(window.RenderTargetView);
-            _deviceContext.ClearRenderTargetView(window.RenderTargetView, new Color(0, 0, 0, 1));
+            var backBufferSize = window.Window.BackBufferSize;
+            _deviceContext.Rasterizer.SetViewport(new Viewport(0, 0, backBufferSize.Width, backBufferSize.Height, 0f, 1f));
+            _deviceContext.OutputMerger.SetTargets(window.Window.RenderTargetView);
+            _deviceContext.ClearRenderTargetView(window.Window.RenderTargetView, new Vector4(0, 0, 0, 1));
 
             _deviceContext.Rasterizer.State = _rasterizerState;
             if (_fullScreenVertexShaderResource?.Value != null)
@@ -146,7 +128,7 @@ internal static partial class Program
                 _deviceContext.PixelShader.Set(_fullScreenPixelShaderResource.Value);
 
             _deviceContext.PixelShader.SetShaderResource(0, window.TextureView);
-            _deviceContext.InputAssembler.PrimitiveTopology = SharpDX.Direct3D.PrimitiveTopology.TriangleList;
+            _deviceContext.InputAssembler.PrimitiveTopology = T3.Graphics.Compat.PrimitiveTopology.TriangleList;
             _deviceContext.Draw(3, 0);
             _deviceContext.PixelShader.SetShaderResource(0, null);
         }
@@ -184,7 +166,7 @@ internal static partial class Program
     {
         for (var i = 0; i < _outputWindows.Count; i++)
         {
-            _outputWindows[i].SwapChain.Present(_vsyncInterval, PresentFlags.None);
+            _outputWindows[i].Window.SwapChain.Present(_vsyncInterval);
         }
     }
 
@@ -198,13 +180,10 @@ internal static partial class Program
         _outputWindows.Clear();
     }
 
-    private sealed class OutputWindow(Guid outputId, RenderForm form, SwapChain swapChain,
-                                      SharpDX.Direct3D11.Texture2D backBuffer, RenderTargetView renderTargetView)
+    private sealed class OutputWindow(Guid outputId, PlayerWindow window)
     {
         public Guid OutputId { get; } = outputId;
-        public RenderForm Form { get; } = form;
-        public SwapChain SwapChain { get; } = swapChain;
-        public RenderTargetView RenderTargetView { get; } = renderTargetView;
+        public PlayerWindow Window { get; } = window;
         public ShaderResourceView? TextureView { get; private set; }
 
         /// <summary>Rebuilds the view only when a different composite arrives; the texture is reused across frames.</summary>
@@ -213,7 +192,7 @@ internal static partial class Program
             if (composite.IsDisposed)
                 return;
 
-            var nativePointer = ((SharpDX.Direct3D11.Texture2D)composite).NativePointer;
+            var nativePointer = ((T3.Graphics.Compat.Texture2D)composite).NativePointer;
             if (TextureView != null && !TextureView.IsDisposed && _viewedTexture == nativePointer)
                 return;
 
@@ -225,10 +204,7 @@ internal static partial class Program
         public void Dispose()
         {
             TextureView?.Dispose();
-            RenderTargetView.Dispose();
-            backBuffer.Dispose();
-            SwapChain.Dispose();
-            Form.Dispose();
+            Window.Dispose();
         }
 
         private IntPtr _viewedTexture;

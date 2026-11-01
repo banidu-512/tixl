@@ -1,8 +1,8 @@
 using System.Threading;
 using Sdcb.FFmpeg.Raw;
 using Sdcb.FFmpeg.Utils;
-using SharpDX.Direct3D11;
-using SharpDX.DXGI;
+using T3.Graphics.Compat;
+using T3.Graphics;
 using T3.Core.Logging;
 using T3.Core.Resource;
 using T3.Core.Video;
@@ -170,7 +170,14 @@ public sealed class VideoPlaybackController : IDisposable
     {
         _cancellation.Cancel();
         _wake.Set();
-        _worker?.Join(TimeSpan.FromSeconds(2));
+        if (_worker != null && !_worker.Join(TimeSpan.FromSeconds(2)))
+        {
+            // Stuck in a blocking open/decode. The worker still owns _session, _converter, _cache and the
+            // pending GPU frame; disposing them under it is a native use-after-free. Leak them instead -
+            // the thread is background and exits as soon as its current call returns.
+            Log.Warning("[VideoPlayback] The decode worker did not exit in time; leaving its resources behind.");
+            return;
+        }
 
         // The worker has exited, so its resources can be released without racing it.
         _hardwareConverter?.Dispose();
@@ -232,7 +239,7 @@ public sealed class VideoPlaybackController : IDisposable
 
         fixed (byte* pixels = _pendingBuffer)
         {
-            var dataBox = new SharpDX.DataBox((IntPtr)pixels, _pendingWidth * bytesPerPixel, 0);
+            var dataBox = new T3.Graphics.Compat.DataBox((IntPtr)pixels, _pendingWidth * bytesPerPixel, 0);
             ResourceManager.Device.ImmediateContext.UpdateSubresource(dataBox, _softwareTexture, 0);
         }
 
@@ -525,7 +532,7 @@ public sealed class VideoPlaybackController : IDisposable
             if (_pendingBuffer == null || _pendingBuffer.Length < byteCount)
                 _pendingBuffer = new byte[byteCount];
 
-            rgba.FillImageBuffer(_pendingBuffer, 1);
+            _converter.CopyPixels(rgba, _pendingBuffer);
             _pendingWidth = rgba.Width;
             _pendingHeight = rgba.Height;
             _pendingIsHdr = _session!.IsHdr;

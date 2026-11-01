@@ -7,11 +7,9 @@ using T3.Core.Utils;
 using T3.Editor.Gui.Styling;
 using T3.Editor.Gui.UiHelpers;
 using T3.Editor.Gui.Windows;
-using SharpDX.Direct3D;
-using SharpDX.Direct3D11;
-using SharpDX.DXGI;
-using Buffer = SharpDX.Direct3D11.Buffer;
-using Utilities = T3.Core.Utils.Utilities;
+using T3.Graphics;
+using T3.Graphics.Compat;
+using Buffer = T3.Graphics.Compat.Buffer;
 using ComputeShader = T3.Core.DataTypes.ComputeShader;
 using Texture2D = T3.Core.DataTypes.Texture2D;
 
@@ -98,7 +96,7 @@ internal sealed class CubeMapPreview
         if (TryRender(cubeMap, (int)previewSize.X, (int)previewSize.Y, parameters))
         {
             ImGui.SetCursorScreenPos(previewPos);
-            ImGui.Image((IntPtr)SrvManager.GetSrvForTexture(_preview!), previewSize);
+            ImGui.Image((IntPtr)SrvManager.GetSrvForTexture(_preview!).ImGuiTextureId, previewSize);
         }
 
         if (UserSettings.Config.ShowToolbar)
@@ -240,7 +238,7 @@ internal sealed class CubeMapPreview
         {
             if (cubeMap != _facesSource || _facesSrv == null)
             {
-                Utilities.Dispose(ref _facesSrv);
+                GraphicsUtilities.Dispose(ref _facesSrv);
                 var description = cubeMap.Description;
                 _facesSrv = new ShaderResourceView(ResourceManager.Device, cubeMap,
                                                    new ShaderResourceViewDescription
@@ -261,8 +259,8 @@ internal sealed class CubeMapPreview
             if (_preview is { IsDisposed: false } && _preview.Description.Width == width && _preview.Description.Height == height)
                 return true;
 
-            Utilities.Dispose(ref _previewUav);
-            Utilities.Dispose(ref _preview);
+            GraphicsUtilities.Dispose(ref _previewUav);
+            GraphicsUtilities.Dispose(ref _preview);
             _preview = Texture2D.CreateTexture2D(new Texture2DDescription
                                                      {
                                                          ArraySize = 1,
@@ -282,9 +280,9 @@ internal sealed class CubeMapPreview
         catch (Exception e)
         {
             Log.Warning("Failed to create cube map preview: " + e.Message);
-            Utilities.Dispose(ref _facesSrv);
-            Utilities.Dispose(ref _previewUav);
-            Utilities.Dispose(ref _preview);
+            GraphicsUtilities.Dispose(ref _facesSrv);
+            GraphicsUtilities.Dispose(ref _previewUav);
+            GraphicsUtilities.Dispose(ref _preview);
             return false;
         }
     }

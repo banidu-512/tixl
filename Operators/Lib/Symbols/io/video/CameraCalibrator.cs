@@ -2,8 +2,7 @@ using System.Drawing;
 using System.Drawing.Imaging;
 using OpenCvSharp;
 using OpenCvSharp.Extensions;
-using SharpDX;
-using SharpDX.Direct3D11;
+using T3.Graphics.Compat;
 using T3.Core.Resource.Assets;
 using Color = System.Drawing.Color;
 using Rectangle = System.Drawing.Rectangle;
@@ -12,7 +11,7 @@ using Size = OpenCvSharp.Size;
 namespace Lib.io.video
 {
     [Guid("7b4d3c2a-5b16-4b2a-8f3a-7e8c9d0b1a2b")]
-    [ExportDependencies("OpenCvSharpExtern.dll")]
+    [ExportDependencies("OpenCvSharpExtern.dll", "libOpenCvSharpExtern.so", "libOpenCvSharpExtern.dylib")]
     public class CameraCalibrator : Instance<CameraCalibrator>, ICustomDropdownHolder
     {
         public enum Modes
@@ -103,6 +102,20 @@ namespace Lib.io.video
         }
 
         private void Update(EvaluationContext context)
+        {
+            // The checkerboard and both texture uploads go through System.Drawing.
+            if (!T3.Core.Utils.WindowsOnlyFeature.IsAvailable("Camera calibration"))
+            {
+                StatusMessage.Value = "Camera calibration is only available on Windows.";
+                return;
+            }
+
+            UpdateCalibration(context);
+        }
+
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+        private void UpdateCalibration(EvaluationContext context)
         {
             HandleTriggers(context);
             var mode = (Modes)Mode.GetValue(context);
@@ -346,6 +359,7 @@ namespace Lib.io.video
             _isCalibrated = true;
         }
 
+        [System.Runtime.Versioning.SupportedOSPlatform("windows")]
         private void GenerateCheckerboard(Size patternSize, Size imageSize, int border)
         {
             if (patternSize.Width <= 0 || patternSize.Height <= 0 || imageSize.Width <= 0 || imageSize.Height <= 0) return;
@@ -512,7 +526,7 @@ namespace Lib.io.video
                                       SampleDescription = new SampleDescription(1, 0), Usage = ResourceUsage.Staging, BindFlags = BindFlags.None,
                                       CpuAccessFlags = CpuAccessFlags.Read, OptionFlags = ResourceOptionFlags.None
                                   };
-            using var stagingTexture = new SharpDX.Direct3D11.Texture2D(d3dDevice, stagingDesc);
+            using var stagingTexture = new T3.Graphics.Compat.Texture2D(d3dDevice, stagingDesc);
             deviceContext.CopyResource(t3Texture, stagingTexture);
             var dataBox = deviceContext.MapSubresource(stagingTexture, 0, MapMode.Read, MapFlags.None);
             using var matBgra = Mat.FromPixelData(desc.Height, desc.Width, MatType.CV_8UC4, dataBox.DataPointer, dataBox.RowPitch);
@@ -522,6 +536,7 @@ namespace Lib.io.video
             return matBgr;
         }
 
+        [System.Runtime.Versioning.SupportedOSPlatform("windows")]
         public static void UploadMatToTexture(Mat mat, ref Texture2D texture)
         {
             if (mat == null || mat.Empty()) return;
@@ -531,6 +546,7 @@ namespace Lib.io.video
             UploadBitmapToTexture(bmp, ref texture);
         }
 
+        [System.Runtime.Versioning.SupportedOSPlatform("windows")]
         public static void UploadBitmapToTexture(Bitmap bmp, ref Texture2D texture)
         {
             if (bmp == null) return;
@@ -547,7 +563,7 @@ namespace Lib.io.video
                                           SampleDescription = new SampleDescription(1, 0), Usage = ResourceUsage.Default, BindFlags = BindFlags.ShaderResource
                                       };
                     var dataRectangle = new DataRectangle(bmpData.Scan0, bmpData.Stride);
-                    texture = new Texture2D(new SharpDX.Direct3D11.Texture2D(ResourceManager.Device, texDesc, dataRectangle));
+                    texture = new Texture2D(new T3.Graphics.Compat.Texture2D(ResourceManager.Device, texDesc, [dataRectangle]));
                 }
                 else
                 {

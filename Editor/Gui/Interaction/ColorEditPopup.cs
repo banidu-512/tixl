@@ -1,5 +1,5 @@
 #nullable enable
-using System.Drawing;
+using System.Runtime.InteropServices;
 using ImGuiNET;
 using T3.Core.DataTypes;
 using T3.Core.Operator;
@@ -170,9 +170,9 @@ internal static class ColorEditPopup
         var clampedV = v.Clamp(0, 1);
 
         var colorEdgeWidth = 3 * T3Ui.UiScaleFactor;
-        drawList.AddImage((IntPtr)SharedResources.ColorPickerImageSrv, windowPos - Vector2.One * colorEdgeWidth,
+        drawList.AddImage((IntPtr)SharedResources.ColorPickerImageSrv.ImGuiTextureId, windowPos - Vector2.One * colorEdgeWidth,
                           windowPos + size + Vector2.One * colorEdgeWidth);
-        drawList.AddImage((IntPtr)SharedResources.ColorPickerImageSrv, windowPos, windowPos + size, Vector2.Zero, Vector2.One,
+        drawList.AddImage((IntPtr)SharedResources.ColorPickerImageSrv.ImGuiTextureId, windowPos, windowPos + size, Vector2.Zero, Vector2.One,
                           new Color(clampedV, clampedV, clampedV));
 
         var hueAngle = (hNormalized + 0.25f) * 2 * MathF.PI;
@@ -829,32 +829,51 @@ internal static class ColorEditPopup
             FitViewToSelectionHandling.FitViewToSelection();
     }
 
+    /// <summary>
+    /// The screen's colour under the pointer, for the eyedropper. Reading the screen takes a platform API, and
+    /// Wayland does not let applications read it at all, so elsewhere the pick is transparent.
+    /// </summary>
     private static Color GetColorAtMousePosition()
     {
-        var pos = CoreUi.Instance.Cursor.PositionVec;
-        var x = (int)pos.X;
-        var y = (int)pos.Y;
+        if (!OperatingSystem.IsWindows())
+            return Color.Transparent;
 
-        var bounds = new Rectangle(x, y, 1, 1);
+        var pos = CoreUi.Instance.Cursor.PositionVec;
+        var screenContext = GetDC(IntPtr.Zero);
+        if (screenContext == IntPtr.Zero)
+        {
+            Log.Warning("Failed to pick color: the screen can't be read.");
+            return Color.Transparent;
+        }
+
         try
         {
-            using (var g = Graphics.FromImage(_bmp))
-                g.CopyFromScreen(bounds.Location, Point.Empty, bounds.Size);
+            // COLORREF is 0x00BBGGRR.
+            var colorRef = GetPixel(screenContext, (int)pos.X, (int)pos.Y);
+            if (colorRef == InvalidColorRef)
+                return Color.Transparent;
 
-            var c = _bmp.GetPixel(0, 0);
-
-            return new Color(c.R, c.G, c.B, c.A);
+            return new Color((byte)colorRef, (byte)(colorRef >> 8), (byte)(colorRef >> 16), (byte)255);
         }
-        catch(Exception e)
+        finally
         {
-            Log.Warning("Failed to pick color: " + e.Message);
+            ReleaseDC(IntPtr.Zero, screenContext);
         }
-        return Color.Transparent;
     }
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetDC(IntPtr windowHandle);
+
+    [DllImport("user32.dll")]
+    private static extern int ReleaseDC(IntPtr windowHandle, IntPtr deviceContext);
+
+    [DllImport("gdi32.dll")]
+    private static extern uint GetPixel(IntPtr deviceContext, int x, int y);
+
+    private const uint InvalidColorRef = 0xFFFFFFFF;
 
     private static Color _hoveredColor;
     private static bool _isHoveringColor;
-    private static readonly Bitmap _bmp = new(1, 1);
     public  const string PopupId =  "##colorEdit";
     private static uint _openedId;
 }

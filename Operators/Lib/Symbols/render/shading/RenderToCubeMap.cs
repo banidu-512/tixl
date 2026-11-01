@@ -1,14 +1,12 @@
 #nullable enable
 using System.Runtime.InteropServices;
 using T3.Core.Animation;
-using SharpDX.Direct3D;
-using SharpDX.Direct3D11;
-using SharpDX.Mathematics.Interop;
+using T3.Graphics;
+using T3.Graphics.Compat;
 using T3.Core.Rendering;
 using T3.Core.Utils;
 using T3.Core.Utils.Geometry;
-using Device = SharpDX.Direct3D11.Device;
-using Utilities = T3.Core.Utils.Utilities;
+using Device = T3.Graphics.Compat.Device;
 
 namespace Lib.render.shading;
 
@@ -133,8 +131,7 @@ internal sealed class RenderToCubeMap : Instance<RenderToCubeMap>
         }
 
         var deviceContext = device.ImmediateContext;
-        var prevViewports = deviceContext.Rasterizer.GetViewports<RawViewportF>();
-        var prevTargets = deviceContext.OutputMerger.GetRenderTargets(MaxRestoredRenderTargets, out var prevDsv);
+        deviceContext.PushState(StateGroups.Rasterizer | StateGroups.OutputMerger);
 
         var prevObjectToWorld = context.ObjectToWorld;
         var prevWorldToCamera = context.WorldToCamera;
@@ -202,9 +199,9 @@ internal sealed class RenderToCubeMap : Instance<RenderToCubeMap>
                            : sampleCount > 1 ? _multiSampledRtv
                            : _faceRtvs[faceIndex])!;
             var faceDsv = (isProgressive ? _sampleDepthDsvs[faceIndex] : _depthDsv)!;
-            deviceContext.Rasterizer.SetViewport(new SharpDX.Viewport(0, 0, renderSize, renderSize, 0.0f, 1.0f));
+            deviceContext.Rasterizer.SetViewport(new T3.Graphics.Viewport(0, 0, renderSize, renderSize, 0.0f, 1.0f));
             deviceContext.OutputMerger.SetTargets(faceDsv, faceRtv);
-            deviceContext.ClearRenderTargetView(faceRtv, new RawColor4(clearColor.X, clearColor.Y, clearColor.Z, clearColor.W));
+            deviceContext.ClearRenderTargetView(faceRtv, clearColor);
             deviceContext.ClearDepthStencilView(faceDsv, DepthStencilClearFlags.Depth, 1.0f, 0);
 
             context.ObjectToWorld = prevObjectToWorld;
@@ -248,16 +245,7 @@ internal sealed class RenderToCubeMap : Instance<RenderToCubeMap>
         context.BypassCameras = keepCameraBypass;
         context.BackgroundColor = keepBackgroundColor;
         context.ForegroundColor = keepForegroundColor;
-        deviceContext.Rasterizer.SetViewports(prevViewports);
-        deviceContext.OutputMerger.SetTargets(prevDsv, prevTargets);
-
-        // GetRenderTargets() added a reference to each view.
-        for (var targetIndex = 0; targetIndex < prevTargets.Length; targetIndex++)
-        {
-            prevTargets[targetIndex]?.Dispose();
-        }
-
-        prevDsv?.Dispose();
+        deviceContext.PopState();
 
         if (isProgressive)
         {
@@ -625,46 +613,46 @@ internal sealed class RenderToCubeMap : Instance<RenderToCubeMap>
     {
         for (var faceIndex = 0; faceIndex < FaceCount; faceIndex++)
         {
-            Utilities.Dispose(ref _sampleRtvs[faceIndex]);
-            Utilities.Dispose(ref _sampleDepthDsvs[faceIndex]);
+            GraphicsUtilities.Dispose(ref _sampleRtvs[faceIndex]);
+            GraphicsUtilities.Dispose(ref _sampleDepthDsvs[faceIndex]);
         }
 
-        Utilities.Dispose(ref _samplesSrv);
-        Utilities.Dispose(ref _samples);
-        Utilities.Dispose(ref _sampleDepthSrv);
-        Utilities.Dispose(ref _sampleDepth);
+        GraphicsUtilities.Dispose(ref _samplesSrv);
+        GraphicsUtilities.Dispose(ref _samples);
+        GraphicsUtilities.Dispose(ref _sampleDepthSrv);
+        GraphicsUtilities.Dispose(ref _sampleDepth);
 
         for (var historyIndex = 0; historyIndex < 2; historyIndex++)
         {
-            Utilities.Dispose(ref _historyColorUavs[historyIndex]);
-            Utilities.Dispose(ref _historyColorSrvs[historyIndex]);
-            Utilities.Dispose(ref _historyColors[historyIndex]);
-            Utilities.Dispose(ref _historyDataUavs[historyIndex]);
-            Utilities.Dispose(ref _historyDataSrvs[historyIndex]);
-            Utilities.Dispose(ref _historyDatas[historyIndex]);
+            GraphicsUtilities.Dispose(ref _historyColorUavs[historyIndex]);
+            GraphicsUtilities.Dispose(ref _historyColorSrvs[historyIndex]);
+            GraphicsUtilities.Dispose(ref _historyColors[historyIndex]);
+            GraphicsUtilities.Dispose(ref _historyDataUavs[historyIndex]);
+            GraphicsUtilities.Dispose(ref _historyDataSrvs[historyIndex]);
+            GraphicsUtilities.Dispose(ref _historyDatas[historyIndex]);
         }
     }
 
     private void DisposeTextures()
     {
-        Utilities.Dispose(ref _cubeMapUav);
-        Utilities.Dispose(ref _cubeMapSrv);
-        Utilities.Dispose(ref _cubeMap);
+        GraphicsUtilities.Dispose(ref _cubeMapUav);
+        GraphicsUtilities.Dispose(ref _cubeMapSrv);
+        GraphicsUtilities.Dispose(ref _cubeMap);
 
         for (var faceIndex = 0; faceIndex < FaceCount; faceIndex++)
         {
-            Utilities.Dispose(ref _faceRtvs[faceIndex]);
+            GraphicsUtilities.Dispose(ref _faceRtvs[faceIndex]);
         }
 
-        Utilities.Dispose(ref _facesUav);
-        Utilities.Dispose(ref _facesSrv);
-        Utilities.Dispose(ref _faces);
+        GraphicsUtilities.Dispose(ref _facesUav);
+        GraphicsUtilities.Dispose(ref _facesSrv);
+        GraphicsUtilities.Dispose(ref _faces);
 
-        Utilities.Dispose(ref _multiSampledRtv);
-        Utilities.Dispose(ref _multiSampled);
+        GraphicsUtilities.Dispose(ref _multiSampledRtv);
+        GraphicsUtilities.Dispose(ref _multiSampled);
 
-        Utilities.Dispose(ref _depthDsv);
-        Utilities.Dispose(ref _depth);
+        GraphicsUtilities.Dispose(ref _depthDsv);
+        GraphicsUtilities.Dispose(ref _depth);
     }
 
     protected override void Dispose(bool isDisposing)
@@ -674,7 +662,7 @@ internal sealed class RenderToCubeMap : Instance<RenderToCubeMap>
 
         DisposeTextures();
         DisposeProgressiveTextures();
-        Utilities.Dispose(ref _paramsBuffer);
+        GraphicsUtilities.Dispose(ref _paramsBuffer);
     }
 
     private static Int2 GetBayerOffset(int tileSize, int sampleIndex)
@@ -822,7 +810,6 @@ internal sealed class RenderToCubeMap : Instance<RenderToCubeMap>
     public readonly InputSlot<bool> Reset = new();
 
     private const int FaceCount = 6;
-    private const int MaxRestoredRenderTargets = 3;
     private const int CopyThreadGroupSize = 16;
     private const string FaceVariableName = "CubeFace";
     private const string RepeatPassVariableName = "__MotionBlurPass";

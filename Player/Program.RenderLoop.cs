@@ -1,9 +1,7 @@
 #nullable enable
 using System;
-using SharpDX;
-using SharpDX.Direct3D;
-using SharpDX.Direct3D11;
-using SharpDX.DXGI;
+using T3.Graphics.Compat;
+using T3.Graphics;
 using T3.Core.Animation;
 using T3.Core.Audio;
 using T3.Core.Audio.Graph;
@@ -15,6 +13,10 @@ using T3.Core.Operator.Slots;
 using T3.Core.Stats;
 using Texture2D = T3.Core.DataTypes.Texture2D;
 
+using System.Numerics;
+using T3.Core.Audio.Input;
+using T3.IoServices.Midi;
+
 namespace T3.Player;
 
 internal static partial class Program
@@ -23,10 +25,18 @@ internal static partial class Program
     private static void RenderCallback()
     {
         // Recorded at the frame's start, before playback advances by the resulting visual frame duration.
+        FrameTiming.SetRefreshRateFromDisplay(_mainWindow.DisplayRefreshRate);
         FrameTiming.RecordFrameStart(Playback.RunTimeInSecs, _vsyncInterval > 0);
 
         EnsureBackBufferSize();
-        WasapiAudioInput.StartFrame(_playback.Settings);
+
+        // The backends record into a frame and submit it at the end; D3D11's immediate context needed no such
+        // bracketing, which is why the render loop never had it.
+        _device.BeginFrame();
+        AudioInput.StartFrame(_playback.Settings);
+        if (MidiConnectionManager.TryConsumeDeviceChange())
+            MidiConnectionManager.Rescan();
+
         _playback.Update();
 
         //Log.Debug($" render at playback time {_playback.TimeInSecs:0.00}s");
@@ -72,10 +82,15 @@ internal static partial class Program
         DirtyFlag.IncrementGlobalTicks();
         DirtyFlag.GlobalInvalidationTick++;
 
-        EvaluateAndDrawOutput(_resolution, _deviceContext, _renderView);
+        // Under Vulkan this is what acquires the image for this frame, so it has to happen every frame
+        // and after the graph has been updated, not once at start-up.
+        _mainWindow.AcquireBackBuffer(_device);
+        EvaluateAndDrawOutput(_resolution, _deviceContext, _mainWindow.RenderTargetView);
 
-        _swapChain.Present(_vsyncInterval, PresentFlags.None);
+        _mainWindow.SwapChain.Present(_vsyncInterval);
         PresentOutputWindows();
+        _device.EndFrame();
+
 
         PerformanceMetrics.RecordFrame((float)(FrameTiming.FrameIntervalSec * 1000.0));
     }
@@ -128,7 +143,9 @@ internal static partial class Program
 
         // Operators that render off-screen save and restore the bound viewports, and SharpDX's GetViewports
         // throws when none is bound at all — so one is bound before any content runs, as the editor always has.
-        deviceContext.Rasterizer.SetViewport(new Viewport(0, 0, _backBufferSize.Width, _backBufferSize.Height, 0.0f, 1.0f));
+        var backBufferSize = _mainWindow.BackBufferSize;
+        var backBufferViewport = new Viewport(0, 0, backBufferSize.Width, backBufferSize.Height, 0.0f, 1.0f);
+        deviceContext.Rasterizer.SetViewport(backBufferViewport);
 
         // Composited first: the compositor binds render targets of its own and leaves them bound, so the back
         // buffer is claimed after it is done rather than before.
@@ -137,12 +154,12 @@ internal static partial class Program
 
         // The output is rendered at the requested resolution and stretched onto the back buffer,
         // whose size follows the window (borderless fullscreen may differ from the requested size).
-        deviceContext.Rasterizer.SetViewport(new Viewport(0, 0, _backBufferSize.Width, _backBufferSize.Height, 0.0f, 1.0f));
+        deviceContext.Rasterizer.SetViewport(backBufferViewport);
         deviceContext.OutputMerger.SetTargets(renderView);
 
         // Clear before evaluating: with a flip-model swap chain an un-drawn back buffer is undefined
         // (typically white), which hides the fact that the output produced nothing.
-        deviceContext.ClearRenderTargetView(renderView, new Color(0.45f, 0.55f, 0.6f, 1.0f));
+        deviceContext.ClearRenderTargetView(renderView, new Vector4(0.45f, 0.55f, 0.6f, 1.0f));
 
         if (outputTexture == null)
         {

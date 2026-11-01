@@ -1,10 +1,12 @@
-using System.Windows.Forms;
-using SharpDX;
-using SharpDX.Direct3D;
-using SharpDX.Direct3D11;
+using System.Runtime.CompilerServices;
+using System.Text;
+using T3.Core.Diagnostics;
+using System.Runtime.InteropServices;
+using SDL;
+using T3.Graphics.Compat;
+using T3.Graphics;
 using System.Diagnostics;
-using SharpDX.DXGI;
-using T3.Core.Logging;
+using System.Threading;
 using T3.Core.Stats;
 using T3.Core.IO;
 using T3.Core.Resource;
@@ -14,44 +16,21 @@ using T3.Editor.Gui;
 using T3.Editor.Gui.UiHelpers;
 using T3.Editor.Gui.Windows.Analyze;
 using T3.Editor.UiModel;
-using Device = SharpDX.Direct3D11.Device;
+using T3.SdlPlatform;
+using static SDL.SDL3;
+using Device = T3.Graphics.Compat.Device;
 using PixelShader = T3.Core.DataTypes.PixelShader;
 using VertexShader = T3.Core.DataTypes.VertexShader;
 
 namespace T3.Editor.App;
 
-internal static class ProgramWindows
+internal static unsafe class ProgramWindows
 {
     public static AppWindow Main { get; private set; }
     public static AppWindow Viewer { get; private set; } // Required it distinguish 2nd render view in mouse handling   
     private static Device _device;
     private static DeviceContext _deviceContext;
-    private static Factory _factory;
-
-    /** The window whose display's vblank paces the frame loop. */
-    private static AppWindow _pacingWindow;
-
-    private static int _pacingVblanksPerFrame = 1;
-    private static bool _isPacingWithVSync = true;
-    private static long _lastPacedFrameStart;
-    private static bool _isWaitingForVblanks;
-    private static int _pacingFrameLatency = 1;
-
-    /**
-     * Fraction of a refresh period a frame may start early without waiting for another vblank. Large enough for
-     * start jitter, small enough that a frame released half a period early (120 Hz clock, 60 Hz display) still waits.
-     */
-    private const double VblankTimingTolerance = 0.25;
-
-    /** The display the pacing window is on, for waiting on its vblanks; refreshed when the pacing window changes. */
-    private static Output _pacingOutput;
-    private static AppWindow _pacingOutputWindow;
-    private static long _pacingOutputLookupTimestamp;
-    private static bool _hasLoggedVblankWaitFailure;
-
-    /** 30 fps on a 120 Hz display; lower rates don't need a frame-rate setting. */
-    private const int MaxVblanksPerFrame = 4;
-
+    private static IGraphicsBackend? _backend;
     public static string ActiveGpu { get; private set; } = "Unknown";
 
     internal static void SetMainWindowSize(int width, int height)
@@ -60,11 +39,41 @@ internal static class ProgramWindows
         Main.SetBorderStyleSizable();
     }
 
+    /// <summary>
+    /// Hands every Win32 message to the devices that read raw input from it, the SpaceMouse's WM_INPUT. SDL owns
+    /// the window procedure, so they get the messages from its hook, before SDL dispatches them.
+    /// </summary>
     internal static void SetInteractionDevices(params object[] objects)
     {
-        IWindowsFormsMessageHandler[] messageHandlers = objects.OfType<IWindowsFormsMessageHandler>().ToArray();
-        ImGuiDx11RenderForm.InputMethods = messageHandlers;
+        _messageHandlers = objects.OfType<IWin32MessageHandler>().ToArray();
+        if (OperatingSystem.IsWindows() && _messageHandlers.Length > 0)
+            SDL_SetWindowsMessageHook(&ForwardWindowsMessage, IntPtr.Zero);
     }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static SDLBool ForwardWindowsMessage(IntPtr userData, MSG* msg)
+    {
+        // Messages arrive before ImGui has a context, and the handlers read ImGui state.
+        if (ImGuiNET.ImGui.GetCurrentContext() == IntPtr.Zero)
+            return true;
+
+        // An exception must not unwind into SDL's native frame.
+        try
+        {
+            foreach (var handler in _messageHandlers)
+            {
+                handler.ProcessMessage((int)msg->message, (nint)msg->wParam, msg->lParam);
+            }
+        }
+        catch (Exception e)
+        {
+            Log.Error($"Processing a window message failed: {e.Message}");
+        }
+
+        return true;
+    }
+
+    private static IWin32MessageHandler[] _messageHandlers = [];
 
     public static void SetVertexShader(Resource<VertexShader> resource) => _deviceContext.VertexShader.Set(resource.Value);
     public static void SetPixelShader(Resource<PixelShader> resource) => _deviceContext.PixelShader.Set(resource.Value);
@@ -78,7 +87,7 @@ internal static class ProgramWindows
         {
             // The display the window is already on: drag the editor where you want it, then go fullscreen —
             // which beats keeping a screen index that silently means a different monitor after a replug.
-            Main.SetFullScreen(IndexOfScreenUnder(Main));
+            Main.SetFullScreen(Main.GetDisplayIndex());
         }
         else
         {
@@ -99,131 +108,33 @@ internal static class ProgramWindows
         Main = new AppWindow("TiXL " + version, disableClose: false);
         // Enable explicit frame-latency pacing on Main's swap chain. Replaces the accidental
         // pacing previously provided by Viewer's secondary `Present(1)` call. Must be set before
-        // SwapChainDescription is consumed by Device.CreateWithSwapChain.
+        // the swap chain is created.
         Main.UseFrameLatencyWaitable = true;
-        _pacingWindow = Main;
         device = null;
-        string[] highPerformanceKeywords = ["dedicated", "high performance", "rtx", "gtx"];
-        string[] integratedKeywords = ["integrated", "intel(r) uhd graphics", "microsoft basic render", "microsoft basic render"]; // twice to make MS worse
 
         try
         {
-            using var factory = new Factory1();
+            _backend = CreateBackend();
+            ActiveGpu = _backend.AdapterName;
+            EnvironmentReport.GraphicsDescription = _backend.BackendDescription;
+            Log.Info($"Rendering with {_backend.BackendDescription}");
+            LogEnvironment();
 
-            if (factory.GetAdapterCount() == 0)
-            {
-                BlockingWindow.Instance.ShowMessageBox("We are unable to find any graphics adapters",
-                                                       "Oh noooo",
-                                                       "OK");
-                Environment.Exit(0);
-            }
-
-            var adapterRatings = new List<DisplayAdapterRating>(8);
-
-            for (var i = 0; i < factory.GetAdapterCount(); i++)
-            {
-                using var adapter = factory.GetAdapter1(i);
-                const long gb = 1024 * 1024 * 1024;
-                
-                var newRating = new DisplayAdapterRating
-                                    {
-                                        Name = adapter.Description.Description,
-                                        Index = i,
-                                        MemoryInGb = (float)((double)adapter.Description.DedicatedVideoMemory/gb),
-                                    };
-                adapterRatings.Add(newRating);                
-                
-                var descriptionLower = adapter.Description.Description.ToLowerInvariant();
-                
-                // Positive keywords
-                foreach (var keyword in highPerformanceKeywords)
-                {
-                    if (!descriptionLower.Contains(keyword))
-                        continue;
-
-                    newRating.Rating *= 2f;
-                }
-
-                // Negative keywords
-                foreach (var keyword in integratedKeywords)
-                {
-                    if (!descriptionLower.Contains(keyword))
-                        continue;
-
-                    newRating.Rating *= 0.2f;
-                }
-
-                var memSizeFactor = newRating.MemoryInGb switch
-                                        {
-                                            < 1 => 0.1f,
-                                            < 2 => 0.5f,
-                                            < 4 => 1f,
-                                            < 8 => 2f,
-                                            > 8 => 3f,
-                                            _ => 4f
-                                        };
-                newRating.Rating *= memSizeFactor;
-            }
-
-            var selectedAdapterIndex = adapterRatings.OrderByDescending(r => r.Rating).First().Index;
-            Log.Debug("Detected display adapters...");
-            foreach (var r in adapterRatings)
-            {
-                Log.Debug($"  #{r.Index}: {r.Name} / {r.MemoryInGb:0.0}GB  -> rated {r.Rating:0.0}");
-            }
-            
-            var selectedAdapter = factory.GetAdapter1(selectedAdapterIndex);
-            ActiveGpu = selectedAdapter.Description.Description;
-
-            //Try to load 11.1 if possible, revert to 11.0 auto
-            FeatureLevel[] levels =
-            [
-                FeatureLevel.Level_11_1,
-                FeatureLevel.Level_11_0,
-            ];
-
-            
-            
-            // Create Device and SwapChain with the selected adapter
-            var deviceCreationFlags = DeviceCreationFlags.BgraSupport;
-
-            if (CoreSettings.Config.EnableDirectXDebug)
-                deviceCreationFlags |= DeviceCreationFlags.Debug;
-            
-            Log.Debug("Creating Device...");
-
-            SwapChain swapchain;
-            try
-            {
-                Device.CreateWithSwapChain(selectedAdapter,
-                                           deviceCreationFlags,
-                                           levels,
-                                           Main.SwapChainDescription,
-                                           out device,
-                                           out  swapchain);
-            }
-            catch (Exception e)
-            {
-                Log.Warning("Failed to create device with advanced features. Trying basic settings. " + e.Message);
-                Device.CreateWithSwapChain(selectedAdapter,
-                                           DeviceCreationFlags.None,
-                                           levels,
-                                           Main.SwapChainDescription,
-                                           out device,
-                                           out  swapchain);
-            }
-
+            device = new Device(_backend);
             _device = device;
             _deviceContext = device.ImmediateContext;
-            _factory = swapchain.GetParent<Factory>();
 
-            Main.SetDevice(device, _deviceContext, swapchain);
+            Main.SetDevice(device, _deviceContext);
+            Main.InitViewSwapChain();
             GpuFrameTimer.Initialize(device, _deviceContext);
-            var windowState = Program.WindowSizeOverride == null ? FormWindowState.Maximized : FormWindowState.Normal;
-            Main.InitializeWindow(windowState, OnCloseMainWindow, true);
+            Main.InitializeWindow(maximized: Program.WindowSizeOverride == null, CanCloseMainWindow);
             if (Program.WindowSizeOverride is { } windowSize)
                 Main.SetSize(windowSize.Width, windowSize.Height);
-            _factory.MakeWindowAssociation(Main.HwndHandle, WindowAssociationFlags.IgnoreAll);
+
+            // D3D11 only, not Windows only: this reaches through the device's native pointer as a
+            // SharpDX D3D11 device, which a Vulkan device is not.
+            if (OperatingSystem.IsWindows() && !UseVulkanBackend)
+                IgnoreDxgiWindowShortcuts(device, Main.HwndHandle);
         }
         catch (Exception e)
         {
@@ -250,24 +161,149 @@ internal static class ProgramWindows
         }
     }
 
+    /// <summary>
+    /// Whether to create the Vulkan backend. It is the default everywhere and the only choice outside Windows;
+    /// on Windows TIXL_BACKEND=d3d11 falls back to Direct3D 11, e.g. to compare output or to work around a
+    /// Vulkan driver issue. Evaluated once - the backend cannot change while running.
+    /// </summary>
+    internal static bool UseVulkanBackend { get; } =
+        !OperatingSystem.IsWindows()
+        || !string.Equals(Environment.GetEnvironmentVariable("TIXL_BACKEND"), "d3d11", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Vulkan by default; Direct3D 11 on Windows when TIXL_BACKEND=d3d11. The D3D11 path stays in its own
+    /// method so its assemblies are only touched where they can load.
+    /// </summary>
+    private static IGraphicsBackend CreateBackend()
+    {
+        // A backend that can't create a view or state reports it here and carries on, so without this the
+        // operator just renders nothing.
+        GraphicsLog.Error = message => Log.Error($"[graphics] {message}");
+        GraphicsLog.Warning = message => Log.Warning($"[graphics] {message}");
+
+        if (!UseVulkanBackend)
+        {
+            Log.Info("TIXL_BACKEND=d3d11: using the Direct3D 11 backend instead of Vulkan.");
+            return CreateD3D11Backend();
+        }
+
+        // TIXL_VULKAN_VALIDATION=1 turns the validation layer on. It reports invalid use while the command is
+        // recorded, which is the only way to see what a driver later reports as nothing but a lost device.
+        var validation = Environment.GetEnvironmentVariable("TIXL_VULKAN_VALIDATION") == "1";
+        if (validation)
+        {
+            Log.Info("Vulkan validation layer enabled.");
+            GraphicsLog.Debug = message => Log.Debug($"[graphics] {message}");
+        }
+
+        return new T3.Graphics.Vulkan.VulkanBackend(new T3.Graphics.Vulkan.VulkanBackendOptions
+                                                        {
+                                                            EnableValidation = validation,
+                                                            InstanceExtensions = SdlSurface.GetVulkanInstanceExtensions(),
+                                                        });
+    }
+
+    /// <summary>Picks the adapter most likely to be the dedicated GPU, by name and memory.</summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static IGraphicsBackend CreateD3D11Backend()
+    {
+        string[] highPerformanceKeywords = ["dedicated", "high performance", "rtx", "gtx"];
+        string[] integratedKeywords = ["integrated", "intel(r) uhd graphics", "microsoft basic render", "microsoft basic render"]; // twice to make MS worse
+
+        using var factory = new SharpDX.DXGI.Factory1();
+
+        if (factory.GetAdapterCount() == 0)
+        {
+            BlockingWindow.Instance.ShowMessageBox("We are unable to find any graphics adapters",
+                                                   "Oh noooo",
+                                                   "OK");
+            Environment.Exit(0);
+        }
+
+        var adapterRatings = new List<DisplayAdapterRating>(8);
+
+        for (var i = 0; i < factory.GetAdapterCount(); i++)
+        {
+            using var adapter = factory.GetAdapter1(i);
+            const long gb = 1024 * 1024 * 1024;
+            
+            var newRating = new DisplayAdapterRating
+                                {
+                                    Name = adapter.Description1.Description,
+                                    Index = i,
+                                    MemoryInGb = (float)((double)adapter.Description1.DedicatedVideoMemory/gb),
+                                };
+            adapterRatings.Add(newRating);                
+            
+            string descriptionLower = adapter.Description1.Description.ToLowerInvariant();
+            
+            // Positive keywords
+            foreach (var keyword in highPerformanceKeywords)
+            {
+                if (!descriptionLower.Contains(keyword))
+                    continue;
+
+                newRating.Rating *= 2f;
+            }
+
+            // Negative keywords
+            foreach (var keyword in integratedKeywords)
+            {
+                if (!descriptionLower.Contains(keyword))
+                    continue;
+
+                newRating.Rating *= 0.2f;
+            }
+
+            var memSizeFactor = newRating.MemoryInGb switch
+                                    {
+                                        < 1 => 0.1f,
+                                        < 2 => 0.5f,
+                                        < 4 => 1f,
+                                        < 8 => 2f,
+                                        > 8 => 3f,
+                                        _ => 4f
+                                    };
+            newRating.Rating *= memSizeFactor;
+        }
+
+        var selectedAdapterIndex = adapterRatings.OrderByDescending(r => r.Rating).First().Index;
+        Log.Debug("Detected display adapters...");
+        foreach (var r in adapterRatings)
+        {
+            Log.Debug($"  #{r.Index}: {r.Name} / {r.MemoryInGb:0.0}GB  -> rated {r.Rating:0.0}");
+        }
+        
+        using var selectedAdapter = factory.GetAdapter1(selectedAdapterIndex);
+
+        var deviceCreationFlags = SharpDX.Direct3D11.DeviceCreationFlags.BgraSupport;
+        if (CoreSettings.Config.EnableDirectXDebug)
+            deviceCreationFlags |= SharpDX.Direct3D11.DeviceCreationFlags.Debug;
+
+        Log.Debug("Creating Device...");
+        var nativeDevice = new SharpDX.Direct3D11.Device(selectedAdapter, deviceCreationFlags, SharpDX.Direct3D.FeatureLevel.Level_11_1);
+        return new T3.Graphics.D3D11.D3D11Backend(nativeDevice, ownsDevice: true);
+    }
+
+    /// <summary>
+    /// Stops DXGI from acting on the editor window's keys itself — Alt+Enter would switch to exclusive
+    /// fullscreen behind the editor's back.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void IgnoreDxgiWindowShortcuts(Device device, IntPtr windowHandle)
+    {
+        using var nativeDevice = new SharpDX.Direct3D11.Device(device.NativePointer);
+        Marshal.AddRef(device.NativePointer);
+        using var dxgiDevice = nativeDevice.QueryInterface<SharpDX.DXGI.Device>();
+        using var adapter = dxgiDevice.Adapter;
+        using var factory = adapter.GetParent<SharpDX.DXGI.Factory>();
+        factory.MakeWindowAssociation(windowHandle, SharpDX.DXGI.WindowAssociationFlags.IgnoreAll);
+    }
+
     internal static void InitializeSecondaryViewerWindow(string name, int width, int height)
     {
         Viewer = CreateViewerWindow(name, width, height);
         Viewer.Show();
-    }
-
-    /// <summary>The display a window sits on, by its index in the arrangement; 0 when it can't be placed.</summary>
-    private static int IndexOfScreenUnder(AppWindow window)
-    {
-        var screen = Screen.FromControl(window.Form);
-        var screens = Screen.AllScreens;
-        for (var i = 0; i < screens.Length; i++)
-        {
-            if (screens[i].DeviceName == screen.DeviceName)
-                return i;
-        }
-
-        return 0;
     }
 
     /// <summary>
@@ -277,46 +313,40 @@ internal static class ProgramWindows
     internal static AppWindow CreateViewerWindow(string name, int width, int height)
     {
         var window = new AppWindow(name, disableClose: true);
-
-        // An output window paces the frame loop while an output is bound to its display.
-        window.UseFrameLatencyWaitable = true;
         window.SetDevice(_device, _deviceContext);
         window.SetSize(width, height);
         window.SetSizeable();
-        window.InitViewSwapChain(_factory);
-        window.InitializeWindow(FormWindowState.Normal, null, false);
+        window.IsPacedByMainWindow = true;
+        window.InitViewSwapChain();
+        window.InitializeWindow(maximized: false, canClose: null);
         return window;
     }
 
-    private static void OnCloseMainWindow(object sender, FormClosingEventArgs args)
+    private static bool CanCloseMainWindow()
     {
         if (EditableSymbolProject.AllProjects.Any(x => x.IsSaving))
         {
-            args.Cancel = true;
             Log.Debug($"Cancel closing because save-operation is in progress.");
+            return false;
         }
-        else
-        {
+
 #if DEBUG
-            args.Cancel = false;
+        return true;
 #else
-            args.Cancel = true;
-            T3Ui.ExitDialog.ShowNextFrame();
+        T3Ui.ExitDialog.ShowNextFrame();
+        return false;
 #endif
-        }
     }
 
     public static void Release()
     {
         OutputWindowHandling.Release();
         GpuFrameTimer.Release();
-        Main.Release();
-        Viewer.Release();
         _device.ImmediateContext.ClearState();
         _deviceContext.Flush();
-        _device.Dispose();
-        _deviceContext.Dispose();
-        _factory.Dispose();
+        Main.Release();
+        Viewer?.Release();
+        _backend?.Dispose();
     }
 
     public static void SetRasterizerState(RasterizerState viewWindowRasterizerState)
@@ -342,38 +372,24 @@ internal static class ProgramWindows
     }
 
     /// <summary>
-    /// Blocks until the pacing window's swap chain accepts the next frame. Call once at the start of each frame.
+    /// Holds the loop until the previous frame has lasted the whole refreshes the frame-rate setting asks for. The
+    /// swap chain paces to single vblanks only, so lower rates come from waiting out the extra ones here, and
+    /// <see cref="FrameTiming.VblanksPerFrame"/> keeps animation speed unchanged. Call once per frame, right after
+    /// the frame-latency wait and before input is read.
     /// </summary>
-    public static void WaitForFrameLatency()
+    public static void HoldForTargetFrameRate()
     {
-        _pacingWindow.WaitForFrameLatency();
+        var vblanksPerFrame = T3Ui.UseVSync ? GetVblanksPerFrame(UserSettings.Config.TargetFrameRate, FrameTiming.RefreshRate) : 1;
+        FrameTiming.VblanksPerFrame = vblanksPerFrame;
 
-        // The latency waitable releases the loop once per vblank of the primary display's clock while DWM composes,
-        // whatever the sync interval. A window on another display, or a frame that should last several vblanks,
-        // therefore waits for the pacing display's own vblanks until the frame has lasted long enough. On the primary
-        // display at full rate the waitable alone paces, and the extra wait must stay out of the way: it fires
-        // whenever the waitable released the loop a little before the vblank, and that head start is what a frame
-        // whose CPU and GPU work add up to a full period needs to make its vblank.
-        // With a frame latency of 2 the loop paces like the Vulkan backend: the waitable alone, a frame in flight
-        // ahead. Waiting for the secondary display's vblanks on top would take that head start away again.
-        var needsVblankWait = _isPacingWithVSync
-                              && (_pacingVblanksPerFrame > 1
-                                  || (_pacingFrameLatency == 1 && !PresentationDiagnostics.IsPacingWindowOnPrimaryDisplay));
-        if (needsVblankWait != _isWaitingForVblanks)
+        if (vblanksPerFrame > 1)
         {
-            _isWaitingForVblanks = needsVblankWait;
-            Log.Debug(needsVblankWait
-                          ? $"Frame pacing waits for the pacing display's vblanks ({_pacingVblanksPerFrame} per frame, "
-                            + $"window on primary display: {PresentationDiagnostics.IsPacingWindowOnPrimaryDisplay})"
-                          : "Frame pacing follows the frame-latency waitable alone");
-        }
-
-        if (needsVblankWait)
-        {
-            var minFrameTicks = (long)((_pacingVblanksPerFrame - VblankTimingTolerance) * FrameTiming.RefreshPeriodSec * Stopwatch.Frequency);
-            while (Stopwatch.GetTimestamp() - _lastPacedFrameStart < minFrameTicks
-                   && WaitForVerticalBlank(_pacingWindow))
+            // Released a quarter period early: the present still lands on the intended vblank, and a frame whose
+            // work fills a whole period keeps its head start.
+            var minFrameTicks = (long)((vblanksPerFrame - VblankTimingTolerance) * FrameTiming.RefreshPeriodSec * Stopwatch.Frequency);
+            while (Stopwatch.GetTimestamp() - _lastPacedFrameStart < minFrameTicks)
             {
+                Thread.Sleep(1);
             }
         }
 
@@ -392,60 +408,41 @@ internal static class ProgramWindows
         return Math.Clamp((int)Math.Round(refreshRate / targetFps), 1, MaxVblanksPerFrame);
     }
 
-    /// <summary>
-    /// Presents every shown window. Only the pacing window may block on its display's vblank: windows on other
-    /// displays run on their own refresh clocks, and waiting for two clocks in one loop gives neither an even
-    /// cadence. They present without waiting and drop the frame when their display is still busy.
-    /// </summary>
+    private const double VblankTimingTolerance = 0.25;
+
+    /** 30 fps on a 120 Hz display; lower rates don't need a frame-rate setting. */
+    private const int MaxVblanksPerFrame = 4;
+    private static long _lastPacedFrameStart;
+
     public static void Present(bool useVSync)
     {
         var startTimestamp = Stopwatch.GetTimestamp();
         GpuFrameTimer.EndFrame();
         try
         {
-            var syncInterval = useVSync ? 1 : 0;
-
-            // The projector matters more than the editor UI during a show, so the first bound output paces.
-            var outputWindows = OutputWindowHandling.Presenting;
-            var pacingWindow = outputWindows.Count > 0 ? outputWindows[0].Window : Main;
-            if (pacingWindow != _pacingWindow)
-            {
-                Log.Debug($"Frame pacing now follows '{pacingWindow.Form.Text}'");
-                _pacingWindow = pacingWindow;
-            }
-
-            // Takes effect in the next frame's wait; windows on other displays just show each frame longer.
-            var vblanksPerFrame = useVSync ? GetVblanksPerFrame(UserSettings.Config.TargetFrameRate, FrameTiming.RefreshRate) : 1;
-            FrameTiming.VblanksPerFrame = vblanksPerFrame;
-            _pacingVblanksPerFrame = vblanksPerFrame;
-            _isPacingWithVSync = useVSync;
-
-            _pacingFrameLatency = Math.Clamp(UserSettings.Config.FrameLatency, 1, 2);
-            Main.SetMaximumFrameLatency(_pacingFrameLatency);
-            for (var i = 0; i < outputWindows.Count; i++)
-            {
-                outputWindows[i].Window.SetMaximumFrameLatency(_pacingFrameLatency);
-            }
-
-            PresentWindow(Main, syncInterval);
+            Main.SwapChain.Present(useVSync ? 1 : 0);
             PresentationDiagnostics.Update(Main.SwapChain);
-            PresentationDiagnostics.MeasureRefreshPeriod(_pacingWindow.SwapChain, _pacingWindow.HwndHandle);
 
             // Only while its window is actually shown. Presenting a hidden flip-model swap chain is not the
             // cheap no-op it looks like: DWM throttles presents to a window it isn't displaying, and with an
-            // output window up that wait measured 34ms per frame against 0.3ms for Main.
-            if (T3Ui.ShowSecondaryRenderWindow && Viewer != null)
-                PresentWindow(Viewer, syncInterval);
+            // output window up that wait measured 34ms per frame against 0.3ms for Main. Main's pacing comes
+            // from its frame-latency waitable swap chain, not from a second Present.
+            if (T3Ui.ShowSecondaryRenderWindow)
+                Viewer?.SwapChain?.Present(useVSync ? 1 : 0);
 
-            // Synced even when not pacing, so a projector never tears.
+            // Each display an output is bound to has its own swap chain, presented with the same sync as Main so
+            // a projector never tears.
+            var outputWindows = OutputWindowHandling.Presenting;
             for (var i = 0; i < outputWindows.Count; i++)
             {
-                PresentWindow(outputWindows[i].Window, syncInterval);
+                outputWindows[i].Window.SwapChain?.Present(useVSync ? 1 : 0);
             }
         }
         catch (SharpDX.SharpDXException e)
         {
-            var reason = _device.DeviceRemovedReason;
+            using var nativeDevice = new SharpDX.Direct3D11.Device(_device.NativePointer);
+            System.Runtime.InteropServices.Marshal.AddRef(_device.NativePointer);
+            var reason = nativeDevice.DeviceRemovedReason;
             string description;
             if (reason.Code == SharpDX.DXGI.ResultCode.DeviceHung.Code)
             {
@@ -467,7 +464,7 @@ internal static class ProgramWindows
             {
                 description = "invalid API call";
             }
-            else if (reason.Code == Result.OutOfMemory.Code)
+            else if (reason.Code == SharpDX.Result.OutOfMemory.Code)
             {
                 description = "out of GPU memory";
             }
@@ -483,57 +480,6 @@ internal static class ProgramWindows
             // Without vsync this is where a GPU that can't keep up shows itself: the driver blocks the queue
             // here rather than in the work that filled it.
             PerformanceMetrics.RecordPresent((float)((Stopwatch.GetTimestamp() - startTimestamp) * 1000.0 / Stopwatch.Frequency));
-        }
-    }
-
-    private static void PresentWindow(AppWindow window, int syncInterval)
-    {
-        var swapChain = window.SwapChain;
-        if (swapChain == null)
-            return;
-
-        if (window == _pacingWindow)
-        {
-            swapChain.Present(syncInterval, PresentFlags.None);
-            return;
-        }
-
-        var result = swapChain.TryPresent(syncInterval, PresentFlags.DoNotWait);
-        if (result == SharpDX.DXGI.ResultCode.WasStillDrawing.Result)
-            return;
-
-        result.CheckError();
-    }
-
-    /** False when the display couldn't be waited on, so callers don't spin. */
-    private static bool WaitForVerticalBlank(AppWindow window)
-    {
-        try
-        {
-            // Looked up again now and then: the window can be moved to another display.
-            var now = Stopwatch.GetTimestamp();
-            if (_pacingOutputWindow != window || _pacingOutput == null || now - _pacingOutputLookupTimestamp > Stopwatch.Frequency)
-            {
-                _pacingOutputLookupTimestamp = now;
-                _pacingOutput?.Dispose();
-                _pacingOutput = window.SwapChain.ContainingOutput;
-                _pacingOutputWindow = window;
-            }
-
-            _pacingOutput.WaitForVerticalBlank();
-            _hasLoggedVblankWaitFailure = false;
-            return true;
-        }
-        catch (SharpDX.SharpDXException e)
-        {
-            // A window moved between displays or a display reconfiguration; look the output up again next frame.
-            if (!_hasLoggedVblankWaitFailure)
-                Log.Debug($"Waiting for the pacing display's vblank failed: {e.Message}");
-
-            _hasLoggedVblankWaitFailure = true;
-            _pacingOutput?.Dispose();
-            _pacingOutput = null;
-            return false;
         }
     }
 
@@ -568,7 +514,7 @@ internal static class ProgramWindows
             Height = backBufferDescription.Height,
             MipLevels = 1,
             ArraySize = 1,
-            Format = Main.SwapChain.Description.ModeDescription.Format,
+            Format = Main.SwapChain.Format,
             SampleDescription = new SampleDescription(1, 0),
             Usage = ResourceUsage.Default,
             BindFlags = BindFlags.ShaderResource,
@@ -626,14 +572,14 @@ internal static class ProgramWindows
 
         // A fresh copy per capture: the wrapper handed out disposes its native texture, so it must not be
         // the mirror's shared one.
-        var mode = Main.SwapChain.Description.ModeDescription;
+        var swapChain = Main.SwapChain;
         var copy = new Texture2D(_device, new Texture2DDescription
                                               {
-                                                  Width = mode.Width,
-                                                  Height = mode.Height,
+                                                  Width = swapChain.Width,
+                                                  Height = swapChain.Height,
                                                   MipLevels = 1,
                                                   ArraySize = 1,
-                                                  Format = mode.Format,
+                                                  Format = swapChain.Format,
                                                   SampleDescription = new SampleDescription(1, 0),
                                                   Usage = ResourceUsage.Default,
                                                   BindFlags = BindFlags.ShaderResource,
@@ -649,4 +595,20 @@ internal static class ProgramWindows
     public static ShaderResourceView UiCopyTextureSrv { get; private set; }
 
     internal static Texture2DDescription UiCopyTextureDescription { get; private set; }
+
+    /// <summary>
+    /// Records what this machine is, once, so a pasted log answers the questions a Linux bug report always
+    /// raises - which distribution, which session, which driver - without asking the reporter.
+    /// </summary>
+    private static void LogEnvironment()
+    {
+        var builder = new StringBuilder("Environment:");
+        foreach (var (key, value) in EnvironmentReport.Collect())
+        {
+            builder.Append("\n  ").Append(key).Append(": ").Append(value);
+        }
+
+        Log.Debug(builder.ToString());
+    }
+
 }

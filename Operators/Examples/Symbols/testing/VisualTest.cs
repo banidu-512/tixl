@@ -1,12 +1,11 @@
 using System.Text.RegularExpressions;
-using SharpDX;
-using SharpDX.Direct3D11;
-using SharpDX.IO;
-using SharpDX.WIC;
+using T3.Graphics.Compat;
 using T3.Core.Animation;
 using T3.Core.Settings;
 using T3.Core.Utils;
 using Utilities = T3.Core.Utils.Utilities;
+
+using System.Numerics;
 
 namespace Examples.testing;
 
@@ -187,7 +186,7 @@ internal sealed class VisualTest : Instance<VisualTest>
 
     private void ConductTests(EvaluationContext context, List<string> testResult)
     {
-        SharpDX.Direct3D11.Texture2D diffColorImage = null;
+        T3.Graphics.Compat.Texture2D diffColorImage = null;
         for (; _testIndex < _stepCount; _testIndex++)
         {
             var referenceFilepath = GetReferenceFilepath(_testIndex);
@@ -240,7 +239,7 @@ internal sealed class VisualTest : Instance<VisualTest>
                 testResult.Add($"{testName} {timeLabel}: FAILED ({deviation:0.00} > {_threshold}) #{testId}");
             }
             
-            Utilities.Dispose(ref diffColorImage);
+            T3.Graphics.Compat.GraphicsUtilities.Dispose(ref diffColorImage);
         }
         _state = States.Completed;
         Playback.Current.IsRenderingToFile = false;
@@ -303,6 +302,9 @@ internal sealed class VisualTest : Instance<VisualTest>
         return unchecked((int)hash ^ (int)(hash >> 32));
     }
 
+    /// <summary>The distance between two channels, each held in the lowest byte of its argument.</summary>
+    private static int Difference(uint a, uint b) => Math.Abs((int)(a & 0xff) - (int)(b & 0xff));
+
     private string GetCompositionName()
     {
         var compositionName = !string.IsNullOrEmpty(Parent?.Symbol.Name) 
@@ -311,7 +313,7 @@ internal sealed class VisualTest : Instance<VisualTest>
         return compositionName;
     }
 
-    private static bool TryLoadTextureFromFile(SharpDX.Direct3D11.Device device, string filePath, out SharpDX.Direct3D11.Texture2D image)
+    private static bool TryLoadTextureFromFile(T3.Graphics.Compat.Device device, string filePath, out T3.Graphics.Compat.Texture2D image)
     {
         if (!File.Exists(filePath))
         {
@@ -319,51 +321,43 @@ internal sealed class VisualTest : Instance<VisualTest>
             return false;
         }
 
-        var imagingFactory = new ImagingFactory();
+        try
+        {
+            using var file = File.OpenRead(filePath);
+            var decoded = StbImageSharp.ImageResult.FromStream(file, StbImageSharp.ColorComponents.RedGreenBlueAlpha);
 
-        // Decode the image
-        var decoder = new BitmapDecoder(imagingFactory, filePath, DecodeOptions.CacheOnDemand);
-        var frame = decoder.GetFrame(0);
+            var texDesc = new Texture2DDescription
+                              {
+                                  Width = decoded.Width,
+                                  Height = decoded.Height,
+                                  ArraySize = 1,
+                                  BindFlags = BindFlags.ShaderResource,
+                                  Usage = ResourceUsage.Immutable,
+                                  CpuAccessFlags = CpuAccessFlags.None,
+                                  Format = Format.R8G8B8A8_UNorm,
+                                  MipLevels = 1,
+                                  OptionFlags = ResourceOptionFlags.None,
+                                  SampleDescription = new SampleDescription(1, 0)
+                              };
 
-        // Convert to 32bpp RGBA
-        var converter = new FormatConverter(imagingFactory);
-        converter.Initialize(frame, PixelFormat.Format32bppRGBA);
+            var pinned = System.Runtime.InteropServices.GCHandle.Alloc(decoded.Data, System.Runtime.InteropServices.GCHandleType.Pinned);
+            try
+            {
+                var dataBox = new DataBox(pinned.AddrOfPinnedObject(), decoded.Width * 4, 0);
+                image = new T3.Graphics.Compat.Texture2D(device, texDesc, [dataBox]);
+            }
+            finally
+            {
+                pinned.Free();
+            }
+        }
+        catch (Exception e)
+        {
+            Log.Warning($"Failed to load reference image {filePath}: {e.Message}");
+            image = null;
+            return false;
+        }
 
-        int width = converter.Size.Width;
-        int height = converter.Size.Height;
-
-        // Copy pixels into a buffer
-        var stride = width * 4;
-        var buffer = new DataStream(height * stride, true, true);
-        converter.CopyPixels(stride, buffer);
-
-        // Create texture description
-        var texDesc = new Texture2DDescription
-                          {
-                              Width = width,
-                              Height = height,
-                              ArraySize = 1,
-                              BindFlags = BindFlags.ShaderResource,
-                              Usage = ResourceUsage.Immutable,
-                              CpuAccessFlags = CpuAccessFlags.None,
-                              Format = Format.R8G8B8A8_UNorm,
-                              MipLevels = 1,
-                              OptionFlags = ResourceOptionFlags.None,
-                              SampleDescription = new SampleDescription(1, 0)
-                          };
-
-        // Define initial data
-        var dataBox = new DataBox(buffer.DataPointer, stride, 0);
-        var dataBoxes = new[] { dataBox };
-        var texture = new SharpDX.Direct3D11.Texture2D(device, texDesc, dataBoxes);
-
-        // Cleanup
-        buffer.Dispose();
-        converter.Dispose();
-        frame.Dispose();
-        decoder.Dispose();
-        imagingFactory.Dispose();
-        image = texture;
         return true;
     }
 
@@ -371,8 +365,8 @@ internal sealed class VisualTest : Instance<VisualTest>
     /// Sadly, we have to deal with BRGA vs RGBA because we convert the current image to brga on the GPU
     /// to speedup writing as PNG.  
     /// </remarks>
-    private float CompareImage(SharpDX.Direct3D11.Texture2D currentBgraWithCpuAccess,
-                               SharpDX.Direct3D11.Texture2D reference)
+    private float CompareImage(T3.Graphics.Compat.Texture2D currentBgraWithCpuAccess,
+                               T3.Graphics.Compat.Texture2D reference)
     {
         try
         {
@@ -405,44 +399,50 @@ internal sealed class VisualTest : Instance<VisualTest>
                                         CpuAccessFlags = CpuAccessFlags.Read,
                                         ArraySize = 1
                                     };
-            var referenceWithCpuAccess = new SharpDX.Direct3D11.Texture2D(ResourceManager.Device, referenceDesc);
+            var referenceWithCpuAccess = new T3.Graphics.Compat.Texture2D(ResourceManager.Device, referenceDesc);
             immediateContext.CopyResource(reference, referenceWithCpuAccess);
             ResourceManager.Device.ImmediateContext.Flush();  // Ensure the copy is complete
             
 
             var currentDataBox =
-                immediateContext.MapSubresource(currentBgraWithCpuAccess, 0, 0, MapMode.Read, SharpDX.Direct3D11.MapFlags.None, out var currentStream);
+                immediateContext.MapSubresource(currentBgraWithCpuAccess, 0, 0, MapMode.Read, T3.Graphics.Compat.MapFlags.None, out var currentStream);
             currentStream.Position = 0;
 
             var refDataBox =
-                immediateContext.MapSubresource(referenceWithCpuAccess, 0, 0, MapMode.Read, SharpDX.Direct3D11.MapFlags.None, out var referenceStream);
+                immediateContext.MapSubresource(referenceWithCpuAccess, 0, 0, MapMode.Read, T3.Graphics.Compat.MapFlags.None, out var referenceStream);
             referenceStream.Position = 0;
 
 
+            // Both pixels arrive as one packed integer each, and the two differ in channel order: the readback
+            // is BGRA, the reference was loaded from a PNG as RGBA. Comparing the packed values instead of the
+            // channels is what made every deviation land in the millions.
             double deviation = 0;
             for (int y = 0; y < currentBgraWithCpuAccess.Description.Height; ++y)
             {
                 for (int x = 0; x < currentBgraWithCpuAccess.Description.Width; ++x)
                 {
-                    var currentBgra = new Color4(currentStream.Read<Int32>());
-                    var referenceRgba = new Color4(referenceStream.Read<Int32>());
-                    deviation += Math.Abs(currentBgra.Alpha - referenceRgba.Alpha)
-                                 + Math.Abs(currentBgra.Blue - referenceRgba.Red)
-                                 + Math.Abs(currentBgra.Green - referenceRgba.Green)
-                                 + Math.Abs(currentBgra.Red - referenceRgba.Blue);
+                    var currentBgra = (uint)currentStream.Read<Int32>();
+                    var referenceRgba = (uint)referenceStream.Read<Int32>();
+
+                    deviation += Difference(currentBgra >> 16, referenceRgba) // red
+                                 + Difference(currentBgra >> 8, referenceRgba >> 8) // green
+                                 + Difference(currentBgra, referenceRgba >> 16) // blue
+                                 + Difference(currentBgra >> 24, referenceRgba >> 24); // alpha
                 }
 
                 currentStream.Position += currentDataBox.RowPitch - currentBgraWithCpuAccess.Description.Width * 4;
                 referenceStream.Position += refDataBox.RowPitch - currentBgraWithCpuAccess.Description.Width * 4;
             }
 
-            deviation /= currentBgraWithCpuAccess.Description.Width * currentBgraWithCpuAccess.Description.Height;
+            // Averaged over every channel of every pixel and scaled to 0...1, so a threshold reads as a
+            // fraction of full brightness.
+            deviation /= currentBgraWithCpuAccess.Description.Width * currentBgraWithCpuAccess.Description.Height * 4 * 255.0;
 
             immediateContext.UnmapSubresource(currentBgraWithCpuAccess, 0);
-            Utilities.Dispose(ref currentStream);
+            T3.Graphics.Compat.GraphicsUtilities.Dispose(ref currentStream);
             immediateContext.UnmapSubresource(referenceWithCpuAccess, 0);
-            Utilities.Dispose(ref referenceStream);
-            Utilities.Dispose(ref referenceWithCpuAccess);
+            T3.Graphics.Compat.GraphicsUtilities.Dispose(ref referenceStream);
+            T3.Graphics.Compat.GraphicsUtilities.Dispose(ref referenceWithCpuAccess);
             return (float)deviation;
         }
         catch (Exception ex)
@@ -482,70 +482,44 @@ internal sealed class VisualTest : Instance<VisualTest>
         var dataBox = immediateContext.MapSubresource(requestCpuAccessTexture,
                                                       0,
                                                       0,
-                                                      SharpDX.Direct3D11.MapMode.Read,
-                                                      SharpDX.Direct3D11.MapFlags.None,
+                                                      T3.Graphics.Compat.MapMode.Read,
+                                                      T3.Graphics.Compat.MapFlags.None,
                                                       out var imageStream);
         using var dataStream = imageStream;
 
         var width = requestCpuAccessTexture.Description.Width;
         var height = requestCpuAccessTexture.Description.Height;
-        var factory = new ImagingFactory();
 
-        WICStream stream;
-        try
-        {
-            stream = new WICStream(factory, requestFilepath, NativeFileAccess.Write);
-        }
-        catch (Exception e)
-        {
-            Log.Warning("Failed to export image: " + e.Message);
-            return;
-        }
-
-        BitmapEncoder encoder = new PngBitmapEncoder(factory);
-        encoder.Initialize(stream);
-
-        // Create a Frame encoder
-        var bitmapFrameEncode = new BitmapFrameEncode(encoder);
-        bitmapFrameEncode.Initialize();
-        bitmapFrameEncode.SetSize(width, height);
-        var formatId = PixelFormat.Format32bppRGBA;
-        bitmapFrameEncode.SetPixelFormat(ref formatId);
-
-        var rowStride = PixelFormat.GetStride(formatId, width);
-        var outBufferSize = height * rowStride;
-        var outDataStream = new DataStream(outBufferSize, true, true);
+        // The mapped rows are padded, so they are copied out one at a time.
+        var pixels = new byte[width * height * 4];
+        var row = new byte[width * 4];
 
         try
         {
-            // Note: dataBox.RowPitch and outputStream.RowPitch can diverge if width is not divisible by 16.
-            for (var loopY = 0; loopY < height; loopY++)
+            for (var y = 0; y < height; y++)
             {
-                imageStream.Position = (long)(loopY) * dataBox.RowPitch;
-                outDataStream.WriteRange(imageStream.ReadRange<byte>(rowStride));
+                System.Runtime.InteropServices.Marshal.Copy(dataBox.DataPointer + y * dataBox.RowPitch, row, 0, row.Length);
+
+                // The readback converts to BGRA, and a PNG wants RGB.
+                var target = y * row.Length;
+                for (var x = 0; x < row.Length; x += 4)
+                {
+                    pixels[target + x] = row[x + 2];
+                    pixels[target + x + 1] = row[x + 1];
+                    pixels[target + x + 2] = row[x];
+                    pixels[target + x + 3] = row[x + 3];
+                }
             }
 
-            // Copy the BGRA pixels from the buffer to the Wic Bitmap Frame encoder
-            bitmapFrameEncode.WritePixels(height, new DataRectangle(outDataStream.DataPointer, rowStride));
-
-            // Commit changes
-            bitmapFrameEncode.Commit();
-            encoder.Commit();
+            using var file = File.Create(requestFilepath);
+            new StbImageWriteSharp.ImageWriter().WritePng(pixels, width, height, StbImageWriteSharp.ColorComponents.RedGreenBlueAlpha, file);
         }
         catch (Exception e)
         {
-            Log.Error($"Screenshot internal image copy failed : {e.Message}");
-        }
-        finally
-        {
-            imageStream.Dispose();
-            outDataStream.Dispose();
-            bitmapFrameEncode.Dispose();
-            encoder.Dispose();
-            stream.Dispose();
+            Log.Error($"Writing the test image failed: {e.Message}");
         }
     }
-    
+
     private const double ReferenceFrameDurationSec = 1.0 / 60.0;
 
     private States _state = States.Waiting;

@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <Import Project="$(SolutionDir)/Tixl.props" />
   <PropertyGroup>
-    <TargetFramework>$(TixlNetFrameworkVersion)</TargetFramework>
+    <TargetFramework>$(TixlNetCoreFrameworkVersion)</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <!-- Files moved from Core were written under per-file nullable contexts; the newer ones opt in
          with "#nullable enable" individually. -->
@@ -25,6 +25,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Core\Core.csproj" />
+    <ProjectReference Include="..\Graphics\Graphics.csproj" />
+    <ProjectReference Include="..\Graphics.Compat\Graphics.Compat.csproj" />
     <ProjectReference Include="..\Logging\Logging.csproj" />
   </ItemGroup>
 

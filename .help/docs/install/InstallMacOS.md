@@ -1,13 +1,125 @@
-# Install on MacOS
+# Install on macOS
 
-This guide covers running TiXL on MacOs under Sikarugir.
+This page covers the native macOS version of TiXL: what your Mac needs, how to install and start it, and
+what doesn't work on macOS yet. If the native version doesn't do what you need, you can still
+[run the Windows version under Sikarugir](#run-the-windows-version-under-sikarugir).
 
-## Background
-We are working on MacOS support, but this is a major task that requires multiple drastic refactoring efforts. We have already made large strides in separating Windows dependencies from the .NET architecture. However, moving from DirectX to Vulkan and supporting abstraction layers for Metal will be another significant undertaking.
+The native macOS version is an early preview. Expect rough edges, and please report problems on
+[GitHub issues](https://github.com/tixl3d/tixl/issues).
 
-## Running with ~~Kegworks~~ Sikarugir
+## System requirements
 
-Sikarugir (which was formerly called "Kegworks", but was forced to rename because of that name was trademarked) is a convenient open source tool to run Wine on Mac OS X. [Please follow the installation instructions on the Sikarugir repository](https://github.com/Sikarugir-App/Sikarugir), which in turn requires either [MacPorts](https://www.macports.org/install.php) or [Homebrew](https://brew.sh/).
+- A Mac with Apple Silicon (M1 or newer). Intel Macs aren't supported.
+- macOS 14 Sonoma or newer.
+- The **.NET 10 SDK**. TiXL compiles operators while it runs, so the runtime alone isn't enough.
+- 16 GB of memory is comfortable. The graphics chip shares the Mac's memory, so large projects use more of it.
+
+Graphics run on Vulkan through MoltenVK, which translates it to Metal. The app brings both along.
+
+## Install the .NET 10 SDK
+
+Download the **macOS Arm64 installer** for the .NET 10 SDK from
+[Microsoft's download page](https://dotnet.microsoft.com/download/dotnet/10.0) and run it. TiXL looks for
+it in `/usr/local/share/dotnet`, where the installer puts it.
+
+If you use Homebrew, `brew install --cask dotnet-sdk` installs the same package.
+
+## Download and run TiXL
+
+1. Download the latest `TiXL-<version>-osx-arm64.dmg` from the
+   [releases page](https://github.com/tixl3d/tixl/releases), under **Assets**.
+2. Open the DMG and drag **TiXL** into **Applications**.
+3. Start TiXL from Applications or Launchpad.
+
+Start it from Applications, not straight from the DMG or the Downloads folder. Otherwise macOS runs a
+read-only copy of the app from a hidden location, which can stop TiXL from loading.
+
+### Allow TiXL to open
+
+The app isn't signed with an Apple developer certificate yet, so macOS blocks it the first time with a
+message that it couldn't verify TiXL. Right-clicking the app and choosing **Open** no longer helps on
+macOS 15 and later. Instead:
+
+1. Try to start TiXL once and close the message with **Done**.
+2. Open **System Settings → Privacy & Security** and scroll down to the message that TiXL was blocked.
+3. Click **Open Anyway** and confirm with your password or Touch ID.
+4. Start TiXL again and confirm **Open Anyway** once more.
+
+The button only shows up for about an hour after the blocked attempt; if it's missing, start TiXL again.
+You need to do this once per version.
+
+If you're comfortable with the Terminal, removing the download's quarantine flag does the same in one step:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/TiXL.app
+```
+
+When TiXL first opens your projects, macOS asks whether it may access your **Documents** folder. Click
+**Allow**: TiXL keeps your projects there, and it waits until you answer.
+
+### Missing dependencies
+
+At startup, TiXL checks for the .NET SDK and the Slang shader compiler (`slangc`). If one is missing, a
+dialog explains what to do. TiXL offers to download `slangc` for you. Without the .NET SDK the built-in
+operators still load, but your own operators won't compile.
+
+### Video playback
+
+TiXL ships its own FFmpeg with the app, so video playback, video export and render export work out of
+the box. Video export uses Apple's VideoToolbox hardware encoders when the Mac has them (it does,
+on Apple Silicon) and falls back to software encoders.
+
+For development from source the app has no bundled FFmpeg: install Homebrew's FFmpeg 7
+(`brew install ffmpeg@7`) and start TiXL with `TIXL_FFMPEG_ALLOW_RESTRICTED=1`. Homebrew's FFmpeg is
+licensed differently from the one TiXL ships, which is why it is only used when you ask for it.
+
+## Using TiXL on a Mac
+
+- **Cmd** takes the place of **Ctrl** in all shortcuts — `Cmd+C`, `Cmd+Z`, `Cmd+S` — and menus show the
+  Mac key names. The physical Ctrl key isn't used yet.
+- On a trackpad, pinch to zoom and drag with two fingers to pan the graph.
+- **Reveal in Finder** opens Finder with the file selected.
+
+## Where TiXL keeps your files
+
+TiXL never writes into the app:
+
+- **Projects** go to `~/Documents/TiXL<version>/`.
+- **Settings and logs** go to `~/Library/Application Support/TiXL<version>/`. Log files are in its `Log`
+  folder.
+- **Caches** go to `~/Library/Caches/TiXL<version>/`. It's safe to delete.
+
+These folders are hidden in Finder's `Library` folder; press `Cmd+Shift+G` in Finder and type the path to
+open one. See [Files and folders](FilesAndFolders.md) for what each folder holds and what is safe to remove.
+
+## Update and uninstall
+
+To update, drag the new version into Applications and replace the old one. A new minor version (for
+example 4.3 to 4.4) starts with fresh settings, because the settings and projects folder names contain the
+version. If your projects don't show up after such an update, add the previous version's projects folder
+under *Settings → Projects → Project Directories*.
+
+To uninstall, move TiXL from Applications to the Trash. Your projects, settings and caches stay in the
+folders above until you delete them yourself.
+
+## What doesn't work on macOS yet
+
+- **Video** without the Homebrew setup above, and hardware-accelerated video export.
+- **NDI, webcams and screen capture.** Syphon, the Mac's way of sharing video with other apps, is planned.
+- **Geometry shaders.** Apple's graphics chips don't have them. TiXL's own operators don't need them, but a
+  custom shader with a geometry stage won't render.
+- **Recording what other programs play** (loopback). A virtual audio device like BlackHole can route system
+  audio into TiXL's live input.
+- MediaPipe, OpenCV, Ableton Link, gamepads and SpaceMouse.
+
+[Platform support](PlatformSupport.md) has the full comparison of Windows, Linux and macOS.
+
+## Run the Windows version under Sikarugir
+
+Sikarugir (formerly "Kegworks") runs Windows programs on macOS through Wine. It gives you the full Windows
+feature set, at the cost of a more involved setup and lower performance. [Follow the installation
+instructions on the Sikarugir repository](https://github.com/Sikarugir-App/Sikarugir), which in turn requires
+either [MacPorts](https://www.macports.org/install.php) or [Homebrew](https://brew.sh/).
 
 ### Sikarugir setup
 
@@ -139,3 +251,9 @@ Start with _Test Run_.
 <img width="1297" alt="image" src="https://github.com/user-attachments/assets/936c8c32-ae61-422c-a546-3052ebb3cd0e" />
 
 ![image](https://github.com/user-attachments/assets/9aea310e-e62d-4f88-ac1c-0ec424b2ef31)
+
+## See also
+
+- [Platform support](PlatformSupport.md)
+- [Install on Linux](InstallLinux.md)
+- [Files and folders](FilesAndFolders.md)
