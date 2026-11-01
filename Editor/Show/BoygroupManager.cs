@@ -99,10 +99,30 @@ internal sealed class BoygroupManager
     }
 
     /// <summary>One display of a connected render node, as that machine enumerated it.</summary>
-    public sealed record RemoteScreen(int Index, string Name, int Width, int Height);
+    public sealed record RemoteScreen(int Index, string Name, int Width, int Height, int X = 0, int Y = 0, bool Primary = false);
 
     private readonly List<ClientInfo> _clients = [];
     public IReadOnlyList<ClientInfo> Clients => _clients;
+
+    private IPAddress? _masterAddress;
+
+    /// <summary>Adds the machines this instance is currently linked to: the render nodes on a master,
+    /// the master on a render node.</summary>
+    public void AddLinkedPeers(List<NetworkPeer> peers)
+    {
+        if (State == BoygroupState.Client && _masterAddress != null)
+        {
+            peers.Add(new NetworkPeer("Boygroup master", _masterAddress));
+        }
+        else if (State == BoygroupState.Server)
+        {
+            foreach (var client in _clients)
+            {
+                if (IPAddress.TryParse(client.Address, out var address))
+                    peers.Add(new NetworkPeer($"Render node {client.Name}", address));
+            }
+        }
+    }
 
     public sealed class DiscoveredServer
     {
@@ -385,6 +405,7 @@ internal sealed class BoygroupManager
                 throw new ArgumentException($"'{host}' is not a valid address");
 
             var transport = BoygroupClientTransport.Connect(new IPEndPoint(address, port));
+            _masterAddress = address;
             _transport = transport;
             transport.PeerDisconnected += OnPeerDisconnected;
             State = BoygroupState.Client;
@@ -631,9 +652,16 @@ internal sealed class BoygroupManager
             _lastVideoInputsVersion = RemoteVideoInputBus.InputsVersion;
             RemoveStaleVideoSenders(inputs);
             _nextVideoSourcesTicks = 0;
+            _nextVideoDescribeTicks = 0;
         }
 
-        var sources = new JArray();
+        // Frames go out every call; the announced source list is only rebuilt a few times a second,
+        // so a steady stream does not allocate JSON per frame.
+        var now = Environment.TickCount64;
+        var sources = now >= _nextVideoDescribeTicks ? new JArray() : null;
+        if (sources != null)
+            _nextVideoDescribeTicks = now + VideoDescribeIntervalMs;
+
         var streaming = 0;
         var firstProblem = "";
 
@@ -646,7 +674,7 @@ internal sealed class BoygroupManager
             if (provider == null)
             {
                 firstProblem = $"the {RemoteVideoInputBus.PreferredTransportKind} package is not loaded";
-                sources.Add(VideoSourceEntry(key, "", firstProblem));
+                sources?.Add(VideoSourceEntry(key, "", firstProblem));
                 continue;
             }
 
@@ -661,7 +689,7 @@ internal sealed class BoygroupManager
                 catch (Exception e)
                 {
                     firstProblem = $"OMT sender failed: {e.Message}";
-                    sources.Add(VideoSourceEntry(key, "", firstProblem));
+                    sources?.Add(VideoSourceEntry(key, "", firstProblem));
                     continue;
                 }
             }
@@ -686,7 +714,7 @@ internal sealed class BoygroupManager
                     sent = false;
                     status = $"OMT send failed: {e.Message}";
                     firstProblem = status;
-                    sources.Add(VideoSourceEntry(key, sender.AdvertisedAddress ?? "", status));
+                    sources?.Add(VideoSourceEntry(key, sender.AdvertisedAddress ?? "", status));
                     continue;
                 }
 
@@ -706,8 +734,11 @@ internal sealed class BoygroupManager
             if (string.IsNullOrEmpty(address) && string.IsNullOrEmpty(firstProblem))
                 firstProblem = "waiting for the OMT sender";
 
-            sources.Add(VideoSourceEntry(key, address, status));
+            sources?.Add(VideoSourceEntry(key, address, status));
         }
+
+        if (sources == null)
+            return;
 
         _videoRelaySummary = inputs.Count == 0
                                  ? "No video input in the project"
@@ -716,7 +747,6 @@ internal sealed class BoygroupManager
                                      : string.IsNullOrEmpty(firstProblem) ? "Waiting for the camera" : firstProblem;
 
         var json = sources.ToString(Formatting.None);
-        var now = Environment.TickCount64;
         if (json == _lastVideoSourcesJson && now < _nextVideoSourcesTicks)
             return;
 
@@ -758,6 +788,9 @@ internal sealed class BoygroupManager
         }
     }
 
+    private const int VideoDescribeIntervalMs = 250;
+    private long _nextVideoDescribeTicks;
+
     private void ResetVideoRelay()
     {
         foreach (var sender in _videoSenders.Values)
@@ -767,6 +800,7 @@ internal sealed class BoygroupManager
         _videoRelaySummary = "No video input";
         _lastVideoInputsVersion = -1;
         _nextVideoSourcesTicks = 0;
+        _nextVideoDescribeTicks = 0;
         _lastVideoSourcesJson = "";
     }
 
@@ -1493,7 +1527,10 @@ internal sealed class BoygroupManager
             screens.Add(new RemoteScreen(index,
                                          screen.Value<string>("name") ?? $"Display {index + 1}",
                                          screen["width"]?.Value<int>() ?? 0,
-                                         screen["height"]?.Value<int>() ?? 0));
+                                         screen["height"]?.Value<int>() ?? 0,
+                                         screen["x"]?.Value<int>() ?? 0,
+                                         screen["y"]?.Value<int>() ?? 0,
+                                         screen["primary"]?.Value<bool>() ?? false));
         }
 
         return screens;
@@ -1621,6 +1658,9 @@ internal sealed class BoygroupManager
                                ["name"] = screens[i].DeviceName,
                                ["width"] = screens[i].Bounds.Width,
                                ["height"] = screens[i].Bounds.Height,
+                               ["x"] = screens[i].Bounds.X,
+                               ["y"] = screens[i].Bounds.Y,
+                               ["primary"] = screens[i].Primary,
                            });
         }
 

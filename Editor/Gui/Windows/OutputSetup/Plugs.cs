@@ -1,4 +1,4 @@
-﻿#nullable enable
+#nullable enable
 using T3.Editor.SystemUi;
 using T3.Core.DataTypes.Vector;
 using T3.Core.Output;
@@ -6,7 +6,6 @@ using T3.Core.Output.Streaming;
 using T3.Core.Utils;
 using T3.Editor.Show;
 using T3.Editor.UiModel.ProjectHandling;
-using T3.Editor.Show;
 
 namespace T3.Editor.Gui.Windows.OutputSetup;
 
@@ -53,17 +52,19 @@ internal static class Plugs
         if (TryGetRemoteDisplayName(plugId, out var remoteName))
             return remoteName;
 
-        return machineConfig.FindStreamPlug(plugId)?.Name ?? "Output";
+        return machineConfig.FindStreamPlug(plugId)?.Name
+               ?? machineConfig.FindLaserPlug(plugId)?.Name
+               ?? "Output";
     }
 
     /// <summary>A display of a connected render node, listed under Local Bindings next to this machine's own.</summary>
-    public static bool IsRemoteDisplay(Guid plugId) => Show.BoygroupManager.Instance.TryGetRemoteDisplayPlug(plugId, out _, out _);
+    public static bool IsRemoteDisplay(Guid plugId) => BoygroupManager.Instance.TryGetRemoteDisplayPlug(plugId, out _, out _);
 
     /// <summary>The "node / display" name of a render node's display; false for any other plug.</summary>
     public static bool TryGetRemoteDisplayName(Guid plugId, out string name)
     {
         name = "";
-        if (!Show.BoygroupManager.Instance.TryGetRemoteDisplayPlug(plugId, out var client, out var displayIndex))
+        if (!BoygroupManager.Instance.TryGetRemoteDisplayPlug(plugId, out var client, out var displayIndex))
             return false;
 
         var screenName = $"Display {displayIndex + 1}";
@@ -80,7 +81,7 @@ internal static class Plugs
         return true;
     }
 
-    /// <summary>Whether a plug id still names an attached display or a stream this machine offers.</summary>
+    /// <summary>Whether a plug id still names an attached display, a stream or a laser this machine offers.</summary>
     public static bool Exists(MachineConfig machineConfig, Guid plugId)
     {
         if (TryGetDisplayIndex(plugId, out var displayIndex))
@@ -89,7 +90,7 @@ internal static class Plugs
         if (IsRemoteDisplay(plugId))
             return true;
 
-        return machineConfig.FindStreamPlug(plugId) != null;
+        return machineConfig.FindStreamPlug(plugId) != null || machineConfig.FindLaserPlug(plugId) != null;
     }
 
     /// <summary>The pixels a canvas presented here should have: the display's mode, or a sensible default for a stream.</summary>
@@ -158,6 +159,7 @@ internal static class Plugs
             BindOutputToStream(machineConfig, outputId, plugId);
     }
 
+    /// <summary>Drops an output's binding; the next frame's presentation pass takes its window down.</summary>
     public static void UnbindOutput(MachineConfig machineConfig, Guid outputId)
     {
         machineConfig.Unbind(outputId);

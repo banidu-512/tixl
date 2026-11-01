@@ -229,6 +229,9 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public string NetworkInterface = "";
 
         // Collaboration
+        /// <summary>Master switch: when off, no session is hosted or joined and nothing is discovered.</summary>
+        public bool CollabEnabled = true;
+
         /// <summary>Persistent participant id; also seeds the per-user accent color.</summary>
         public string CollabUserId = "";
 

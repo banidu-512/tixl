@@ -1,4 +1,4 @@
-﻿#nullable enable
+#nullable enable
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -10,7 +10,6 @@ using T3.Editor.Show;
 using T3.Editor.SystemUi;
 using T3.SystemUi;
 using Vector2 = System.Numerics.Vector2;
-using T3.Editor.Show;
 
 namespace T3.Editor.Gui.Windows.OutputSetup;
 
@@ -24,13 +23,17 @@ internal static class DisplayLayoutView
     /// <summary>
     /// The hover body for a display: the machine's screens in their arrangement with
     /// <paramref name="highlightedIndex"/> lit. Drawing only — a tooltip takes no clicks.
-
+    /// </summary>
     public static void DrawTooltip(int highlightedIndex)
     {
         RefreshCache();
         DrawDiagram(_boxes, _overallBounds, highlightedIndex);
     }
 
+    /// <summary>
+    /// The same hover body for a display of a connected render node, drawn from the arrangement that node
+    /// reported. Built on hover only, so the small lists it allocates are not a per-frame cost.
+    /// </summary>
     public static void DrawRemoteTooltip(BoygroupManager.ClientInfo client, int highlightedIndex)
     {
         if (client.Screens.Count == 0)

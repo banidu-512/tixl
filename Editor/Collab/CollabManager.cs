@@ -50,6 +50,9 @@ internal sealed class CollabManager
 
     public bool IsSessionActive => State is SessionState.Hosting or SessionState.Connected;
 
+    /// <summary>False when collaboration is switched off in the settings; nothing is hosted, joined or discovered then.</summary>
+    public bool IsEnabled => UserSettings.Config.CollabEnabled;
+
     /// <summary>True while a join waits for the user to enter the host's session password.</summary>
     public bool IsPasswordRequested => _rejoinWithPassword != null;
 
@@ -248,6 +251,12 @@ internal sealed class CollabManager
     public void StartHost(int tcpPort, string password, bool enableLanDiscovery, string? projectName = null,
                           string? interfaceName = null)
     {
+        if (!IsEnabled)
+        {
+            ErrorText = "Collaboration is turned off in the settings.";
+            return;
+        }
+
         // Hosting is an explicit session choice — it releases the manual-leave latch below, so failover
         // may keep driving this session again.
         LeftManually = false;
@@ -327,6 +336,12 @@ internal sealed class CollabManager
     /// </summary>
     public void StartHostViaRelay(string relayHost, int relayPort, string? projectName = null)
     {
+        if (!IsEnabled)
+        {
+            ErrorText = "Collaboration is turned off in the settings.";
+            return;
+        }
+
         if (IsSessionActive)
             Leave();
 
@@ -398,6 +413,12 @@ internal sealed class CollabManager
     /// <summary>Joins a relay-hosted room by code.</summary>
     public void JoinViaRelay(string relayHost, int relayPort, string roomCode, string password)
     {
+        if (!IsEnabled)
+        {
+            ErrorText = "Collaboration is turned off in the settings.";
+            return;
+        }
+
         if (IsSessionActive)
             Leave();
 
@@ -496,6 +517,12 @@ internal sealed class CollabManager
 
     public void JoinDirect(string hostAddress, int tcpPort, string password)
     {
+        if (!IsEnabled)
+        {
+            ErrorText = "Collaboration is turned off in the settings.";
+            return;
+        }
+
         // Joining is an explicit session choice — release the manual-leave latch (see Leave).
         LeftManually = false;
 
@@ -783,6 +810,15 @@ internal sealed class CollabManager
 
     public void Update()
     {
+        // Switching collaboration off ends a running session and stops everything below, including auto-rejoin.
+        if (!IsEnabled)
+        {
+            if (State != SessionState.Off)
+                Leave(manual: true);
+
+            return;
+        }
+
         // Apply background connect results first: they may install or (when stale) release a
         // transport, and everything below depends on the current session state.
         while (_uiThreadActions.TryDequeue(out var uiThreadAction))

@@ -32,6 +32,12 @@ internal sealed class CollabWindow : Window
     protected override void DrawContent()
     {
         var collab = CollabManager.Instance;
+        if (!collab.IsEnabled)
+        {
+            ImGui.TextDisabled("Collaboration is turned off.");
+            ImGui.TextDisabled("Enable it in Settings > Collaboration.");
+            return;
+        }
 
         DrawSessionHeader(collab);
         DrawDivider();
