@@ -1150,7 +1150,7 @@ internal sealed class CollabManager
                 break;
 
             case FailoverMirror.TimeMessageType when State == SessionState.Connected:
-                FailoverMirror.ApplyTime(json);
+                FailoverMirror.ApplyTime(json, this);
                 break;
 
             // The failover lease/liveness channel: no-op unless show failover is enabled.
