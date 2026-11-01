@@ -73,6 +73,37 @@ public class MediapipeNativeTests
         }
     }
 
+    // The operators default to Xnnpack and offer Gpu; both must either work or fail with a managed exception
+    // the operator can catch and fall back from - a native abort here would take the whole editor down.
+    [Theory]
+    [InlineData(CoreBaseOptions.Delegate.Xnnpack)]
+    [InlineData(CoreBaseOptions.Delegate.GPU)]
+    public void HandLandmarker_AcceleratedDelegate_RunsOrFailsCatchably(CoreBaseOptions.Delegate delegateCase)
+    {
+        HandLandmarker landmarker;
+        try
+        {
+            var baseOptions = new CoreBaseOptions(modelAssetPath: AssetPath("hand_landmarker.task"), delegateCase: delegateCase);
+            landmarker = HandLandmarker.CreateFromOptions(new HandLandmarkerOptions(baseOptions, VisionRunningMode.VIDEO, numHands: 2));
+        }
+        catch (Exception) when (delegateCase == CoreBaseOptions.Delegate.GPU)
+        {
+            return;
+        }
+
+        using (landmarker)
+        {
+            long timestamp = 0;
+            for (var frame = 0; frame < 3; frame++)
+            {
+                timestamp += 33;
+                using var image = CreateTestImage();
+                var result = landmarker.DetectForVideo(image, timestamp);
+                Assert.True(result.HandLandmarks == null || result.HandLandmarks.Count <= 2);
+            }
+        }
+    }
+
     [Fact]
     public void HandLandmarker_VideoMode_RejectsNonMonotonicTimestamp()
     {
