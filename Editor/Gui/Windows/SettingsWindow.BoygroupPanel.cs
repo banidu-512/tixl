@@ -42,6 +42,7 @@ internal sealed partial class SettingsWindow
         if (!config.BoygroupEnabled)
         {
             DrawBoygroupStatus(manager);
+            DrawCameraSharing(ref changed);
             DrawBoygroupError(manager);
             return;
         }
@@ -81,6 +82,7 @@ internal sealed partial class SettingsWindow
         else
             DrawSlaveSection(manager);
 
+        DrawCameraSharing(ref changed);
         DrawBoygroupError(manager);
     }
 
