@@ -57,8 +57,8 @@ public static class HardwareEncoderProbe
     }
 
     // Opening is not proof of encoding: a headless VM can initialize VideoToolbox/QSV and then emit no
-    // packets at all. Encode a keyframe with the same settings the live encoder uses and require a packet
-    // before declaring the encoder usable; otherwise the caller falls back to the LGPL software codec.
+    // packets at all. Encode keyframes with the same settings the live encoder uses and require a packet
+    // without flushing — a live stream never flushes, so an encoder that only emits on flush is unusable.
     private static unsafe bool CanOpenEncoder(string encoderName)
     {
         CodecContext? context = null;
@@ -93,7 +93,7 @@ public static class HardwareEncoderProbe
             frame.Colorspace = AVColorSpace.Bt709;
 
             using var packet = new Packet();
-            for (var i = 0; i < 2; i++)
+            for (var i = 0; i < 3; i++)
             {
                 frame.Pts = i;
                 frame.PictType = i == 0 ? AVPictureType.I : AVPictureType.None;
@@ -105,15 +105,7 @@ public static class HardwareEncoderProbe
                 return true;
             }
 
-            // A delayed encoder may only emit after the flush.
-            ffmpeg.avcodec_send_frame(context, null);
-            if (context.ReceivePacket(packet) == CodecResult.Success)
-            {
-                packet.Unref();
-                return true;
-            }
-
-            Log.Debug($"Hardware video encoder {encoderName} opened but produced no packet");
+            Log.Debug($"Hardware video encoder {encoderName} opened but produced no packet for 3 frames");
             return false;
         }
         catch (Exception e)
