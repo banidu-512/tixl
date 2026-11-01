@@ -4,19 +4,19 @@ using System.Linq;
 using System.Text;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
-using SharpDX.Direct3D;
-using SharpDX.Direct3D11;
-using SharpDX.DXGI;
-using SharpDX.Mathematics.Interop;
+using T3.Graphics.Compat;
+using T3.Graphics;
+using System.Numerics;
 using T3.Core.Animation;
 using T3.Core.DataTypes;
 using T3.Core.DataTypes.DataSet;
 using T3.Core.DataTypes.ShaderGraph;
 using T3.Core.DataTypes.Vector;
+using T3.Core.DataTypes.Volume;
 using T3.Core.Operator.Slots;
 using T3.Core.Rendering.Material;
 using T3.Serialization;
-using Buffer = SharpDX.Direct3D11.Buffer;
+using Buffer = T3.Graphics.Compat.Buffer;
 using Int3 = T3.Core.DataTypes.Vector.Int3;
 using Point = T3.Core.DataTypes.Point;
 using GeometryShader = T3.Core.DataTypes.GeometryShader;
@@ -65,7 +65,9 @@ public partial class SymbolPackage
                          if (jsonToken.Type == JTokenType.Float || jsonToken.Type == JTokenType.Integer)
                              return jsonToken.Value<float>();
 
-                         return 0;
+                         // Must be a float: SetValueFromJson casts the boxed result to T, and a boxed
+                         // int would throw InvalidCastException for every float input.
+                         return 0f;
                      });
         RegisterType(typeof(int), "int",
                      InputDefaultValueCreator<int>,
@@ -78,7 +80,7 @@ public partial class SymbolPackage
         RegisterType(typeof(double), "double",
                      InputDefaultValueCreator<double>,
                      (writer, obj) => writer.WriteValue((double)obj),
-                     jsonToken => jsonToken?.Value<double>()??0);
+                     jsonToken => jsonToken?.Value<double>()??0d);
 
         RegisterType(typeof(string), "string",
                      () => new InputValue<string>(string.Empty),
@@ -435,6 +437,15 @@ public partial class SymbolPackage
         RegisterType(typeof(ParticleSystem), "ParticleSystem",
                      () => new InputValue<ParticleSystem>(null));
 
+        // Rigid-body descriptions passed from body/joint operators into Lib.physics.PhysicsWorld.
+        // Simulation state lives inside the world, so these are plain references and null means
+        // "unconnected". Unregistered slot types make the operator unresolvable at load time.
+        RegisterType(typeof(PhysicsBody), "PhysicsBody",
+                     () => new InputValue<PhysicsBody>(null));
+
+        RegisterType(typeof(PhysicsJoint), "PhysicsJoint",
+                     () => new InputValue<PhysicsJoint>(null));
+
         RegisterType(typeof(T3.Core.Operator.GizmoVisibility), "GizmoVisibility",
                      InputDefaultValueCreator<T3.Core.Operator.GizmoVisibility>,
                      (writer, obj) => writer.WriteValue(obj.ToString()),
@@ -484,6 +495,11 @@ public partial class SymbolPackage
 
         RegisterType(typeof(MeshGeometry), "MeshGeometry",
                      () => new InputValue<MeshGeometry>(null));
+
+        // Sparse OpenVDB volume. Connections pass the instance through by reference;
+        // null means "no volume yet", which every Lib.volume operator handles.
+        RegisterType(typeof(VdbVolume), "VdbVolume",
+                     () => new InputValue<VdbVolume>(null));
 
         RegisterType(typeof(CurveGeometry), "CurveGeometry",
                      () => new InputValue<CurveGeometry>(null));
@@ -540,104 +556,104 @@ public partial class SymbolPackage
         // todo - add these to CsProject as DefaultUsings dynamically
 
         // sharpdx types
-        RegisterType(typeof(SharpDX.Direct3D.PrimitiveTopology), "PrimitiveTopology",
+        RegisterType(typeof(T3.Graphics.Compat.PrimitiveTopology), "PrimitiveTopology",
                      InputDefaultValueCreator<PrimitiveTopology>,
                      (writer, obj) => writer.WriteValue(obj.ToString()),
                      JsonToEnumValue<PrimitiveTopology>);
-        RegisterType(typeof(SharpDX.Direct3D11.BindFlags), "BindFlags",
+        RegisterType(typeof(T3.Graphics.Compat.BindFlags), "BindFlags",
                      InputDefaultValueCreator<BindFlags>,
                      (writer, obj) => writer.WriteValue(obj.ToString()),
                      JsonToEnumValue<BindFlags>);
-        RegisterType(typeof(SharpDX.Direct3D11.BlendOperation), "BlendOperation",
+        RegisterType(typeof(T3.Graphics.Compat.BlendOperation), "BlendOperation",
                      InputDefaultValueCreator<BlendOperation>,
                      (writer, obj) => writer.WriteValue(obj.ToString()),
                      JsonToEnumValue<BlendOperation>);
-        RegisterType(typeof(SharpDX.Direct3D11.BlendOption), "BlendOption",
+        RegisterType(typeof(T3.Graphics.Compat.BlendOption), "BlendOption",
                      InputDefaultValueCreator<BlendOption>,
                      (writer, obj) => writer.WriteValue(obj.ToString()),
                      JsonToEnumValue<BlendOption>);
-        RegisterType(typeof(SharpDX.Direct3D11.BlendState), "BlendState",
+        RegisterType(typeof(T3.Graphics.Compat.BlendState), "BlendState",
                      () => new InputValue<BlendState>(null));
-        RegisterType(typeof(SharpDX.Direct3D11.Buffer), "Buffer",
+        RegisterType(typeof(T3.Graphics.Compat.Buffer), "Buffer",
                      () => new InputValue<Buffer>(null));
-        RegisterType(typeof(SharpDX.Direct3D11.ColorWriteMaskFlags), "ColorWriteMaskFlags",
+        RegisterType(typeof(T3.Graphics.Compat.ColorWriteMaskFlags), "ColorWriteMaskFlags",
                      InputDefaultValueCreator<ColorWriteMaskFlags>,
                      (writer, obj) => writer.WriteValue(obj.ToString()),
                      JsonToEnumValue<ColorWriteMaskFlags>);
-        RegisterType(typeof(SharpDX.Direct3D11.Comparison), "Comparison",
+        RegisterType(typeof(T3.Graphics.Compat.Comparison), "Comparison",
                      InputDefaultValueCreator<Comparison>,
                      (writer, obj) => writer.WriteValue(obj.ToString()),
                      JsonToEnumValue<Comparison>);
         RegisterType(typeof(ComputeShader), "ComputeShader",
                      () => new InputValue<ComputeShader>(null));
-        RegisterType(typeof(SharpDX.Direct3D11.CpuAccessFlags), "CpuAccessFlags",
+        RegisterType(typeof(T3.Graphics.Compat.CpuAccessFlags), "CpuAccessFlags",
                      InputDefaultValueCreator<CpuAccessFlags>,
                      (writer, obj) => writer.WriteValue(obj.ToString()),
                      JsonToEnumValue<CpuAccessFlags>);
-        RegisterType(typeof(SharpDX.Direct3D11.CullMode), "CullMode",
+        RegisterType(typeof(T3.Graphics.Compat.CullMode), "CullMode",
                      InputDefaultValueCreator<CullMode>,
                      (writer, obj) => writer.WriteValue(obj.ToString()),
                      JsonToEnumValue<CullMode>);
-        RegisterType(typeof(SharpDX.Direct3D11.DepthStencilState), "DepthStencilState",
+        RegisterType(typeof(T3.Graphics.Compat.DepthStencilState), "DepthStencilState",
                      () => new InputValue<DepthStencilState>(null));
-        RegisterType(typeof(SharpDX.Direct3D11.DepthStencilView), "DepthStencilView",
+        RegisterType(typeof(T3.Graphics.Compat.DepthStencilView), "DepthStencilView",
                      () => new InputValue<DepthStencilView>(null));
-        RegisterType(typeof(SharpDX.Direct3D11.FillMode), "FillMode",
+        RegisterType(typeof(T3.Graphics.Compat.FillMode), "FillMode",
                      InputDefaultValueCreator<FillMode>,
                      (writer, obj) => writer.WriteValue(obj.ToString()),
                      JsonToEnumValue<FillMode>);
-        RegisterType(typeof(SharpDX.Direct3D11.Filter), "Filter",
+        RegisterType(typeof(T3.Graphics.Compat.Filter), "Filter",
                      InputDefaultValueCreator<Filter>,
                      (writer, obj) => writer.WriteValue(obj.ToString()),
                      JsonToEnumValue<Filter>);
         RegisterType(typeof(GeometryShader), "GeometryShader",
                      () => new InputValue<GeometryShader>(null));
-        RegisterType(typeof(SharpDX.Direct3D11.InputLayout), "InputLayout",
+        RegisterType(typeof(T3.Graphics.Compat.InputLayout), "InputLayout",
                      () => new InputValue<InputLayout>(null));
         RegisterType(typeof(PixelShader), "PixelShader",
                      () => new InputValue<PixelShader>(null));
-        RegisterType(typeof(SharpDX.Direct3D11.RenderTargetBlendDescription), "RenderTargetBlendDescription",
+        RegisterType(typeof(T3.Graphics.Compat.RenderTargetBlendDescription), "RenderTargetBlendDescription",
                      () => new InputValue<RenderTargetBlendDescription>());
-        RegisterType(typeof(SharpDX.Direct3D11.RasterizerState), "RasterizerState",
+        RegisterType(typeof(T3.Graphics.Compat.RasterizerState), "RasterizerState",
                      () => new InputValue<RasterizerState>(null));
-        RegisterType(typeof(SharpDX.Direct3D11.RenderTargetView), "RenderTargetView",
+        RegisterType(typeof(T3.Graphics.Compat.RenderTargetView), "RenderTargetView",
                      () => new InputValue<RenderTargetView>(null));
-        RegisterType(typeof(SharpDX.Direct3D11.ResourceOptionFlags), "ResourceOptionFlags",
+        RegisterType(typeof(T3.Graphics.Compat.ResourceOptionFlags), "ResourceOptionFlags",
                      InputDefaultValueCreator<ResourceOptionFlags>,
                      (writer, obj) => writer.WriteValue(obj.ToString()),
                      JsonToEnumValue<ResourceOptionFlags>);
-        RegisterType(typeof(SharpDX.Direct3D11.ResourceUsage), "ResourceUsage",
+        RegisterType(typeof(T3.Graphics.Compat.ResourceUsage), "ResourceUsage",
                      InputDefaultValueCreator<ResourceUsage>,
                      (writer, obj) => writer.WriteValue(obj.ToString()),
                      JsonToEnumValue<ResourceUsage>);
-        RegisterType(typeof(SharpDX.Direct3D11.SamplerState), "SamplerState",
+        RegisterType(typeof(T3.Graphics.Compat.SamplerState), "SamplerState",
                      () => new InputValue<SamplerState>(null));
-        RegisterType(typeof(SharpDX.Direct3D11.ShaderResourceView), "ShaderResourceView",
+        RegisterType(typeof(T3.Graphics.Compat.ShaderResourceView), "ShaderResourceView",
                      () => new InputValue<ShaderResourceView>(null));
         RegisterType(typeof(Texture2D), "Texture2D",
                      () => new InputValue<Texture2D>(null));
         RegisterType(typeof(Texture3D), "Texture3D",
                      () => new InputValue<Texture3D>(null));
-        RegisterType(typeof(SharpDX.Direct3D11.TextureAddressMode), "TextureAddressMode",
+        RegisterType(typeof(T3.Graphics.Compat.TextureAddressMode), "TextureAddressMode",
                      InputDefaultValueCreator<TextureAddressMode>,
                      (writer, obj) => writer.WriteValue(obj.ToString()),
                      JsonToEnumValue<TextureAddressMode>);
-        RegisterType(typeof(SharpDX.Direct3D11.UnorderedAccessView), "UnorderedAccessView",
+        RegisterType(typeof(T3.Graphics.Compat.UnorderedAccessView), "UnorderedAccessView",
                      () => new InputValue<UnorderedAccessView>(null));
-        RegisterType(typeof(SharpDX.Direct3D11.UnorderedAccessViewBufferFlags), "UnorderedAccessViewBufferFlags",
+        RegisterType(typeof(T3.Graphics.Compat.UnorderedAccessViewBufferFlags), "UnorderedAccessViewBufferFlags",
                      InputDefaultValueCreator<UnorderedAccessViewBufferFlags>,
                      (writer, obj) => writer.WriteValue(obj.ToString()),
                      JsonToEnumValue<UnorderedAccessViewBufferFlags>);
         RegisterType(typeof(VertexShader), "VertexShader",
                      () => new InputValue<VertexShader>(null));
-        RegisterType(typeof(SharpDX.DXGI.Format), "Format",
+        RegisterType(typeof(T3.Graphics.Format), "Format",
                      InputDefaultValueCreator<Format>,
                      (writer, obj) => writer.WriteValue(obj.ToString()),
                      JsonToEnumValue<Format>);
-        RegisterType(typeof(SharpDX.Mathematics.Interop.RawRectangle), "RawRectangle",
-                     () => new InputValue<RawRectangle>(new RawRectangle { Left = -100, Right = 100, Bottom = -100, Top = 100 }));
-        RegisterType(typeof(SharpDX.Mathematics.Interop.RawViewportF), "RawViewportF",
-                     () => new InputValue<RawViewportF>(new RawViewportF
+        RegisterType(typeof(T3.Graphics.ScissorRect), "ScissorRect",
+                     () => new InputValue<ScissorRect>(ScissorRect.FromEdges(-100, 100, 100, -100)));
+        RegisterType(typeof(T3.Graphics.Viewport), "Viewport",
+                     () => new InputValue<Viewport>(new Viewport
                                                             { X = 0.0f, Y = 0.0f, Width = 100.0f, Height = 100.0f, MinDepth = 0.0f, MaxDepth = 10000.0f }));
         #endregion
 

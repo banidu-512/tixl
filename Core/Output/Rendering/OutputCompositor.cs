@@ -3,17 +3,14 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
-using SharpDX;
-using SharpDX.Direct3D;
-using SharpDX.Direct3D11;
-using SharpDX.DXGI;
-using SharpDX.Mathematics.Interop;
+using T3.Graphics.Compat;
+using T3.Graphics;
+using System.Numerics;
 using T3.Core.Logging;
-using T3.Core.Operator.Slots;
 using T3.Core.Rendering;
 using T3.Core.Resource;
-using Buffer = SharpDX.Direct3D11.Buffer;
-using Format = SharpDX.DXGI.Format;
+using Buffer = T3.Graphics.Compat.Buffer;
+using Format = T3.Graphics.Format;
 using Texture2D = T3.Core.DataTypes.Texture2D;
 using Int2 = T3.Core.DataTypes.Vector.Int2;
 using PixelShader = T3.Core.DataTypes.PixelShader;
@@ -89,9 +86,19 @@ public static class OutputCompositor
     public static Texture2D? RenderPreview(Guid outputId)
     {
         if (OutputPreviewRefresh.ShouldRefresh(outputId))
-            return RenderOutput(outputId);
+        {
+            var rendered = RenderOutput(outputId);
 
-        return _compositeFrames.TryGetValue(outputId, out var rendered) && rendered.HasContent
+            // The refresh budget records a preview as filled before the composite is known to have pixels.
+            // An early frame (setup still loading, a send not instantiated yet) can produce an empty
+            // composite; without this, the card would stay blank for the rest of the session.
+            if (rendered == null)
+                OutputPreviewRefresh.Invalidate(outputId);
+
+            return rendered;
+        }
+
+        return _compositeFrames.TryGetValue(outputId, out var cached) && cached.HasContent
                && _targets.TryGetValue(outputId, out var target)
                    ? target.Texture
                    : null;
@@ -249,10 +256,10 @@ public static class OutputCompositor
         // the rest of the frame, and every caller here runs before that happens.
         var deviceContext = ResourceManager.Device.ImmediateContext;
         deviceContext.OutputMerger.SetTargets(target.Rtv);
-        deviceContext.Rasterizer.SetViewport(new ViewportF(0, 0, target.Size.Width, target.Size.Height, 0f, 1f));
+        deviceContext.Rasterizer.SetViewport(new Viewport(0, 0, target.Size.Width, target.Size.Height, 0f, 1f));
         // Opaque black: uncovered output area is "no projection", and the editor preview shouldn't show the
         // panel gray through a transparent composite.
-        deviceContext.ClearRenderTargetView(target.Rtv, new RawColor4(0, 0, 0, 1));
+        deviceContext.ClearRenderTargetView(target.Rtv, new Vector4(0, 0, 0, 1));
 
         deviceContext.InputAssembler.PrimitiveTopology = PrimitiveTopology.TriangleList;
         deviceContext.InputAssembler.InputLayout = null;
@@ -315,8 +322,8 @@ public static class OutputCompositor
 
         var deviceContext = ResourceManager.Device.ImmediateContext;
         deviceContext.OutputMerger.SetTargets(target.Rtv);
-        deviceContext.Rasterizer.SetViewport(new ViewportF(0, 0, target.Size.Width, target.Size.Height, 0f, 1f));
-        deviceContext.ClearRenderTargetView(target.Rtv, new RawColor4(0, 0, 0, 0));
+        deviceContext.Rasterizer.SetViewport(new Viewport(0, 0, target.Size.Width, target.Size.Height, 0f, 1f));
+        deviceContext.ClearRenderTargetView(target.Rtv, new Vector4(0, 0, 0, 0));
 
         deviceContext.InputAssembler.PrimitiveTopology = PrimitiveTopology.TriangleList;
         deviceContext.InputAssembler.InputLayout = null;
