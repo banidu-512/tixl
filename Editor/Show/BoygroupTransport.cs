@@ -184,6 +184,9 @@ internal sealed class BoygroupClientTransport : BoygroupTransport
     public CollabPeerConnection ServerPeer => _serverPeer;
 
     private readonly CollabPeerConnection _serverPeer;
+
+    /** Cached so the per-frame Peers access does not allocate a one-element array every time. */
+    private readonly IReadOnlyList<CollabPeerConnection> _peerList;
     private readonly TcpClient _client;
     private readonly CancellationTokenSource _cancellation = new();
 
@@ -195,6 +198,7 @@ internal sealed class BoygroupClientTransport : BoygroupTransport
                           {
                               TimeoutMs = PeerTimeoutMs,
                           };
+        _peerList = [_serverPeer];
     }
 
     public static BoygroupClientTransport Connect(IPEndPoint endPoint)
@@ -210,7 +214,7 @@ internal sealed class BoygroupClientTransport : BoygroupTransport
     /// </summary>
     public void StartReading() => _ = Task.Run(() => ReadLoop(_serverPeer), CancellationToken.None);
 
-    public override IReadOnlyList<CollabPeerConnection> Peers => [_serverPeer];
+    public override IReadOnlyList<CollabPeerConnection> Peers => _peerList;
 
     public override void SendToPeer(CollabPeerConnection peer, CollabProtocol.FrameType type, ReadOnlySpan<byte> payload)
     {
