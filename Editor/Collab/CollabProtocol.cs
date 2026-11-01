@@ -1,0 +1,402 @@
+#nullable enable
+using System.Diagnostics.CodeAnalysis;
+using System.Buffers.Binary;
+using System.IO;
+using System.Net;
+using System.Net.Sockets;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Text;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
+
+namespace T3.Editor.Collab;
+
+/// <summary>
+/// Wire protocol for TiXL collaboration sessions.
+///
+/// Transport framing:
+/// - Reliable channel (TCP or relay): [int32 length][byte type][payload], length includes the type
+///   byte, all multi-byte values little-endian. Frames larger than <see cref="MaxFrameSize"/> are a
+///   protocol violation and drop the connection (guards against memory-exhaustion from bad peers).
+/// - Unreliable channel (UDP, direct LAN/online connections only): raw presence datagrams without a
+///   length prefix, same payload layout as the reliable presence frame.
+///
+/// Payload types:
+/// - <see cref="FrameType.Json">: UTF-8 JSON document, first property "t" discriminates the message.
+/// - <see cref="FrameType.Presence">: fixed-layout binary cursor telemetry (see <see cref="PresencePacket"/>).
+/// - <see cref="FrameType.Heartbeat">: 8-byte Environment.TickCount64 ping. The receiver answers
+///   with the same 8 bytes plus one marker byte; answers are never answered.
+///
+/// All graph mutations travel as JSON "op" messages and are applied on the UI thread only; presence
+/// is display-only and never touches the graph.
+/// </summary>
+internal static class CollabProtocol
+{
+    public const int ProtocolVersion = 1;
+    public const int DefaultTcpPort = 44700;
+    public const int DefaultRelayPort = 44710;
+
+    /// <summary>
+    /// Relay used when none is configured, so a session ID is all a joiner needs. Empty falls back to
+    /// a relay on this machine.
+    /// </summary>
+    public const string DefaultRelayHost = "10.0.0.222";
+
+    /// <summary>Hard upper bound for one reliable frame including the type byte.</summary>
+    public const int MaxFrameSize = 4 * 1024 * 1024;
+
+    /// <summary>Hard upper bound for one JSON payload. Ops are tiny; anything bigger is hostile or buggy.</summary>
+    public const int MaxJsonPayload = 1024 * 1024;
+
+    /// <summary>Expected size of one presence datagram with a full selection list (connId, flags, guid, 2 floats, count, 15 guids, wheel byte).</summary>
+    public const int MaxPresencePayload = 2 + 16 + 8 + 1 + 15 * 16 + 1 + 3 + 1 + MaxPressedKeysPerPresence;
+
+    /// <summary>Keys shown next to a remote cursor; more held at once are dropped.</summary>
+    public const int MaxPressedKeysPerPresence = 4;
+
+    public const int MaxPeers = 16;
+    public const int MaxSelectionIdsPerPresence = 15;
+    public const int HeartbeatIntervalMs = 1000;
+    public const int HeartbeatPingSize = 8;
+    public const int PeerTimeoutMs = 10_000;
+    public const int PresenceSendIntervalMs = 50;
+
+    /// <summary>Writes run on the UI thread: a peer that stops reading stalls it at most this long before it is dropped.</summary>
+    public const int WriteTimeoutMs = 5000;
+
+    /// <summary>Joins dial from the UI thread; an unreachable host must not freeze it for the OS SYN-retry timeout.</summary>
+    public const int ConnectTimeoutMs = 5000;
+
+    public enum FrameType : byte
+    {
+        Json = 1,
+        Presence = 2,
+        Heartbeat = 3,
+
+        /// <summary>
+        /// WebRTC SDP/ICE for a relay session. It is routed like any other frame — the relay never
+        /// inspects it — and consumed by the transport, so the session protocol never sees it.
+        /// </summary>
+        Signal = 4,
+    }
+
+    /// <summary>SDP offers and ICE candidates are small; anything larger is a broken or hostile peer.</summary>
+    public const int MaxSignalPayload = 64 * 1024;
+
+    /// <summary>Opens a TCP connection, giving up after <see cref="ConnectTimeoutMs"/>. Throws on failure.</summary>
+    public static TcpClient ConnectWithTimeout(IPEndPoint endPoint)
+    {
+        var client = new TcpClient();
+        try
+        {
+            using var timeout = new CancellationTokenSource(ConnectTimeoutMs);
+            client.ConnectAsync(endPoint, timeout.Token).AsTask().GetAwaiter().GetResult();
+            return client;
+        }
+        catch (OperationCanceledException)
+        {
+            client.Dispose();
+            throw new TimeoutException($"no answer from {endPoint} within {ConnectTimeoutMs / 1000} s");
+        }
+        catch
+        {
+            client.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Reads the length prefix and returns it, or false when the stream ended. The caller then reads
+    /// <paramref name="length"/> payload bytes.
+    /// </summary>
+    public static bool TryReadFrameLength(Stream stream, out int length)
+    {
+        length = 0;
+        Span<byte> buffer = stackalloc byte[4];
+        if (!TryReadExact(stream, buffer))
+            return false;
+
+        length = BinaryPrimitives.ReadInt32LittleEndian(buffer);
+        return true;
+    }
+
+    public static bool TryReadExact(Stream stream, Span<byte> buffer)
+    {
+        var offset = 0;
+        while (offset < buffer.Length)
+        {
+            var read = stream.Read(buffer[offset..]);
+            if (read <= 0)
+                return false;
+
+            offset += read;
+        }
+
+        return true;
+    }
+
+    public static async Task<bool> TryReadExactAsync(Stream stream, Memory<byte> buffer, CancellationToken cancellation)
+    {
+        var offset = 0;
+        while (offset < buffer.Length)
+        {
+            var read = await stream.ReadAsync(buffer[offset..], cancellation);
+            if (read <= 0)
+                return false;
+
+            offset += read;
+        }
+
+        return true;
+    }
+
+    /// <summary>Writes one framed message to a reliable stream. Single writer enforced by caller locking.</summary>
+    public static void WriteFrame(Stream stream, FrameType type, ReadOnlySpan<byte> payload)
+    {
+        var total = payload.Length + 1;
+        if (total > MaxFrameSize)
+            throw new IOException($"Collab frame of {total} bytes exceeds the {MaxFrameSize} byte limit");
+
+        Span<byte> prefix = stackalloc byte[5];
+        BinaryPrimitives.WriteInt32LittleEndian(prefix, total);
+        prefix[4] = (byte)type;
+        stream.Write(prefix);
+        stream.Write(payload);
+        stream.Flush();
+    }
+
+    public static byte[] EncodeJson(object message)
+    {
+        var json = JsonConvert.SerializeObject(message);
+        return Encoding.UTF8.GetBytes(json);
+    }
+
+    /// <summary>
+    /// Round trip of an echoed heartbeat, in milliseconds. The echo carries the sender's own
+    /// TickCount64, so the difference is the path latency; a corrupt or stale value is reported as -1
+    /// instead of a nonsense number in the participant table.
+    /// </summary>
+    public static int MeasureHeartbeatRtt(ReadOnlySpan<byte> echo)
+    {
+        if (echo.Length != HeartbeatPingSize + 1)
+            return -1;
+
+        var sent = BitConverter.ToInt64(echo);
+        var rtt = Environment.TickCount64 - sent;
+        return rtt is >= 0 and <= 10_000 ? (int)rtt : -1;
+    }
+
+    /// <summary>
+    /// True for the host's "kicked" control message. A WebRTC client drops relay frames once its
+    /// data channel is up, but this one must still get through or a removed participant never leaves.
+    /// </summary>
+    public static bool IsKickJson(ReadOnlySpan<byte> payload)
+    {
+        return TryDecodeJson(payload, out var json)
+               && string.Equals(GetString(json, "t"), "kicked", StringComparison.Ordinal);
+    }
+
+    public static bool TryDecodeJson(ReadOnlySpan<byte> payload, out JObject json)
+    {
+        json = null!;
+        if (payload.Length > MaxJsonPayload)
+            return false;
+
+        try
+        {
+            json = JObject.Parse(Encoding.UTF8.GetString(payload));
+            return json.TryGetValue("t", out _);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    public static string GetString(JObject json, string property, string fallback = "")
+    {
+        if (!json.TryGetValue(property, out var value))
+            return fallback;
+
+        return value.Type switch
+                   {
+                       JTokenType.Null or JTokenType.Undefined => fallback,
+                       JTokenType.String => value.Value<string>() ?? fallback,
+                       _ => value.ToString(),
+                   };
+    }
+
+    public static bool TryGetGuid(JObject json, string property, out Guid guid)
+    {
+        guid = Guid.Empty;
+        if (!json.TryGetValue(property, out var value))
+            return false;
+
+        // A malformed op must not take the host down: only string/Guid tokens are candidates.
+        switch (value.Type)
+        {
+            case JTokenType.String:
+                return Guid.TryParse(value.Value<string>(), out guid);
+            case JTokenType.Guid:
+                guid = value.Value<Guid>();
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    public static bool TryGetInt(JObject json, string property, out int value)
+    {
+        value = 0;
+        if (!json.TryGetValue(property, out var token))
+            return false;
+
+        try
+        {
+            switch (token.Type)
+            {
+                case JTokenType.Integer:
+                {
+                    var number = token.Value<long>();
+                    if (number is < int.MinValue or > int.MaxValue)
+                        return false;
+
+                    value = (int)number;
+                    return true;
+                }
+                case JTokenType.Float:
+                {
+                    var number = token.Value<double>();
+                    if (double.IsNaN(number) || double.IsInfinity(number) || number < int.MinValue || number > int.MaxValue)
+                        return false;
+
+                    value = (int)number;
+                    return true;
+                }
+                case JTokenType.String:
+                    return int.TryParse(token.Value<string>(), out value);
+                default:
+                    return false;
+            }
+        }
+        catch (Exception e) when (e is OverflowException or InvalidCastException or FormatException)
+        {
+            // A JSON integer beyond long (Newtonsoft stores it as BigInteger) is still just a miss.
+            value = 0;
+            return false;
+        }
+    }
+}
+
+/// <summary>
+/// Immutable snapshot of one peer's editor presence. Written by the UI thread, shipped over the wire,
+/// decoded on the receiving network thread and consumed on the receiving UI thread. Passed by
+/// reference so a swap replaces the whole packet without locking.
+/// </summary>
+internal sealed class PresencePacket
+{
+    public byte PeerId;
+    public byte Flags;
+    public Guid CompositionId;
+    public Vector2 CursorOnCanvas;
+    public Guid[] SelectedChildIds = [];
+
+    /// <summary>Decaying wheel-spin value (signed ticks), appended to the payload so peers can show
+    /// scrolling. Zero for peers on an older build that doesn't send it.</summary>
+    public sbyte WheelSpin;
+
+    /// <summary>The participant's chosen cursor color as 0xRRGGBB; 0 lets receivers derive one from the user id.</summary>
+    public int ColorRgb;
+
+    /// <summary>Key codes held right now, as the interaction overlay labels them.</summary>
+    public byte[] PressedKeys = [];
+
+    public const byte FlagHoveringCanvas = 0x01;
+    public const byte FlagLeftButton = 0x02;
+    public const byte FlagRightButton = 0x04;
+    public const byte FlagMiddleButton = 0x08;
+    public const byte FlagDoubleClick = 0x10;
+    public const byte FlagAddingOperator = 0x20;
+
+    public bool IsHoveringCanvas => (Flags & FlagHoveringCanvas) != 0;
+    public bool IsLeftButtonDown => (Flags & FlagLeftButton) != 0;
+    public bool IsRightButtonDown => (Flags & FlagRightButton) != 0;
+    public bool IsMiddleButtonDown => (Flags & FlagMiddleButton) != 0;
+    public bool IsDoubleClick => (Flags & FlagDoubleClick) != 0;
+    public bool IsAddingOperator => (Flags & FlagAddingOperator) != 0;
+
+    public int Encode(Span<byte> target)
+    {
+        var selectionCount = Math.Min(SelectedChildIds.Length, CollabProtocol.MaxSelectionIdsPerPresence);
+        var keyCount = Math.Min(PressedKeys.Length, CollabProtocol.MaxPressedKeysPerPresence);
+        var size = 2 + 16 + 8 + 1 + selectionCount * 16 + 1 + 3 + 1 + keyCount;
+        if (target.Length < size)
+            return 0;
+
+        target[0] = PeerId;
+        target[1] = Flags;
+        CompositionId.TryWriteBytes(target.Slice(2, 16));
+        BinaryPrimitives.WriteSingleLittleEndian(target.Slice(18, 4), CursorOnCanvas.X);
+        BinaryPrimitives.WriteSingleLittleEndian(target.Slice(22, 4), CursorOnCanvas.Y);
+        target[26] = (byte)selectionCount;
+        for (var i = 0; i < selectionCount; i++)
+        {
+            SelectedChildIds[i].TryWriteBytes(target.Slice(27 + i * 16, 16));
+        }
+
+        // Appended rather than inserted: an older peer reads the selection list at the same offsets and
+        // ignores the trailing byte, so mixed-version sessions keep exchanging cursors.
+        var tail = 27 + selectionCount * 16;
+        target[tail] = unchecked((byte)WheelSpin);
+        target[tail + 1] = (byte)(ColorRgb >> 16);
+        target[tail + 2] = (byte)(ColorRgb >> 8);
+        target[tail + 3] = (byte)ColorRgb;
+        target[tail + 4] = (byte)keyCount;
+        for (var i = 0; i < keyCount; i++)
+            target[tail + 5 + i] = PressedKeys[i];
+
+        return size;
+    }
+
+    public static bool TryDecode(ReadOnlySpan<byte> payload, [NotNullWhen(true)] out PresencePacket? packet)
+    {
+        packet = null;
+        if (payload.Length < 27)
+            return false;
+
+        var selectionCount = payload[26];
+        if (selectionCount > CollabProtocol.MaxSelectionIdsPerPresence)
+            return false;
+
+        if (payload.Length < 27 + selectionCount * 16)
+            return false;
+
+        var wheelOffset = 27 + selectionCount * 16;
+        packet = new PresencePacket
+                     {
+                         PeerId = payload[0],
+                         Flags = payload[1],
+                         CompositionId = new Guid(payload.Slice(2, 16)),
+                         CursorOnCanvas = new Vector2(BinaryPrimitives.ReadSingleLittleEndian(payload.Slice(18, 4)),
+                                                      BinaryPrimitives.ReadSingleLittleEndian(payload.Slice(22, 4))),
+                         SelectedChildIds = new Guid[selectionCount],
+                         WheelSpin = payload.Length > wheelOffset ? unchecked((sbyte)payload[wheelOffset]) : (sbyte)0,
+                     };
+
+        // Color and keys come after the wheel byte; peers on an older build stop before them.
+        if (payload.Length >= wheelOffset + 5)
+        {
+            packet.ColorRgb = (payload[wheelOffset + 1] << 16) | (payload[wheelOffset + 2] << 8) | payload[wheelOffset + 3];
+            var keyCount = Math.Min((int)payload[wheelOffset + 4], Math.Min(CollabProtocol.MaxPressedKeysPerPresence, payload.Length - wheelOffset - 5));
+            packet.PressedKeys = payload.Slice(wheelOffset + 5, keyCount).ToArray();
+        }
+
+        for (var i = 0; i < selectionCount; i++)
+        {
+            packet.SelectedChildIds[i] = new Guid(payload.Slice(27 + i * 16, 16));
+        }
+
+        return true;
+    }
+}

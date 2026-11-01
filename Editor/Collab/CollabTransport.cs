@@ -1,0 +1,1004 @@
+#nullable enable
+using System.Buffers;
+using System.Collections.Concurrent;
+using System.IO;
+using System.Net;
+using System.Net.Sockets;
+using System.Text;
+using System.Threading;
+using System.Threading.Channels;
+using System.Threading.Tasks;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
+using T3.Core.Logging;
+using T3.Core.Utils;
+using T3.Editor.Gui.Interaction;
+
+namespace T3.Editor.Collab;
+
+/// <summary>A message received from a peer, handed to the UI thread through the inbound queue.</summary>
+internal readonly struct InboundMessage
+{
+    public InboundMessage(CollabPeerConnection peer, JObject json)
+    {
+        Peer = peer;
+        Json = json;
+    }
+
+    public InboundMessage(CollabPeerConnection peer, PresencePacket presence)
+    {
+        Peer = peer;
+        Presence = presence;
+    }
+
+    public readonly CollabPeerConnection Peer;
+    public readonly JObject? Json;
+    public readonly PresencePacket? Presence;
+
+    public bool IsPresence => Presence != null;
+}
+
+/// <summary>
+/// One remote participant: framed reader thread, write lock, and authentication state.
+/// Instances are created on network threads but only ever listed/removed from the UI thread.
+/// Direct transports back this with a TcpClient; the relay transport backs it with the relay
+/// stream plus a slot id and a close callback.
+/// </summary>
+internal sealed class CollabPeerConnection
+{
+    private readonly record struct OutboundFrame(CollabProtocol.FrameType Type, byte[] Buffer, int Length);
+
+    public CollabPeerConnection(TcpClient client, int assignedId)
+    {
+        Client = client;
+        AssignedId = assignedId;
+        Stream = client.GetStream();
+        RemoteAddress = (client.Client.RemoteEndPoint as IPEndPoint)?.Address;
+        client.SendTimeout = CollabProtocol.WriteTimeoutMs;
+    }
+
+    /// <summary>Relay-backed peer: shares the relay stream; closing only detaches this peer.</summary>
+    public CollabPeerConnection(Stream sharedStream, int assignedId, Action? onDetach)
+    {
+        Client = null;
+        AssignedId = assignedId;
+        Stream = sharedStream;
+        _onDetach = onDetach;
+    }
+
+    public readonly TcpClient? Client;
+    public readonly Stream Stream;
+    public readonly int AssignedId;
+
+    /// <summary>TCP peer address, captured on connect: the socket throws once it is closed.</summary>
+    public readonly IPAddress? RemoteAddress;
+    private readonly Action? _onDetach;
+
+    public volatile bool SessionClosed;
+    public volatile bool IsAuthenticated;
+
+    /// <summary>Round trip of the last heartbeat echo in milliseconds; -1 until the first echo arrives.</summary>
+    public volatile int LastRttMs = -1;
+
+    public Guid UserId { get; set; }
+    public string Name { get; set; } = "";
+    public byte PresencePeerId => (byte)AssignedId;
+
+    /// <summary>Latest presence. Swapped atomically by reference; never mutated in place.</summary>
+    public PresencePacket? LatestPresence;
+
+    /// <summary>UDP endpoint the peer sends presence from; the reply path for host-to-peer presence. Null for relayed peers.</summary>
+    public volatile IPEndPoint? UdpEndpoint;
+
+    private long _lastHeardFromTicks = Environment.TickCount64;
+    private readonly object _writeLock = new();
+    private Channel<OutboundFrame>? _outbound;
+    private int _queuedBytes;
+
+    private const int MaxQueuedBytes = 32 * 1024 * 1024;
+    private const int MaxQueuedPresenceBytes = 64 * 1024;
+
+    public void MarkHeardFrom() => Interlocked.Exchange(ref _lastHeardFromTicks, Environment.TickCount64);
+
+    /// <summary>Last frame received on any path, for a transport that checks its own liveness.</summary>
+    public long LastHeardFromTicks => Interlocked.Read(ref _lastHeardFromTicks);
+
+    /// <summary>
+    /// Silence after which this peer is considered gone. Collaboration tolerates a slow link; a
+    /// boygroup session lowers it so a dropped master is noticed before the show visibly drifts.
+    /// </summary>
+    public int TimeoutMs { get; set; } = CollabProtocol.PeerTimeoutMs;
+
+    public bool IsTimedOut => Environment.TickCount64 - Interlocked.Read(ref _lastHeardFromTicks) > TimeoutMs;
+
+    /// <summary>
+    /// A path that can carry frames without the stream, e.g. a WebRTC data channel. The transport
+    /// offers every frame here first; false means "not available", and the stream is used instead.
+    /// </summary>
+    public delegate bool FrameSender(CollabProtocol.FrameType type, ReadOnlySpan<byte> payload);
+
+    /// <summary>
+    /// Set while a peer has a lower-latency path than its relay stream. Cleared when that path dies,
+    /// so the peer silently falls back to the relay instead of losing the session.
+    /// </summary>
+    public volatile FrameSender? PreferredSender;
+
+    public bool TrySendPreferred(CollabProtocol.FrameType type, ReadOnlySpan<byte> payload)
+    {
+        var sender = PreferredSender;
+        if (sender == null)
+            return false;
+
+        try
+        {
+            return sender(type, payload);
+        }
+        catch
+        {
+            // A dying data channel must not take the peer down; the relay path still works.
+            return false;
+        }
+    }
+
+    /// <summary>Bytes accepted by <see cref="Write"/> that are not on the wire yet; bulk senders pace themselves on it.</summary>
+    public int QueuedBytes => Volatile.Read(ref _queuedBytes);
+
+    /// <summary>
+    /// Thread-safe framed write that never blocks the caller: a TCP peer copies the frame into an outbound queue
+    /// that a background writer drains in order, so a stalled partner cannot freeze the editor's frame loop.
+    /// Callers must pass a payload already encoded for the frame type.
+    /// </summary>
+    public void Write(CollabProtocol.FrameType type, ReadOnlySpan<byte> payload)
+    {
+        if (SessionClosed)
+            return;
+
+        // A relay peer shares one stream with every other peer, which its transport writes and flushes itself.
+        if (Client == null)
+        {
+            WriteNow(type, payload);
+            return;
+        }
+
+        var queued = Volatile.Read(ref _queuedBytes);
+        if (type == CollabProtocol.FrameType.Presence)
+        {
+            // Presence is best-effort and superseded by the next packet: never let it pile up behind a slow link.
+            if (queued > MaxQueuedPresenceBytes)
+                return;
+        }
+        else if (queued > MaxQueuedBytes)
+        {
+            // Dropping a reliable frame would desynchronise the stream; a peer this far behind is gone for our purposes.
+            Log.Warning($"Collab: {this} is not keeping up ({queued} bytes waiting) - disconnecting it");
+            Close();
+            return;
+        }
+
+        var buffer = ArrayPool<byte>.Shared.Rent(Math.Max(1, payload.Length));
+        payload.CopyTo(buffer);
+        var frame = new OutboundFrame(type, buffer, payload.Length);
+        Interlocked.Add(ref _queuedBytes, payload.Length);
+
+        var outbound = EnsureOutbound();
+        if (!outbound.Writer.TryWrite(frame))
+            Release(frame);
+    }
+
+    private Channel<OutboundFrame> EnsureOutbound()
+    {
+        var existing = _outbound;
+        if (existing != null)
+            return existing;
+
+        var created = Channel.CreateUnbounded<OutboundFrame>(new UnboundedChannelOptions { SingleReader = true });
+        existing = Interlocked.CompareExchange(ref _outbound, created, null);
+        if (existing != null)
+            return existing;
+
+        _ = Task.Run(() => WriteLoopAsync(created.Reader));
+        return created;
+    }
+
+    private async Task WriteLoopAsync(ChannelReader<OutboundFrame> reader)
+    {
+        try
+        {
+            while (await reader.WaitToReadAsync().ConfigureAwait(false))
+            {
+                while (reader.TryRead(out var frame))
+                {
+                    try
+                    {
+                        if (!SessionClosed)
+                            WriteNow(frame.Type, frame.Buffer.AsSpan(0, frame.Length));
+                    }
+                    finally
+                    {
+                        Release(frame);
+                    }
+                }
+            }
+        }
+        catch (Exception e)
+        {
+            Log.Debug($"Collab: writer for {this} stopped: {e.Message}");
+            Close();
+        }
+    }
+
+    private void Release(OutboundFrame frame)
+    {
+        Interlocked.Add(ref _queuedBytes, -frame.Length);
+        ArrayPool<byte>.Shared.Return(frame.Buffer);
+    }
+
+    private void WriteNow(CollabProtocol.FrameType type, ReadOnlySpan<byte> payload)
+    {
+        if (SessionClosed)
+            return;
+
+        try
+        {
+            lock (_writeLock)
+            {
+                if (SessionClosed)
+                    return;
+
+                CollabProtocol.WriteFrame(Stream, type, payload);
+            }
+        }
+        catch (Exception e) when (e is IOException or SocketException or ObjectDisposedException)
+        {
+            // Closing ends the reader too, so the peer is reported as gone instead of lingering
+            // half-open with every further write silently dropped.
+            Close();
+        }
+    }
+
+    public void Close()
+    {
+        SessionClosed = true;
+
+        // Lets the writer finish: it returns what is still queued to the pool without writing it.
+        _outbound?.Writer.TryComplete();
+        try
+        {
+            Client?.Close();
+        }
+        catch
+        {
+            // Closing a dying socket can throw; nothing to do about it.
+        }
+
+        try
+        {
+            _onDetach?.Invoke();
+        }
+        catch
+        {
+            // Detach callbacks must not take the connection down with them.
+        }
+    }
+
+    public override string ToString() => $"{Name}#{AssignedId}";
+}
+
+/// <summary>
+/// Owns the raw sockets of a collaboration session. All socket I/O runs on dedicated background
+/// threads; the only cross-thread artifacts are a ConcurrentQueue of inbound messages and locked
+/// synchronous writes. Nothing in here touches editor state.
+/// </summary>
+internal abstract class CollabTransport : IDisposable
+{
+    /// <summary>Drained by <see cref="CollabManager"/> on the UI thread.</summary>
+    public readonly ConcurrentQueue<InboundMessage> Inbound = new();
+
+    /// <summary>Raised on a network thread when a peer disconnected. The manager removes it on the UI thread.</summary>
+    public event Action<CollabPeerConnection>? PeerDisconnected;
+
+    public event Action<string>? StatusMessage;
+
+    /// <summary>Connected peers. Client transports expose only their host link so heartbeat and
+    /// timeout handling covers it; the list may be read from the UI thread at any time.</summary>
+    public abstract IReadOnlyList<CollabPeerConnection> Peers { get; }
+
+    /// <summary>
+    /// The single link back to the session host, for client transports (direct and relay). Null on
+    /// hosts. Session messages that go "to the host" must use this instead of testing for one
+    /// concrete client transport, or a relay client silently stops sending.
+    /// </summary>
+    public virtual CollabPeerConnection? HostLink => null;
+
+    /// <summary>
+    /// Called by the session once a peer is authenticated and the handshake has finished. A transport
+    /// with a faster path may switch the peer to it now; doing it earlier could put handshake messages
+    /// on a second path and let them overtake the session messages still in flight on the first.
+    /// </summary>
+    public virtual void EnablePeerToPeer(CollabPeerConnection peer)
+    {
+    }
+
+    /// <summary>A short label for the path a peer currently uses, for the participant list.</summary>
+    public virtual string DescribePeerLink(CollabPeerConnection peer) => "";
+
+    public abstract void SendToPeer(CollabPeerConnection peer, CollabProtocol.FrameType type, ReadOnlySpan<byte> payload);
+
+    public void SendJson(CollabPeerConnection peer, object message)
+    {
+        SendToPeer(peer, CollabProtocol.FrameType.Json, CollabProtocol.EncodeJson(message));
+    }
+
+    /// <summary>
+    /// Sends a control message that must not be lost while a faster path is preferred. The base
+    /// implementation uses the reliable socket; a relay host overrides it to bypass the data channel,
+    /// so the write is flushed before the connection is closed.
+    /// </summary>
+    public virtual void SendJsonOverRelay(CollabPeerConnection peer, object message)
+    {
+        SendToPeer(peer, CollabProtocol.FrameType.Json, CollabProtocol.EncodeJson(message));
+    }
+
+    public void BroadcastJson(IEnumerable<CollabPeerConnection> peers, object message, CollabPeerConnection? except = null)
+    {
+        var payload = CollabProtocol.EncodeJson(message);
+        foreach (var peer in peers)
+        {
+            if (peer == except || !peer.IsAuthenticated)
+                continue;
+
+            SendToPeer(peer, CollabProtocol.FrameType.Json, payload);
+        }
+    }
+
+    protected void OnPeerDisconnected(CollabPeerConnection peer) => PeerDisconnected?.Invoke(peer);
+
+    protected void OnStatus(string message) => StatusMessage?.Invoke(message);
+
+    public abstract void Dispose();
+
+    /// <summary>
+    /// Shared per-connection receive loop. Reads frames until the socket dies or the session ends.
+    /// Frame-size violations kill the connection instead of being logged — a peer sending oversized
+    /// frames is either broken or attacking us.
+    /// </summary>
+    protected void ReadLoop(CollabPeerConnection peer)
+    {
+        ReadFrameLoop(peer, peer.Stream);
+
+        // A transport that keeps the peer on another path (the WebRTC data channel) can keep it
+        // alive after its original stream dies.
+        if (!ShouldReportLostPeer(peer))
+            return;
+
+        peer.Close();
+        CleanupPeer(peer);
+        OnPeerDisconnected(peer);
+    }
+
+    /// <summary>Whether an ended read stream means the peer is gone, or another path still carries it.</summary>
+    protected virtual bool ShouldReportLostPeer(CollabPeerConnection peer) => true;
+
+    /// <summary>
+    /// Reads and dispatches frames from one stream until it ends. Shared by the socket transports
+    /// and a peer's WebRTC data channel; the caller decides what a dead stream means.
+    /// </summary>
+    protected void ReadFrameLoop(CollabPeerConnection peer, Stream stream)
+    {
+        var buffer = new byte[CollabProtocol.MaxFrameSize];
+        try
+        {
+            while (!peer.SessionClosed)
+            {
+                if (!CollabProtocol.TryReadFrameLength(stream, out var length))
+                    break;
+
+                if (length < 1 || length > CollabProtocol.MaxFrameSize)
+                {
+                    Log.Warning($"Collab: peer {peer} sent illegal frame length {length}, disconnecting");
+                    break;
+                }
+
+                if (!CollabProtocol.TryReadExact(stream, buffer.AsSpan(0, length)))
+                    break;
+
+                // Any frame counts as a life sign, not just heartbeats.
+                peer.MarkHeardFrom();
+                DispatchFrame(peer, buffer.AsSpan(0, length), stream);
+            }
+        }
+        catch (Exception e) when (e is IOException or SocketException or ObjectDisposedException)
+        {
+            // Expected during teardown or when a peer drops. Logged at debug level to keep the
+            // session log readable when the wifi hiccups.
+            Log.Debug($"Collab: connection to {peer} ended: {e.Message}");
+        }
+        catch (Exception e)
+        {
+            Log.Warning($"Collab: unexpected error reading from {peer}: {e.Message}");
+        }
+    }
+
+    /// <summary>Removes a dead peer from this transport's list. Called from the network thread.</summary>
+    protected virtual void CleanupPeer(CollabPeerConnection peer)
+    {
+    }
+
+    /// <summary>
+    /// Dispatches one frame from a specific stream. A transport can carry two paths for the same
+    /// peer (relay and WebRTC) and needs the source to decide whether a frame is still authoritative.
+    /// </summary>
+    protected virtual void DispatchFrame(CollabPeerConnection peer, ReadOnlySpan<byte> frame, Stream source)
+    {
+        DispatchFrame(peer, frame);
+    }
+
+    protected virtual void DispatchFrame(CollabPeerConnection peer, ReadOnlySpan<byte> frame)
+    {
+        var type = (CollabProtocol.FrameType)frame[0];
+        var payload = frame[1..];
+        switch (type)
+        {
+            case CollabProtocol.FrameType.Json:
+                if (CollabProtocol.TryDecodeJson(payload, out var json))
+                    Inbound.Enqueue(new InboundMessage(peer, json));
+                else
+                    Log.Warning($"Collab: dropped malformed JSON frame from {peer}");
+                break;
+
+            case CollabProtocol.FrameType.Presence:
+                // Presence is advisory display data; silently drop garbage instead of spamming the log.
+                if (PresencePacket.TryDecode(payload, out var presence))
+                    Inbound.Enqueue(new InboundMessage(peer, presence));
+                break;
+
+            case CollabProtocol.FrameType.Heartbeat:
+                peer.MarkHeardFrom();
+                if (payload.Length == CollabProtocol.HeartbeatPingSize)
+                {
+                    // The answer is one byte longer so it is never answered itself; echoing every
+                    // heartbeat would bounce each one between both ends forever.
+                    Span<byte> answer = stackalloc byte[CollabProtocol.HeartbeatPingSize + 1];
+                    payload.CopyTo(answer);
+                    answer[CollabProtocol.HeartbeatPingSize] = 0; // explicit: stackalloc is not guaranteed zeroed
+                    EchoHeartbeat(peer, answer);
+                }
+                else if (payload.Length == CollabProtocol.HeartbeatPingSize + 1)
+                {
+                    // An echo of our own ping: its payload is still our TickCount64.
+                    var rtt = CollabProtocol.MeasureHeartbeatRtt(payload);
+                    if (rtt >= 0)
+                        peer.LastRttMs = rtt;
+                }
+
+                break;
+
+            default:
+                Log.Warning($"Collab: peer {peer} sent unknown frame type {type}, disconnecting");
+                peer.SessionClosed = true;
+                break;
+        }
+    }
+
+    protected abstract void EchoHeartbeat(CollabPeerConnection peer, ReadOnlySpan<byte> timestamp);
+}
+
+/// <summary>
+/// Host transport for direct LAN/online sessions: a TCP listener plus a UDP socket used for presence
+/// telemetry and (optionally) LAN discovery replies. One reader thread per accepted peer.
+/// </summary>
+internal sealed class CollabHostTransport : CollabTransport
+{
+    private readonly List<CollabPeerConnection> _peers = [];
+
+    /** Copy of _peers republished on every change, so the UI and UDP threads enumerate without locking. */
+    private volatile CollabPeerConnection[] _peerSnapshot = [];
+
+    private readonly TcpListener _listener;
+    private readonly UdpClient _udp;
+    private readonly CancellationTokenSource _cancellation = new();
+    private int _nextPeerId = 1;
+
+    public LanDiscoveryResponder? DiscoveryResponder { get; private set; }
+
+    public override IReadOnlyList<CollabPeerConnection> Peers => _peerSnapshot;
+
+    protected override void CleanupPeer(CollabPeerConnection peer)
+    {
+        lock (_peers)
+        {
+            _peers.Remove(peer);
+            _peerSnapshot = _peers.ToArray();
+        }
+    }
+
+    public CollabHostTransport(int tcpPort, bool enableLanDiscovery, Func<JObject> announcementFactory, string? interfaceName = null)
+    {
+        // A pinned adapter must receive the session; everything else keeps the previous
+        // all-interface bind. Clients discover the host by the address they reach it on.
+        var bindAddress = LanInterfaces.ResolveAddress(interfaceName) ?? IPAddress.Any;
+        _listener = new TcpListener(bindAddress, tcpPort);
+        _listener.Start();
+
+        UdpClient? udp = null;
+        try
+        {
+            udp = new UdpClient(new IPEndPoint(bindAddress, tcpPort));
+            udp.Client.EnableBroadcast = false;
+
+            if (enableLanDiscovery)
+                DiscoveryResponder = new LanDiscoveryResponder(tcpPort + LanDiscoveryResponder.DiscoveryPortOffset, announcementFactory);
+
+            _udp = udp;
+        }
+        catch
+        {
+            // The TCP listener (and possibly the discovery socket) is already bound. Without
+            // releasing them here, starting a session again in this process fails with "address
+            // already in use" until the editor exits.
+            udp?.Close();
+            DiscoveryResponder?.Dispose();
+            try
+            {
+                _listener.Stop();
+            }
+            catch
+            {
+                // Listener already stopped.
+            }
+
+            throw;
+        }
+
+        _ = Task.Run(() => AcceptLoopAsync(_cancellation.Token));
+        _ = Task.Run(() => UdpLoopAsync(_cancellation.Token));
+        Log.Info($"Collab: hosting on {bindAddress}:{tcpPort}");
+    }
+
+    public override void SendToPeer(CollabPeerConnection peer, CollabProtocol.FrameType type, ReadOnlySpan<byte> payload)
+    {
+        peer.Write(type, payload);
+    }
+
+    /// <summary>Relays a presence datagram from one peer to all other peers over UDP.</summary>
+    public void RelayPresence(CollabPeerConnection source, ReadOnlySpan<byte> payload)
+    {
+        foreach (var peer in _peerSnapshot)
+        {
+            if (peer == source || !peer.IsAuthenticated)
+                continue;
+
+            SendPresenceTo(peer, payload);
+        }
+    }
+
+    public void SendPresenceTo(CollabPeerConnection peer, ReadOnlySpan<byte> payload)
+    {
+        var endpoint = peer.UdpEndpoint;
+        if (endpoint == null)
+        {
+            // No UDP pinhole (e.g. symmetric NAT or a relayed session) — fall back to the reliable
+            // channel. Slightly higher latency, but correctness first.
+            peer.Write(CollabProtocol.FrameType.Presence, payload);
+            return;
+        }
+
+        try
+        {
+            _udp.Send(payload.ToArray(), payload.Length, endpoint);
+        }
+        catch (SocketException)
+        {
+            // ICMP unreachable etc. Presence is best-effort; the next tick retries.
+        }
+    }
+
+    private async Task AcceptLoopAsync(CancellationToken cancellation)
+    {
+        while (!cancellation.IsCancellationRequested)
+        {
+            TcpClient client;
+            try
+            {
+                client = await _listener.AcceptTcpClientAsync(cancellation);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+            catch (SocketException e)
+            {
+                Log.Warning($"Collab: accept failed: {e.Message}");
+                await Task.Delay(500, cancellation).ContinueWith(_ => { });
+                continue;
+            }
+
+            if (_peerSnapshot.Count(p => !p.SessionClosed) >= CollabProtocol.MaxPeers)
+            {
+                Log.Warning("Collab: refused connection, peer limit reached");
+                client.Close();
+                continue;
+            }
+
+            client.NoDelay = true;
+            CollabPeerConnection peer;
+            try
+            {
+                peer = new CollabPeerConnection(client, Interlocked.Increment(ref _nextPeerId));
+            }
+            catch (Exception e) when (e is SocketException or ObjectDisposedException or InvalidOperationException)
+            {
+                // Peer reset the connection between accept and setup.
+                client.Close();
+                continue;
+            }
+
+            lock (_peers)
+            {
+                _peers.Add(peer);
+                _peerSnapshot = _peers.ToArray();
+            }
+
+            OnStatus($"Peer connecting from {(client.Client.RemoteEndPoint as IPEndPoint)?.Address}");
+            _ = Task.Run(() => ReadLoop(peer), cancellation);
+        }
+    }
+
+    private async Task UdpLoopAsync(CancellationToken cancellation)
+    {
+        while (!cancellation.IsCancellationRequested)
+        {
+            UdpReceiveResult result;
+            try
+            {
+                result = await _udp.ReceiveAsync(cancellation);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+            catch (SocketException)
+            {
+                continue;
+            }
+
+            var payload = result.Buffer;
+            if (payload.Length < 27 || payload.Length > CollabProtocol.MaxPresencePayload)
+                continue;
+
+            var peerId = payload[0];
+            CollabPeerConnection? peer;
+            lock (_peers)
+            {
+                peer = _peers.FirstOrDefault(p => p.AssignedId == peerId);
+            }
+
+            if (peer == null || !peer.IsAuthenticated)
+                continue;
+
+            // Learn the peer's UDP path: datagrams must originate from the address we already know
+            // from TCP to prevent third parties from injecting presence into a session.
+            var remoteIp = (result.RemoteEndPoint as IPEndPoint)?.Address;
+            var tcpIp = peer.RemoteAddress;
+            if (remoteIp == null || tcpIp == null || !remoteIp.Equals(tcpIp))
+                continue;
+
+            peer.UdpEndpoint = result.RemoteEndPoint;
+            peer.MarkHeardFrom();
+
+            var packet = PresencePacket.TryDecode(payload, out var presence) ? presence : null;
+            if (packet == null)
+                continue;
+
+            Inbound.Enqueue(new InboundMessage(peer, packet));
+            RelayPresence(peer, payload);
+        }
+    }
+
+    public override void Dispose()
+    {
+        _cancellation.Cancel();
+        lock (_peers)
+        {
+            foreach (var peer in _peers)
+                peer.Close();
+
+            _peers.Clear();
+            _peerSnapshot = [];
+        }
+
+        DiscoveryResponder?.Dispose();
+        try
+        {
+            _listener.Stop();
+            _udp.Close();
+        }
+        catch
+        {
+            // Listener already dead.
+        }
+    }
+
+    protected override void EchoHeartbeat(CollabPeerConnection peer, ReadOnlySpan<byte> timestamp)
+    {
+        peer.Write(CollabProtocol.FrameType.Heartbeat, timestamp);
+    }
+}
+
+/// <summary>
+/// Client transport for direct sessions: one TCP connection to the host plus a bound UDP socket for
+/// presence. The host's replies keep the NAT mapping open.
+/// </summary>
+internal sealed class CollabClientTransport : CollabTransport
+{
+    /// <summary>The link to the host. Only valid after <see cref="Connect"/> succeeded.</summary>
+    public CollabPeerConnection HostPeer => _hostPeer ?? throw new InvalidOperationException("Collab client transport is not connected");
+
+    private readonly UdpClient _udp;
+    private readonly IPEndPoint _hostEndPoint;
+    private CollabPeerConnection? _hostPeer;
+
+    /** Cached so the per-frame Peers access does not allocate a one-element array every time. */
+    private IReadOnlyList<CollabPeerConnection> _hostPeerList = [];
+    private readonly CancellationTokenSource _cancellation = new();
+
+    public CollabClientTransport(IPEndPoint hostEndPoint)
+    {
+        _hostEndPoint = hostEndPoint;
+
+        // Bound up front: the receive loop starts before the first presence send, and receiving on an
+        // unbound socket fails on Linux, which left the host's presence unread in the socket queue.
+        var anyAddress = hostEndPoint.AddressFamily == AddressFamily.InterNetworkV6 ? IPAddress.IPv6Any : IPAddress.Any;
+        _udp = new UdpClient(new IPEndPoint(anyAddress, 0));
+        _udp.Client.EnableBroadcast = false;
+    }
+
+    /// <summary>Connects synchronously; throws on failure so the manager can surface a clean error.</summary>
+    public void Connect()
+    {
+        var client = CollabProtocol.ConnectWithTimeout(_hostEndPoint);
+        client.NoDelay = true;
+        _hostPeer = new CollabPeerConnection(client, 0);
+        _hostPeerList = [_hostPeer];
+        _ = Task.Run(() => ReadLoop(_hostPeer));
+        _ = Task.Run(() => UdpLoopAsync(_cancellation.Token));
+        Log.Info($"Collab: connected to {_hostEndPoint}");
+    }
+
+    public override IReadOnlyList<CollabPeerConnection> Peers => _hostPeer == null ? [] : _hostPeerList;
+
+    public override CollabPeerConnection? HostLink => _hostPeer;
+
+    public void SendPresence(ReadOnlySpan<byte> payload)
+    {
+        try
+        {
+            _udp.Send(payload.ToArray(), payload.Length, _hostEndPoint);
+        }
+        catch (SocketException)
+        {
+            // Best-effort channel.
+        }
+    }
+
+    public override void SendToPeer(CollabPeerConnection peer, CollabProtocol.FrameType type, ReadOnlySpan<byte> payload)
+    {
+        peer.Write(type, payload);
+    }
+
+    private async Task UdpLoopAsync(CancellationToken cancellation)
+    {
+        while (!cancellation.IsCancellationRequested)
+        {
+            UdpReceiveResult result;
+            try
+            {
+                result = await _udp.ReceiveAsync(cancellation);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+            catch (SocketException)
+            {
+                continue;
+            }
+
+            var payload = result.Buffer;
+            if (payload.Length < 27 || payload.Length > CollabProtocol.MaxPresencePayload)
+                continue;
+
+            // Accept only datagrams that come back from the address we connected to.
+            var remoteIp = (result.RemoteEndPoint as IPEndPoint)?.Address;
+            if (remoteIp == null || !remoteIp.Equals(_hostEndPoint.Address))
+                continue;
+
+            if (_hostPeer != null && PresencePacket.TryDecode(payload, out var presence))
+                Inbound.Enqueue(new InboundMessage(_hostPeer, presence));
+        }
+    }
+
+    public override void Dispose()
+    {
+        _cancellation.Cancel();
+        _hostPeer?.Close();
+        _udp.Close();
+    }
+
+    protected override void EchoHeartbeat(CollabPeerConnection peer, ReadOnlySpan<byte> timestamp)
+    {
+        peer.Write(CollabProtocol.FrameType.Heartbeat, timestamp);
+    }
+}
+
+/// <summary>
+/// LAN discovery: answers UDP broadcast probes with a small JSON announcement and forwards other
+/// unicast packets (boygroup invitations) to an optional handler. Runs on its own socket so it can be
+/// enabled and disabled independently of a session.
+/// </summary>
+internal sealed class LanDiscoveryResponder : IDisposable
+{
+    public const string ProbePayload = "TIXL-COLLAB-DISCOVER";
+    public const int DiscoveryPortOffset = 1;
+
+    private readonly UdpClient _udp;
+    private readonly CancellationTokenSource _cancellation = new();
+    private readonly Func<JObject> _announcementFactory;
+    private readonly Action<JObject, IPEndPoint>? _messageHandler;
+
+    /// <param name="discoveryPort">The UDP port this responder listens on — a session's TCP port plus
+    /// <see cref="DiscoveryPortOffset"/>, or a standalone boygroup node's port plus the offset.</param>
+    public LanDiscoveryResponder(int discoveryPort, Func<JObject> announcementFactory,
+                                 Action<JObject, IPEndPoint>? messageHandler = null)
+    {
+        _announcementFactory = announcementFactory;
+        _messageHandler = messageHandler;
+        _udp = new UdpClient(discoveryPort);
+        _udp.Client.EnableBroadcast = true;
+        _ = Task.Run(LoopAsync);
+    }
+
+    private async Task LoopAsync()
+    {
+        while (!_cancellation.IsCancellationRequested)
+        {
+            UdpReceiveResult result;
+            try
+            {
+                result = await _udp.ReceiveAsync(_cancellation.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+            catch (SocketException)
+            {
+                continue;
+            }
+
+            var text = Encoding.UTF8.GetString(result.Buffer);
+            if (text == ProbePayload)
+            {
+                var announcement = _announcementFactory();
+                var payload = CollabProtocol.EncodeJson(announcement);
+                try
+                {
+                    await _udp.SendAsync(payload, payload.Length, result.RemoteEndPoint);
+                }
+                catch (SocketException)
+                {
+                    // The probing client may already be gone.
+                }
+
+                continue;
+            }
+
+            if (_messageHandler == null)
+                continue;
+
+            try
+            {
+                _messageHandler(JObject.Parse(text), result.RemoteEndPoint);
+            }
+            catch (JsonException)
+            {
+                // Some other tool answered our broadcast; ignore.
+            }
+        }
+    }
+
+    public void Dispose()
+    {
+        _cancellation.Cancel();
+        _udp.Close();
+    }
+}
+
+/// <summary>
+/// LAN discovery scanner used by the join UI: broadcasts probes and collects announcements for a
+/// couple of seconds. Fully independent of any running session.
+/// </summary>
+internal sealed class LanDiscoveryScanner : IDisposable
+{
+    public readonly ConcurrentQueue<(JObject Announcement, IPEndPoint Source, DateTime Received)> Results = new();
+
+    private UdpClient? _udp;
+    private CancellationTokenSource? _cancellation;
+    private Task? _loopTask;
+
+    /// <summary>
+    /// Starts probing. An optional adapter name pins both the source address and the broadcast
+    /// target to that interface; empty keeps the OS default route on all interfaces.
+    /// </summary>
+    public void Start(int discoveryPort, string? interfaceName = null)
+    {
+        Stop();
+        var lanInterface = LanInterfaces.Find(interfaceName);
+        var cancellation = new CancellationTokenSource();
+        var udp = new UdpClient(new IPEndPoint(lanInterface?.Address ?? IPAddress.Any, 0));
+        udp.Client.EnableBroadcast = true;
+        var broadcast = lanInterface?.BroadcastAddress ?? IPAddress.Broadcast;
+        _cancellation = cancellation;
+        _udp = udp;
+
+        // The loop owns its socket and token directly: fields are swapped and nulled by Stop()
+        // from the UI thread, and a loop that read them would race with its own teardown.
+        _loopTask = Task.Run(() => LoopAsync(discoveryPort, broadcast, udp, cancellation.Token));
+    }
+
+    private async Task LoopAsync(int discoveryPort, IPAddress broadcast, UdpClient udp, CancellationToken cancellation)
+    {
+        var probe = Encoding.UTF8.GetBytes(LanDiscoveryResponder.ProbePayload);
+        var interval = TimeSpan.FromMilliseconds(700);
+        while (!cancellation.IsCancellationRequested)
+        {
+            try
+            {
+                await udp.SendAsync(probe, probe.Length, new IPEndPoint(broadcast, discoveryPort));
+
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
+                timeout.CancelAfter(interval);
+                while (true)
+                {
+                    var result = await udp.ReceiveAsync(timeout.Token);
+                    var text = Encoding.UTF8.GetString(result.Buffer);
+                    if (!text.StartsWith("{\"collab\"") && !text.StartsWith("{\"boygroup\""))
+                        continue;
+
+                    var json = JObject.Parse(text);
+                    var source = result.RemoteEndPoint as IPEndPoint ?? new IPEndPoint(IPAddress.None, 0);
+                    Results.Enqueue((json, source, DateTime.UtcNow));
+                }
+            }
+            catch (OperationCanceledException) when (!cancellation.IsCancellationRequested)
+            {
+                // Receive timeout for this interval — probe again.
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+            catch (SocketException)
+            {
+                try { await Task.Delay(200, cancellation); } catch (OperationCanceledException) { break; }
+            }
+            catch (JsonException)
+            {
+                // Some other tool answered our broadcast; ignore.
+            }
+        }
+    }
+
+    public void Stop()
+    {
+        _cancellation?.Cancel();
+        _udp?.Close();
+        try { _loopTask?.Wait(200); } catch { /* teardown */ }
+        _cancellation?.Dispose();
+        _cancellation = null;
+        _udp = null;
+        _loopTask = null;
+    }
+
+    public void Dispose() => Stop();
+}
