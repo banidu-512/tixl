@@ -203,10 +203,23 @@ internal sealed partial class MagGraphView : ScalableCanvas, IGraphView
         return true;
     }
 
+    /** For the app menu, which offers the graph's edit actions without being part of its drawing. */
+    internal GraphUiContext Context => _context;
+
     /// <summary>Runs the layout action bound to G, as the debug bridge drives it.</summary>
     internal bool LayoutInputsOfSelection()
     {
         return !HasActiveInteraction && TreeLayouting.LayoutInputsOfSelection(_context);
+    }
+
+    /// <summary>Runs the delete action bound to Del (or Ctrl+Del without <paramref name="keepConnections"/>), as the debug bridge drives it.</summary>
+    internal bool DeleteSelection(bool keepConnections)
+    {
+        if (HasActiveInteraction || _projectView.NodeSelection.Selection.Count == 0)
+            return false;
+
+        Modifications.DeleteSelection(_context, keepConnections);
+        return true;
     }
 
     void IGraphView.Close()
@@ -428,6 +441,7 @@ internal sealed partial class MagGraphView : ScalableCanvas, IGraphView
                 && (_context.StateMachine.CurrentState == GraphStates.Default
                     || _context.StateMachine.CurrentState == GraphStates.HoldBackground)
                 && _context.StateMachine.StateTime > 0.01f // Prevent glitches when coming from other states.
+                && !FrameStats.Last.OpenedPopupCapturedMouse
             ;
 
         if (!shouldBeActive)

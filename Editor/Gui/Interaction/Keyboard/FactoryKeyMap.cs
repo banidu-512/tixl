@@ -16,6 +16,8 @@ internal static class FactoryKeyMap
                 new(UserActions.DuplicateWithConnections, new KeyCombination(Key.D, ctrl: true, shift: true)),
                 new(UserActions.DeleteSelection, new KeyCombination(Key.Delete)),
                 new(UserActions.DeleteSelection, new KeyCombination(Key.Backspace)),
+                new(UserActions.DeleteSelectionAndConnections, new KeyCombination(Key.Delete, ctrl: true)),
+                new(UserActions.DeleteSelectionAndConnections, new KeyCombination(Key.Backspace, ctrl: true)),
                 new(UserActions.CopyToClipboard, new KeyCombination(Key.C, ctrl: true)),
                 new(UserActions.PasteFromClipboard, new KeyCombination(Key.V, ctrl: true)),
                 new(UserActions.PasteValues, new KeyCombination(Key.V, ctrl: true, shift: true)),
@@ -34,6 +36,7 @@ internal static class FactoryKeyMap
                 new(UserActions.PlaybackJumpToNextKeyframe, new KeyCombination(Key.Period)),
                 new(UserActions.PlaybackJumpToPreviousKeyframe, new KeyCombination(Key.Comma)),
                 new(UserActions.PlaybackScrubTime, new KeyCombination(Key.T)),
+                new(UserActions.ToggleIdleMotion, new KeyCombination(Key.M)),
 
                 // Timeline actions
                 new(UserActions.InsertKeyframe, new KeyCombination(Key.C)),
@@ -65,6 +68,7 @@ internal static class FactoryKeyMap
                 new(UserActions.OpenOperator, new KeyCombination(Key.I)),
                 new(UserActions.CloseOperator, new KeyCombination(Key.U)),
                 new(UserActions.RenameChild, new KeyCombination(Key.Return)),
+                new(UserActions.EditParameter, new KeyCombination(Key.S)),
                 new(UserActions.AlignSelectionLeft, new KeyCombination(Key.A, alt:true)),
 
                 // Navigation
@@ -108,6 +112,8 @@ internal static class FactoryKeyMap
 
             keyBindings.Add(new KeyBinding(loadAction, new KeyCombination(numberKeys[i], ctrl: true)));
             keyBindings.Add(new KeyBinding(saveAction, new KeyCombination(numberKeys[i], ctrl: true, shift: true)));
+            keyBindings.Add(new KeyBinding(UserActions.SelectOperatorBookmark0 + i, new KeyCombination(numberKeys[i])));
+            keyBindings.Add(new KeyBinding(UserActions.SetOperatorBookmark0 + i, new KeyCombination(numberKeys[i], shift: true)));
         }
 
         var fKeys = new[] { Key.F1, Key.F2, Key.F3, Key.F4, Key.F5, Key.F6, Key.F7, Key.F8, Key.F9, Key.F10 };

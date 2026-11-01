@@ -16,6 +16,47 @@ namespace T3.Editor.Gui.MagGraph.States
 {
     internal static class GraphStates
     {
+        /// <summary>
+        /// The op that pressing Tab appends to: the single visible selected op, if it has an output.
+        /// </summary>
+        internal static bool TryGetItemForTabInsertion(GraphUiContext context, out MagGraphItem item)
+        {
+            item = null;
+            if (context.StateMachine.CurrentState != Default
+                || !context.View.IsFocused
+                || !context.View.IsHovered
+                || ImGui.IsAnyItemActive()
+                || context.Selector.Selection.Count != 1)
+                return false;
+
+            var selected = context.Selector.Selection[0];
+            return context.View.IsItemVisible(selected)
+                   && context.Layout.Items.TryGetValue(selected.Id, out item)
+                   && item.OutputLines.Length > 0;
+        }
+
+        /// <summary>
+        /// Tab continues the op's existing flow: below it, or to the right if its first output already snaps horizontally.
+        /// Shift switches to the other direction.
+        /// </summary>
+        internal static MagGraphItem.Directions GetTabInsertionDirection(MagGraphItem item)
+        {
+            var isHorizontal = HasHorizontalSnappedOutput(item.OutputLines[0]) != ImGui.GetIO().KeyShift;
+            return isHorizontal ? MagGraphItem.Directions.Horizontal : MagGraphItem.Directions.Vertical;
+        }
+
+        private static bool HasHorizontalSnappedOutput(MagGraphItem.OutputLine outputLine)
+        {
+            foreach (var c in outputLine.ConnectionsOut)
+            {
+                if (c.Style is MagGraphConnection.ConnectionStyles.MainOutToMainInSnappedHorizontal
+                    or MagGraphConnection.ConnectionStyles.MainOutToInputSnappedHorizontal)
+                    return true;
+            }
+
+            return false;
+        }
+
         internal static State<GraphUiContext> Default
             = new(
                   Enter: context =>
@@ -44,31 +85,24 @@ namespace T3.Editor.Gui.MagGraph.States
                                   return;
                               }
                           
-                              // Check keyboard commands if focused...
+                              // Keyboard commands need the graph focused, not hovered
                               if (context.View.IsFocused
-                                  && context.View.IsHovered
                                   && !ImGui.IsAnyItemActive())
                               {
                                   // Tab create placeholder
-                                  if (ImGui.IsKeyReleased(ImGuiKey.Tab) && !ImGui.GetIO().KeyShift)
+                                  if (ImGui.IsKeyReleased(ImGuiKey.Tab))
                                   {
-                                      var focusedObject =
-                                          context.Selector.Selection.Count == 1 &&
-                                          context.View.IsItemVisible(context.Selector.Selection[0])
-                                              ? context.Selector.Selection[0]
-                                              : null;
-
-                                      if (focusedObject != null
-                                          && context.Layout.Items.TryGetValue(focusedObject.Id, out var focusedItem))
+                                      if (TryGetItemForTabInsertion(context, out var focusedItem))
                                       {
-                                          if (focusedItem.OutputLines.Length > 0)
-                                          {
-                                              context.Placeholder.OpenForItemOutput(context, focusedItem, focusedItem.OutputLines[0]);
-                                          }
+                                          context.Placeholder.OpenForItemOutput(context, focusedItem, focusedItem.OutputLines[0],
+                                                                                GetTabInsertionDirection(focusedItem));
                                       }
                                       else
                                       {
-                                          var posOnCanvas = context.View.InverseTransformPositionFloat(ImGui.GetMousePos());
+                                          // Without the mouse over the graph, insert in the middle of the view
+                                          var posOnCanvas = context.View.IsHovered
+                                                                ? context.View.InverseTransformPositionFloat(ImGui.GetMousePos())
+                                                                : context.View.GetVisibleCanvasArea().GetCenter();
                                           context.Placeholder.OpenOnCanvas(context, posOnCanvas);
                                       }
 
@@ -338,6 +372,7 @@ namespace T3.Editor.Gui.MagGraph.States
                          {
                              context.ItemMovement.PrepareDragInteraction();
                              context.ItemMovement.StartDragOperation(context);
+                             EdgeScrolling.Reset();
                          },
                   Update: context =>
                           {
@@ -349,6 +384,7 @@ namespace T3.Editor.Gui.MagGraph.States
                                   return;
                               }
 
+                              EdgeScrolling.Update(context.View);
                               context.ItemMovement.UpdateDragging(context);
                           },
                   Exit: context => { context.ItemMovement.StopDragOperation(); }
@@ -517,7 +553,7 @@ namespace T3.Editor.Gui.MagGraph.States
     
         internal static State<GraphUiContext> DragConnectionEnd
             = new(
-                  Enter: _ => { },
+                  Enter: _ => EdgeScrolling.Reset(),
                   Update: context =>
                           {
                               if (ImGui.IsKeyDown(ImGuiKey.Escape))
@@ -526,6 +562,7 @@ namespace T3.Editor.Gui.MagGraph.States
                                   return;
                               }
 
+                              EdgeScrolling.Update(context.View);
                               var posOnCanvas = context.View.InverseTransformPositionFloat(ImGui.GetMousePos());
                               context.PeekAnchorInCanvas = posOnCanvas;
 
@@ -647,7 +684,7 @@ namespace T3.Editor.Gui.MagGraph.States
 
         internal static State<GraphUiContext> DragConnectionBeginning
             = new(
-                  Enter: _ => { },
+                  Enter: _ => EdgeScrolling.Reset(),
                   Update: context =>
                           {
                               if (!ImGui.IsMouseDown(ImGuiMouseButton.Left))
@@ -683,7 +720,10 @@ namespace T3.Editor.Gui.MagGraph.States
                                   context.CancelMacroCommand();
                                   context.Layout.FlagStructureAsChanged();
                                   context.StateMachine.SetState(Default, context);
+                                  return;
                               }
+
+                              EdgeScrolling.Update(context.View);
                           },
                   Exit: _ => { });
 

@@ -129,7 +129,7 @@ internal sealed partial class SettingsWindow : Window
                                                           "Graph Style",
                                                           """
                                                           Allows to switch between different graphical representations.
-                                                          This also will affect usability and performance
+                                                          This also will affect usability and performance. To make this change effective, you need to go back to the projects hub and open your project again. 
                                                           """, UserSettings.Defaults.GraphStyle
                                                          );
 
@@ -209,6 +209,18 @@ internal sealed partial class SettingsWindow : Window
                                                       ref UserSettings.Config.ApplyDropdownValuesOnHover,
                                                       "Preview a value while hovering its entry in an open parameter dropdown. Turn this off to avoid unintended changes while live performing.",
                                                       UserSettings.Defaults.ApplyDropdownValuesOnHover);
+
+                    changed |= FormInputs.AddCheckBox("Show action notifications",
+                                                      ref UserSettings.Config.Toasts.Enabled,
+                                                      "Short messages in the menu bar that tell what a keyboard shortcut did, and tips about related shortcuts.",
+                                                      UserSettings.Defaults.Toasts.Enabled);
+
+                    FormInputs.ApplyIndent();
+                    if (ImGui.Button("Show Tips Again"))
+                    {
+                        ActionToast.ResetTips();
+                        changed = true;
+                    }
 
                     FormInputs.AddVerticalSpace();
                     FormInputs.AddSectionSubHeader("Input");
@@ -432,6 +444,15 @@ internal sealed partial class SettingsWindow : Window
                                                       UserSettings.Defaults.SaveWindowLayoutsWithProjects
                                                      );
 
+                    changed |= FormInputs.AddCheckBox("Reopen Last Project on Startup",
+                                                      ref UserSettings.Config.ReopenLastProjectOnStartup,
+                                                      """
+                                                      When enabled, TiXL starts with the project that was open when it was closed, showing the same operator and selection.
+                                                      If the editor was closed in the project hub, it starts there.
+                                                      """,
+                                                      UserSettings.Defaults.ReopenLastProjectOnStartup
+                                                     );
+
                     FormInputs.AddSectionSubHeader("Performance");
                     FormInputs.SetIndentToLeft();
 
@@ -640,6 +661,11 @@ internal sealed partial class SettingsWindow : Window
                         Log.Gated.VideoRenderEnabled = UserSettings.Config.LogVideoRenderingDetails;
                         changed = true;
                     }
+
+                    changed |= FormInputs.AddCheckBox("Show Presentation Mode Changes",
+                                                      ref UserSettings.Config.LogPresentationModeChanges,
+                                                      "Logs when Windows switches the main window between DWM composition, hardware overlay and independent flip. Frame pacing differs between these modes, so this helps when frame intervals jitter.",
+                                                      UserSettings.Defaults.LogPresentationModeChanges);
 
                     FormInputs.AddVerticalSpace();
                     break;

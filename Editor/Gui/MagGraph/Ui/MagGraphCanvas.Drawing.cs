@@ -4,6 +4,7 @@ using T3.Core.Operator.Interfaces;
 using T3.Core.Stats;
 using T3.Core.Utils;
 using T3.Editor.Gui.MagGraph.Interaction;
+using T3.Editor.Gui.MagGraph.Interaction.KeyboardEditing;
 using T3.Editor.Gui.MagGraph.Model;
 using T3.Editor.Gui.MagGraph.States;
 using T3.Editor.Gui.Styling;
@@ -94,6 +95,7 @@ internal sealed partial class MagGraphView
             }
 
             _context.ItemMovement.PrepareFrame(_context);
+            _context.HideHoverTooltips = SelectionNavigation.HidesHoverTooltips(_context);
 
             if (_context.StateMachine.CurrentState == GraphStates.Default)
             {
@@ -167,6 +169,9 @@ internal sealed partial class MagGraphView
             DrawMissingItems(drawList);
             DrawOffscreenIndicators(drawList);
             DrawAutoCollectIndicators(drawList);
+            SelectionNavigation.DrawTargetIndicators(_context, drawList);
+            OperatorBookmarks.DrawBadges(_context, drawList);
+            ParameterPopover.Draw(_context);
 
             // Draw special overlays
             if (_context.StateMachine.CurrentState == GraphStates.RenameChild)

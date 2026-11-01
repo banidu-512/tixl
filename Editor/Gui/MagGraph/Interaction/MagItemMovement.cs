@@ -2,6 +2,8 @@
 
 using System.Diagnostics;
 using ImGuiNET;
+using T3.Core.Output;
+using T3.Editor.Gui.Windows.Output;
 using T3.Core.DataTypes.Vector;
 using T3.Core.Stats;
 using T3.Core.Utils;
@@ -333,6 +335,10 @@ internal sealed partial class MagItemMovement
             if (append)
             {
                 context.Selector.DeselectNode(item, item.Instance);
+            }
+            else if (item.Instance is IContentSupplier)
+            {
+                OutputWindow.EnterSetupModeForSendOpClick();
             }
         }
         else
@@ -1543,7 +1549,43 @@ internal sealed partial class MagItemMovement
         MoveItems(context, movableItems, new Vector2(xDistance,0));
     }
 
-    private static void MoveItems(GraphUiContext context, IEnumerable<MagGraphItem> movableItems, Vector2 offset)
+    /// <summary>
+    /// Creates and applies a command to move the items above <paramref name="yThreshold"/>, leaving the items below in place
+    /// </summary>
+    public static void MoveSnappedItemsAbove(GraphUiContext context, HashSet<MagGraphItem> snappedItems, float yThreshold, float yDistance)
+    {
+        var movableItems = new List<MagGraphItem>();
+        foreach (var otherItem in snappedItems)
+        {
+            if (otherItem.PosOnCanvas.Y < yThreshold)
+                movableItems.Add(otherItem);
+        }
+
+        if (movableItems.Count == 0)
+            return;
+
+        MoveItems(context, movableItems, new Vector2(0, yDistance));
+    }
+
+    /// <summary>
+    /// Creates and applies a command to move the items left of <paramref name="xThreshold"/>, leaving the items right of it in place
+    /// </summary>
+    public static void MoveSnappedItemsLeftOf(GraphUiContext context, HashSet<MagGraphItem> snappedItems, float xThreshold, float xDistance)
+    {
+        var movableItems = new List<MagGraphItem>();
+        foreach (var otherItem in snappedItems)
+        {
+            if (otherItem.PosOnCanvas.X < xThreshold)
+                movableItems.Add(otherItem);
+        }
+
+        if (movableItems.Count == 0)
+            return;
+
+        MoveItems(context, movableItems, new Vector2(xDistance, 0));
+    }
+
+    internal static void MoveItems(GraphUiContext context, IEnumerable<MagGraphItem> movableItems, Vector2 offset)
     {
         Debug.Assert(context.MacroCommand != null);
         

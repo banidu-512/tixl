@@ -315,6 +315,9 @@ internal static class StallWatchdog
     private const int IdlePollMilliseconds = 50;
     private const int OverlayFrameMilliseconds = 33;
 
+    /** Short, because the main thread waits for the present lock while this runs when the stall ends. */
+    private const uint OverlayFrameLatencyTimeoutMs = 50;
+
     private static Thread? _thread;
     private static Device? _device;
     private static AppWindow? _mainWindow;

@@ -31,6 +31,7 @@ using T3.Editor.UiContentDrawing;
 using T3.Editor.UiModel.Helpers;
 using SDL;
 using T3.SdlPlatform;
+using T3.Editor.UiModel.ProjectHandling;
 using T3.SystemUi;
 using ShaderCompiler = T3.Core.Resource.ShaderCompiling.ShaderCompiler;
 
@@ -364,6 +365,10 @@ internal static class Program
         // ReSharper disable once AccessToDisposedClosure
         ProgramWindows.Main.RunRenderLoop(UiContentContentDrawer.RenderCallback);
         IsShuttingDown = true;
+
+        // ImGui is still alive here, and the user settings that hold the canvas views are written on process exit.
+        ProjectView.SaveSessionForFocusedProject();
+        LastOpenProject.ReleaseReopenGuard();
         StallWatchdog.Stop();
         App.DebugProtocol.DebugServer.Stop();
 
@@ -398,6 +403,9 @@ internal static class Program
     /// <summary>Set via <c>--no-splash</c> — skips showing the splash screen (e.g. for protocol-driven sessions).</summary>
     internal static bool SkipSplash { get; private set; }
 
+    /// <summary>Set via <c>--no-reopen</c> — starts in the project hub, so scripted sessions get a predictable start.</summary>
+    internal static bool SkipProjectReopen { get; private set; }
+
     /// <summary>Set via <c>--autostart</c>: this launch came from the OS login entry, not a manual start.</summary>
     internal static bool StartedByOsAutostart { get; private set; }
 
@@ -407,7 +415,7 @@ internal static class Program
 
     /// <summary>
     /// Honors <c>--window=&lt;w&gt;x&lt;h&gt;</c> (or <c>--window &lt;w&gt;x&lt;h&gt;</c>) for a predictable
-    /// non-maximized window, <c>--no-splash</c>, <c>--autostart</c>, and <c>--project &lt;folder&gt;</c>.
+    /// non-maximized window, <c>--no-splash</c>, <c>--autostart</c>, <c>--project &lt;folder&gt;</c> and <c>--no-reopen</c>.
     /// </summary>
     private static void ApplyWindowArgs(string[] args)
     {
@@ -437,6 +445,12 @@ internal static class Program
             if (arg.Equals(projectFlag, StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
             {
                 ProjectFolderArgument = args[i + 1];
+                continue;
+            }
+
+            if (arg.Equals("--no-reopen", StringComparison.OrdinalIgnoreCase))
+            {
+                SkipProjectReopen = true;
                 continue;
             }
 

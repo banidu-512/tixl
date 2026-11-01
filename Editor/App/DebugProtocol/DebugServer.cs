@@ -407,6 +407,10 @@ internal static class DebugServer
                 HandleGetShaderErrors(request, context);
                 break;
 
+            case "getFrameSamples":
+                HandleGetFrameSamples(context);
+                break;
+
             case "screenshot":
                 HandleScreenshot(request, context);
                 break;
@@ -672,6 +676,17 @@ internal static class DebugServer
                 break;
             }
 
+            case "setFrameLatency":
+            {
+                // 1 or 2 frames in flight; without a value it only reports.
+                var value = request["value"]?.Value<int>();
+                if (value != null)
+                    UserSettings.Config.FrameLatency = Math.Clamp(value.Value, 1, 2);
+
+                context.SendOk(new JObject { ["frameLatency"] = UserSettings.Config.FrameLatency });
+                break;
+            }
+
             case "layoutSelection":
             {
                 var view = ProjectView.Focused;
@@ -689,6 +704,27 @@ internal static class DebugServer
                 }
 
                 context.SendOk(new JObject { ["changed"] = changed, ["selectedIds"] = selectedIds });
+                break;
+            }
+
+            case "deleteSelection":
+            {
+                var view = ProjectView.Focused;
+                if (view?.GraphView is not MagGraphView magGraphView)
+                {
+                    context.SendError("NO_COMPOSITION", "No graph view focused");
+                    break;
+                }
+
+                var keepConnections = request["disconnect"]?.Value<bool>() != true;
+                var deleted = magGraphView.DeleteSelection(keepConnections);
+                var selectedIds = new JArray();
+                foreach (var selectable in view.NodeSelection.Selection)
+                {
+                    selectedIds.Add(selectable.Id.ToString());
+                }
+
+                context.SendOk(new JObject { ["deleted"] = deleted, ["selectedIds"] = selectedIds });
                 break;
             }
 
@@ -1775,6 +1811,21 @@ internal static class DebugServer
         result["gpuMemory"] = TryGetGpuMemoryInfo();
         result["liveGpuResources"] = Program.Device?.Backend.LiveResourceCount ?? 0;
         context.SendOk(result);
+    }
+
+    /// <summary>The Performance window's rolling frame, CPU and present durations (oldest first), the data of its CSV export.</summary>
+    private static void HandleGetFrameSamples(RequestContext context)
+    {
+        var frames = PerformanceMetrics.FrameDuration.AsOrderedSpan(new float[PerformanceMetrics.WindowSize]);
+        var cpus = PerformanceMetrics.CpuFrameDuration.AsOrderedSpan(new float[PerformanceMetrics.WindowSize]);
+        var presents = PerformanceMetrics.PresentDuration.AsOrderedSpan(new float[PerformanceMetrics.WindowSize]);
+        context.SendOk(new JObject
+                           {
+                               ["totalFrames"] = PerformanceMetrics.TotalFrameCount,
+                               ["frameMs"] = new JArray(frames.ToArray().Select(v => Math.Round(v, 2))),
+                               ["cpuMs"] = new JArray(cpus.ToArray().Select(v => Math.Round(v, 2))),
+                               ["presentMs"] = new JArray(presents.ToArray().Select(v => Math.Round(v, 2))),
+                           });
     }
 
     private static JToken TryGetGpuMemoryInfo()

@@ -8,6 +8,8 @@ using T3.Core.Model;
 using T3.Core.Utils;
 using T3.Editor.App;
 using T3.Editor.Gui.Help;
+using T3.Editor.Gui.Interaction.Variations;
+using T3.Editor.Gui.Interaction.Variations.Model;
 using T3.Editor.Gui.MagGraph.Model;
 using T3.Editor.Gui.MagGraph.States;
 using T3.Editor.Gui.Styling;
@@ -32,6 +34,7 @@ internal static class PlaceHolderUi
     {
         _selectedSymbolUi = null;
         _focusInputNextTime = true;
+        ResetPresets();
 
         Filter.FilterInputType = inputFilter;
         Filter.FilterOutputType = outputFilter;
@@ -56,6 +59,7 @@ internal static class PlaceHolderUi
         Filter.Reset();
         _placeholderItem = null;
         _selectedSymbolUi = null;
+        ResetPresets();
         _rowHeight = 0;
         _focusInputNextTime = false;
     }
@@ -75,6 +79,10 @@ internal static class PlaceHolderUi
         Filter.UpdateIfNecessary(context.Selector);
 
         uiResult |= DrawSearchInput(context, drawList);
+
+        // The help window previews the suggestion picked with the keys; hovering an entry later this frame wins
+        if (_selectedSymbolUi != null)
+            HoveredHelpTarget.SetOperator(_selectedSymbolUi.Symbol.Id);
 
         var pMin = context.View.TransformPosition(_placeholderItem.PosOnCanvas);
         var pMax = context.View.TransformPosition(_placeholderItem.Area.Max);
@@ -98,15 +106,6 @@ internal static class PlaceHolderUi
         selectedUi = _selectedSymbolUi;
         return uiResult;
     }
-    
-    // TODO: Implement preset search
-    // if (_selectedSymbolUi != null)
-    // {
-    //     if (Filter.PresetFilterString != string.Empty && (Filter.WasUpdated || _selectedItemChanged))
-    //     {
-    //
-    //     }
-    // }
     
     /// <summary>
     /// Scrolls the canvas so the placeholder and the space its results list will occupy are on screen.
@@ -179,9 +178,11 @@ internal static class PlaceHolderUi
             ImGui.PushID("SymbolBrowserSearch");
             ImGui.InputText("##symbolBrowserFilter",
                             ref Filter.SearchString,
-                            20,
+                            MaxSearchLength,
                             ImGuiInputTextFlags.AutoSelectAll);
             ImGui.PopID();
+
+            DrawSuggestion(drawList, padding);
 
             ImGui.PopStyleColor();
             ImGui.PopStyleVar();
@@ -211,7 +212,14 @@ internal static class PlaceHolderUi
             }
         }
 
-        if (Filter.WasUpdated)
+        // A space after the preset completes the insertion and continues with editing its parameters
+        if (IsChoosingPreset && Filter.SearchString.EndsWith(' ') && GetPresetSearch(out _).Length > 0 && _selectedSymbolUi != null)
+        {
+            uiResult |= UiResults.Create | UiResults.EditParameters;
+        }
+
+        // While choosing a preset the symbol picked before the space stays selected
+        if (Filter.WasUpdated && !IsChoosingPreset)
         {
             _selectedSymbolUi = Filter.MatchingSymbolUis.Count > 0
                                     ? Filter.MatchingSymbolUis[0]
@@ -315,7 +323,11 @@ internal static class PlaceHolderUi
         {
             FrameStats.Current.OpenedPopupHovered = ImGui.IsWindowHovered();
 
-            if (!string.IsNullOrEmpty(filter.SearchString)
+            if (IsChoosingPreset && _selectedSymbolUi != null)
+            {
+                result |= DrawPresetEntries(_selectedSymbolUi);
+            }
+            else if (!string.IsNullOrEmpty(filter.SearchString)
                 || filter.FilterInputType != null
                 || filter.FilterOutputType != null)
             {
@@ -382,8 +394,9 @@ internal static class PlaceHolderUi
         if (gotAMatch)
             _selectedSymbolUi = filter.MatchingSymbolUis[0];
 
-        if (_selectedSymbolUi == null && EditorSymbolPackage.AllSymbolUis.Any())
-            _selectedSymbolUi = EditorSymbolPackage.AllSymbolUis.First();
+        // Opening with a type filter computes the matches before the first frame, so nothing is selected yet
+        if (_selectedSymbolUi == null && filter.MatchingSymbolUis.Count > 0)
+            _selectedSymbolUi = filter.MatchingSymbolUis[0];
 
         // --- ImGuiListClipper integration (only when child is visible) ---
         var count = filter.MatchingSymbolUis.Count;
@@ -500,6 +513,166 @@ internal static class PlaceHolderUi
         return result;
     }
 
+    /// <summary>
+    /// A space after the symbol name switches the list to that symbol's presets. Without a typed name it uses the
+    /// symbol picked with the arrow keys.
+    /// </summary>
+    private static bool IsChoosingPreset
+    {
+        get
+        {
+            var spaceIndex = Filter.SearchString.IndexOf(' ');
+            return spaceIndex > 0 || spaceIndex == 0 && _selectedSymbolUi != null;
+        }
+    }
+
+    /// <summary>The preset filter is the text after the first space; <paramref name="rawSearch"/> keeps trailing spaces.</summary>
+    private static string GetPresetSearch(out string rawSearch)
+    {
+        var search = Filter.SearchString;
+        var spaceIndex = search.IndexOf(' ');
+        rawSearch = spaceIndex < 0 ? string.Empty : search[(spaceIndex + 1)..];
+        return rawSearch;
+    }
+
+    /// <summary>
+    /// Lists the presets of the selected symbol matching the text after the space. Without a filter "Default"
+    /// (no preset) comes first.
+    /// </summary>
+    private static UiResults DrawPresetEntries(SymbolUi symbolUi)
+    {
+        var result = UiResults.None;
+        UpdatePresetMatches(symbolUi);
+
+        var wasMovedByKey = false;
+        if (ImGui.IsKeyPressed(Key.CursorDown.ToImGuiKey()))
+        {
+            _presetIndex = Math.Min(_presetIndex + 1, _presetMatches.Count - 1);
+            wasMovedByKey = true;
+        }
+        else if (ImGui.IsKeyPressed(Key.CursorUp.ToImGuiKey()))
+        {
+            _presetIndex = Math.Max(_presetIndex - 1, 0);
+            wasMovedByKey = true;
+        }
+
+        CustomComponents.StylizedText(_presetHeader, Fonts.FontSmall, UiColors.TextMuted);
+        if (_presetMatches.Count == 0)
+        {
+            CustomComponents.StylizedText("No matching preset", Fonts.FontNormal, UiColors.TextDisabled);
+        }
+
+        for (var index = 0; index < _presetMatches.Count; index++)
+        {
+            var preset = _presetMatches[index];
+            ImGui.PushID(index);
+            if (ImGui.Selectable(preset?.Title ?? DefaultPresetLabel, index == _presetIndex))
+            {
+                _presetIndex = index;
+                result |= UiResults.Create;
+            }
+
+            if (index == _presetIndex && wasMovedByKey)
+                ImGui.SetScrollHereY();
+
+            ImGui.PopID();
+        }
+
+        WindowContentExtend.ExtendToLastItem((int)(200 * T3Ui.UiScaleFactor));
+        return result;
+    }
+
+    private static void UpdatePresetMatches(SymbolUi symbolUi)
+    {
+        var filter = GetPresetSearch(out _).Trim();
+        if (symbolUi == _presetSymbolUi && filter == _lastPresetFilter)
+            return;
+
+        if (symbolUi != _presetSymbolUi)
+            _presetHeader = symbolUi.Symbol.Name + " Presets";
+
+        _presetSymbolUi = symbolUi;
+        _lastPresetFilter = filter;
+        _presetMatches.Clear();
+        _presetIndex = 0;
+
+        if (filter.Length == 0)
+            _presetMatches.Add(null);
+
+        var pool = VariationHandling.GetOrLoadVariations(symbolUi.Symbol.Id);
+        foreach (var titleMustStartWithFilter in TitleMatchPasses)
+        {
+            foreach (var variation in pool.AllVariations)
+            {
+                if (!variation.IsPreset || variation.Title == null)
+                    continue;
+
+                var startsWith = variation.Title.StartsWith(filter, StringComparison.OrdinalIgnoreCase);
+                var isMatch = titleMustStartWithFilter
+                                  ? startsWith
+                                  : !startsWith && variation.Title.Contains(filter, StringComparison.OrdinalIgnoreCase);
+                if (isMatch)
+                    _presetMatches.Add(variation);
+            }
+        }
+    }
+
+    /** The preset to apply when creating, or null for the symbol's defaults */
+    internal static Variation? SelectedPreset
+        => IsChoosingPreset && _presetIndex >= 0 && _presetIndex < _presetMatches.Count
+               ? _presetMatches[_presetIndex]
+               : null;
+
+    private static void ResetPresets()
+    {
+        _presetMatches.Clear();
+        _presetSymbolUi = null;
+        _lastPresetFilter = string.Empty;
+        _presetIndex = 0;
+    }
+
+    /// <summary>
+    /// Grey text after the typed search that completes the selected item and tells what a space does next.
+    /// </summary>
+    private static void DrawSuggestion(ImDrawListPtr drawList, Vector2 padding)
+    {
+        if (_selectedSymbolUi == null)
+            return;
+
+        // Rebuilt only when what it describes changes
+        if (_selectedSymbolUi != _suggestionSymbolUi
+            || Filter.SearchString != _suggestionSearch
+            || _presetIndex != _suggestionPresetIndex)
+        {
+            _suggestionSymbolUi = _selectedSymbolUi;
+            _suggestionSearch = Filter.SearchString;
+            _suggestionPresetIndex = _presetIndex;
+            KeyHintText.Parse(BuildSuggestion(_selectedSymbolUi), _suggestionSegments);
+        }
+
+        var textPos = ImGui.GetItemRectMin() + padding + new Vector2(ImGui.CalcTextSize(Filter.SearchString).X, 0);
+        KeyHintText.Draw(drawList, textPos, _suggestionSegments);
+    }
+
+    private static string BuildSuggestion(SymbolUi selectedSymbolUi)
+    {
+        if (Filter.SearchString.Length == 0)
+            return "[Space] " + selectedSymbolUi.Symbol.Name + " presets";
+
+        if (IsChoosingPreset)
+        {
+            var presetSearch = GetPresetSearch(out _);
+            var title = SelectedPreset?.Title ?? (_presetMatches.Count > 0 ? DefaultPresetLabel : string.Empty);
+            var completion = title.StartsWith(presetSearch, StringComparison.OrdinalIgnoreCase) ? title[presetSearch.Length..] : string.Empty;
+            var next = presetSearch.Length == 0 ? "   type a preset,  [Space] insert and edit" : "   [Space] insert and edit";
+            return completion.Length > 0 ? "{" + completion + "}" + next : next;
+        }
+
+        var name = selectedSymbolUi.Symbol.Name;
+        var nameCompletion = name.StartsWith(Filter.SearchString, StringComparison.OrdinalIgnoreCase) ? name[Filter.SearchString.Length..] : string.Empty;
+        return nameCompletion.Length > 0 ? "{" + nameCompletion + "}   [Space] presets" : "   [Space] presets";
+    }
+
     private static bool IsRelevantNamespace(GraphUiContext context, string symbolNamespace)
     {
         var projectNamespace = "user." + context.CompositionInstance.Symbol.SymbolPackage.AssemblyInformation.Name + ".";
@@ -514,6 +687,20 @@ internal static class PlaceHolderUi
 
         return isRelevantNamespace;
     }
+
+    private const int MaxSearchLength = 48;
+    private const string DefaultPresetLabel = "Default";
+    private static readonly bool[] TitleMatchPasses = [true, false];
+
+    private static readonly List<Variation?> _presetMatches = new(16);
+    private static SymbolUi? _presetSymbolUi;
+    private static string _presetHeader = string.Empty;
+    private static string _lastPresetFilter = string.Empty;
+    private static int _presetIndex;
+    private static readonly List<KeyHintText.Segment> _suggestionSegments = new(4);
+    private static SymbolUi? _suggestionSymbolUi;
+    private static string? _suggestionSearch;
+    private static int _suggestionPresetIndex = -1;
 
     private static bool _focusInputNextTime = true;
     private static SymbolUi? _selectedSymbolUi;
@@ -535,5 +722,6 @@ internal static class PlaceHolderUi
         Create = 1 << 4,
         Cancel = 1 << 5,
         ClickedOutside = 1 << 6,
+        EditParameters = 1 << 7,
     }
 }

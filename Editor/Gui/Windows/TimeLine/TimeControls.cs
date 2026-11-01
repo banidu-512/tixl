@@ -148,6 +148,8 @@ internal static class TimeControls
             Playback.Current.LoopRange.Start = (float)Playback.Current.TimeInBars;
             if(Playback.Current.LoopRange.End < Playback.Current.LoopRange.Start)
                 Playback.Current.LoopRange.End = Playback.Current.LoopRange.Start + 4;
+
+            ActionToast.Show("{Loop starts at bar " + FormatBars(Playback.Current.LoopRange.Start) + "}");
         }
 
         if (UserActions.SetEndTime.Triggered())
@@ -156,6 +158,8 @@ internal static class TimeControls
             Playback.Current.LoopRange.End = (float)Playback.Current.TimeInBars;
             if(Playback.Current.LoopRange.Start > Playback.Current.LoopRange.End)
                 Playback.Current.LoopRange.Start = Playback.Current.LoopRange.End - 4;
+
+            ActionToast.Show("{Loop ends at bar " + FormatBars(Playback.Current.LoopRange.End) + "}");
         }
 
         if (UserActions.PlaybackJumpToNextKeyframe.Triggered())
@@ -272,9 +276,12 @@ internal static class TimeControls
                 UserSettings.Config.EnableIdleMotion = !UserSettings.Config.EnableIdleMotion;
             }
 
-            // Tooltip (same as before)
-            CustomComponents.TooltipForLastItem("Idle Motion - Keeps beat time running",
-                                                "This will keep updating the output [Time]\nwhich is useful for procedural animation and syncing.");
+            if (ImGui.IsItemHovered())
+            {
+                CustomComponents.TooltipForLastItem("Idle Motion - Keeps beat time running",
+                                                    "This will keep updating the output [Time]\nwhich is useful for procedural animation and syncing.\n\n"
+                                                    + UserActions.ToggleIdleMotion.ListKeyboardShortcutsForActionWithLabel());
+            }
 
             var drawList = ImGui.GetWindowDrawList();
             var min = ImGui.GetItemRectMin();
@@ -722,4 +729,6 @@ internal static class TimeControls
 
         return isActive;
     }
+
+    private static string FormatBars(float bars) => bars.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
 }

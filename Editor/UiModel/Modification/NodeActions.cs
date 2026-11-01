@@ -235,7 +235,8 @@ internal static class NodeActions
 
     // todo - better encapsulate this in SymbolJson
 
-    public static void PasteClipboard(NodeSelection nodeSelection, ScalableCanvas canvas, Instance compositionOp)
+    /// <param name="screenPosition">Where to paste; the mouse by default. Callers outside the graph, like the app menu, pass a point in it.</param>
+    public static void PasteClipboard(NodeSelection nodeSelection, ScalableCanvas canvas, Instance compositionOp, Vector2? screenPosition = null)
     {
         try
         {
@@ -268,7 +269,7 @@ internal static class NodeActions
             }
 
             var compositionSymbolUi = compositionOp.GetSymbolUi();
-            var targetPosition = canvas.InverseTransformPositionFloat(ImGui.GetMousePos());
+            var targetPosition = canvas.InverseTransformPositionFloat(screenPosition ?? ImGui.GetMousePos());
             var cmd = new CopySymbolChildrenCommand(containerSymbolUi,
                                                     null,
                                                     containerSymbolUi.Sections.Values.ToList(),
@@ -318,7 +319,8 @@ internal static class NodeActions
     ///   copying values between different versions of ops 
     /// 
     /// </summary>
-    public static void PasteValues(NodeSelection nodeSelection, ScalableCanvas canvas, Instance compositionOp)
+    /// <returns>The number of parameters that were changed</returns>
+    public static int PasteValues(NodeSelection nodeSelection, ScalableCanvas canvas, Instance compositionOp)
     {
         try
         {
@@ -326,21 +328,21 @@ internal static class NodeActions
             if (selectedChildUis.Count ==0)
             {
                 Log.Debug("Please select ops to paste values into.");
-                return;
+                return 0;
             }
             
             var text = EditorUi.Instance.GetClipboardText();
             using var reader = new StringReader(text);
             var jsonReader = new JsonTextReader(reader);
             if (JToken.ReadFrom(jsonReader, SymbolJson.LoadSettings) is not JArray jArray)
-                return;
+                return 0;
 
             var symbolJson = jArray[0];
 
             if (!TryGetPastedSymbol(symbolJson, compositionOp.Symbol.SymbolPackage, out var containerSymbol))
             {
                 Log.Error("Failed to paste values. Incorrect format.");
-                return;
+                return 0;
             }
 
             //var cmd = new MacroCommand("Paste values");
@@ -413,7 +415,8 @@ internal static class NodeActions
             {
                 UndoRedoStack.AddAndExecute(new MacroCommand("Paste values", cmds));
             }
-            
+
+            return cmds.Count;
         }
         catch (Exception e)
         {
@@ -421,7 +424,7 @@ internal static class NodeActions
             Log.Debug("Paste exception: " + e);
         }
 
-        return;
+        return 0;
 
         void ApplyChangesToInput(Symbol.Child source, Symbol.Child.Input sourceInput,
                                  Symbol.Child target,

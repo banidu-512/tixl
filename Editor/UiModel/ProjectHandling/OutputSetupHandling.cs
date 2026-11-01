@@ -1,4 +1,6 @@
 #nullable enable
+using System.Diagnostics;
+using T3.Core.SystemUi;
 using System.IO;
 using T3.Editor.Gui.Windows.OutputSetup;
 using T3.Core.DataTypes.Vector;
@@ -157,6 +159,36 @@ internal static class OutputSetupHandling
 
     private static StringComparison PathComparison =>
         OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+
+
+    /// <summary>
+    /// Shows the active setup's file in the system's file manager. A setup that only exists in memory is saved
+    /// first, so there is a file to show. Elsewhere than on Windows this opens the containing folder.
+    /// </summary>
+    public static void RevealActiveFile()
+    {
+        if (!TryGetFocusedEntry(out var entry, out var setupsFolder))
+            return;
+
+        if (!entry.IsSaved)
+            SaveActive();
+
+        var path = SetupFilePath(setupsFolder, entry.Setup.Name);
+        if (!OperatingSystem.IsWindows())
+        {
+            CoreUi.Instance.OpenWithDefaultApplication(setupsFolder);
+            return;
+        }
+
+        try
+        {
+            Process.Start("explorer.exe", $"/select,\"{path}\"");
+        }
+        catch (Exception e)
+        {
+            Log.Warning($"Failed to reveal setup file '{path}': {e.Message}");
+        }
+    }
 
     /// <summary>Setup names available for the focused project: its .meta/Setups/*.setup.json files, or the unsaved default.</summary>
     public static void GetAvailableSetupNames(List<string> names)

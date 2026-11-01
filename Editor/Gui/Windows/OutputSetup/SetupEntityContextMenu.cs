@@ -65,6 +65,37 @@ internal static class SetupEntityContextMenu
             CustomComponents.TooltipForLastItem("Lays the selected surfaces out side by side in the order their walls run around the floor plan.",
                                                 "Board layout only — nothing in the stage or the routing moves.");
 
+        WallpaperLayout.CollectWalls(setup, selection, kind, id, _wallpaperWalls);
+        if (_wallpaperWalls.Count == 0 && kind == SetupEntityKinds.ContentSource
+            && setup.FindSourceByChildId(id) is { } shownSource)
+        {
+            // A wallpaper already spread over its walls re-cuts from its own item, without re-selecting them.
+            WallpaperLayout.CollectWallsShowing(setup, shownSource, _wallpaperWalls);
+            if (_wallpaperWalls.Count > 1)
+            {
+                if (CustomComponents.DrawMenuItem(24, "Update Wallpaper Layout"))
+                    WallpaperLayout.Create(selection, setup, _wallpaperWalls, shownSource);
+
+                CustomComponents.TooltipForLastItem("Re-cuts this content over the walls showing it, after a wall was resized, lifted or reordered.",
+                                                    "Keeps every route; only the slices and the resolution change.");
+            }
+
+            _wallpaperWalls.Clear();
+        }
+
+        if (_wallpaperWalls.Count > 0)
+        {
+            var recutSource = WallpaperLayout.FindSelectedSource(setup, selection, kind, id);
+            var label = recutSource == null ? "Create Wallpaper Layout" : $"Create Wallpaper Layout on {recutSource.Name}";
+            if (CustomComponents.DrawMenuItem(24, label))
+                WallpaperLayout.Create(selection, setup, _wallpaperWalls, recutSource);
+
+            CustomComponents.TooltipForLastItem("Shows one strip of content across these walls, in the order they stand around the room.",
+                                                recutSource == null
+                                                    ? "Adds a SendToOutput sized to the walls' pixel density and gives each wall its slice of it."
+                                                    : "Re-cuts the selected content into one slice per wall and sets its resolution.");
+        }
+
         // Deleting is the one action that reads the selection rather than the item, so it is offered even
         // from an item that isn't itself deletable.
         if (multi)
@@ -73,9 +104,17 @@ internal static class SetupEntityContextMenu
             if (deletable > 0 && CustomComponents.DrawMenuItem(2, $"Delete {deletable}"))
                 SetupActions.DeleteSelection(selection, setup);
         }
-        else if (SetupActions.CanDeleteDirectly(kind) && CustomComponents.DrawMenuItem(2, "Delete"))
+        else if (SetupActions.CanDeleteDirectly(kind))
         {
-            SetupActions.DeleteEntity(setup, kind, id);
+            if (CustomComponents.DrawMenuItem(2, "Delete"))
+                SetupActions.DeleteEntity(setup, kind, id);
+        }
+        else if (kind == SetupEntityKinds.ContentSource && ContentSourceSync.HasSendOp(id))
+        {
+            if (CustomComponents.DrawMenuItem(2, "Delete"))
+                ContentSourceSync.DeleteSendOp(setup, id);
+
+            CustomComponents.TooltipForLastItem("Deletes the SendToOutput op from the graph, with its slices and routes.");
         }
 
         CustomComponents.MenuItemsFlushLeft = false;
@@ -169,7 +208,7 @@ internal static class SetupEntityContextMenu
                         continue;
 
                     var boundOutput = setup.FindOutput(binding.OutputId);
-                    if (boundOutput != null && CustomComponents.DrawMenuItem(15, $"Unbind {boundOutput.Name}"))
+                    if (boundOutput != null && CustomComponents.DrawMenuItem(15, $"Unbind {SetupLabels.OutputLabel(boundOutput)}"))
                     {
                         // Per-plug: a multi-bound laser output keeps its other devices.
                         Plugs.UnbindOutput(plugMachineConfig, boundOutput.Id, id);
@@ -298,7 +337,7 @@ internal static class SetupEntityContextMenu
                             CustomComponents.DrawMenuGroupLabel("Pin to Patch");
 
                         var patchId = patch.Id;
-                        if (CustomComponents.DrawMenuItem(300 + patchOrdinal, $"{SetupLabels.PatchLabel(patchOutput, patch)} on {patchOutput.Name}"))
+                        if (CustomComponents.DrawMenuItem(300 + patchOrdinal, $"{SetupLabels.PatchLabel(patchOutput, patch)} on {SetupLabels.OutputLabel(patchOutput)}"))
                             SetupRouting.ApplyDrop(setup, SetupEntityKinds.Surface, surface.Id, SetupEntityKinds.Patch, patchId);
 
                         patchOrdinal++;
@@ -335,6 +374,7 @@ internal static class SetupEntityContextMenu
     }
 
     private static readonly Action _drawMenuItemsCached = DrawMenuItemsForCurrent;
+    private static readonly List<Surface> _wallpaperWalls = [];
     private static SetupEntitySelection? _menuSelection;
     private static Setup? _menuSetup;
     private static SetupEntityKinds _menuKind;

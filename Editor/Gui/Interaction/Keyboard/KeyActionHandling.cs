@@ -112,7 +112,7 @@ internal static class KeyActionHandling
         RegisterActionsFlags(UserActions.Duplicate, Flags.NeedsWindowFocus);
         RegisterActionsFlags(UserActions.DuplicateWithConnections, Flags.NeedsWindowFocus);
         RegisterActionsFlags(UserActions.DeleteSelection, Flags.NeedsWindowFocus);
-        RegisterActionsFlags(UserActions.DeleteSelection, Flags.NeedsWindowFocus);
+        RegisterActionsFlags(UserActions.DeleteSelectionAndConnections, Flags.NeedsWindowFocus);
         RegisterActionsFlags(UserActions.CopyToClipboard, Flags.NeedsWindowFocus);
         RegisterActionsFlags(UserActions.PasteFromClipboard, Flags.NeedsWindowFocus);
         RegisterActionsFlags(UserActions.PasteValues, Flags.NeedsWindowFocus);
@@ -127,6 +127,7 @@ internal static class KeyActionHandling
         RegisterActionsFlags(UserActions.PlaybackToggle, Flags.KeyPressOnly);
         RegisterActionsFlags(UserActions.PlaybackJumpToStartTime, Flags.KeyPressOnly);
         RegisterActionsFlags(UserActions.PlaybackScrubTime, Flags.KeyHoldOnly);
+        RegisterActionsFlags(UserActions.ToggleIdleMotion, Flags.KeyPressOnly);
 
         // Timeline actions
         RegisterActionsFlags(UserActions.InsertKeyframe, Flags.NeedsWindowFocus | Flags.KeyPressOnly);
@@ -142,6 +143,8 @@ internal static class KeyActionHandling
         RegisterActionsFlags(UserActions.PinToOutputWindow, Flags.KeyPressOnly);
         RegisterActionsFlags(UserActions.ShowInGraph, Flags.KeyPressOnly);
         RegisterActionsFlags(UserActions.ToggleOutputSetup, Flags.KeyPressOnly);
+        RegisterActionsFlags(UserActions.ToggleFocusMode, Flags.KeyPressOnly);
+        RegisterActionsFlags(UserActions.DisplayImageAsBackground, Flags.KeyPressOnly);
         RegisterActionsFlags(UserActions.ClearBackgroundImage, Flags.NeedsWindowFocus);
 
         RegisterActionsFlags(UserActions.AddSection, Flags.NeedsWindowFocus | Flags.KeyPressOnly);
@@ -149,12 +152,19 @@ internal static class KeyActionHandling
         RegisterActionsFlags(UserActions.OpenOperator, Flags.NeedsWindowFocus);
         RegisterActionsFlags(UserActions.CloseOperator, Flags.NeedsWindowFocus);
         //RegisterActionsFlags(UserActions.RenameChild, Flags.NeedsWindowFocus);
+        RegisterActionsFlags(UserActions.EditParameter, Flags.NeedsWindowFocus | Flags.KeyPressOnly);
 
         // Navigation
         RegisterActionsFlags(UserActions.SelectToAbove, Flags.NeedsWindowFocus);
         RegisterActionsFlags(UserActions.SelectToRight, Flags.NeedsWindowFocus);
         RegisterActionsFlags(UserActions.SelectToBelow, Flags.NeedsWindowFocus);
         RegisterActionsFlags(UserActions.SelectToLeft, Flags.NeedsWindowFocus);
+
+        for (var index = 0; index < 10; index++)
+        {
+            RegisterActionsFlags(UserActions.SelectOperatorBookmark0 + index, Flags.NeedsWindowFocus | Flags.KeyPressOnly);
+            RegisterActionsFlags(UserActions.SetOperatorBookmark0 + index, Flags.NeedsWindowFocus | Flags.KeyPressOnly);
+        }
 
         // Camera controls
         RegisterActionsFlags(UserActions.CameraLeft, Flags.NeedsWindowHover | Flags.KeyHoldOnly | Flags.RemainActiveWhenItemActive);

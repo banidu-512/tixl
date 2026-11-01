@@ -20,6 +20,9 @@ namespace T3.Editor.Gui.Windows;
 /// </summary>
 internal sealed class ViewSelectionPinning
 {
+    /** The pin before a peek, restored when the peek ends */
+    private readonly record struct PeekState(bool IsPinned, IReadOnlyList<Guid> InstancePath, ProjectView? ProjectView, Guid SelectedOutputId);
+
     public void DrawPinning(Action? drawExtraMenuItems = null)
     {
         if (!TryGetPinnedOrSelectedInstance(out var pinnedOrSelectedInstance, out var canvas))
@@ -92,7 +95,7 @@ internal sealed class ViewSelectionPinning
         }
 
         ImGui.PushStyleColor(ImGuiCol.Text, UiColors.TextMuted.Rgba);
-        var open = ImGui.BeginCombo("##pinning", symbolName + suffix);
+        var open = ImGui.BeginCombo("##pinning", symbolName + suffix, ImGuiComboFlags.HeightLarge);
         ImGui.PopStyleColor();
 
         if (open)
@@ -162,11 +165,7 @@ internal sealed class ViewSelectionPinning
                 }
             }
 
-            if (drawExtraMenuItems != null)
-            {
-                CustomComponents.SeparatorLine();
-                drawExtraMenuItems();
-            }
+            drawExtraMenuItems?.Invoke();
 
             CustomComponents.SeparatorLine();
             CustomComponents.DrawMenuItem(_showHoveredOutputsId, "Show Hovered Outputs", isEnabled: false, reserveIconColumn: false);
@@ -291,6 +290,35 @@ internal sealed class ViewSelectionPinning
         _isPinned = true;
     }
 
+    public bool IsPinnedTo(Instance instance)
+    {
+        return _isPinned && instance.InstancePath.SequenceEqual(_pinnedInstancePath);
+    }
+
+    /// <summary>
+    /// Remembers the current pin before showing another operator for a moment (holding P). <see cref="EndPeek"/>
+    /// brings the remembered pin back, <see cref="CommitPeek"/> keeps what is shown now.
+    /// </summary>
+    public void BeginPeek()
+    {
+        _peekState = new PeekState(_isPinned, _pinnedInstancePath, _pinnedProjectView, _selectedOutputId);
+    }
+
+    public void CommitPeek()
+    {
+        _peekState = null;
+    }
+
+    public void EndPeek()
+    {
+        if (_peekState is not { } state)
+            return;
+
+        (_isPinned, _pinnedInstancePath, _pinnedProjectView, _selectedOutputId)
+            = (state.IsPinned, state.InstancePath, state.ProjectView, state.SelectedOutputId);
+        _peekState = null;
+    }
+
     public void Unpin()
     {
         _isPinned = false;
@@ -328,6 +356,7 @@ internal sealed class ViewSelectionPinning
     }
 
     private bool _isPinned;
+    private PeekState? _peekState;
     private Guid _selectedOutputId; // Empty if default
     private ProjectView? _pinnedProjectView;
     private static bool IsSamePath(Guid[] stored, IReadOnlyList<Guid> path)

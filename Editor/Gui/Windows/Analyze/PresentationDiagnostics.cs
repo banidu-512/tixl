@@ -2,6 +2,8 @@
 using T3.Core.Logging;
 using T3.Graphics;
 using T3.Graphics.Compat;
+using T3.Core.Stats;
+using T3.Editor.Gui.UiHelpers;
 
 namespace T3.Editor.Gui.Windows.Analyze;
 
@@ -31,7 +33,9 @@ internal static class PresentationDiagnostics
         if (statistics.Mode == CompositionMode)
             return;
 
-        Log.Debug($"Main window presentation changed from {Describe(CompositionMode)} to {Describe(statistics.Mode)}");
+        if (UserSettings.Config.LogPresentationModeChanges)
+            Log.Debug($"Main window presentation changed from {Describe(CompositionMode)} to {Describe(statistics.Mode)}");
+
         CompositionMode = statistics.Mode;
     }
 

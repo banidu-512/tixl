@@ -60,9 +60,8 @@ internal sealed class OutputSetupModeView
         _toggleOutlinerCollapse ??= () => _outlinerCollapsed = !_outlinerCollapsed;
         _drawGrip ??= DrawOutlinerGrip;
         _drawHostedHeader ??= _outputView.DrawHostedHeader;
-        _drawStripMenuExtras ??= DrawStripMenuExtras;
         _leaveSetup ??= () => _viewMode = ViewModes.Operator;
-        _outliner.Draw(_entitySelection, _toggleOutlinerCollapse, !_outlinerCollapsed, _drawGrip, _drawHostedHeader, _drawStripMenuExtras, _leaveSetup);
+        _outliner.Draw(_entitySelection, _toggleOutlinerCollapse, !_outlinerCollapsed, _drawGrip, _drawHostedHeader, _leaveSetup);
         ImGui.EndChild();
         ImGui.PopStyleColor();
     }
@@ -70,13 +69,13 @@ internal sealed class OutputSetupModeView
     /// <summary>
     /// Draws an output-editing view if one applies to the current focus, and returns true; returns false
     /// when the caller should draw the operator output instead. A picked entity takes precedence over a
-    /// focused send op; both are dropped when the focused op changes (graph selection wins). A window pinned
-    /// to an op (<paramref name="opPinned"/>) keeps showing it: neither the graph focus nor the shared entity
-    /// selection pulls it into the setup.
+    /// focused send op; both are dropped when the focused op changes (graph selection wins). With
+    /// <paramref name="keepsPinnedOp"/> the window keeps showing its pinned op: neither the graph focus nor the
+    /// shared entity selection pulls it into the setup.
     /// </summary>
-    public bool TryDrawEditingView(Instance? focusedInstance, EvaluationContext context, bool opPinned = false)
+    public bool TryDrawEditingView(Instance? focusedInstance, EvaluationContext context, bool keepsPinnedOp = false)
     {
-        _opPinned = opPinned;
+        _keepsPinnedOp = keepsPinnedOp;
         FollowGraphFocus();
         _outputView.IsHeaderHostedByStrip = IsSetupMode;
 
@@ -170,24 +169,24 @@ internal sealed class OutputSetupModeView
         _viewMode = ViewModes.Setup;
     }
 
-    /// <summary>Pin menu entry for the breadcrumb: pins the currently shown entity, or releases the pin.</summary>
+    /// <summary>Pin menu entry for the breadcrumb: pins the currently shown entity, or releases the pin.
+    /// Absent, with its separator, while no entity is on view: then the menu is only about the operator.</summary>
     public void DrawPinMenuItem()
     {
         if (_pinnedKind != SetupEntityKinds.None)
         {
-            if (CustomComponents.DrawMenuItem(_pinViewMenuId, $"Unpin view ({PinnedEntityName()})", isChecked: true))
+            CustomComponents.SeparatorLine();
+            if (CustomComponents.DrawMenuItem(_pinViewMenuId, $"Unpin view ({PinnedEntityName()})", reserveIconColumn: false))
                 ClearPin();
 
             return;
         }
 
         if (!TryGetShownEntity(out var kind, out var id) || kind == SetupEntityKinds.None)
-        {
-            CustomComponents.DrawMenuItem(_pinViewMenuId, "Pin view", isEnabled: false);
             return;
-        }
 
-        if (CustomComponents.DrawMenuItem(_pinViewMenuId, $"Pin view to {SetupLabels.NameForEntity(kind, id)}"))
+        CustomComponents.SeparatorLine();
+        if (CustomComponents.DrawMenuItem(_pinViewMenuId, $"Pin view to {SetupLabels.NameForEntity(kind, id)}", reserveIconColumn: false))
         {
             _pinnedKind = kind;
             _pinnedId = id;
@@ -252,8 +251,8 @@ internal sealed class OutputSetupModeView
 
     private bool IsSetupMode => _viewMode == ViewModes.Setup;
 
-    /** Whether the host window is pinned to an op this frame, so focus and selection leave its view alone. */
-    private bool _opPinned;
+    /** Whether the host window keeps showing its pinned op this frame, so focus and selection leave its view alone. */
+    private bool _keepsPinnedOp;
     private Action? _leaveSetup;
 
     /// <summary>
@@ -279,11 +278,11 @@ internal sealed class OutputSetupModeView
             _entitySelection.Mirror(SetupEntityKinds.ContentSource, focusedId);
         }
 
-        if (graphOwnsInspection && focusTransition && !_opPinned)
+        if (graphOwnsInspection && focusTransition && !_keepsPinnedOp)
         {
             // A focused SendToOutput enters Setup (its surfaces/outputs are at hand); selecting any other op —
             // or clicking the graph background — leaves it. Only on the transition, so the mode can still be
-            // toggled by hand while the focus stays put. A window pinned to an op is looking at that op.
+            // toggled by hand while the focus stays put.
             _viewMode = selectedInGraph is IContentSupplier ? ViewModes.Setup : ViewModes.Operator;
         }
 
@@ -414,12 +413,6 @@ internal sealed class OutputSetupModeView
     }
 
     /// <summary>Window-level entries for the setup menu: the strip's own toggle and the view pin.</summary>
-    private void DrawStripMenuExtras()
-    {
-        DrawOutlinerMenuItem();
-        DrawPinMenuItem();
-    }
-
     private static bool IsInReferenceSpace(Setup setup, Guid imageId, SetupEntityKinds kind, Guid id)
     {
         if (kind == SetupEntityKinds.ReferenceImage)
@@ -501,7 +494,6 @@ internal sealed class OutputSetupModeView
     private readonly SetupEntitySelection _entitySelection = GlobalSelectionHandling.SetupEntities;
     private Action? _drawGrip;
     private Action? _drawHostedHeader;
-    private Action? _drawStripMenuExtras;
     private bool _gripActive, _gripHovered;
 
     private readonly SetupFlowOutliner _outliner;

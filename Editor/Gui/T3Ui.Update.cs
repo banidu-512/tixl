@@ -109,7 +109,7 @@ public static partial class T3Ui
         }
 
         // Draw everything!
-        ImGui.DockSpaceOverViewport();
+        LayoutHandling.DrawMainDockSpace();
 
         ImGui.PushStyleVar(ImGuiStyleVar.WindowBorderSize, 1);
         WindowManager.Draw();
@@ -148,6 +148,13 @@ public static partial class T3Ui
         OperatorHelp.EditDescriptionDialog.Draw();
         SkillMapPopup.Draw();
 
+        // Reopen before the welcome check: restoring the project's window visibility would otherwise
+        // close a welcome window that was just opened.
+        if (!_lastProjectReopened)
+            _lastProjectReopened = LastOpenProject.ProcessStartupReopen();
+
+        LastOpenProject.Update();
+
         // Classify the launch first so the welcome window claims the foreground before the
         // user-name prompt. They must not overlap — the user-name dialog waits until the
         // welcome window is closed (see the IsVisible guard below).
@@ -183,6 +190,7 @@ public static partial class T3Ui
         }
 
         KeyboardAndMouseOverlay.Draw();
+        ActionToast.Draw();
 
         Playback.OpNotReady = false;
         AutoBackup.AutoBackup.CheckForSave();
@@ -209,7 +217,7 @@ public static partial class T3Ui
     /// </summary>
     private static void CheckForVersionWelcome()
     {
-        if (_versionWelcomeChecked || !IsWindowLayoutComplete() || IsAnyPopupOpen)
+        if (_versionWelcomeChecked || !_lastProjectReopened || IsAnyPopupOpen)
             return;
 
         _versionWelcomeChecked = true;
@@ -230,6 +238,7 @@ public static partial class T3Ui
     }
 
     private static bool _versionWelcomeChecked;
+    private static bool _lastProjectReopened;
     private static bool _blockedProjectsChecked;
     private static bool _missingOperatorsChecked;
     private static bool _crashReportsChecked;

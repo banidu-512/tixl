@@ -30,13 +30,36 @@ Click the SendToOutput op in the graph window.
   dimmed item per display of this machine, labelled "Local / Display N" with its resolution.
 - Nothing docks to the left of the canvas anymore.
 
+## Step: Clicking the send op reopens the setup
+
+**Action:**
+1. With the SendToOutput op still selected, press **O** to close the strip, then click the
+   same op once in the graph.
+2. Press **P** with the op selected, so the output window is pinned to it and the strip closes.
+   Click the op once again.
+3. Click an op that is not a SendToOutput.
+
+**Expected:**
+- After 1 and 2: the strip opens again, although the selection didn't change. After 2 the pin
+  icon is still there.
+- After 3: the strip closes and the window shows its pinned SendToOutput.
+
+## Step: Reveal the setup file
+
+**Action:**
+Click the setup name in the strip's header and choose **Reveal in Explorer**.
+
+**Expected:**
+- A file manager window opens on the project's `.meta/Setups` folder with `<setup name>.setup.json`
+  selected. The menu closes and the setup is unchanged.
+
 ## Step: Splitter and collapse
 
 **Action:**
 1. Drag the strip's top edge upward by about 100 px, then downward past the middle of the
    window; then drag the dotted grip at the header's left the same way.
 2. Click the chevron at the right end of the header, then click it again.
-3. Open the setup-name menu and untick **Show Flow Outliner**; then click the "Output Setup" button at
+3. Click **Close** at the right end of the header; then click the "Output Setup" button at
    the left of the toolbar that reappears.
 
 **Expected:**
@@ -114,6 +137,22 @@ Image**; then use it again for **Add Prop**.
 - After 4: four curves fan out from "Slice 1" to "Patch 1" … "Patch 4", one per tile; the
   undo returns to one.
 
+## Step: Items show that they can be dragged
+
+**Action:**
+1. Look at the right edge of "Surface 1" and "Local / Display 1" with nothing hovered.
+2. Hover "Surface 1", then select it and hover it again.
+3. Press on "Surface 1" and drag about 200 px to the right, without releasing; then move the
+   mouse left of the item, and release over empty space in the gap between two columns.
+
+**Expected:**
+- After 1: "Surface 1" has a small dot in its kind colour on its right edge; "Local / Display 1"
+  has none, as nothing follows it.
+- After 2: the dot grows smoothly while hovered and shrinks again afterwards. The selected item
+  also gets brighter while hovered.
+- After 3: a temporary curve follows the mouse from the item's right edge, or from its left edge
+  once the mouse is left of it. It disappears on release and no connection is added.
+
 ## Step: Pills are always visible
 
 **Action:**
@@ -146,7 +185,7 @@ the "SendToOutput" item.
 3. Press Ctrl+Z.
 
 **Expected:**
-- After 1: that patch is gone from under "P1".
+- After 1: that patch is gone from under "P1". Backspace does the same as Del.
 - After 2: Del only edits the text; "Patch 1" survives.
 - After 3: it is back.
 

@@ -46,12 +46,10 @@ internal sealed class SetupFlowOutliner
     /// <param name="bodyVisible">False while collapsed: only the header draws.</param>
     /// <param name="drawGrip">The strip's resize grip, drawn first in the header.</param>
     /// <param name="drawToolbar">The canvas' toolbar (mode switch and its actions), drawn after the setup switcher.</param>
-    /// <param name="drawMenuExtras">Window-level entries appended to the setup menu (outliner toggle, pin).</param>
     /// <param name="onLeave">Leaves the setup for the operator view; drawn as the header's close button.</param>
     public void Draw(SetupEntitySelection selection, Action? onToggleCollapse, bool bodyVisible,
-                     Action? drawGrip = null, Action? drawToolbar = null, Action? drawMenuExtras = null, Action? onLeave = null)
+                     Action? drawGrip = null, Action? drawToolbar = null, Action? onLeave = null)
     {
-        _drawMenuExtras = drawMenuExtras;
         _onLeave = onLeave;
         if (!OutputSetupHandling.TryGetActiveSetup(out var setup, out var machineConfig))
         {
@@ -66,11 +64,11 @@ internal sealed class SetupFlowOutliner
         if (_cacheVersion != OutputSetupHandling.StructureVersion || _cacheSetupId != setup.Id)
             RefreshCaches(setup, machineConfig);
 
-        // Del removes the selection while the strip has focus — the same verb as the items' context menu.
+        // Del or Backspace removes the selection while the strip has focus — the same verb as the items' context menu.
         if (bodyVisible && selection.Count > 0
             && ImGui.IsWindowFocused(ImGuiFocusedFlags.RootAndChildWindows)
             && !ImGui.IsAnyItemActive()
-            && ImGui.IsKeyPressed(ImGuiKey.Delete, false))
+            && (ImGui.IsKeyPressed(ImGuiKey.Delete, false) || ImGui.IsKeyPressed(ImGuiKey.Backspace, false)))
         {
             SetupActions.DeleteSelection(selection, setup);
         }
@@ -78,7 +76,13 @@ internal sealed class SetupFlowOutliner
         DrawHeader(setup, selection, onToggleCollapse, bodyVisible, drawGrip, drawToolbar);
 
         if (bodyVisible)
+        {
+            var separatorStart = ImGui.GetCursorScreenPos();
+            var separatorEnd = separatorStart + new Vector2(ImGui.GetContentRegionAvail().X, 0);
+            SetupStrokes.DrawCrispLine(ImGui.GetWindowDrawList(), separatorStart, separatorEnd, UiColors.BackgroundFull.Fade(0.6f), 1);
+
             DrawColumns(setup, machineConfig, selection);
+        }
 
         OutlinerItem.ApplyPendingMove(setup);
         _hoveredKind = _pendingHoveredKind;
@@ -209,24 +213,33 @@ internal sealed class SetupFlowOutliner
 
         // Items are inset from the column boundaries so the gutters between columns have room for the connections.
         var gap = ColumnGap * scale;
+        _columnBodyBottom = origin.Y + avail.Y;
 
         BeginColumn(origin.X + gap * 0.5f, origin.Y, columnWidth - gap);
-        DrawColumnHeader("CONTENT", "##addContent", selection, ContentSourceSync.AddContentSend, SetupEntityKinds.ContentSource);
+        DrawColumnHeader("CONTENT", "##addContent", selection, ContentSourceSync.AddContentSend,
+                         "Add content", "Adds a [SendToOutput] to the graph. If a texture operator is selected, it gets connected to it.",
+                         SetupEntityKinds.ContentSource);
         DrawContentSends(selection, setup);
         maxY = MathF.Max(maxY, ImGui.GetCursorScreenPos().Y);
 
         BeginColumn(origin.X + columnWidth + gap * 0.5f, origin.Y, columnWidth - gap);
-        DrawColumnHeader("SURFACES", "##addSurface", selection, s => SetupActions.AddSurface(s), SetupEntityKinds.Surface);
+        DrawColumnHeader("SURFACES", "##addSurface", selection, s => SetupActions.AddSurface(s),
+                         "Add a surface", "A physical area in the venue, like a wall or a screen, that shows a slice of the content.",
+                         SetupEntityKinds.Surface);
         DrawSurfaces(selection, setup);
         maxY = MathF.Max(maxY, ImGui.GetCursorScreenPos().Y);
 
         BeginColumn(origin.X + 2 * columnWidth + gap * 0.5f, origin.Y, columnWidth - gap);
-        DrawColumnHeader("OUTPUTS", "##addOutput", selection, _requestAddOutputMenu, SetupEntityKinds.Output);
+        DrawColumnHeader("OUTPUTS", "##addOutput", selection, _requestAddOutputMenu,
+                         "Add an output", "A display, projector, laser or video stream that surfaces get mapped onto.",
+                         SetupEntityKinds.Output);
         DrawOutputs(selection, setup, machineConfig);
         maxY = MathF.Max(maxY, ImGui.GetCursorScreenPos().Y);
 
         BeginColumn(origin.X + 3 * columnWidth + gap * 0.5f, origin.Y, columnWidth - gap);
-        DrawColumnHeader("LOCAL BINDINGS", "##addPlug", selection, _requestAddPlugMenu, SetupEntityKinds.Plug);
+        DrawColumnHeader("LOCAL BINDINGS", "##addPlug", selection, _requestAddPlugMenu,
+                         "Add a stream sender", "Lets this machine send an output to other applications, e.g. over Spout or NDI. Its displays are listed already.",
+                         SetupEntityKinds.Plug);
         DrawLocalBindings(selection, setup, machineConfig);
         maxY = MathF.Max(maxY, ImGui.GetCursorScreenPos().Y);
 
@@ -238,7 +251,7 @@ internal sealed class SetupFlowOutliner
         for (var i = 1; i <= 3; i++)
         {
             var x = (float)Math.Round(origin.X + i * columnWidth);
-            dl.AddLine(new Vector2(x, origin.Y), new Vector2(x, dividerBottom), UiColors.BackgroundFull, 1 * scale);
+            dl.AddLine(new Vector2(x, origin.Y), new Vector2(x, dividerBottom), UiColors.BackgroundFull.Fade(0.6f), 1 * scale);
         }
 
         DrawConnections(dl, setup, machineConfig, selection);
@@ -270,6 +283,26 @@ internal sealed class SetupFlowOutliner
             var c = _connections[i];
             DrawConnection(dl, selection, c.FromKind, c.FromId, c.ToKind, c.ToId, setup);
         }
+
+        DrawDraggedConnection(dl, setup);
+    }
+
+    /// <summary>The temporary connection of a routing drag, from the dragged item to the mouse.</summary>
+    private void DrawDraggedConnection(ImDrawListPtr dl, Setup setup)
+    {
+        if (!DragAndDropHandling.TryGetDragData(DragAndDropHandling.DragTypes.SetupEntity, out var dragData)
+            || !SetupRouting.TryParseDrag(dragData, out var kind, out var id)
+            || !TryGetAnchor(setup, kind, id, out var anchor))
+            return;
+
+        var scale = T3Ui.UiScaleFactor;
+        var mouse = ImGui.GetMousePos();
+
+        // Routing is direction-agnostic, so the line leaves the item on the side the mouse is on.
+        var direction = mouse.X < anchor.Left ? -1f : 1f;
+        var start = new Vector2(direction < 0 ? anchor.Left : anchor.Right, anchor.Y);
+        var reach = direction * MathF.Max(24 * scale, MathF.Abs(mouse.X - start.X) * 0.4f);
+        dl.AddBezierCubic(start, start + new Vector2(reach, 0), mouse - new Vector2(reach, 0), mouse, SetupColors.ForKind(kind), 2.5f * scale);
     }
 
     /// <summary>
@@ -294,7 +327,12 @@ internal sealed class SetupFlowOutliner
                 _connections.Add(new Connection(SetupEntityKinds.Slice, surface.SliceId, SetupEntityKinds.Surface, surface.Id));
 
             foreach (var mapping in surface.OutputMappings)
-                _connections.Add(new Connection(SetupEntityKinds.Surface, surface.Id, SetupEntityKinds.Output, mapping.OutputId));
+            {
+                var patchId = FindLayoutPatchUnder(setup, mapping);
+                _connections.Add(patchId != Guid.Empty
+                                     ? new Connection(SetupEntityKinds.Surface, surface.Id, SetupEntityKinds.Patch, patchId)
+                                     : new Connection(SetupEntityKinds.Surface, surface.Id, SetupEntityKinds.Output, mapping.OutputId));
+            }
         }
 
         foreach (var output in setup.Outputs)
@@ -356,6 +394,38 @@ internal sealed class SetupFlowOutliner
             _connections.Add(new Connection(SetupEntityKinds.ContentSource, camera.SymbolChildId, SetupEntityKinds.Output, outputRef));
         }
     }
+
+    /// <summary>
+    /// The content-less patch a surface's pin sits exactly on — a venue's pixel map traced as patches, which the
+    /// surface was dropped onto — so the link leads to that area rather than to the output as a whole.
+    /// </summary>
+    private Guid FindLayoutPatchUnder(Setup setup, Surface.OutputMapping mapping)
+    {
+        var output = setup.FindOutput(mapping.OutputId);
+        if (output == null || mapping.IsFilling || mapping.Quad.Length < 4)
+            return Guid.Empty;
+
+        foreach (var patch in output.Patches)
+        {
+            if (patch.SliceId != Guid.Empty || patch.Quad.Length < 4)
+                continue;
+
+            patch.CopyTurnedCorners(_patchCorners);
+            var matches = true;
+            for (var corner = 0; corner < 4 && matches; corner++)
+            {
+                matches = Vector2.DistanceSquared(_patchCorners[corner], mapping.Quad[corner]) < SamePinToleranceSquared;
+            }
+
+            if (matches)
+                return patch.Id;
+        }
+
+        return Guid.Empty;
+    }
+
+    /** Canvas 0..1 units: far below a pixel on any output, well above float noise from the corner turn. */
+    private const float SamePinToleranceSquared = 1e-8f;
 
     private readonly record struct Connection(SetupEntityKinds FromKind, Guid FromId,
                                               SetupEntityKinds ToKind, Guid ToId);
@@ -498,7 +568,7 @@ internal sealed class SetupFlowOutliner
 
     /// <summary>A column's persistent title, tinted in its kind's colour, with its `+` at the right end (none for the plug inventory).</summary>
     private void DrawColumnHeader(string title, string? addButtonId, SetupEntitySelection selection, Action<SetupEntitySelection>? onAdd,
-                                  SetupEntityKinds kind = SetupEntityKinds.None)
+                                  string addTooltip, string addTooltipNotes, SetupEntityKinds kind = SetupEntityKinds.None)
     {
         var scale = T3Ui.UiScaleFactor;
         // Anchored on the column's x: a spacer before a second header (the shelf) resets the cursor's x to the window.
@@ -517,6 +587,7 @@ internal sealed class SetupFlowOutliner
             if (CustomComponents.IconButton(Icon.Plus, Vector2.Zero))
                 onAdd(selection);
 
+            CustomComponents.TooltipForLastItem(addTooltip, addTooltipNotes);
             ImGui.PopID();
         }
 
@@ -526,12 +597,15 @@ internal sealed class SetupFlowOutliner
 
     private void DrawOutputs(SetupEntitySelection selection, Setup setup, MachineConfig machineConfig)
     {
+        var drawnCount = 0;
         for (var i = 0; i < setup.Outputs.Count; i++)
         {
             var output = setup.Outputs[i];
             // The Default output is the editor's internal preview, not something you present or map — hide it.
             if (output.Kind == OutputDefinition.Kinds.Default)
                 continue;
+
+            drawnCount++;
 
             // The implicit full-canvas patch is the output itself here: no item, and its slice connection
             // lands on the output item (TryGetAnchor folds an undrawn patch onto its output).
@@ -546,7 +620,7 @@ internal sealed class SetupFlowOutliner
                            {
                                Kind = SetupEntityKinds.Output,
                                Id = output.Id,
-                               Name = output.Name,
+                               Name = SetupLabels.OutputLabel(output),
                                // Nothing presents it yet — said in words, where the plug connection would otherwise start.
                                Status = machineConfig.FindBinding(output.Id) == null ? "unbound" : null,
                                IsExpanded = hasPatches ? isExpanded : null,
@@ -591,6 +665,8 @@ internal sealed class SetupFlowOutliner
 
             SetupPopup.End();
         }
+        if (drawnCount == 0)
+            DrawColumnHint("The pixel canvases of your projectors and displays.");
     }
 
     /// <summary>
@@ -670,6 +746,9 @@ internal sealed class SetupFlowOutliner
                            };
             DrawItem(selection, setup, ref args);
         }
+        // Displays are always listed, so this column explains itself until the first output is bound rather than when empty.
+        if (!HasBoundOutput(setup, machineConfig))
+            DrawColumnHint("Drag an output onto a display or stream to show it there.");
 
         if (_addPlugMenuRequested)
         {
@@ -799,6 +878,17 @@ internal sealed class SetupFlowOutliner
         ImGui.TextUnformatted("In composition parent " + _tooltipSendParent.SymbolChild.ReadableName);
     }
 
+    private static bool HasBoundOutput(Setup setup, MachineConfig machineConfig)
+    {
+        foreach (var binding in machineConfig.Bindings)
+        {
+            if (setup.FindOutput(binding.OutputId) != null)
+                return true;
+        }
+
+        return false;
+    }
+
     private static bool IsPlugBound(Setup setup, MachineConfig machineConfig, Guid plugId)
     {
         foreach (var binding in machineConfig.Bindings)
@@ -909,6 +999,27 @@ internal sealed class SetupFlowOutliner
         }
     }
 
+    /// <summary>
+    /// Explains a column in the free space below its items. The child window only gives the centered message
+    /// its bounds: it takes no input, so a click on it still counts as a click on empty strip.
+    /// </summary>
+    private void DrawColumnHint(string hint)
+    {
+        var top = new Vector2(_columnMinX, ImGui.GetCursorScreenPos().Y);
+        var height = MathF.Max(_columnBodyBottom - top.Y, MinColumnHintLines * ImGui.GetTextLineHeight());
+
+        ImGui.SetCursorScreenPos(top);
+        ImGui.BeginChild(hint, new Vector2(_columnWidth, height), ImGuiChildFlags.None,
+                         ImGuiWindowFlags.NoBackground | ImGuiWindowFlags.NoInputs | ImGuiWindowFlags.NoScrollbar);
+        CustomComponents.EmptyWindowMessage(hint);
+        ImGui.EndChild();
+
+        // Stacked columns measure their end from the cursor; the hint shouldn't count as content there.
+        ImGui.SetCursorScreenPos(top);
+    }
+
+    private const int MinColumnHintLines = 4;
+
     /// <summary>A slice under its source. A slice nothing shows reads as "unused".</summary>
     private void DrawSliceItem(SetupEntitySelection selection, Setup setup, Slice slice)
     {
@@ -951,6 +1062,9 @@ internal sealed class SetupFlowOutliner
             if (setup.Surfaces[i].ParentId == Guid.Empty)
                 DrawSurfaceItem(selection, setup, setup.Surfaces[i], 0);
         }
+
+        if (setup.Surfaces.Count == 0)
+            DrawColumnHint("Physical surfaces\nlike a walls or screens.");
     }
 
     private void DrawSurfaceItem(SetupEntitySelection selection, Setup setup, Surface surface, int depth)
@@ -1031,7 +1145,7 @@ internal sealed class SetupFlowOutliner
             for (var i = 0; i < _availableNames.Count; i++)
             {
                 var name = _availableNames[i];
-                if (CustomComponents.DrawMenuItem(i, name, isChecked: name == setup.Name) && name != setup.Name)
+                if (CustomComponents.DrawMenuItem(i, name, isChecked: name == setup.Name, reserveIconColumn: false) && name != setup.Name)
                 {
                     if (OutputSetupHandling.TrySwitchTo(name))
                         selection.Clear();
@@ -1039,21 +1153,21 @@ internal sealed class SetupFlowOutliner
             }
 
             CustomComponents.SeparatorLine();
-            if (CustomComponents.DrawMenuItem(903, "Rename"))
+            if (CustomComponents.DrawMenuItem(903, "Rename", reserveIconColumn: false))
             {
                 _isRenamingSetup = true;
                 _setupRenameFocusPending = true;
                 _setupRenameBuffer = setup.Name;
             }
 
-            if (CustomComponents.DrawMenuItem(900, "Duplicate Current"))
+            if (CustomComponents.DrawMenuItem(900, "Duplicate Current", reserveIconColumn: false))
             {
                 OutputSetupHandling.TryDuplicateActive(GetFreeName(setup.Name + " copy"));
             }
             CustomComponents.TooltipForLastItem("Duplicates the setup for another venue.",
                                                 "Entity ids are preserved, so operator bindings stay intact.");
 
-            if (CustomComponents.DrawMenuItem(901, "New (Empty)"))
+            if (CustomComponents.DrawMenuItem(901, "New (Empty)", reserveIconColumn: false))
             {
                 if (OutputSetupHandling.TryCreateNew(GetFreeName("Setup")))
                     selection.Clear();
@@ -1061,16 +1175,15 @@ internal sealed class SetupFlowOutliner
             CustomComponents.TooltipForLastItem("Creates a fresh setup with new entity ids.",
                                                 "Operator bindings into it will be unresolved until re-assigned.");
 
-            if (_availableNames.Count > 1 && CustomComponents.DrawMenuItem(902, "Delete"))
+            if (CustomComponents.DrawMenuItem(904, "Reveal in Explorer", reserveIconColumn: false))
+                OutputSetupHandling.RevealActiveFile();
+
+            CustomComponents.TooltipForLastItem("Shows this setup's file in the project's .meta folder.");
+
+            if (_availableNames.Count > 1 && CustomComponents.DrawMenuItem(902, "Delete", reserveIconColumn: false))
             {
                 if (OutputSetupHandling.TryDeleteActive())
                     selection.Clear();
-            }
-
-            if (_drawMenuExtras != null)
-            {
-                CustomComponents.SeparatorLine();
-                _drawMenuExtras();
             }
 
             SetupPopup.End();
@@ -1161,15 +1274,16 @@ internal sealed class SetupFlowOutliner
     // The column the items currently draw into (screen x + width); 0 width = whole window.
     private float _columnMinX;
     private float _columnWidth;
+    private float _columnBodyBottom;
 
     // Per-structure caches (see RefreshCaches), keyed on the structure version and the setup.
     private int _cacheVersion = -1;
     private Guid _cacheSetupId;
     private readonly List<Connection> _connections = [];
+    private readonly Vector2[] _patchCorners = new Vector2[4];
     private readonly Dictionary<Guid, string> _sliceLabels = [];
     private readonly Dictionary<Guid, string> _patchLabels = [];
 
-    private Action? _drawMenuExtras;
 
     private bool _isRenamingSetup;
     private bool _setupRenameFocusPending;
