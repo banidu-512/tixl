@@ -56,8 +56,36 @@ internal sealed partial class SettingsWindow
         changed |= FormInputs.AddInt("Timeout (× heartbeat)",
                                      ref config.FailoverTimeoutFactor,
                                      2, 20, 1,
-                                     "Heartbeats that may be missed before the Standby promotes itself. 3 × 500 ms ≈ 1.5 s takeover.",
+                                     "Heartbeats that may be missed before the Standby promotes itself. 3 × 100 ms ≈ 0.3 s takeover.",
                                      3);
+
+        changed |= FormInputs.AddInt("Stall window (ms)",
+                                     ref config.FailoverStallMs,
+                                     100, 5000, 50,
+                                     """
+                                     The active machine steps down when it has not rendered a frame for this long:
+                                     a frozen render is an output fault, even while the process is still alive.
+                                     This is the instant path; the timeout above only covers real silence.
+                                     """,
+                                     300);
+
+        if (ImGui.Button("Use fast timing (100 ms × 3 ≈ 0.3 s)"))
+        {
+            config.FailoverHeartbeatMs = 100;
+            config.FailoverTimeoutFactor = 3;
+            changed = true;
+        }
+
+        changed |= FormInputs.AddCheckBox("Fence outputs when the standby goes silent",
+                                          ref config.FailoverFencing,
+                                          """
+                                          The active machine mutes before the standby's timeout expires if the standby
+                                          stops acknowledging heartbeats. This is what makes fast takeovers safe: a
+                                          network partition can never leave two masters on the same DMX universe.
+                                          A dead standby also mutes the active machine — use "Resume solo" below when
+                                          the backup is known to be gone.
+                                          """,
+                                          true);
 
         changed |= FormInputs.AddCheckBox("Preempt on master return",
                                           ref config.FailoverPreempt,
@@ -79,12 +107,37 @@ internal sealed partial class SettingsWindow
                             ? UiColors.StatusActivated
                             : FailoverArbiter.RoleText is "Standby" or "Handover"
                                 ? UiColors.StatusWarning
-                                : UiColors.Text;
+                                : FailoverArbiter.RoleText.StartsWith("FAULT") || FailoverArbiter.RoleText.StartsWith("FENCED")
+                                    ? UiColors.StatusError
+                                    : UiColors.Text;
 
         ImGui.PushStyleColor(ImGuiCol.Text, roleColor.Rgba);
         ImGui.Bullet();
         ImGui.TextUnformatted($"This machine: {FailoverArbiter.RoleText}");
         ImGui.PopStyleColor();
+
+        ImGui.Bullet();
+        ImGui.TextUnformatted($"Health: {FailoverArbiter.HealthText}");
+
+        ImGui.Bullet();
+        ImGui.TextUnformatted($"Lease: {FailoverArbiter.LeaseText}");
+
+        var role = FailoverArbiter.Role;
+        if (role is FailoverArbiter.NodeRole.Active or FailoverArbiter.NodeRole.Contested)
+        {
+            if (ImGui.Button("Step down now"))
+                FailoverArbiter.RequestStepDown("settings panel");
+        }
+        else if (role == FailoverArbiter.NodeRole.Standby)
+        {
+            if (ImGui.Button("Take over now"))
+                FailoverArbiter.RequestTakeover("settings panel");
+        }
+        else if (role == FailoverArbiter.NodeRole.Fenced)
+        {
+            if (ImGui.Button("Resume solo (override)"))
+                FailoverArbiter.RequestResumeSolo("operator override");
+        }
 
         ImGui.Bullet();
         ImGui.TextUnformatted($"Sync: {FailoverCollabLink.Instance.StatusText}");
@@ -116,11 +169,18 @@ internal sealed partial class SettingsWindow
                                      show. When the master returns it reclaims the output (preempt) and the
                                      backup steps down and follows it again.
                                   3. Configure your Artnet/sACN/stream outputs identically on both.
-                                  The Standby renders silently and starts streaming within the timeout when the
-                                  ACTIVE machine stops answering. Heartbeats use multicast so both machines can
-                                  also be rehearsed on a single PC. Timeline playback (play/pause, position) is
-                                  not synced by the session — start playback on the backup too, or keep playing
-                                  on both.
+                                  The active machine reacts instantly to its own faults: a frozen render or a failing
+                                  DMX send steps it down and the standby promotes in one frame. Pure silence is
+                                  covered by the timeout, and the lease mutes the old master before that timeout
+                                  expires — so a takeover can never leave two masters on the same universe.
+                                  Heartbeats use multicast so both machines can also be rehearsed on a single PC,
+                                  and the collaboration session carries a second health channel so a broken
+                                  multicast path alone never causes a takeover.
+                                  Transient problems heal themselves: a faulted node rejoins after ~2 s, a fenced
+                                  master resumes when acknowledgements return, and heartbeat sockets are re-bound
+                                  when an adapter is replugged or re-addressed.
+                                  Timeline playback (play/pause, position) is not synced by the session — start
+                                  playback on the backup too, or keep playing on both.
                                   """);
     }
 }

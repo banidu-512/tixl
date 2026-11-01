@@ -37,6 +37,21 @@ internal sealed class NdiSender : IOutputStreamSender
     /// <summary>Whether the alpha channel is sent, or receivers get an opaque frame.</summary>
     public bool EnableAlpha;
 
+    /// <summary>Advertises the source without sending: with nobody sending, a receiver that fails over to it connects instantly.</summary>
+    public void KeepWarm()
+    {
+        if (!NdiRuntime.IsAvailable)
+            return;
+
+        if (_ndiSender != IntPtr.Zero && _requestedName != _openedName)
+            Release();
+
+        if (_ndiSender == IntPtr.Zero)
+            Open(_requestedName);
+
+        UpdateFailoverSource();
+    }
+
     public void Configure(OutputStreamSettings settings)
     {
         FrameRate = settings.FrameRate;

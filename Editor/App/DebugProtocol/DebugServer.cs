@@ -1211,6 +1211,8 @@ internal static class DebugServer
                 UserSettings.Config.FailoverHeartbeatMs = request["heartbeatMs"]?.Value<int>() ?? UserSettings.Config.FailoverHeartbeatMs;
                 UserSettings.Config.FailoverTimeoutFactor = request["timeoutFactor"]?.Value<int>() ?? UserSettings.Config.FailoverTimeoutFactor;
                 UserSettings.Config.FailoverPreempt = request["preempt"]?.Value<bool>() ?? UserSettings.Config.FailoverPreempt;
+                UserSettings.Config.FailoverStallMs = request["stallMs"]?.Value<int>() ?? UserSettings.Config.FailoverStallMs;
+                UserSettings.Config.FailoverFencing = request["fencing"]?.Value<bool>() ?? UserSettings.Config.FailoverFencing;
                 UserSettings.Save();
                 Core.Show.FailoverArbiter.ApplyConfig(new Core.Show.FailoverConfig
                                                           {
@@ -1220,10 +1222,28 @@ internal static class DebugServer
                                                               HeartbeatMs = UserSettings.Config.FailoverHeartbeatMs,
                                                               TimeoutFactor = UserSettings.Config.FailoverTimeoutFactor,
                                                               Preempt = UserSettings.Config.FailoverPreempt,
+                                                              StallMs = UserSettings.Config.FailoverStallMs,
+                                                              Fencing = UserSettings.Config.FailoverFencing,
                                                               NetworkInterfaceName = UserSettings.Config.NetworkInterface,
                                                           });
                 break;
             }
+
+            case "stepdown":
+                Core.Show.FailoverArbiter.RequestStepDown(request["reason"]?.Value<string>() ?? "debug request");
+                break;
+
+            case "takeover":
+                Core.Show.FailoverArbiter.RequestTakeover(request["reason"]?.Value<string>() ?? "debug request");
+                break;
+
+            case "resume":
+                Core.Show.FailoverArbiter.RequestResumeSolo(request["reason"]?.Value<string>() ?? "debug request");
+                break;
+
+            case "fault":
+                Core.Show.FailoverArbiter.ReportOutputFault(request["reason"]?.Value<string>() ?? "debug request");
+                break;
 
             case "disable":
                 UserSettings.Config.FailoverEnabled = false;
@@ -1239,7 +1259,7 @@ internal static class DebugServer
                 break;
 
             default:
-                context.SendError("INVALID_PARAM", "failover requires op = enable | disable | status");
+                context.SendError("INVALID_PARAM", "failover requires op = enable | disable | status | stepdown | takeover | resume | fault");
                 return;
         }
 
@@ -1249,6 +1269,8 @@ internal static class DebugServer
                                ["suppressed"] = Core.Show.FailoverArbiter.IsOutputSuppressed,
                                ["peer"] = Core.Show.FailoverArbiter.PeerSummary,
                                ["takeovers"] = Core.Show.FailoverArbiter.TakeoverCount,
+                               ["health"] = Core.Show.FailoverArbiter.HealthText,
+                               ["lease"] = Core.Show.FailoverArbiter.LeaseText,
                                ["link"] = T3.Editor.Show.FailoverCollabLink.Instance.StatusText,
                                ["collabEnabled"] = CollabManager.Instance.IsEnabled,
                                ["leftManually"] = CollabManager.Instance.LeftManually,

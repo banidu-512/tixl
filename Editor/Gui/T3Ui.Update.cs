@@ -44,6 +44,8 @@ public static partial class T3Ui
         _failoverConfig.TimeoutFactor = UserSettings.Config.FailoverTimeoutFactor;
         _failoverConfig.NetworkInterfaceName = UserSettings.Config.NetworkInterface;
         _failoverConfig.Preempt = UserSettings.Config.FailoverPreempt;
+        _failoverConfig.StallMs = UserSettings.Config.FailoverStallMs;
+        _failoverConfig.Fencing = UserSettings.Config.FailoverFencing;
         _failoverConfig.CollabPort = UserSettings.Config.CollabPort;
         T3.Core.Show.FailoverArbiter.ApplyConfig(_failoverConfig);
         Show.BoygroupManager.Instance.Update();
@@ -109,7 +111,7 @@ public static partial class T3Ui
         }
 
         // Draw everything!
-        ImGui.DockSpaceOverViewport();
+        LayoutHandling.DrawMainDockSpace();
 
         ImGui.PushStyleVar(ImGuiStyleVar.WindowBorderSize, 1);
         WindowManager.Draw();
@@ -141,11 +143,19 @@ public static partial class T3Ui
         _sendCrashReportsDialog.Draw();
         CreateFromTemplateDialog.Draw();
         _userNameDialog.Draw();
+        _collabPasswordDialog.Draw();
         Windows.AssetLib.FolderImportDialog.Instance.Draw();
         AboutDialog.Draw();
         ExitDialog.Draw();
         OperatorHelp.EditDescriptionDialog.Draw();
         SkillMapPopup.Draw();
+
+        // Reopen before the welcome check: restoring the project's window visibility would otherwise
+        // close a welcome window that was just opened.
+        if (!_lastProjectReopened)
+            _lastProjectReopened = LastOpenProject.ProcessStartupReopen();
+
+        LastOpenProject.Update();
 
         // Classify the launch first so the welcome window claims the foreground before the
         // user-name prompt. They must not overlap — the user-name dialog waits until the
@@ -182,6 +192,7 @@ public static partial class T3Ui
         }
 
         KeyboardAndMouseOverlay.Draw();
+        ActionToast.Draw();
 
         Playback.OpNotReady = false;
         AutoBackup.AutoBackup.CheckForSave();
@@ -208,7 +219,7 @@ public static partial class T3Ui
     /// </summary>
     private static void CheckForVersionWelcome()
     {
-        if (_versionWelcomeChecked || !IsWindowLayoutComplete() || IsAnyPopupOpen)
+        if (_versionWelcomeChecked || !_lastProjectReopened || IsAnyPopupOpen)
             return;
 
         _versionWelcomeChecked = true;
@@ -229,6 +240,7 @@ public static partial class T3Ui
     }
 
     private static bool _versionWelcomeChecked;
+    private static bool _lastProjectReopened;
     private static bool _blockedProjectsChecked;
     private static bool _missingOperatorsChecked;
     private static bool _crashReportsChecked;

@@ -1,8 +1,9 @@
 // Headless tests for the collab/boygroup/failover network layer. Runs anywhere .NET 10 runs.
 //
 //   CollabHeadless                 → runs every in-process test, prints PASS/FAIL per test, exit 0/1
-//   CollabHeadless failover-node <showId> <priority> <heartbeatMs>
-//                                  → failover election participant used by TestFailoverElection
+//   CollabHeadless failover-node <showId> <priority> <heartbeatMs> [script]
+//                                  → failover election participant used by TestFailoverElection;
+//                                    script actions run on the elapsed clock, e.g. "fault@1500"
 //
 // These exercise exactly the code that runs inside the editor: the same sources are compile-included.
 using System.Buffers.Binary;
@@ -10,6 +11,7 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using T3.Core.IO;
 using T3.Core.Show;
@@ -26,7 +28,7 @@ internal static class Program
     private static int Main(string[] args)
     {
         if (args.Length >= 4 && args[0] == "failover-node")
-            return RunFailoverNode(args[1], int.Parse(args[2]), int.Parse(args[3]));
+            return RunFailoverNode(args[1], int.Parse(args[2]), int.Parse(args[3]), args.Length > 4 ? args[4] : null);
 
         Run("framing.roundtrip", TestFramingRoundTrip);
         Run("framing.maxsize", TestFrameSizeLimit);
@@ -43,6 +45,10 @@ internal static class Program
         Run("deploy.pathsafety", TestDeployPathSafety);
         Run("failover.election", TestFailoverElection);
         Run("failover.no-dual-active", TestFailoverNoDualActive);
+        Run("failover.declared-fault", TestFailoverDeclaredFault);
+        Run("failover.solo-fault-recovery", TestFailoverSoloFaultRecovery);
+        Run("failover.session-close-crosscheck", TestFailoverSessionCloseCrossCheck);
+        Run("failover.fences-without-ack", TestFailoverFencesWithoutAck);
         Run("failover.foreign-datagrams", TestFailoverSurvivesForeignDatagrams);
 
         Console.WriteLine(_failures == 0 ? "ALL TESTS PASSED" : $"{_failures} TEST(S) FAILED");
@@ -595,6 +601,206 @@ internal static class Program
     }
 
     /// <summary>
+    /// A declared fault (a broken output path, not silence) must promote the standby almost immediately:
+    /// the failing node mutes itself first, so the takeover is not a guess and must not wait for the timeout.
+    /// </summary>
+    private static void TestFailoverDeclaredFault()
+    {
+        var showId = $"headless-fault-{Environment.ProcessId}-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
+        var heartbeatMs = 150;
+        using var master = StartNode(showId, priority: 200, heartbeatMs, "fault@1500");
+        using var backup = StartNode(showId, priority: 100, heartbeatMs);
+
+        Check(WaitForRole(master, "ACTIVE", TimeSpan.FromSeconds(8)), "master never became ACTIVE; events: " + master.AllEvents);
+        Check(WaitForRole(backup, "Standby", TimeSpan.FromSeconds(8)), "backup never settled on Standby; events: " + backup.AllEvents);
+
+        // Both children stamp role changes with the machine clock, so the delay is exact even when the
+        // parent's polling loop starts after the transition already happened.
+        var faultTick = WaitForRoleTick(master, "FAULT", TimeSpan.FromSeconds(6));
+        Check(faultTick != null, "the faulty master never reported a fault");
+        var promotedTick = WaitForRoleTick(backup, "ACTIVE", TimeSpan.FromSeconds(6), master);
+        Check(promotedTick != null, "the backup never promoted after the declared fault; events: " + backup.AllEvents);
+
+        var latency = promotedTick.Value - faultTick.Value;
+        Check(latency <= 700, $"promotion took {latency} ms after the declared fault (budget 700 ms)");
+        Console.WriteLine($"      failover: declared fault promoted the standby within {latency} ms");
+    }
+
+    private static long? WaitForRoleTick(FailoverNode node, string roleSubstring, TimeSpan timeout, FailoverNode? other = null, long minTicks = 0)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            node.Poll();
+            other?.Poll();
+
+            var tick = node.FindRoleTick(roleSubstring, minTicks);
+            if (tick != null)
+                return tick;
+
+            if (other != null)
+                Check(!(node.IsUnsuppressed && other.IsUnsuppressed),
+                      $"both nodes streamed at once (node: {node.CurrentRole}; other: {other.CurrentRole})");
+            Thread.Sleep(20);
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// A node that faults with no partner must heal itself: after the fault hold expires it has to reclaim
+    /// the role, not sit in the post-step-down hold-down with the output black. Guards the stand-down rule
+    /// ("only wait for a partner that could actually claim").
+    /// </summary>
+    private static void TestFailoverSoloFaultRecovery()
+    {
+        var showId = $"headless-solo-{Environment.ProcessId}-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
+        var heartbeatMs = 150;
+        using var node = StartNode(showId, priority: 100, heartbeatMs, "fault@1200");
+
+        Check(WaitForRole(node, "ACTIVE", TimeSpan.FromSeconds(8)), "solo node never became ACTIVE; events: " + node.AllEvents);
+        var faultTick = WaitForRoleTick(node, "FAULT", TimeSpan.FromSeconds(6));
+        Check(faultTick != null, "solo node never reported the fault");
+
+        // Fault hold is 2 s, then the probe window ~0.9 s. The old stand-down rule added another 5 s.
+        var activeAgainTick = WaitForRoleTick(node, "ACTIVE", TimeSpan.FromSeconds(8), minTicks: faultTick.Value + 1);
+        Check(activeAgainTick != null, "solo node never resumed streaming; events: " + node.AllEvents);
+
+        var delay = activeAgainTick.Value - faultTick.Value;
+        Check(delay <= 4200, $"solo recovery took {delay} ms — it is still waiting out the stand-down");
+        Console.WriteLine($"      failover: solo fault recovery took {delay} ms");
+    }
+
+    /// <summary>
+    /// Losing only the collaboration session is not losing the master. The standby's fast path must
+    /// require the heartbeats to stop as well, or a collab hiccup becomes a false takeover.
+    /// </summary>
+    private static void TestFailoverSessionCloseCrossCheck()
+    {
+        var showId = $"headless-session-{Environment.ProcessId}-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
+        var heartbeatMs = 150;
+        using var master = StartNode(showId, priority: 200, heartbeatMs);
+        using var backup = StartNode(showId, priority: 100, heartbeatMs, "sessionlost@1200");
+
+        Check(WaitForRole(master, "ACTIVE", TimeSpan.FromSeconds(8)), "master never became ACTIVE; events: " + master.AllEvents);
+        Check(WaitForRole(backup, "Standby", TimeSpan.FromSeconds(8)), "backup never settled on Standby; events: " + backup.AllEvents);
+
+        // The session-loss notification has fired; several timeouts later the master is still alive,
+        // so the backup must still be muted and following.
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(2.5);
+        while (DateTime.UtcNow < deadline)
+        {
+            backup.Poll();
+            Check(backup.CurrentRole.Contains("Standby", StringComparison.Ordinal),
+                  $"backup left Standby after a session-only loss; events: {backup.AllEvents}");
+            Check(!backup.IsUnsuppressed, "backup streamed while the master was alive");
+            Thread.Sleep(50);
+        }
+    }
+
+    /// <summary>
+    /// The lease: a master that was relying on an armed standby must mute itself when that standby stops
+    /// acknowledging heartbeats (a partition), before the standby's timeout can let it promote. The phantom
+    /// below sends armed heartbeats but never acks — exactly the one-way case the lease exists for.
+    /// </summary>
+    private static void TestFailoverFencesWithoutAck()
+    {
+        var showId = $"headless-fence-{Environment.ProcessId}-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
+        FailoverArbiter.ApplyConfig(new FailoverConfig
+                                        {
+                                            Enabled = true,
+                                            ShowId = showId,
+                                            Priority = 200,
+                                            HeartbeatMs = 200,
+                                            TimeoutFactor = 3,
+                                            Preempt = true,
+                                            Fencing = true,
+                                        });
+
+        using var phantomStop = new CancellationTokenSource();
+        var phantom = Task.Run(() => SendPhantomHeartbeats(showId, phantomStop.Token));
+
+        try
+        {
+            Check(WaitForRole(() => FailoverArbiter.RoleText, "ACTIVE", TimeSpan.FromSeconds(8)),
+                  $"node never became ACTIVE; events: {string.Join(" | ", FailoverArbiter.RecentEvents)}");
+            Check(WaitForRole(() => FailoverArbiter.RoleText, "FENCED", TimeSpan.FromSeconds(6)),
+                  $"node never fenced without acks; events: {string.Join(" | ", FailoverArbiter.RecentEvents)}");
+            Check(FailoverArbiter.IsOutputSuppressed, "fenced node still allowed output");
+
+            // While the partner stays silent the fence must hold: un-fencing here would be a second master.
+            Thread.Sleep(1000);
+            Check(FailoverArbiter.RoleText.Contains("FENCED", StringComparison.Ordinal),
+                  $"un-fenced while the partner was still silent; events: {string.Join(" | ", FailoverArbiter.RecentEvents)}");
+
+            // The partner is gone; an operator override resumes solo output.
+            phantomStop.Cancel();
+            phantom.Wait(TimeSpan.FromSeconds(2));
+            FailoverArbiter.RequestResumeSolo("test override");
+            Check(WaitForRole(() => FailoverArbiter.RoleText, "ACTIVE", TimeSpan.FromSeconds(6)),
+                  $"solo output never resumed; events: {string.Join(" | ", FailoverArbiter.RecentEvents)}");
+            Check(!FailoverArbiter.IsOutputSuppressed, "resumed solo node still suppressed");
+        }
+        finally
+        {
+            phantomStop.Cancel();
+            FailoverArbiter.ApplyConfig(new FailoverConfig { Enabled = false });
+        }
+    }
+
+    /// <summary>An armed standby that never acknowledges: one-way multicast loss, without a second process.</summary>
+    private static void SendPhantomHeartbeats(string showId, CancellationToken token)
+    {
+        using var udp = new UdpClient();
+        var group = new IPEndPoint(IPAddress.Parse("224.0.0.157"), 44910);
+        long seq = 0;
+        while (!token.IsCancellationRequested)
+        {
+            var payload = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(new
+                                                                                 {
+                                                                                     t = "hb",
+                                                                                     show = showId,
+                                                                                     id = "phantom-standby",
+                                                                                     prio = 100,
+                                                                                     active = false,
+                                                                                     port = 0,
+                                                                                     host = "phantom",
+                                                                                     seq = ++seq,
+                                                                                     epoch = 0L,
+                                                                                     frame = 0L,
+                                                                                     health = 0,
+                                                                                     armed = true,
+                                                                                     standdown = false,
+                                                                                     mute = 400,
+                                                                                 }));
+            try
+            {
+                udp.Send(payload, payload.Length, group);
+            }
+            catch (SocketException)
+            {
+                // Best effort; the next tick retries.
+            }
+
+            Thread.Sleep(50);
+        }
+    }
+
+    private static bool WaitForRole(Func<string> roleText, string roleSubstring, TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            if (roleText().Contains(roleSubstring, StringComparison.Ordinal))
+                return true;
+
+            Thread.Sleep(25);
+        }
+
+        return false;
+    }
+
+    /// <summary>
     /// Another tool on the heartbeat port (oversized or malformed datagrams) must not disturb the arbiter:
     /// a standby that stopped listening promotes itself next to a live master. Guards the listener's
     /// error handling; it passes on runtimes where a truncated read does not throw.
@@ -632,8 +838,9 @@ internal static class Program
         }
     }
 
-    /// <summary>One failover participant: applies the config, streams role changes to stdout.</summary>
-    private static int RunFailoverNode(string showId, int priority, int heartbeatMs)
+    /// <summary>One failover participant: applies the config, streams role changes to stdout.
+    /// <paramref name="script"/> runs fault-injection actions on the elapsed clock ("fault@1500").</summary>
+    private static int RunFailoverNode(string showId, int priority, int heartbeatMs, string? script)
     {
         FailoverArbiter.ApplyConfig(new FailoverConfig
                                         {
@@ -645,30 +852,84 @@ internal static class Program
                                             Preempt = true,
                                         });
 
+        var startedTicks = Environment.TickCount64;
+        var actions = ParseActions(script);
+
         var reportedRole = "";
         var reportedSuppressed = -1;
         while (true)
         {
-            Thread.Sleep(100);
+            Thread.Sleep(50);
+            var elapsed = Environment.TickCount64 - startedTicks;
+            foreach (var action in actions)
+            {
+                if (action.Done || elapsed < action.AtMs)
+                    continue;
+
+                action.Done = true;
+                switch (action.Kind)
+                {
+                    case "fault":
+                        FailoverArbiter.ReportOutputFault("headless test fault");
+                        break;
+
+                    case "stepdown":
+                        FailoverArbiter.RequestStepDown("headless test step-down");
+                        break;
+
+                    case "sessionlost":
+                        // Simulates losing the collab session while the heartbeats keep flowing:
+                        // the arbiter must not treat this as the master's death.
+                        FailoverArbiter.NotifyPeerSessionLost(iAmHost: false);
+                        break;
+                }
+            }
+
             var role = FailoverArbiter.RoleText;
             var suppressed = FailoverArbiter.IsOutputSuppressed ? 1 : 0;
             if (role != reportedRole || suppressed != reportedSuppressed)
             {
                 reportedRole = role;
                 reportedSuppressed = suppressed;
-                Console.WriteLine($"ROLE {role} suppressed={suppressed}");
+                Console.WriteLine($"ROLE {role} suppressed={suppressed} at={Environment.TickCount64}");
             }
         }
     }
 
-    private static FailoverNode StartNode(string showId, int priority, int heartbeatMs)
+    private sealed class ScriptedAction
+    {
+        public string Kind = "";
+        public long AtMs;
+        public bool Done;
+    }
+
+    private static List<ScriptedAction> ParseActions(string? script)
+    {
+        var actions = new List<ScriptedAction>();
+        if (string.IsNullOrWhiteSpace(script))
+            return actions;
+
+        foreach (var part in script.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var pieces = part.Split('@');
+            if (pieces.Length != 2 || !long.TryParse(pieces[1], out var atMs))
+                throw new Exception($"bad failover script action: {part}");
+
+            actions.Add(new ScriptedAction { Kind = pieces[0], AtMs = atMs });
+        }
+
+        return actions;
+    }
+
+    private static FailoverNode StartNode(string showId, int priority, int heartbeatMs, string? script = null)
     {
         var self = Environment.ProcessPath
                    ?? throw new Exception("cannot resolve own executable for child spawn");
         var start = new ProcessStartInfo
                         {
                             FileName = self,
-                            Arguments = $"failover-node {showId} {priority} {heartbeatMs}",
+                            Arguments = $"failover-node {showId} {priority} {heartbeatMs}"
+                                        + (string.IsNullOrEmpty(script) ? "" : $" {script}"),
                             RedirectStandardOutput = true,
                             RedirectStandardError = true,
                             UseShellExecute = false,
@@ -734,12 +995,35 @@ internal static class Program
                                        .LastOrDefault(l => l.StartsWith("ROLE ", StringComparison.Ordinal));
             if (lastRoleLine != null)
             {
-                CurrentRole = lastRoleLine["ROLE ".Length..];
-                IsUnsuppressed = CurrentRole.Contains("suppressed=0", StringComparison.Ordinal);
+                var text = lastRoleLine["ROLE ".Length..];
+                IsUnsuppressed = text.Contains("suppressed=0", StringComparison.Ordinal);
+                var atIndex = text.IndexOf(" at=", StringComparison.Ordinal);
+                CurrentRole = atIndex > 0 ? text[..atIndex] : text;
             }
 
             lock (_events)
                 AllEvents = _events.ToString();
+        }
+
+        /// <summary>Machine tick (from the child's own clock) of the first role change containing the marker,
+        /// ignoring transitions at or before <paramref name="minTicks"/>.</summary>
+        public long? FindRoleTick(string roleSubstring, long minTicks = 0)
+        {
+            string snapshot;
+            lock (_stdout)
+                snapshot = _stdout.ToString();
+
+            foreach (var line in snapshot.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+            {
+                if (!line.StartsWith("ROLE ", StringComparison.Ordinal) || !line.Contains(roleSubstring, StringComparison.Ordinal))
+                    continue;
+
+                var atIndex = line.IndexOf(" at=", StringComparison.Ordinal);
+                if (atIndex > 0 && long.TryParse(line[(atIndex + 4)..], out var ticks) && ticks > minTicks)
+                    return ticks;
+            }
+
+            return null;
         }
 
         public void Kill()

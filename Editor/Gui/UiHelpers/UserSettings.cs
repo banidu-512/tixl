@@ -308,9 +308,15 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public bool FailoverEnabled = false;
         public string FailoverShowId = "tixl-show";
         public int FailoverPriority = 100;
-        public int FailoverHeartbeatMs = 500;
+        public int FailoverHeartbeatMs = 100;
         public int FailoverTimeoutFactor = 3;
         public bool FailoverPreempt = true;
+
+        /// <summary>How long this node may go without rendering a frame before it steps down as broken.</summary>
+        public int FailoverStallMs = 300;
+
+        /// <summary>Fence the outputs when the standby stops acknowledging: no two masters on a partition.</summary>
+        public bool FailoverFencing = true;
 
         public float GizmoSize = 100;
 
