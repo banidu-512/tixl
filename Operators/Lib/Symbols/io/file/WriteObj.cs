@@ -2,7 +2,7 @@
 using System.Globalization;
 using System.IO;
 using System.Text;
-using SharpDX.Direct3D11;
+using T3.Graphics.Compat;
 using T3.Core.DataTypes;
 using T3.Core.Logging;
 using T3.Core.Rendering;
@@ -186,32 +186,26 @@ internal sealed class WriteObj : Instance<WriteObj>, IStatusProvider
         var device = ResourceManager.Device;
         var immediateContext = device.ImmediateContext;
 
-        var sourceDesc = source.Buffer.Description;
+        // Copied to a staging buffer: only those can be mapped for reading.
+        var description = source.Buffer.Description;
+        description.Usage = ResourceUsage.Staging;
+        description.BindFlags = BindFlags.None;
+        description.CpuAccessFlags = CpuAccessFlags.Read;
+        description.OptionFlags = ResourceOptionFlags.None;
 
-        var bufferDesc = new BufferDescription
-        {
-            Usage = ResourceUsage.Default,
-            BindFlags = BindFlags.UnorderedAccess | BindFlags.ShaderResource,
-            SizeInBytes = sourceDesc.SizeInBytes,
-            OptionFlags = ResourceOptionFlags.BufferStructured,
-            StructureByteStride = sourceDesc.StructureByteStride,
-            CpuAccessFlags = CpuAccessFlags.Read,
-        };
+        using var stagingBuffer = new Buffer(device, description);
+        immediateContext.CopyResource(source.Buffer, stagingBuffer);
 
-        using var cpuBuffer = new Buffer(device, bufferDesc);
-
-        immediateContext.CopyResource(source.Buffer, cpuBuffer);
-
-        immediateContext.MapSubresource(cpuBuffer, 0, MapMode.Read, MapFlags.None, out var stream);
+        var dataBox = immediateContext.MapSubresource(stagingBuffer, 0, MapMode.Read, MapFlags.None);
         try
         {
-            data = stream.ReadRange<T>(elementCount);
+            data = new T[elementCount];
+            GraphicsUtilities.Read(dataBox.DataPointer, data, 0, elementCount);
             return true;
         }
         finally
         {
-            stream.Dispose();
-            immediateContext.UnmapSubresource(cpuBuffer, 0);
+            immediateContext.UnmapSubresource(stagingBuffer, 0);
         }
     }
 
