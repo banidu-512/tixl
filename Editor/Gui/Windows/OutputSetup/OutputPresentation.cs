@@ -24,6 +24,11 @@ internal static class OutputPresentation
     /// </summary>
     public static void UpdatePresentation()
     {
+        // The failover arbiter sees every rendered frame here. A node that comes back from a freeze
+        // longer than the stall window demotes itself before the first output is evaluated, so a zombie
+        // master can never send a frame while a standby already took over.
+        T3.Core.Show.FailoverArbiter.NotifyFrameAdvanced();
+
         // One token per frame for everything the compositing path memoises, advanced before anything asks.
         OutputFrame.Advance();
         OutputWindowHandling.BeginFrame();
@@ -37,19 +42,55 @@ internal static class OutputPresentation
         }
 
         OutputStreaming.BeginFrame();
+
+        // Show failover: a Standby machine keeps rendering its local display windows but suppresses
+        // every stream-bound (network) output. Disposing the senders matters — NDI/Spout senders
+        // would otherwise keep re-sending their last frame from their own loops.
+        var failoverSuppressed = T3.Core.Show.FailoverArbiter.IsOutputSuppressed;
+
+        // A settled standby keeps warm-capable senders open (nothing is sent), so their sources are already there
+        // when the active machine fails. In any other muted state - a handover, a fence, a fault - they go.
+        var warmStandby = failoverSuppressed
+                          && T3.Core.Show.FailoverArbiter.Role == T3.Core.Show.FailoverArbiter.NodeRole.Standby;
+        if (failoverSuppressed && !warmStandby)
+            OutputStreaming.DisposeAll();
+
         foreach (var output in setup.Outputs)
         {
             // Send=false pauses presenting this output without dropping its binding.
             if (!output.IsSending)
                 continue;
 
+            // A laser output presents nothing here, whatever its bindings say: it has no canvas
+            // composite - its frame is vector content streamed by the laser driver (LaserDriver).
+            // Checked on the output and not just on the binding, so a stale display binding on a
+            // laser output (configs from older builds, hand-edited files) can never throw the input
+            // full-screen onto a wall - in any binding order.
+            if (output.Kind == OutputDefinition.Kinds.Laser || HasLaserBinding(machineConfig, output.Id))
+                continue;
+
+            // Each machine presents what its own Local Bindings connect: the setup is shared, but which
+            // output goes to which display or stream is machine state (outputs.machine.json).
             var binding = machineConfig.FindBinding(output.Id);
             if (binding == null)
+                continue;
+
+            // A laser binding on a canvas output presents nothing either: that frame streams from
+            // the laser driver.
+            if (binding.IsLaser)
                 continue;
 
             var startTimestamp = Stopwatch.GetTimestamp();
             if (binding.IsStream)
             {
+                if (failoverSuppressed)
+                {
+                    if (warmStandby)
+                        OutputStreaming.Standby(machineConfig, output, binding);
+
+                    continue;
+                }
+
                 OutputStreaming.Send(machineConfig, output, binding);
             }
             else
@@ -64,6 +105,19 @@ internal static class OutputPresentation
 
         OutputStreaming.EndFrame();
         OutputWindowHandling.EndFrame();
+    }
+
+    /// <summary>Whether any binding of this output goes to a laser plug. A laser target is never a
+    /// canvas to present - checked per output so binding order can't change the answer.</summary>
+    private static bool HasLaserBinding(MachineConfig machineConfig, Guid outputId)
+    {
+        foreach (var binding in machineConfig.Bindings)
+        {
+            if (binding.OutputId == outputId && binding.IsLaser)
+                return true;
+        }
+
+        return false;
     }
 
     /// <summary>Why the stream plug's sender refused its last frame, if it did (e.g. an unsupported format).</summary>

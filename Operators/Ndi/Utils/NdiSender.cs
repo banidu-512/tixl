@@ -2,8 +2,8 @@
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using NewTek;
-using SharpDX.Direct3D11;
-using SharpDX.DXGI;
+using T3.Graphics.Compat;
+using T3.Graphics;
 using T3.Core.Output;
 using T3.Core.Output.Streaming;
 using T3.Core.Resource.Assets;
@@ -37,6 +37,21 @@ internal sealed class NdiSender : IOutputStreamSender
     /// <summary>Whether the alpha channel is sent, or receivers get an opaque frame.</summary>
     public bool EnableAlpha;
 
+    /// <summary>Advertises the source without sending: with nobody sending, a receiver that fails over to it connects instantly.</summary>
+    public void KeepWarm()
+    {
+        if (!NdiRuntime.IsAvailable)
+            return;
+
+        if (_ndiSender != IntPtr.Zero && _requestedName != _openedName)
+            Release();
+
+        if (_ndiSender == IntPtr.Zero)
+            Open(_requestedName);
+
+        UpdateFailoverSource();
+    }
+
     public void Configure(OutputStreamSettings settings)
     {
         FrameRate = settings.FrameRate;
@@ -51,6 +66,12 @@ internal sealed class NdiSender : IOutputStreamSender
 
     public bool Send(Texture2D frame)
     {
+        if (!NdiRuntime.IsAvailable)
+        {
+            _lastError = NdiRuntime.MissingMessage;
+            return false;
+        }
+
         if (frame == null)
         {
             _lastError = "No texture";
@@ -103,6 +124,8 @@ internal sealed class NdiSender : IOutputStreamSender
         if (_ndiSender == IntPtr.Zero)
             Open(_requestedName);
 
+        UpdateFailoverSource();
+
         // Checked before any GPU work: with nobody listening, reading 46 megapixels back only to drop them is waste.
         // No timeout — waiting here would stall the render loop every frame nobody watches.
         var connections = NDIlib.send_get_no_connections(_ndiSender, 0);
@@ -148,7 +171,7 @@ internal sealed class NdiSender : IOutputStreamSender
             return true;
 
         var sendSlot = _queuedSlots.Dequeue();
-        var dataBox = context.MapSubresource(_stagingTextures[sendSlot], 0, MapMode.Read, SharpDX.Direct3D11.MapFlags.None, out _);
+        var dataBox = context.MapSubresource(_stagingTextures[sendSlot], 0, MapMode.Read, T3.Graphics.Compat.MapFlags.None, out _);
 
         var videoFrame = new NDIlib.video_frame_v2_t
                              {
@@ -176,6 +199,44 @@ internal sealed class NdiSender : IOutputStreamSender
     {
         Release();
     }
+
+    /// <summary>
+    /// With show failover on, tells receivers which source to switch to when this one goes away: the partner
+    /// machine's sender of the same name. Receivers that support NDI failover then follow a takeover by themselves.
+    /// </summary>
+    private void UpdateFailoverSource()
+    {
+        var now = Environment.TickCount64;
+        if (now < _nextFailoverCheckTicks)
+            return;
+
+        _nextFailoverCheckTicks = now + FailoverCheckIntervalMs;
+        var host = T3.Core.Show.FailoverArbiter.IsEnabled ? T3.Core.Show.FailoverArbiter.PeerHostName : null;
+        if (string.IsNullOrEmpty(host))
+            return;
+
+        // NDI names a source after the machine in upper case, whatever case the OS reports it in.
+        var failoverName = $"{host.ToUpperInvariant()} ({_openedName})";
+        if (failoverName == _failoverName)
+            return;
+
+        _failoverName = failoverName;
+        var name = NewTek.NDI.UTF.StringToUtf8(failoverName);
+        try
+        {
+            var source = new NDIlib.source_t { p_ndi_name = name };
+            NDIlib.send_set_failover(_ndiSender, ref source);
+            Log.Debug($"NDI '{_openedName}': receivers fail over to '{failoverName}'");
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(name);
+        }
+    }
+
+    private const long FailoverCheckIntervalMs = 1000;
+    private long _nextFailoverCheckTicks;
+    private string? _failoverName;
 
     private void Open(string senderName)
     {
@@ -275,13 +336,10 @@ internal sealed class NdiSender : IOutputStreamSender
         var computeStage = context.ComputeShader;
 
         // Everything touched is put back: this runs inside whatever the host is rendering.
-        var previousShader = computeStage.Get();
-        var previousUavs = computeStage.GetUnorderedAccessViews(0, 1);
-        var previousSrvs = computeStage.GetShaderResources(0, 1);
+        context.PushState(StateGroups.ComputeShader | StateGroups.OutputMerger);
 
         // The frame is often still bound as a render target (the output compositor leaves its target bound), and
         // D3D11 silently drops a view onto a resource that is bound for writing — the shader would read black.
-        var previousTargets = context.OutputMerger.GetRenderTargets(MaxRenderTargets, out var previousDepth);
         context.OutputMerger.SetRenderTargets((DepthStencilView?)null, (RenderTargetView?)null);
 
         computeStage.Set(shader);
@@ -290,18 +348,7 @@ internal sealed class NdiSender : IOutputStreamSender
         context.Dispatch((_packedWidth + 15) / 16, (_height + 15) / 16, 1);
 
         // Unbound before anything else touches the packed texture, which is read next as a copy source.
-        computeStage.SetUnorderedAccessView(0, previousUavs[0]);
-        computeStage.SetShaderResource(0, previousSrvs[0]);
-        computeStage.Set(previousShader);
-        context.OutputMerger.SetRenderTargets(previousDepth, previousTargets);
-
-        // Getters hand out references that must be released.
-        previousShader?.Dispose();
-        previousUavs[0]?.Dispose();
-        previousSrvs[0]?.Dispose();
-        previousDepth?.Dispose();
-        foreach (var target in previousTargets)
-            target?.Dispose();
+        context.PopState();
 
         return true;
     }
@@ -370,6 +417,7 @@ internal sealed class NdiSender : IOutputStreamSender
         }
 
         _lastConnectionCount = 0;
+        _failoverName = null;
 
         UnmapInFlightSlot();
         _queuedSlots.Clear();
@@ -377,8 +425,8 @@ internal sealed class NdiSender : IOutputStreamSender
             stagingTexture.Dispose();
 
         _stagingTextures.Clear();
-        Utilities.Dispose(ref _packedUav);
-        Utilities.Dispose(ref _packedTexture);
+        T3.Graphics.Compat.GraphicsUtilities.Dispose(ref _packedUav);
+        T3.Graphics.Compat.GraphicsUtilities.Dispose(ref _packedTexture);
     }
 
     private static NDIlib.FourCC_type_e FourCcFor(Format format, bool packsToUyvy)

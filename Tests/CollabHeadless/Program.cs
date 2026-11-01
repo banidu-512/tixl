@@ -1,0 +1,1125 @@
+// Headless tests for the collab/boygroup/failover network layer. Runs anywhere .NET 10 runs.
+//
+//   CollabHeadless                 → runs every in-process test, prints PASS/FAIL per test, exit 0/1
+//   CollabHeadless failover-node <showId> <priority> <heartbeatMs> [script]
+//                                  → failover election participant used by TestFailoverElection;
+//                                    script actions run on the elapsed clock, e.g. "fault@1500"
+//
+// These exercise exactly the code that runs inside the editor: the same sources are compile-included.
+using System.Buffers.Binary;
+using System.Diagnostics;
+using System.Net;
+using System.Net.Sockets;
+using System.Text;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
+using T3.Core.IO;
+using T3.Core.Show;
+using T3.Core.Utils;
+using T3.Editor.Collab;
+using T3.Editor.Show;
+
+namespace T3.CollabHeadless;
+
+internal static class Program
+{
+    private static int _failures;
+
+    private static int Main(string[] args)
+    {
+        if (args.Length >= 4 && args[0] == "failover-node")
+            return RunFailoverNode(args[1], int.Parse(args[2]), int.Parse(args[3]), args.Length > 4 ? args[4] : null);
+
+        Run("framing.roundtrip", TestFramingRoundTrip);
+        Run("framing.maxsize", TestFrameSizeLimit);
+        Run("json.decode", TestJsonDecode);
+        Run("io.wire", TestInputWire);
+        Run("presence.roundtrip", TestPresencePacket);
+        Run("auth.mac", TestAuth);
+        Run("heartbeat.answers-not-answered", TestHeartbeatAnswersAreNotAnswered);
+        Run("collab.host-port-release", TestHostPortReleasedOnFailure);
+        Run("network.interface-bind", TestPinnedInterfaceBind);
+        Run("machine.local-address-reconcile", TestMachineAddressReconcile);
+        Run("deploy.inventory", TestDeployInventoryDiff);
+        Run("deploy.transfer", TestDeployFileTransfer);
+        Run("deploy.pathsafety", TestDeployPathSafety);
+        Run("failover.election", TestFailoverElection);
+        Run("failover.no-dual-active", TestFailoverNoDualActive);
+        Run("failover.declared-fault", TestFailoverDeclaredFault);
+        Run("failover.solo-fault-recovery", TestFailoverSoloFaultRecovery);
+        Run("failover.session-close-crosscheck", TestFailoverSessionCloseCrossCheck);
+        Run("failover.fences-without-ack", TestFailoverFencesWithoutAck);
+        Run("failover.foreign-datagrams", TestFailoverSurvivesForeignDatagrams);
+
+        Console.WriteLine(_failures == 0 ? "ALL TESTS PASSED" : $"{_failures} TEST(S) FAILED");
+        return _failures == 0 ? 0 : 1;
+    }
+
+    private static void Run(string name, Action test)
+    {
+        try
+        {
+            test();
+            Console.WriteLine($"PASS {name}");
+        }
+        catch (Exception e)
+        {
+            _failures++;
+            Console.WriteLine($"FAIL {name}: {e.Message}");
+        }
+    }
+
+    private static void Check(bool condition, string message)
+    {
+        if (!condition)
+            throw new Exception(message);
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Framing
+    // ---------------------------------------------------------------------------------------
+
+    private static void TestFramingRoundTrip()
+    {
+        // Real sockets: forces multi-read paths (a 100 KB payload never arrives in one Read).
+        var (a, b) = LoopbackPair();
+        try
+        {
+            var streamA = a.GetStream();
+            var streamB = b.GetStream();
+
+            var payloads = new[]
+                               {
+                                   Array.Empty<byte>(),
+                                   Encoding.UTF8.GetBytes("hello"),
+                                   new byte[100_000],
+                               };
+            payloads[2].AsSpan().Fill(0xAB);
+
+            foreach (var (payload, i) in payloads.Select((p, i) => (p, i)))
+            {
+                var type = i % 2 == 0 ? CollabProtocol.FrameType.Json : CollabProtocol.FrameType.Presence;
+                CollabProtocol.WriteFrame(streamA, type, payload);
+            }
+
+            for (var i = 0; i < payloads.Length; i++)
+            {
+                var expectedType = i % 2 == 0 ? CollabProtocol.FrameType.Json : CollabProtocol.FrameType.Presence;
+                Check(CollabProtocol.TryReadFrameLength(streamB, out var length), $"frame {i}: stream ended early");
+                Check(length == payloads[i].Length + 1, $"frame {i}: length {length} != {payloads[i].Length + 1}");
+
+                var header = new byte[1];
+                Check(CollabProtocol.TryReadExact(streamB, header), $"frame {i}: type read failed");
+                Check((CollabProtocol.FrameType)header[0] == expectedType, $"frame {i}: wrong type {header[0]}");
+
+                var body = new byte[length - 1];
+                Check(CollabProtocol.TryReadExact(streamB, body), $"frame {i}: payload read failed");
+                Check(body.AsSpan().SequenceEqual(payloads[i]), $"frame {i}: payload mismatch");
+            }
+        }
+        finally
+        {
+            a.Dispose();
+            b.Dispose();
+        }
+    }
+
+    private static void TestFrameSizeLimit()
+    {
+        var tooBig = new byte[CollabProtocol.MaxFrameSize]; // +1 type byte exceeds the cap
+        try
+        {
+            CollabProtocol.WriteFrame(System.IO.Stream.Null, CollabProtocol.FrameType.Json, tooBig);
+            throw new Exception("oversized frame was accepted");
+        }
+        catch (System.IO.IOException)
+        {
+            // expected
+        }
+    }
+
+    private static void TestJsonDecode()
+    {
+        var encoded = CollabProtocol.EncodeJson(new { t = "hello", n = 42, g = Guid.Empty.ToString() });
+        Check(CollabProtocol.TryDecodeJson(encoded, out var json), "valid message rejected");
+        Check(CollabProtocol.GetString(json, "t") == "hello", "GetString failed");
+        Check(CollabProtocol.TryGetInt(json, "n", out var n) && n == 42, "TryGetInt failed");
+        Check(CollabProtocol.TryGetGuid(json, "g", out var g) && g == Guid.Empty, "TryGetGuid failed");
+
+        Check(!CollabProtocol.TryDecodeJson("[1,2,3]"u8.ToArray(), out _), "array accepted as message");
+        Check(!CollabProtocol.TryDecodeJson("not json"u8.ToArray(), out _), "garbage accepted");
+        Check(!CollabProtocol.TryDecodeJson("{\"noType\":1}"u8.ToArray(), out _), "message without t accepted");
+
+        // Malformed field types are a dropped value, not an exception that kills the frame loop.
+        var weird = JObject.Parse("""{"g":{"x":1},"n":[1],"s":42}""");
+        Check(!CollabProtocol.TryGetGuid(weird, "g", out _), "object accepted as guid");
+        Check(!CollabProtocol.TryGetInt(weird, "n", out _), "array accepted as int");
+        Check(CollabProtocol.GetString(weird, "s") == "42", "numeric string failed");
+
+        var huge = JObject.Parse("""{"n":999999999999999999999999999}""");
+        Check(!CollabProtocol.TryGetInt(huge, "n", out _), "integer beyond long accepted");
+
+        // JSON never starts with '{' collides with relay control lines — assert the discriminator.
+        var objStart = Encoding.UTF8.GetBytes("{\"t\":\"x\"}");
+        Check(objStart[0] == (byte)'{', "JSON frames must start with '{' (relay control-line convention)");
+    }
+
+    /// <summary>
+    /// Input replication batch: MIDI stays a device + raw message pair, and OSC keeps its original
+    /// packet bytes so argument types survive the round trip.
+    /// </summary>
+    private static void TestInputWire()
+    {
+        var midi = new List<RemoteMidiEvent>
+                       {
+                           new("Controller", 0xB3 | (7 << 8) | (100 << 16)),
+                           new("", 0x90 | (60 << 8) | (127 << 16)),
+                       };
+
+        // OSC "/debug" (8 bytes padded), type tag ",f" (4 bytes), float 0.25 (big-endian).
+        var packet = new byte[]
+                         {
+                             0x2F, 0x64, 0x65, 0x62, 0x75, 0x67, 0x00, 0x00,
+                             0x2C, 0x66, 0x00, 0x00,
+                             0x3E, 0x80, 0x00, 0x00,
+                         };
+        var osc = new List<RemoteOscPacket> { new(7000, packet) };
+
+        var json = BoygroupInputWire.Encode(midi, osc);
+        Check(BoygroupInputWire.TryDecode(json, out var decodedMidi, out var decodedOsc), "batch was rejected");
+        Check(decodedMidi.Count == 2, "wrong MIDI event count");
+        Check(decodedMidi[0].DeviceProductName == "Controller" && decodedMidi[0].RawMessage == midi[0].RawMessage, "MIDI event changed");
+        Check(decodedMidi[1].RawMessage == midi[1].RawMessage, "device-less MIDI event changed");
+        Check(decodedOsc.Count == 1 && decodedOsc[0].Port == 7000, "OSC packet changed");
+        Check(decodedOsc[0].Packet.AsSpan().SequenceEqual(packet), "OSC bytes were not preserved");
+
+        // A malformed entry only drops itself, and an empty batch decodes to "nothing".
+        var broken = JObject.Parse("""{"t":"io","midi":[["x",0],["ok",144]],"osc":[{"p":1,"d":"%%%"}]}""");
+        Check(BoygroupInputWire.TryDecode(broken, out var recoveredMidi, out var recoveredOsc), "partial batch rejected");
+        Check(recoveredMidi.Count == 1 && recoveredMidi[0].RawMessage == 144, "valid MIDI entry in a partial batch was lost");
+        Check(recoveredOsc.Count == 0, "malformed OSC entry was accepted");
+        Check(!BoygroupInputWire.TryDecode(JObject.Parse("""{"t":"io"}"""), out _, out _), "empty batch reported content");
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Presence packet (binary, little-endian)
+    // ---------------------------------------------------------------------------------------
+
+    private static void TestPresencePacket()
+    {
+        var packet = new PresencePacket
+                         {
+                             PeerId = 7,
+                             Flags = PresencePacket.FlagHoveringCanvas | PresencePacket.FlagLeftButton | PresencePacket.FlagDoubleClick,
+                             CompositionId = Guid.NewGuid(),
+                             CursorOnCanvas = new Vector2(-123.5f, 88.25f),
+                             SelectedChildIds = [Guid.NewGuid(), Guid.NewGuid()],
+                             WheelSpin = -42,
+                             ColorRgb = 0x336699,
+                             PressedKeys = [65, 17],
+                         };
+
+        var buffer = new byte[128];
+        var size = packet.Encode(buffer);
+        Check(size == 2 + 16 + 8 + 1 + 2 * 16 + 1 + 3 + 1 + 2, $"encoded size {size} unexpected");
+        Check(PresencePacket.TryDecode(buffer.AsSpan(0, size), out var decoded), "decode failed");
+        Check(decoded.PeerId == 7 && decoded.Flags == packet.Flags, "header fields mismatch");
+        Check(decoded.CompositionId == packet.CompositionId, "composition id mismatch");
+        Check(MathF.Abs(decoded.CursorOnCanvas.X - packet.CursorOnCanvas.X) < 0.001f, "cursor x drifted");
+        Check(decoded.SelectedChildIds.SequenceEqual(packet.SelectedChildIds), "selection mismatch");
+        Check(decoded.WheelSpin == -42 && decoded.IsLeftButtonDown && !decoded.IsRightButtonDown, "button/wheel fields mismatch");
+
+        Check(decoded.ColorRgb == 0x336699 && decoded.IsDoubleClick && decoded.PressedKeys.SequenceEqual(packet.PressedKeys), "color/keys/double-click fields mismatch");
+
+        // A peer on an older build stops after the wheel byte: the packet still decodes, with no color or keys.
+        Check(PresencePacket.TryDecode(buffer.AsSpan(0, size - 6), out var beforeColor) && beforeColor.WheelSpin == -42
+              && beforeColor.ColorRgb == 0 && beforeColor.PressedKeys.Length == 0, "older-build packet without color/keys rejected");
+
+        // An even older one sends no trailing wheel byte: the packet still decodes, with no spin.
+        Check(PresencePacket.TryDecode(buffer.AsSpan(0, size - 7), out var older) && older.WheelSpin == 0
+              && older.SelectedChildIds.SequenceEqual(packet.SelectedChildIds), "older-build packet without wheel byte rejected");
+
+        Check(!PresencePacket.TryDecode(buffer.AsSpan(0, 26), out _), "truncated packet accepted");
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Auth (PBKDF2 + HMAC challenge/response)
+    // ---------------------------------------------------------------------------------------
+
+    private static void TestAuth()
+    {
+        var salt = CollabAuth.CreateSalt();
+        var nonce = CollabAuth.CreateNonce();
+        var keyA = CollabAuth.DeriveKey("show-password", salt);
+        var keyB = CollabAuth.DeriveKey("show-password", salt);
+        Check(keyA.AsSpan().SequenceEqual(keyB), "derivation not deterministic for same salt");
+
+        var other = CollabAuth.DeriveKey("wrong-password", salt);
+        Check(!keyA.AsSpan().SequenceEqual(other), "different passwords produced equal keys");
+
+        var mac = CollabAuth.ComputeMac(keyA, nonce);
+        Check(CollabAuth.MacsEqual(mac, CollabAuth.ComputeMac(keyB, nonce)), "valid mac rejected");
+        Check(!CollabAuth.MacsEqual(mac, CollabAuth.ComputeMac(other, nonce)), "wrong-password mac accepted");
+        Check(!CollabAuth.MacsEqual(mac, CollabAuth.ComputeMac(keyA, CollabAuth.CreateNonce())), "mac bound to nonce");
+
+        Check(CollabAuth.TryFromHexString(CollabAuth.ToHexString(mac), out var roundTrip)
+              && roundTrip.AsSpan().SequenceEqual(mac), "hex round-trip failed");
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Heartbeats
+    // ---------------------------------------------------------------------------------------
+
+    private static void TestHeartbeatAnswersAreNotAnswered()
+    {
+        var port = FreeTcpPort();
+        using var host = new CollabHostTransport(port, enableLanDiscovery: false, () => new JObject());
+        using var raw = new TcpClient();
+        raw.Connect(IPAddress.Loopback, port);
+        raw.NoDelay = true;
+        var stream = raw.GetStream();
+
+        CollabProtocol.WriteFrame(stream, CollabProtocol.FrameType.Heartbeat, BitConverter.GetBytes(Environment.TickCount64));
+
+        // Behave like a peer that answers every heartbeat it receives: if the host answered those
+        // answers too, the pair would ping-pong for as long as the connection lives.
+        var heartbeatsReceived = 0;
+        var watch = Stopwatch.StartNew();
+        while (watch.ElapsedMilliseconds < 1500)
+        {
+            if (!raw.Client.Poll(50_000, SelectMode.SelectRead))
+                continue;
+
+            Check(TryReadRawFrame(stream, out var type, out var payload), "host closed the connection");
+            if (type != CollabProtocol.FrameType.Heartbeat)
+                continue;
+
+            heartbeatsReceived++;
+            CollabProtocol.WriteFrame(stream, CollabProtocol.FrameType.Heartbeat, payload);
+        }
+
+        Check(heartbeatsReceived == 1, $"host sent {heartbeatsReceived} heartbeats for one ping");
+    }
+
+    /// <summary>
+    /// A host transport whose constructor fails after its TCP listener is up must release that
+    /// listener. Otherwise hosting again in the same process fails with "address in use" forever.
+    /// </summary>
+    private static void TestHostPortReleasedOnFailure()
+    {
+        var port = FreeTcpPort();
+
+        // Occupy only the UDP half, so the constructor gets past the TCP bind and then fails.
+        using (var squatter = new UdpClient(port))
+        {
+            try
+            {
+                using var host = new CollabHostTransport(port, enableLanDiscovery: false, () => new JObject());
+                throw new Exception("host started although the UDP port was occupied");
+            }
+            catch (SocketException)
+            {
+                // expected: the UDP bind is taken
+            }
+        }
+
+        using var restarted = new CollabHostTransport(port, enableLanDiscovery: false, () => new JObject());
+    }
+
+    /// <summary>
+    /// A pinned adapter must be the address the session actually binds to; a missing adapter falls
+    /// back to all interfaces instead of failing to host.
+    /// </summary>
+    private static void TestPinnedInterfaceBind()
+    {
+        var interfaces = LanInterfaces.GetUsable();
+        Check(LanInterfaces.ResolveAddress("no-such-adapter") == null, "missing adapter resolved to an address");
+        if (interfaces.Count == 0)
+        {
+            Console.WriteLine("      (no usable IPv4 adapter — bind check skipped)");
+            return;
+        }
+
+        var lanInterface = interfaces[0];
+        Check(LanInterfaces.ResolveAddress(lanInterface.Name)?.Equals(lanInterface.Address) == true,
+              "adapter name did not resolve back to its address");
+
+        var port = FreeTcpPort();
+        using var host = new CollabHostTransport(port, enableLanDiscovery: false, () => new JObject(), lanInterface.Name);
+        using var client = new TcpClient();
+        var connect = client.ConnectAsync(lanInterface.Address, port);
+        Check(connect.Wait(TimeSpan.FromSeconds(3)) && client.Connected,
+              $"could not connect to pinned adapter {lanInterface.Address}:{port}");
+    }
+
+    /// <summary>
+    /// A cloned project's machine config can carry the source machine's "packets leave on" address.
+    /// The reconcile keeps deliberate pins (any address this machine holds, loopback included, and
+    /// unparsable values), re-homes a foreign pin to the adapter that reaches the target device, and
+    /// clears one it cannot place. TEST-NET addresses (RFC 5737) are foreign on every machine.
+    /// </summary>
+    private static void TestMachineAddressReconcile()
+    {
+        Check(LanInterfaces.ReconcileLocalAddress("", "192.0.2.10") == "", "empty pin was rewritten");
+        Check(LanInterfaces.ReconcileLocalAddress("eth0", "192.0.2.10") == "eth0", "unparsable pin was rewritten");
+        Check(LanInterfaces.ReconcileLocalAddress("127.0.0.1", "") == "127.0.0.1", "loopback pin was cleared");
+
+        const string foreign = "203.0.113.9";
+        Check(LanInterfaces.ReconcileLocalAddress(foreign, "") == "",
+              "foreign pin without a target survived");
+        Check(LanInterfaces.ReconcileLocalAddress(foreign, "198.51.100.1") == "",
+              "foreign pin with an unreachable target survived");
+
+        var adapter = LanInterfaces.GetUsable().FirstOrDefault();
+        if (adapter == null)
+        {
+            Console.WriteLine("      (no usable IPv4 adapter — re-home check skipped)");
+            return;
+        }
+
+        // The adapter's own address is the trivial case of "in its subnet".
+        Check(LanInterfaces.ReconcileLocalAddress(foreign, adapter.Address.ToString()) == adapter.Address.ToString(),
+              $"foreign pin did not re-home to {adapter.Name} ({adapter.Address})");
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Deployer: inventory diff + full chunked transfer
+    // ---------------------------------------------------------------------------------------
+
+    private static void TestDeployInventoryDiff()
+    {
+        var server = new Dictionary<string, BoygroupDeployer.InventoryEntry>(StringComparer.Ordinal)
+                         {
+                             ["a.txt"] = new() { RelativePath = "a.txt", Size = 10, LastWriteTicks = 1000 },
+                             ["b.bin"] = new() { RelativePath = "b.bin", Size = 500_000, LastWriteTicks = 2000 },
+                             ["sub/c.txt"] = new() { RelativePath = "sub/c.txt", Size = 3, LastWriteTicks = 3000 },
+                             ["d.txt"] = new() { RelativePath = "d.txt", Size = 100, LastWriteTicks = 4000 },
+                         };
+        var client = new Dictionary<string, BoygroupDeployer.InventoryEntry>(StringComparer.Ordinal)
+                         {
+                             // a.txt: identical. b.bin: size differs. c.txt: mtime differs. d.txt: server-only.
+                             ["a.txt"] = new() { RelativePath = "a.txt", Size = 10, LastWriteTicks = 1000 },
+                             ["b.bin"] = new() { RelativePath = "b.bin", Size = 400_000, LastWriteTicks = 2000 },
+                             ["sub/c.txt"] = new() { RelativePath = "sub/c.txt", Size = 3, LastWriteTicks = 9999 },
+                             ["stale.txt"] = new() { RelativePath = "stale.txt", Size = 1, LastWriteTicks = 1 },
+                         };
+
+        var message = BoygroupDeployer.BuildInventoryMessage(server);
+        var parsed = BoygroupDeployer.ParseInventory(message);
+        Check(parsed.Count == 4 && parsed["b.bin"].Size == 500_000, "inventory message round-trip failed");
+
+        var missing = BoygroupDeployer.ComputeMissingFiles(server, client);
+        // b.bin: size differs. sub/c.txt: mtime differs. d.txt: exists only on the server.
+        Check(missing.Count == 3, $"expected 3 missing, got {string.Join(',', missing)}");
+        Check(missing[0] == "sub/c.txt" && missing[1] == "d.txt" && missing[2] == "b.bin",
+              $"smallest-first sort wrong: {string.Join(',', missing)}");
+
+        var extra = BoygroupDeployer.ComputeExtraFiles(server, client);
+        Check(extra.Count == 1 && extra[0] == "stale.txt", "extra-file detection failed");
+    }
+
+    private static void TestDeployFileTransfer()
+    {
+        var root = Directory.CreateTempSubdirectory("tixl-deploy-");
+        try
+        {
+            // Empty file (edge case), a text file, and a 500 KB binary blob spanning several chunks.
+            var mtime = new DateTime(2024, 6, 1, 12, 0, 0, DateTimeKind.Utc);
+            var cases = new (string Name, byte[] Content)[]
+                            {
+                                ("empty.dat", []),
+                                ("notes.txt", "höllo ünICODE ✓"u8.ToArray()),
+                                ("blob.bin", MakeBlob(500_000)),
+                            };
+            foreach (var (name, content) in cases)
+            {
+                var path = Path.Combine(root.FullName, name);
+                File.WriteAllBytes(path, content);
+                File.SetLastWriteTimeUtc(path, mtime);
+            }
+
+            var inventory = BoygroupDeployer.BuildInventory(root.FullName);
+            Check(inventory.Count == 3, $"inventory found {inventory.Count} files");
+
+            foreach (var (name, content) in cases)
+            {
+                var receiver = new BoygroupDeployer.FileReceiver();
+                receiver.Begin(root.FullName, new JObject { ["t"] = "fileBegin", ["path"] = name });
+
+                var sender = new BoygroupDeployer.FileSender(root.FullName, name);
+                try
+                {
+                JObject? message;
+                while ((message = sender.NextMessage()) != null)
+                {
+                    var type = message["t"]?.Value<string>();
+                    if (type == "fileChunk")
+                        receiver.Chunk(message);
+                    else if (type == "fileEnd")
+                    {
+                        var error = receiver.Finish(message);
+                        Check(error == null, $"receiver error for {name}: {error}");
+                    }
+                }
+
+                Check(sender.Completed, $"sender never completed for {name}");
+                }
+                finally
+                {
+                    sender.Dispose();
+                }
+
+                Check(receiver.Error == null, $"receiver error for {name}: {receiver.Error}");
+                var deployed = File.ReadAllBytes(Path.Combine(root.FullName, name));
+                Check(deployed.AsSpan().SequenceEqual(content), $"content mismatch for {name}");
+                Check(File.GetLastWriteTimeUtc(Path.Combine(root.FullName, name)) == mtime,
+                      $"mtime not restored for {name}");
+            }
+        }
+        finally
+        {
+            try { root.Delete(recursive: true); }
+            catch { /* temp cleanup is best-effort in tests */ }
+        }
+    }
+
+    private static void TestDeployPathSafety()
+    {
+        var root = Directory.CreateTempSubdirectory("tixl-path-");
+        try
+        {
+            foreach (var evil in new[] { "../escape.txt", "sub/../../escape.txt", "a/../../b" })
+            {
+                try
+                {
+                    BoygroupDeployer.SafeProjectPath(root.FullName, evil);
+                    throw new Exception($"path escape accepted: {evil}");
+                }
+                catch (System.IO.IOException)
+                {
+                    // expected
+                }
+            }
+
+            // A sibling directory that merely shares the root's name prefix is still outside it;
+            // both an absolute path and a relative climb must be rejected.
+            var sibling = root.FullName + "-evil";
+            foreach (var evil in new[]
+                                 {
+                                     Path.Combine(sibling, "x.txt"),
+                                     "../" + Path.GetFileName(root.FullName) + "-evil/x.txt",
+                                     "",
+                                 })
+            {
+                try
+                {
+                    BoygroupDeployer.SafeProjectPath(root.FullName, evil);
+                    throw new Exception($"path escape accepted: {evil}");
+                }
+                catch (System.IO.IOException)
+                {
+                    // expected
+                }
+            }
+
+            var ok = BoygroupDeployer.SafeProjectPath(root.FullName, "sub/dir/file.txt");
+            Check(ok.Replace('\\', '/').EndsWith("sub/dir/file.txt", StringComparison.Ordinal), "safe path mangled");
+        }
+        finally
+        {
+            try { root.Delete(recursive: true); }
+            catch { /* best effort */ }
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Failover election — needs separate processes (the arbiter is a static singleton).
+    // Spawns two `failover-node` children on the same host: multicast loopback makes this work
+    // on Windows, Linux and macOS alike. ShowId isolates this run from any other on the machine.
+    // ---------------------------------------------------------------------------------------
+
+    private static void TestFailoverElection()
+    {
+        var showId = $"headless-{Environment.ProcessId}-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
+        var heartbeatMs = 150;
+        using var master = StartNode(showId, priority: 200, heartbeatMs);
+        using var backup = StartNode(showId, priority: 100, heartbeatMs);
+
+        // Master becomes ACTIVE, backup settles on Standby (output suppressed).
+        var masterActive = WaitForRole(master, "ACTIVE", TimeSpan.FromSeconds(8));
+        Check(masterActive, "master never became ACTIVE; events: " + backup.AllEvents);
+        var backupStandby = WaitForRole(backup, "Standby", TimeSpan.FromSeconds(8));
+        Check(backupStandby, "backup never settled on Standby; events: " + backup.AllEvents);
+
+        // Kill the master → backup promotes within TimeoutFactor × Heartbeat (+ margin).
+        var killAt = Stopwatch.StartNew();
+        master.Kill();
+
+        var promoted = WaitForRole(backup, "ACTIVE", TimeSpan.FromSeconds(8));
+        Check(promoted, $"backup never promoted after master death; events: {backup.AllEvents}");
+        var takeoverMs = killAt.ElapsedMilliseconds;
+
+        // Restart the higher-priority master → preemption reclaims Active, backup demotes.
+        using var master2 = StartNode(showId, priority: 200, heartbeatMs);
+        Check(WaitForRole(master2, "ACTIVE", TimeSpan.FromSeconds(10)), "restarted master never reclaimed; events: " + master2.AllEvents);
+        Check(WaitForRole(backup, "Standby", TimeSpan.FromSeconds(10)), "backup never demoted after preempt; events: " + backup.AllEvents);
+
+        // The bound is the arbiter's timeout plus the watchdog tick granularity; a takeover that
+        // needs noticeably longer than that is a show that sits dark.
+        var budgetMs = 3 * heartbeatMs + 500;
+        Check(takeoverMs <= budgetMs, $"takeover took {takeoverMs} ms, budget {budgetMs} ms");
+        Console.WriteLine($"      failover: takeover after {takeoverMs} ms (budget {budgetMs} ms)");
+    }
+
+    /// <summary>
+    /// Two nodes starting at the same time must never both stream. Each probe deadline used to see
+    /// no *active* peer (a probing peer does not advertise itself) and both claimed Active.
+    /// </summary>
+    private static void TestFailoverNoDualActive()
+    {
+        var showId = $"headless-dual-{Environment.ProcessId}-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
+        var heartbeatMs = 150;
+
+        // Same priority: the tie-break by node id must still leave exactly one node on the wire.
+        using var first = StartNode(showId, priority: 100, heartbeatMs);
+        using var second = StartNode(showId, priority: 100, heartbeatMs);
+
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(6);
+        while (DateTime.UtcNow < deadline)
+        {
+            first.Poll();
+            second.Poll();
+            Check(!(first.IsUnsuppressed && second.IsUnsuppressed),
+                  $"both nodes streamed at once (first: {first.CurrentRole}; second: {second.CurrentRole})");
+            Thread.Sleep(25);
+        }
+
+        first.Poll();
+        second.Poll();
+        Check(first.IsUnsuppressed || second.IsUnsuppressed,
+              $"neither node became active (first: {first.CurrentRole}; second: {second.CurrentRole})");
+    }
+
+    /// <summary>
+    /// A declared fault (a broken output path, not silence) must promote the standby almost immediately:
+    /// the failing node mutes itself first, so the takeover is not a guess and must not wait for the timeout.
+    /// </summary>
+    private static void TestFailoverDeclaredFault()
+    {
+        var showId = $"headless-fault-{Environment.ProcessId}-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
+        var heartbeatMs = 150;
+        using var master = StartNode(showId, priority: 200, heartbeatMs, "fault@1500");
+        using var backup = StartNode(showId, priority: 100, heartbeatMs);
+
+        Check(WaitForRole(master, "ACTIVE", TimeSpan.FromSeconds(8)), "master never became ACTIVE; events: " + master.AllEvents);
+        Check(WaitForRole(backup, "Standby", TimeSpan.FromSeconds(8)), "backup never settled on Standby; events: " + backup.AllEvents);
+
+        // Both children stamp role changes with the machine clock, so the delay is exact even when the
+        // parent's polling loop starts after the transition already happened.
+        var faultTick = WaitForRoleTick(master, "FAULT", TimeSpan.FromSeconds(6));
+        Check(faultTick != null, "the faulty master never reported a fault");
+        var promotedTick = WaitForRoleTick(backup, "ACTIVE", TimeSpan.FromSeconds(6), master);
+        Check(promotedTick != null, "the backup never promoted after the declared fault; events: " + backup.AllEvents);
+
+        var latency = promotedTick.Value - faultTick.Value;
+        Check(latency <= 700, $"promotion took {latency} ms after the declared fault (budget 700 ms)");
+        Console.WriteLine($"      failover: declared fault promoted the standby within {latency} ms");
+    }
+
+    private static long? WaitForRoleTick(FailoverNode node, string roleSubstring, TimeSpan timeout, FailoverNode? other = null, long minTicks = 0)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            node.Poll();
+            other?.Poll();
+
+            var tick = node.FindRoleTick(roleSubstring, minTicks);
+            if (tick != null)
+                return tick;
+
+            if (other != null)
+                Check(!(node.IsUnsuppressed && other.IsUnsuppressed),
+                      $"both nodes streamed at once (node: {node.CurrentRole}; other: {other.CurrentRole})");
+            Thread.Sleep(20);
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// A node that faults with no partner must heal itself: after the fault hold expires it has to reclaim
+    /// the role, not sit in the post-step-down hold-down with the output black. Guards the stand-down rule
+    /// ("only wait for a partner that could actually claim").
+    /// </summary>
+    private static void TestFailoverSoloFaultRecovery()
+    {
+        var showId = $"headless-solo-{Environment.ProcessId}-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
+        var heartbeatMs = 150;
+        using var node = StartNode(showId, priority: 100, heartbeatMs, "fault@1200");
+
+        Check(WaitForRole(node, "ACTIVE", TimeSpan.FromSeconds(8)), "solo node never became ACTIVE; events: " + node.AllEvents);
+        var faultTick = WaitForRoleTick(node, "FAULT", TimeSpan.FromSeconds(6));
+        Check(faultTick != null, "solo node never reported the fault");
+
+        // Fault hold is 2 s, then the probe window ~0.9 s. The old stand-down rule added another 5 s.
+        var activeAgainTick = WaitForRoleTick(node, "ACTIVE", TimeSpan.FromSeconds(8), minTicks: faultTick.Value + 1);
+        Check(activeAgainTick != null, "solo node never resumed streaming; events: " + node.AllEvents);
+
+        var delay = activeAgainTick.Value - faultTick.Value;
+        Check(delay <= 4200, $"solo recovery took {delay} ms — it is still waiting out the stand-down");
+        Console.WriteLine($"      failover: solo fault recovery took {delay} ms");
+    }
+
+    /// <summary>
+    /// Losing only the collaboration session is not losing the master. The standby's fast path must
+    /// require the heartbeats to stop as well, or a collab hiccup becomes a false takeover.
+    /// </summary>
+    private static void TestFailoverSessionCloseCrossCheck()
+    {
+        var showId = $"headless-session-{Environment.ProcessId}-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
+        var heartbeatMs = 150;
+        using var master = StartNode(showId, priority: 200, heartbeatMs);
+        using var backup = StartNode(showId, priority: 100, heartbeatMs, "sessionlost@1200");
+
+        Check(WaitForRole(master, "ACTIVE", TimeSpan.FromSeconds(8)), "master never became ACTIVE; events: " + master.AllEvents);
+        Check(WaitForRole(backup, "Standby", TimeSpan.FromSeconds(8)), "backup never settled on Standby; events: " + backup.AllEvents);
+
+        // The session-loss notification has fired; several timeouts later the master is still alive,
+        // so the backup must still be muted and following.
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(2.5);
+        while (DateTime.UtcNow < deadline)
+        {
+            backup.Poll();
+            Check(backup.CurrentRole.Contains("Standby", StringComparison.Ordinal),
+                  $"backup left Standby after a session-only loss; events: {backup.AllEvents}");
+            Check(!backup.IsUnsuppressed, "backup streamed while the master was alive");
+            Thread.Sleep(50);
+        }
+    }
+
+    /// <summary>
+    /// The lease: a master that was relying on an armed standby must mute itself when that standby stops
+    /// acknowledging heartbeats (a partition), before the standby's timeout can let it promote. The phantom
+    /// below sends armed heartbeats but never acks — exactly the one-way case the lease exists for.
+    /// </summary>
+    private static void TestFailoverFencesWithoutAck()
+    {
+        var showId = $"headless-fence-{Environment.ProcessId}-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
+        FailoverArbiter.ApplyConfig(new FailoverConfig
+                                        {
+                                            Enabled = true,
+                                            ShowId = showId,
+                                            Priority = 200,
+                                            HeartbeatMs = 200,
+                                            TimeoutFactor = 3,
+                                            Preempt = true,
+                                            Fencing = true,
+                                        });
+
+        using var phantomStop = new CancellationTokenSource();
+        var phantom = Task.Run(() => SendPhantomHeartbeats(showId, phantomStop.Token));
+
+        try
+        {
+            Check(WaitForRole(() => FailoverArbiter.RoleText, "ACTIVE", TimeSpan.FromSeconds(8)),
+                  $"node never became ACTIVE; events: {string.Join(" | ", FailoverArbiter.RecentEvents)}");
+            Check(WaitForRole(() => FailoverArbiter.RoleText, "FENCED", TimeSpan.FromSeconds(6)),
+                  $"node never fenced without acks; events: {string.Join(" | ", FailoverArbiter.RecentEvents)}");
+            Check(FailoverArbiter.IsOutputSuppressed, "fenced node still allowed output");
+
+            // While the partner stays silent the fence must hold: un-fencing here would be a second master.
+            Thread.Sleep(1000);
+            Check(FailoverArbiter.RoleText.Contains("FENCED", StringComparison.Ordinal),
+                  $"un-fenced while the partner was still silent; events: {string.Join(" | ", FailoverArbiter.RecentEvents)}");
+
+            // The partner is gone; an operator override resumes solo output.
+            phantomStop.Cancel();
+            phantom.Wait(TimeSpan.FromSeconds(2));
+            FailoverArbiter.RequestResumeSolo("test override");
+            Check(WaitForRole(() => FailoverArbiter.RoleText, "ACTIVE", TimeSpan.FromSeconds(6)),
+                  $"solo output never resumed; events: {string.Join(" | ", FailoverArbiter.RecentEvents)}");
+            Check(!FailoverArbiter.IsOutputSuppressed, "resumed solo node still suppressed");
+        }
+        finally
+        {
+            phantomStop.Cancel();
+            FailoverArbiter.ApplyConfig(new FailoverConfig { Enabled = false });
+        }
+    }
+
+    /// <summary>An armed standby that never acknowledges: one-way multicast loss, without a second process.</summary>
+    private static void SendPhantomHeartbeats(string showId, CancellationToken token)
+    {
+        using var udp = new UdpClient();
+        var group = new IPEndPoint(IPAddress.Parse("224.0.0.157"), 44910);
+        long seq = 0;
+        while (!token.IsCancellationRequested)
+        {
+            var payload = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(new
+                                                                                 {
+                                                                                     t = "hb",
+                                                                                     show = showId,
+                                                                                     id = "phantom-standby",
+                                                                                     prio = 100,
+                                                                                     active = false,
+                                                                                     port = 0,
+                                                                                     host = "phantom",
+                                                                                     seq = ++seq,
+                                                                                     epoch = 0L,
+                                                                                     frame = 0L,
+                                                                                     health = 0,
+                                                                                     armed = true,
+                                                                                     standdown = false,
+                                                                                     mute = 400,
+                                                                                 }));
+            try
+            {
+                udp.Send(payload, payload.Length, group);
+            }
+            catch (SocketException)
+            {
+                // Best effort; the next tick retries.
+            }
+
+            Thread.Sleep(50);
+        }
+    }
+
+    private static bool WaitForRole(Func<string> roleText, string roleSubstring, TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            if (roleText().Contains(roleSubstring, StringComparison.Ordinal))
+                return true;
+
+            Thread.Sleep(25);
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Another tool on the heartbeat port (oversized or malformed datagrams) must not disturb the arbiter:
+    /// a standby that stopped listening promotes itself next to a live master. Guards the listener's
+    /// error handling; it passes on runtimes where a truncated read does not throw.
+    /// </summary>
+    private static void TestFailoverSurvivesForeignDatagrams()
+    {
+        var showId = $"headless-junk-{Environment.ProcessId}-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
+        var heartbeatMs = 150;
+        using var master = StartNode(showId, priority: 200, heartbeatMs);
+        using var backup = StartNode(showId, priority: 100, heartbeatMs);
+        Check(WaitForRole(master, "ACTIVE", TimeSpan.FromSeconds(8)), "master never became ACTIVE; events: " + master.AllEvents);
+        Check(WaitForRole(backup, "Standby", TimeSpan.FromSeconds(8)), "backup never settled on Standby; events: " + backup.AllEvents);
+
+        using (var junk = new System.Net.Sockets.UdpClient())
+        {
+            var group = new System.Net.IPEndPoint(System.Net.IPAddress.Parse("224.0.0.157"), 44910);
+            var oversized = new byte[4000];
+            var garbage = Encoding.UTF8.GetBytes("{ not a heartbeat");
+            for (var i = 0; i < 20; i++)
+            {
+                junk.Send(oversized, oversized.Length, group);
+                junk.Send(garbage, garbage.Length, group);
+                Thread.Sleep(20);
+            }
+        }
+
+        // Several timeouts with the master alive: a deaf backup would take over within one.
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(3);
+        while (DateTime.UtcNow < deadline)
+        {
+            backup.Poll();
+            Check(backup.CurrentRole.Contains("Standby", StringComparison.Ordinal),
+                  $"backup left Standby while the master was alive; events: {backup.AllEvents}");
+            Thread.Sleep(50);
+        }
+    }
+
+    /// <summary>One failover participant: applies the config, streams role changes to stdout.
+    /// <paramref name="script"/> runs fault-injection actions on the elapsed clock ("fault@1500").</summary>
+    private static int RunFailoverNode(string showId, int priority, int heartbeatMs, string? script)
+    {
+        FailoverArbiter.ApplyConfig(new FailoverConfig
+                                        {
+                                            Enabled = true,
+                                            ShowId = showId,
+                                            Priority = priority,
+                                            HeartbeatMs = heartbeatMs,
+                                            TimeoutFactor = 3,
+                                            Preempt = true,
+                                        });
+
+        var startedTicks = Environment.TickCount64;
+        var actions = ParseActions(script);
+
+        var reportedRole = "";
+        var reportedSuppressed = -1;
+        while (true)
+        {
+            Thread.Sleep(50);
+            var elapsed = Environment.TickCount64 - startedTicks;
+            foreach (var action in actions)
+            {
+                if (action.Done || elapsed < action.AtMs)
+                    continue;
+
+                action.Done = true;
+                switch (action.Kind)
+                {
+                    case "fault":
+                        FailoverArbiter.ReportOutputFault("headless test fault");
+                        break;
+
+                    case "stepdown":
+                        FailoverArbiter.RequestStepDown("headless test step-down");
+                        break;
+
+                    case "sessionlost":
+                        // Simulates losing the collab session while the heartbeats keep flowing:
+                        // the arbiter must not treat this as the master's death.
+                        FailoverArbiter.NotifyPeerSessionLost(iAmHost: false);
+                        break;
+                }
+            }
+
+            var role = FailoverArbiter.RoleText;
+            var suppressed = FailoverArbiter.IsOutputSuppressed ? 1 : 0;
+            if (role != reportedRole || suppressed != reportedSuppressed)
+            {
+                reportedRole = role;
+                reportedSuppressed = suppressed;
+                Console.WriteLine($"ROLE {role} suppressed={suppressed} at={Environment.TickCount64}");
+            }
+        }
+    }
+
+    private sealed class ScriptedAction
+    {
+        public string Kind = "";
+        public long AtMs;
+        public bool Done;
+    }
+
+    private static List<ScriptedAction> ParseActions(string? script)
+    {
+        var actions = new List<ScriptedAction>();
+        if (string.IsNullOrWhiteSpace(script))
+            return actions;
+
+        foreach (var part in script.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var pieces = part.Split('@');
+            if (pieces.Length != 2 || !long.TryParse(pieces[1], out var atMs))
+                throw new Exception($"bad failover script action: {part}");
+
+            actions.Add(new ScriptedAction { Kind = pieces[0], AtMs = atMs });
+        }
+
+        return actions;
+    }
+
+    private static FailoverNode StartNode(string showId, int priority, int heartbeatMs, string? script = null)
+    {
+        var self = Environment.ProcessPath
+                   ?? throw new Exception("cannot resolve own executable for child spawn");
+        var start = new ProcessStartInfo
+                        {
+                            FileName = self,
+                            Arguments = $"failover-node {showId} {priority} {heartbeatMs}"
+                                        + (string.IsNullOrEmpty(script) ? "" : $" {script}"),
+                            RedirectStandardOutput = true,
+                            RedirectStandardError = true,
+                            UseShellExecute = false,
+                        };
+        var process = Process.Start(start)
+                      ?? throw new Exception("failed to spawn failover node");
+        return new FailoverNode(process);
+    }
+
+    private static bool WaitForRole(FailoverNode node, string roleSubstring, TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            node.Poll();
+            if (node.CurrentRole.Contains(roleSubstring, StringComparison.Ordinal))
+                return true;
+            Thread.Sleep(50);
+        }
+        return false;
+    }
+
+    /// <summary>Async stdout pump for one child node (reading synchronously would deadlock).</summary>
+    private sealed class FailoverNode : IDisposable
+    {
+        public string CurrentRole = "starting";
+        public string AllEvents = "";
+
+        /// <summary>False until the child reports suppressed=0; before its first report it streams nothing.</summary>
+        public bool IsUnsuppressed { get; private set; }
+
+        private readonly Process _process;
+        private readonly StringBuilder _stdout = new();
+        private readonly StringBuilder _events = new();
+
+        public FailoverNode(Process process)
+        {
+            _process = process;
+            process.OutputDataReceived += (_, e) =>
+                                              {
+                                                  if (e.Data == null)
+                                                      return;
+                                                  lock (_stdout)
+                                                      _stdout.AppendLine(e.Data);
+                                              };
+            process.ErrorDataReceived += (_, e) =>
+                                             {
+                                                 if (e.Data == null)
+                                                     return;
+                                                 lock (_events)
+                                                     _events.AppendLine(e.Data);
+                                             };
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+        }
+
+        public void Poll()
+        {
+            string snapshot;
+            lock (_stdout)
+                snapshot = _stdout.ToString();
+            var lastRoleLine = snapshot.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                                       .LastOrDefault(l => l.StartsWith("ROLE ", StringComparison.Ordinal));
+            if (lastRoleLine != null)
+            {
+                var text = lastRoleLine["ROLE ".Length..];
+                IsUnsuppressed = text.Contains("suppressed=0", StringComparison.Ordinal);
+                var atIndex = text.IndexOf(" at=", StringComparison.Ordinal);
+                CurrentRole = atIndex > 0 ? text[..atIndex] : text;
+            }
+
+            lock (_events)
+                AllEvents = _events.ToString();
+        }
+
+        /// <summary>Machine tick (from the child's own clock) of the first role change containing the marker,
+        /// ignoring transitions at or before <paramref name="minTicks"/>.</summary>
+        public long? FindRoleTick(string roleSubstring, long minTicks = 0)
+        {
+            string snapshot;
+            lock (_stdout)
+                snapshot = _stdout.ToString();
+
+            foreach (var line in snapshot.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+            {
+                if (!line.StartsWith("ROLE ", StringComparison.Ordinal) || !line.Contains(roleSubstring, StringComparison.Ordinal))
+                    continue;
+
+                var atIndex = line.IndexOf(" at=", StringComparison.Ordinal);
+                if (atIndex > 0 && long.TryParse(line[(atIndex + 4)..], out var ticks) && ticks > minTicks)
+                    return ticks;
+            }
+
+            return null;
+        }
+
+        public void Kill()
+        {
+            try
+            {
+                if (!_process.HasExited)
+                    _process.Kill();
+                _process.WaitForExit(2000);
+            }
+            catch
+            {
+                // already gone
+            }
+        }
+
+        public void Dispose()
+        {
+            Kill();
+            _process.Dispose();
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Helpers
+    // ---------------------------------------------------------------------------------------
+
+    private static byte[] MakeBlob(int length)
+    {
+        // Deterministic pseudo-random content: exercise compression-hostile bytes without RNG setup.
+        var blob = new byte[length];
+        var x = 0x9e3779b9;
+        for (var i = 0; i < length; i++)
+        {
+            x = x * 1664525 + 1013904223;
+            blob[i] = (byte)(x >> 24);
+        }
+        return blob;
+    }
+
+    private static int FreeTcpPort()
+    {
+        // The host binds TCP and UDP on the same wildcard port. Port 0 hands out ephemeral ports
+        // that can fall inside a Windows excluded range (Hyper-V), where the UDP bind is denied, so
+        // walk the registered range and verify that both protocols can take the port.
+        for (var port = 21000; port < 31000; port++)
+        {
+            TcpListener? listener = null;
+            try
+            {
+                listener = new TcpListener(IPAddress.Any, port);
+                listener.Start();
+                using var udp = new UdpClient(port);
+                return port;
+            }
+            catch (SocketException)
+            {
+                // Taken or excluded - try the next one.
+            }
+            finally
+            {
+                listener?.Stop();
+            }
+        }
+
+        throw new Exception("no free TCP+UDP port for the host transport");
+    }
+
+    /// <summary>Reads one [length][type][payload] frame; false when the stream ended.</summary>
+    private static bool TryReadRawFrame(System.IO.Stream stream, out CollabProtocol.FrameType type, out byte[] payload)
+    {
+        type = 0;
+        payload = [];
+        if (!CollabProtocol.TryReadFrameLength(stream, out var length) || length < 1)
+            return false;
+
+        var frame = new byte[length];
+        if (!CollabProtocol.TryReadExact(stream, frame))
+            return false;
+
+        type = (CollabProtocol.FrameType)frame[0];
+        payload = frame[1..];
+        return true;
+    }
+
+    private static (TcpClient, TcpClient) LoopbackPair()
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var client = new TcpClient();
+        var listenPort = ((IPEndPoint)listener.LocalEndpoint!).Port;
+        client.Connect(IPAddress.Loopback, listenPort);
+        var server = listener.AcceptTcpClient();
+        listener.Stop();
+        client.NoDelay = true;
+        server.NoDelay = true;
+        return (client, server);
+    }
+}

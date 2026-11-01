@@ -11,6 +11,7 @@ using T3.Editor.Gui.Windows.RenderExport;
 using T3.Editor.Gui.Windows.TimeLine;
 
 using T3.Editor.Gui.Windows.OutputSetup;
+using T3.Editor.Collab;
 
 namespace T3.Editor.Gui.UiHelpers;
 
@@ -96,6 +97,16 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
 
         public readonly ToastSettings Toasts = new();
 
+        // Startup & recovery
+        /// <summary>Project folder that opens automatically on the next launch. Empty starts with the Hub.</summary>
+        public string StartupProjectFolder = "";
+
+        /// <summary>Installs a per-user OS login entry (Windows Run key, Linux XDG autostart, macOS LaunchAgent).</summary>
+        public bool AutostartWithSystem = false;
+
+        /// <summary>Relaunch the editor automatically after a crash via a supervisor process.</summary>
+        public bool CrashAutoRestart = false;
+
         // UI-Elements
         public bool ShowThumbnails = true;
         public bool ShowMainMenu = true;
@@ -109,6 +120,9 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
 
         /// <summary>When true, the Welcome window opens automatically at startup. Toggled from that window.</summary>
         public bool ShowWelcomeOnStartup = true;
+
+        /// <summary>Whether the next launch offers crashes that were never reported.</summary>
+        public bool AskToSendCrashReports = true;
 
         // UI-State
         public float UiScaleFactor = 1;
@@ -209,6 +223,104 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public bool EnableAutoBackup = true;
         public bool MinimalBackup = true;
 
+        // Networking (shared by collaboration, boygrouping and failover)
+        /// <summary>Adapter name to bind sessions, discovery and failover heartbeats to.
+        /// Empty = automatic (all interfaces).</summary>
+        public string NetworkInterface = "";
+
+        // Collaboration
+        /// <summary>Master switch: when off, no session is hosted or joined and nothing is discovered.</summary>
+        public bool CollabEnabled = true;
+
+        /// <summary>Persistent participant id; also seeds the per-user accent color.</summary>
+        public string CollabUserId = "";
+
+        /// <summary>The cursor color this user picked, as 0xRRGGBB. 0 uses the color derived from the user id.</summary>
+        public int CollabCursorColor = 0;
+
+        public int CollabPort = CollabProtocol.DefaultTcpPort;
+        public bool CollabLanDiscovery = true;
+        public string CollabPassword = "";
+
+        /// <summary>host:port of the last joined collab session — auto-rejoined on launch, which is
+        /// what brings a client back after a project download restarted the editor.</summary>
+        public string CollabLastSessionHost = "";
+
+        /// <summary>Relay address ("host:port") for online sessions, persisted so hosting and joining
+        /// use the same relay. Empty means a relay on this machine.</summary>
+        public string CollabRelayAddress = "";
+
+        /// <summary>Relay address of the last joined relay session, for auto-rejoin after a restart.</summary>
+        public string CollabLastRelayHost = "";
+
+        /// <summary>Room code of the last joined relay session, for auto-rejoin after a restart.</summary>
+        public string CollabLastRelayRoom = "";
+
+        /// <summary>
+        /// Comma-separated STUN/TURN URLs for the peer-to-peer data path of relay sessions. Empty
+        /// uses a public STUN server; peers that cannot connect fall back to the relay automatically.
+        /// </summary>
+        public string CollabWebRtcIceServers = "";
+
+        /// <summary>When false, relay sessions stay on the relay even if a direct path is possible.</summary>
+        public bool CollabWebRtcEnabled = true;
+
+        /// <summary>Whether a hosting member streams its rendered preview to the participants.</summary>
+        public bool CollabSharePreview = true;
+
+        /// <summary>
+        /// The project hosted when starting a session. Empty shares the focused project; a name opens
+        /// (and focuses) that project first, so a host can share a project without switching to it.
+        /// </summary>
+        public string CollabShareProject = "";
+
+        public string CollabDiscordClientId = "";
+        public string CollabDiscordClientSecret = "";
+        public string CollabDiscordUserId = "";
+        public string CollabDiscordUserName = "";
+        public string CollabDiscordUserAvatar = "";
+
+        // Boygrouping (show distribution to render nodes)
+        public string BoygroupClientName = "";
+
+        /// <summary>Whether boygrouping starts with the editor (and stays available for discovery).</summary>
+        public bool BoygroupEnabled = false;
+
+        /// <summary>Master shares its show; Slave waits to be added by a master on the network.</summary>
+        public Show.BoygroupRole BoygroupRole = Show.BoygroupRole.Master;
+
+        public int BoygroupPort = 44720;
+
+        /// <summary>
+        /// Render nodes a master has added, by node name. Remembered so a restart reconnects them as
+        /// soon as they are discovered instead of starting with an empty show.
+        /// </summary>
+        public List<string> BoygroupAddedNodes = [];
+
+        /// <summary>Per-node presentation delay in milliseconds, set by the master (positive = later).</summary>
+        public Dictionary<string, int> BoygroupNodeDelays = [];
+
+        /// <summary>The master a slave last joined, by advertised name. A slave reconnects to it as
+        /// soon as it reappears on the network.</summary>
+        public string BoygroupMasterName = "";
+
+        // Show failover (active/standby output arbitration)
+        public bool FailoverEnabled = false;
+        public string FailoverShowId = "tixl-show";
+        public int FailoverPriority = 100;
+        public int FailoverHeartbeatMs = 100;
+        public int FailoverTimeoutFactor = 3;
+        public bool FailoverPreempt = true;
+
+        /// <summary>How long this node may go without rendering a frame before it steps down as broken.</summary>
+        public int FailoverStallMs = 300;
+
+        /// <summary>Fence the outputs when the standby stops acknowledging: no two masters on a partition.</summary>
+        public bool FailoverFencing = true;
+
+        /// <summary>Lets the other TiXL clients of a collab, boygroup or failover session open this machine's cameras.</summary>
+        public bool ShareCamerasInSessions = true;
+
         public float GizmoSize = 100;
 
 
@@ -251,6 +363,7 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public bool EnableGCProfiling = false;
         public bool EnableMidiDebugLogging = false;
         public bool ShowOperatorStats = false;
+        public int DebugServerPort = 9042;
         
         // Gated Debug Logging
         public bool LogAudioDetails = false;
