@@ -131,6 +131,7 @@ public static class FailoverArbiter
         /// so a standby knows where to follow the active master.</summary>
         public string Address = "";
         public int CollabPort;
+        public string Host = "";
     }
 
     private static readonly Dictionary<string, PeerInfo> _peers = new(); // key: node id
@@ -232,6 +233,33 @@ public static class FailoverArbiter
                                NodeRole.Contested => "Handover",
                                _                  => "?",
                            };
+            }
+        }
+    }
+
+    /// <summary>
+    /// The machine name of the partner node heard most recently, or null. A stream sender uses it to tell its
+    /// receivers where to fail over: a network source is named after the machine that sends it.
+    /// </summary>
+    public static string? PeerHostName
+    {
+        get
+        {
+            lock (Gate)
+            {
+                var now = Environment.TickCount64;
+                var timeout = TimeoutMs;
+                PeerInfo? best = null;
+                foreach (var peer in _peers.Values)
+                {
+                    if (now - peer.LastHeardTicks > timeout || string.IsNullOrEmpty(peer.Host))
+                        continue;
+
+                    if (best == null || peer.LastHeardTicks > best.LastHeardTicks)
+                        best = peer;
+                }
+
+                return best?.Host;
             }
         }
     }
@@ -563,6 +591,7 @@ public static class FailoverArbiter
                                                                                  prio = priority,
                                                                                  active = advertiseActive,
                                                                                  port = collabPort,
+                                                                                 host = Environment.MachineName,
                                                                              }));
 
         // One copy per interface: heartbeats are ~100 bytes, and peers that only share one NIC
@@ -641,6 +670,7 @@ public static class FailoverArbiter
                     peer.LastHeardTicks = Environment.TickCount64;
                     peer.Address = senderAddress;
                     peer.CollabPort = heartbeat.Port;
+                    peer.Host = heartbeat.Host ?? "";
                 }
             }
             catch
@@ -657,6 +687,7 @@ public static class FailoverArbiter
         public int Prio { get; set; }
         public bool Active { get; set; }
         public int Port { get; set; }
+        public string? Host { get; set; }
     }
 
     /// <summary>Does (priority, id) win the election against the other side? Deterministic from both sides.</summary>
