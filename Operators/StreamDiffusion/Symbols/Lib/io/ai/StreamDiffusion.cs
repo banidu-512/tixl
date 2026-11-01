@@ -2,6 +2,7 @@
 #nullable enable
 using System;
 using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -19,7 +20,7 @@ namespace Lib.io.ai;
 [ExportDependencies("Microsoft.ML.OnnxRuntime.dll", "onnxruntime.dll", "onnxruntime_providers_shared.dll",
     "onnxruntime_providers_cuda.dll", "onnxruntime_providers_tensorrt.dll",
     "cudart64_12.dll", "cublas64_12.dll", "cublasLt64_12.dll", "cufft64_11.dll", "curand64_10.dll",
-    "cudnn64_9.dll", "cudnn_*64_9.dll")]
+    "cudnn64_9.dll", "cudnn_*64_9.dll", "libonnxruntime*")]
 public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider, ICustomDropdownHolder
 {
     // Expose pipeline readiness for tests
@@ -138,7 +139,7 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
     private static readonly string[] ModeNames = { "Text to Image", "Image to Image", "Stream" };
     private static readonly string[] ModelTypeNames = { "SD 1.5", "SD Turbo", "SDXL Turbo", "FLUX.2 Klein 4B", "SDXL 1.0" };
     private static readonly string[] ResizeModeNames = { "Stretch", "CenterCrop", "Pad" };
-    private static readonly string[] ExecutionProviderNames = { "CPU", "DirectML", "CUDA", "TensorRT" };
+    private static readonly string[] ExecutionProviderNames = { "CPU", "DirectML", "CUDA", "TensorRT", "CoreML" };
 
     public enum ModeOptions { TextToImage, ImageToImage, Stream }
     public enum ModelTypeOptions { SD15, SDTurbo, SDXLTurbo, FLUX2Klein, SDXL10 }
@@ -1217,20 +1218,34 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
         var names = new List<string>();
         try
         {
-            using var factory = new SharpDX.DXGI.Factory1();
-            foreach (var adapter in factory.Adapters)
+            if (OperatingSystem.IsWindows())
             {
-                names.Add(adapter.Description.Description.Trim());
-                adapter.Dispose();
+                AddDxgiAdapterNames(names);
             }
         }
         catch
+        {
+            // Adapter names are only labels for the device dropdown
+        }
+
+        if (names.Count == 0)
         {
             names.Add("Default");
         }
 
         _cachedDeviceNames = names.Count > 0 ? names.ToArray() : new[] { "Default" };
         return _cachedDeviceNames;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void AddDxgiAdapterNames(List<string> names)
+    {
+        using var factory = new SharpDX.DXGI.Factory1();
+        foreach (var adapter in factory.Adapters)
+        {
+            names.Add(adapter.Description.Description.Trim());
+            adapter.Dispose();
+        }
     }
 
     protected override void Dispose(bool isDisposing)

@@ -39,7 +39,7 @@ internal sealed class DepthEstimationResult
 }
 
 [Guid("c8f7d6e5-4b3a-2c1d-9f8e-7a6b5c4d3e2f")]
-[ExportDependencies("Microsoft.ML.OnnxRuntime.dll", "onnxruntime.dll", "DirectML.dll")]
+[ExportDependencies("Microsoft.ML.OnnxRuntime.dll", "onnxruntime.dll", "DirectML.dll", "libonnxruntime*")]
 public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
 {
     #region Outputs
@@ -276,7 +276,7 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
     private volatile bool _isInitializing;
     private volatile bool _initFailed;
     private volatile bool _requestInFlight;
-    private bool _usingDirectMl;
+    private volatile string _activeProviderLabel = "CPU";
 
     // Render-thread only
     private bool _hasPendingInput;
@@ -537,8 +537,8 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
                     _onnxSession = session;
                 }
 
-                PublishStatus($"Ready ({(_usingDirectMl ? "DirectML" : "CPU")})");
-                Log.Info($"[DepthAnything] Ready ({(_usingDirectMl ? "DirectML" : "CPU")}) - " +
+                PublishStatus($"Ready ({_activeProviderLabel})");
+                Log.Info($"[DepthAnything] Ready ({_activeProviderLabel}) - " +
                                 $"input '{workerContext.InputName}' {session.InputMetadata[workerContext.InputName]}, " +
                                 $"output '{workerContext.OutputName}' {session.OutputMetadata[workerContext.OutputName]}", this);
             }
@@ -664,14 +664,12 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
 
     private static void LogGpuAdapters()
     {
+        if (!OperatingSystem.IsWindows())
+            return;
+
         try
         {
-            using var factory = new SharpDX.DXGI.Factory1();
-            foreach (var adapter in factory.Adapters)
-            {
-                Log.Info($"[DepthAnything] GPU adapter: {adapter.Description.Description}");
-                adapter.Dispose();
-            }
+            LogDxgiAdapters();
         }
         catch
         {
@@ -679,46 +677,93 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
         }
     }
 
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private static void LogDxgiAdapters()
+    {
+        using var factory = new SharpDX.DXGI.Factory1();
+        foreach (var adapter in factory.Adapters)
+        {
+            Log.Info($"[DepthAnything] GPU adapter: {adapter.Description.Description}");
+            adapter.Dispose();
+        }
+    }
+
     private InferenceSession CreateSession(byte[] modelBytes, ExecutionProvider provider)
     {
-        var sessionOptions = new SessionOptions();
-        sessionOptions.GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL;
-
-        // Without this the CPU provider saturates all cores during inference
-        // and starves the render thread
-        int intraOpThreads = Math.Min(4, Math.Max(1, Environment.ProcessorCount));
-sessionOptions.IntraOpNumThreads = intraOpThreads;
-
-        _usingDirectMl = false;
         if (provider == ExecutionProvider.DirectMl)
         {
             LogGpuAdapters();
+        }
 
+        // Without a thread cap the CPU provider saturates all cores during inference
+        // and starves the render thread
+        int intraOpThreads = Math.Min(4, Math.Max(1, Environment.ProcessorCount));
+
+        // Walk the chain and keep the first provider that initializes; CPU is always last and always works
+        foreach (var candidate in GetProviderChain(provider))
+        {
+            if (!IsProviderAvailableOnThisPlatform(candidate))
+            {
+                continue;
+            }
+
+            SessionOptions? options = null;
             try
             {
-                sessionOptions.AppendExecutionProvider_DML(0);
-                _usingDirectMl = true;
+                options = new SessionOptions
+                {
+                    GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL,
+                    IntraOpNumThreads = intraOpThreads
+                };
+
+                switch (candidate)
+                {
+                    case ExecutionProvider.DirectMl:
+                        options.AppendExecutionProvider_DML(0);
+                        break;
+                    case ExecutionProvider.Cuda:
+                        options.AppendExecutionProvider_CUDA(0);
+                        break;
+                    case ExecutionProvider.CoreMl:
+                        options.AppendExecutionProvider_CoreML(CoreMLFlags.COREML_FLAG_USE_NONE);
+                        break;
+                }
+
+                var session = new InferenceSession(modelBytes, options);
+                _activeProviderLabel = ExecutionProviderNames[(int)candidate];
+                return session;
             }
-            catch (Exception ex)
+            catch (Exception ex) when (candidate != ExecutionProvider.Cpu)
             {
-                // The CPU execution provider is always available as fallback
-                Log.Info($"[DepthAnything] DirectML unavailable, using CPU: {ex.Message}", this);
+                Log.Info($"[DepthAnything] {ExecutionProviderNames[(int)candidate]} unavailable, trying next provider: {ex.Message}", this);
+                options?.Dispose();
             }
         }
 
-        try
+        throw new InvalidOperationException("No ONNX execution provider could create a session");
+    }
+
+    private static ExecutionProvider[] GetProviderChain(ExecutionProvider requested)
+    {
+        return requested switch
         {
-            return new InferenceSession(modelBytes, sessionOptions);
-        }
-        catch (Exception ex) when (_usingDirectMl)
+            ExecutionProvider.DirectMl => [ExecutionProvider.DirectMl, ExecutionProvider.Cuda, ExecutionProvider.CoreMl, ExecutionProvider.Cpu],
+            ExecutionProvider.Cuda => [ExecutionProvider.Cuda, ExecutionProvider.CoreMl, ExecutionProvider.Cpu],
+            ExecutionProvider.CoreMl => [ExecutionProvider.CoreMl, ExecutionProvider.Cpu],
+            _ => [ExecutionProvider.Cpu]
+        };
+    }
+
+    /** DirectML exists only on Windows, CUDA in the Windows and Linux GPU builds, CoreML only on macOS. */
+    private static bool IsProviderAvailableOnThisPlatform(ExecutionProvider provider)
+    {
+        return provider switch
         {
-            Log.Info($"[DepthAnything] DirectML session failed, retrying on CPU: {ex.Message}", this);
-            _usingDirectMl = false;
-            var cpuOptions = new SessionOptions();
-            cpuOptions.GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL;
-            cpuOptions.IntraOpNumThreads = 2;
-            return new InferenceSession(modelBytes, cpuOptions);
-        }
+            ExecutionProvider.DirectMl => OperatingSystem.IsWindows(),
+            ExecutionProvider.Cuda => OperatingSystem.IsWindows() || OperatingSystem.IsLinux(),
+            ExecutionProvider.CoreMl => OperatingSystem.IsMacOS(),
+            _ => true
+        };
     }
 
     private DepthEstimationResult ProcessFrame(WorkerContext workerContext, DepthEstimationRequest request, ModelSize modelSize, bool debug)
@@ -1486,7 +1531,9 @@ sessionOptions.IntraOpNumThreads = intraOpThreads;
     public enum ExecutionProvider
     {
         Cpu,
-        DirectMl
+        DirectMl,
+        Cuda,
+        CoreMl
     }
 
     public enum DepthOutputFormat
@@ -1503,7 +1550,7 @@ sessionOptions.IntraOpNumThreads = intraOpThreads;
     private static readonly string[] OutputFormatNames = { "Grayscale", "Color", "Rainbow" };
     private static readonly string[] ModelSizeNames = { "Small", "Base", "Large", "Small Fp32", "Small Int8" };
     private static readonly string[] ResolutionNames = { "Auto", "196", "280", "392", "518" };
-    private static readonly string[] ExecutionProviderNames = { "CPU", "DirectML" };
+    private static readonly string[] ExecutionProviderNames = { "CPU", "DirectML", "CUDA", "CoreML" };
 
     string ICustomDropdownHolder.GetValueForInput(Guid inputId)
     {

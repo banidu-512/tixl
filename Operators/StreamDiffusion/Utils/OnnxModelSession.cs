@@ -10,7 +10,8 @@ internal enum ExecutionProvider
     Cpu,
     DirectMl,
     Cuda,
-    TensorRt
+    TensorRt,
+    CoreMl
 }
 
 /// <summary>
@@ -65,9 +66,10 @@ internal sealed class OnnxModelSession : IDisposable
         var chain = provider switch
         {
             ExecutionProvider.Cpu => new[] { ExecutionProvider.Cpu },
-            ExecutionProvider.DirectMl => new[] { ExecutionProvider.DirectMl, ExecutionProvider.Cuda, ExecutionProvider.Cpu },
-            ExecutionProvider.Cuda => new[] { ExecutionProvider.Cuda, ExecutionProvider.Cpu },
-            ExecutionProvider.TensorRt => new[] { ExecutionProvider.TensorRt, ExecutionProvider.Cuda, ExecutionProvider.Cpu },
+            ExecutionProvider.DirectMl => new[] { ExecutionProvider.DirectMl, ExecutionProvider.Cuda, ExecutionProvider.CoreMl, ExecutionProvider.Cpu },
+            ExecutionProvider.Cuda => new[] { ExecutionProvider.Cuda, ExecutionProvider.CoreMl, ExecutionProvider.Cpu },
+            ExecutionProvider.TensorRt => new[] { ExecutionProvider.TensorRt, ExecutionProvider.Cuda, ExecutionProvider.CoreMl, ExecutionProvider.Cpu },
+            ExecutionProvider.CoreMl => new[] { ExecutionProvider.CoreMl, ExecutionProvider.Cpu },
             _ => new[] { ExecutionProvider.Cpu }
         };
 
@@ -75,6 +77,9 @@ internal sealed class OnnxModelSession : IDisposable
 
         foreach (var candidate in chain)
         {
+            if (!IsProviderAvailableOnThisPlatform(candidate))
+                continue;
+
             SessionOptions? options = null;
             try
             {
@@ -122,6 +127,10 @@ internal sealed class OnnxModelSession : IDisposable
                 options.AppendExecutionProvider_CUDA(deviceId);
                 break;
 
+            case ExecutionProvider.CoreMl:
+                options.AppendExecutionProvider_CoreML(CoreMLFlags.COREML_FLAG_USE_NONE);
+                break;
+
             case ExecutionProvider.TensorRt:
                 // Engine building is slow (minutes per input shape) - persist engines
                 // next to the models so only the first use of a resolution stalls
@@ -146,11 +155,28 @@ internal sealed class OnnxModelSession : IDisposable
         return options;
     }
 
+    /** DirectML exists only on Windows, CUDA and TensorRT only in the Windows and Linux GPU builds. */
+    private static bool IsProviderAvailableOnThisPlatform(ExecutionProvider provider)
+    {
+        return provider switch
+        {
+            ExecutionProvider.DirectMl => OperatingSystem.IsWindows(),
+            ExecutionProvider.CoreMl => OperatingSystem.IsMacOS(),
+            ExecutionProvider.Cuda or ExecutionProvider.TensorRt => OperatingSystem.IsWindows() || OperatingSystem.IsLinux(),
+            _ => true
+        };
+    }
+
     [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
     private static extern bool SetDllDirectory(string? lpPathName);
 
     private static void PreloadCudaRuntimes(string modelPath)
     {
+        // The explicit preload works around the Windows loader; Linux resolves the CUDA libraries
+        // through ld.so (LD_LIBRARY_PATH / ldconfig) when the provider library loads.
+        if (!OperatingSystem.IsWindows())
+            return;
+
         lock (PreloadLock)
         {
             if (_preloadAttempted)
@@ -252,6 +278,7 @@ internal sealed class OnnxModelSession : IDisposable
             ExecutionProvider.DirectMl => "DirectML",
             ExecutionProvider.Cuda => "CUDA",
             ExecutionProvider.TensorRt => "TensorRT",
+            ExecutionProvider.CoreMl => "CoreML",
             _ => "CPU"
         };
     }
