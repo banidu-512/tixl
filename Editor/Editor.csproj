@@ -226,6 +226,8 @@
         <PackageNames Include="Omt" />
         <PackageNames Include="Video" />
         <PackageNames Include="Io" />
+        <PackageNames Include="DepthAnything" />
+        <PackageNames Include="StreamDiffusion" />
         <PackageNames Include="Mediapipe">
             <Name>t3.mediapipe</Name>
         </PackageNames>

@@ -1,0 +1,210 @@
+{
+  "FormatVersion": 3,
+  "Id": "9A7B3C8D-4E2F-5A6B-7C8D-9E0F1A2B3C4D"/*StreamDiffusion*/,
+  "Description": "AI image generation using Stable Diffusion with ONNX Runtime (DirectML). Supports text-to-image and image-to-image generation.\n\nThis operator runs SD 1.x / SD-Turbo models exported to ONNX. It can generate images from text prompts or transform existing images.\n\nTips:\n- Point `EnginePath` to a folder containing unet.onnx, text_encoder.onnx, vae_decoder.onnx and tokenizer files.\n- Add vae_encoder.onnx to enable img2img mode.\n- Use `TriggerGenerate` for manual generation or enable `AutoGenerate` for continuous output.\n- Adjust `Strength` in img2img mode to control how much the input influences the output.\n- Lower `Steps` = faster but lower quality; 1 step is good for SD Turbo models.\n- `Guidance` controls prompt adherence (1.0 = balanced, higher = stronger prompt).\n- Use `MatchInputSize` in img2img to preserve the input image dimensions.\n- `ResizeMode` controls how the input image fits the output size.\n- `PreserveDetails` blends the original input back into the result for structure retention.\n\nAKA: stable diffusion, ai, generation, diffusion, onnx, directml, streamdiffusion, txt2img, img2img",
+  "InputUis": [
+    {
+      "InputId": "A1B2C3D4-E5F6-7890-ABCD-EF1234567890"/*EnginePath*/,
+      "Position": {
+        "X": -250,
+        "Y": -350
+      },
+      "Description": "Path to the model folder containing unet.onnx, text_encoder.onnx, vae_decoder.onnx and tokenizer files. Add vae_encoder.onnx for img2img.",
+      "Usage": "FilePath",
+      "FileFilter": "onnx"
+    },
+    {
+      "InputId": "B2C3D4E5-F6A7-8901-BCDE-F12345678901"/*Mode*/,
+      "Position": {
+        "X": -250,
+        "Y": -300
+      },
+      "Description": "Generation mode: Text to Image creates from scratch, Image to Image transforms an input.",
+      "Usage": "CustomDropdown"
+    },
+    {
+      "InputId": "F2A3B4C5-D6E7-8901-5678-012345678901"/*ModelType*/,
+      "Position": {
+        "X": -250,
+        "Y": -250
+      },
+      "Description": "Model variant label (informational only). The actual model is defined by the ONNX files in EnginePath. This does not change runtime behavior.",
+      "Usage": "CustomDropdown"
+    },
+    {
+      "InputId": "A3B4C5D6-E7F8-9012-6789-123456789012"/*CudaDevice*/,
+      "Position": {
+        "X": -250,
+        "Y": -200
+      },
+      "Description": "DirectML device index for multi-GPU systems. Shows available adapters in dropdown.",
+      "Usage": "CustomDropdown"
+    },
+    {
+      "InputId": "C3D4E5F6-A7B8-9012-CDEF-123456789012"/*Prompt*/,
+      "Position": {
+        "X": -250,
+        "Y": -150
+      },
+      "Description": "Text prompt describing the desired image. Be descriptive for better results.",
+      "DefaultString": "a beautiful landscape"
+    },
+    {
+      "InputId": "D4E5F6A7-B8C9-0123-DEF0-234567890123"/*NegativePrompt*/,
+      "Position": {
+        "X": -250,
+        "Y": -100
+      },
+      "Description": "Things to avoid in the generated image. Empty = no negative prompt.",
+      "DefaultString": ""
+    },
+    {
+      "InputId": "E5F6A7B8-C9D0-1234-EF01-345678901234"/*Seed*/,
+      "Position": {
+        "X": -250,
+        "Y": -50
+      },
+      "Description": "Random seed for generation. -1 = random, same value = reproducible output.",
+      "DefaultInt": -1
+    },
+    {
+      "InputId": "F6A7B8C9-D0E1-2345-F012-456789012345"/*Width*/,
+      "Position": {
+        "X": -250,
+        "Y": 0
+      },
+      "Description": "Output image width. Must match or be supported by the engine.",
+      "DefaultInt": 512,
+      "Min": 256,
+      "Max": 4096,
+      "ClampMin": true
+    },
+    {
+      "InputId": "A7B8C9D0-E1F2-3456-0123-567890123456"/*Height*/,
+      "Position": {
+        "X": -250,
+        "Y": 50
+      },
+      "Description": "Output image height. Must match or be supported by the engine.",
+      "DefaultInt": 512,
+      "Min": 256,
+      "Max": 4096,
+      "ClampMin": true
+    },
+    {
+      "InputId": "C9D0E1F2-A3B4-5678-2345-789012345678"/*Strength*/,
+      "Position": {
+        "X": -250,
+        "Y": 100
+      },
+      "Description": "In img2img mode, how much to transform the input (0.0 = no change, 1.0 = completely new).",
+      "DefaultFloat": 0.8,
+      "Min": 0.0,
+      "Max": 1.0
+    },
+    {
+      "InputId": "B8C9D0E1-F2A3-4567-1234-678901234567"/*Guidance*/,
+      "Position": {
+        "X": -250,
+        "Y": 150
+      },
+      "Description": "Classifier-free guidance strength. Higher = more prompt adherence, lower = more creative/random.",
+      "DefaultFloat": 1.0,
+      "Min": 0.5,
+      "Max": 15.0
+    },
+    {
+      "InputId": "D0E1F2A3-B4C5-6789-3456-890123456789"/*Steps*/,
+      "Position": {
+        "X": -250,
+        "Y": 200
+      },
+      "Description": "Number of denoising steps. More = better quality but slower. SD Turbo models work well with 1 step.",
+      "DefaultInt": 1,
+      "Min": 1,
+      "Max": 50,
+      "ClampMin": true
+    },
+    {
+      "InputId": "E1F2A3B4-C5D6-7890-4567-901234567890"/*InputImage*/,
+      "Position": {
+        "X": -250,
+        "Y": 250
+      },
+      "Description": "Source image for img2img mode. Ignored in txt2img mode."
+    },
+    {
+      "InputId": "D1E2F3A4-B5C6-7890-1234-567890123456"/*MatchInputSize*/,
+      "Position": {
+        "X": -250,
+        "Y": 300
+      },
+      "Description": "When enabled, overrides Width/Height with the input image dimensions for 1:1 pixel mapping.",
+      "DefaultBool": false
+    },
+    {
+      "InputId": "E2F3A4B5-C6D7-8901-2345-678901234567"/*ResizeMode*/,
+      "Position": {
+        "X": -250,
+        "Y": 350
+      },
+      "Description": "How the input image fits the output: Stretch = fill, CenterCrop = crop then fill, Pad = fit with borders.",
+      "Usage": "CustomDropdown",
+      "DefaultInt": 0
+    },
+    {
+      "InputId": "F3A4B5C6-D7E8-9012-3456-789012345678"/*PreserveDetails*/,
+      "Position": {
+        "X": -250,
+        "Y": 400
+      },
+      "Description": "Blend the original input back into the output to retain structure (0 = pure diffusion, 1 = exact input).",
+      "DefaultFloat": 0.0,
+      "Min": 0.0,
+      "Max": 1.0
+    },
+    {
+      "InputId": "B4C5D6E7-F8A9-0123-7890-234567890123"/*TriggerGenerate*/,
+      "Position": {
+        "X": -250,
+        "Y": 450
+      },
+      "Description": "Momentarily true to trigger a single generation when AutoGenerate is off."
+    },
+    {
+      "InputId": "C5D6E7F8-A9B0-1234-8901-345678901234"/*AutoGenerate*/,
+      "Position": {
+        "X": -250,
+        "Y": 500
+      },
+      "Description": "Continuously regenerate when inputs change. Disable for manual trigger mode."
+    }
+  ],
+  "SymbolChildUis": [],
+  "OutputUis": [
+    {
+      "OutputId": "D8E2F9A1-7B3C-4D5E-8F9A-1B2C3D4E5F6A"/*Output*/,
+      "Position": {
+        "X": 200,
+        "Y": -350
+      },
+      "Description": "Generated image texture."
+    },
+    {
+      "OutputId": "E9F3A2B1-8C4D-5E6F-9A1B-2C3D4E5F6A7B"/*OutputSize*/,
+      "Position": {
+        "X": 200,
+        "Y": -300
+      },
+      "Description": "Dimensions of the generated image."
+    },
+    {
+      "OutputId": "F1A4B3C2-9D5E-6F7A-0B2C-3D4E5F6A7B8C"/*GenerationTime*/,
+      "Position": {
+        "X": 200,
+        "Y": -250
+      },
+      "Description": "Time in seconds for the last generation."
+    }
+  ]
+}
