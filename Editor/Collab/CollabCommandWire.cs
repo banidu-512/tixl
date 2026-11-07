@@ -93,11 +93,8 @@ internal static class CollabCommandWire
                        ["c"] = command.CompositionSymbolIdForCollab,
                        ["ch"] = command.ChildIdForCollab,
                        ["i"] = command.InputIdForCollab,
-                       // Parsed into a JSON value, not stored as the string it was serialized to: the
-                       // receiver feeds the token straight into SetValueFromJson, whose converter needs
-                       // a numeric/object token to produce the typed value.
-                       ["v"] = JToken.Parse(InputValueToJson(command.NewValueForCollab)),
-                       ["pv"] = JToken.Parse(InputValueToJson(command.OriginalValueForCollab)),
+                       ["v"] = InputValueToJson(command.NewValueForCollab),
+                       ["pv"] = InputValueToJson(command.OriginalValueForCollab),
                    };
     }
 
@@ -144,13 +141,13 @@ internal static class CollabCommandWire
         var inputs = new JObject();
         foreach (var (inputId, value) in restoreData.InputValues)
         {
-            inputs[inputId.ToString()] = JToken.Parse(InputValueToJson(value));
+            inputs[inputId.ToString()] = InputValueToJson(value);
         }
 
         var clips = new JObject();
         foreach (var (outputId, timeClip) in restoreData.TimeClips)
         {
-            clips[outputId.ToString()] = JToken.Parse(TimeClipToJson(timeClip));
+            clips[outputId.ToString()] = TimeClipToJson(timeClip);
         }
 
         var connections = new JArray();

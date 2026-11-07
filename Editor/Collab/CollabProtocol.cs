@@ -37,23 +37,14 @@ internal static class CollabProtocol
     public const int DefaultTcpPort = 44700;
     public const int DefaultRelayPort = 44710;
 
-    /// <summary>
-    /// Relay used when none is configured, so a session ID is all a joiner needs. Empty falls back to
-    /// a relay on this machine.
-    /// </summary>
-    public const string DefaultRelayHost = "10.0.0.222";
-
     /// <summary>Hard upper bound for one reliable frame including the type byte.</summary>
     public const int MaxFrameSize = 4 * 1024 * 1024;
 
     /// <summary>Hard upper bound for one JSON payload. Ops are tiny; anything bigger is hostile or buggy.</summary>
     public const int MaxJsonPayload = 1024 * 1024;
 
-    /// <summary>Expected size of one presence datagram with a full selection list (connId, flags, guid, 2 floats, count, 15 guids, wheel byte).</summary>
-    public const int MaxPresencePayload = 2 + 16 + 8 + 1 + 15 * 16 + 1 + 3 + 1 + MaxPressedKeysPerPresence;
-
-    /// <summary>Keys shown next to a remote cursor; more held at once are dropped.</summary>
-    public const int MaxPressedKeysPerPresence = 4;
+    /// <summary>Expected size of one presence datagram with a full selection list (connId, flags, guid, 2 floats, count, 15 guids).</summary>
+    public const int MaxPresencePayload = 2 + 16 + 8 + 1 + 15 * 16;
 
     public const int MaxPeers = 16;
     public const int MaxSelectionIdsPerPresence = 15;
@@ -73,16 +64,7 @@ internal static class CollabProtocol
         Json = 1,
         Presence = 2,
         Heartbeat = 3,
-
-        /// <summary>
-        /// WebRTC SDP/ICE for a relay session. It is routed like any other frame — the relay never
-        /// inspects it — and consumed by the transport, so the session protocol never sees it.
-        /// </summary>
-        Signal = 4,
     }
-
-    /// <summary>SDP offers and ICE candidates are small; anything larger is a broken or hostile peer.</summary>
-    public const int MaxSignalPayload = 64 * 1024;
 
     /// <summary>Opens a TCP connection, giving up after <see cref="ConnectTimeoutMs"/>. Throws on failure.</summary>
     public static TcpClient ConnectWithTimeout(IPEndPoint endPoint)
@@ -172,31 +154,6 @@ internal static class CollabProtocol
         return Encoding.UTF8.GetBytes(json);
     }
 
-    /// <summary>
-    /// Round trip of an echoed heartbeat, in milliseconds. The echo carries the sender's own
-    /// TickCount64, so the difference is the path latency; a corrupt or stale value is reported as -1
-    /// instead of a nonsense number in the participant table.
-    /// </summary>
-    public static int MeasureHeartbeatRtt(ReadOnlySpan<byte> echo)
-    {
-        if (echo.Length != HeartbeatPingSize + 1)
-            return -1;
-
-        var sent = BitConverter.ToInt64(echo);
-        var rtt = Environment.TickCount64 - sent;
-        return rtt is >= 0 and <= 10_000 ? (int)rtt : -1;
-    }
-
-    /// <summary>
-    /// True for the host's "kicked" control message. A WebRTC client drops relay frames once its
-    /// data channel is up, but this one must still get through or a removed participant never leaves.
-    /// </summary>
-    public static bool IsKickJson(ReadOnlySpan<byte> payload)
-    {
-        return TryDecodeJson(payload, out var json)
-               && string.Equals(GetString(json, "t"), "kicked", StringComparison.Ordinal);
-    }
-
     public static bool TryDecodeJson(ReadOnlySpan<byte> payload, out JObject json)
     {
         json = null!;
@@ -216,76 +173,21 @@ internal static class CollabProtocol
 
     public static string GetString(JObject json, string property, string fallback = "")
     {
-        if (!json.TryGetValue(property, out var value))
-            return fallback;
-
-        return value.Type switch
-                   {
-                       JTokenType.Null or JTokenType.Undefined => fallback,
-                       JTokenType.String => value.Value<string>() ?? fallback,
-                       _ => value.ToString(),
-                   };
+        return json.TryGetValue(property, out var value) ? value.Value<string>() ?? fallback : fallback;
     }
 
     public static bool TryGetGuid(JObject json, string property, out Guid guid)
     {
         guid = Guid.Empty;
-        if (!json.TryGetValue(property, out var value))
-            return false;
-
-        // A malformed op must not take the host down: only string/Guid tokens are candidates.
-        switch (value.Type)
-        {
-            case JTokenType.String:
-                return Guid.TryParse(value.Value<string>(), out guid);
-            case JTokenType.Guid:
-                guid = value.Value<Guid>();
-                return true;
-            default:
-                return false;
-        }
+        return json.TryGetValue(property, out var value)
+               && Guid.TryParse(value.Value<string>(), out guid);
     }
 
     public static bool TryGetInt(JObject json, string property, out int value)
     {
         value = 0;
-        if (!json.TryGetValue(property, out var token))
-            return false;
-
-        try
-        {
-            switch (token.Type)
-            {
-                case JTokenType.Integer:
-                {
-                    var number = token.Value<long>();
-                    if (number is < int.MinValue or > int.MaxValue)
-                        return false;
-
-                    value = (int)number;
-                    return true;
-                }
-                case JTokenType.Float:
-                {
-                    var number = token.Value<double>();
-                    if (double.IsNaN(number) || double.IsInfinity(number) || number < int.MinValue || number > int.MaxValue)
-                        return false;
-
-                    value = (int)number;
-                    return true;
-                }
-                case JTokenType.String:
-                    return int.TryParse(token.Value<string>(), out value);
-                default:
-                    return false;
-            }
-        }
-        catch (Exception e) when (e is OverflowException or InvalidCastException or FormatException)
-        {
-            // A JSON integer beyond long (Newtonsoft stores it as BigInteger) is still just a miss.
-            value = 0;
-            return false;
-        }
+        return json.TryGetValue(property, out var token)
+               && int.TryParse(token.Value<string>(), out value);
     }
 }
 
@@ -302,35 +204,14 @@ internal sealed class PresencePacket
     public Vector2 CursorOnCanvas;
     public Guid[] SelectedChildIds = [];
 
-    /// <summary>Decaying wheel-spin value (signed ticks), appended to the payload so peers can show
-    /// scrolling. Zero for peers on an older build that doesn't send it.</summary>
-    public sbyte WheelSpin;
-
-    /// <summary>The participant's chosen cursor color as 0xRRGGBB; 0 lets receivers derive one from the user id.</summary>
-    public int ColorRgb;
-
-    /// <summary>Key codes held right now, as the interaction overlay labels them.</summary>
-    public byte[] PressedKeys = [];
-
     public const byte FlagHoveringCanvas = 0x01;
-    public const byte FlagLeftButton = 0x02;
-    public const byte FlagRightButton = 0x04;
-    public const byte FlagMiddleButton = 0x08;
-    public const byte FlagDoubleClick = 0x10;
-    public const byte FlagAddingOperator = 0x20;
 
     public bool IsHoveringCanvas => (Flags & FlagHoveringCanvas) != 0;
-    public bool IsLeftButtonDown => (Flags & FlagLeftButton) != 0;
-    public bool IsRightButtonDown => (Flags & FlagRightButton) != 0;
-    public bool IsMiddleButtonDown => (Flags & FlagMiddleButton) != 0;
-    public bool IsDoubleClick => (Flags & FlagDoubleClick) != 0;
-    public bool IsAddingOperator => (Flags & FlagAddingOperator) != 0;
 
     public int Encode(Span<byte> target)
     {
         var selectionCount = Math.Min(SelectedChildIds.Length, CollabProtocol.MaxSelectionIdsPerPresence);
-        var keyCount = Math.Min(PressedKeys.Length, CollabProtocol.MaxPressedKeysPerPresence);
-        var size = 2 + 16 + 8 + 1 + selectionCount * 16 + 1 + 3 + 1 + keyCount;
+        var size = 2 + 16 + 8 + 1 + selectionCount * 16;
         if (target.Length < size)
             return 0;
 
@@ -344,17 +225,6 @@ internal sealed class PresencePacket
         {
             SelectedChildIds[i].TryWriteBytes(target.Slice(27 + i * 16, 16));
         }
-
-        // Appended rather than inserted: an older peer reads the selection list at the same offsets and
-        // ignores the trailing byte, so mixed-version sessions keep exchanging cursors.
-        var tail = 27 + selectionCount * 16;
-        target[tail] = unchecked((byte)WheelSpin);
-        target[tail + 1] = (byte)(ColorRgb >> 16);
-        target[tail + 2] = (byte)(ColorRgb >> 8);
-        target[tail + 3] = (byte)ColorRgb;
-        target[tail + 4] = (byte)keyCount;
-        for (var i = 0; i < keyCount; i++)
-            target[tail + 5 + i] = PressedKeys[i];
 
         return size;
     }
@@ -372,7 +242,6 @@ internal sealed class PresencePacket
         if (payload.Length < 27 + selectionCount * 16)
             return false;
 
-        var wheelOffset = 27 + selectionCount * 16;
         packet = new PresencePacket
                      {
                          PeerId = payload[0],
@@ -381,16 +250,7 @@ internal sealed class PresencePacket
                          CursorOnCanvas = new Vector2(BinaryPrimitives.ReadSingleLittleEndian(payload.Slice(18, 4)),
                                                       BinaryPrimitives.ReadSingleLittleEndian(payload.Slice(22, 4))),
                          SelectedChildIds = new Guid[selectionCount],
-                         WheelSpin = payload.Length > wheelOffset ? unchecked((sbyte)payload[wheelOffset]) : (sbyte)0,
                      };
-
-        // Color and keys come after the wheel byte; peers on an older build stop before them.
-        if (payload.Length >= wheelOffset + 5)
-        {
-            packet.ColorRgb = (payload[wheelOffset + 1] << 16) | (payload[wheelOffset + 2] << 8) | payload[wheelOffset + 3];
-            var keyCount = Math.Min((int)payload[wheelOffset + 4], Math.Min(CollabProtocol.MaxPressedKeysPerPresence, payload.Length - wheelOffset - 5));
-            packet.PressedKeys = payload.Slice(wheelOffset + 5, keyCount).ToArray();
-        }
 
         for (var i = 0; i < selectionCount; i++)
         {
