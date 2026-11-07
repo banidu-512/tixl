@@ -53,6 +53,10 @@ namespace libomtnet.src.mdns
         private IPEndPoint mdns6;
 
         private object lockSync = new object();
+
+        // Adapters without multicast support (VPN/virtual) make GetIPv4/IPv6Properties throw on Windows;
+        // one note instead of a stack trace per adapter keeps the log readable.
+        private static bool loggedUnusableAdapter;
         public MDNSClient(string serviceType)
         {
             query = CreateDNSQuery(serviceType);
@@ -99,7 +103,11 @@ namespace libomtnet.src.mdns
                             }
                             catch (Exception ex)
                             {
-                                OMTLogging.Write(ex.ToString(), "MDNSClient");
+                                if (!loggedUnusableAdapter)
+                                {
+                                    loggedUnusableAdapter = true;
+                                    OMTLogging.Write($"Skipping an adapter whose multicast properties are unavailable ({ex.GetType().Name}: {ex.Message}); further skips are silent.", "MDNSClient");
+                                }
                             }
                             try
                             {
@@ -112,7 +120,11 @@ namespace libomtnet.src.mdns
                             }
                             catch (Exception ex)
                             {
-                                OMTLogging.Write(ex.ToString(), "MDNSClient");
+                                if (!loggedUnusableAdapter)
+                                {
+                                    loggedUnusableAdapter = true;
+                                    OMTLogging.Write($"Skipping an adapter whose multicast properties are unavailable ({ex.GetType().Name}: {ex.Message}); further skips are silent.", "MDNSClient");
+                                }
                             }
                         }
                     }

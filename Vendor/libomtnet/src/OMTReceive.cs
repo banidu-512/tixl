@@ -75,6 +75,12 @@ namespace libomtnet
 
         private DateTime lastBeginConnect = DateTime.MinValue;
 
+        // Automatic reconnect after the channel died (sender restart, network blip). Discovery
+        // re-announcements also reconnect via Notify, but a sender that comes back without one
+        // used to leave this receiver bound to a dead channel until it was re-bound by hand.
+        private Timer reconnectTimer = null;
+        private int reconnectDelayMs = 1000;
+
         internal delegate void RedirectChangedEventHandler(object sender, OMTRedirectChangedEventArgs e);
         internal event RedirectChangedEventHandler RedirectChanged;
         private string redirectAddress = null;
@@ -282,6 +288,8 @@ namespace libomtnet
                 lastVideoFrame.Dispose();
                 lastVideoFrame = null;
             }
+            reconnectTimer?.Dispose();
+            reconnectTimer = null;
             base.DisposeInternal();
         }
                
@@ -528,6 +536,49 @@ namespace libomtnet
                 {
                     discoveryClient.Disconnected();
                 }
+
+                ScheduleReconnect();
+            }
+        }
+
+        /// <summary>
+        /// Re-establishes the channel after a disconnect, retrying with exponential backoff until the
+        /// connection is live again. Attempts go through <see cref="BeginConnect"/>, which re-resolves
+        /// the address through discovery (so a sender that re-announces under the same name is found)
+        /// and is throttled to one attempt per second on its own.
+        /// </summary>
+        private void ScheduleReconnect()
+        {
+            lock (connectSync)
+            {
+                if (Exiting || IsConnected() || reconnectTimer != null)
+                    return;
+
+                var delay = reconnectDelayMs;
+                reconnectDelayMs = Math.Min(reconnectDelayMs * 2, 10000);
+                reconnectTimer = new Timer(_ =>
+                {
+                    lock (connectSync)
+                    {
+                        reconnectTimer.Dispose();
+                        reconnectTimer = null;
+                    }
+
+                    if (Exiting)
+                        return;
+
+                    if (IsConnected())
+                    {
+                        reconnectDelayMs = 1000;
+                        return;
+                    }
+
+                    BeginConnect();
+
+                    // A failed connect attempt raises no disconnect event, so keep re-arming until the
+                    // channel is back; the delay doubles from 1s up to 10s while nothing responds.
+                    ScheduleReconnect();
+                }, null, delay, Timeout.Infinite);
             }
         }
 
