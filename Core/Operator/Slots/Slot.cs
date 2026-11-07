@@ -247,6 +247,20 @@ public class Slot<T> : ISlot, ITimeClipRemapTarget
 
     public void ConnectedUpdate(EvaluationContext context)
     {
+        // Rewiring during evaluation can leave a slot in connected-update mode after its connection is
+        // already gone; indexing the empty array used to take the editor down. Keeping the last value
+        // degrades to a stale input instead.
+        if (InputConnections.Length == 0)
+        {
+            if (!_warnedAboutMissingConnection)
+            {
+                _warnedAboutMissingConnection = true;
+                Log.Warning($"{Parent}: update with no input connection - keeping the last value.");
+            }
+
+            return;
+        }
+
         Value = InputConnections[0].GetValue(context)!;
     }
         
@@ -339,6 +353,8 @@ public class Slot<T> : ISlot, ITimeClipRemapTarget
     }
 
     protected Slot<T>[] InputConnections = [];
+
+    private bool _warnedAboutMissingConnection;
 
     public int InvalidateGraph()
     {
