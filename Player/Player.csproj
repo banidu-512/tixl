@@ -12,6 +12,9 @@
         <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
         <EnableUnsafeBinaryFormatterSerialization>true</EnableUnsafeBinaryFormatterSerialization>
         <Deterministic>true</Deterministic>
+        <!-- Startup reads and parses thousands of small symbol files, which is allocation heavy; server GC
+             parallelizes collection across cores instead of stalling the load on single-threaded GC. -->
+        <ServerGarbageCollection>true</ServerGarbageCollection>
         <NoWarn>$(NoWarn);NU1900</NoWarn>
     </PropertyGroup>
 
