@@ -1,0 +1,16 @@
+{
+  "FormatVersion": 3,
+  "Id": "70b83837-48fa-53ad-8b68-504bceff2848"/*LoadVdb*/,
+  "Inputs": [
+    {
+      "Id": "1e3dcc23-489a-5a54-b1af-c04d85ac3b8a"/*GridName*/,
+      "DefaultValue": ""
+    },
+    {
+      "Id": "e16c0dad-a228-5a6f-964b-82986746836e"/*Path*/,
+      "DefaultValue": ""
+    }
+  ],
+  "Children": [],
+  "Connections": []
+}
