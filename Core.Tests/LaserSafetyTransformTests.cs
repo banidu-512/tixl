@@ -130,10 +130,11 @@ public class LaserSafetyTransformTests
     [Fact]
     public void LimitStaticDwell_BlanksPointsBeyondCap()
     {
-        // 100 identical lit points; cap of 64 leaves the first 64 lit, blanks the rest
+        // 100 identical lit points, then a blanked move away and back; cap of 64 leaves the first 64 lit
         var points = new List<LaserPoint>();
         for (var i = 0; i < 100; i++)
             points.Add(Lit(100, 100));
+        points.Add(LaserPoint.CreateBlanked(5000, 5000));
 
         var config = LaserSafetyTransforms.Config.Default;
         config.MaxStaticPoints = 64;
@@ -200,8 +201,8 @@ public class LaserSafetyTransformTests
         Assert.Equal(32767, points[0].R);
         Assert.Equal(16384, points[0].G);
         Assert.Equal(0, points[0].B);
-        // The blanking gate is preserved
-        Assert.Equal(65535, points[0].I);
+        // I carries the ceiling too (single-colour projectors are driven from it), and stays lit
+        Assert.Equal(32767, points[0].I);
         Assert.Equal(1, stats.IntensityScaled);
     }
 
@@ -515,8 +516,9 @@ public class LaserSafetyTransformTests
     public void LimitStaticDwell_FullFieldStepCountsAsMovement()
     {
         // 65534 squared overflows int; the step must still read as motion, not as a frozen beam.
+        // Even count, so the loop seam (last back to first) is a full-field step as well.
         var points = Points(Lit(-32767, 0));
-        for (var i = 0; i < 4; i++)
+        for (var i = 0; i < 5; i++)
             points.Add(Lit(i % 2 == 0 ? 32767 : -32767, 0));
 
         var config = LaserSafetyTransforms.Config.Default;

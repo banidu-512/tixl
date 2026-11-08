@@ -35,8 +35,8 @@ Three layers of software safety ship with the laser output. They reduce risk fro
 * **Calibrated gate**: while off, upstream content is ignored and only the setup rectangle streams.
 * **Safe zone**: hard-clips all points into a configurable region of the field (build audience keep-out areas).
 * **Jump limiting**: subdivides over-long jumps so scanners track linearly instead of overshooting.
-* **Static-dwell blanking**: blanks a beam that sits near-motionless too long (the classic scan-fail hazard).
-* **Show brightness ceiling**: hard cap on R/G/B regardless of what content requests.
+* **Static-dwell blanking**: blanks a beam that sits near-motionless too long (the classic scan-fail hazard). The DAC replays the last frame until a new one arrives, so dwell is measured across the frame loop: a run continues over the frame seam, and a frame that never moves at all has every lit point blanked - which also means a frame that is *only* a static spot (a single beam dot without motion) renders dark. Beam effects need motion.
+* **Show brightness ceiling**: hard cap on R/G/B regardless of what content requests; single-colour setups driven from the intensity channel are capped through `I` the same way.
 * **Beam enable**: per-output master switch; off blanks every point but keeps the geometry.
 
 **The laser plug's device settings** (Output Setup - select the plug under Local Bindings):
@@ -48,10 +48,13 @@ Three layers of software safety ship with the laser output. They reduce risk fro
 * Defaults to **off** on every editor start; no light leaves the projector until you click it.
 * A click zeroes every beam at once - the scanners keep scanning the last geometry (settled, so they never park mid-stroke) with the intensity zeroed.
 * It stays orange while any laser output is still uncalibrated: the alignment rectangle, not show content, is what streams.
+* **A device E-stop disarms it.** When a projector reports its hardware/network E-stop engaged, the master latches off for *all* laser outputs; re-arming the master is the operator action that sends the clear command - and if the cause persists, the master drops again. No code path clears an E-stop automatically.
+* Muting an output, or its content going empty, submits a dark frame to that output immediately instead of leaving the last lit frame on the wall until the watchdog.
 
 **The transport door** (built into every transport, always active):
 
 * The output's safety limits are re-applied to every frame right at the point of submission, before encoding - no code path can stream a frame that skips the safe zone, jump/dwell limits or brightness ceiling.
+* The blanking gate is honoured end to end: a point with `I <= 0` is *dark* - its colour is zeroed at encoding too, and it skips the brightness cap, dwell audit and bounds check as a blank. A coloured point with zero intensity can never glow.
 
 **The frame watchdog** (built into the transports, always active):
 

@@ -63,9 +63,36 @@ public static class LaserPipeline
         /// </summary>
         public LaserPoint[] Apply(LaserProcessingSettings settings, LaserPoint[]? input, int count, out string status, out int frameCount)
         {
+            var result = Apply(settings, input, count, out frameCount);
+            status = DescribeLastRun();
+            return result;
+        }
+
+        /// <summary>The status line of the last <see cref="Apply(LaserProcessingSettings, LaserPoint[], int, out int)"/>.
+        /// Built on request: the pump discards it, and formatting it per output per pump is garbage at show rate.</summary>
+        public string DescribeLastRun() => _lastRun switch
+                                               {
+                                                   LastRun.NoSettings => "No laser processing settings",
+                                                   LastRun.SetupQuad => "Safety setup (frame corners): drag the 4 corners in the frame preview"
+                                                                        + " - switch Calibrated on for content",
+                                                   LastRun.SetupRectangle => _lastSettings?.Safety.DescribeSetup() ?? string.Empty,
+                                                   LastRun.NoInput => "No input points",
+                                                   _ => _lastStats.Describe(_resultWritten),
+                                               };
+
+        private enum LastRun { NoSettings, SetupQuad, SetupRectangle, NoInput, Content }
+
+        private LastRun _lastRun;
+        private LaserProcessingSettings? _lastSettings;
+        private LaserSafetyTransforms.Stats _lastStats;
+
+        /// <summary>Same as the status overload, without building the status line.</summary>
+        public LaserPoint[] Apply(LaserProcessingSettings settings, LaserPoint[]? input, int count, out int frameCount)
+        {
+            _lastSettings = settings;
             if (settings == null)
             {
-                status = "No laser processing settings";
+                _lastRun = LastRun.NoSettings;
                 frameCount = 0;
                 return [];
             }
@@ -76,15 +103,14 @@ public static class LaserPipeline
                 // trapezes it against a skewed screen before switching Calibrated on.
                 if (settings.Safety.FrameWarp)
                 {
-                    status = "Safety setup (frame corners): drag the 4 corners in the frame preview"
-                             + " - switch Calibrated on for content";
+                    _lastRun = LastRun.SetupQuad;
                     var quad = BuildSetupQuad(WarpQuadFromSafety(settings.Safety));
                     frameCount = quad.Length;
                     return quad;
                 }
 
                 RectFromSafety(settings.Safety, out var cx, out var cy, out var hw, out var hh);
-                status = settings.Safety.DescribeSetup();
+                _lastRun = LastRun.SetupRectangle;
 
                 // Pumped every interval while an output is being aimed: rebuilt only when the rectangle moves.
                 if (_setupRectangle == null || _setupRectangleKey != (cx, cy, hw, hh))
@@ -99,7 +125,7 @@ public static class LaserPipeline
 
             if (input == null || count <= 0)
             {
-                status = "No input points";
+                _lastRun = LastRun.NoInput;
                 for (var i = 0; i < _resultWritten; i++)
                     _result[i] = default;
 
@@ -115,10 +141,9 @@ public static class LaserPipeline
             for (var i = 0; i < optimizedCount; i++)
                 _safetyWorkList.Add(optimized[i]);
 
-            var stats = new LaserSafetyTransforms.Stats();
             var safetyConfig = settings.Safety.ToConfig();
-            var result = LaserSafetyTransforms.Apply(_safetyWorkList, _safetySpareList, in safetyConfig, ref stats);
-            status = stats.Describe(result.Count);
+            var result = LaserSafetyTransforms.Apply(_safetyWorkList, _safetySpareList, in safetyConfig, ref _lastStats);
+            _lastRun = LastRun.Content;
 
             // The optimizer's buffer is free again once its points are in the work list - the
             // safety result lands there instead of a fresh allocation. Points past the frame are
@@ -235,8 +260,9 @@ public static class LaserPipeline
     /// full field quad lands on the four corners, so straight lines stay straight while the
     /// picture can be trapezed onto a skewed screen. Runs instead of <see cref="MapFrameIntoZone"/>;
     /// the safety transforms still clamp the result afterwards. Returns a new array - the input is
-    /// the camera's live backing list and must not be mutated. A degenerate corner set (three
-    /// collinear corners) returns the input unchanged rather than a broken frame.
+    /// the camera's live backing list and must not be mutated. A degenerate corner set (repeated or
+    /// collinear corners, a bow-tie) returns null: the frame goes dark. Falling back to the unwarped
+    /// frame would throw the content across the whole field while the user meant a small screen.
     /// </summary>
     public static LaserPoint[]? WarpFrameIntoQuad(LaserPoint[]? input, int count, LaserProcessingSettings.SafetySettings safety, LaserPoint[]? destination = null)
     {
@@ -256,10 +282,10 @@ public static class LaserPipeline
 
         var destinationQuad = WarpQuadFromSafety(safety);
         if (!IsSimpleQuad(destinationQuad))
-            return input;
+            return null;
 
         if (!Homography.TryComputeQuadToQuad(source, destinationQuad, out var warp))
-            return input;
+            return null;
 
         var mapped = destination != null && destination.Length >= count ? destination : new LaserPoint[count];
         for (var i = 0; i < count; i++)
@@ -316,8 +342,8 @@ public static class LaserPipeline
 
     /// <summary>Rejects quads without a meaningful, non-self-intersecting interior — a repeated
     /// corner collapses an edge, three collinear corners collapse the area, and a bow-tie
-    /// ordering makes the homography fold the frame over itself. In every case the input is
-    /// returned unchanged instead of a broken warp.</summary>
+    /// ordering makes the homography fold the frame over itself. In every case the warp is
+    /// refused and the frame goes dark instead of being folded.</summary>
     private static bool IsSimpleQuad(Vector2[] corners)
     {
         if (corners is not { Length: >= 4 })

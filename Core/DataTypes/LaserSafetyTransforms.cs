@@ -5,7 +5,7 @@ namespace T3.Core.DataTypes;
 
 /// <summary>
 /// Point-data safety transforms for laser output, applied in a fixed order:
-/// scan-field clamp → jump-distance limiting → static-dwell blanking →
+/// blanking normalization → scan-field clamp → jump-distance limiting → static-dwell blanking →
 /// intensity ceiling → out-of-bounds audit. A later stage relies on the guarantees
 /// of the earlier ones, so the order must not be changed.
 ///
@@ -123,6 +123,8 @@ public static class LaserSafetyTransforms
         if (points.Count == 0)
             return points;
 
+        NormalizeBlanking(points);
+
         if (!config.BeamEnable)
         {
             for (var i = 0; i < points.Count; i++)
@@ -175,6 +177,22 @@ public static class LaserSafetyTransforms
         result.StaticDistance = Math.Clamp(result.StaticDistance, 0, FieldMax * 2);
 
         return result;
+    }
+
+    /// <summary>
+    /// Makes <c>I &lt;= 0</c> mean dark on every transport. Every later stage treats such a point as
+    /// blanked and skips it, but no encoder can rely on the I channel alone: PONK and CITP carry no
+    /// intensity at all, and many ILDA projectors ignore I and emit on RGB. A point with I = 0 and
+    /// colour would therefore bypass the brightness, dwell and bounds stages and still be drawn.
+    /// </summary>
+    public static void NormalizeBlanking(List<LaserPoint> points)
+    {
+        for (var i = 0; i < points.Count; i++)
+        {
+            var p = points[i];
+            if (p.I <= 0 && (p.I != 0 || p.R != 0 || p.G != 0 || p.B != 0))
+                points[i] = LaserPoint.CreateBlanked(p.X, p.Y);
+        }
     }
 
     private static float NormalizeZoneExtent(float halfExtent)
@@ -273,37 +291,66 @@ public static class LaserSafetyTransforms
     }
 
     /// <summary>
-    /// Caps how long the beam may sit near-motionless at one coordinate - a frozen lit
-    /// beam is the classic scan-failure hazard. Points beyond the cap keep their
-    /// position but are blanked, so the scanners keep moving with the beam off.
+    /// Caps how long the beam may sit near-motionless at one coordinate - a frozen lit beam is the
+    /// classic scan-failure hazard. Points beyond the cap keep their position but are blanked, so
+    /// the scanners keep moving with the beam off.
+    ///
+    /// The frame is treated as a loop, because that is how it is played: a DAC replays the last
+    /// frame until a new one arrives. A run therefore continues across the seam (last point back
+    /// to the first), and only movement ends it - blanking in place does not, since the beam comes
+    /// back on at the same spot. A frame that never moves at all would be a static beam for as long
+    /// as it is shown, so all of its lit points are blanked.
     /// </summary>
     public static void LimitStaticDwell(List<LaserPoint> points, in Config config, ref Stats stats)
     {
+        var count = points.Count;
+        if (count == 0)
+            return;
+
         var safeConfig = Sanitize(in config);
         // Widened before squaring: a full-field step squared overflows int and would read as "not moving".
         var staticDistance = (long)safeConfig.StaticDistance;
         var thresholdSq = staticDistance * staticDistance;
         var maxStaticPoints = safeConfig.MaxStaticPoints;
-        var run = 0;
 
-        for (var i = 0; i < points.Count; i++)
+        // Start right after a movement, so the run that wraps over the seam is counted in one pass.
+        var start = -1;
+        for (var i = 0; i < count; i++)
         {
+            if (MovesFromPrevious(points, i, thresholdSq))
+            {
+                start = i;
+                break;
+            }
+        }
+
+        if (start < 0)
+        {
+            for (var i = 0; i < count; i++)
+            {
+                var p = points[i];
+                if (p.I <= 0)
+                    continue;
+
+                points[i] = LaserPoint.CreateBlanked(p.X, p.Y);
+                stats.StaticBlanked++;
+            }
+
+            return;
+        }
+
+        var run = 0;
+        for (var k = 0; k < count; k++)
+        {
+            var i = (start + k) % count;
+            if (MovesFromPrevious(points, i, thresholdSq))
+                run = 0;
+
             var p = points[i];
             if (p.I <= 0)
-            {
-                run = 0;
                 continue;
-            }
 
-            var moving = i == 0;
-            if (!moving)
-            {
-                long dx = p.X - points[i - 1].X;
-                long dy = p.Y - points[i - 1].Y;
-                moving = dx * dx + dy * dy > thresholdSq;
-            }
-
-            run = moving ? 1 : run + 1;
+            run++;
             if (run > maxStaticPoints)
             {
                 points[i] = LaserPoint.CreateBlanked(p.X, p.Y);
@@ -312,10 +359,21 @@ public static class LaserSafetyTransforms
         }
     }
 
+    /** True when point <paramref name="index"/> is farther than the static threshold from the point before it in loop order. */
+    private static bool MovesFromPrevious(List<LaserPoint> points, int index, long thresholdSq)
+    {
+        var previous = points[index == 0 ? points.Count - 1 : index - 1];
+        var current = points[index];
+        long dx = current.X - previous.X;
+        long dy = current.Y - previous.Y;
+        return dx * dx + dy * dy > thresholdSq;
+    }
+
     /// <summary>
-    /// Hard ceiling on output color, independent of whatever upstream content requests.
-    /// Also folds stray out-of-range values into 0..65535. The blanking gate (I) is left
-    /// untouched so blanked points stay blanked.
+    /// Hard ceiling on output color, independent of whatever upstream content requests. Scales the
+    /// I channel too: a single-colour projector driven from I would otherwise ignore the ceiling.
+    /// A lit point whose intensity rounds to zero becomes a canonical blank. Also folds stray
+    /// out-of-range values into 0..65535.
     /// </summary>
     public static void ClampIntensity(List<LaserPoint> points, in Config config, ref Stats stats)
     {
@@ -327,14 +385,17 @@ public static class LaserSafetyTransforms
             if (p.I <= 0)
                 continue;
 
-            var r = Math.Min(Math.Max(p.R, 0) * scale, 65535f);
-            var g = Math.Min(Math.Max(p.G, 0) * scale, 65535f);
-            var b = Math.Min(Math.Max(p.B, 0) * scale, 65535f);
-            if ((int)r != p.R || (int)g != p.G || (int)b != p.B)
-            {
-                points[i] = new LaserPoint(p.X, p.Y, (int)r, (int)g, (int)b, p.I);
-                stats.IntensityScaled++;
-            }
+            var r = (int)Math.Min(Math.Max(p.R, 0) * scale, 65535f);
+            var g = (int)Math.Min(Math.Max(p.G, 0) * scale, 65535f);
+            var b = (int)Math.Min(Math.Max(p.B, 0) * scale, 65535f);
+            var intensity = (int)Math.Min(p.I * scale, 65535f);
+            if (r == p.R && g == p.G && b == p.B && intensity == p.I)
+                continue;
+
+            points[i] = intensity > 0
+                            ? new LaserPoint(p.X, p.Y, r, g, b, intensity)
+                            : LaserPoint.CreateBlanked(p.X, p.Y);
+            stats.IntensityScaled++;
         }
     }
 

@@ -237,6 +237,16 @@ public static class LaserOptimizerTransforms
                 useGrid = false;
         }
 
+        // The sequential tour is quadratic in the segment count, and it runs on the render
+        // thread. Past this size a concentrated frame keeps its original order (still blanked
+        // and corner-dwelt) instead of stalling the editor for a reordering.
+        if (!useGrid && segmentCount > MaxSequentialTourSegments)
+        {
+            ApplyCornerDwellingAndBlanking(input, inputCount, output, maxJumpDistance, blankingDelayPoints,
+                                           cornerAngleThreshold, cornerAnchorCount, out outputCount);
+            return;
+        }
+
         for (var i = 0; i < starts.Count; i++)
         {
             var bestIndex = useGrid
@@ -315,6 +325,10 @@ public static class LaserOptimizerTransforms
     /// is CONCENTRATED (a whole wireframe seen small): its grid queries would each sweep an
     /// enormous linked list, so the whole tour goes sequential over the remaining-list.</summary>
     private const int DenseCellEntryLimit = 256;
+
+    /// <summary>Largest segment count the quadratic sequential tour is allowed to reorder
+    /// (about 17M distance tests, a few milliseconds).</summary>
+    private const int MaxSequentialTourSegments = 4096;
 
     /// <summary>Rings the grid scan expands before giving up and answering from the remaining-list
     /// - for the far-away-nearest case on spread-out frames.</summary>
@@ -667,7 +681,12 @@ public static class LaserOptimizerTransforms
 
         for (var i = 0; i < inputCount; i++)
         {
-            InsertBlankingIfNeeded(output, ref outputCount, currentX, currentY, input[i].X, input[i].Y, maxJumpDistance, blankingDelayPoints);
+            // Dark travel only where a shape starts (a lit point after a blanked one). Inserting it
+            // before every point put blanked samples between consecutive lit points and turned
+            // every drawn line into a dotted one.
+            var isShapeEntry = input[i].I > 0 && (i == 0 || input[i - 1].I <= 0);
+            if (isShapeEntry)
+                InsertBlankingIfNeeded(output, ref outputCount, currentX, currentY, input[i].X, input[i].Y, maxJumpDistance, blankingDelayPoints);
 
             if (!TryAddPoint(output, ref outputCount, input[i]))
                 break;
@@ -679,7 +698,7 @@ public static class LaserOptimizerTransforms
             {
                 if (i < inputCount - 2)
                 {
-                    var angle = CalculateAngle(input[i], input[i + 1], input[i + 2]);
+                    var angle = CalculateInteriorAngle(input[i], input[i + 1], input[i + 2]);
                     if (angle < cornerAngleThreshold)
                     {
                         for (var a = 1; a < cornerAnchorCount; a++)
@@ -726,7 +745,7 @@ public static class LaserOptimizerTransforms
             // the next input point, all real samples.
             if (i + 1 < originalCount && output[i].I > 0 && output[i + 1].I > 0 && writeIndex >= 2)
             {
-                var angle = CalculateAngle(tempArray[writeIndex - 2], tempArray[writeIndex - 1], output[i + 1]);
+                var angle = CalculateInteriorAngle(tempArray[writeIndex - 2], tempArray[writeIndex - 1], output[i + 1]);
                 if (angle < cornerAngleThreshold)
                 {
                     for (var a = 1; a < cornerAnchorCount && writeIndex < tempArray.Length; a++)
@@ -792,7 +811,12 @@ public static class LaserOptimizerTransforms
             output[outputCount++] = LaserPoint.CreateBlanked(toX, toY);
     }
 
-    private static float CalculateAngle(LaserPoint p1, LaserPoint p2, LaserPoint p3)
+    /// <summary>
+    /// The interior angle at <paramref name="p2"/> in degrees: 180 is straight, small is a sharp
+    /// spike - the convention the corner threshold is documented in ("angles below this count as
+    /// sharp corners"). Zero-length legs (dwell runs) read as straight.
+    /// </summary>
+    private static float CalculateInteriorAngle(LaserPoint p1, LaserPoint p2, LaserPoint p3)
     {
         // Float before multiplying: full-field steps squared overflow int and turned the angle into NaN.
         var dx1 = (float)(p2.X - p1.X);
@@ -810,8 +834,11 @@ public static class LaserOptimizerTransforms
         var cosAngle = dot / (len1 * len2);
         cosAngle = Math.Clamp(cosAngle, -1f, 1f);
 
-        var angleRad = MathF.Acos(cosAngle);
-        return angleRad * (180f / MathF.PI);
+        // The angle between the two travel directions is the TURN (0 = straight on); the
+        // interior angle is its supplement. Comparing the turn against the threshold dwelt every
+        // straight sample (tripling line point counts) and skipped the real corners.
+        var turnDegrees = MathF.Acos(cosAngle) * (180f / MathF.PI);
+        return 180f - turnDegrees;
     }
 
     private static float CalculateDistanceSquared(int x1, int y1, int x2, int y2)

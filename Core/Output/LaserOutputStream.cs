@@ -132,6 +132,22 @@ public sealed class LaserOutputStream : IDisposable
         }
     }
 
+    /// <summary>
+    /// Takes the beam dark right away while keeping the connection warm: for a muted output, or
+    /// content that went empty. Without it the stream keeps looping the last lit frame until the
+    /// frame watchdog fires a second later. A single blanked point at the field centre - the
+    /// transports lead it with their dark approach, so the scanners travel there beam-off.
+    /// </summary>
+    public void SubmitBlank()
+    {
+        if (Volatile.Read(ref _disposed) != 0)
+            return;
+
+        _inner.SubmitFrame(new LaserFrame(DarkFrame, DarkFrame.Length, true));
+    }
+
+    private static readonly LaserPoint[] DarkFrame = [LaserPoint.CreateBlanked(0, 0)];
+
     public bool IsConnected => _inner.IsConnected;
 
     public IStatusProvider.StatusLevel StatusLevel => _inner.StatusLevel;
@@ -718,7 +734,11 @@ public sealed class LaserOutputStream : IDisposable
                                                   if (ReferenceEquals(Volatile.Read(ref _dac), dac))
                                                       HandleConnectionStateChanged(false);
                                               };
-                    dac.SafetyFaultDetected += reason => Log.Warning($"EtherDream stream: safety fault - {reason}");
+                    dac.SafetyFaultDetected += reason =>
+                           {
+                               if (ReferenceEquals(Volatile.Read(ref _dac), dac))
+                                   ReportSafetyFault(reason);
+                           };
 
                     // A connected DAC stops its discovery broadcasts — report it so the plug picker
                     // can still offer the device a show is streaming to.
@@ -885,6 +905,11 @@ public sealed class LaserOutputStream : IDisposable
                     // Master came back: reset the engine's state machine so the send path's
                     // own prepare/begin cycle starts a clean session.
                     _masterStopped = false;
+
+                    // The operator re-armed: this is the one place an E-stop is cleared. A cause
+                    // that is still present makes the device report E-stop again, which disarms
+                    // the master again (see LatchDeviceEStop).
+                    _deviceEStopLatched = false;
                     try
                     {
                         dac.ClearEStop();
@@ -997,9 +1022,9 @@ public sealed class LaserOutputStream : IDisposable
                         }
                         else
                         {
-                            // Soft recovery did not take - reset the DAC's state machine fully
+                            // Soft recovery did not take - reset the DAC's state machine fully.
+                            // Never ClearEStop here: an E-stop is released by the operator only.
                             dac.Stop();
-                            dac.ClearEStop();
                             dac.Prepare();
                         }
 
@@ -1074,7 +1099,7 @@ public sealed class LaserOutputStream : IDisposable
 
                     if (ex.Message.Contains("EmergencyStop"))
                     {
-                        SetStatus("E-stop active on device", IStatusProvider.StatusLevel.Warning);
+                        LatchDeviceEStop();
                     }
                     else
                     {
@@ -1164,6 +1189,9 @@ public sealed class LaserOutputStream : IDisposable
         private void HandleStatusUpdate(AckCode ack, PlayBackEngineState playBackEngineState, LightEngineState lightEngineState, ushort bufferFullness)
         {
             // Runs on a library callback thread - only plain field writes here.
+            if (lightEngineState == LightEngineState.EmergencyStop)
+                LatchDeviceEStop();
+
             _bufferFullness = bufferFullness;
             var playing = playBackEngineState == PlayBackEngineState.Playing;
             _isPlaying = playing;
@@ -1179,7 +1207,47 @@ public sealed class LaserOutputStream : IDisposable
             }
         }
 
-        private void HandleConnectionStateChanged(bool isConnected)
+        /// <summary>
+/// A device E-stop (hardware interlock, a network E-stop from another host, over-temperature)
+/// is never cleared by this stream: restarting after an emergency stop must take a
+/// deliberate operator action. The global LASER master is disarmed, so every output goes
+/// dark, and re-arming it is that action - the re-arm sends ClearEStop, and if the cause is
+/// still there the device reports E-stop again and the master drops again.
+/// </summary>
+private void LatchDeviceEStop()
+{
+    if (_deviceEStopLatched)
+        return;
+
+    _deviceEStopLatched = true;
+    var wasArmed = LaserMasterEnable.Enabled;
+    LaserMasterEnable.Enabled = false;
+    Log.Warning(wasArmed
+                    ? $"EtherDream stream: device at {_lastConnectIp} reports EMERGENCY STOP - LASER master disarmed; clear the cause, then re-arm"
+                    : $"EtherDream stream: device at {_lastConnectIp} reports EMERGENCY STOP");
+    SetStatus("Device E-stop - clear the cause, then re-arm the LASER master", IStatusProvider.StatusLevel.Error);
+}
+
+/// <summary>The library raises a fault on every DAC response while the flag stays set (each
+/// poll, every few ms); only a new reason, or the same one after a quiet minute, is logged.</summary>
+private void ReportSafetyFault(string reason)
+{
+    var now = Environment.TickCount64;
+    if (reason == _lastFaultReason && now - Interlocked.Read(ref _lastFaultLogTicks) < 60_000)
+        return;
+
+    _lastFaultReason = reason;
+    Interlocked.Exchange(ref _lastFaultLogTicks, now);
+    Log.Warning($"EtherDream stream: safety fault - {reason}");
+}
+
+private volatile string? _lastFaultReason;
+private long _lastFaultLogTicks;
+
+/// <summary>Set when the device reported E-stop; cleared only by the operator re-arming the master.</summary>
+private volatile bool _deviceEStopLatched;
+
+private void HandleConnectionStateChanged(bool isConnected)
         {
             _isConnected = isConnected;
             if (isConnected)
@@ -1198,6 +1266,9 @@ public sealed class LaserOutputStream : IDisposable
             for (var i = 0; i < points.Length; i++)
             {
                 var p = points[i];
+                if (p.I <= 0)
+                    p = LaserPoint.CreateBlanked(p.X, p.Y); // dark on every projector, also those that ignore I
+
                 dacPoints[i] = new DacPointDto
                                    {
                                        Control = 0,
@@ -1663,7 +1734,11 @@ public sealed class LaserOutputStream : IDisposable
 
         private async Task SendLoopAsync(Socket socket, IPEndPoint target, CancellationToken token)
         {
+            // Buffers are owned by this connection attempt. TearDown does not join the old send
+            // loop before a new connection starts, so a shared instance field would let two
+            // overlapping loops interleave their encodes into one datagram.
             var headerBuffer = new byte[MaxDatagramSize];
+            var encodeBuffer = new byte[MaxDatagramSize];
             var lastSendTicks = 0L;
 
             while (!token.IsCancellationRequested && Volatile.Read(ref _disposed) == 0)
@@ -1675,6 +1750,18 @@ public sealed class LaserOutputStream : IDisposable
                 // deliberate preview override (PONK receivers can drive real scanners, so the
                 // default is off). The pick below ignores queued frames while blanked.
                 var masterOff = !LaserMasterEnable.Enabled && !_keepalive;
+                var overrideLive = !LaserMasterEnable.Enabled && _keepalive;
+                if (overrideLive != _keepaliveOverrideReported)
+                {
+                    // The override streams live content past the emergency master - it must never be silent.
+                    _keepaliveOverrideReported = overrideLive;
+                    if (overrideLive)
+                    {
+                        Log.Warning($"PONK stream '{_senderName}': LASER master is off but Keepalive is on - content keeps streaming");
+                        SetStatus("Master off - Keepalive override is streaming LIVE content", IStatusProvider.StatusLevel.Warning);
+                    }
+                }
+
                 var lastFrame = _lastFrame;
                 if (masterOff)
                 {
@@ -1729,13 +1816,13 @@ public sealed class LaserOutputStream : IDisposable
                     continue;
                 }
 
-                var frameLength = EncodeFrame(frame);
-                var crc = ComputeChecksum(_encodeBuffer, frameLength);
+                var frameLength = EncodeFrame(frame, ref encodeBuffer);
+                var crc = ComputeChecksum(encodeBuffer, frameLength);
                 var chunkCount = ComputeChunkCount(frameLength);
 
                 try
                 {
-                    SendFrame(socket, target, headerBuffer, _encodeBuffer, frameLength, crc, chunkCount, token);
+                    SendFrame(socket, target, headerBuffer, encodeBuffer, frameLength, crc, chunkCount, token);
                     lastSendTicks = Environment.TickCount64;
                     _consecutiveErrors = 0;
                     _lastFrame = frame;
@@ -1770,6 +1857,21 @@ public sealed class LaserOutputStream : IDisposable
         {
             // PONK chunks are header-prefixed; each chunk's payload is a slice of the frame data.
             // All chunks of a frame carry the same CRC so receivers can drop incomplete frames.
+            // The frame number (mod 256) advances even for a frame dropped half-way, so its
+            // leftover chunks can never be merged with the next frame's.
+            try
+            {
+                SendFrameChunks(socket, target, headerBuffer, frameData, frameLength, crc, chunkCount, token);
+            }
+            finally
+            {
+                unchecked { _frameNumber++; }
+            }
+        }
+
+        private void SendFrameChunks(Socket socket, IPEndPoint target, byte[] headerBuffer, byte[] frameData, int frameLength, uint crc,
+                                     int chunkCount, CancellationToken token)
+        {
             var written = 0;
             for (var chunkNumber = 0; chunkNumber < chunkCount; chunkNumber++)
             {
@@ -1810,22 +1912,19 @@ public sealed class LaserOutputStream : IDisposable
 
                 written += payloadSize;
             }
-
-            // Frame number wraps mod 256
-            unchecked { _frameNumber++; }
         }
 
-        /// <summary>Encodes the frame into <see cref="_encodeBuffer"/> and returns the encoded length.</summary>
-        private int EncodeFrame(LaserPoint[] points)
+        /// <summary>Encodes the frame into <paramref name="buffer"/>, growing it if needed, and returns the encoded length.</summary>
+        private int EncodeFrame(LaserPoint[] points, ref byte[] buffer)
         {
             // pointCount is a ushort and chunkCount a byte, so cap the frame at a point count
             // whose chunking stays inside both limits.
             var count = Math.Min(points.Length, MaxPointsPerFrame);
             var length = PayloadHeaderSize + count * BytesPerPoint;
-            if (_encodeBuffer.Length < length)
-                _encodeBuffer = new byte[length];
+            if (buffer.Length < length)
+                buffer = new byte[length];
 
-            var data = _encodeBuffer;
+            var data = buffer;
 
             // One path per frame: PATHNUMB identifies the shape across frames so receivers can
             // dispatch; MAXSPEED tells the receiver the requested scan-speed multiplier.
@@ -1839,6 +1938,9 @@ public sealed class LaserOutputStream : IDisposable
             for (var i = 0; i < count; i++)
             {
                 var p = points[i];
+                if (p.I <= 0)
+                    p = LaserPoint.CreateBlanked(p.X, p.Y); // PONK has no intensity channel: I = 0 must mean no colour
+
                 // LaserPoint.X/Y are ILDA-style 16-bit signed (-32768..32767); normalize to
                 // PONK's mandatory float32 [-1, 1] XY + uint8 RGB format. Colors are scaled by
                 // the brightness ceiling right before encoding - the final output audit.
@@ -1930,6 +2032,7 @@ public sealed class LaserOutputStream : IDisposable
             _status = new StatusInfo(message, level);
         }
 
+        private bool _keepaliveOverrideReported;
         private int _consecutiveErrors;
         private long _lastEnqueueTimestamp;
         private volatile bool _watchdogBlanked;
@@ -1937,9 +2040,6 @@ public sealed class LaserOutputStream : IDisposable
 
         /** The remembered frame already has its colors zeroed, so repeats need no new blanked copy. */
         private bool _lastFrameBlanked;
-
-        /** Datagram payload of the frame being sent; send thread only. */
-        private byte[] _encodeBuffer = new byte[MaxDatagramSize];
     }
     #endregion
 
@@ -3022,6 +3122,9 @@ public sealed class LaserOutputStream : IDisposable
                 {
                     // ConvertLaserPoint inlined: ILDA 16-bit signed -> 12-bit unsigned, RGB565 color
                     var p = points[i];
+                    if (p.I <= 0)
+                        p = LaserPoint.CreateBlanked(p.X, p.Y); // CITP has no intensity channel: I = 0 must mean no colour
+
                     var xNorm = Math.Clamp(p.X / 32767f, -1f, 1f);
                     var yNorm = Math.Clamp(p.Y / 32767f, -1f, 1f);
                     var x = Math.Clamp((int)((xNorm + 1f) * 0.5f * 4095f), 0, 4095);

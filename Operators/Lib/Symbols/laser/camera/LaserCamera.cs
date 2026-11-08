@@ -1362,10 +1362,16 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
                 ResourceManager.Device.ImmediateContext.CopyResource(source, _buffers[_writeIndex]);
                 _copyStamp[_writeIndex] = Stopwatch.GetTimestamp();
 
+                // The slice belongs to the copy, not to the read: mapping last frame's copy with this
+                // frame's (larger) element count would read elements that copy never drew - whatever
+                // the buffer held before, served as one frame of phantom points.
+                _copyElementCount[_writeIndex] = elementCount;
+                _copyOffsetElements[_writeIndex] = offsetElements;
+
                 if (!_hasPrevious)
                 {
                     // First use: nothing to read yet, so wait for the fresh copy once.
-                    TryMapInto<T>(_writeIndex, true, sourceBytes, stride, elementCount, offsetElements);
+                    TryMapInto<T>(_writeIndex, true, sourceBytes, stride);
                     _hasPrevious = true;
                     LastAgeMs = 0;
                     LastReadWasStale = false;
@@ -1374,7 +1380,7 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
                 else
                 {
                     var readIndex = 1 - _writeIndex;
-                    if (TryMapInto<T>(readIndex, false, sourceBytes, stride, elementCount, offsetElements))
+                    if (TryMapInto<T>(readIndex, false, sourceBytes, stride))
                     {
                         LastAgeMs = (Stopwatch.GetTimestamp() - _copyStamp[readIndex]) * 1000.0 / Stopwatch.Frequency;
                         LastReadWasStale = false;
@@ -1457,8 +1463,10 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
         /// <summary>Maps one staging buffer and copies the requested slice into the reusable array.
         /// With <paramref name="wait"/> off it does not stall on queued GPU work: false means "copy not
         /// finished" (the blocking map was 7-30ms per pull).</summary>
-        private bool TryMapInto<T>(int index, bool wait, int sourceBytes, int stride, int elementCount, int offsetElements) where T : struct
+        private bool TryMapInto<T>(int index, bool wait, int sourceBytes, int stride) where T : struct
         {
+            var elementCount = _copyElementCount[index];
+            var offsetElements = _copyOffsetElements[index];
             var context = ResourceManager.Device.ImmediateContext;
             DataStream stream = null;
             var mapped = false;
@@ -1509,6 +1517,8 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
 
         private Buffer[] _buffers;
         private readonly long[] _copyStamp = new long[2];
+private readonly int[] _copyElementCount = new int[2];
+private readonly int[] _copyOffsetElements = new int[2];
         private int _writeIndex;
         private bool _hasPrevious;
         private bool _failureLogged;

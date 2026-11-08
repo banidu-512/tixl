@@ -74,17 +74,16 @@ public class LaserFrameWarpTests
     }
 
     [Fact]
-    public void WarpFrameIntoQuad_WithDegenerateQuad_ReturnsInputUnchanged()
+    public void WarpFrameIntoQuad_WithDegenerateQuad_FailsClosed()
     {
-        // Three collinear corners: no homography exists - the frame must pass through untouched.
+        // Three collinear corners: no homography exists. The frame goes dark (null) rather than
+        // falling back to the unwarped full field the user did not aim at.
         var safety = SafetyWithCorners((-0.5f, 0f), (0.5f, 0f), (0.5f, 0f), (-0.5f, -0.5f));
 
         var input = new[] { new LaserPoint(-32767, 32767, 65535, 0, 0) };
         var mapped = LaserPipeline.WarpFrameIntoQuad(input, input.Length, safety);
 
-        Assert.NotNull(mapped);
-        Assert.Equal(input[0].X, mapped![0].X);
-        Assert.Equal(input[0].Y, mapped[0].Y);
+        Assert.Null(mapped);
     }
 
     [Fact]

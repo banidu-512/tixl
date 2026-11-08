@@ -302,6 +302,13 @@ internal static class LaserDriver
         var limit = isFirstCompute ? budgetEnd : budgetEnd + FollowUpBudgetTicks;
         if (now > limit)
         {
+            // A deferred output keeps looping its last frame - unless it was just muted.
+            if (!sending)
+            {
+                foreach (var stream in _submitStreams)
+                    stream.SubmitBlank();
+            }
+
             ranOutOfBudget = true;
             _lastOutputsSkipped++;
             return;
@@ -325,7 +332,13 @@ internal static class LaserDriver
         _frameCache[output.Id] = (Stopwatch.GetTimestamp(), frame);
 
         if (frame.IsEmpty || !sending)
+        {
+            // Muted, or nothing to draw: dark now. Returning without a submission would keep the
+            // streams looping the last lit frame until their watchdog fires a second later.
+            foreach (var stream in _submitStreams)
+                stream.SubmitBlank();
             return;
+        }
 
         // A calibrated frame already went through this exact safety config in the pipeline session,
         // so the door stage would be an identical pass plus two array copies - skip it. The test
@@ -582,7 +595,8 @@ internal static class LaserDriver
         // Frame mapping: in calibrated mode the incoming frame's actual extent is rescaled into
         // the aimed zone (the setup rect) - Stretch fills both axes, Fit preserves aspect. With
         // frame warp on, the frame lands on the four keystone corners instead (a homography, so
-        // it can be trapezed onto a skewed screen). Before the pipeline, so the safety transforms
+        // it can be trapezed onto a skewed screen; an invalid corner set yields no frame, never the
+// unwarped full field). Before the pipeline, so the safety transforms
         // clamp the mapped result. The input is the camera's live backing array; mapping writes
         // into the session's reused buffer (a per-pump allocation here lands in the large-object
         // heap at pump rate and turns into GC stalls across the rig).
@@ -592,7 +606,7 @@ internal static class LaserDriver
             input = LaserPipeline.MapFrameIntoZone(input, count, settings.Safety, output.FrameMapping, session.GetMappedBuffer(count));
 
         var pipelineStart = Stopwatch.GetTimestamp();
-        var result = session.Apply(settings, input, count, out _, out var frameCount);
+        var result = session.Apply(settings, input, count, out var frameCount);
         _lastPipelineTotalMs += (Stopwatch.GetTimestamp() - pipelineStart) * 1000.0 / Stopwatch.Frequency;
         return new LaserFrame(result, frameCount, settings.Safety.Calibrated);
     }
