@@ -41,10 +41,22 @@ internal static class ShowControlBarStatus
         if (startX > ImGui.GetCursorPosX())
             ImGui.SetCursorPosX(startX);
 
+        var pad = new System.Numerics.Vector2(8, 3) * T3Ui.UiScaleFactor;
         foreach (var segment in segments)
         {
-            CustomComponents.StylizedText(segment.Label, Fonts.FontNormal, segment.Color);
+            var size = ImGui.CalcTextSize(segment.Label) + pad * 2;
+            var pos = ImGui.GetCursorScreenPos();
+            var drawList = ImGui.GetWindowDrawList();
 
+            // Subtle tinted pill behind the role word; the word itself in the status color.
+            drawList.AddRectFilled(pos, pos + size,
+                                   ImGui.ColorConvertFloat4ToU32(segment.Color.Fade(0.18f).Rgba),
+                                   4 * T3Ui.UiScaleFactor);
+            drawList.AddText(pos + pad,
+                             ImGui.ColorConvertFloat4ToU32(segment.Color.Rgba),
+                             segment.Label);
+
+            ImGui.InvisibleButton(segment.Label, size);
             if (ImGui.IsItemHovered())
             {
                 CustomComponents.BeginTooltip(360);
@@ -75,10 +87,11 @@ internal static class ShowControlBarStatus
             FailoverArbiter.GetLivePeerAddresses(_peerAddresses);
             var peerAddress = _peerAddresses.Count > 0 ? _peerAddresses[0] : "—";
 
+            // Green = this machine is live; blue = ready and following; magenta = a handover is happening.
             var (label, color) = role switch
                                       {
-                                          "ACTIVE (streaming)" => ("Active", UiColors.StatusActivated),
-                                          "Standby"            => ("Standby", UiColors.TextMuted),
+                                          "ACTIVE (streaming)" => ("Active", UiColors.StatusOkay),
+                                          "Standby"            => ("Standby", UiColors.StatusActivated),
                                           "Handover"           => ("Handover", UiColors.StatusAttention),
                                           "Probing"            => ("Probing", UiColors.TextMuted),
                                           _                    => ("Failover", UiColors.TextMuted),
@@ -114,7 +127,10 @@ internal static class ShowControlBarStatus
             if (boygroup.RestartPending)
                 detail.Add("Restart pending on the nodes");
 
-            segments.Add(new Segment("Master", UiColors.Text, [.. detail]));
+            var masterColor = boygroup.RestartPending
+                                  ? UiColors.StatusAttention
+                                  : UiColors.StatusActivated;
+            segments.Add(new Segment("Master", masterColor, [.. detail]));
         }
         else if (boygroup.State == BoygroupManager.BoygroupState.Client)
         {
@@ -129,7 +145,14 @@ internal static class ShowControlBarStatus
             if (!string.IsNullOrEmpty(boygroup.ErrorText))
                 detail.Add(boygroup.ErrorText);
 
-            segments.Add(new Segment("Slave", UiColors.TextMuted, [.. detail]));
+            // Green once the show files are on the node; magenta while a restart is pending or
+            // something went wrong.
+            var slaveColor = !string.IsNullOrEmpty(boygroup.ErrorText) || boygroup.RestartPending
+                                 ? UiColors.StatusAttention
+                                 : boygroup.DeploySummary.Contains("complete", StringComparison.OrdinalIgnoreCase)
+                                     ? UiColors.StatusOkay
+                                     : UiColors.TextMuted;
+            segments.Add(new Segment("Slave", slaveColor, [.. detail]));
         }
 
         var collab = CollabManager.Instance;
@@ -147,7 +170,10 @@ internal static class ShowControlBarStatus
                                      $"Participants: {collab.Peers.Count}",
                                      $"Signed in as {collab.LocalIdentity.DisplayName}",
                                  };
-                segments.Add(new Segment("Host", UiColors.Text, [.. detail]));
+                var hostColor = string.IsNullOrEmpty(collab.ErrorText)
+                                    ? UiColors.StatusActivated
+                                    : UiColors.StatusAttention;
+                segments.Add(new Segment("Host", hostColor, [.. detail]));
             }
             else
             {
@@ -165,7 +191,10 @@ internal static class ShowControlBarStatus
                                            $"Room: {UserSettings.Config.CollabLastRelayRoom} · Relay: {collab.RelayEndpoint}",
                                            $"Signed in as {collab.LocalIdentity.DisplayName}",
                                        };
-                segments.Add(new Segment("Joined", UiColors.TextMuted, [.. detail]));
+                var joinedColor = string.IsNullOrEmpty(collab.ErrorText)
+                                      ? UiColors.StatusOkay
+                                      : UiColors.StatusAttention;
+                segments.Add(new Segment("Joined", joinedColor, [.. detail]));
             }
         }
 
