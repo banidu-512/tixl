@@ -1,15 +1,13 @@
 #nullable enable
-using System.Linq;
 using System.Threading;
 using T3.Core.Utils;
-using T3.Core.Video;
 using T3.Graphics.Compat;
 using T3.SystemUi;
 
 namespace Lib.io.video;
 
 [Guid("cd5a182e-254b-4e65-820b-ff754122614c")]
-public class WebcamInput : Instance<WebcamInput>, ICustomDropdownHolder, IStatusProvider, IRemoteVideoInput
+public class WebcamInput : Instance<WebcamInput>, ICustomDropdownHolder, IStatusProvider
 {
     [Output(Guid = "1d0159cc-33d2-46b1-9c0c-7054aa560df5", DirtyFlagTrigger = DirtyFlagTrigger.Animated)]
     public readonly Slot<Texture2D?> Texture = new();
@@ -68,107 +66,6 @@ public class WebcamInput : Instance<WebcamInput>, ICustomDropdownHolder, IStatus
         UpdateCount.UpdateAction = Update;
         Resolution.UpdateAction = Update;
         Status.UpdateAction = Update;
-
-        // A boygroup master publishes this camera's frame; a render node gets the frame from the master.
-        RemoteVideoInputBus.RegisterInput(this);
-    }
-
-    // ---------------------------------------------------------------------------------------
-    // Remote video input (boygroup master relay / peer camera sharing)
-    // ---------------------------------------------------------------------------------------
-
-    public string RelayKey => _relayKey ??= BuildRelayKey();
-
-    public string RelayDisplayName => InputDeviceName.Value ?? "";
-
-    /// <summary>Master side: the frame captured locally, which the boygroup relay publishes over OMT.</summary>
-    public Texture2D? RelayTexture => _gpuTexture;
-
-    /// <summary>The local camera's own status, shown by the master when there is no frame to relay yet.</summary>
-    public string RelayStatus => _lastStatusMessage;
-
-    /// <summary>Render-node side: the master's frame replaces this machine's camera entirely.</summary>
-    public void ApplyRemoteFrame(Texture2D? texture, int frameCounter, string status)
-    {
-        _remoteActive = true;
-        _remoteTexture = texture;
-        _remoteFrameCounter = frameCounter;
-        _remoteStatus = status;
-    }
-
-    public void EndRemoteFrames()
-    {
-        _remoteActive = false;
-        _remoteTexture = null;
-        _remoteFrameCounter = -1;
-        _remoteStatus = "";
-    }
-
-    private string BuildRelayKey()
-    {
-        var packageId = Symbol?.SymbolPackage?.Id ?? Guid.Empty;
-        return packageId.ToString("N") + "/" + string.Join("/", InstancePath.Select(id => id.ToString("N")));
-    }
-
-    private string? _relayKey;
-    private bool _remoteActive;
-    private Texture2D? _remoteTexture;
-    private int _remoteFrameCounter = -1;
-    private string _remoteStatus = "";
-    private bool _remoteWasActive;
-    private int _presentedRemoteFrameCounter = -1;
-
-    /// <summary>Presents the master's frame instead of the local camera while a remote stream is active.</summary>
-    private bool UpdateRemoteFrames()
-    {
-        if (!_remoteActive)
-        {
-            if (_remoteWasActive)
-            {
-                _remoteWasActive = false;
-                _presentedRemoteFrameCounter = -1;
-                Texture.Value = null!;
-                Resolution.Value = default;
-                UpdateCount.Value++;
-                _lastStatusMessage = "Remote stream ended — resuming the local camera";
-                Status.Value = _lastStatusMessage;
-            }
-
-            return false;
-        }
-
-        if (!_remoteWasActive)
-        {
-            _remoteWasActive = true;
-
-            // Release the camera completely while the master drives this input; the worker is
-            // started again if the stream ends and local capture resumes.
-            StopCaptureThread();
-        }
-
-        var status = string.IsNullOrWhiteSpace(_remoteStatus) ? "Receiving video from the boygroup master" : _remoteStatus;
-        _lastStatusMessage = status;
-        Status.Value = status;
-
-        Texture.Value = _remoteTexture!;
-        if (_remoteTexture != null)
-        {
-            var description = _remoteTexture.Description;
-            if (description.Width > 0 && description.Height > 0)
-                Resolution.Value = new Int2(description.Width, description.Height);
-        }
-        else
-        {
-            Resolution.Value = default;
-        }
-
-        if (_remoteFrameCounter != _presentedRemoteFrameCounter)
-        {
-            _presentedRemoteFrameCounter = _remoteFrameCounter;
-            UpdateCount.Value++;
-        }
-
-        return true;
     }
 
     public IStatusProvider.StatusLevel GetStatusLevel()
@@ -183,10 +80,6 @@ public class WebcamInput : Instance<WebcamInput>, ICustomDropdownHolder, IStatus
 
     private void Update(EvaluationContext context)
     {
-        // While the boygroup master (or a peer) drives this input, its frame replaces the local camera.
-        if (UpdateRemoteFrames())
-            return;
-
         Cameras.Provider?.EnsureStarted();
 
         var reconnect = Reconnect.GetValue(context);
@@ -496,7 +389,6 @@ public class WebcamInput : Instance<WebcamInput>, ICustomDropdownHolder, IStatus
         if (!disposing)
             return;
 
-        RemoteVideoInputBus.UnregisterInput(this);
         StopCaptureThread();
         GraphicsUtilities.Dispose(ref _gpuTexture);
     }

@@ -45,7 +45,6 @@ public static partial class T3Ui
         _failoverConfig.Preempt = UserSettings.Config.FailoverPreempt;
         T3.Core.Show.FailoverArbiter.ApplyConfig(_failoverConfig);
         Show.BoygroupManager.Instance.Update();
-        Show.PeerCameraService.Instance.Update();
         //ImGui.PushStyleColor(ImGuiCol.Text, UiColors.Text.Rgba);
         DragAndDropHandling.Update();
         MagGraph.Ui.DropHandling.DrawDragIndicator();
