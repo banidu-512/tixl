@@ -344,6 +344,35 @@ internal sealed partial class SettingsWindow
                                              """);
 
         FormInputs.AddVerticalSpace();
+        FormInputs.AddSectionSubHeader("Peer-to-Peer");
+        changed |= FormInputs.AddCheckBox("Use peer-to-peer connections",
+                                          ref config.CollabWebRtcEnabled,
+                                          """
+                                          Relay sessions first authenticate over the relay, then try a direct WebRTC path
+                                          between the machines. The session falls back to the relay when a direct path is
+                                          not possible, so this can stay on everywhere.
+                                          """,
+                                          true);
+
+        changed |= FormInputs.AddCheckBox("Share preview with participants",
+                                          ref config.CollabSharePreview,
+                                          """
+                                          Streams the host's rendered output to the participants over the
+                                          peer-to-peer video track. Applies to peers that join afterwards.
+                                          """,
+                                          true);
+
+        changed |= FormInputs.AddStringInput("STUN/TURN servers",
+                                             ref config.CollabWebRtcIceServers,
+                                             "stun:stun.l.google.com:19302",
+                                             null,
+                                             """
+                                             Comma-separated STUN/TURN URLs used to establish the direct path.
+                                             Empty uses a public STUN server. A TURN server is only needed
+                                             between peers that cannot reach each other directly.
+                                             """);
+
+        FormInputs.AddVerticalSpace();
         FormInputs.AddSectionSubHeader("Direct and LAN");
         changed |= FormInputs.AddInt("Port",
                                      ref config.CollabPort,

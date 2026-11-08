@@ -64,6 +64,7 @@
     <!-- ======================= Nuget References =========================== -->
     <ItemGroup>
         <PackageReference Include="ImGui.NET" Version="1.91.6.1" />
+        <PackageReference Include="DataChannelDotnet" Version="1.3.1" />
         <PackageReference Include="Microsoft.Build" Version="18.8.2" />
         <PackageReference Include="Microsoft.CodeAnalysis.Common" Version="5.6.0" />
         <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.6.0" />
@@ -91,14 +92,6 @@
         <ProjectReference Include="..\IoServices\IoServices.csproj" />
         <ProjectReference Include="..\Logging\Logging.csproj" />
         <ProjectReference Include="..\SilkWindows\SilkWindows.csproj" />
-        <!-- Not used by the editor itself: building it here produces the VideoServices ref assembly that the
-             Video operator package's runtime compile (with the "no dependencies" flag) resolves. Without
-             this, a machine that only ever built the editor has no Debug VideoServices and the Video
-             package fails (CS0006). ExcludeAssets="runtime" + Private="false" keep it compile-only: with
-             runtime assets flowing, Sdcb.FFmpeg.dll lands in the editor output, gets loaded by the default
-             context ahead of the Video package's copy, and its FFmpeg P/Invokes then resolve to a
-             system-wide GPL libavcodec instead of the bundled LGPL one (rejected by FfmpegLibrary). -->
-        <ProjectReference Include="..\VideoServices\VideoServices.csproj" Private="false" ExcludeAssets="runtime" />
     </ItemGroup>
     <!-- ===============================//======================================= -->
 
@@ -113,9 +106,8 @@
         </Content>
     </ItemGroup>
 
-    <!-- BASS ships one native per platform under the same managed name, so the Linux and macOS libraries live
-         in their own folders and are copied only there - the flat copy above would otherwise drop them into a
-         Windows build as dead weight. BASSWASAPI is Windows-only; audio input is gated on it at runtime. -->
+    <!-- Linux and macOS natives live in their own folders and are copied only there - the flat copy above
+         would otherwise drop them into a Windows build as dead weight. -->
     <ItemGroup Condition="$([MSBuild]::IsOSPlatform('Linux'))">
         <Content Include="../Dependencies/linux-x64/*.so" Visible="false">
             <Link>%(Filename)%(Extension)</Link>
@@ -128,16 +120,6 @@
             <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
         </Content>
     </ItemGroup>
-
-    <!-- macOS: libmediapipe_c.dylib resolves its OpenCL imports by dynamic lookup and Apple Silicon
-         ships no OpenCL, so a no-op stub must be in the process before the first P/Invoke
-         (MediapipeNativeLibrary loads it from the app directory). Build it for dev builds too -
-         previously only the packaged DMG and the test host produced one, so a plain `dotnet run`
-         of the editor failed with "symbol not found in flat namespace". Needs clang. -->
-    <Target Name="BuildMediapipeOpenClStub" BeforeTargets="BeforeBuild" Condition="$([MSBuild]::IsOSPlatform('OSX'))">
-        <MakeDir Directories="$(OutputPath)" />
-        <Exec Command="clang -arch x86_64 -arch arm64 -shared -o &quot;$(OutputPath)libmediapipe_opencl_stub.dylib&quot; &quot;$(MSBuildThisFileDirectory)../Dependencies/osx/mediapipe-opencl-stub.c&quot;" />
-    </Target>
     <!-- =================================//===================================== -->
 
 
@@ -290,8 +272,11 @@
 
     <!-- Release-only: read-only packages and exports are loaded from bin, so Release output must be exactly
          what the build produces. Debug reads symbols from source and profits from incremental builds;
-         cleaning it also gutted the output folder of a running editor. -->
-    <Target Name="ClearBuildOutput" BeforeTargets="BeforeBuild" Condition="'$(Configuration)' == 'Release'">
+         cleaning it also gutted the output folder of a running editor. Escape hatch for when a stray
+         process pins the output directory (its CWD or an Explorer window): build with
+         -p:ClearBuildOutput=false, which increments into the existing tree instead of wiping it. -->
+    <Target Name="ClearBuildOutput" BeforeTargets="BeforeBuild"
+            Condition="'$(Configuration)' == 'Release' And '$(ClearBuildOutput)' != 'false'">
         <RemoveDir Directories="bin/$(Configuration)" />
     </Target>
 

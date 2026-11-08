@@ -62,6 +62,22 @@ internal sealed class CollabManager
     /// <summary>Peers currently in the session (UI thread only).</summary>
     public IReadOnlyList<CollabPeerConnection> Peers => _transport?.Peers ?? [];
 
+    internal CollabWebRtcHostTransport? WebRtcHost => _transport as CollabWebRtcHostTransport;
+    internal CollabWebRtcClientTransport? WebRtcClient => _transport as CollabWebRtcClientTransport;
+
+    private CollabVideoHostStreamer? _videoStreamer;
+    private CollabVideoReceiver? _videoReceiver;
+
+    /// <summary>The host's preview on a joined session, or null when no video is arriving.</summary>
+    public CollabVideoReceiver? VideoReceiver => _videoReceiver;
+
+    /// <summary>True while the host is encoding its preview for members.</summary>
+    public bool IsStreamingPreview => _videoStreamer is { IsEncoding: true };
+
+    public string PreviewEncoderName => _videoStreamer?.EncoderName ?? "";
+
+    internal CollabVideoHostStreamer? VideoStreamer => _videoStreamer;
+
     /// <summary>The machines this instance is linked to right now — the settings panel's network
     /// check compares them against the selected adapter.</summary>
     public void AddLinkedPeers(List<NetworkPeer> peers)
@@ -231,7 +247,9 @@ internal sealed class CollabManager
                 {
                     try
                     {
-                        var transport = await CollabRelayHostTransport.ConnectAsync(relayHost, relayPort, "", CancellationToken.None);
+                        var transport = UserSettings.Config.CollabWebRtcEnabled
+                                            ? await CollabWebRtcHostTransport.ConnectAsync(relayHost, relayPort, "", CancellationToken.None)
+                                            : await CollabRelayHostTransport.ConnectAsync(relayHost, relayPort, "", CancellationToken.None);
                         _uiThreadActions.Enqueue(() => CompleteRelayHostConnect(transport, generation, password, relayHost, relayPort));
                     }
                     catch (Exception e)
@@ -261,6 +279,9 @@ internal sealed class CollabManager
         _transport = transport;
         RoomCode = transport.AssignedRoomCode;
         RelayEndpoint = $"{relayHost}:{relayPort}";
+        if (transport is CollabWebRtcHostTransport rtcHost)
+            _videoStreamer = new CollabVideoHostStreamer(rtcHost);
+
         State = SessionState.Hosting;
         StatusText = $"Hosting via relay, room {RoomCode}";
         Log.Info($"Collab: hosting via relay {relayHost}:{relayPort}, room {RoomCode}");
@@ -296,7 +317,9 @@ internal sealed class CollabManager
                 {
                     try
                     {
-                        var transport = await CollabRelayClientTransport.ConnectAsync(relayHost, relayPort, roomCode, CancellationToken.None);
+                        var transport = UserSettings.Config.CollabWebRtcEnabled
+                                            ? await CollabWebRtcClientTransport.ConnectAsync(relayHost, relayPort, roomCode, CancellationToken.None)
+                                            : await CollabRelayClientTransport.ConnectAsync(relayHost, relayPort, roomCode, CancellationToken.None);
                         _uiThreadActions.Enqueue(() => CompleteRelayClientConnect(transport, generation, passwordToUse, relayHost, relayPort, roomCode));
                     }
                     catch (Exception e)
@@ -304,6 +327,15 @@ internal sealed class CollabManager
                         ReportRelayFailure(generation, "Relay join failed", "Connection failed", e);
                     }
                 });
+    }
+
+    private void RequestResyncAfterFallback(int generation)
+    {
+        if (generation != _sessionGeneration || State != SessionState.Connected || HostLink is not { } host)
+            return;
+
+        Log.Info("Collab: data channel lost, asking the host for a fresh state");
+        SendJson(host, new { t = "requestSync" });
     }
 
     /// <summary>UI thread: adopts a joined relay link, unless that join was abandoned meanwhile.</summary>
@@ -328,6 +360,12 @@ internal sealed class CollabManager
         RelayEndpoint = $"{relayHost}:{relayPort}";
         transport.PeerDisconnected += OnPeerDisconnectedTransport;
         transport.StartReading();
+        if (transport is CollabWebRtcClientTransport rtcClient)
+        {
+            _videoReceiver = new CollabVideoReceiver(rtcClient);
+            rtcClient.FellBackToRelay += () => _uiThreadActions.Enqueue(() => RequestResyncAfterFallback(generation));
+        }
+
         SendJson(transport.HostPeer, new
                                          {
                                              t = "hello",
@@ -424,6 +462,11 @@ internal sealed class CollabManager
     {
         // Anything still connecting becomes stale; its completion is discarded.
         ++_sessionGeneration;
+
+        _videoStreamer?.Dispose();
+        _videoStreamer = null;
+        _videoReceiver?.Dispose();
+        _videoReceiver = null;
 
         if (_transport != null)
         {
@@ -615,6 +658,9 @@ internal sealed class CollabManager
         // Leave() disposes the transport — nothing below may run against it.
         if (State == SessionState.Off)
             return;
+
+        _videoStreamer?.Update();
+        _videoReceiver?.Update();
 
         DrainInboundQueue();
 
@@ -1026,6 +1072,9 @@ internal sealed class CollabManager
                                project = _sessionProjectName,
                            });
 
+        // The handshake runs on the relay first; only a fully authenticated peer may switch paths.
+        _transport?.EnablePeerToPeer(peer);
+
         BroadcastSystemMessage(new
                                    {
                                        t = "peerJoined",
@@ -1100,6 +1149,7 @@ internal sealed class CollabManager
 
         State = SessionState.Connected;
         StatusText = $"Connected as {_localIdentity.DisplayName}";
+        _transport?.EnablePeerToPeer(peer);
         SendJson(peer, new { t = "requestSync" });
 
         // Remember the session so a restart (e.g. after a project download) can rejoin, then make

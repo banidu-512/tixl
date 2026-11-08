@@ -101,7 +101,11 @@ internal static class CollabProtocol
         Json = 1,
         Presence = 2,
         Heartbeat = 3,
+        Signal = 4,
     }
+
+    /// <summary>Hard upper bound for one WebRTC signaling frame.</summary>
+    public const int MaxSignalPayload = 64 * 1024;
 
     /// <summary>Opens a TCP connection, giving up after <see cref="ConnectTimeoutMs"/>. Throws on failure.</summary>
     public static TcpClient ConnectWithTimeout(IPEndPoint endPoint)
@@ -189,6 +193,14 @@ internal static class CollabProtocol
     {
         var json = JsonConvert.SerializeObject(message);
         return Encoding.UTF8.GetBytes(json);
+    }
+
+    /// <summary>Whether a JSON frame is a kick — the one relay message that must survive an
+    /// active peer-to-peer data channel (see the WebRTC client's dispatch).</summary>
+    public static bool IsKickJson(ReadOnlySpan<byte> payload)
+    {
+        return TryDecodeJson(payload, out var json)
+               && string.Equals(GetString(json, "t"), "kicked", StringComparison.Ordinal);
     }
 
     public static bool TryDecodeJson(ReadOnlySpan<byte> payload, out JObject json)

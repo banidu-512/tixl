@@ -91,7 +91,7 @@ internal static class CollabRelayWire
 /// <see cref="CollabTransport.CollabPeerConnection"/>s are created per relay slot; the rest of the
 /// session machinery (handshake, ops, presence, sync) works unchanged against them.
 /// </summary>
-internal sealed class CollabRelayHostTransport : CollabTransport
+internal class CollabRelayHostTransport : CollabTransport
 {
     public string AssignedRoomCode { get; private set; } = "";
 
@@ -114,7 +114,7 @@ internal sealed class CollabRelayHostTransport : CollabTransport
     /** Never assigned to a member: the relay discards frames for it after counting them as activity. */
     private const byte KeepAliveSlot = 0;
 
-    private CollabRelayHostTransport(TcpClient relayClient, string assignedRoomCode)
+    protected CollabRelayHostTransport(TcpClient relayClient, string assignedRoomCode)
     {
         _relayClient = relayClient;
         _relayStream = relayClient.GetStream();
@@ -130,6 +130,22 @@ internal sealed class CollabRelayHostTransport : CollabTransport
 
     /// <summary>Connects to the relay and registers as a room owner. Throws with a readable message on failure.</summary>
     public static async Task<CollabRelayHostTransport> ConnectAsync(string relayHost, int relayPort, string roomCode, CancellationToken cancellation)
+    {
+        var (client, room) = await OpenRoomAsync(relayHost, relayPort, roomCode, cancellation);
+        try
+        {
+            return new CollabRelayHostTransport(client, room);
+        }
+        catch
+        {
+            client.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>Shared by the relay and WebRTC host transports: both need a registered room first.</summary>
+    protected static async Task<(TcpClient Client, string Room)> OpenRoomAsync(string relayHost, int relayPort, string roomCode,
+                                                                               CancellationToken cancellation)
     {
         var client = new TcpClient();
         try
@@ -152,8 +168,7 @@ internal sealed class CollabRelayHostTransport : CollabTransport
             if (!ok)
                 throw new Exception(string.IsNullOrEmpty(detail) ? "relay refused the room" : detail);
 
-            var room = reply["room"]?.Value<string>() ?? "";
-            return new CollabRelayHostTransport(client, room);
+            return (client, reply["room"]?.Value<string>() ?? "");
         }
         catch
         {
@@ -163,6 +178,19 @@ internal sealed class CollabRelayHostTransport : CollabTransport
     }
 
     public override void SendToPeer(CollabPeerConnection peer, CollabProtocol.FrameType type, ReadOnlySpan<byte> payload)
+    {
+        if (peer.SessionClosed)
+            return;
+
+        // A peer with a live data channel takes the frame directly; the relay path would be stale.
+        if (peer.TrySendPreferred(type, payload))
+            return;
+
+        WriteToRelay(peer.PresencePeerId, type, payload);
+    }
+
+    /// <summary>Writes on the relay even when the peer prefers a data channel (signaling and keepalives).</summary>
+    protected void SendOverRelay(CollabPeerConnection peer, CollabProtocol.FrameType type, ReadOnlySpan<byte> payload)
     {
         if (peer.SessionClosed)
             return;
@@ -333,7 +361,7 @@ internal sealed class CollabRelayHostTransport : CollabTransport
         }
     }
 
-    private CollabPeerConnection? FindPeer(int slot)
+    protected CollabPeerConnection? FindPeer(int slot)
     {
         foreach (var peer in _peerSnapshot)
         {
@@ -362,7 +390,8 @@ internal sealed class CollabRelayHostTransport : CollabTransport
         OnPeerDisconnected(peer);
     }
 
-    private void DispatchRelayFrame(ReadOnlySpan<byte> frame)
+    /// <summary>A relayed frame for one member slot. The WebRTC host forwards to peer links instead.</summary>
+    protected virtual void DispatchRelayFrame(ReadOnlySpan<byte> frame)
     {
         if (frame.Length < 2)
             return;
@@ -423,21 +452,34 @@ internal sealed class CollabRelayHostTransport : CollabTransport
     {
         SendToPeer(peer, CollabProtocol.FrameType.Heartbeat, timestamp);
     }
+
+    /// <summary>Factory for member peers; the WebRTC host creates peers whose stream is a data channel.</summary>
+    protected virtual CollabPeerConnection CreateMemberPeer(int slot, Action? onDetach) =>
+        new CollabPeerConnection(_relayStream, slot, onDetach);
+
+    protected virtual void OnMemberJoined(CollabPeerConnection peer)
+    {
+    }
+
+    protected virtual void OnMemberRemoved(CollabPeerConnection peer)
+    {
+    }
+
 }
 
 /// <summary>
 /// Client side: behaves like the direct client transport, but the single stream goes through the
 /// relay and presence rides the reliable channel.
 /// </summary>
-internal sealed class CollabRelayClientTransport : CollabTransport
+internal class CollabRelayClientTransport : CollabTransport
 {
     public CollabPeerConnection HostPeer => _hostPeer;
 
-    private CollabPeerConnection _hostPeer;
+    protected CollabPeerConnection _hostPeer;
     private readonly TcpClient _relayClient;
     private readonly CancellationTokenSource _cancellation = new();
 
-    private CollabRelayClientTransport(TcpClient relayClient)
+    protected CollabRelayClientTransport(TcpClient relayClient)
     {
         _relayClient = relayClient;
         _hostPeer = new CollabPeerConnection(relayClient.GetStream(), 0, null);
@@ -445,6 +487,21 @@ internal sealed class CollabRelayClientTransport : CollabTransport
 
     /// <summary>Connects to the relay and joins the room. Throws with a readable message on failure.</summary>
     public static async Task<CollabRelayClientTransport> ConnectAsync(string relayHost, int relayPort, string roomCode, CancellationToken cancellation)
+    {
+        var client = await JoinRoomAsync(relayHost, relayPort, roomCode, cancellation);
+        try
+        {
+            return new CollabRelayClientTransport(client);
+        }
+        catch
+        {
+            client.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>Shared by the relay and WebRTC client transports: both join the room the same way.</summary>
+    protected static async Task<TcpClient> JoinRoomAsync(string relayHost, int relayPort, string roomCode, CancellationToken cancellation)
     {
         var client = new TcpClient();
         try
@@ -465,8 +522,7 @@ internal sealed class CollabRelayClientTransport : CollabTransport
             if (!ok)
                 throw new Exception(string.IsNullOrEmpty(detail) ? "could not join room" : detail);
 
-            var transport = new CollabRelayClientTransport(client);
-            return transport;
+            return client;
         }
         catch
         {
@@ -480,11 +536,17 @@ internal sealed class CollabRelayClientTransport : CollabTransport
         peer.Write(type, payload);
     }
 
+    /// <summary>Writes on the relay even when the host link prefers a data channel (signaling and keepalives).</summary>
+    protected void SendOverRelay(CollabPeerConnection peer, CollabProtocol.FrameType type, ReadOnlySpan<byte> payload)
+    {
+        peer.Write(type, payload);
+    }
+
     /// <summary>
     /// The relay stream carries plain framed traffic once joined — the standard read loop. Start it
     /// only after PeerDisconnected is wired, so an immediately dying link is reported.
     /// </summary>
-    public void StartReading() => _ = Task.Run(() => ReadLoop(_hostPeer));
+    public virtual void StartReading() => _ = Task.Run(() => ReadLoop(_hostPeer));
 
     /// <summary>No UDP pinhole through the relay — presence rides the reliable channel.</summary>
     public void SendPresence(ReadOnlySpan<byte> payload)

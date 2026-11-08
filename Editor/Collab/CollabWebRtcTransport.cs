@@ -663,11 +663,8 @@ internal sealed class CollabDataChannelStream : Stream
 /// Host transport: the relay host link plus one WebRTC peer connection per member. Members join on
 /// the relay, negotiate over it, and switch their frames to the data channel after authentication.
 /// </summary>
-internal sealed class CollabWebRtcHostTransport : CollabRelayHostTransport, ICollabVideoSink
+internal sealed class CollabWebRtcHostTransport : CollabRelayHostTransport
 {
-    /// <summary>The video sink's view of <see cref="VideoViewerCount"/>.</summary>
-    public int ViewerCount => VideoViewerCount;
-
     /// <summary>Opened video tracks across all peers, so the encoder knows whether anyone is watching.</summary>
     public int VideoViewerCount
     {
@@ -692,10 +689,9 @@ internal sealed class CollabWebRtcHostTransport : CollabRelayHostTransport, ICol
     }
 
     public static new async Task<CollabWebRtcHostTransport> ConnectAsync(string relayHost, int relayPort, string roomCode,
-                                                                     CancellationToken cancellation,
-                                                                     CollabRelayHello? hello = null)
+                                                                     CancellationToken cancellation)
     {
-        var (client, room) = await OpenRoomAsync(relayHost, relayPort, roomCode, cancellation, hello);
+        var (client, room) = await OpenRoomAsync(relayHost, relayPort, roomCode, cancellation);
         try
         {
             return new CollabWebRtcHostTransport(client, room);
@@ -806,7 +802,7 @@ internal sealed class CollabWebRtcHostTransport : CollabRelayHostTransport, ICol
 /// Client transport: the relay join plus one WebRTC peer connection to the host. The relay stays the
 /// signaling channel and the fallback; the data channel carries the session once authenticated.
 /// </summary>
-internal sealed class CollabWebRtcClientTransport : CollabRelayClientTransport, ICollabVideoSource
+internal sealed class CollabWebRtcClientTransport : CollabRelayClientTransport
 {
     /// <summary>Raised on a libdatachannel thread with raw RTP packets of the host's preview.</summary>
     public event Action<byte[]>? VideoRtpReceived;
@@ -831,10 +827,9 @@ internal sealed class CollabWebRtcClientTransport : CollabRelayClientTransport, 
     }
 
     public static new async Task<CollabWebRtcClientTransport> ConnectAsync(string relayHost, int relayPort, string roomCode,
-                                                                       CancellationToken cancellation,
-                                                                       CollabRelayHello? hello = null)
+                                                                       CancellationToken cancellation)
     {
-        var client = await JoinRoomAsync(relayHost, relayPort, roomCode, cancellation, hello);
+        var client = await JoinRoomAsync(relayHost, relayPort, roomCode, cancellation);
         try
         {
             return new CollabWebRtcClientTransport(client);

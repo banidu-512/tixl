@@ -28,15 +28,14 @@ internal sealed class CollabVideoHostStreamer : IDisposable
     /// <summary>Access units handed to the peer tracks, for status display and verification.</summary>
     public long EncodedFrames => Interlocked.Read(ref _encodedFrames);
 
-    public int ViewerCount => _sink.ViewerCount;
+    public int ViewerCount => _transport.VideoViewerCount;
 
     /// <summary>Cheap fingerprint of the last captured RGBA frame, for headless capture verification.</summary>
     public long FrameChecksum => Interlocked.Read(ref _frameChecksum);
 
-    public CollabVideoHostStreamer(ICollabVideoSink sink, Func<T3.Core.DataTypes.Texture2D?>? source = null)
+    public CollabVideoHostStreamer(CollabWebRtcHostTransport transport)
     {
-        _sink = sink;
-        _source = source;
+        _transport = transport;
         _readAccess = new TextureBgraReadAccess(useImmediateReadback: false, targetFormat: Format.R8G8B8A8_UNorm);
 
         _encodeThread = new Thread(EncodeLoop)
@@ -55,22 +54,13 @@ internal sealed class CollabVideoHostStreamer : IDisposable
         if (_disposed || _encoderFailed || _readbackInFlight)
             return;
 
-        if (_sink.ViewerCount == 0)
+        if (_transport.VideoViewerCount == 0)
             return;
 
         if (Environment.TickCount64 - _lastCaptureTicks < 1000 / TargetFps)
             return;
 
-        // The shared feed is ONLY the explicit source (a selected input operator such as a webcam,
-        // NDI or Spout input). Output windows are never streamed: everyone renders their own.
-        var texture = _source != null ? _source() : RenderProcess.MainOutputTexture;
-        if (Environment.TickCount64 - _lastDiagTicks > 3000)
-        {
-            _lastDiagTicks = Environment.TickCount64;
-            Log.Debug($"Collab video: viewers={_sink.ViewerCount} customSource={_source != null} "
-                      + $"texture={(texture == null ? "null" : $"{texture.Description.Width}x{texture.Description.Height}")}");
-        }
-
+        var texture = RenderProcess.MainOutputTexture;
         if (texture == null || texture.IsDisposed)
             return;
 
@@ -186,7 +176,7 @@ internal sealed class CollabVideoHostStreamer : IDisposable
                 break;
             }
 
-            var forceKeyFrame = _sink.ConsumeKeyFrameRequest()
+            var forceKeyFrame = _transport.ConsumeKeyFrameRequest()
                                 || Environment.TickCount64 - _lastKeyFrameTicks > KeyFrameIntervalMs;
             if (forceKeyFrame)
                 _lastKeyFrameTicks = Environment.TickCount64;
@@ -235,7 +225,7 @@ internal sealed class CollabVideoHostStreamer : IDisposable
         encoder.AccessUnitEncoded += bytes =>
                                          {
                                              Interlocked.Increment(ref _encodedFrames);
-                                             _sink.SendVideo(bytes);
+                                             _transport.SendVideo(bytes);
                                          };
         _encoder = encoder;
         _encoderName = encoder.EncoderName;
@@ -259,8 +249,7 @@ internal sealed class CollabVideoHostStreamer : IDisposable
     private const int TargetHeight = 720;
     private const int KeyFrameIntervalMs = 2000;
 
-    private readonly ICollabVideoSink _sink;
-    private readonly Func<T3.Core.DataTypes.Texture2D?>? _source;
+    private readonly CollabWebRtcHostTransport _transport;
     private readonly TextureBgraReadAccess _readAccess;
     private readonly Thread _encodeThread;
     private readonly object _frameLock = new();
@@ -273,7 +262,6 @@ internal sealed class CollabVideoHostStreamer : IDisposable
     private int _pendingWidth;
     private int _pendingHeight;
     private long _lastCaptureTicks;
-    private long _lastDiagTicks;
     private long _lastKeyFrameTicks;
     private long _encodedFrames;
     private long _frameChecksum;
@@ -417,10 +405,10 @@ internal sealed class H264RtpDepacketizer
 /// </summary>
 internal sealed class CollabVideoReceiver : IDisposable
 {
-    public CollabVideoReceiver(ICollabVideoSource source)
+    public CollabVideoReceiver(CollabWebRtcClientTransport transport)
     {
-        _source = source;
-        _source.VideoRtpReceived += OnRtpReceived;
+        _transport = transport;
+        _transport.VideoRtpReceived += OnRtpReceived;
 
         _decodeThread = new Thread(DecodeLoop)
                             {
@@ -595,12 +583,12 @@ internal sealed class CollabVideoReceiver : IDisposable
             return;
 
         _disposed = true;
-        _source.VideoRtpReceived -= OnRtpReceived;
+        _transport.VideoRtpReceived -= OnRtpReceived;
         _accessUnits.CompleteAdding();
         DisposeTexture();
     }
 
-    private readonly ICollabVideoSource _source;
+    private readonly CollabWebRtcClientTransport _transport;
     private readonly H264RtpDepacketizer _depacketizer = new();
     private readonly BlockingCollection<byte[]> _accessUnits = new(new ConcurrentQueue<byte[]>());
     private readonly Thread? _decodeThread;
@@ -617,18 +605,4 @@ internal sealed class CollabVideoReceiver : IDisposable
     private T3.Core.DataTypes.Texture2D? _texture;
     private ShaderResourceView? _view;
     private volatile bool _disposed;
-}
-
-/// <summary>Whoever can fan encoded access units out to peers that watch the shared feed.</summary>
-internal interface ICollabVideoSink
-{
-    int ViewerCount { get; }
-    void SendVideo(byte[] annexB);
-    bool ConsumeKeyFrameRequest();
-}
-
-/// <summary>Whoever delivers the host's encoded video to this editor.</summary>
-internal interface ICollabVideoSource
-{
-    event Action<byte[]>? VideoRtpReceived;
 }
