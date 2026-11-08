@@ -84,7 +84,6 @@ public interface IGraphicsBackend : IDisposable
     /// <summary>True if the device can actually do this; topology and format support differ between drivers.</summary>
     bool Supports(Topology topology);
 
-    /// <summary>True if the device supports every usage in <paramref name="usage"/>; <see cref="TextureUsage.None"/> asks whether the format can be created at all.</summary>
     bool Supports(Format format, TextureUsage usage);
 
     /// <summary>Null where the device cannot time GPU work; the measuring code then reports nothing.</summary>
@@ -111,6 +110,14 @@ public interface IGraphicsBackend : IDisposable
     /// exactly this, stall included; everything else should use <see cref="ReadbackAsync"/>.
     /// </summary>
     MappedMemory MapForRead(GpuResource resource, int subresource);
+
+    /// <summary>
+    /// Tries to map for reading without stalling on queued GPU work. Returns false when the
+    /// resource still has work in flight (the backend cannot hand over stable contents yet);
+    /// callers keep their last good read instead of blocking the render thread. Used by
+    /// pipelined readbacks (the depth operators' staging).
+    /// </summary>
+    bool TryMapForRead(GpuResource resource, int subresource, out MappedMemory memory);
 
     void Unmap(GpuResource resource, int subresource);
 

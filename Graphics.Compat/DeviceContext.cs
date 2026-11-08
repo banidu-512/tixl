@@ -1,4 +1,4 @@
-﻿using System.Numerics;
+using System.Numerics;
 using T3.Graphics;
 
 namespace T3.Graphics.Compat;

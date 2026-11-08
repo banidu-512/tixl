@@ -1,6 +1,4 @@
-using System;
-using T3.Graphics.Compat;
-using T3.Core.Resource;
+using Lib.io.video.depthanything.Utils;
 
 #pragma warning disable CS8981
 
@@ -27,8 +25,6 @@ public class DepthFilter : Instance<DepthFilter>
     private void Update(EvaluationContext context)
     {
         var depthTexture = DepthTexture.GetValue(context);
-        var sigmaSpace = SigmaSpace.GetValue(context);
-        var sigmaColor = SigmaColor.GetValue(context);
         var enabled = Enabled.GetValue(context);
 
         if (!enabled || depthTexture == null || depthTexture.IsDisposed)
@@ -37,198 +33,56 @@ public class DepthFilter : Instance<DepthFilter>
             return;
         }
 
-        var device = ResourceManager.Device;
-        var desc = depthTexture.Description;
+        var sigmaSpace = Math.Max(SigmaSpace.GetValue(context), MinSigma);
+        var sigmaColor = Math.Max(SigmaColor.GetValue(context), MinSigma);
 
-        // Create or update output texture
-        if (_outputTexture == null || _outputTexture.Description.Width != desc.Width || _outputTexture.Description.Height != desc.Height)
+        var parameters = new Parameters
+                             {
+                                 SpaceCoefficient = -0.5f / (sigmaSpace * sigmaSpace),
+                                 ColorCoefficient = -0.5f / (sigmaColor * sigmaColor),
+                                 Radius = Math.Clamp((int)(sigmaSpace * 2), 1, MaxRadius)
+                             };
+
+        var description = depthTexture.Description;
+        if (!_pass.TryRun(parameters, depthTexture, null, description.Width, description.Height, Format.R32_Float))
         {
-            _outputTexture?.Dispose();
-            var outputDesc = new Texture2DDescription
+            if (_pass.Error != _loggedError)
             {
-                Width = desc.Width,
-                Height = desc.Height,
-                MipLevels = 1,
-                ArraySize = 1,
-                Format = Format.R32_Float,
-                SampleDescription = new SampleDescription(1, 0),
-                Usage = ResourceUsage.Default,
-                BindFlags = BindFlags.ShaderResource | BindFlags.RenderTarget,
-                OptionFlags = ResourceOptionFlags.None
-            };
-            _outputTexture = new Texture2D(new T3.Graphics.Compat.Texture2D(device, outputDesc));
-        }
+                _loggedError = _pass.Error;
+                Log.Warning($"[DepthFilter] {_pass.Error}", this);
+            }
 
-        // Get depth data
-        var stagingTexture = GetOrCreateStagingTexture(desc.Width, desc.Height, desc.Format);
-        device.ImmediateContext.CopyResource(depthTexture, stagingTexture);
-        var dataBox = device.ImmediateContext.MapSubresource(stagingTexture, 0, MapMode.Read, MapFlags.None);
-
-        if (dataBox.DataPointer == IntPtr.Zero)
-        {
-            device.ImmediateContext.UnmapSubresource(stagingTexture, 0);
+            FilteredDepth.Value = depthTexture;
             return;
         }
 
-        try
-        {
-            int width = desc.Width;
-            int height = desc.Height;
-            var depthData = new float[width * height];
-
-            // Copy data from staging texture
-            IntPtr srcPtr = dataBox.DataPointer;
-            int rowPitch = dataBox.RowPitch;
-
-            for (int y = 0; y < height; y++)
-            {
-                int dstOffset = y * width;
-
-                for (int x = 0; x < width; x++)
-                {
-                    unsafe
-                    {
-                        IntPtr rowSrcPtr = srcPtr + (y * rowPitch) + (x * sizeof(float));
-                        depthData[dstOffset + x] = *((float*)rowSrcPtr);
-                    }
-                }
-            }
-
-            // Apply bilateral filter
-            var filteredData = ApplyBilateralFilter(depthData, width, height, sigmaSpace, sigmaColor);
-
-            var handle = System.Runtime.InteropServices.GCHandle.Alloc(filteredData, System.Runtime.InteropServices.GCHandleType.Pinned);
-            try
-            {
-                var dataOut = new DataBox(handle.AddrOfPinnedObject(), width * 4, 0);
-                device.ImmediateContext.UpdateSubresource(dataOut, _outputTexture);
-            }
-            finally
-            {
-                handle.Free();
-            }
-
-            FilteredDepth.Value = _outputTexture;
-        }
-        finally
-        {
-            device.ImmediateContext.UnmapSubresource(stagingTexture, 0);
-        }
-    }
-
-    private float[] ApplyBilateralFilter(float[] depth, int width, int height, float sigmaSpace, float sigmaColor)
-    {
-        var filtered = new float[width * height];
-        int radius = (int)(sigmaSpace * 2);
-        if (radius < 1) radius = 1;
-        if (radius > 5) radius = 5; // Limit kernel size for performance
-
-        float spaceCoeff = -0.5f / (sigmaSpace * sigmaSpace);
-        float colorCoeff = -0.5f / (sigmaColor * sigmaColor);
-
-        // Compute Gaussian kernel weights
-        var spaceWeights = new float[radius * 2 + 1];
-        for (int i = -radius; i <= radius; i++)
-        {
-            spaceWeights[i + radius] = (float)System.Math.Exp(i * i * spaceCoeff);
-        }
-
-        Parallel.For(0, height, y =>
-        {
-            for (int x = 0; x < width; x++)
-            {
-                int idx = y * width + x;
-                float centerDepth = depth[idx];
-
-                if (float.IsNaN(centerDepth) || float.IsInfinity(centerDepth))
-                {
-                    filtered[idx] = centerDepth;
-                    continue;
-                }
-
-                float sum = 0;
-                float weightSum = 0;
-
-                for (int dy = -radius; dy <= radius; dy++)
-                {
-                    for (int dx = -radius; dx <= radius; dx++)
-                    {
-                        int nx = x + dx;
-                        int ny = y + dy;
-
-                        if (nx >= 0 && nx < width && ny >= 0 && ny < height)
-                        {
-                            int nIdx = ny * width + nx;
-                            float neighborDepth = depth[nIdx];
-
-                            if (!float.IsNaN(neighborDepth) && !float.IsInfinity(neighborDepth))
-                            {
-                                float spaceWeight = spaceWeights[Math.Abs(dx) + radius] * spaceWeights[Math.Abs(dy) + radius];
-                                float colorDiff = centerDepth - neighborDepth;
-                                float colorWeight = (float)System.Math.Exp(colorDiff * colorDiff * colorCoeff);
-
-                                float weight = spaceWeight * colorWeight;
-                                sum += neighborDepth * weight;
-                                weightSum += weight;
-                            }
-                        }
-                    }
-                }
-
-                filtered[idx] = weightSum > 0 ? sum / weightSum : centerDepth;
-            }
-        });
-
-        return filtered;
-    }
-
-    private Texture2D GetOrCreateStagingTexture(int width, int height, Format format)
-    {
-        var key = (width, height, format);
-
-        if (_cachedStagingTextures.TryGetValue(key, out var cachedTexture))
-            return cachedTexture;
-
-        lock (_textureCacheLock)
-        {
-            if (_cachedStagingTextures.TryGetValue(key, out cachedTexture))
-                return cachedTexture;
-
-            var newTexture = new Texture2D(new T3.Graphics.Compat.Texture2D(ResourceManager.Device, new Texture2DDescription
-            {
-                Width = width,
-                Height = height,
-                MipLevels = 1,
-                ArraySize = 1,
-                Format = format,
-                SampleDescription = new SampleDescription(1, 0),
-                Usage = ResourceUsage.Staging,
-                BindFlags = BindFlags.None,
-                CpuAccessFlags = CpuAccessFlags.Read,
-                OptionFlags = ResourceOptionFlags.None
-            }));
-
-            _cachedStagingTextures[key] = newTexture;
-            return newTexture;
-        }
+        FilteredDepth.Value = _pass.Output;
     }
 
     protected override void Dispose(bool isDisposing)
     {
         if (!isDisposing) return;
 
-        _outputTexture?.Dispose();
-        _outputTexture = null;
-
-        lock (_textureCacheLock)
-        {
-            foreach (var texture in _cachedStagingTextures.Values)
-                texture?.Dispose();
-            _cachedStagingTextures.Clear();
-        }
-
+        _pass.Dispose();
         base.Dispose(isDisposing);
     }
+
+    // Padding rounds the constant buffer up to whole 16-byte rows
+#pragma warning disable CS0649
+    private struct Parameters
+    {
+        public float SpaceCoefficient;
+        public float ColorCoefficient;
+        public int Radius;
+        public float Padding;
+    }
+#pragma warning restore CS0649
+
+    private const float MinSigma = 0.0001f;
+    private const int MaxRadius = 5;
+
+    private readonly ComputePass _pass = new("DepthAnything:shaders/depth-filter-cs.hlsl");
+    private string? _loggedError;
 
     #region Inputs
 
@@ -243,14 +97,6 @@ public class DepthFilter : Instance<DepthFilter>
 
     [Input(Guid = "d5e6f7a8-b9c0-d1e2-f3a4-b5c6d7e8f9a0")]
     public readonly InputSlot<bool> Enabled = new(true);
-
-    #endregion
-
-    #region Private Fields
-
-    private Texture2D? _outputTexture;
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<(int, int, Format), Texture2D> _cachedStagingTextures = new();
-    private readonly object _textureCacheLock = new object();
 
     #endregion
 }
