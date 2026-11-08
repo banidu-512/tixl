@@ -45,19 +45,44 @@ internal static class StartupProjectLoader
             return;
         }
 
+        if (!TryOpen(project, graphWindow))
+            return;
+
+        Log.Info($"Startup project '{project.DisplayName}' loaded.");
+    }
+
+    /// <summary>
+    /// Opens a project exactly as the Hub and the startup setting do. Also used by boygrouping: a
+    /// node that just received a bootstrapped project opens it in place instead of restarting the
+    /// whole editor (a deploy restart only exists because a *running* project cannot be replaced).
+    /// </summary>
+    internal static bool TryOpen(string folder)
+    {
+        var project = FindProject(folder);
+        if (project == null)
+        {
+            Log.Warning($"Project '{folder}' is not known yet — cannot open it in place.");
+            return false;
+        }
+
+        return TryOpen(project, GetGraphWindow());
+    }
+
+    private static bool TryOpen(EditableSymbolProject project, GraphWindow? graphWindow)
+    {
         if (!OpenedProject.TryCreate(project, out var openedProject, out var failureLog) || openedProject == null)
         {
-            Log.Warning($"Could not load the startup project '{project.DisplayName}': {failureLog}");
-            return;
+            Log.Warning($"Could not load the project '{project.DisplayName}': {failureLog}");
+            return false;
         }
 
         if (graphWindow == null || !graphWindow.TrySetToProject(openedProject))
         {
-            Log.Warning($"Could not open the startup project '{project.DisplayName}' in a graph window.");
-            return;
+            Log.Warning($"Could not open the project '{project.DisplayName}' in a graph window.");
+            return false;
         }
 
-        Log.Info($"Startup project '{project.DisplayName}' loaded.");
+        return true;
     }
 
     private static EditableSymbolProject? FindProject(string folder)

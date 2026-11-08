@@ -118,6 +118,28 @@ internal sealed class BoygroupManager
         RemoteInputBus.ErrorReported += message => Log.Warning(message);
     }
 
+    /// <summary>Adds the machines this instance is currently linked to: the render nodes on a
+    /// master, the master on a render node — the settings panel's network check compares them
+    /// against the selected adapter.</summary>
+    public void AddLinkedPeers(List<NetworkPeer> peers)
+    {
+        if (State == BoygroupState.Client)
+        {
+            var address = (_transport as BoygroupClientTransport)?.ServerPeer.RemoteAddress;
+            if (address != null)
+                peers.Add(new NetworkPeer("Boygroup master", address));
+        }
+        else if (State == BoygroupState.Server)
+        {
+            foreach (var client in _clients)
+            {
+                var address = client.Peer.RemoteAddress;
+                if (address != null)
+                    peers.Add(new NetworkPeer($"Boygroup node {client.Name}", address));
+            }
+        }
+    }
+
     /// <summary>What the input replication is doing, for the settings panel and the debug bridge.</summary>
     public string InputRelaySummary => State switch
                                            {
@@ -173,7 +195,7 @@ internal sealed class BoygroupManager
         {
             _password = password ?? "";
             GroupName = group;
-            _transport = new BoygroupServerTransport(port, UserSettings.Config.BoygroupGroups.Distinct().ToArray());
+            _transport = new BoygroupServerTransport(port, UserSettings.Config.BoygroupGroups.Distinct().ToArray(), UserSettings.Config.NetworkInterface);
             _transport.PeerDisconnected += OnPeerDisconnected;
             State = BoygroupState.Server;
             StatusText = $"Serving group '{group}' on port {port}";
@@ -1094,6 +1116,10 @@ internal sealed class BoygroupManager
         return ProjectView.Focused?.OpenedProject.Package.Folder;
     }
 
+    /// <summary>Whether a project is really open (not merely a pending bootstrap folder) — the debug
+    /// bridge's status reports it, so a master that cannot deploy is diagnosable remotely.</summary>
+    public static bool HasProjectFolder => ProjectView.Focused?.OpenedProject?.Package.Folder is { Length: > 0 };
+
     // ---------------------------------------------------------------------------------------
     // Client: deploy reception
     // ---------------------------------------------------------------------------------------
@@ -1281,6 +1307,18 @@ internal sealed class BoygroupManager
             }
         }
 
+        // A render node that just received a bootstrapped project can open it in place - no restart
+        // needed, because nothing was open that the new project would have to replace.
+        if (_bootstrapProjectFolder is { Length: > 0 } bootstrapped
+            && ProjectView.Focused?.OpenedProject == null
+            && T3.Editor.App.Startup.StartupProjectLoader.TryOpen(bootstrapped))
+        {
+            Log.Info($"Boygroup: opened the received project {bootstrapped} without a restart");
+            _bootstrapProjectFolder = null;
+            DeploySummary += " - project opened";
+            return;
+        }
+
         // A render node must come back into the show it was deployed, not into the Hub: pin the
         // deployed project as the startup project so the restart reopens it (StartupProjectLoader).
         // Only for the slave role - a master's editor restarts are the operator's business.
@@ -1454,7 +1492,7 @@ internal sealed class BoygroupManager
                 directTargets = [resolved];
         }
 
-        _discoveryScanner.Start(UserSettings.Config.BoygroupPort + LanDiscoveryResponder.DiscoveryPortOffset, directTargets);
+        _discoveryScanner.Start(UserSettings.Config.BoygroupPort + LanDiscoveryResponder.DiscoveryPortOffset, directTargets, UserSettings.Config.NetworkInterface);
     }
 
     public void StopDiscovery()
