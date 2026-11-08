@@ -94,8 +94,8 @@ internal static class CollabCommandWire
                        ["c"] = command.CompositionSymbolIdForCollab,
                        ["ch"] = command.ChildIdForCollab,
                        ["i"] = command.InputIdForCollab,
-                       ["v"] = InputValueToJson(command.NewValueForCollab),
-                       ["pv"] = InputValueToJson(command.OriginalValueForCollab),
+                       ["v"] = InputValueToToken(command.NewValueForCollab),
+                       ["pv"] = InputValueToToken(command.OriginalValueForCollab),
                    };
     }
 
@@ -142,13 +142,15 @@ internal static class CollabCommandWire
         var inputs = new JObject();
         foreach (var (inputId, value) in restoreData.InputValues)
         {
-            inputs[inputId.ToString()] = InputValueToJson(value);
+            // Tokens, not JSON-encoded strings: the restore side feeds these straight into
+            // SetValueFromJson, which types them by token kind.
+            inputs[inputId.ToString()] = InputValueToToken(value);
         }
 
         var clips = new JObject();
         foreach (var (outputId, timeClip) in restoreData.TimeClips)
         {
-            clips[outputId.ToString()] = TimeClipToJson(timeClip);
+            clips[outputId.ToString()] = TimeClipToToken(timeClip);
         }
 
         var connections = new JArray();
@@ -248,7 +250,10 @@ internal static class CollabCommandWire
     /// skips instead of desyncing or killing the session (e.g. when a client briefly misses an
     /// operator type another user just added).
     /// </summary>
-    public static void ApplyOp(JObject op)
+    /// <param name="markModified">False for values a render node receives from its master: they are
+    /// live show state, not local edits, so they must not dirty the node's project and feed the
+    /// deploy diff (which saves the file, sees a difference and restarts the node).</param>
+    public static void ApplyOp(JObject op, bool markModified = true)
     {
         try
         {
@@ -261,14 +266,14 @@ internal static class CollabCommandWire
                         foreach (var child in ops)
                         {
                             if (child is JObject subOp)
-                                ApplyOp(subOp);
+                                ApplyOp(subOp, markModified);
                         }
                     }
 
                     break;
 
                 case "set_input":
-                    ApplySetInput(op);
+                    ApplySetInput(op, markModified);
                     break;
 
                 case "add_child":
@@ -501,7 +506,7 @@ internal static class CollabCommandWire
                && SymbolUiRegistry.TryGetSymbolUi(compositionId, out compositionUi);
     }
 
-    private static void ApplySetInput(JObject op)
+    private static void ApplySetInput(JObject op, bool markModified = true)
     {
         if (!TryGetComposition(op, out var compositionUi)
             || !CollabProtocol.TryGetGuid(op, "ch", out var childId)
@@ -531,7 +536,10 @@ internal static class CollabCommandWire
             return;
         }
 
-        var command = new ChangeInputValueCommand(compositionUi.Symbol, childId, input, newValue);
+        var command = new ChangeInputValueCommand(compositionUi.Symbol, childId, input, newValue)
+                          {
+                              MarksModified = markModified,
+                          };
         command.Do();
     }
 
@@ -674,6 +682,53 @@ internal static class CollabCommandWire
         return stringWriter.ToString();
     }
 
+    /// <summary>
+    /// Serializes an input value as a real JSON token. The receiving side hands this token straight
+    /// to <c>InputValue.SetValueFromJson</c>, whose converters expect a number/string/object — a
+    /// JSON-encoded *string* reads as the wrong token type and silently becomes the type default.
+    /// </summary>
+    public static JToken? InputValueToToken(InputValue value)
+    {
+        if (value == null)
+            return JValue.CreateNull();
+
+        var json = InputValueToJson(value);
+        return string.IsNullOrEmpty(json) || json == "null" ? JValue.CreateNull() : JToken.Parse(json);
+    }
+
+    /// <summary>
+    /// All non-default input values of a composition as <c>set_input</c> ops. Used when a render node
+    /// joins so it starts from the master's live values, not from the ones last saved to disk.
+    /// </summary>
+    public static JArray BuildValueOps(SymbolUi compositionUi)
+    {
+        var ops = new JArray();
+        foreach (var childUi in compositionUi.ChildUis.Values)
+        {
+            var child = childUi.SymbolChild;
+            foreach (var (inputId, input) in child.Inputs)
+            {
+                if (input.IsDefault)
+                    continue;
+
+                var token = InputValueToToken(input.Value);
+                if (token == null)
+                    continue;
+
+                ops.Add(new JObject
+                            {
+                                ["type"] = "set_input",
+                                ["c"] = compositionUi.Symbol.Id,
+                                ["ch"] = child.Id,
+                                ["i"] = inputId,
+                                ["v"] = token,
+                            });
+            }
+        }
+
+        return ops;
+    }
+
     private static string TimeClipToJson(TimeClip timeClip)
     {
         using var stringWriter = new StringWriter();
@@ -683,6 +738,13 @@ internal static class CollabCommandWire
         }
 
         return stringWriter.ToString();
+    }
+
+    /// <summary><see cref="TimeClip.ReadFromJson"/> expects a JSON object, not its text.</summary>
+    private static JToken TimeClipToToken(TimeClip timeClip)
+    {
+        var json = TimeClipToJson(timeClip);
+        return string.IsNullOrEmpty(json) || json == "null" ? JValue.CreateNull() : JToken.Parse(json);
     }
 
     /// <summary>

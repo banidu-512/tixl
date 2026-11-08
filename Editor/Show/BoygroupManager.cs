@@ -221,7 +221,6 @@ internal sealed class BoygroupManager
             _transport.PeerDisconnected += OnPeerDisconnected;
             State = BoygroupState.Server;
             StatusText = $"Serving group '{group}' on port {port}";
-            PersistJoinTarget("127.0.0.1", group);
             Log.Info($"Boygroup: server started (group '{group}', port {port})");
         }
         catch (SocketException e)
@@ -452,7 +451,10 @@ internal sealed class BoygroupManager
                 }
                 else
                 {
-                    TryAutoJoin();
+                    // Auto-join alone must not claim the boygroup mode: joining anywhere else (the
+                    // hub, a collab or failover session) pulled the machine into a group behind the
+                    // operator's back, which made turning boygrouping off look ineffective.
+                    Log.Info("Boygroup: disabled - not auto-joining (enable the mode to follow a master)");
                 }
             }
             else if (_autoJoinAttempted && !_leftManually && UserSettings.Config.BoygroupEnabled && !UserSettings.Config.BoygroupIsMaster)
@@ -496,6 +498,7 @@ internal sealed class BoygroupManager
             PumpInputReplication();
             ReRequestPendingInventories();
             FollowSharedProject();
+            SyncLiveValues();
             BroadcastPlayStateOnChange();
         }
 
@@ -723,6 +726,15 @@ internal sealed class BoygroupManager
 
                 break;
 
+            // Live values from the master. Applied without marking the project modified: they are
+            // show state, not edits — a dirty project gets saved, differs from the master's file and
+            // is deployed back with a restart.
+            case "op" when State == BoygroupState.Client:
+                if (json["op"] is JObject valueOp)
+                    CollabCommandWire.ApplyOp(valueOp, markModified: false);
+
+                break;
+
             case "bindings" when State == BoygroupState.Server:
                 HandleClientBindings(json);
                 break;
@@ -836,6 +848,10 @@ internal sealed class BoygroupManager
 
         Log.Info($"Boygroup: client authenticated: {client.Name} ({client.Address}) group '{client.Group}'");
 
+        // The new node starts from the values saved on disk. Forget the change baseline so the next
+        // sync pass sends every live value, not just the ones that happen to change afterwards.
+        _sentValues.Clear();
+
         // A node that appears is served: schedule a deploy shortly after the handshake (the delay
         // debounces a burst of joins into one pass; clients mid-deploy keep their own transfer).
         if (UserSettings.Config.BoygroupAutoDeployOnJoin)
@@ -919,6 +935,9 @@ internal sealed class BoygroupManager
         }
 
         var mirror = UserSettings.Config.BoygroupDeployMirror;
+        // Remember what this pass is for: _autoDeployOnlyUndeployed leaked from an earlier
+        // join-triggered pass and silently dropped manual deploys for already-deployed nodes.
+        _autoDeployOnlyUndeployed = onlyUndeployed;
         var setupsFolderRelative = Path.GetRelativePath(projectFolder, SetupFiles.FolderIn(projectFolder));
         var inventory = BoygroupDeployer.BuildInventory(projectFolder, setupsFolderRelative);
 
@@ -943,7 +962,11 @@ internal sealed class BoygroupManager
         }
 
         PushSetupToGroup();
-        PushGraphSnapshotToGroup();
+
+        // No graph snapshot: the files below carry the structure, and SyncLiveValues keeps the node
+        // on the master's live values. Rebuilding the node's composition here on every deploy was
+        // what dropped its connections and made it restart in a loop.
+        SendCurrentValuesToGroup();
     }
 
     /// <summary>A node joined without a project open: name ours so it can create the folder and
@@ -1209,19 +1232,135 @@ internal sealed class BoygroupManager
         }
     }
 
-    private void PushGraphSnapshotToGroup()
+    /// <summary>
+    /// Master side: sends only the input values that changed since the last pass. The project files
+    /// (graph structure, operators, assets) are deployed once; everything after that is live show
+    /// state. The old full graph snapshot deleted and rebuilt the node's whole composition on every
+    /// deploy — which is what made nodes restart in a loop and crash while rendering.
+    /// </summary>
+    private void SyncLiveValues()
     {
-        var focused = ProjectView.Focused;
-        var compositionUi = focused?.InstView?.Symbol.GetSymbolUi();
-        if (compositionUi == null)
-        {
-            Log.Info("Boygroup: no open composition to snapshot");
+        if (State != BoygroupState.Server || _clients.Count == 0)
             return;
+
+        var now = Environment.TickCount64;
+        if (now < _nextValueSyncTicks)
+            return;
+
+        _nextValueSyncTicks = now + ValueSyncIntervalMs;
+
+        var compositionUi = ProjectView.Focused?.InstView?.Symbol.GetSymbolUi();
+        if (compositionUi == null)
+            return;
+
+        // A different composition means a different set of keys; comparing against the old baseline
+        // would suppress the first values of the new one.
+        if (compositionUi.Symbol.Id != _valueSyncCompositionId)
+        {
+            _valueSyncCompositionId = compositionUi.Symbol.Id;
+            _sentValues.Clear();
         }
 
-        var snapshotOp = CollabCommandWire.BuildSnapshotOp(compositionUi);
-        BroadcastToGroup(new { t = "snapshot", op = snapshotOp });
+        var ops = new List<JObject>();
+        foreach (var childUi in compositionUi.ChildUis.Values)
+        {
+            var child = childUi.SymbolChild;
+            foreach (var (inputId, input) in child.Inputs)
+            {
+                var token = CollabCommandWire.InputValueToToken(input.IsDefault ? input.DefaultValue : input.Value);
+                if (token == null || token.Type == JTokenType.Null)
+                    continue;
+
+                var valueJson = token.ToString(Formatting.None);
+                var key = $"{child.Id:N}/{inputId:N}";
+                if (_sentValues.TryGetValue(key, out var previous) && previous == valueJson)
+                    continue;
+
+                _sentValues[key] = valueJson;
+                ops.Add(new JObject
+                            {
+                                ["type"] = "set_input",
+                                ["c"] = compositionUi.Symbol.Id,
+                                ["ch"] = child.Id,
+                                ["i"] = inputId,
+                                ["v"] = token,
+                            });
+            }
+        }
+
+        BroadcastValueOps(ops);
     }
+
+    /// <summary>
+    /// Sends value ops in bounded batches. A big composition's first pass covers every input; one
+    /// unbounded message would run into the session's JSON payload cap and kill the link.
+    /// </summary>
+    private void BroadcastValueOps(List<JObject> ops)
+    {
+        for (var offset = 0; offset < ops.Count; offset += MaxValueOpsPerMessage)
+        {
+            var batch = new JArray();
+            for (var i = offset; i < Math.Min(offset + MaxValueOpsPerMessage, ops.Count); i++)
+                batch.Add(ops[i]);
+
+            BroadcastToGroup(new
+                                 {
+                                     t = "op",
+                                     op = new JObject
+                                              {
+                                                  ["type"] = "batch",
+                                                  ["ops"] = batch,
+                                              },
+                                 });
+        }
+    }
+
+    private const int MaxValueOpsPerMessage = 400;
+
+    /// <summary>
+    /// Sends every current value of the focused composition, ignoring the change baseline. A node
+    /// that just joined or received files starts from the values saved on disk; this puts it on the
+    /// master's live values immediately instead of waiting for each one to change again.
+    /// </summary>
+    private void SendCurrentValuesToGroup()
+    {
+        var compositionUi = ProjectView.Focused?.InstView?.Symbol.GetSymbolUi();
+        if (compositionUi == null)
+            return;
+
+        var ops = new List<JObject>();
+        foreach (var childUi in compositionUi.ChildUis.Values)
+        {
+            var child = childUi.SymbolChild;
+            foreach (var (inputId, input) in child.Inputs)
+            {
+                var token = CollabCommandWire.InputValueToToken(input.IsDefault ? input.DefaultValue : input.Value);
+                if (token == null || token.Type == JTokenType.Null)
+                    continue;
+
+                _sentValues[$"{child.Id:N}/{inputId:N}"] = token.ToString(Formatting.None);
+                ops.Add(new JObject
+                            {
+                                ["type"] = "set_input",
+                                ["c"] = compositionUi.Symbol.Id,
+                                ["ch"] = child.Id,
+                                ["i"] = inputId,
+                                ["v"] = token,
+                            });
+            }
+        }
+
+        // A full push covers every value, so the incremental baseline restarts from it.
+        _valueSyncCompositionId = compositionUi.Symbol.Id;
+        BroadcastValueOps(ops);
+    }
+
+    /// <summary>Values last broadcast per child/input, so only changes travel.</summary>
+    private readonly Dictionary<string, string> _sentValues = [];
+
+    private Guid _valueSyncCompositionId;
+    private long _nextValueSyncTicks;
+    private const int ValueSyncIntervalMs = 500;
 
     private static string? GetProjectFolder()
     {
@@ -1259,7 +1398,20 @@ internal sealed class BoygroupManager
 
         var inventory = BoygroupDeployer.BuildInventory(projectFolder,
                                                         Path.GetRelativePath(projectFolder, SetupFiles.FolderIn(projectFolder)));
-        SendJson(((_transport as BoygroupClientTransport)!).ServerPeer,
+        SendInventoryToMaster(inventory);
+    }
+
+    /// <summary>Sends this machine's project inventory, answering the master's requestInventory.</summary>
+    private void SendInventoryToMaster(Dictionary<string, BoygroupDeployer.InventoryEntry>? inventory = null)
+    {
+        var projectFolder = GetProjectFolder();
+        if (string.IsNullOrEmpty(projectFolder) || _transport is not BoygroupClientTransport transport)
+            return;
+
+        inventory ??= BoygroupDeployer.BuildInventory(projectFolder,
+                                                      Path.GetRelativePath(projectFolder, SetupFiles.FolderIn(projectFolder)));
+
+        SendJson(transport.ServerPeer,
                  new JObject
                      {
                          ["t"] = "inventory",
@@ -1277,6 +1429,21 @@ internal sealed class BoygroupManager
         var name = CollabProtocol.GetString(json, "name", "");
         if (string.IsNullOrEmpty(name))
             return;
+
+        // The master runs a project this machine already has: switch to it in place (a no-op when it
+        // is already shown). Receiving a second copy into a bootstrap folder would restart the node
+        // for a project that is right here — and the deploy then diffs against what it really shows.
+        if (ProjectFollower.TrySwitchToName(name))
+        {
+            _bootstrapProjectFolder = null;
+            DeploySummary = $"Following the master's project '{name}'";
+            Log.Info($"Boygroup: following the master onto project '{name}' without a restart");
+
+            // Answer the pending inventory request with the project we just opened, so the deploy
+            // diffs against it instead of waiting for the next re-request.
+            SendInventoryToMaster();
+            return;
+        }
 
         var root = UserSettings.Config.ProjectDirectories.FirstOrDefault();
         if (string.IsNullOrEmpty(root))
@@ -1626,7 +1793,10 @@ internal sealed class BoygroupManager
             return;
         }
 
-        if (config.BoygroupDeployRestartWindowStartTicks == 0 || now - config.BoygroupDeployRestartWindowStartTicks > 120_000)
+        // A window of ten minutes, not two: restarts that follow each reboot by a few minutes (the
+        // join -> deploy -> restart cycle) always fell outside the old window, so the counter reset
+        // and the guard could never trip. Tripping it now really keeps the node up.
+        if (config.BoygroupDeployRestartWindowStartTicks == 0 || now - config.BoygroupDeployRestartWindowStartTicks > DeployRestartWindowMs)
         {
             config.BoygroupDeployRestartWindowStartTicks = now;
             config.BoygroupDeployRestartCount = 1;
@@ -1634,11 +1804,14 @@ internal sealed class BoygroupManager
         else
         {
             config.BoygroupDeployRestartCount++;
-            if (config.BoygroupDeployRestartCount > 4)
+            if (config.BoygroupDeployRestartCount > MaxDeployRestartsPerWindow)
             {
                 config.BoygroupDeployRestartBlockedUntilTicks = now + 300_000;
                 config.BoygroupDeployRestartCount = 0;
-                Log.Warning("Boygroup: more than four deploy restarts in two minutes - blocking further deploy restarts for five minutes (restart-loop guard)");
+                UserSettings.Save();
+                Log.Warning($"Boygroup: more than {MaxDeployRestartsPerWindow} deploy restarts in ten minutes - blocking further deploy restarts for five minutes (restart-loop guard) - staying up");
+                DeploySummary += " - restart blocked (loop guard)";
+                return;
             }
         }
 
@@ -1667,21 +1840,34 @@ internal sealed class BoygroupManager
         _deployedRelativePaths.Clear();
         if (!needsReload)
         {
+            // Nothing the running editor can't hot-apply arrived — but the node may still be showing
+            // a different project than the master. Follow it in place instead of restarting.
+            if (GetProjectFolder() is { Length: > 0 } deployedFolder
+                && !ProjectFollower.IsOpen(deployedFolder)
+                && ProjectFollower.TrySwitchTo(deployedFolder))
+            {
+                DeploySummary += " - followed the master's project";
+                return;
+            }
+
             Log.Info($"Boygroup: deploy changed {_deployFilesDone} live-applicable file(s) - staying up without a restart");
             DeploySummary += " - applied live";
             return;
         }
 
         // A render node must come back into the show it was deployed, not into the Hub: pin the
-        // deployed project as the startup project so the restart reopens it (StartupProjectLoader).
-        // Only for the slave role - a master's editor restarts are the operator's business.
-        if (State == BoygroupState.Client && config.BoygroupEnabled && !config.BoygroupIsMaster)
+        // deployed project for the restart. Both restart paths are covered — the reopen-last-session
+        // loader (the default) and the startup-project one. Only for the slave role; a master's
+        // editor restarts are the operator's business.
+        if (State == BoygroupState.Client && config.BoygroupEnabled && !config.BoygroupIsMaster
+            && GetProjectFolder() is { Length: > 0 } deployedProject)
         {
-            if (GetProjectFolder() is { Length: > 0 } deployedProject)
-                config.StartupProjectFolder = deployedProject;
+            ProjectFollower.PinForRestart(deployedProject);
         }
-
-        UserSettings.Save();
+        else
+        {
+            UserSettings.Save();
+        }
 
         RestartPending = true;
         // Brief delay so the panel shows what happened before the process exits.
@@ -1696,6 +1882,10 @@ internal sealed class BoygroupManager
     }
 
     private long _restartAtTicks;
+
+    /// <summary>Restart-flood window and budget; see <see cref="HandleDeployDone"/>.</summary>
+    private const long DeployRestartWindowMs = 10 * 60_000;
+    private const int MaxDeployRestartsPerWindow = 4;
 
     private void ProcessPendingRestart()
     {

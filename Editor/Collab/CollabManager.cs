@@ -1233,40 +1233,12 @@ internal sealed class CollabManager
     /// <summary>Opens a local project by display name (short form accepted) into the visible graph window.</summary>
     internal static bool TryOpenProjectByName(string name)
     {
-        foreach (var p in SymbolPackage.AllPackages)
-        {
-            if (p is not EditorSymbolPackage editorPackage
-                || !(string.Equals(editorPackage.DisplayName, name, StringComparison.OrdinalIgnoreCase)
-                     || editorPackage.DisplayName.StartsWith(name + " (", StringComparison.OrdinalIgnoreCase)))
-                continue;
-
-            if (!OpenedProject.TryCreate(editorPackage, out var openedProject, out var failureLog)
-                || openedProject == null)
-            {
-                Log.Warning($"Collab: could not open project '{name}': {failureLog}");
-                return false;
-            }
-
-            GraphWindow? graphWindow = null;
-            foreach (var window in GraphWindow.GraphWindowInstances)
-            {
-                if (!window.Config.Visible)
-                    continue;
-
-                graphWindow = window;
-                break;
-            }
-
-            graphWindow ??= GraphWindow.GraphWindowInstances.Count > 0 ? GraphWindow.GraphWindowInstances[0] : null;
-            if (graphWindow == null || !graphWindow.TrySetToProject(openedProject, tryRestoreViewArea: false))
-            {
-                Log.Warning($"Collab: could not open project '{name}' in a graph window");
-                return false;
-            }
-
+        // Shared with failover and boygrouping: every mode follows the active machine's project the
+        // same way (in place, without a restart, when the project is installed).
+        if (T3.Editor.Show.ProjectFollower.TrySwitchToName(name))
             return true;
-        }
 
+        Log.Warning($"Collab: project '{name}' is not installed locally");
         return false;
     }
 
