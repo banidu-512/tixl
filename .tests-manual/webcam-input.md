@@ -114,6 +114,22 @@ Enable `DeactivateWhenNotShowing`, then make the operator stop being rendered â€
 - `Status` reports `Paused (not rendered)` while nothing renders the operator.
 - Reconnecting `Texture` makes the image reappear within about a second.
 
+## Known issue: rapid start/stop cycles can lose the camera
+
+**Observed:**
+Toggling `Active` off and on several times in quick succession can leave the image frozen or empty while
+`Status` reports `Error: Camera disconnected.` for the rest of the session. Closing and reopening the project
+does not restore it.
+
+**Notes:**
+Measured on a laptop camera (BisonCam,NB Pro) with `Tests/Editor.IntegrationTests/WebcamInputTests`, which
+covered this sequence before it was narrowed to a single connect/stop/reconnect cycle. The capture thread
+keeps retrying once per second and never recovers, because the camera has dropped out of SDL's camera list
+and reopening it yields a stream that is reported as gone. Restarting SDL camera support is the only
+re-enumeration path, and that did not clear it in testing either â€” so this is unfixed and needs a proper
+investigation of how often the device may be reopened on Windows. After heavy cycling the device also needed
+a cooldown before it streamed reliably again.
+
 ## Step: Unplugging
 
 **Action:**
