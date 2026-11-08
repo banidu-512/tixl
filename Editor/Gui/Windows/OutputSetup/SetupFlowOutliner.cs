@@ -701,6 +701,10 @@ internal sealed class SetupFlowOutliner
 
             SetupPopup.End();
         }
+
+        // After this machine's own plugs: the connected render nodes' displays, which take a drop
+        // the same way but bind inside the node.
+        DrawRemoteBindings(selection, setup);
     }
 
     private static string MissingPackageStatus(string kind)
