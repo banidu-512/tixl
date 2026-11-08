@@ -9,6 +9,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
+using T3.Core.Utils;
 using Newtonsoft.Json.Linq;
 using T3.Editor.Gui.Interaction;
 
@@ -319,19 +320,23 @@ internal sealed class CollabHostTransport : CollabTransport
         }
     }
 
-    public CollabHostTransport(int tcpPort, bool enableLanDiscovery, Func<JObject> announcementFactory)
+    public CollabHostTransport(int tcpPort, bool enableLanDiscovery, Func<JObject> announcementFactory, string? interfaceName = null)
     {
-        _listener = new TcpListener(IPAddress.Any, tcpPort);
+        // A pinned adapter (Settings → Network) must receive the session; everything else keeps
+        // the previous all-interface bind. Clients discover the host by the address they reach it on.
+        var bindAddress = LanInterfaces.ResolveAddress(interfaceName) ?? IPAddress.Any;
+        _listener = new TcpListener(bindAddress, tcpPort);
         _listener.Start();
 
         UdpClient? udp = null;
         try
         {
-            udp = new UdpClient(tcpPort);
+            udp = bindAddress != IPAddress.Any ? new UdpClient(new IPEndPoint(bindAddress, tcpPort)) : new UdpClient(tcpPort);
             udp.Client.EnableBroadcast = false;
 
             if (enableLanDiscovery)
-                DiscoveryResponder = new LanDiscoveryResponder(tcpPort, announcementFactory);
+                DiscoveryResponder = new LanDiscoveryResponder(tcpPort, announcementFactory,
+                                                               bindAddress == IPAddress.Any ? null : bindAddress);
 
             _udp = udp;
         }
@@ -640,10 +645,13 @@ internal sealed class LanDiscoveryResponder : IDisposable
     private readonly CancellationTokenSource _cancellation = new();
     private readonly Func<JObject> _announcementFactory;
 
-    public LanDiscoveryResponder(int tcpPort, Func<JObject> announcementFactory)
+    /// <summary><paramref name="bindAddress"/> pins the responder to one adapter (Settings → Network);
+    /// null binds all interfaces.</summary>
+    public LanDiscoveryResponder(int tcpPort, Func<JObject> announcementFactory, IPAddress? bindAddress = null)
     {
         _announcementFactory = announcementFactory;
-        _udp = new UdpClient(tcpPort + DiscoveryPortOffset);
+        _udp = bindAddress != null ? new UdpClient(new IPEndPoint(bindAddress, tcpPort + DiscoveryPortOffset))
+                       : new UdpClient(tcpPort + DiscoveryPortOffset);
         _udp.Client.EnableBroadcast = true;
         _ = Task.Run(LoopAsync);
     }
@@ -702,20 +710,23 @@ internal sealed class LanDiscoveryScanner : IDisposable
     private CancellationTokenSource? _cancellation;
     private Task? _loopTask;
     private IReadOnlyList<IPAddress> _directTargets = [];
+    private LanInterface? _pinnedInterface;
 
     /// <summary>
     /// Starts the scan. <paramref name="directTargets"/> are probed by unicast alongside the
     /// broadcasts — a master whose address is already known is re-found even on networks that
-    /// block broadcast (Wi-Fi client isolation, guest VLANs).
+    /// block broadcast (Wi-Fi client isolation, guest VLANs). <paramref name="interfaceName"/>
+    /// pins probe and socket to one adapter (Settings → Network); empty probes every route.
     /// </summary>
-    public void Start(int discoveryPort, IReadOnlyList<IPAddress>? directTargets = null)
+    public void Start(int discoveryPort, IReadOnlyList<IPAddress>? directTargets = null, string? interfaceName = null)
     {
         Stop();
         _directTargets = directTargets ?? [];
+        _pinnedInterface = T3.Core.Utils.LanInterfaces.Find(interfaceName);
         var cancellation = new CancellationTokenSource();
         var udp = new UdpClient();
         udp.Client.EnableBroadcast = true;
-        udp.Client.Bind(new IPEndPoint(IPAddress.Any, 0));
+        udp.Client.Bind(new IPEndPoint(_pinnedInterface?.Address ?? IPAddress.Any, 0));
         _cancellation = cancellation;
         _udp = udp;
 
@@ -733,40 +744,48 @@ internal sealed class LanDiscoveryScanner : IDisposable
         // each interface's directed broadcast covers multi-adapter machines (Hyper-V, Wi-Fi plus
         // Ethernet) and routed subnets, the loopback covers rehearsing on one computer, and the
         // direct targets re-find a master whose address we already know on networks that block
-        // broadcast entirely (Wi-Fi client isolation, guest VLANs).
+        // broadcast entirely (Wi-Fi client isolation, guest VLANs). A pinned adapter (Settings →
+        // Network) narrows all of that to that adapter's broadcast.
         var targets = new List<IPEndPoint>();
         void RebuildTargets()
         {
             targets.Clear();
-            targets.Add(new IPEndPoint(IPAddress.Broadcast, discoveryPort));
-            try
+            if (_pinnedInterface != null)
             {
-                foreach (var @interface in NetworkInterface.GetAllNetworkInterfaces())
+                targets.Add(new IPEndPoint(_pinnedInterface.BroadcastAddress ?? IPAddress.Broadcast, discoveryPort));
+            }
+            else
+            {
+                targets.Add(new IPEndPoint(IPAddress.Broadcast, discoveryPort));
+                try
                 {
-                    if (@interface.OperationalStatus != OperationalStatus.Up
-                        || @interface.NetworkInterfaceType == NetworkInterfaceType.Loopback)
-                        continue;
-
-                    foreach (var address in @interface.GetIPProperties().UnicastAddresses)
+                    foreach (var @interface in NetworkInterface.GetAllNetworkInterfaces())
                     {
-                        if (address.Address.AddressFamily != AddressFamily.InterNetwork
-                            || address.PrefixLength is < 8 or > 32)
+                        if (@interface.OperationalStatus != OperationalStatus.Up
+                            || @interface.NetworkInterfaceType == NetworkInterfaceType.Loopback)
                             continue;
 
-                        var local = address.Address.GetAddressBytes();
-                        var mask = PrefixToMask(address.PrefixLength);
-                        var broadcast = new byte[4];
-                        for (var i = 0; i < 4; i++)
-                            broadcast[i] = (byte)(local[i] | (byte)~mask[i]);
+                        foreach (var address in @interface.GetIPProperties().UnicastAddresses)
+                        {
+                            if (address.Address.AddressFamily != AddressFamily.InterNetwork
+                                || address.PrefixLength is < 8 or > 32)
+                                continue;
 
-                        targets.Add(new IPEndPoint(new IPAddress(broadcast), discoveryPort));
+                            var local = address.Address.GetAddressBytes();
+                            var mask = PrefixToMask(address.PrefixLength);
+                            var broadcast = new byte[4];
+                            for (var i = 0; i < 4; i++)
+                                broadcast[i] = (byte)(local[i] | (byte)~mask[i]);
+
+                            targets.Add(new IPEndPoint(new IPAddress(broadcast), discoveryPort));
+                        }
                     }
                 }
-            }
-            catch (Exception)
-            {
-                // Interface enumeration can fail on machines with exotic virtual adapters; the
-                // limited broadcast and the direct targets below still go out.
+                catch (Exception)
+                {
+                    // Interface enumeration can fail on machines with exotic virtual adapters; the
+                    // limited broadcast and the direct targets below still go out.
+                }
             }
 
             targets.Add(new IPEndPoint(IPAddress.Loopback, discoveryPort));

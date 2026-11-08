@@ -758,6 +758,7 @@ internal static class DebugServer
                 UserSettings.Config.FailoverHeartbeatMs = request["heartbeatMs"]?.Value<int>() ?? UserSettings.Config.FailoverHeartbeatMs;
                 UserSettings.Config.FailoverTimeoutFactor = request["timeoutFactor"]?.Value<int>() ?? UserSettings.Config.FailoverTimeoutFactor;
                 UserSettings.Config.FailoverPreempt = request["preempt"]?.Value<bool>() ?? UserSettings.Config.FailoverPreempt;
+                UserSettings.Config.NetworkInterface = request["interface"]?.Value<string>() ?? UserSettings.Config.NetworkInterface;
                 UserSettings.Save();
                 Core.Show.FailoverArbiter.ApplyConfig(new Core.Show.FailoverConfig
                                                           {
@@ -791,6 +792,7 @@ internal static class DebugServer
                                ["suppressed"] = Core.Show.FailoverArbiter.IsOutputSuppressed,
                                ["peer"] = Core.Show.FailoverArbiter.PeerSummary,
                                ["takeovers"] = Core.Show.FailoverArbiter.TakeoverCount,
+                               ["interface"] = UserSettings.Config.NetworkInterface,
                            });
     }
 

@@ -118,6 +118,28 @@ internal sealed class BoygroupManager
         RemoteInputBus.ErrorReported += message => Log.Warning(message);
     }
 
+    /// <summary>Adds the machines this instance is currently linked to: the render nodes on a
+    /// master, the master on a render node — the settings panel's network check compares them
+    /// against the selected adapter.</summary>
+    public void AddLinkedPeers(List<NetworkPeer> peers)
+    {
+        if (State == BoygroupState.Client)
+        {
+            var address = (_transport as BoygroupClientTransport)?.ServerPeer.RemoteAddress;
+            if (address != null)
+                peers.Add(new NetworkPeer("Boygroup master", address));
+        }
+        else if (State == BoygroupState.Server)
+        {
+            foreach (var client in _clients)
+            {
+                var address = client.Peer.RemoteAddress;
+                if (address != null)
+                    peers.Add(new NetworkPeer($"Boygroup node {client.Name}", address));
+            }
+        }
+    }
+
     /// <summary>What the input replication is doing, for the settings panel and the debug bridge.</summary>
     public string InputRelaySummary => State switch
                                            {
@@ -173,7 +195,7 @@ internal sealed class BoygroupManager
         {
             _password = password ?? "";
             GroupName = group;
-            _transport = new BoygroupServerTransport(port, UserSettings.Config.BoygroupGroups.Distinct().ToArray());
+            _transport = new BoygroupServerTransport(port, UserSettings.Config.BoygroupGroups.Distinct().ToArray(), UserSettings.Config.NetworkInterface);
             _transport.PeerDisconnected += OnPeerDisconnected;
             State = BoygroupState.Server;
             StatusText = $"Serving group '{group}' on port {port}";
@@ -428,6 +450,7 @@ internal sealed class BoygroupManager
             return;
 
         PumpDeploy();
+        RunScheduledAutoDeploy();
         SendHeartbeats();
         SendTimeSync();
         ProcessPendingRestart();
@@ -731,7 +754,39 @@ internal sealed class BoygroupManager
     {
         client.Peer.IsAuthenticated = true;
         SendJson(client.Peer, new { t = "authOk", serverName = Environment.MachineName });
+
+        // Late joiners must see the show as it runs: the play broadcast only fires when the
+        // master's playback state changes, so a client that joined mid-show stayed frozen.
+        var playback = Playback.Current;
+        SendJson(client.Peer, new
+                               {
+                                   t = "play",
+                                   playing = (playback?.PlaybackSpeed ?? 0) > 0,
+                                   bars = playback?.TimeInBars ?? 0,
+                               });
+
         Log.Info($"Boygroup: client authenticated: {client.Name} ({client.Address}) group '{client.Group}'");
+
+        // A node that appears is served: schedule a deploy shortly after the handshake (the delay
+        // debounces a burst of joins into one pass; clients mid-deploy keep their own transfer).
+        if (UserSettings.Config.BoygroupAutoDeployOnJoin)
+            _autoDeployAtTicks = Environment.TickCount64 + 1500;
+    }
+
+    /// <summary>Due time for the deploy-on-join pass; 0 while nothing is scheduled.</summary>
+    private long _autoDeployAtTicks;
+
+    private void RunScheduledAutoDeploy()
+    {
+        if (_autoDeployAtTicks == 0 || Environment.TickCount64 < _autoDeployAtTicks)
+            return;
+
+        _autoDeployAtTicks = 0;
+        if (State != BoygroupState.Server || string.IsNullOrEmpty(GetProjectFolder()))
+            return; // No project open: a manual Deploy & Sync will report it properly.
+
+        Log.Info("Boygroup: node joined - running deploy & sync");
+        DeployAndSync();
     }
 
     private void Reject(CollabPeerConnection peer, string reason)
@@ -794,7 +849,8 @@ internal sealed class BoygroupManager
         }
 
         var mirror = UserSettings.Config.BoygroupDeployMirror;
-        var inventory = BoygroupDeployer.BuildInventory(projectFolder);
+        var setupsFolderRelative = Path.GetRelativePath(projectFolder, SetupFiles.FolderIn(projectFolder));
+        var inventory = BoygroupDeployer.BuildInventory(projectFolder, setupsFolderRelative);
 
         foreach (var client in _clients.Where(c => c.Peer.IsAuthenticated && c.Group == GroupName).ToList())
         {
@@ -915,8 +971,11 @@ internal sealed class BoygroupManager
         client.PendingInventory = null;
         client.IsDeployed = true;
         client.StatusText = "deployed";
-        SendJson(client.Peer, new { t = "deployDone", restart = true });
-        Log.Info($"Boygroup: deployment to {client.Name} complete");
+        // A deploy that transferred nothing (the node was already current) must not reboot it:
+        // the auto-deploy on join runs against every join, up-to-date nodes stay up.
+        var transferred = client.FilesDone > 0;
+        SendJson(client.Peer, new { t = "deployDone", restart = transferred });
+        Log.Info($"Boygroup: deployment to {client.Name} complete ({client.FilesDone} file(s){(transferred ? ", restart requested" : ", no changes")})");
     }
 
     /// <summary>Pushes the active output setup file so clients render the master's output config.</summary>
@@ -974,11 +1033,14 @@ internal sealed class BoygroupManager
 
     private void HandleServerInventory(JObject json)
     {
-        // Client answers the server's request with what it has on disk.
+        // Client answers the server's request with what it has on disk. The setups folder is
+        // excluded on both sides: it travels as live setupJson, and mirror mode would otherwise
+        // flag the client's applied setups as extra and delete them.
         var projectFolder = GetProjectFolder();
         var inventory = string.IsNullOrEmpty(projectFolder)
                             ? []
-                            : BoygroupDeployer.BuildInventory(projectFolder);
+                            : BoygroupDeployer.BuildInventory(projectFolder,
+                                                              Path.GetRelativePath(projectFolder, SetupFiles.FolderIn(projectFolder)));
         SendJson(((_transport as BoygroupClientTransport)!).ServerPeer, BoygroupDeployer.BuildInventoryMessage(inventory));
     }
 
@@ -1066,8 +1128,44 @@ internal sealed class BoygroupManager
         var shouldRestart = json["restart"]?.Value<bool>() ?? true;
         DeploySummary = $"Deployment complete ({_deployFilesDone} files" + (_deployErrors > 0 ? $", {_deployErrors} failed" : "") + ")";
 
+        // A deploy that transferred no files (the node was already current) leaves this machine up:
+        // only a real update restarts into the deployed state.
+        if (_deployFilesTotal == 0)
+        {
+            Log.Info("Boygroup: deploy had no file changes - staying up");
+            return;
+        }
+
         if (!shouldRestart || !UserSettings.Config.BoygroupAutoJoin)
             return;
+
+        // Flood breaker, persisted across the restarts it guards: a file that perpetually diffs
+        // (should be impossible now that setups are excluded) may never loop a show machine.
+        var config = UserSettings.Config;
+        var now = Environment.TickCount64;
+        if (now < config.BoygroupDeployRestartBlockedUntilTicks)
+        {
+            Log.Warning($"Boygroup: deploy restart blocked for another {(config.BoygroupDeployRestartBlockedUntilTicks - now) / 1000}s (restart-loop guard) - staying up");
+            return;
+        }
+
+        if (config.BoygroupDeployRestartWindowStartTicks == 0 || now - config.BoygroupDeployRestartWindowStartTicks > 120_000)
+        {
+            config.BoygroupDeployRestartWindowStartTicks = now;
+            config.BoygroupDeployRestartCount = 1;
+        }
+        else
+        {
+            config.BoygroupDeployRestartCount++;
+            if (config.BoygroupDeployRestartCount > 4)
+            {
+                config.BoygroupDeployRestartBlockedUntilTicks = now + 300_000;
+                config.BoygroupDeployRestartCount = 0;
+                Log.Warning("Boygroup: more than four deploy restarts in two minutes - blocking further deploy restarts for five minutes (restart-loop guard)");
+            }
+        }
+
+        UserSettings.Save();
 
         RestartPending = true;
         // Brief delay so the panel shows what happened before the process exits.
@@ -1231,7 +1329,7 @@ internal sealed class BoygroupManager
                 directTargets = [resolved];
         }
 
-        _discoveryScanner.Start(UserSettings.Config.BoygroupPort + LanDiscoveryResponder.DiscoveryPortOffset, directTargets);
+        _discoveryScanner.Start(UserSettings.Config.BoygroupPort + LanDiscoveryResponder.DiscoveryPortOffset, directTargets, UserSettings.Config.NetworkInterface);
     }
 
     public void StopDiscovery()

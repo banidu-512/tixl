@@ -43,6 +43,7 @@ public static partial class T3Ui
         _failoverConfig.HeartbeatMs = UserSettings.Config.FailoverHeartbeatMs;
         _failoverConfig.TimeoutFactor = UserSettings.Config.FailoverTimeoutFactor;
         _failoverConfig.Preempt = UserSettings.Config.FailoverPreempt;
+        _failoverConfig.NetworkInterfaceName = UserSettings.Config.NetworkInterface;
         T3.Core.Show.FailoverArbiter.ApplyConfig(_failoverConfig);
         Show.BoygroupManager.Instance.Update();
         Collab.CollabManager.Instance.Update();

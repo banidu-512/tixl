@@ -6,6 +6,7 @@ using T3.Core.Utils;
 using T3.Editor.Gui.Input;
 using T3.Editor.Gui.Styling;
 using T3.Editor.Gui.UiHelpers;
+using T3.Editor.Show;
 
 namespace T3.Editor.Gui.Windows;
 
@@ -73,5 +74,56 @@ internal sealed partial class SettingsWindow
         {
             CustomComponents.HelpText($"The saved adapter '{config.NetworkInterface}' is not connected. TiXL binds all interfaces until it returns.");
         }
+
+        DrawPeerNetworkCheck(interfaces, ref changed);
     }
+
+    /// <summary>
+    /// The adapter is stored per computer and never travels with a project or a deploy, so each machine
+    /// checks itself against the machines it is linked to and offers the adapter that shares their network.
+    /// </summary>
+    private static void DrawPeerNetworkCheck(IReadOnlyList<LanInterface> interfaces, ref bool changed)
+    {
+        NetworkPeerCheck.CollectPeers(_networkPeers);
+        if (_networkPeers.Count == 0)
+            return;
+
+        NetworkPeerCheck.FindProblems(UserSettings.Config.NetworkInterface, interfaces, _networkPeers, _networkFindings);
+        if (_networkFindings.Count == 0)
+        {
+            FormInputs.SetCursorToParameterEdit();
+            ImGui.TextDisabled($"{_networkPeers.Count} linked machine(s) can be reached on this network setup.");
+            return;
+        }
+
+        var suggested = _networkFindings[0].Suggested;
+        foreach (var finding in _networkFindings)
+        {
+            var message = finding.Kind switch
+                              {
+                                  NetworkPeerCheck.Kind.WrongAdapter
+                                      => $"{finding.Peer.Source} {finding.Peer.Address} is on the network of {finding.Suggested.Name}, not of the selected adapter.",
+                                  NetworkPeerCheck.Kind.SavedAdapterMissing
+                                      => $"{finding.Peer.Source} {finding.Peer.Address} is on the network of {finding.Suggested.Name}; the saved adapter does not exist on this machine.",
+                                  _ => $"{finding.Peer.Source} {finding.Peer.Address} is on the network of {finding.Suggested.Name}; this machine has several adapters and none is selected.",
+                              };
+
+            FormInputs.SetCursorToParameterEdit();
+            ImGui.PushStyleColor(ImGuiCol.Text, UiColors.StatusWarning.Rgba);
+            ImGui.TextWrapped(message);
+            ImGui.PopStyleColor();
+        }
+
+        FormInputs.SetCursorToParameterEdit();
+        if (ImGui.Button($"Use {suggested.Name}"))
+        {
+            UserSettings.Config.NetworkInterface = suggested.Name;
+            changed = true;
+        }
+
+        CustomComponents.TooltipForLastItem("Selects the adapter that shares the network of the linked machine above. Takes effect the next time a session or server starts.");
+    }
+
+    private static readonly List<NetworkPeer> _networkPeers = [];
+    private static readonly List<NetworkPeerCheck.Finding> _networkFindings = [];
 }

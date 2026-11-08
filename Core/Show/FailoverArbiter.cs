@@ -26,6 +26,9 @@ public sealed record FailoverConfig
     public int TimeoutFactor = 3;
     public bool Preempt = true;
 
+    /// <summary>Adapter name the heartbeat sockets bind to; empty = all interfaces (OS route).</summary>
+    public string NetworkInterfaceName = "";
+
     public FailoverConfig Copy() => new()
                                          {
                                              Enabled = Enabled,
@@ -34,6 +37,7 @@ public sealed record FailoverConfig
                                              HeartbeatMs = HeartbeatMs,
                                              TimeoutFactor = TimeoutFactor,
                                              Preempt = Preempt,
+                                             NetworkInterfaceName = NetworkInterfaceName,
                                          };
 
     public bool ConfigEquals(FailoverConfig? other)
@@ -44,7 +48,8 @@ public sealed record FailoverConfig
                && Priority == other.Priority
                && HeartbeatMs == other.HeartbeatMs
                && TimeoutFactor == other.TimeoutFactor
-               && Preempt == other.Preempt;
+               && Preempt == other.Preempt
+               && NetworkInterfaceName == other.NetworkInterfaceName;
     }
 }
 
@@ -99,6 +104,7 @@ public static class FailoverArbiter
         public bool AdvertisesActive;
         public long LastHeardTicks;
         public string NodeId = "";
+        public string Address = "";
     }
 
     private static readonly Dictionary<string, PeerInfo> _peers = new(); // key: node id
@@ -188,6 +194,22 @@ public static class FailoverArbiter
         }
     }
 
+    /// <summary>Addresses of the peers heard from recently — the settings panel's network check
+    /// compares them against the selected adapter.</summary>
+    public static void GetLivePeerAddresses(List<string> addresses)
+    {
+        lock (Gate)
+        {
+            var now = Environment.TickCount64;
+            var timeout = TimeoutMs;
+            foreach (var peer in _peers.Values)
+            {
+                if (now - peer.LastHeardTicks <= timeout && peer.Address.Length > 0)
+                    addresses.Add(peer.Address);
+            }
+        }
+    }
+
     public static string LastEvent
     {
         get
@@ -236,33 +258,49 @@ public static class FailoverArbiter
             }
             else if (_config.Enabled)
             {
-                // Priority/preempt changes re-evaluate on the next tick naturally.
-                RecordEvent("Configuration updated");
+                // A changed network interface must take effect while failover keeps running: the
+                // sockets still hold the old adapter until something unrelated forces a rebind.
+                if (!string.Equals(_boundInterfaceName, _config.NetworkInterfaceName ?? "", StringComparison.OrdinalIgnoreCase))
+                {
+                    RecordEvent($"Network interface changed to '{_config.NetworkInterfaceName ?? "any"}' — rebinding heartbeats");
+                    RebindSockets();
+                }
+                else
+                {
+                    // Priority/preempt changes re-evaluate on the next tick naturally.
+                    RecordEvent("Configuration updated");
+                }
             }
         }
     }
 
+    /// <summary>The adapter the live heartbeat socket was bound for ("" = all interfaces), under Gate —
+    /// lets ApplyConfig notice a changed NetworkInterfaceName and rebind while failover keeps running.</summary>
+    private static string _boundInterfaceName = "";
+
     private static void Start()
     {
         // Cross-platform notes: the multicast group loops back on Windows, macOS and Linux, so a
-        // master/backup pair works on one machine. On multi-homed machines membership with
-        // IPAddress.Any follows the default interface, which is the common show setup (single LAN
-        // NIC). If a machine routes the show network over a secondary NIC, join/send on that
-        // adapter's address instead.
+        // master/backup pair works on one machine. With no adapter pinned, membership with
+        // IPAddress.Any follows the default interface — the common show setup (single LAN NIC).
+        // A pinned adapter (Settings → Network) binds and joins on that adapter's address instead.
+        var pinnedAddress = T3.Core.Utils.LanInterfaces.ResolveAddress(_config.NetworkInterfaceName);
         _role = NodeRole.Probing;
         _lastStateChangeTicks = Environment.TickCount64;
         _peers.Clear();
-        RecordEvent($"Enabled (show '{_config.ShowId}', priority {_config.Priority})");
+        RecordEvent($"Enabled (show '{_config.ShowId}', priority {_config.Priority}, "
+                  + $"interface '{(pinnedAddress != null ? _config.NetworkInterfaceName : "all")}')");
 
         try
         {
             var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
             socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
-            socket.Bind(new IPEndPoint(IPAddress.Any, FailoverPort));
+            socket.Bind(new IPEndPoint(pinnedAddress ?? IPAddress.Any, FailoverPort));
             socket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.MulticastLoopback, true);
             socket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.AddMembership,
-                                   new MulticastOption(GroupAddress, IPAddress.Any));
+                                   new MulticastOption(GroupAddress, pinnedAddress ?? IPAddress.Any));
             _heartbeatSocket = socket;
+            _boundInterfaceName = pinnedAddress != null ? _config.NetworkInterfaceName : "";
         }
         catch (Exception e)
         {
@@ -276,6 +314,16 @@ public static class FailoverArbiter
         var token = _cancellation.Token;
         _ = Task.Run(() => ListenLoop(token), token);
         _ = Task.Run(() => TickLoop(token), token);
+    }
+
+    private static void RebindSockets()
+    {
+        // A changed adapter must take effect without ending the session: stop the loops, drop the
+        // socket, and start again with the new binding. Roles re-converge within a heartbeat.
+        _cancellation?.Cancel();
+        _heartbeatSocket?.Close();
+        _heartbeatSocket = null;
+        Start();
     }
 
     private static void Stop()
@@ -414,6 +462,7 @@ public static class FailoverArbiter
                     peer.AdvertisesActive = heartbeat.Active;
                     peer.NodeId = heartbeat.Id;
                     peer.LastHeardTicks = Environment.TickCount64;
+                    peer.Address = remote is IPEndPoint endpoint ? endpoint.Address.ToString() : "";
                 }
             }
             catch

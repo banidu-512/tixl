@@ -236,6 +236,10 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public bool EnableAutoBackup = true;
         public bool MinimalBackup = true;
 
+        /// <summary>The network adapter TiXL binds to for hosting collaboration and boygrouping,
+        /// LAN discovery and failover heartbeats (Settings → Network). Empty = all interfaces.</summary>
+        public string NetworkInterface = "";
+
         // Collaboration
         /// <summary>Persistent participant id; also seeds the per-user accent color.</summary>
         public string CollabUserId = "";
@@ -270,6 +274,18 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public int BoygroupPort = 44720;
         public bool BoygroupAutoJoin = true;
         public bool BoygroupDeployMirror = false;
+        /// <summary>The master deploys and syncs to a render node as soon as it joins the group,
+        /// so an added slave is current without anyone clicking Deploy &amp; Sync.</summary>
+        public bool BoygroupAutoDeployOnJoin = true;
+
+        /// <summary>Deploy-restart flood guard, persisted across the restarts it guards: if more
+        /// than four deploy restarts happen inside two minutes the client stops restarting for
+        /// five minutes and logs loudly, so a perpetually-diffing file can never loop a show
+        /// machine.</summary>
+        public int BoygroupDeployRestartCount = 0;
+        public long BoygroupDeployRestartWindowStartTicks = 0;
+        public long BoygroupDeployRestartBlockedUntilTicks = 0;
+
         public List<string> BoygroupGroups = ["Main"];
         public string BoygroupLastServer = "";
         public string BoygroupLastGroup = "";

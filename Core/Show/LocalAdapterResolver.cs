@@ -3,6 +3,7 @@ using System.Linq;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
+using T3.Core.Utils;
 
 namespace T3.Core.Show;
 
@@ -79,14 +80,13 @@ public sealed class LocalAdapterResolver
     {
         try
         {
-            return NetworkInterface.GetAllNetworkInterfaces()
-                                   .Where(ni => ni.OperationalStatus == OperationalStatus.Up
-                                                && ni.NetworkInterfaceType != NetworkInterfaceType.Loopback)
-                                   .SelectMany(ni => ni.GetIPProperties().UnicastAddresses)
-                                   .Where(a => a.Address.AddressFamily == AddressFamily.InterNetwork)
-                                   .Select(a => new Adapter(a.Address, a.IPv4Mask))
-                                   .Prepend(new Adapter(IPAddress.Loopback, IPAddress.Parse("255.0.0.0")))
-                                   .ToArray();
+            // Cached and refreshed off-thread: this is called from the DMX operators' Update whenever the
+            // stored address is not local (the normal case on a second machine), and enumerating adapters
+            // with GetIPProperties stalls for hundreds of milliseconds.
+            return LanInterfaces.GetUsable()
+                                .Select(i => new Adapter(i.Address, i.SubnetMask ?? IPAddress.Parse("255.255.255.255")))
+                                .Prepend(new Adapter(IPAddress.Loopback, IPAddress.Parse("255.0.0.0")))
+                                .ToArray();
         }
         catch
         {

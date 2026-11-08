@@ -16,19 +16,16 @@ Boygrouping distributes a show to render nodes. Enable it in **Settings → Boyg
 
 The master shows the added nodes, their local output bindings and their deployment status, plus per-node diagnostics: round trip, clock offset, measured sync error, time since the last sync, frame rate and version. Heartbeats run at 1 Hz on both sides and a silent peer is dropped after 4 s, so a cable pull or a crashed master is noticed immediately instead of leaving the slave dead-reckoning a show that no longer exists. A slave keeps its role after a master disappears and reconnects on its own: it remembers the master's name and rejoins as soon as that master — or, for a slave that never joined one, the first master that appears — is on the network. Boygrouping therefore always wins over whatever the machine was doing before once it is enabled.
 
-The **Network** section of the Boygrouping and Failover settings is shared: pick the show network's Ethernet adapter there when the machine also has Wi-Fi, VPN or Hyper-V adapters. **Automatic** keeps the previous behavior. A pinned adapter takes effect the next time boygrouping is enabled; failover rebinds immediately.
+The **Network** section of the Collaboration, Boygrouping and Failover settings is shared: pick the show network's Ethernet adapter there when the machine also has Wi-Fi, VPN or Hyper-V adapters. **Automatic** keeps the previous behavior. A pinned adapter takes effect the next time boygrouping is enabled; failover rebinds immediately.
 
 ## Input replication
 
-A render node does not need the controllers or cameras the show was built with. The master forwards its hardware input to the nodes that are connected:
+A render node does not need the controllers the show was built with. The master forwards its hardware input to the nodes that are connected:
 
 - **MIDI** messages are captured once at the device layer and replayed through the same `[MidiInput]` operators on every node, so device, channel, controller, note and control-range filters produce exactly the master's values. MIDI clock and note/CC traffic are both carried.
 - **OSC** packets are forwarded as their original bytes and parsed on the node, so multi-argument messages keep every value and type. Port and address filters behave as they do on the master.
-- **[VideoDeviceInput]** streams its captured frame over **OMT**. The master advertises each camera under a stable name (`MACHINENAME (TiXL <node> <device> <hash>)`) and a node presents that stream instead of opening a local camera. The node's camera stays closed even while the stream is still connecting. No video is sent when the project has no video input.
 - Input traffic is only captured while at least one render node is connected. Events are batched once per frame; an overflowing queue drops events and reports it in the log rather than growing without bound.
 - A slave that truly has its own controllers still uses them while the master sends no MIDI/OSC, and switches to the master's input as soon as replicas arrive.
-
-Video replication requires the OMT codec (`libvmx`). It ships with the Omt package on Windows and Apple Silicon; on other platforms build it from the libvmx sources and place it next to the Omt package (see the `OmtInput` status message). Without it, MIDI and OSC still replicate and the video input falls back to the machine's own camera.
 
 ## Show failover
 
