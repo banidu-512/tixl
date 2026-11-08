@@ -664,6 +664,9 @@ internal static class DebugServer
             case "set":
             {
                 var value = request["value"]?.Value<string>() ?? "off";
+                if (value == Show.ShowControlMode.Boygroup && request["role"] is { } roleToken)
+                    Show.ShowControlMode.SetBoygroupRole(roleToken.Value<string>() == "master");
+
                 var error = Show.ShowControlMode.SwitchTo(value);
                 if (error != null)
                 {
