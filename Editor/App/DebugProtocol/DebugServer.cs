@@ -696,12 +696,14 @@ internal static class DebugServer
         switch (request["op"]?.Value<string>())
         {
             case "host":
+                Show.ShowControlMode.Activate(Show.ShowControlMode.Collab);
                 collab.StartHost(request["port"]?.Value<int>() ?? 44700,
                                  request["password"]?.Value<string>() ?? "",
                                  request["lan"]?.Value<bool>() ?? true);
                 break;
 
             case "join":
+                Show.ShowControlMode.Activate(Show.ShowControlMode.Collab);
                 collab.JoinDirect(request["host"]?.Value<string>() ?? "127.0.0.1",
                                   request["port"]?.Value<int>() ?? 44700,
                                   request["password"]?.Value<string>() ?? "");
@@ -709,6 +711,7 @@ internal static class DebugServer
 
             case "host-relay":
             {
+                Show.ShowControlMode.Activate(Show.ShowControlMode.Collab);
                 ParseRelayParam(request, out var relayHost, out var relayPort);
                 collab.StartHostViaRelay(relayHost, relayPort);
                 break;
@@ -716,6 +719,7 @@ internal static class DebugServer
 
             case "join-relay":
             {
+                Show.ShowControlMode.Activate(Show.ShowControlMode.Collab);
                 ParseRelayParam(request, out var relayHost, out var relayPort);
                 var room = request["room"]?.Value<string>() ?? "";
                 collab.JoinViaRelay(relayHost, relayPort, room, request["password"]?.Value<string>() ?? "");
@@ -777,12 +781,14 @@ internal static class DebugServer
         switch (request["op"]?.Value<string>())
         {
             case "server":
+                Show.ShowControlMode.Activate(Show.ShowControlMode.Boygroup);
                 boygroup.StartServer(request["port"]?.Value<int>() ?? 44720,
                                      request["password"]?.Value<string>() ?? "",
                                      request["group"]?.Value<string>() ?? "Main");
                 break;
 
             case "join":
+                Show.ShowControlMode.Activate(Show.ShowControlMode.Boygroup);
                 boygroup.JoinServer(request["host"]?.Value<string>() ?? "127.0.0.1",
                                     request["port"]?.Value<int>() ?? 44720,
                                     request["group"]?.Value<string>() ?? "Main",

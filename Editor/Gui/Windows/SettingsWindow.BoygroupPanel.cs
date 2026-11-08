@@ -21,6 +21,12 @@ internal sealed partial class SettingsWindow
         var manager = BoygroupManager.Instance;
         var config = UserSettings.Config;
 
+        // Boygrouping is switched through the menu-bar mode selector; this panel configures the
+        // role and connection and runs the session. Starting or joining claims the boygroup mode,
+        // which ends a failover/collab session on this machine (the modes are mutually exclusive).
+
+        FormInputs.AddVerticalSpace();
+
         // -------------------------------------------------------------------------------------
         // Identity & connection
         // -------------------------------------------------------------------------------------
@@ -55,20 +61,6 @@ internal sealed partial class SettingsWindow
         // -------------------------------------------------------------------------------------
         FormInputs.AddSectionSubHeader("Session");
         FormInputs.AddVerticalSpace();
-
-        var enabledChanged = FormInputs.AddCheckBox("Enable boygrouping",
-                                                   ref config.BoygroupEnabled,
-                                                   """
-                                                   This machine participates in boygrouping. When enabled, the role
-                                                   below is applied at launch too: a master starts its server and a
-                                                   slave joins (or waits for) a master without anyone clicking —
-                                                   that's how a show machine comes up ready after a reboot.
-                                                   """,
-                                                   false);
-        if (enabledChanged)
-            manager.ApplyEnabledSetting();
-
-        changed |= enabledChanged;
 
         ImGui.TextUnformatted("Role");
         CustomComponents.TooltipForLastItem("A master hosts the show and deploys to render nodes; a slave renders what the master sends.");
@@ -105,6 +97,7 @@ internal sealed partial class SettingsWindow
 
             if (CustomComponents.DrawCtaButton("Start Server", Icon.None, UiColors.ForegroundFull, UiColors.StatusActivated, Color.Transparent))
             {
+                ShowControlMode.Activate(ShowControlMode.Boygroup);
                 manager.StartServer(config.BoygroupPort, config.CollabPassword, _boygroupGroup);
             }
 
@@ -115,6 +108,7 @@ internal sealed partial class SettingsWindow
             ImGui.PushID("##boygroupgroup");
             if (ImGui.InputText("Group", ref _boygroupGroup, 64, ImGuiInputTextFlags.EnterReturnsTrue))
             {
+                ShowControlMode.Activate(ShowControlMode.Boygroup);
                 manager.JoinServer("127.0.0.1", config.BoygroupPort, _boygroupGroup, config.CollabPassword);
             }
 
@@ -122,6 +116,7 @@ internal sealed partial class SettingsWindow
             ImGui.SameLine();
             if (ImGui.Button("Join"))
             {
+                ShowControlMode.Activate(ShowControlMode.Boygroup);
                 manager.JoinServer(_boygroupServerAddress ?? "127.0.0.1", config.BoygroupPort, _boygroupGroup, config.CollabPassword);
             }
 
@@ -213,6 +208,8 @@ internal sealed partial class SettingsWindow
                                           used after a deployment restarts the client to apply new files.
                                           """,
                                           true);
+
+        DrawNetworkInterface(ref changed);
     }
 
     private static string? _boygroupGroup;
