@@ -98,6 +98,7 @@ internal sealed class BoygroupManager
     private long _nextTimeSyncTicks;
     private long _autoJoinCheckTicks;
     private long _nextServerRestartTicks;
+    private long _nextSlaveJoinAttemptTicks;
 
     // Input replication. Hardware callbacks enqueue from their own threads; the UI thread batches them
     // into one message per frame.
@@ -216,6 +217,7 @@ internal sealed class BoygroupManager
                          group,
                      });
             PersistJoinTarget(host, group);
+            StopDiscovery(); // joined: no need to keep probing (the wait loop restarts it if we drop)
         }
         catch (Exception e)
         {
@@ -321,7 +323,8 @@ internal sealed class BoygroupManager
     /// <summary>
     /// An enabled slave that has never joined a master keeps scanning and joins the first master
     /// that appears, like the master role keeps serving: the pair finds each other after a reboot
-    /// in any order.
+    /// in any order. Join attempts are throttled so a dead candidate can never flap the frame
+    /// loop; a failed attempt clears the candidate list and the scanner restarts on its own.
     /// </summary>
     private void WaitAndAutoJoinDiscoveredMaster()
     {
@@ -330,16 +333,26 @@ internal sealed class BoygroupManager
 
         DrainDiscovery();
 
-        var candidate = _discoveredServers.FirstOrDefault();
+        if (Environment.TickCount64 < _nextSlaveJoinAttemptTicks)
+            return;
+
+        var config = UserSettings.Config;
+        var preferredGroup = config.BoygroupLastGroup is { Length: > 0 } last ? last : null;
+
+        // Prefer a master that hosts the group we want; otherwise take the only / first one.
+        var candidate = preferredGroup != null
+                            ? _discoveredServers.FirstOrDefault(s => s.Groups.Contains(preferredGroup))
+                              ?? _discoveredServers.FirstOrDefault()
+                            : _discoveredServers.FirstOrDefault();
         if (candidate == null)
             return;
 
-        StopDiscovery();
+        _nextSlaveJoinAttemptTicks = Environment.TickCount64 + 3_000;
         Log.Info($"Boygroup: enabled slave joining discovered master {candidate.ServerName} ({candidate.Address}:{candidate.Port})");
+        StopDiscovery(); // clears the candidate list; the scanner restarts if this attempt fails
         JoinServer(candidate.Address, candidate.Port,
-                   UserSettings.Config.BoygroupLastGroup is { Length: > 0 } last ? last
-                       : UserSettings.Config.BoygroupGroups.FirstOrDefault() ?? candidate.Groups.FirstOrDefault() ?? "Main",
-                   UserSettings.Config.CollabPassword);
+                   preferredGroup ?? config.BoygroupGroups.FirstOrDefault() ?? candidate.Groups.FirstOrDefault() ?? "Main",
+                   config.CollabPassword);
     }
 
     private static IPAddress? ResolveHost(string host)
@@ -1220,6 +1233,8 @@ internal sealed class BoygroupManager
     public void StopDiscovery()
     {
         _discoveryScanner?.Stop();
+        _discoveryScanner = null;
+        _discoveredServers.Clear();
     }
 
     /// <summary>Moves scan results into the visible list; called from Update and the panel.</summary>
@@ -1230,25 +1245,36 @@ internal sealed class BoygroupManager
 
         while (_discoveryScanner.Results.TryDequeue(out var result))
         {
-            var announcement = result.Announcement;
-            if (announcement["boygroup"] == null)
-                continue;
+            DiscoveredServer server;
+            try
+            {
+                var announcement = result.Announcement;
+                if (announcement["boygroup"] == null)
+                    continue;
 
-            var server = new DiscoveredServer
+                server = new DiscoveredServer
                              {
                                  ServerName = CollabProtocol.GetString(announcement, "server", "boygroup server"),
                                  Address = result.Source.Address.ToString(),
                                  Port = announcement["port"]?.Value<int>() ?? UserSettings.Config.BoygroupPort,
                              };
 
-            if (announcement["groups"] is JArray groups)
-            {
-                foreach (var group in groups)
+                if (announcement["groups"] is JArray groups)
                 {
-                    var name = group.Value<string>();
-                    if (!string.IsNullOrEmpty(name))
-                        server.Groups.Add(name);
+                    foreach (var group in groups)
+                    {
+                        var name = group.Value<string>();
+                        if (!string.IsNullOrEmpty(name))
+                            server.Groups.Add(name);
+                    }
                 }
+            }
+            catch (Exception e)
+            {
+                // A malformed announcement (hostile or from another tool) must never reach the
+                // frame loop: drop it and keep draining.
+                Log.Debug($"Boygroup: dropping a malformed discovery announcement: {e.Message}");
+                continue;
             }
 
             if (_discoveredServers.Any(d => d.Address == server.Address && d.Port == server.Port))
