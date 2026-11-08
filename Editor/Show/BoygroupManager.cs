@@ -75,6 +75,9 @@ internal sealed class BoygroupManager
         /// <summary>The node's displays as reported; ids for them come from <see cref="RemoteDisplayPlugId"/>.</summary>
         public List<RemoteScreen> Screens = [];
 
+        /// <summary>The project name the node last reported. Empty until it answered an inventory request.</summary>
+        public string KnownProject = "";
+
         // Pending auth challenge (server side)
         public byte[]? PendingSalt;
         public byte[]? PendingNonce;
@@ -492,6 +495,7 @@ internal sealed class BoygroupManager
         {
             PumpInputReplication();
             ReRequestPendingInventories();
+            FollowSharedProject();
             BroadcastPlayStateOnChange();
         }
 
@@ -977,6 +981,7 @@ internal sealed class BoygroupManager
         // (two .csproj files in one folder break project loading). Re-bootstrap it instead.
         var masterName = Path.GetFileName(projectFolder.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
         var clientProject = CollabProtocol.GetString(json, "project", "");
+        client.KnownProject = clientProject;
         if (clientProject.Length > 0 && !string.Equals(clientProject, masterName, StringComparison.OrdinalIgnoreCase))
         {
             client.PendingInventory = null;
@@ -1133,6 +1138,49 @@ internal sealed class BoygroupManager
         var transferred = client.FilesDone > 0;
         SendJson(client.Peer, new { t = "deployDone", restart = transferred });
         Log.Info($"Boygroup: deployment to {client.Name} complete ({client.FilesDone} file(s){(transferred ? ", restart requested" : ", no changes")})");
+    }
+
+    private long _nextProjectCheckTicks;
+    private const int ProjectCheckIntervalMs = 3000;
+
+    /// <summary>
+    /// Keeps the group on the master's project. A node that still shows another project (the master
+    /// switched shows, or the node reopened its own) is asked for its inventory, and the mismatch
+    /// branch in <see cref="HandleClientInventory"/> switches it to the shared project. Without this
+    /// the master and its nodes can sit on different projects until someone presses Deploy & Sync.
+    /// </summary>
+    private void FollowSharedProject()
+    {
+        if (State != BoygroupState.Server || _clients.Count == 0)
+            return;
+
+        var now = Environment.TickCount64;
+        if (now < _nextProjectCheckTicks)
+            return;
+
+        _nextProjectCheckTicks = now + ProjectCheckIntervalMs;
+
+        var projectFolder = GetProjectFolder();
+        if (string.IsNullOrEmpty(projectFolder))
+            return;
+
+        var masterName = Path.GetFileName(projectFolder.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+        foreach (var client in _clients)
+        {
+            if (!client.Peer.IsAuthenticated || client.PendingFiles != null || client.PendingInventory != null)
+                continue;
+
+            if (client.KnownProject.Length == 0
+                || string.Equals(client.KnownProject, masterName, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            // Reuse the deploy diff: the inventory answer runs the same mismatch check.
+            client.PendingInventory = BoygroupDeployer.BuildInventory(projectFolder,
+                                                                      Path.GetRelativePath(projectFolder, SetupFiles.FolderIn(projectFolder)));
+            client.Mirror = UserSettings.Config.BoygroupDeployMirror;
+            client.StatusText = "checking project";
+            SendJson(client.Peer, new { t = "requestInventory" });
+        }
     }
 
     /// <summary>Pushes the active output setup file so clients render the master's output config.</summary>
