@@ -16,6 +16,9 @@ using T3.Editor.Gui.Interaction.Timing;
 using T3.Core.Animation;
 using T3.Core.Settings;
 using T3.Core.Stats;
+using T3.Core.Show;
+using T3.Editor.Collab;
+using T3.Editor.Show;
 using T3.Editor.Gui.Windows;
 using T3.Editor.Gui.Windows.Analyze;
 using T3.Editor.Gui.Windows.Layouts;
@@ -441,20 +444,7 @@ internal static class DebugServer
                 }
 
                 var bypassed = request["bypassed"]?.Value<bool>() ?? true;
-                if (bypassChild.IsBypassed != bypassed)
-                {
-                    var bypassCommand = new ChangeInstanceBypassedCommand(bypassChild, bypassed);
-                    bypassCommand.Do();
-
-                    if (bypassChild.IsBypassed != bypassed)
-                    {
-                        context.SendError("BYPASS_NOT_APPLIED", $"Could not change bypass for [{bypassChild.Symbol.Name}].");
-                        break;
-                    }
-
-                    UndoRedoStack.Add(bypassCommand);
-                }
-
+                UndoRedoStack.AddAndExecute(new ChangeInstanceBypassedCommand(bypassChild, bypassed));
                 context.SendOk(new JObject { ["bypassed"] = bypassChild.IsBypassed });
                 break;
             }
@@ -640,6 +630,22 @@ internal static class DebugServer
                 break;
             }
 
+            case "collab":
+                HandleCollabControl(request, context);
+                break;
+
+            case "boygroup":
+                HandleBoygroupControl(request, context);
+                break;
+
+            case "failover":
+                HandleFailoverControl(request, context);
+                break;
+
+            case "mode":
+                HandleModeControl(request, context);
+                break;
+
             case null:
                 context.SendError("MISSING_METHOD", "Request has no 'method' field");
                 break;
@@ -648,6 +654,220 @@ internal static class DebugServer
                 context.SendError("UNKNOWN_METHOD", $"Unknown method '{method}'");
                 break;
         }
+    }
+
+    /// <summary>Switches the show-control mode for external agents: op = set (value = off | boygroup | failover | collab) | status.</summary>
+    private static void HandleModeControl(JObject request, RequestContext context)
+    {
+        switch (request["op"]?.Value<string>())
+        {
+            case "set":
+            {
+                var value = request["value"]?.Value<string>() ?? "off";
+                var error = Show.ShowControlMode.SwitchTo(value);
+                if (error != null)
+                {
+                    context.SendError("INVALID_PARAM", error);
+                    return;
+                }
+
+                break;
+            }
+
+            case "status":
+                break;
+
+            default:
+                context.SendError("INVALID_PARAM", "mode requires op = set | status");
+                return;
+        }
+
+        context.SendOk(new JObject
+                           {
+                               ["mode"] = Show.ShowControlMode.Current,
+                               ["role"] = Show.ShowControlMode.RoleLabel,
+                           });
+    }
+
+    /// <summary>Drives the collab session for external agents: op = host | host-relay | join | join-relay | leave | chat | status.</summary>
+    private static void HandleCollabControl(JObject request, RequestContext context)
+    {
+        var collab = CollabManager.Instance;
+        switch (request["op"]?.Value<string>())
+        {
+            case "host":
+                collab.StartHost(request["port"]?.Value<int>() ?? 44700,
+                                 request["password"]?.Value<string>() ?? "",
+                                 request["lan"]?.Value<bool>() ?? true);
+                break;
+
+            case "join":
+                collab.JoinDirect(request["host"]?.Value<string>() ?? "127.0.0.1",
+                                  request["port"]?.Value<int>() ?? 44700,
+                                  request["password"]?.Value<string>() ?? "");
+                break;
+
+            case "host-relay":
+            {
+                ParseRelayParam(request, out var relayHost, out var relayPort);
+                collab.StartHostViaRelay(relayHost, relayPort);
+                break;
+            }
+
+            case "join-relay":
+            {
+                ParseRelayParam(request, out var relayHost, out var relayPort);
+                var room = request["room"]?.Value<string>() ?? "";
+                collab.JoinViaRelay(relayHost, relayPort, room, request["password"]?.Value<string>() ?? "");
+                break;
+            }
+
+            case "leave":
+                collab.Leave();
+                break;
+
+            case "chat":
+                collab.SendChat(request["text"]?.Value<string>() ?? "");
+                break;
+
+            case "status":
+                break;
+
+            default:
+                context.SendError("INVALID_PARAM", "collab requires op = host | host-relay | join | join-relay | leave | chat | status");
+                return;
+        }
+
+        context.SendOk(new JObject
+                           {
+                               ["state"] = collab.State.ToString(),
+                               ["status"] = collab.StatusText,
+                               ["error"] = collab.ErrorText,
+                               ["room"] = collab.RoomCode,
+                               ["peers"] = collab.Peers.Count,
+                               ["chatLines"] = collab.ChatLog.Count,
+                           });
+    }
+
+    /// <summary>Reads "relay" ("host:port") or falls back to the protocol defaults for relay ops.</summary>
+    private static void ParseRelayParam(JObject request, out string host, out int port)
+    {
+        host = CollabProtocol.DefaultRelayHost;
+        port = CollabProtocol.DefaultRelayPort;
+        var relay = request["relay"]?.Value<string>();
+        if (string.IsNullOrWhiteSpace(relay))
+            return;
+
+        var separator = relay.LastIndexOf(':');
+        if (separator > 0 && int.TryParse(relay[(separator + 1)..], out var parsed))
+        {
+            port = parsed;
+            host = relay[..separator];
+        }
+        else
+        {
+            host = relay.Trim();
+        }
+    }
+
+    /// <summary>Drives boygrouping for external agents: op = server | join | leave | status.</summary>
+    private static void HandleBoygroupControl(JObject request, RequestContext context)
+    {
+        var boygroup = Show.BoygroupManager.Instance;
+        switch (request["op"]?.Value<string>())
+        {
+            case "server":
+                boygroup.StartServer(request["port"]?.Value<int>() ?? 44720,
+                                     request["password"]?.Value<string>() ?? "",
+                                     request["group"]?.Value<string>() ?? "Main");
+                break;
+
+            case "join":
+                boygroup.JoinServer(request["host"]?.Value<string>() ?? "127.0.0.1",
+                                    request["port"]?.Value<int>() ?? 44720,
+                                    request["group"]?.Value<string>() ?? "Main",
+                                    request["password"]?.Value<string>() ?? "");
+                break;
+
+            case "leave":
+                boygroup.Leave();
+                break;
+
+            case "deploy":
+                boygroup.DeployAndSync();
+                break;
+
+            case "status":
+                break;
+
+            default:
+                context.SendError("INVALID_PARAM", "boygroup requires op = server | join | leave | deploy | status");
+                return;
+        }
+
+        context.SendOk(new JObject
+                           {
+                               ["state"] = boygroup.State.ToString(),
+                               ["status"] = boygroup.StatusText,
+                               ["error"] = boygroup.ErrorText,
+                               ["group"] = boygroup.GroupName,
+                               ["deploy"] = boygroup.DeploySummary,
+                               ["clients"] = boygroup.Clients.Count,
+                               ["projectOpen"] = Show.BoygroupManager.HasProjectFolder,
+                           });
+    }
+
+    /// <summary>Drives the failover arbiter for external agents: op = enable | disable | status.</summary>
+    private static void HandleFailoverControl(JObject request, RequestContext context)
+    {
+        switch (request["op"]?.Value<string>())
+        {
+            case "enable":
+            {
+                // The update loop pushes UserSettings into the arbiter every frame, so enabling
+                // has to go through the persisted settings or it is overwritten immediately.
+                UserSettings.Config.FailoverEnabled = true;
+                UserSettings.Config.FailoverShowId = request["showId"]?.Value<string>() ?? UserSettings.Config.FailoverShowId;
+                UserSettings.Config.FailoverPriority = request["priority"]?.Value<int>() ?? UserSettings.Config.FailoverPriority;
+                UserSettings.Config.FailoverHeartbeatMs = request["heartbeatMs"]?.Value<int>() ?? UserSettings.Config.FailoverHeartbeatMs;
+                UserSettings.Config.FailoverTimeoutFactor = request["timeoutFactor"]?.Value<int>() ?? UserSettings.Config.FailoverTimeoutFactor;
+                UserSettings.Config.FailoverPreempt = request["preempt"]?.Value<bool>() ?? UserSettings.Config.FailoverPreempt;
+                UserSettings.Config.NetworkInterface = request["interface"]?.Value<string>() ?? UserSettings.Config.NetworkInterface;
+                UserSettings.Save();
+                Core.Show.FailoverArbiter.ApplyConfig(new Core.Show.FailoverConfig
+                                                          {
+                                                              Enabled = true,
+                                                              ShowId = UserSettings.Config.FailoverShowId,
+                                                              Priority = UserSettings.Config.FailoverPriority,
+                                                              HeartbeatMs = UserSettings.Config.FailoverHeartbeatMs,
+                                                              TimeoutFactor = UserSettings.Config.FailoverTimeoutFactor,
+                                                              Preempt = UserSettings.Config.FailoverPreempt,
+                                                          });
+                break;
+            }
+
+            case "disable":
+                UserSettings.Config.FailoverEnabled = false;
+                UserSettings.Save();
+                Core.Show.FailoverArbiter.ApplyConfig(new Core.Show.FailoverConfig { Enabled = false });
+                break;
+
+            case "status":
+                break;
+
+            default:
+                context.SendError("INVALID_PARAM", "failover requires op = enable | disable | status");
+                return;
+        }
+
+        context.SendOk(new JObject
+                           {
+                               ["role"] = Core.Show.FailoverArbiter.RoleText,
+                               ["suppressed"] = Core.Show.FailoverArbiter.IsOutputSuppressed,
+                               ["peer"] = Core.Show.FailoverArbiter.PeerSummary,
+                               ["takeovers"] = Core.Show.FailoverArbiter.TakeoverCount,
+                               ["interface"] = UserSettings.Config.NetworkInterface,
+                           });
     }
 
     private static void HandleGetLogTail(JObject request, RequestContext context)
