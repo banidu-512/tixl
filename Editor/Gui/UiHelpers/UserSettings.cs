@@ -11,6 +11,7 @@ using T3.Editor.Gui.Windows.RenderExport;
 using T3.Editor.Gui.Windows.TimeLine;
 
 using T3.Editor.Gui.Windows.OutputSetup;
+using T3.Editor.Collab;
 
 namespace T3.Editor.Gui.UiHelpers;
 
@@ -234,6 +235,55 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public string UserName = UndefinedUserName;
         public bool EnableAutoBackup = true;
         public bool MinimalBackup = true;
+
+        // Collaboration
+        /// <summary>Persistent participant id; also seeds the per-user accent color.</summary>
+        public string CollabUserId = "";
+
+        /// <summary>Display name override. Falls back to the Discord name, then the OS user name.</summary>
+        public string CollabDisplayName = "";
+
+        public int CollabPort = CollabProtocol.DefaultTcpPort;
+        public bool CollabLanDiscovery = true;
+        public string CollabPassword = "";
+
+        /// <summary>host:port of the last joined collab session — auto-rejoined on launch, which is
+        /// what brings a client back after a project download restarted the editor.</summary>
+        public string CollabLastSessionHost = "";
+
+        public string CollabDiscordClientId = "";
+        public string CollabDiscordClientSecret = "";
+        public string CollabDiscordUserId = "";
+        public string CollabDiscordUserName = "";
+        public string CollabDiscordUserAvatar = "";
+
+        // Boygrouping (show distribution to render nodes)
+        /// <summary>Master switch: this machine participates in boygrouping. When set, the role
+        /// below starts automatically shortly after launch — a show machine comes up in its role
+        /// without anyone clicking.</summary>
+        public bool BoygroupEnabled = false;
+
+        /// <summary>true = this machine is a master (server); false = slave (render node).</summary>
+        public bool BoygroupIsMaster = false;
+
+        public string BoygroupClientName = "";
+        public int BoygroupPort = 44720;
+        public bool BoygroupAutoJoin = true;
+        public bool BoygroupDeployMirror = false;
+        /// <summary>The master deploys and syncs to a render node as soon as it joins the group,
+        /// so an added slave is current without anyone clicking Deploy &amp; Sync.</summary>
+        public bool BoygroupAutoDeployOnJoin = true;
+        public List<string> BoygroupGroups = ["Main"];
+        public string BoygroupLastServer = "";
+        public string BoygroupLastGroup = "";
+
+        // Show failover (active/standby output arbitration)
+        public bool FailoverEnabled = false;
+        public string FailoverShowId = "tixl-show";
+        public int FailoverPriority = 100;
+        public int FailoverHeartbeatMs = 500;
+        public int FailoverTimeoutFactor = 3;
+        public bool FailoverPreempt = true;
 
         public float GizmoSize = 100;
 

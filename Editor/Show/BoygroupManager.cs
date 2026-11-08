@@ -3,14 +3,20 @@ using System.Collections.Concurrent;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
+using System.Threading;
+using NAudio.Midi;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using Rug.Osc;
 using T3.Core.Animation;
+using T3.Core.IO;
 using T3.Core.Output;
 using T3.Editor.Collab;
 using T3.Editor.Gui.UiHelpers;
 using T3.Editor.UiModel;
 using T3.Editor.UiModel.Commands;
 using T3.Editor.UiModel.ProjectHandling;
+using T3.IoServices;
 
 namespace T3.Editor.Show;
 
@@ -82,16 +88,76 @@ internal sealed class BoygroupManager
     private BoygroupTransport? _transport;
     private string _password = "";
 
+    /// <summary>The active link while a session is running; null when boygrouping is off. The peer
+    /// camera service tracks it so cameras flow between the machines of the session.</summary>
+    public CollabTransport? PeerSessionTransport => _transport;
+
+    public bool PeerSessionIsHost => State == BoygroupState.Server;
+
     private long _nextHeartbeatTicks;
     private long _nextTimeSyncTicks;
     private long _autoJoinCheckTicks;
+    private long _nextServerRestartTicks;
+    private long _nextSlaveJoinAttemptTicks;
+
+    // Input replication. Hardware callbacks enqueue from their own threads; the UI thread batches them
+    // into one message per frame.
+    private const int MaxQueuedInputEvents = 8192;
+    private readonly ConcurrentQueue<RemoteMidiEvent> _outgoingMidi = new();
+    private readonly ConcurrentQueue<RemoteOscPacket> _outgoingOsc = new();
+    private readonly List<RemoteMidiEvent> _outgoingMidiBatch = [];
+    private readonly List<RemoteOscPacket> _outgoingOscBatch = [];
 
     // Client-side deploy receiver
     private readonly BoygroupDeployer.FileReceiver _fileReceiver = new();
 
     private BoygroupManager()
     {
+        RemoteInputBus.MidiCaptured += OnMidiCaptured;
+        RemoteInputBus.OscCaptured += OnOscCaptured;
+        RemoteInputBus.ErrorReported += message => Log.Warning(message);
     }
+
+    /// <summary>What the input replication is doing, for the settings panel and the debug bridge.</summary>
+    public string InputRelaySummary => State switch
+                                           {
+                                               BoygroupState.Server => "MIDI/OSC from this machine",
+                                               BoygroupState.Client => "Receiving MIDI/OSC",
+                                               _                    => "",
+                                           };
+
+    /// <summary>True while this master forwards its hardware input to at least one render node.</summary>
+    public bool IsCapturingInputs => RemoteInputBus.IsCapturing;
+
+    private void OnMidiCaptured(RemoteMidiEvent ev)
+    {
+        if (State != BoygroupState.Server)
+            return;
+
+        if (_outgoingMidi.Count >= MaxQueuedInputEvents)
+        {
+            Interlocked.Increment(ref _droppedInputEvents);
+            return;
+        }
+
+        _outgoingMidi.Enqueue(ev);
+    }
+
+    private void OnOscCaptured(RemoteOscPacket packet)
+    {
+        if (State != BoygroupState.Server)
+            return;
+
+        if (_outgoingOsc.Count >= MaxQueuedInputEvents)
+        {
+            Interlocked.Increment(ref _droppedInputEvents);
+            return;
+        }
+
+        _outgoingOsc.Enqueue(packet);
+    }
+
+    private long _droppedInputEvents;
 
     // ---------------------------------------------------------------------------------------
     // Lifecycle
@@ -107,7 +173,7 @@ internal sealed class BoygroupManager
         {
             _password = password ?? "";
             GroupName = group;
-            _transport = new BoygroupServerTransport(port, UserSettings.Config.BoygroupGroups.ToArray());
+            _transport = new BoygroupServerTransport(port, UserSettings.Config.BoygroupGroups.Distinct().ToArray());
             _transport.PeerDisconnected += OnPeerDisconnected;
             State = BoygroupState.Server;
             StatusText = $"Serving group '{group}' on port {port}";
@@ -136,11 +202,14 @@ internal sealed class BoygroupManager
             if (address == null)
                 throw new ArgumentException($"'{host}' is not a valid address");
 
-            _transport = BoygroupClientTransport.Connect(new IPEndPoint(address, port));
-            _transport.PeerDisconnected += OnPeerDisconnected;
+            var transport = BoygroupClientTransport.Connect(new IPEndPoint(address, port));
+            _transport = transport;
+            transport.PeerDisconnected += OnPeerDisconnected;
             State = BoygroupState.Client;
             StatusText = $"Joining '{group}' on {host}:{port}...";
-            SendJson(((_transport as BoygroupClientTransport)!).ServerPeer,
+            // Subscribe first, then start reading: a link that dies right now must report.
+            transport.StartReading();
+            SendJson(transport.ServerPeer,
                      new
                      {
                          t = "hello",
@@ -148,6 +217,7 @@ internal sealed class BoygroupManager
                          group,
                      });
             PersistJoinTarget(host, group);
+            StopDiscovery(); // joined: no need to keep probing (the wait loop restarts it if we drop)
         }
         catch (Exception e)
         {
@@ -174,6 +244,12 @@ internal sealed class BoygroupManager
 
         _clients.Clear();
         _fileReceiver.Cancel();
+        while (_pendingDisconnects.TryDequeue(out _))
+        {
+            // Drop events from the dead session: replaying them into the next one would end it
+            // immediately (the collab manager drains its queue for the same reason).
+        }
+
         _password = "";
         GroupName = "";
         RestartPending = false;
@@ -210,6 +286,75 @@ internal sealed class BoygroupManager
         JoinServer(config.BoygroupLastServer, port, config.BoygroupLastGroup, config.CollabPassword);
     }
 
+    /// <summary>
+    /// Applies the enable switch from the settings: starts the server when this machine is a
+    /// master, joins the last server when it is a slave, leaves when disabled. Called from the
+    /// panel toggle and once per launch (after the settle delay), so a show machine comes up
+    /// in its role without anyone clicking.
+    /// </summary>
+    public void ApplyEnabledSetting()
+    {
+        var config = UserSettings.Config;
+        if (!config.BoygroupEnabled)
+        {
+            if (State != BoygroupState.Off)
+                Leave();
+            StopDiscovery();
+            return;
+        }
+
+        // A role flip while running means leave + re-apply on the next call.
+        if (State != BoygroupState.Off && (State == BoygroupState.Server) != config.BoygroupIsMaster)
+            Leave();
+
+        if (State != BoygroupState.Off)
+            return; // Already running in the configured role.
+
+        if (config.BoygroupIsMaster)
+        {
+            StartServer(config.BoygroupPort, config.CollabPassword, config.BoygroupGroups.FirstOrDefault() ?? "Main");
+        }
+        else
+        {
+            TryAutoJoin();
+        }
+    }
+
+    /// <summary>
+    /// An enabled slave that has never joined a master keeps scanning and joins the first master
+    /// that appears, like the master role keeps serving: the pair finds each other after a reboot
+    /// in any order. Join attempts are throttled so a dead candidate can never flap the frame
+    /// loop; a failed attempt clears the candidate list and the scanner restarts on its own.
+    /// </summary>
+    private void WaitAndAutoJoinDiscoveredMaster()
+    {
+        if (_discoveryScanner == null)
+            StartDiscovery();
+
+        DrainDiscovery();
+
+        if (Environment.TickCount64 < _nextSlaveJoinAttemptTicks)
+            return;
+
+        var config = UserSettings.Config;
+        var preferredGroup = config.BoygroupLastGroup is { Length: > 0 } last ? last : null;
+
+        // Prefer a master that hosts the group we want; otherwise take the only / first one.
+        var candidate = preferredGroup != null
+                            ? _discoveredServers.FirstOrDefault(s => s.Groups.Contains(preferredGroup))
+                              ?? _discoveredServers.FirstOrDefault()
+                            : _discoveredServers.FirstOrDefault();
+        if (candidate == null)
+            return;
+
+        _nextSlaveJoinAttemptTicks = Environment.TickCount64 + 3_000;
+        Log.Info($"Boygroup: enabled slave joining discovered master {candidate.ServerName} ({candidate.Address}:{candidate.Port})");
+        StopDiscovery(); // clears the candidate list; the scanner restarts if this attempt fails
+        JoinServer(candidate.Address, candidate.Port,
+                   preferredGroup ?? config.BoygroupGroups.FirstOrDefault() ?? candidate.Groups.FirstOrDefault() ?? "Main",
+                   config.CollabPassword);
+    }
+
     private static IPAddress? ResolveHost(string host)
     {
         if (IPAddress.TryParse(host, out var parsed))
@@ -233,7 +378,8 @@ internal sealed class BoygroupManager
 
     public void Update()
     {
-        // Auto-rejoin shortly after startup (give the project time to load first).
+        // Apply the enable switch shortly after startup (give the project time to load first):
+        // an enabled master starts its server, an enabled slave auto-joins the last server.
         if (State == BoygroupState.Off)
         {
             if (_autoJoinCheckTicks == 0)
@@ -243,7 +389,27 @@ internal sealed class BoygroupManager
             else if (Environment.TickCount64 > _autoJoinCheckTicks && !_autoJoinAttempted)
             {
                 _autoJoinAttempted = true;
-                TryAutoJoin();
+                if (UserSettings.Config.BoygroupEnabled)
+                {
+                    ApplyEnabledSetting();
+                }
+                else
+                {
+                    TryAutoJoin();
+                }
+            }
+            else if (_autoJoinAttempted && UserSettings.Config.BoygroupEnabled && !UserSettings.Config.BoygroupIsMaster)
+            {
+                // Enabled slave still off: keep looking for a master.
+                WaitAndAutoJoinDiscoveredMaster();
+            }
+            else if (_autoJoinAttempted && UserSettings.Config.BoygroupEnabled && UserSettings.Config.BoygroupIsMaster
+                     && Environment.TickCount64 >= _nextServerRestartTicks)
+            {
+                // Enabled master whose server dropped (port conflict, transport fault): bring it
+                // back. Throttled so a persistent failure cannot spin the frame loop.
+                _nextServerRestartTicks = Environment.TickCount64 + 5_000;
+                ApplyEnabledSetting();
             }
 
             return;
@@ -262,9 +428,14 @@ internal sealed class BoygroupManager
             return;
 
         PumpDeploy();
+        RunScheduledAutoDeploy();
         SendHeartbeats();
         SendTimeSync();
         ProcessPendingRestart();
+
+        if (State == BoygroupState.Server)
+            PumpInputReplication();
+
         RefreshDiscoveredServers();
     }
 
@@ -314,6 +485,83 @@ internal sealed class BoygroupManager
     }
 
     // ---------------------------------------------------------------------------------------
+
+
+    // ---------------------------------------------------------------------------------------
+    // Input replication and video relay
+    // ---------------------------------------------------------------------------------------
+
+    private void PumpInputReplication()
+    {
+        if (_outgoingMidi.IsEmpty && _outgoingOsc.IsEmpty)
+            return;
+
+        _outgoingMidiBatch.Clear();
+        _outgoingOscBatch.Clear();
+
+        for (var i = 0; i < BoygroupInputWire.MaxEventsPerBatch && _outgoingMidi.TryDequeue(out var midi); i++)
+            _outgoingMidiBatch.Add(midi);
+
+        for (var i = 0; i < BoygroupInputWire.MaxEventsPerBatch && _outgoingOsc.TryDequeue(out var osc); i++)
+            _outgoingOscBatch.Add(osc);
+
+        if (_outgoingMidiBatch.Count == 0 && _outgoingOscBatch.Count == 0)
+            return;
+
+        BroadcastToGroup(BoygroupInputWire.Encode(_outgoingMidiBatch, _outgoingOscBatch));
+
+        // A producer faster than the link must not make the queue grow without bound.
+        var dropped = Interlocked.Exchange(ref _droppedInputEvents, 0);
+        if (dropped > 0)
+            Log.Warning($"Boygroup: dropped {dropped} input events because the replication queue overflowed");
+    }
+
+    /// <summary>
+    /// Master side: keeps one OMT sender per VideoDeviceInput, sends its frame and tells the render nodes
+    /// which source to receive. The source list is re-broadcast when it changes and again periodically so
+    /// a node that joins later picks it up.
+    /// </summary>
+
+    private static void ApplyRemoteInput(JObject json)
+    {
+        if (!BoygroupInputWire.TryDecode(json, out var midi, out var osc))
+            return;
+
+        foreach (var remote in midi)
+        {
+            try
+            {
+                var midiEvent = MidiEvent.FromRawMessage(remote.RawMessage);
+                if (midiEvent == null)
+                    continue;
+
+                SimulatedIoBus.DispatchMidi(new SimulatedIoBus.SimulatedMidiEvent(remote.DeviceProductName, midiEvent));
+                RemoteInputBus.MarkRemoteMidiReceived();
+            }
+            catch (Exception e)
+            {
+                Log.Debug($"Boygroup: dropping a malformed MIDI event: {e.Message}");
+            }
+        }
+
+        foreach (var remote in osc)
+        {
+            try
+            {
+                if (OscPacket.Read(remote.Packet, 0, remote.Packet.Length) is not OscMessage message)
+                    continue;
+
+                SimulatedIoBus.DispatchOscPacket(new SimulatedIoBus.SimulatedOscPacket(remote.Port, message));
+                RemoteInputBus.MarkRemoteOscReceived();
+            }
+            catch (Exception e)
+            {
+                Log.Debug($"Boygroup: dropping a malformed OSC packet: {e.Message}");
+            }
+        }
+    }
+
+    /// <summary>Client side: applies the master's video input list to the remote camera bus.</summary>
     // Messages
     // ---------------------------------------------------------------------------------------
 
@@ -324,6 +572,10 @@ internal sealed class BoygroupManager
         {
             case "hello" when State == BoygroupState.Server:
                 HandleHello(peer, json);
+                break;
+
+            case "io" when State == BoygroupState.Client:
+                ApplyRemoteInput(json);
                 break;
 
             case "welcome":
@@ -343,7 +595,16 @@ internal sealed class BoygroupManager
                 Leave();
                 break;
 
-            case "inventory" when State == BoygroupState.Client:
+            case "inventory" when State == BoygroupState.Server:
+            {
+                // The client answered our requestInventory with what it has on disk.
+                var requestingClient = _clients.FirstOrDefault(c => ReferenceEquals(c.Peer, peer));
+                if (requestingClient != null)
+                    HandleClientInventory(requestingClient, json);
+                break;
+            }
+
+            case "requestInventory" when State == BoygroupState.Client:
                 HandleServerInventory(json);
                 break;
 
@@ -408,11 +669,13 @@ internal sealed class BoygroupManager
 
     private void HandleHello(CollabPeerConnection peer, JObject json)
     {
+        // A hello from an unregistered connection is simply a new client: the transport accepts
+        // peers on its own, so this is where the server first learns who connected.
         var client = _clients.FirstOrDefault(c => ReferenceEquals(c.Peer, peer));
         if (client == null)
         {
-            Log.Warning("Boygroup: hello from unknown connection");
-            return;
+            client = new ClientInfo { Peer = peer };
+            _clients.Add(client);
         }
 
         client.Name = CollabProtocol.GetString(json, "name", "client");
@@ -470,6 +733,27 @@ internal sealed class BoygroupManager
         client.Peer.IsAuthenticated = true;
         SendJson(client.Peer, new { t = "authOk", serverName = Environment.MachineName });
         Log.Info($"Boygroup: client authenticated: {client.Name} ({client.Address}) group '{client.Group}'");
+
+        // A node that appears is served: schedule a deploy shortly after the handshake (the delay
+        // debounces a burst of joins into one pass; clients mid-deploy keep their own transfer).
+        if (UserSettings.Config.BoygroupAutoDeployOnJoin)
+            _autoDeployAtTicks = Environment.TickCount64 + 1500;
+    }
+
+    /// <summary>Due time for the deploy-on-join pass; 0 while nothing is scheduled.</summary>
+    private long _autoDeployAtTicks;
+
+    private void RunScheduledAutoDeploy()
+    {
+        if (_autoDeployAtTicks == 0 || Environment.TickCount64 < _autoDeployAtTicks)
+            return;
+
+        _autoDeployAtTicks = 0;
+        if (State != BoygroupState.Server || string.IsNullOrEmpty(GetProjectFolder()))
+            return; // No project open: a manual Deploy & Sync will report it properly.
+
+        Log.Info("Boygroup: node joined - running deploy & sync");
+        DeployAndSync();
     }
 
     private void Reject(CollabPeerConnection peer, string reason)
@@ -593,6 +877,9 @@ internal sealed class BoygroupManager
             return;
 
         var projectFolder = GetProjectFolder();
+        if (string.IsNullOrEmpty(projectFolder))
+            return; // Nothing to deploy from; the deploy was already reported as failed on request.
+
         foreach (var client in _clients)
         {
             if (client.PendingFiles == null)
@@ -650,8 +937,11 @@ internal sealed class BoygroupManager
         client.PendingInventory = null;
         client.IsDeployed = true;
         client.StatusText = "deployed";
-        SendJson(client.Peer, new { t = "deployDone", restart = true });
-        Log.Info($"Boygroup: deployment to {client.Name} complete");
+        // A deploy that transferred nothing (the node was already current) must not reboot it:
+        // the auto-deploy on join runs against every join, up-to-date nodes stay up.
+        var transferred = client.FilesDone > 0;
+        SendJson(client.Peer, new { t = "deployDone", restart = transferred });
+        Log.Info($"Boygroup: deployment to {client.Name} complete ({client.FilesDone} file(s){(transferred ? ", restart requested" : ", no changes")})");
     }
 
     /// <summary>Pushes the active output setup file so clients render the master's output config.</summary>
@@ -797,6 +1087,14 @@ internal sealed class BoygroupManager
         var shouldRestart = json["restart"]?.Value<bool>() ?? true;
         DeploySummary = $"Deployment complete ({_deployFilesDone} files" + (_deployErrors > 0 ? $", {_deployErrors} failed" : "") + ")";
 
+        // A deploy that transferred no files (the node was already current) leaves this machine up:
+        // only a real update restarts into the deployed state.
+        if (_deployFilesTotal == 0)
+        {
+            Log.Info("Boygroup: deploy had no file changes - staying up");
+            return;
+        }
+
         if (!shouldRestart || !UserSettings.Config.BoygroupAutoJoin)
             return;
 
@@ -848,6 +1146,23 @@ internal sealed class BoygroupManager
             return;
 
         _nextHeartbeatTicks = now + CollabProtocol.HeartbeatIntervalMs;
+
+        if (_transport is BoygroupClientTransport clientTransport)
+        {
+            // The server pings every client every second, so silence means the master is gone
+            // (or partitioned). Without this check the client kept dead-reckoning time forever
+            // from the last sync and reported itself as connected.
+            var serverPeer = clientTransport.ServerPeer;
+            if (serverPeer.IsTimedOut)
+            {
+                Log.Info("Boygroup: server timed out");
+                serverPeer.SessionClosed = true;
+                serverPeer.Close();
+            }
+
+            return;
+        }
+
         var timestamp = BitConverter.GetBytes(Environment.TickCount64);
         foreach (var client in _clients)
         {
@@ -933,12 +1248,26 @@ internal sealed class BoygroupManager
     {
         _discoveryScanner ??= new LanDiscoveryScanner();
         _discoveredServers.Clear();
-        _discoveryScanner.Start(UserSettings.Config.BoygroupPort + LanDiscoveryResponder.DiscoveryPortOffset);
+
+        // A master whose address is already known is also probed by unicast, so the scan still
+        // finds it on networks that swallow broadcast packets.
+        List<IPAddress>? directTargets = null;
+        var lastServer = UserSettings.Config.BoygroupLastServer;
+        if (!string.IsNullOrWhiteSpace(lastServer))
+        {
+            var resolved = ResolveHost(lastServer);
+            if (resolved != null)
+                directTargets = [resolved];
+        }
+
+        _discoveryScanner.Start(UserSettings.Config.BoygroupPort + LanDiscoveryResponder.DiscoveryPortOffset, directTargets);
     }
 
     public void StopDiscovery()
     {
         _discoveryScanner?.Stop();
+        _discoveryScanner = null;
+        _discoveredServers.Clear();
     }
 
     /// <summary>Moves scan results into the visible list; called from Update and the panel.</summary>
@@ -949,25 +1278,36 @@ internal sealed class BoygroupManager
 
         while (_discoveryScanner.Results.TryDequeue(out var result))
         {
-            var announcement = result.Announcement;
-            if (announcement["boygroup"] == null)
-                continue;
+            DiscoveredServer server;
+            try
+            {
+                var announcement = result.Announcement;
+                if (announcement["boygroup"] == null)
+                    continue;
 
-            var server = new DiscoveredServer
+                server = new DiscoveredServer
                              {
                                  ServerName = CollabProtocol.GetString(announcement, "server", "boygroup server"),
                                  Address = result.Source.Address.ToString(),
                                  Port = announcement["port"]?.Value<int>() ?? UserSettings.Config.BoygroupPort,
                              };
 
-            if (announcement["groups"] is JArray groups)
-            {
-                foreach (var group in groups)
+                if (announcement["groups"] is JArray groups)
                 {
-                    var name = group.Value<string>();
-                    if (!string.IsNullOrEmpty(name))
-                        server.Groups.Add(name);
+                    foreach (var group in groups)
+                    {
+                        var name = group.Value<string>();
+                        if (!string.IsNullOrEmpty(name))
+                            server.Groups.Add(name);
+                    }
                 }
+            }
+            catch (Exception e)
+            {
+                // A malformed announcement (hostile or from another tool) must never reach the
+                // frame loop: drop it and keep draining.
+                Log.Debug($"Boygroup: dropping a malformed discovery announcement: {e.Message}");
+                continue;
             }
 
             if (_discoveredServers.Any(d => d.Address == server.Address && d.Port == server.Port))
