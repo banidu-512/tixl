@@ -642,6 +642,10 @@ internal static class DebugServer
                 HandleFailoverControl(request, context);
                 break;
 
+            case "mode":
+                HandleModeControl(request, context);
+                break;
+
             case null:
                 context.SendError("MISSING_METHOD", "Request has no 'method' field");
                 break;
@@ -650,6 +654,39 @@ internal static class DebugServer
                 context.SendError("UNKNOWN_METHOD", $"Unknown method '{method}'");
                 break;
         }
+    }
+
+    /// <summary>Switches the show-control mode for external agents: op = set (value = off | boygroup | failover | collab) | status.</summary>
+    private static void HandleModeControl(JObject request, RequestContext context)
+    {
+        switch (request["op"]?.Value<string>())
+        {
+            case "set":
+            {
+                var value = request["value"]?.Value<string>() ?? "off";
+                var error = Show.ShowControlMode.SwitchTo(value);
+                if (error != null)
+                {
+                    context.SendError("INVALID_PARAM", error);
+                    return;
+                }
+
+                break;
+            }
+
+            case "status":
+                break;
+
+            default:
+                context.SendError("INVALID_PARAM", "mode requires op = set | status");
+                return;
+        }
+
+        context.SendOk(new JObject
+                           {
+                               ["mode"] = Show.ShowControlMode.Current,
+                               ["role"] = Show.ShowControlMode.RoleLabel,
+                           });
     }
 
     /// <summary>Drives the collab session for external agents: op = host | host-relay | join | join-relay | leave | chat | status.</summary>

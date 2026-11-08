@@ -24,55 +24,112 @@ internal static class ShowControlBarStatus
 
     private static readonly List<string> _peerAddresses = [];
 
-    /// <summary>Draws the indicator centered in the menu bar. Called from <see cref="AppMenuBar"/>.</summary>
+    /// <summary>
+    /// Draws the mode selector centered in the menu bar: one pill naming the current show-control
+    /// mode and the machine's role in it. Clicking opens the mode menu (Off / Boygrouping /
+    /// Failover / Collaboration — mutually exclusive); hovering shows the live details.
+    /// </summary>
     public static void DrawMenuBarIndicator()
     {
-        var segments = CollectSegments();
-        if (segments.Count == 0)
-            return;
+        var mode = ShowControlMode.Current;
+        var role = ShowControlMode.RoleLabel;
+        var label = mode == ShowControlMode.Off
+                        ? "Show: Off"
+                        : role.Length > 0
+                            ? $"{ModeDisplayName(mode)} · {role}"
+                            : ModeDisplayName(mode);
 
-        var spacing = 14 * T3Ui.UiScaleFactor;
-        var totalWidth = -spacing;
-        foreach (var segment in segments)
-            totalWidth += ImGui.CalcTextSize(segment.Label).X + spacing;
+        var (color, detailLines) = DescribeCurrent(mode);
 
+        var pad = new System.Numerics.Vector2(8, 3) * T3Ui.UiScaleFactor;
+        var size = ImGui.CalcTextSize(label) + pad * 2;
+        var totalWidth = size.X;
         ImGui.SameLine(0, 14 * T3Ui.UiScaleFactor);
         var startX = (ImGui.GetWindowWidth() - totalWidth) * 0.5f;
         if (startX > ImGui.GetCursorPosX())
             ImGui.SetCursorPosX(startX);
 
-        var pad = new System.Numerics.Vector2(8, 3) * T3Ui.UiScaleFactor;
-        foreach (var segment in segments)
+        var pos = ImGui.GetCursorScreenPos();
+        var drawList = ImGui.GetWindowDrawList();
+
+        // Subtle tinted pill behind the mode word; the word itself in the status color.
+        drawList.AddRectFilled(pos, pos + size,
+                               ImGui.ColorConvertFloat4ToU32(color.Fade(0.18f).Rgba),
+                               4 * T3Ui.UiScaleFactor);
+        drawList.AddText(pos + pad,
+                         ImGui.ColorConvertFloat4ToU32(color.Rgba),
+                         label);
+
+        ImGui.InvisibleButton("##showMode", size);
+        if (ImGui.IsItemHovered() && detailLines.Length > 0)
         {
-            var size = ImGui.CalcTextSize(segment.Label) + pad * 2;
-            var pos = ImGui.GetCursorScreenPos();
-            var drawList = ImGui.GetWindowDrawList();
-
-            // Subtle tinted pill behind the role word; the word itself in the status color.
-            drawList.AddRectFilled(pos, pos + size,
-                                   ImGui.ColorConvertFloat4ToU32(segment.Color.Fade(0.18f).Rgba),
-                                   4 * T3Ui.UiScaleFactor);
-            drawList.AddText(pos + pad,
-                             ImGui.ColorConvertFloat4ToU32(segment.Color.Rgba),
-                             segment.Label);
-
-            ImGui.InvisibleButton(segment.Label, size);
-            if (ImGui.IsItemHovered())
+            CustomComponents.BeginTooltip(360);
+            foreach (var line in detailLines)
             {
-                CustomComponents.BeginTooltip(360);
-                foreach (var line in segment.DetailLines)
-                {
-                    if (string.IsNullOrEmpty(line))
-                        ImGui.TextUnformatted("");
-                    else
-                        ImGui.TextUnformatted(line);
-                }
-
-                CustomComponents.EndTooltip();
+                if (string.IsNullOrEmpty(line))
+                    ImGui.TextUnformatted("");
+                else
+                    ImGui.TextUnformatted(line);
             }
 
-            ImGui.SameLine(0, spacing);
+            CustomComponents.EndTooltip();
         }
+
+        if (ImGui.IsItemClicked(ImGuiMouseButton.Left))
+            ImGui.OpenPopup("##showModeMenu");
+
+        if (!ImGui.BeginPopup("##showModeMenu"))
+            return;
+
+        ImGui.TextDisabled("Show-control mode - one at a time");
+        ImGui.Separator();
+        foreach (var candidate in ShowControlMode.All)
+        {
+            var selected = candidate == mode;
+            var candidateLabel = ModeDisplayName(candidate);
+            if (ImGui.Selectable(candidateLabel, selected))
+            {
+                var error = ShowControlMode.SwitchTo(candidate);
+                if (error != null)
+                    Log.Warning($"Show mode: {error}");
+                ImGui.CloseCurrentPopup();
+            }
+
+            if (ImGui.IsItemHovered())
+            {
+                CustomComponents.BeginTooltip(300);
+                ImGui.TextWrapped(candidate switch
+                                      {
+                                          ShowControlMode.Boygroup => "Distribute the show to render nodes: this machine becomes a master or slave by its Boygrouping settings.",
+                                          ShowControlMode.Failover => "Redundant pair: two machines run the same composition, one streams, the other takes over on failure.",
+                                          ShowControlMode.Collab => "Edit one graph together: starts a relay room and shares the session ID.",
+                                          _ => "No show-control feature runs on this machine.",
+                                      });
+                CustomComponents.EndTooltip();
+            }
+        }
+
+        ImGui.EndPopup();
+    }
+
+    private static string ModeDisplayName(string mode) => mode switch
+                                                             {
+                                                                 ShowControlMode.Boygroup => "Boygroup",
+                                                                 ShowControlMode.Failover => "Failover",
+                                                                 ShowControlMode.Collab   => "Collab",
+                                                                 _                        => "Off",
+                                                             };
+
+    /// <summary>Status color and hover detail for the current mode; falls back to the pill word when nothing runs.</summary>
+    private static (Color Color, string[] Lines) DescribeCurrent(string mode)
+    {
+        var segments = CollectSegments();
+        if (segments.Count > 0)
+            return (segments[0].Color, segments[0].DetailLines);
+
+        return (UiColors.TextMuted, mode == ShowControlMode.Off
+                                         ? []
+                                         : [$"{ModeDisplayName(mode)} is enabled, but no session is running yet."]);
     }
 
     private static List<Segment> CollectSegments()
