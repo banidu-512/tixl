@@ -912,6 +912,18 @@ internal sealed class BoygroupManager
         if (string.IsNullOrEmpty(projectFolder))
             return;
 
+        // A node showing another project must not receive this project's files on top of it
+        // (two .csproj files in one folder break project loading). Re-bootstrap it instead.
+        var masterName = Path.GetFileName(projectFolder.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+        var clientProject = CollabProtocol.GetString(json, "project", "");
+        if (clientProject.Length > 0 && !string.Equals(clientProject, masterName, StringComparison.OrdinalIgnoreCase))
+        {
+            client.PendingInventory = null;
+            Log.Info($"Boygroup: {client.Name} shows project '{clientProject}' - switching it to '{masterName}'");
+            SendJson(client.Peer, new { t = "projectName", name = masterName });
+            return;
+        }
+
         var serverInventory = client.PendingInventory;
         var clientInventory = BoygroupDeployer.ParseInventory(json);
         var missing = BoygroupDeployer.ComputeMissingFiles(serverInventory, clientInventory);
@@ -1096,7 +1108,12 @@ internal sealed class BoygroupManager
 
     private static string? GetProjectFolder()
     {
-        return ProjectView.Focused?.OpenedProject.Package.Folder ?? Instance._bootstrapProjectFolder;
+        // A pending bootstrap (the master serves a different project) takes precedence: the files
+        // must land in that folder, and the deploy restart opens it.
+        if (Instance._bootstrapProjectFolder is { Length: > 0 } bootstrap)
+            return bootstrap;
+
+        return ProjectView.Focused?.OpenedProject.Package.Folder;
     }
 
     /// <summary>Whether a project is open — the debug bridge's status reports it, so a master that
@@ -1125,7 +1142,13 @@ internal sealed class BoygroupManager
 
         var inventory = BoygroupDeployer.BuildInventory(projectFolder,
                                                         Path.GetRelativePath(projectFolder, SetupFiles.FolderIn(projectFolder)));
-        SendJson(((_transport as BoygroupClientTransport)!).ServerPeer, BoygroupDeployer.BuildInventoryMessage(inventory));
+        SendJson(((_transport as BoygroupClientTransport)!).ServerPeer,
+                 new JObject
+                     {
+                         ["t"] = "inventory",
+                         ["project"] = Path.GetFileName(projectFolder.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)),
+                         ["files"] = BoygroupDeployer.BuildInventoryMessage(inventory)["files"],
+                     });
     }
 
     /// <summary>Folder this node is bootstrap-receiving the master's project into (no project was
@@ -1149,8 +1172,11 @@ internal sealed class BoygroupManager
         {
             var folder = Path.Combine(root, name);
             Directory.CreateDirectory(folder);
-            _bootstrapProjectFolder = folder;
-            Log.Info($"Boygroup: receiving the master's project into {folder}");
+            if (!string.Equals(_bootstrapProjectFolder, folder, StringComparison.Ordinal))
+            {
+                Log.Info($"Boygroup: receiving the master's project into {folder}");
+                _bootstrapProjectFolder = folder;
+            }
             SendJson(((_transport as BoygroupClientTransport)!).ServerPeer,
                      BoygroupDeployer.BuildInventoryMessage([]));
         }
