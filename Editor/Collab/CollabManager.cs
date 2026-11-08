@@ -49,6 +49,9 @@ internal sealed class CollabManager
     /// The invite text carries it so a joiner on another network reaches the same room.</summary>
     public string RelayEndpoint { get; private set; } = "";
 
+    /// <summary>IP of the direct session host on a client; null when hosting, on a relay join, or unknown.</summary>
+    public string? ConnectedHostAddress => HostLink?.RemoteAddress?.ToString();
+
     public bool IsSessionActive => State is SessionState.Hosting or SessionState.Connected;
 
     /// <summary>Collaboration on/off — the settings switch gates every session start and join.</summary>

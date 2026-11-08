@@ -72,6 +72,8 @@ internal static class AppMenuBar
             Interaction.Gamepad.GamepadIndicator.Draw();
             T3Metrics.DrawRenderPerformanceGraph();
 
+            DrawShowControlStatus();
+
             ImGui.SameLine();
 
             if (!UserSettings.Config.EnableKeyboardShortCuts)
@@ -96,6 +98,24 @@ internal static class AppMenuBar
         }
 
         ImGui.PopStyleVar(3);
+    }
+
+    /// <summary>The centered show-control line: what is running, in which role, on which address.</summary>
+    private static void DrawShowControlStatus()
+    {
+        var status = ShowControlBarStatus.Compose();
+        if (string.IsNullOrEmpty(status))
+            return;
+
+        ImGui.SameLine();
+        var width = ImGui.CalcTextSize(status).X;
+        var centerX = (ImGui.GetWindowWidth() - width) * 0.5f;
+        if (centerX > ImGui.GetCursorPosX())
+            ImGui.SetCursorPosX(centerX);
+
+        ImGui.PushStyleColor(ImGuiCol.Text, UiColors.TextMuted.Rgba);
+        ImGui.TextUnformatted(status);
+        ImGui.PopStyleColor();
     }
 
     private static void DrawDebugServerIndicator()
