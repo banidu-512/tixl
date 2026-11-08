@@ -17,7 +17,7 @@
         "X": -200.0,
         "Y": 150.0
       },
-      "Description": "If enabled, the device is automatically deactivated when its output is not being rendered, which can save significant system resources."
+      "Description": "If enabled, capture stops after a few seconds without this operator being evaluated — that is, while its output is not being rendered — releasing the camera for other applications and saving the CPU spent converting frames. Capture resumes within a moment of the operator being rendered again."
     },
     {
       "InputId": "236d4c5c-0022-4416-a22c-d6df73c306e2"/*Active*/,
@@ -209,35 +209,40 @@
       "Position": {
         "X": 300.0,
         "Y": 600.0
-      }
+      },
+      "Description": "Text listing every control the camera reports, with its range, step, default and live value. Useful for finding the names that `Control1`..`Control4` accept on a camera whose controls are not documented."
     },
     {
       "OutputId": "1d0159cc-33d2-46b1-9c0c-7054aa560df5"/*Texture*/,
       "Position": {
         "X": 300.0,
         "Y": 200.0
-      }
+      },
+      "Description": "The latest camera frame. While no new frame arrives the previous one is offered again, so the output never goes empty once the camera has delivered a frame."
     },
     {
       "OutputId": "868d5ffe-032c-4522-b56b-d96b30841db7"/*UpdateCount*/,
       "Position": {
         "X": 300.0,
         "Y": 300.0
-      }
+      },
+      "Description": "Counts the frames uploaded to the GPU. Feed it into a rate display to see the frame rate the camera actually delivers."
     },
     {
       "OutputId": "9c2e4c11-09b6-4f4d-8f99-4a7372d5f2b5"/*Resolution*/,
       "Position": {
         "X": 300.0,
         "Y": 400.0
-      }
+      },
+      "Description": "The size frames actually arrive in, which can differ from the requested one when the device offers no exact match. Zero before the first frame."
     },
     {
       "OutputId": "a1b2c3d4-5678-90ef-1234-567890abcdef"/*Status*/,
       "Position": {
         "X": 300.0,
         "Y": 500.0
-      }
+      },
+      "Description": "Plain-language capture state, such as `Running at 1280x720`, `Waiting for first frame...`, `Paused (not rendered)` or an error explaining why the camera did not open."
     }
   ]
 }
