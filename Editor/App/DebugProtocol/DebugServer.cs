@@ -719,11 +719,15 @@ internal static class DebugServer
                 boygroup.Leave();
                 break;
 
+            case "deploy":
+                boygroup.DeployAndSync();
+                break;
+
             case "status":
                 break;
 
             default:
-                context.SendError("INVALID_PARAM", "boygroup requires op = server | join | leave | status");
+                context.SendError("INVALID_PARAM", "boygroup requires op = server | join | leave | deploy | status");
                 return;
         }
 
@@ -733,6 +737,9 @@ internal static class DebugServer
                                ["status"] = boygroup.StatusText,
                                ["error"] = boygroup.ErrorText,
                                ["group"] = boygroup.GroupName,
+                               ["deploy"] = boygroup.DeploySummary,
+                               ["clients"] = boygroup.Clients.Count,
+                               ["projectOpen"] = Show.BoygroupManager.HasProjectFolder,
                            });
     }
 
