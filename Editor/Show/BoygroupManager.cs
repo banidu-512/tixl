@@ -44,6 +44,9 @@ internal sealed class BoygroupManager
     public string StatusText { get; private set; } = "Boygrouping is off";
     public string ErrorText { get; private set; } = "";
     public string GroupName { get; private set; } = "";
+    /// <summary>IP of the master this node joined as a client; null when serving, off or unknown.</summary>
+    public string? ConnectedMasterAddress => (_transport as BoygroupClientTransport)?.ServerPeer.RemoteAddress?.ToString();
+
     public string TimeFollowSummary { get; private set; } = "Time follow off";
     public string DeploySummary { get; private set; } = "";
     public bool RestartPending { get; private set; }
