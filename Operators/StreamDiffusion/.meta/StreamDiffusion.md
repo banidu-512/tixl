@@ -52,6 +52,61 @@ pipe.to_onnx("./sd-turbo-onnx", fp16=True)
 ```
 The single `model.onnx` file produced by some exporters is NOT enough — the operator needs the per-component files listed above. Note: SDXL and FLUX variants use different text encoders and are not supported by this pipeline.
 
+## StreamDiffusion V2 (ModelType = StreamDiffusion V2)
+
+Runs the causal Wan2.1 1.3B video DiT from [StreamDiffusionV2](https://github.com/chenfengxu714/StreamDiffusionV2) as a
+pipelined stream-batch: each input frame advances every denoising step at once, and keys/values of past frames are kept in
+a GPU-resident cache. Use it with Mode = Stream (Image to Image is routed to the same path; Text to Image is unsupported).
+
+Model folder (produced by `tools/streamdiffusionv2/`, see the README there):
+
+| File | Purpose |
+|---|---|
+| `dit_step.onnx` (+ `.data`), `dit_manifest.json` | Stateless DiT step; resolution is baked in |
+| `cross_kv.onnx`, `kv_zeros.onnx` | Prompt cross-attention K/V and device-side cache allocation |
+| `text_encoder.onnx` (+ `.data`), `tokenizer.json` | UMT5-XXL, loaded on the CPU only while the prompt changes |
+| `vae_encoder.onnx`, `vae_decoder.onnx` | TAEHV (Wan-compatible tiny VAE) |
+
+Input mapping: `Width`/`Height` are ignored (taken from the export), `Steps` selects 1-4 denoising steps (restarts the
+stream), `StreamStrength` is the starting noise level (the pipeline lowers it automatically on fast motion), and a changed
+`Seed` restarts the stream. An input frame that is identical to the previous one reuses the last result instead of running
+the DiT again, so a frozen source stops consuming the GPU.
+
+Prompts are cached: the encoded UMT5 embeddings are written to `%LOCALAPPDATA%\TiXL\sdv2_prompt_cache` (8 MB per prompt,
+32 prompts) and reused across restarts, so a known prompt starts streaming without loading the 11 GB text encoder. A
+prompt change is encoded on a background task while the previous prompt keeps producing frames; the status line shows
+`encoding new prompt` until the swap lands. The status also reports the last step as `enc / dit / dec` milliseconds.
+`FastDecode` decodes one latent instead of a three-latent window: on TensorRT the decode drops from about 45 ms to 19 ms,
+with slightly less temporal smoothing. Changing it restarts the stream.
+
+Execution providers: **CUDA** and **TensorRT** are supported. TensorRT builds an engine on first use (several minutes,
+cached in `trt_cache` next to the model, with a 1-4 batch profile so changing `Steps` reuses it); TiXL preloads the
+TensorRT 10 runtime from the standard NVIDIA install or `TENSORRT_ROOT`, so `PATH` does not need to change, and falls
+back to CUDA with a readable reason when it is missing. **DirectML is not supported** - ONNX Runtime's DML provider fails
+the DiT/VAE 5D reshapes and the operator reports that at load time. **CPU** runs but is far too slow for streaming. GPU
+memory scales with resolution and step count.
+
+`InputImage` accepts RGBA images and float render targets. Float textures hold linear color, so their values are encoded to
+sRGB on readback before they reach the model, which keeps a render chain (for example through `AdjustColors`) looking the
+same as an image loader.
+
+`Steps` is also the batch size of the pipelined stream, so every extra step doubles the GPU-resident KV cache. On a 16 GB
+GPU the 256x256 export runs all 4 steps, while the 512x512 export fits 1 step; more steps at 512 need a larger GPU. When
+the cache does not fit, inference slows to a crawl rather than reporting an error, so pick the resolution and step count
+for the card.
+
+Measured on a 16 GB RTX 3080 Ti Laptop GPU with CUDA and the fp16 256x256 export: after warm-up a frame takes about
+0.32 s with Steps=1 (encode 35 ms, DiT 170 ms, decode 110 ms). Steps=2 runs at about the same rate and doubles the
+temporal context; Steps=4 slows to about 2.8 s because the 4x KV cache leaves little VRAM headroom on 16 GB. With
+TensorRT the same frame is about 120 ms (encode 20 ms, DiT 55 ms, decode 45 ms), or about 95 ms with `FastDecode`.
+The first frame is about 1.4 s when the prompt is already in the disk cache, and 40-60 s when the 11 GB text encoder
+has to load and encode. Open the composition once before a show so the prompt cache and CUDA context are warm; later
+prompt changes encode in the background while the stream keeps running.
+
+A process can bind only one ONNX Runtime native build. If another ONNX operator (for example DepthAnything on its default
+DirectML provider) has already loaded the DirectML build, V2 cannot use CUDA in that session: the log warns, the status
+shows CPU, and restarting TiXL after selecting CUDA is required.
+
 ## Prerequisites
 - Any GPU with Direct3D 12 support (DirectML execution provider)
 - Falls back to CPU automatically when DirectML is unavailable
@@ -81,6 +136,16 @@ The single `model.onnx` file produced by some exporters is NOT enough — the op
 - Image-to-image style transfer
 - Sketch/ photo guided generation
 - Creative coding and VJ performances
+
+## Examples
+
+The Examples package ships three example compositions (symbol browser → Examples → Lib/io/ai):
+
+- `StreamDiffusionExample` — text to image with SD Turbo, one prompt and an AutoGenerate toggle.
+- `StreamDiffusionExampleImg2ImgRestyle` — LoadImage → StreamDiffusion in Image to Image mode, with Strength and MatchInputSize wired.
+- `StreamDiffusionExampleV2Restyle` — LoadImage → AdjustColors → StreamDiffusion V2 in Stream mode; the float render target exercises the worker-side conversion. Set ModelPath to a V2 export and use CUDA or TensorRT.
+
+All three expose `ModelPath` as an input because the ONNX exports are not part of the repository.
 
 ## Symbol and UI Files (`StreamDiffusion.t3` / `StreamDiffusion.t3ui`)
 

@@ -12,7 +12,7 @@ internal enum ModelType { SD15, SDTurbo, SDXLTurbo, FLUX2Klein, SDXL10 }
 /// contains unet.onnx, text_encoder.onnx, vae_decoder.onnx (vae_encoder.onnx
 /// enables img2img) and tokenizer files.
 /// </summary>
-internal sealed class StableDiffusionPipeline : IDisposable
+internal sealed class StableDiffusionPipeline : IGenerationPipeline
 {
     public const float VaeScalingFactor = 0.18215f;
 
@@ -57,12 +57,12 @@ internal sealed class StableDiffusionPipeline : IDisposable
     private OrtIoBinding? _encodeGpuBinding;
     private OrtIoBinding? _decodeGpuBinding;
     private GpuTensor? _streamGpuLatents;
-    private bool _gpuFlowFailed;
 
     /// <summary>True when latents are kept in GPU memory across the whole frame.</summary>
     public bool UseGpuLatentFlow => _gpuLatents != null;
     private ClipTokenizer? _tokenizer;
     private readonly object _lock = new();
+    private volatile bool _verboseLogging;
 
     // Cached UNet input-name discovery (resolved once per session)
     private string? _unetSampleName;
@@ -107,7 +107,11 @@ internal sealed class StableDiffusionPipeline : IDisposable
     /// "all zeros" encoder warnings. Bound to the operator's Debug input each
     /// frame so per-generation verbosity can be toggled without rebuilding the pipeline.
     /// </summary>
-    public bool VerboseLogging { get; set; }
+    public bool VerboseLogging
+    {
+        get => _verboseLogging;
+        set => _verboseLogging = value;
+    }
 
     /// <summary>Per-stage wall time of the most recent generation (milliseconds).</summary>
     public double LastEncodeMs { get; private set; }
@@ -251,11 +255,9 @@ internal sealed class StableDiffusionPipeline : IDisposable
             // on Windows WDDM the per-run device allocations and cross-session
             // syncs currently cost far more than the CPU-latent round-trips they
             // replace (measured 65ms -> 539-888ms per frame), so the default is
-            // the CPU-latent flow. Resets the sticky failure flag per init so an
-            // experiment can be retried without restarting the pipeline.
+            // the CPU-latent flow.
             _gpuLatents?.Dispose();
             _gpuLatents = null;
-            _gpuFlowFailed = false;
             if (provider is ExecutionProvider.Cuda or ExecutionProvider.TensorRt
                 && Environment.GetEnvironmentVariable("TIXL_SD_GPU_LATENTS") == "1")
             {
@@ -1056,7 +1058,7 @@ Log.Info($"[StreamDiffusion] Pipeline ready ({_unet!.ProviderLabel}, " +
         });
     }
 
-    private static byte[] ResizeRgba(byte[] rgbaInput, int inputWidth, int inputHeight, int width, int height, int resizeMode)
+    internal static byte[] ResizeRgba(byte[] rgbaInput, int inputWidth, int inputHeight, int width, int height, int resizeMode)
     {
         if (resizeMode == 2)
         {
@@ -1277,7 +1279,6 @@ Log.Info($"[StreamDiffusion] Pipeline ready ({_unet!.ProviderLabel}, " +
     {
         Log.Warning($"[StreamDiffusion] GPU-resident latent flow failed, falling back to the CPU-latent flow " +
                     $"until the next re-initialization: {ex.Message}", this);
-        _gpuFlowFailed = true;
         DisposeGpuFlow();
     }
 

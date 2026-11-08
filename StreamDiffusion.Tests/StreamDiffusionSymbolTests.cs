@@ -19,16 +19,16 @@ public class StreamDiffusionSymbolTests
         Assert.Equal(3, json["FormatVersion"]?.Value<int>());
 
         var id = json["Id"]?.Value<string>();
-        Assert.Equal("9A7B3C8D-4E2F-5A6B-7C8D-9E0F1A2B3C4D", id);
+        Assert.Equal("9A7B3C8D-4E2F-5A6B-7C8D-9E0F1A2B3C4D", id, ignoreCase: true);
 
         var inputs = json["Inputs"] as JArray;
         Assert.NotNull(inputs);
         Assert.NotEmpty(inputs);
 
         var inputIds = inputs.Select(i => i["Id"]?.Value<string>()).ToList();
-        Assert.Contains("A1B2C3D4-E5F6-7890-ABCD-EF1234567890", inputIds); // EnginePath
-        Assert.Contains("C3D4E5F6-A7B8-9012-CDEF-123456789012", inputIds); // Prompt
-        Assert.Contains("B4C5D6E7-F8A9-0123-7890-234567890123", inputIds); // TriggerGenerate
+        Assert.Contains("A1B2C3D4-E5F6-7890-ABCD-EF1234567890", inputIds, StringComparer.OrdinalIgnoreCase); // EnginePath
+        Assert.Contains("C3D4E5F6-A7B8-9012-CDEF-123456789012", inputIds, StringComparer.OrdinalIgnoreCase); // Prompt
+        Assert.Contains("B4C5D6E7-F8A9-0123-7890-234567890123", inputIds, StringComparer.OrdinalIgnoreCase); // TriggerGenerate
     }
 
     [Fact]
@@ -41,7 +41,7 @@ public class StreamDiffusionSymbolTests
         Assert.Equal(3, json["FormatVersion"]?.Value<int>());
 
         var id = json["Id"]?.Value<string>();
-        Assert.Equal("9A7B3C8D-4E2F-5A6B-7C8D-9E0F1A2B3C4D", id);
+        Assert.Equal("9A7B3C8D-4E2F-5A6B-7C8D-9E0F1A2B3C4D", id, ignoreCase: true);
 
         var description = json["Description"]?.Value<string>();
         Assert.NotNull(description);

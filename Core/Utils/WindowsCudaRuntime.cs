@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+#nullable enable
 
 namespace T3.Core.Utils;
 
@@ -31,10 +32,10 @@ public static class WindowsCudaRuntime
 
     private static readonly object Lock = new();
     private static readonly List<IntPtr> LoadedHandles = new();
-    private static string _failure;
+    private static string? _failure;
     private static bool _probed;
-    private static string _tensorRtFailure;
-    private static string _tensorRtDirectory;
+    private static string? _tensorRtFailure;
+    private static string? _tensorRtDirectory;
     private static bool _tensorRtProbed;
 
     public static bool TryPrepare(out string reason)
@@ -76,7 +77,7 @@ public static class WindowsCudaRuntime
 
     public static bool TryPrepareTensorRt(out string reason) => TryPrepareTensorRt(out reason, out _);
 
-    private static string Probe()
+    private static string? Probe()
     {
         var searchDirs = CollectSearchDirs();
         var missing = new List<string>();
@@ -94,7 +95,7 @@ public static class WindowsCudaRuntime
                "(NVIDIA driver 525 or newer, Pascal or newer GPU). Install them, or put their DLLs in a CudaRuntime folder next to the operator";
     }
 
-    private static string ProbeTensorRt()
+    private static string? ProbeTensorRt()
     {
         var missing = new List<string>();
         foreach (var dir in CollectTensorRtSearchDirs())
