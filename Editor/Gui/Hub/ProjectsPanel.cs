@@ -9,6 +9,7 @@ using T3.Core.Model;
 using T3.Core.SystemUi;
 using T3.Core.Utils;
 using T3.Editor.Collab;
+using T3.Editor.Gui.Windows.Layouts;
 using T3.Editor.Compilation;
 using T3.Editor.Gui.Help;
 using T3.Editor.Gui.Window;
@@ -41,9 +42,47 @@ internal static class ProjectsPanel
             // 0. Live collaboration sessions — join straight from the hub.
             DrawCollabSessions();
 
+            // Show-control projects (boygroup deploy targets, collab downloads) get their own
+            // group so an operator sees which projects belong to the distributed show.
+            var networkKinds = new Dictionary<string, string>();
+            foreach (var (kind, folder) in NetworkProjectRegistry.All())
+                networkKinds[folder] = kind;
+
+            FormInputs.AddSectionHeader("Network projects");
+            var hasNetworkProjects = false;
+            foreach (var package in EditableSymbolProject.AllProjects)
+            {
+                var kind = networkKinds.GetValueOrDefault(package.Folder);
+                if (kind == null)
+                    continue;
+
+                hasNetworkProjects = true;
+                DrawProjectItem(window, package);
+                DrawNetworkBadge(kind);
+            }
+
+            foreach (var (kind, folder) in NetworkProjectRegistry.All())
+            {
+                if (EditableSymbolProject.AllProjects.Any(p => p.Folder == folder))
+                    continue;
+
+                hasNetworkProjects = true;
+                ImGui.Bullet();
+                ImGui.TextUnformatted(Path.GetFileName(folder.TrimEnd(Path.DirectorySeparatorChar)));
+                ImGui.SameLine();
+                ImGui.TextDisabled("not loaded - starts with the show");
+            }
+
+            if (!hasNetworkProjects)
+                ImGui.TextDisabled("none yet - a boygroup deploy or a collab download adds this machine's show projects here");
+
+            ImGui.Separator();
             FormInputs.AddSectionHeader("Local projects");
             foreach (var package in EditableSymbolProject.AllProjects)
             {
+                if (networkKinds.ContainsKey(package.Folder))
+                    continue;
+
                 DrawProjectItem(window, package);
             }
             
@@ -104,6 +143,7 @@ internal static class ProjectsPanel
             DrawSessionRow("collab-own", ownLabel, collab.StatusText, null, null, isActive: true, locked: false);
         }
 
+        var pinRequested = false;
         foreach (var session in collab.DiscoveredSessions)
         {
             ImGui.PushID($"collab-{session.Address}:{session.Port}");
@@ -122,7 +162,7 @@ internal static class ProjectsPanel
                 if (session.PasswordProtected)
                 {
                     _pinSession = session; // ask first, join after confirm
-                    ImGui.OpenPopup(JoinPinPopupId);
+                    pinRequested = true;
                 }
                 else
                 {
@@ -131,6 +171,11 @@ internal static class ProjectsPanel
             }
             ImGui.PopID();
         }
+
+        // OpenPopup must run at the same id scope as BeginPopupModal — calling it inside the
+        // per-session PushID above scoped the popup to that row and the modal never opened.
+        if (pinRequested)
+            ImGui.OpenPopup(JoinPinPopupId);
 
         DrawJoinPinPopup(null);
 
@@ -441,6 +486,31 @@ internal static class ProjectsPanel
                 CoreUi.Instance.OpenWithDefaultApplication(package.Folder);
             }
 
+            // Collab: host a session that shares exactly this project (pick the project first,
+            // then share it — instead of sharing whatever happens to be focused).
+            var collab = CollabManager.Instance;
+            if (collab.State == CollabManager.SessionState.Off)
+            {
+                if (CustomComponents.DrawMenuItem(_hostSessionId, "Host Collaboration Session", reserveIconColumn: false))
+                {
+                    collab.StartHost(UserSettings.Config.CollabPort,
+                                     UserSettings.Config.CollabPassword ?? "",
+                                     UserSettings.Config.CollabLanDiscovery,
+                                     package.DisplayName);
+                    WindowManager.CollabWindow.Config.Visible = true;
+                    ImGui.CloseCurrentPopup();
+                }
+            }
+            else
+            {
+                if (CustomComponents.DrawMenuItem(_leaveSessionId, $"Leave Collaboration Session ({collab.StatusText})",
+                                                  reserveIconColumn: false))
+                {
+                    collab.Leave();
+                    ImGui.CloseCurrentPopup();
+                }
+            }
+
             if (package is EditableSymbolProject { IsBuiltIn: false } shareableProject)
             {
                 if (CustomComponents.DrawMenuItem(_shareProjectId, "Share Project...", reserveIconColumn: false))
@@ -481,6 +551,16 @@ internal static class ProjectsPanel
 
         ImGui.PopID();
         return wasOpened;
+    }
+
+    /// <summary>A small kind tag after a network project row (boygroup / collab).</summary>
+    private static void DrawNetworkBadge(string kind)
+    {
+        ImGui.SameLine();
+        var color = kind == NetworkProjectRegistry.CollabKind ? UiColors.StatusActivated : UiColors.StatusOkay;
+        ImGui.PushStyleColor(ImGuiCol.Text, color.Rgba);
+        ImGui.TextUnformatted($"[{kind}]");
+        ImGui.PopStyleColor();
     }
 
     private static void DrawArchivedItem(ProjectSetup.ArchivedProjectInfo archivedProject)
@@ -880,6 +960,8 @@ internal static class ProjectsPanel
 
     private static readonly int _revealInExplorerId = nameof(_revealInExplorerId).GetHashCode();
     private static readonly int _shareProjectId = nameof(_shareProjectId).GetHashCode();
+    private static readonly int _hostSessionId = nameof(_hostSessionId).GetHashCode();
+    private static readonly int _leaveSessionId = nameof(_leaveSessionId).GetHashCode();
     private static readonly int _restoreFromBackupId = nameof(_restoreFromBackupId).GetHashCode();
     private static readonly int _unloadProjectId = nameof(_unloadProjectId).GetHashCode();
     private static readonly int _archiveProjectId = nameof(_archiveProjectId).GetHashCode();

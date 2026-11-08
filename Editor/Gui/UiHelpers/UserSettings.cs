@@ -299,6 +299,10 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public string CollabLastRelayHost = "";
         public string CollabLastRelayRoom = "";
 
+        /// <summary>Project folders participating in show-control features ("kind:folder" entries,
+        /// kind = boygroup | collab). The Hub lists them under "Network projects".</summary>
+        public List<string> NetworkProjectRefs = [];
+
         /// <summary>host:port of the last joined collab session — auto-rejoined on launch, which is
         /// what brings a client back after a project download restarted the editor.</summary>
         public string CollabLastSessionHost = "";

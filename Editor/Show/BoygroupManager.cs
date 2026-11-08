@@ -12,6 +12,7 @@ using T3.Core.Animation;
 using T3.Core.IO;
 using T3.Core.Output;
 using T3.Editor.Collab;
+using T3.Editor.Compilation;
 using T3.Editor.Gui.UiHelpers;
 using T3.Editor.UiModel;
 using T3.Editor.UiModel.Commands;
@@ -25,7 +26,7 @@ namespace T3.Editor.Show;
 /// The server deploys project files and live output state, drives playback, and each client renders
 /// only the outputs assigned to it in the Output Setup (OutputDefinition.MachineName).
 ///
-/// Threading contract matches the collab session manager: network threads only enqueue inbound messages; every
+/// Threading contract matches CollabManager: network threads only enqueue inbound messages; every
 /// state change and every graph/file write happens in <see cref="Update"/> on the UI thread. File
 /// transfers run per client in small steps per frame so large deployments never stall rendering.
 /// </summary>
@@ -44,6 +45,9 @@ internal sealed class BoygroupManager
     public string StatusText { get; private set; } = "Boygrouping is off";
     public string ErrorText { get; private set; } = "";
     public string GroupName { get; private set; } = "";
+    /// <summary>IP of the master this node joined as a client; null when serving, off or unknown.</summary>
+    public string? ConnectedMasterAddress => (_transport as BoygroupClientTransport)?.ServerPeer.RemoteAddress?.ToString();
+
     public string TimeFollowSummary { get; private set; } = "Time follow off";
     public string DeploySummary { get; private set; } = "";
     public bool RestartPending { get; private set; }
@@ -456,7 +460,11 @@ internal sealed class BoygroupManager
         ProcessPendingRestart();
 
         if (State == BoygroupState.Server)
+        {
             PumpInputReplication();
+            ReRequestPendingInventories();
+            BroadcastPlayStateOnChange();
+        }
 
         RefreshDiscoveredServers();
     }
@@ -617,6 +625,10 @@ internal sealed class BoygroupManager
                 Leave();
                 break;
 
+            case "noProject" when State == BoygroupState.Server:
+                HandleNoProject(peer);
+                break;
+
             case "inventory" when State == BoygroupState.Server:
             {
                 // The client answered our requestInventory with what it has on disk.
@@ -628,6 +640,10 @@ internal sealed class BoygroupManager
 
             case "requestInventory" when State == BoygroupState.Client:
                 HandleServerInventory(json);
+                break;
+
+            case "projectName" when State == BoygroupState.Client:
+                HandleBootstrapProject(json);
                 break;
 
             case "deployStart" when State == BoygroupState.Client:
@@ -782,11 +798,12 @@ internal sealed class BoygroupManager
             return;
 
         _autoDeployAtTicks = 0;
+        _autoDeployOnlyUndeployed = true;
         if (State != BoygroupState.Server || string.IsNullOrEmpty(GetProjectFolder()))
             return; // No project open: a manual Deploy & Sync will report it properly.
 
-        Log.Info("Boygroup: node joined - running deploy & sync");
-        DeployAndSync();
+        Log.Info("Boygroup: node joined - running deploy & sync for new nodes");
+        DeployAndSync(onlyUndeployed: true);
     }
 
     private void Reject(CollabPeerConnection peer, string reason)
@@ -833,7 +850,7 @@ internal sealed class BoygroupManager
     // ---------------------------------------------------------------------------------------
 
     /// <summary>Server action: push project files, the output setup, and live graph state to the group.</summary>
-    public void DeployAndSync()
+    public void DeployAndSync(bool onlyUndeployed = false)
     {
         if (State != BoygroupState.Server)
         {
@@ -857,6 +874,13 @@ internal sealed class BoygroupManager
             if (client.PendingFiles != null)
                 continue; // A deploy is already in flight for this client.
 
+            // The automatic pass serves only never-deployed nodes. A node that rewrites an
+            // unchanged project file at launch (asset-path migration normalizes it) would
+            // otherwise be re-sent, restart, rewrite, and loop forever; its updates ride the
+            // explicit Deploy & Sync button instead.
+            if (onlyUndeployed && client.IsDeployed)
+                continue;
+
             client.Mirror = mirror;
             client.PendingInventory = inventory;
             // The client's own inventory arrives first (it reported it in its hello); request it via
@@ -869,6 +893,28 @@ internal sealed class BoygroupManager
         PushGraphSnapshotToGroup();
     }
 
+    /// <summary>A node joined without a project open: name ours so it can create the folder and
+    /// receive the whole project (then restart into it).</summary>
+    private void HandleNoProject(CollabPeerConnection peer)
+    {
+        var client = _clients.FirstOrDefault(c => ReferenceEquals(c.Peer, peer));
+        if (client == null)
+            return;
+
+        var projectFolder = ProjectView.Focused?.OpenedProject.Package.Folder;
+        if (string.IsNullOrEmpty(projectFolder))
+            return; // No project open here either; nothing to serve.
+
+        var name = Path.GetFileName(projectFolder.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+        if (_bootstrapSentTo.Add(peer.AssignedId))
+            Log.Info($"Boygroup: {client.Name} joined without a project - sending '{name}'");
+
+        client.StatusText = $"bootstrapping project '{name}'";
+        SendJson(peer, new { t = "projectName", name });
+    }
+
+    private readonly HashSet<int> _bootstrapSentTo = [];
+
     private void HandleClientInventory(ClientInfo client, JObject json)
     {
         if (client.PendingInventory == null)
@@ -877,6 +923,18 @@ internal sealed class BoygroupManager
         var projectFolder = GetProjectFolder();
         if (string.IsNullOrEmpty(projectFolder))
             return;
+
+        // A node showing another project must not receive this project's files on top of it
+        // (two .csproj files in one folder break project loading). Re-bootstrap it instead.
+        var masterName = Path.GetFileName(projectFolder.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+        var clientProject = CollabProtocol.GetString(json, "project", "");
+        if (clientProject.Length > 0 && !string.Equals(clientProject, masterName, StringComparison.OrdinalIgnoreCase))
+        {
+            client.PendingInventory = null;
+            Log.Info($"Boygroup: {client.Name} shows project '{clientProject}' - switching it to '{masterName}'");
+            SendJson(client.Peer, new { t = "projectName", name = masterName });
+            return;
+        }
 
         var serverInventory = client.PendingInventory;
         var clientInventory = BoygroupDeployer.ParseInventory(json);
@@ -903,6 +961,56 @@ internal sealed class BoygroupManager
             FinishDeployToClient(client);
         }
     }
+
+    /// <summary>
+    /// Clients still loading their project stay silent when asked for their inventory (see
+    /// <see cref="HandleServerInventory"/>), so a deploy request would otherwise dangle. Re-ask
+    /// every few seconds until the client answers or the session ends.
+    /// </summary>
+    private bool _autoDeployOnlyUndeployed;
+
+    private void ReRequestPendingInventories()
+    {
+        var now = Environment.TickCount64;
+        foreach (var client in _clients)
+        {
+            if (!client.Peer.IsAuthenticated || client.PendingInventory == null)
+                continue;
+
+            if (_autoDeployOnlyUndeployed && client.IsDeployed)
+            {
+                client.PendingInventory = null;
+                continue;
+            }
+
+            if (_inventoryRequestedAt.TryGetValue(client.Peer.AssignedId, out var requestedAt)
+                && now - requestedAt < ReRequestInventoryIntervalMs)
+                continue;
+
+            _inventoryRequestedAt[client.Peer.AssignedId] = now;
+            client.StatusText = "waiting for project to load...";
+            SendJson(client.Peer, new { t = "requestInventory" });
+        }
+    }
+
+    private const int ReRequestInventoryIntervalMs = 4000;
+    private readonly Dictionary<int, long> _inventoryRequestedAt = [];
+
+    /// <summary>
+    /// The play broadcast must follow the master's playback however it is driven - timeline
+    /// space bar, panel buttons or an external agent. Broadcast when the running state changes.
+    /// </summary>
+    private void BroadcastPlayStateOnChange()
+    {
+        var playing = (Playback.Current?.PlaybackSpeed ?? 0) > 0;
+        if (playing == _lastBroadcastPlaying)
+            return;
+
+        _lastBroadcastPlaying = playing;
+        BroadcastToGroup(new { t = "play", playing, bars = Playback.Current?.TimeInBars ?? 0 });
+    }
+
+    private bool _lastBroadcastPlaying;
 
     /// <summary>Runs one deploy step per client per frame; returns true when a frame budget is spent.</summary>
     private void PumpDeploy()
@@ -1020,8 +1128,17 @@ internal sealed class BoygroupManager
 
     private static string? GetProjectFolder()
     {
+        // A pending bootstrap (the master serves a different project) takes precedence: the files
+        // must land in that folder, and the deploy restart opens it.
+        if (Instance._bootstrapProjectFolder is { Length: > 0 } bootstrap)
+            return bootstrap;
+
         return ProjectView.Focused?.OpenedProject.Package.Folder;
     }
+
+    /// <summary>Whether a project is really open (not merely a pending bootstrap folder) — the debug
+    /// bridge's status reports it, so a master that cannot deploy is diagnosable remotely.</summary>
+    public static bool HasProjectFolder => ProjectView.Focused?.OpenedProject?.Package.Folder is { Length: > 0 };
 
     // ---------------------------------------------------------------------------------------
     // Client: deploy reception
@@ -1031,13 +1148,71 @@ internal sealed class BoygroupManager
     {
         // Client answers the server's request with what it has on disk. The setups folder is
         // excluded on both sides: it travels as live setupJson, and mirror mode would otherwise
-        // flag the client's applied setups as extra and delete them.
+        // flag the client's applied setups as extra and delete them. While the project is still
+        // loading there is nothing to answer with: staying silent makes the server re-request
+        // instead of deploying the whole project into a folder that does not exist yet.
         var projectFolder = GetProjectFolder();
-        var inventory = string.IsNullOrEmpty(projectFolder)
-                            ? []
-                            : BoygroupDeployer.BuildInventory(projectFolder,
-                                                              Path.GetRelativePath(projectFolder, SetupFiles.FolderIn(projectFolder)));
-        SendJson(((_transport as BoygroupClientTransport)!).ServerPeer, BoygroupDeployer.BuildInventoryMessage(inventory));
+        if (string.IsNullOrEmpty(projectFolder))
+        {
+            // Nothing opened yet: tell the master, which answers with the project it deploys, and
+            // this node creates that folder and receives the whole project (bootstrap).
+            SendJson(((_transport as BoygroupClientTransport)!).ServerPeer, new { t = "noProject" });
+            return;
+        }
+
+        var inventory = BoygroupDeployer.BuildInventory(projectFolder,
+                                                        Path.GetRelativePath(projectFolder, SetupFiles.FolderIn(projectFolder)));
+        SendJson(((_transport as BoygroupClientTransport)!).ServerPeer,
+                 new JObject
+                     {
+                         ["t"] = "inventory",
+                         ["project"] = Path.GetFileName(projectFolder.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)),
+                         ["files"] = BoygroupDeployer.BuildInventoryMessage(inventory)["files"],
+                     });
+    }
+
+    /// <summary>Folder this node is bootstrap-receiving the master's project into (no project was
+    /// open when it joined). Becomes the startup project so the deploy restart reopens it.</summary>
+    private string? _bootstrapProjectFolder;
+
+    private void HandleBootstrapProject(JObject json)
+    {
+        var name = CollabProtocol.GetString(json, "name", "");
+        if (string.IsNullOrEmpty(name))
+            return;
+
+        var root = UserSettings.Config.ProjectDirectories.FirstOrDefault();
+        if (string.IsNullOrEmpty(root))
+        {
+            Log.Warning("Boygroup: no project directory configured - cannot receive the master's project");
+            return;
+        }
+
+        try
+        {
+            var folder = Path.Combine(root, name);
+            Directory.CreateDirectory(folder);
+            if (!string.Equals(_bootstrapProjectFolder, folder, StringComparison.Ordinal))
+            {
+                Log.Info($"Boygroup: receiving the master's project into {folder}");
+                _bootstrapProjectFolder = folder;
+
+                // The received project shows up in the Hub's "Network projects" group.
+                NetworkProjectRegistry.Register(NetworkProjectRegistry.BoygroupKind, folder);
+
+                // Receiving a project is a one-time event per project, not a restart loop: the
+                // flood guard from a previous project must not block opening this one.
+                UserSettings.Config.BoygroupDeployRestartCount = 0;
+                UserSettings.Config.BoygroupDeployRestartWindowStartTicks = 0;
+                UserSettings.Config.BoygroupDeployRestartBlockedUntilTicks = 0;
+            }
+            SendJson(((_transport as BoygroupClientTransport)!).ServerPeer,
+                     BoygroupDeployer.BuildInventoryMessage([]));
+        }
+        catch (Exception e)
+        {
+            Log.Warning($"Boygroup: cannot create the project folder for '{name}': {e.Message}");
+        }
     }
 
     private void StartReceivingFile(JObject json)
@@ -1139,7 +1314,8 @@ internal sealed class BoygroupManager
         // (should be impossible now that setups are excluded) may never loop a show machine.
         var config = UserSettings.Config;
         var now = Environment.TickCount64;
-        if (now < config.BoygroupDeployRestartBlockedUntilTicks)
+        var isBootstrapRestart = _bootstrapProjectFolder is { Length: > 0 };
+        if (!isBootstrapRestart && now < config.BoygroupDeployRestartBlockedUntilTicks)
         {
             Log.Warning($"Boygroup: deploy restart blocked for another {(config.BoygroupDeployRestartBlockedUntilTicks - now) / 1000}s (restart-loop guard) - staying up");
             return;
@@ -1158,6 +1334,42 @@ internal sealed class BoygroupManager
                 config.BoygroupDeployRestartBlockedUntilTicks = now + 300_000;
                 config.BoygroupDeployRestartCount = 0;
                 Log.Warning("Boygroup: more than four deploy restarts in two minutes - blocking further deploy restarts for five minutes (restart-loop guard)");
+            }
+        }
+
+        // A render node that just received a bootstrapped project can open it in place - no restart
+        // needed, because nothing was open that the new project would have to replace.
+        if (_bootstrapProjectFolder is { Length: > 0 } bootstrapped
+            && ProjectView.Focused?.OpenedProject == null
+            && T3.Editor.App.Startup.StartupProjectLoader.TryOpen(bootstrapped))
+        {
+            Log.Info($"Boygroup: opened the received project {bootstrapped} without a restart");
+            _bootstrapProjectFolder = null;
+            DeploySummary += " - project opened";
+            return;
+        }
+
+        // A render node must come back into the show it was deployed, not into the Hub: pin the
+        // deployed project as the startup project so the restart reopens it (StartupProjectLoader).
+        // Only for the slave role - a master's editor restarts are the operator's business.
+        if (State == BoygroupState.Client && config.BoygroupEnabled && !config.BoygroupIsMaster)
+        {
+            if (GetProjectFolder() is { Length: > 0 } deployedProject)
+            {
+                config.StartupProjectFolder = deployedProject;
+
+                // Hot reload first: unload the deployed project's package and load it fresh from
+                // disk in place. The boygroup session keeps running; only a failed reload falls
+                // back to the process restart below.
+                if (ProjectSetup.TryReloadProject(deployedProject))
+                {
+                    Log.Info("Boygroup: applied deployed files by reloading the project in place - no restart");
+                    DeploySummary += " - reloaded without restart";
+                    UserSettings.Save();
+                    return;
+                }
+
+                Log.Info("Boygroup: in-place reload not possible - restarting");
             }
         }
 
