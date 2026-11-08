@@ -3,6 +3,7 @@ using ImGuiNET;
 using Newtonsoft.Json.Linq;
 using T3.Core.DataTypes.Vector;
 using T3.Editor.Collab;
+using T3.Editor.Show;
 using T3.Editor.Gui.Input;
 using T3.Editor.Gui.Styling;
 using T3.Editor.Gui.UiHelpers;
@@ -23,25 +24,9 @@ internal sealed partial class SettingsWindow
         var manager = CollabManager.Instance;
         var config = UserSettings.Config;
 
-        // The settings switch ends a running session (CollabManager.Update enforces it), so the
-        // session controls must not be reachable while collaboration is off.
-        var enabled = config.CollabEnabled;
-        if (FormInputs.AddCheckBox("Enable",
-                                   ref enabled,
-                                   """
-                                   Turns collaboration on. When off, no session is hosted or joined,
-                                   nothing is discovered on the network, and a running session ends.
-                                   """,
-                                   true))
-        {
-            config.CollabEnabled = enabled;
-            changed = true;
-        }
-
-        if (!config.CollabEnabled)
-            return;
-
-        FormInputs.AddVerticalSpace();
+        // Collaboration is switched through the menu-bar mode selector; this panel only
+        // configures and runs sessions. Session actions below claim the collab mode, which ends
+        // a boygroup/failover session on this machine (the modes are mutually exclusive).
 
         // -------------------------------------------------------------------------------------
         // Identity
@@ -81,7 +66,12 @@ internal sealed partial class SettingsWindow
         }
         else
         {
-            DrawHostAndJoinControls(manager, ref changed);
+            FormInputs.AddVerticalSpace();
+            CustomComponents.HelpText("""
+                                      No session is running. Use the menu bar at the top:
+                                      Collab ▸ Host session starts one and gives you a session ID;
+                                      Collab ▸ Join session connects with the ID the host shared.
+                                      """);
         }
 
         if (!string.IsNullOrEmpty(manager.ErrorText))
@@ -100,77 +90,6 @@ internal sealed partial class SettingsWindow
     // Hosting / joining
     // ---------------------------------------------------------------------------------------
 
-    /// <summary>Start a session to get a session ID, or enter someone else's ID to join.</summary>
-    private static void DrawHostAndJoinControls(CollabManager manager, ref bool changed)
-    {
-        var config = UserSettings.Config;
-
-        FormInputs.AddSectionSubHeader("Host");
-        FormInputs.AddVerticalSpace();
-
-        FormInputs.SetCursorToParameterEdit();
-        if (CustomComponents.DrawCtaButton("Start Session", Icon.None, UiColors.ForegroundFull, UiColors.StatusActivated, Color.Transparent))
-        {
-            ParseRelayAddress(config.CollabRelayAddress, out var host, out var port);
-            manager.StartHostViaRelay(host, port);
-        }
-
-        CustomComponents.TooltipForLastItem("Start a session and get a session ID. Share the ID with the people you want to collaborate with. You keep full control: every edit from participants is applied to your graph first and then distributed.");
-
-        FormInputs.AddVerticalSpace();
-
-        FormInputs.AddSectionSubHeader("Join");
-        _roomCode ??= "";
-        FormInputs.DrawInputLabel("Session ID");
-        ImGui.PushID("##collabroom");
-        ImGui.SetNextItemWidth(FormInputs.GetAvailableInputSize(null, false, true).X * 0.5f);
-        var submitted = ImGui.InputText("##collabRoomCode", ref _roomCode, 12,
-                                        ImGuiInputTextFlags.EnterReturnsTrue | ImGuiInputTextFlags.CharsUppercase | ImGuiInputTextFlags.CharsNoBlank);
-        ImGui.PopID();
-        ImGui.SameLine();
-        if (ImGui.Button("Join Session") || submitted)
-        {
-            ParseRelayAddress(config.CollabRelayAddress, out var host, out var port);
-            manager.JoinViaRelay(host, port, _roomCode, config.CollabPassword);
-        }
-
-        CustomComponents.TooltipForLastItem("Join the session with the ID the host shared.");
-
-        FormInputs.AddVerticalSpace(5);
-
-        if (ImGui.Button("Paste Invite and Join"))
-        {
-            if (TryParseInvite(ImGui.GetClipboardText(), out var relayAddress, out var room))
-            {
-                if (!string.IsNullOrEmpty(relayAddress))
-                {
-                    config.CollabRelayAddress = relayAddress;
-                    changed = true;
-                }
-
-                _roomCode = room;
-                _inviteMessage = "";
-                ParseRelayAddress(config.CollabRelayAddress, out var host, out var port);
-                manager.JoinViaRelay(host, port, room, config.CollabPassword);
-            }
-            else
-            {
-                _inviteMessage = "The clipboard does not contain a TiXL collab invite.";
-            }
-        }
-
-        CustomComponents.TooltipForLastItem("Reads the relay address and session ID from a copied invite, then joins.");
-
-        if (!string.IsNullOrEmpty(_inviteMessage))
-        {
-            ImGui.TextDisabled(_inviteMessage);
-        }
-    }
-
-    private static string _roomCode = "";
-    private static string _joinAddress = "";
-    private static string _inviteMessage = "";
-
     /// <summary>One clipboard string carrying both things a joiner needs.</summary>
     private static string BuildInvite(CollabManager manager)
     {
@@ -187,26 +106,6 @@ internal sealed partial class SettingsWindow
 
         var host = string.IsNullOrEmpty(CollabProtocol.DefaultRelayHost) ? "127.0.0.1" : CollabProtocol.DefaultRelayHost;
         return $"{host}:{CollabProtocol.DefaultRelayPort}";
-    }
-
-    /// <summary>Reads an invite copied by <see cref="BuildInvite"/>; the relay line is optional.</summary>
-    private static bool TryParseInvite(string? text, out string relay, out string room)
-    {
-        relay = "";
-        room = "";
-        if (string.IsNullOrWhiteSpace(text))
-            return false;
-
-        foreach (var line in text.Split('\n'))
-        {
-            var trimmed = line.Trim();
-            if (trimmed.StartsWith("Relay:", StringComparison.OrdinalIgnoreCase))
-                relay = trimmed[6..].Trim();
-            else if (trimmed.StartsWith("Room:", StringComparison.OrdinalIgnoreCase))
-                room = trimmed[5..].Trim();
-        }
-
-        return !string.IsNullOrEmpty(room);
     }
 
     private static void ParseRelayAddress(string text, out string host, out int port)
@@ -262,6 +161,7 @@ internal sealed partial class SettingsWindow
     private static bool _discoveryScannerActive;
     private static DateTime _discoveryScanUntil;
     private static readonly List<CollabManager.DiscoveredSession> _discovered = [];
+    private static string _joinAddress = "";
 
     private static void DrainDiscoveryResults()
     {
@@ -317,6 +217,7 @@ internal sealed partial class SettingsWindow
             ImGui.PushID(session.Address + session.Port);
             if (ImGui.SmallButton("Join"))
             {
+                ShowControlMode.Activate(ShowControlMode.Collab);
                 manager.JoinDirect(session.Address, session.Port, UserSettings.Config.CollabPassword);
             }
 
@@ -472,6 +373,7 @@ internal sealed partial class SettingsWindow
         ImGui.SetNextItemWidth(FormInputs.GetAvailableInputSize(null, false, true).X);
         if (ImGui.InputText("##collabJoinAddress", ref _joinAddress, 256, ImGuiInputTextFlags.EnterReturnsTrue))
         {
+            ShowControlMode.Activate(ShowControlMode.Collab);
             ParseJoinAddress(_joinAddress, config.CollabPort, out var host, out var port);
             manager.JoinDirect(host, port, config.CollabPassword);
         }
@@ -490,6 +392,7 @@ internal sealed partial class SettingsWindow
         FormInputs.SetCursorToParameterEdit();
         if (CustomComponents.DrawCtaButton("Host on LAN", Icon.None, UiColors.ForegroundFull, UiColors.StatusActivated, Color.Transparent))
         {
+            ShowControlMode.Activate(ShowControlMode.Collab);
             manager.StartHost(config.CollabPort, config.CollabPassword, config.CollabLanDiscovery);
         }
 
