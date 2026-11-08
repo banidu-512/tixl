@@ -745,7 +745,7 @@ internal static class DebugServer
                 break;
 
             case "leave":
-                collab.Leave();
+                collab.Leave(manual: true);
                 break;
 
             case "chat":
@@ -818,7 +818,7 @@ internal static class DebugServer
                 break;
 
             case "leave":
-                boygroup.Leave();
+                boygroup.Leave(manual: true);
                 break;
 
             case "bind":

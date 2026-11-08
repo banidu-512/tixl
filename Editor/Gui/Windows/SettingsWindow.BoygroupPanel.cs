@@ -263,7 +263,7 @@ internal sealed partial class SettingsWindow
 
         ImGui.SameLine();
         if (ImGui.Button("Leave"))
-            manager.Leave();
+            manager.Leave(manual: true);
 
         if (manager.State == BoygroupManager.BoygroupState.Client && manager.RestartPending)
         {

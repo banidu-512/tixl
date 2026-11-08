@@ -294,7 +294,7 @@ internal sealed partial class SettingsWindow
         FormInputs.AddVerticalSpace();
         FormInputs.SetIndentToLeft();
         if (ImGui.Button("Leave Session"))
-            manager.Leave();
+            manager.Leave(manual: true);
 
         FormInputs.SetIndentToParameters();
 

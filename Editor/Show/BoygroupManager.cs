@@ -44,6 +44,9 @@ internal sealed class BoygroupManager
     }
 
     public BoygroupState State { get; private set; } = BoygroupState.Off;
+
+    /// <summary>Set by a manual Leave: the enabled-role automation must not rejoin on its own.</summary>
+    private bool _leftManually;
     public string StatusText { get; private set; } = "Boygrouping is off";
     public string ErrorText { get; private set; } = "";
     public string GroupName { get; private set; } = "";
@@ -202,6 +205,7 @@ internal sealed class BoygroupManager
 
     public void StartServer(int port, string password, string group)
     {
+        _leftManually = false;
         if (State != BoygroupState.Off)
             Leave();
 
@@ -227,6 +231,7 @@ internal sealed class BoygroupManager
 
     public void JoinServer(string host, int port, string group, string password)
     {
+        _leftManually = false;
         if (State != BoygroupState.Off)
             Leave();
 
@@ -265,8 +270,16 @@ internal sealed class BoygroupManager
         }
     }
 
-    public void Leave()
+    /// <summary>
+    /// Ends the session. <paramref name="manual"/> marks a leave the user asked for: the enabled-role
+    /// automation (auto-join for a slave, auto-restart for a master) then stays quiet instead of
+    /// rejoining a second later, which made the Leave button look broken. Starting or joining a
+    /// session, or switching into the mode, clears the mark.
+    /// </summary>
+    public void Leave(bool manual = false)
     {
+        _leftManually = manual;
+
         if (_transport != null)
         {
             _transport.PeerDisconnected -= OnPeerDisconnected;
@@ -291,7 +304,7 @@ internal sealed class BoygroupManager
         GroupName = "";
         RestartPending = false;
         State = BoygroupState.Off;
-        StatusText = "Boygrouping is off";
+        StatusText = manual ? "Boygrouping left" : "Boygrouping is off";
     }
 
     /// <summary>The name this machine is known by in output assignments (OutputDefinition.MachineName).</summary>
@@ -426,7 +439,11 @@ internal sealed class BoygroupManager
             else if (Environment.TickCount64 > _autoJoinCheckTicks && !_autoJoinAttempted)
             {
                 _autoJoinAttempted = true;
-                if (UserSettings.Config.BoygroupEnabled)
+                if (_leftManually)
+                {
+                    // The user left on purpose; the role automation waits for an explicit start.
+                }
+                else if (UserSettings.Config.BoygroupEnabled)
                 {
                     ApplyEnabledSetting();
                 }
@@ -435,12 +452,12 @@ internal sealed class BoygroupManager
                     TryAutoJoin();
                 }
             }
-            else if (_autoJoinAttempted && UserSettings.Config.BoygroupEnabled && !UserSettings.Config.BoygroupIsMaster)
+            else if (_autoJoinAttempted && !_leftManually && UserSettings.Config.BoygroupEnabled && !UserSettings.Config.BoygroupIsMaster)
             {
                 // Enabled slave still off: keep looking for a master.
                 WaitAndAutoJoinDiscoveredMaster();
             }
-            else if (_autoJoinAttempted && UserSettings.Config.BoygroupEnabled && UserSettings.Config.BoygroupIsMaster
+            else if (_autoJoinAttempted && !_leftManually && UserSettings.Config.BoygroupEnabled && UserSettings.Config.BoygroupIsMaster
                      && Environment.TickCount64 >= _nextServerRestartTicks)
             {
                 // Enabled master whose server dropped (port conflict, transport fault): bring it
