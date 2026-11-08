@@ -160,6 +160,27 @@ internal static class ShowControlMode
         return null;
     }
 
+    /// <summary>
+    /// Sets the boygroup role (master = server / slave = render node) from the menu bar: persists
+    /// it and re-applies the boygroup session when one is running, so a serving master becomes a
+    /// searching slave and vice versa without touching the other modes.
+    /// </summary>
+    public static void SetBoygroupRole(bool isMaster)
+    {
+        if (UserSettings.Config.BoygroupIsMaster == isMaster)
+            return;
+
+        UserSettings.Config.BoygroupIsMaster = isMaster;
+        UserSettings.Save();
+
+        var boygroup = BoygroupManager.Instance;
+        if (Current == Boygroup || boygroup.State != BoygroupManager.BoygroupState.Off)
+        {
+            boygroup.Leave();
+            boygroup.ApplyEnabledSetting();
+        }
+    }
+
     private static void TearDownBoygroup()
     {
         var boygroup = BoygroupManager.Instance;

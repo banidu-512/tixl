@@ -78,27 +78,20 @@ internal static class ShowControlBarStatus
         if (ImGui.IsItemClicked(ImGuiMouseButton.Left))
             ImGui.OpenPopup("##showModeMenu");
 
-        var modeMenuOpen = ImGui.BeginPopup("##showModeMenu");
-        if (!modeMenuOpen)
-        {
-            DrawJoinRoomModal();
+        if (!ImGui.BeginPopup("##showModeMenu"))
             return;
-        }
 
         ImGui.TextDisabled("Show-control mode - one at a time");
         ImGui.Separator();
 
-        // Menu clicks only record what was chosen. Switching inside the open menu would tear down a
-        // live session - and with it whatever window is mid-render this frame - while ImGui still
-        // holds the menu's window stack, which left the frame's ID/style stacks unbalanced.
-        string? requestedMode = null;
-        bool? requestedMaster = null;
-        var requestedJoinLast = false;
-        var requestedJoinDialog = false;
-
         // Plain editing: no show-control feature runs.
         if (ImGui.Selectable("Editor mode", mode == ShowControlMode.Off))
-            requestedMode = ShowControlMode.Off;
+        {
+            var error = ShowControlMode.SwitchTo(ShowControlMode.Off);
+            if (error != null)
+                Log.Warning($"Show mode: {error}");
+            ImGui.CloseCurrentPopup();
+        }
 
         if (ImGui.IsItemHovered())
         {
@@ -113,8 +106,15 @@ internal static class ShowControlBarStatus
             var isMaster = UserSettings.Config.BoygroupIsMaster;
             if (ImGui.Selectable("as Master", mode == ShowControlMode.Boygroup && isMaster))
             {
-                requestedMode = ShowControlMode.Boygroup;
-                requestedMaster = true;
+                ShowControlMode.SetBoygroupRole(true);
+                if (mode != ShowControlMode.Boygroup)
+                {
+                    var error = ShowControlMode.SwitchTo(ShowControlMode.Boygroup);
+                    if (error != null)
+                        Log.Warning($"Show mode: {error}");
+                }
+
+                ImGui.CloseCurrentPopup();
             }
 
             if (ImGui.IsItemHovered())
@@ -126,8 +126,15 @@ internal static class ShowControlBarStatus
 
             if (ImGui.Selectable("as Slave", mode == ShowControlMode.Boygroup && !isMaster))
             {
-                requestedMode = ShowControlMode.Boygroup;
-                requestedMaster = false;
+                ShowControlMode.SetBoygroupRole(false);
+                if (mode != ShowControlMode.Boygroup)
+                {
+                    var error = ShowControlMode.SwitchTo(ShowControlMode.Boygroup);
+                    if (error != null)
+                        Log.Warning($"Show mode: {error}");
+                }
+
+                ImGui.CloseCurrentPopup();
             }
 
             if (ImGui.IsItemHovered())
@@ -140,207 +147,32 @@ internal static class ShowControlBarStatus
             ImGui.EndMenu();
         }
 
-        // Failover carries a preference like boygrouping's role: Main wins the election, Backup
-        // takes over when Main dies. The arbiter still decides who streams at runtime.
-        if (ImGui.BeginMenu("Failover"))
+        foreach (var candidate in new[] { ShowControlMode.Failover, ShowControlMode.Collab })
         {
-            const int mainPriority = 100;
-            const int backupPriority = 50;
-
-            if (ImGui.Selectable("as Main", mode == ShowControlMode.Failover && UserSettings.Config.FailoverPriority > backupPriority))
-                requestedMode = ShowControlMode.Failover;
-
-            if (ImGui.IsItemHovered())
+            var selected = candidate == mode;
+            var candidateLabel = ModeDisplayName(candidate);
+            if (ImGui.Selectable(candidateLabel, selected))
             {
-                CustomComponents.BeginTooltip(300);
-                ImGui.TextWrapped("Preferred active machine: streams the show as long as it is alive (priority 100).");
-                CustomComponents.EndTooltip();
-            }
-
-            if (ImGui.Selectable("as Backup", mode == ShowControlMode.Failover && UserSettings.Config.FailoverPriority <= backupPriority))
-                requestedMode = ShowControlMode.Failover + ":backup";
-
-            if (ImGui.IsItemHovered())
-            {
-                CustomComponents.BeginTooltip(300);
-                ImGui.TextWrapped("Standby machine: renders silently and takes over automatically when Main dies (priority 50).");
-                CustomComponents.EndTooltip();
-            }
-
-            ImGui.EndMenu();
-        }
-
-        // Collaboration carries a choice like boygrouping's role: host a session or join one.
-        if (ImGui.BeginMenu("Collab"))
-        {
-            if (ImGui.Selectable("Host session", mode == ShowControlMode.Collab))
-                requestedMode = ShowControlMode.Collab;
-
-            if (ImGui.IsItemHovered())
-            {
-                CustomComponents.BeginTooltip(300);
-                ImGui.TextWrapped("Start a session and share the session ID.");
-                CustomComponents.EndTooltip();
-            }
-
-            var lastRoom = UserSettings.Config.CollabLastRelayRoom;
-            if (!string.IsNullOrEmpty(lastRoom) && ImGui.Selectable($"Join last session ({lastRoom})", false))
-                requestedJoinLast = true;
-
-            if (!string.IsNullOrEmpty(lastRoom) && ImGui.IsItemHovered())
-            {
-                CustomComponents.BeginTooltip(300);
-                ImGui.TextWrapped("Rejoin the session this machine joined last.");
-                CustomComponents.EndTooltip();
-            }
-
-            if (ImGui.Selectable("Join session..."))
-                requestedJoinDialog = true;
-
-            ImGui.EndMenu();
-        }
-
-        ImGui.EndPopup();
-
-        // Everything happens here, with the menu stack closed again.
-        if (requestedMode != null)
-            ApplyModeRequest(requestedMode, requestedMaster);
-
-        if (requestedJoinLast)
-            JoinLastSession();
-
-        if (requestedJoinDialog)
-            _openJoinRoomModal = true;
-
-        DrawJoinRoomModal();
-    }
-
-    /// <summary>Applies a menu choice once the menu is closed. "Failover:backup" carries the Backup preference.</summary>
-    private static void ApplyModeRequest(string requestedMode, bool? requestedMaster)
-    {
-        const int mainPriority = 100;
-        const int backupPriority = 50;
-
-        var mode = requestedMode;
-        if (mode.StartsWith(ShowControlMode.Failover + ":", StringComparison.Ordinal))
-        {
-            mode = ShowControlMode.Failover;
-            UserSettings.Config.FailoverPriority = requestedMode.EndsWith(":backup", StringComparison.Ordinal) ? backupPriority : mainPriority;
-            UserSettings.Save();
-        }
-
-        if (requestedMaster is { } isMaster)
-            ShowControlMode.SetBoygroupRole(isMaster);
-
-        if (mode == ShowControlMode.Boygroup && ShowControlMode.Current == ShowControlMode.Boygroup && requestedMaster != null)
-            return; // The role switch already re-applied the session.
-
-        var error = ShowControlMode.SwitchTo(mode);
-        if (error != null)
-            Log.Warning($"Show mode: {error}");
-    }
-
-    private static void JoinLastSession()
-    {
-        var lastRoom = UserSettings.Config.CollabLastRelayRoom;
-        if (string.IsNullOrEmpty(lastRoom))
-            return;
-
-        ShowControlMode.Activate(ShowControlMode.Collab);
-        var (host, port) = ParseRelayEndpoint(UserSettings.Config.CollabLastRelayHost);
-        CollabManager.Instance.JoinViaRelay(host, port, lastRoom, UserSettings.Config.CollabPassword ?? "");
-    }
-
-    /// <summary>The join modal lives at menu-bar id scope, outside the mode popup.</summary>
-    private static void DrawJoinRoomModal()
-    {
-        if (_openJoinRoomModal)
-        {
-            _openJoinRoomModal = false;
-            ImGui.OpenPopup("Join session");
-        }
-
-    var joinCenter = ImGui.GetWindowWidth() * 0.5f;
-    ImGui.SetNextWindowPos(ImGui.GetWindowPos() + new System.Numerics.Vector2(joinCenter - 140, ImGui.GetFrameHeight() + 8),
-                           ImGuiCond.Appearing);
-    if (ImGui.BeginPopupModal("Join session", ImGuiWindowFlags.AlwaysAutoResize))
-    {
-        ImGui.TextDisabled("Enter the session ID the host shared, or paste an invite.");
-        _joinRoomInput ??= "";
-        var submit = ImGui.InputText("##roomCode", ref _joinRoomInput, 12,
-                                     ImGuiInputTextFlags.EnterReturnsTrue | ImGuiInputTextFlags.CharsUppercase | ImGuiInputTextFlags.CharsNoBlank);
-        if (ImGui.Button("Paste"))
-        {
-            var clipboard = ImGui.GetClipboardText();
-            if (TryParseInvite(clipboard, out var inviteRelay, out var inviteRoom))
-            {
-                if (!string.IsNullOrEmpty(inviteRelay))
-                    UserSettings.Config.CollabRelayAddress = inviteRelay;
-
-                _joinRoomInput = inviteRoom;
-            }
-            else
-            {
-                _joinRoomInput = clipboard?.Trim() ?? "";
-            }
-        }
-
-        CustomComponents.TooltipForLastItem("Reads a copied invite (relay + session ID) or a plain session ID from the clipboard.");
-
-        if (ImGui.Button("Join") || submit)
-        {
-            var room = _joinRoomInput.Trim();
-            if (room.Length > 0)
-            {
-                ShowControlMode.Activate(ShowControlMode.Collab);
-                var (host, port) = ParseRelayEndpoint(UserSettings.Config.CollabRelayAddress);
-                CollabManager.Instance.JoinViaRelay(host, port, room, UserSettings.Config.CollabPassword ?? "");
+                var error = ShowControlMode.SwitchTo(candidate);
+                if (error != null)
+                    Log.Warning($"Show mode: {error}");
                 ImGui.CloseCurrentPopup();
             }
-        }
 
-        ImGui.SameLine();
-        if (ImGui.Button("Cancel"))
-            ImGui.CloseCurrentPopup();
+            if (ImGui.IsItemHovered())
+            {
+                CustomComponents.BeginTooltip(300);
+                ImGui.TextWrapped(candidate switch
+                                      {
+                                          ShowControlMode.Failover => "Redundant pair: two machines run the same composition, one streams, the other takes over on failure.",
+                                          ShowControlMode.Collab => "Edit one graph together: starts a relay room and shares the session ID.",
+                                          _ => "",
+                                      });
+                CustomComponents.EndTooltip();
+            }
+        }
 
         ImGui.EndPopup();
-    }
-    }
-
-    /// <summary>Reads a copied collab invite ("Relay:" and "Room:" lines); the relay line is optional.</summary>
-    private static bool TryParseInvite(string? text, out string relay, out string room)
-    {
-        relay = "";
-        room = "";
-        if (string.IsNullOrWhiteSpace(text))
-            return false;
-
-        foreach (var line in text.Split('\n'))
-        {
-            var trimmed = line.Trim();
-            if (trimmed.StartsWith("Relay:", StringComparison.OrdinalIgnoreCase))
-                relay = trimmed[6..].Trim();
-            else if (trimmed.StartsWith("Room:", StringComparison.OrdinalIgnoreCase))
-                room = trimmed[5..].Trim();
-        }
-
-        return !string.IsNullOrEmpty(room);
-    }
-
-    private static bool _openJoinRoomModal;
-    private static string _joinRoomInput;
-
-    private static (string Host, int Port) ParseRelayEndpoint(string? configured)
-    {
-        var text = configured?.Trim();
-        if (string.IsNullOrEmpty(text))
-            return (CollabProtocol.DefaultRelayHost, CollabProtocol.DefaultRelayPort);
-
-        var separator = text.LastIndexOf(':');
-        if (separator > 0 && int.TryParse(text[(separator + 1)..], out var port))
-            return (text[..separator], port);
-
-        return (text, CollabProtocol.DefaultRelayPort);
     }
 
     private static string ModeDisplayName(string mode) => mode switch
