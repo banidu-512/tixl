@@ -1116,6 +1116,10 @@ internal sealed class BoygroupManager
         return ProjectView.Focused?.OpenedProject.Package.Folder;
     }
 
+    /// <summary>Whether a project is really open (not merely a pending bootstrap folder) — the debug
+    /// bridge's status reports it, so a master that cannot deploy is diagnosable remotely.</summary>
+    public static bool HasProjectFolder => ProjectView.Focused?.OpenedProject?.Package.Folder is { Length: > 0 };
+
     // ---------------------------------------------------------------------------------------
     // Client: deploy reception
     // ---------------------------------------------------------------------------------------
@@ -1301,6 +1305,18 @@ internal sealed class BoygroupManager
                 config.BoygroupDeployRestartCount = 0;
                 Log.Warning("Boygroup: more than four deploy restarts in two minutes - blocking further deploy restarts for five minutes (restart-loop guard)");
             }
+        }
+
+        // A render node that just received a bootstrapped project can open it in place - no restart
+        // needed, because nothing was open that the new project would have to replace.
+        if (_bootstrapProjectFolder is { Length: > 0 } bootstrapped
+            && ProjectView.Focused?.OpenedProject == null
+            && T3.Editor.App.Startup.StartupProjectLoader.TryOpen(bootstrapped))
+        {
+            Log.Info($"Boygroup: opened the received project {bootstrapped} without a restart");
+            _bootstrapProjectFolder = null;
+            DeploySummary += " - project opened";
+            return;
         }
 
         // A render node must come back into the show it was deployed, not into the Hub: pin the
