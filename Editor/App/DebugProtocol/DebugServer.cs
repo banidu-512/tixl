@@ -926,6 +926,8 @@ internal static class DebugServer
                                ["peer"] = Core.Show.FailoverArbiter.PeerSummary,
                                ["takeovers"] = Core.Show.FailoverArbiter.TakeoverCount,
                                ["interface"] = UserSettings.Config.NetworkInterface,
+                               ["project"] = Show.ProjectFollower.OpenProjectName ?? "",
+                               ["peerProject"] = Core.Show.FailoverArbiter.ActivePeerProjectName ?? "",
                            });
     }
 
