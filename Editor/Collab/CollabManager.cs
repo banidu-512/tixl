@@ -52,6 +52,17 @@ internal sealed class CollabManager
     /// <summary>Peers currently in the session (UI thread only).</summary>
     public IReadOnlyList<CollabPeerConnection> Peers => _transport?.Peers ?? [];
 
+    /// <summary>The machines this instance is linked to right now — the settings panel's network
+    /// check compares them against the selected adapter.</summary>
+    public void AddLinkedPeers(List<NetworkPeer> peers)
+    {
+        foreach (var peer in Peers)
+        {
+            if (peer.RemoteAddress != null)
+                peers.Add(new NetworkPeer("Collaboration peer", peer.RemoteAddress));
+        }
+    }
+
     /// <summary>The link back to the session host on client transports, direct or relay.</summary>
     private CollabPeerConnection? HostLink => _transport?.HostLink;
 
@@ -133,7 +144,9 @@ internal sealed class CollabManager
 
     public void StartHost(int tcpPort, string password, bool enableLanDiscovery, string? projectName = null)
     {
-        if (IsSessionActive)
+        // A join from a still-Connecting session (the previous host never answered) must not leak
+        // its transport: tear down whatever session object still exists, whatever its state.
+        if (State != SessionState.Off)
             Leave();
 
         ++_sessionGeneration;
@@ -158,7 +171,8 @@ internal sealed class CollabManager
                                                                ["project"] = projectName
                                                                              ?? ProjectView.Focused?.OpenedProject.Package.DisplayName
                                                                              ?? "",
-                                                           });
+                                                           },
+                                                 interfaceName: UserSettings.Config.NetworkInterface);
             _transport.PeerDisconnected += OnPeerDisconnectedTransport;
             State = SessionState.Hosting;
             StatusText = $"Hosting on port {tcpPort}";
@@ -179,7 +193,9 @@ internal sealed class CollabManager
     /// </summary>
     public void StartHostViaRelay(string relayHost, int relayPort)
     {
-        if (IsSessionActive)
+        // A join from a still-Connecting session (the previous host never answered) must not leak
+        // its transport: tear down whatever session object still exists, whatever its state.
+        if (State != SessionState.Off)
             Leave();
 
         ErrorText = "";
@@ -229,7 +245,9 @@ internal sealed class CollabManager
     /// <summary>Joins a relay-hosted room by code.</summary>
     public void JoinViaRelay(string relayHost, int relayPort, string roomCode, string password)
     {
-        if (IsSessionActive)
+        // A join from a still-Connecting session (the previous host never answered) must not leak
+        // its transport: tear down whatever session object still exists, whatever its state.
+        if (State != SessionState.Off)
             Leave();
 
         if (string.IsNullOrWhiteSpace(roomCode))
@@ -301,7 +319,9 @@ internal sealed class CollabManager
 
     public void JoinDirect(string hostAddress, int tcpPort, string password)
     {
-        if (IsSessionActive)
+        // A join from a still-Connecting session (the previous host never answered) must not leak
+        // its transport: tear down whatever session object still exists, whatever its state.
+        if (State != SessionState.Off)
             Leave();
 
         ++_sessionGeneration;
@@ -394,6 +414,13 @@ internal sealed class CollabManager
         _redoStack.Clear();
         _activeLocks.Clear();
         UndoNotice = "";
+        // A session's participants must not survive into the next one. Per-peer disconnects do not
+        // run for every peer on teardown, so clear the roster here or stale cursors/participants
+        // reappear as ghosts after reconnecting.
+        _roster.Clear();
+        _rosterUserIds.Clear();
+        _latestPresenceByPeer.Clear();
+        MyPeerId = 0;
 
         // The local undo stack only contains this machine's edits; after a session it no longer
         // matches the shared graph state, so replaying it would corrupt the project.
@@ -604,6 +631,16 @@ internal sealed class CollabManager
                 ErrorText = "Disconnected from host";
                 Leave();
             }
+            else if (State == SessionState.Connecting && _transport != null
+                     && (ReferenceEquals(peer, (_transport as CollabClientTransport)?.HostPeer)
+                         || _transport is CollabRelayClientTransport))
+            {
+                // The host/relay link died while the handshake was still running. Without this the
+                // state stays "Connecting" forever with no error, and the next Join click builds a
+                // second transport without disposing the first.
+                ErrorText = "Could not connect to host";
+                Leave();
+            }
             else if (State == SessionState.Connected && _transport is CollabRelayClientTransport)
             {
                 ErrorText = "Disconnected from relay session";
@@ -647,7 +684,11 @@ internal sealed class CollabManager
 
     private void HandlePresence(CollabPeerConnection peer, PresencePacket presence)
     {
-        peer.LatestPresence = presence;
+        // On a client the only transport peer is the host link, but the host relays other clients'
+        // presence frames through it. Only the packet that belongs to this peer may replace its
+        // own presence, or another participant's cursor/selection overwrites the host's.
+        if (presence.PeerId == peer.PresencePeerId)
+            peer.LatestPresence = presence;
         _latestPresenceByPeer[presence.PeerId] = presence;
 
         // The host relays presence between clients on the reliable path when UDP isn't available
@@ -1630,8 +1671,12 @@ internal sealed class CollabManager
                                   Name = CollabProtocol.GetString(announcement, "name", "TiXL session"),
                                   HostName = CollabProtocol.GetString(announcement, "host", ""),
                                   Address = result.Source.Address.ToString(),
-                                  Port = announcement["port"]?.Value<int>() ?? CollabProtocol.DefaultTcpPort,
-                                  PasswordProtected = announcement["pwd"]?.Value<bool>() ?? false,
+                                  Port = CollabProtocol.TryGetInt(announcement, "port", out var port)
+                                             ? port
+                                             : CollabProtocol.DefaultTcpPort,
+                                  PasswordProtected = CollabProtocol.TryGetBool(announcement, "pwd", out var passwordProtected)
+                                                          ? passwordProtected
+                                                          : false,
                                   Project = CollabProtocol.GetString(announcement, "project", ""),
                               };
 
