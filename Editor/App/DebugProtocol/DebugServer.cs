@@ -2211,6 +2211,30 @@ internal static class DebugServer
             return;
         }
 
+        // A child whose type is the containing composition references itself; instantiating that
+        // graph recurses forever (Symbol.Child.TryGetOrCreateInstance -> TryGetParentInstance).
+        // Reject it here with an error instead of wedging the editor.
+        if (symbolIdToAdd == compositionSymbol.Id)
+        {
+            context.SendError("INVALID_PARAM", "addOp cannot add a composition into itself");
+            return;
+        }
+
+        if (!SymbolRegistry.TryGetSymbol(symbolIdToAdd, out var symbolToAdd))
+        {
+            context.SendError("NOT_FOUND", $"No symbol with id {symbolIdToAdd}");
+            return;
+        }
+
+        // The same cycle can be reached indirectly (A contains B, B contains A). Refuse when the
+        // candidate already (transitively) contains the composition it would be placed into.
+        if (SymbolContains(symbolToAdd, compositionSymbol.Id, depth: 0))
+        {
+            context.SendError("INVALID_PARAM",
+                              $"'{symbolToAdd.Name}' already contains '{compositionSymbol.Name}' - adding it would create a reference cycle");
+            return;
+        }
+
         // Scripts that pass no position used to pile every op onto the origin, on top of
         // whatever the previous probe left there. Without coordinates, start a fresh row
         // below the lowest existing op instead.
@@ -2229,6 +2253,25 @@ internal static class DebugServer
                                ["childId"] = command.AddedChildId.ToString(),
                                ["symbolId"] = symbolIdToAdd.ToString(),
                            });
+    }
+
+    /// <summary>True when <paramref name="candidate"/> contains <paramref name="targetId"/> at any
+    /// depth — the check that keeps addOp from creating a reference cycle.</summary>
+    private static bool SymbolContains(Symbol candidate, Guid targetId, int depth)
+    {
+        if (depth > 16)
+            return true; // Deeper than any sane graph: treat as a cycle.
+
+        foreach (var child in candidate.Children.Values)
+        {
+            if (child.Symbol.Id == targetId)
+                return true;
+
+            if (SymbolContains(child.Symbol, targetId, depth + 1))
+                return true;
+        }
+
+        return false;
     }
 
     /// <summary>Left edge of the graph, one row's height below its lowest op.</summary>
