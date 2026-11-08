@@ -270,6 +270,9 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public int BoygroupPort = 44720;
         public bool BoygroupAutoJoin = true;
         public bool BoygroupDeployMirror = false;
+        /// <summary>The master deploys and syncs to a render node as soon as it joins the group,
+        /// so an added slave is current without anyone clicking Deploy &amp; Sync.</summary>
+        public bool BoygroupAutoDeployOnJoin = true;
         public List<string> BoygroupGroups = ["Main"];
         public string BoygroupLastServer = "";
         public string BoygroupLastGroup = "";

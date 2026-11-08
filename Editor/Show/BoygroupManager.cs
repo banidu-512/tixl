@@ -428,6 +428,7 @@ internal sealed class BoygroupManager
             return;
 
         PumpDeploy();
+        RunScheduledAutoDeploy();
         SendHeartbeats();
         SendTimeSync();
         ProcessPendingRestart();
@@ -732,6 +733,27 @@ internal sealed class BoygroupManager
         client.Peer.IsAuthenticated = true;
         SendJson(client.Peer, new { t = "authOk", serverName = Environment.MachineName });
         Log.Info($"Boygroup: client authenticated: {client.Name} ({client.Address}) group '{client.Group}'");
+
+        // A node that appears is served: schedule a deploy shortly after the handshake (the delay
+        // debounces a burst of joins into one pass; clients mid-deploy keep their own transfer).
+        if (UserSettings.Config.BoygroupAutoDeployOnJoin)
+            _autoDeployAtTicks = Environment.TickCount64 + 1500;
+    }
+
+    /// <summary>Due time for the deploy-on-join pass; 0 while nothing is scheduled.</summary>
+    private long _autoDeployAtTicks;
+
+    private void RunScheduledAutoDeploy()
+    {
+        if (_autoDeployAtTicks == 0 || Environment.TickCount64 < _autoDeployAtTicks)
+            return;
+
+        _autoDeployAtTicks = 0;
+        if (State != BoygroupState.Server || string.IsNullOrEmpty(GetProjectFolder()))
+            return; // No project open: a manual Deploy & Sync will report it properly.
+
+        Log.Info("Boygroup: node joined - running deploy & sync");
+        DeployAndSync();
     }
 
     private void Reject(CollabPeerConnection peer, string reason)
@@ -915,8 +937,11 @@ internal sealed class BoygroupManager
         client.PendingInventory = null;
         client.IsDeployed = true;
         client.StatusText = "deployed";
-        SendJson(client.Peer, new { t = "deployDone", restart = true });
-        Log.Info($"Boygroup: deployment to {client.Name} complete");
+        // A deploy that transferred nothing (the node was already current) must not reboot it:
+        // the auto-deploy on join runs against every join, up-to-date nodes stay up.
+        var transferred = client.FilesDone > 0;
+        SendJson(client.Peer, new { t = "deployDone", restart = transferred });
+        Log.Info($"Boygroup: deployment to {client.Name} complete ({client.FilesDone} file(s){(transferred ? ", restart requested" : ", no changes")})");
     }
 
     /// <summary>Pushes the active output setup file so clients render the master's output config.</summary>
@@ -1061,6 +1086,14 @@ internal sealed class BoygroupManager
     {
         var shouldRestart = json["restart"]?.Value<bool>() ?? true;
         DeploySummary = $"Deployment complete ({_deployFilesDone} files" + (_deployErrors > 0 ? $", {_deployErrors} failed" : "") + ")";
+
+        // A deploy that transferred no files (the node was already current) leaves this machine up:
+        // only a real update restarts into the deployed state.
+        if (_deployFilesTotal == 0)
+        {
+            Log.Info("Boygroup: deploy had no file changes - staying up");
+            return;
+        }
 
         if (!shouldRestart || !UserSettings.Config.BoygroupAutoJoin)
             return;
