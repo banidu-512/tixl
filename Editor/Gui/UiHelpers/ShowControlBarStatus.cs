@@ -151,25 +151,54 @@ internal static class ShowControlBarStatus
             ImGui.EndMenu();
         }
 
-        if (ImGui.Selectable("Failover", mode == ShowControlMode.Failover))
+        // Failover carries a preference like boygrouping's role: Main wins the election, Backup
+        // takes over when Main dies. The arbiter still decides who streams at runtime.
+        if (ImGui.BeginMenu("Failover"))
         {
-            var error = ShowControlMode.SwitchTo(ShowControlMode.Failover);
-            if (error != null)
-                Log.Warning($"Show mode: {error}");
-            ImGui.CloseCurrentPopup();
-        }
+            const int mainPriority = 100;
+            const int backupPriority = 50;
 
-        if (ImGui.IsItemHovered())
-        {
-            CustomComponents.BeginTooltip(300);
-            ImGui.TextWrapped("Redundant pair: two machines run the same composition, one streams, the other takes over on failure.");
-            CustomComponents.EndTooltip();
+            if (ImGui.Selectable("as Main", mode == ShowControlMode.Failover && UserSettings.Config.FailoverPriority > backupPriority))
+            {
+                UserSettings.Config.FailoverPriority = mainPriority;
+                UserSettings.Save();
+                var error = ShowControlMode.SwitchTo(ShowControlMode.Failover);
+                if (error != null)
+                    Log.Warning($"Show mode: {error}");
+                ImGui.CloseCurrentPopup();
+            }
+
+            if (ImGui.IsItemHovered())
+            {
+                CustomComponents.BeginTooltip(300);
+                ImGui.TextWrapped("Preferred active machine: streams the show as long as it is alive (priority 100).");
+                CustomComponents.EndTooltip();
+            }
+
+            if (ImGui.Selectable("as Backup", mode == ShowControlMode.Failover && UserSettings.Config.FailoverPriority <= backupPriority))
+            {
+                UserSettings.Config.FailoverPriority = backupPriority;
+                UserSettings.Save();
+                var error = ShowControlMode.SwitchTo(ShowControlMode.Failover);
+                if (error != null)
+                    Log.Warning($"Show mode: {error}");
+                ImGui.CloseCurrentPopup();
+            }
+
+            if (ImGui.IsItemHovered())
+            {
+                CustomComponents.BeginTooltip(300);
+                ImGui.TextWrapped("Standby machine: renders silently and takes over automatically when Main dies (priority 50).");
+                CustomComponents.EndTooltip();
+            }
+
+            ImGui.EndMenu();
         }
 
         // Collaboration carries a choice like boygrouping's role: host a room or join one.
         if (ImGui.BeginMenu("Collab"))
         {
-            if (ImGui.Selectable("Host a room", mode == ShowControlMode.Collab))
+            if (ImGui.Selectable("Host session", mode == ShowControlMode.Collab))
             {
                 var error = ShowControlMode.SwitchTo(ShowControlMode.Collab);
                 if (error != null)
@@ -180,12 +209,12 @@ internal static class ShowControlBarStatus
             if (ImGui.IsItemHovered())
             {
                 CustomComponents.BeginTooltip(300);
-                ImGui.TextWrapped("Register a room on the relay and share the session ID.");
+                ImGui.TextWrapped("Start a session and share the session ID.");
                 CustomComponents.EndTooltip();
             }
 
             var lastRoom = UserSettings.Config.CollabLastRelayRoom;
-            if (!string.IsNullOrEmpty(lastRoom) && ImGui.Selectable($"Join last room ({lastRoom})", false))
+            if (!string.IsNullOrEmpty(lastRoom) && ImGui.Selectable($"Join last session ({lastRoom})", false))
             {
                 ShowControlMode.Activate(ShowControlMode.Collab);
                 var (host, port) = ParseRelayEndpoint(UserSettings.Config.CollabLastRelayHost);
@@ -196,11 +225,11 @@ internal static class ShowControlBarStatus
             if (!string.IsNullOrEmpty(lastRoom) && ImGui.IsItemHovered())
             {
                 CustomComponents.BeginTooltip(300);
-                ImGui.TextWrapped("Rejoin the room this machine joined last.");
+                ImGui.TextWrapped("Rejoin the session this machine joined last.");
                 CustomComponents.EndTooltip();
             }
 
-            if (ImGui.Selectable("Join a room..."))
+            if (ImGui.Selectable("Join session..."))
             {
                 // Open the modal after this menu closes: OpenPopup must run in the same id scope
                 // as BeginPopupModal, which is the menu bar's.
@@ -222,18 +251,36 @@ internal static class ShowControlBarStatus
         if (_openJoinRoomModal)
         {
             _openJoinRoomModal = false;
-            ImGui.OpenPopup("Join a room");
+            ImGui.OpenPopup("Join session");
         }
 
     var joinCenter = ImGui.GetWindowWidth() * 0.5f;
     ImGui.SetNextWindowPos(ImGui.GetWindowPos() + new System.Numerics.Vector2(joinCenter - 140, ImGui.GetFrameHeight() + 8),
                            ImGuiCond.Appearing);
-    if (ImGui.BeginPopupModal("Join a room", ImGuiWindowFlags.AlwaysAutoResize))
+    if (ImGui.BeginPopupModal("Join session", ImGuiWindowFlags.AlwaysAutoResize))
     {
-        ImGui.TextDisabled("Enter the session ID the host shared.");
+        ImGui.TextDisabled("Enter the session ID the host shared, or paste an invite.");
         _joinRoomInput ??= "";
         var submit = ImGui.InputText("##roomCode", ref _joinRoomInput, 12,
                                      ImGuiInputTextFlags.EnterReturnsTrue | ImGuiInputTextFlags.CharsUppercase | ImGuiInputTextFlags.CharsNoBlank);
+        if (ImGui.Button("Paste"))
+        {
+            var clipboard = ImGui.GetClipboardText();
+            if (TryParseInvite(clipboard, out var inviteRelay, out var inviteRoom))
+            {
+                if (!string.IsNullOrEmpty(inviteRelay))
+                    UserSettings.Config.CollabRelayAddress = inviteRelay;
+
+                _joinRoomInput = inviteRoom;
+            }
+            else
+            {
+                _joinRoomInput = clipboard?.Trim() ?? "";
+            }
+        }
+
+        CustomComponents.TooltipForLastItem("Reads a copied invite (relay + session ID) or a plain session ID from the clipboard.");
+
         if (ImGui.Button("Join") || submit)
         {
             var room = _joinRoomInput.Trim();
@@ -252,6 +299,26 @@ internal static class ShowControlBarStatus
 
         ImGui.EndPopup();
     }
+    }
+
+    /// <summary>Reads a copied collab invite ("Relay:" and "Room:" lines); the relay line is optional.</summary>
+    private static bool TryParseInvite(string? text, out string relay, out string room)
+    {
+        relay = "";
+        room = "";
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+
+        foreach (var line in text.Split('\n'))
+        {
+            var trimmed = line.Trim();
+            if (trimmed.StartsWith("Relay:", StringComparison.OrdinalIgnoreCase))
+                relay = trimmed[6..].Trim();
+            else if (trimmed.StartsWith("Room:", StringComparison.OrdinalIgnoreCase))
+                room = trimmed[5..].Trim();
+        }
+
+        return !string.IsNullOrEmpty(room);
     }
 
     private static bool _openJoinRoomModal;
