@@ -1,0 +1,311 @@
+{
+  "FormatVersion": 3,
+  "Id": "0b533efb-952f-5173-ac30-a5bc40fa5da6"/*PhysicsRopeBridgeExample*/,
+  "Description": "A sagging plank bridge held by two kinematic anchors, with a crate dropped on it.\n\nNine planks are chained with ball-socket [RigidJoint] operators. The planks start on a gentle curve so the bridge hangs slack, the crate lands in the middle, bounces and slides off.\n\nAKA: chain, rope, hanging bridge, joints\n\nTips\n- Lower Frequency on the joints to make the bridge stretch more.\n- Each joint offset is half the plank spacing, in the local space of the plank it belongs to.",
+  "InputUis": [],
+  "SymbolChildUis": [
+    {
+      "ChildId": "02071b77-721c-5cef-9a4a-6d5328e93215",
+      "SymbolName": "Lib.physics.RigidJoint",
+      "Position": {
+        "X": 700.0,
+        "Y": 1400.0
+      }
+    },
+    {
+      "ChildId": "04566978-3e2c-54d3-b080-fab4323b4835",
+      "SymbolName": "Lib.mesh.generate.CubeMesh",
+      "Position": {
+        "X": 1200.0,
+        "Y": -300.0
+      }
+    },
+    {
+      "ChildId": "07ae06d9-8853-5215-ac27-f3a76d602236",
+      "SymbolName": "Lib.physics.RigidJoint",
+      "Position": {
+        "X": 700.0,
+        "Y": 960.0
+      }
+    },
+    {
+      "ChildId": "1e9f20ac-1fe5-5e16-84ca-e72c46be8ffb",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 300.0,
+        "Y": 960.0
+      }
+    },
+    {
+      "ChildId": "1fe6b3b5-4cbb-5b60-9b62-fe65bdebbe57",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 0.0,
+        "Y": 600.0
+      }
+    },
+    {
+      "ChildId": "220e7e49-c92f-5618-a60d-f0f6596aaad9",
+      "SymbolName": "Lib.physics.RigidJoint",
+      "Position": {
+        "X": 700.0,
+        "Y": 2060.0
+      }
+    },
+    {
+      "ChildId": "228fe3c0-ba7f-5069-8732-313e4fbd770a",
+      "SymbolName": "Lib.render.camera.Camera",
+      "Position": {
+        "X": 2400.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "2a18432e-2a61-5467-b732-7085b76b5d81",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 300.0,
+        "Y": 1840.0
+      }
+    },
+    {
+      "ChildId": "2f16fcd5-0c6c-57c6-a2fd-ff60129f7f68",
+      "SymbolName": "Lib.mesh.draw.DrawMeshAtPoints",
+      "Position": {
+        "X": 1500.0,
+        "Y": -150.0
+      }
+    },
+    {
+      "ChildId": "54184051-c994-5ccf-a33e-863fe45ca397",
+      "SymbolName": "Lib.physics.RigidJoint",
+      "Position": {
+        "X": 700.0,
+        "Y": 740.0
+      }
+    },
+    {
+      "ChildId": "57fc54cc-66bf-55ca-8836-2ddc6e3b5191",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 0.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "660fc87c-0a85-5693-a1d5-6791035d0bbd",
+      "SymbolName": "Lib.physics.RigidJoint",
+      "Position": {
+        "X": 700.0,
+        "Y": 1620.0
+      }
+    },
+    {
+      "ChildId": "67b3f222-bb93-551f-90c6-91c00c1fff0b",
+      "SymbolName": "Lib.physics.RigidJoint",
+      "Position": {
+        "X": 700.0,
+        "Y": 1180.0
+      }
+    },
+    {
+      "ChildId": "75c1152b-bd30-5083-8f79-bd8af2c23528",
+      "SymbolName": "Lib.render.transform.Group",
+      "Position": {
+        "X": 2100.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "75f1c6b6-1713-5c76-847c-539cac655d79",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 0.0,
+        "Y": 900.0
+      }
+    },
+    {
+      "ChildId": "782341a8-0478-56d4-8643-a1b862647070",
+      "SymbolName": "Lib.mesh.draw.DrawMeshUnlit",
+      "Position": {
+        "X": 1800.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "7eba4884-dd47-5d92-8f65-8c7c4a44c5c7",
+      "SymbolName": "Lib.physics.RigidJoint",
+      "Position": {
+        "X": 700.0,
+        "Y": 2400.0
+      }
+    },
+    {
+      "ChildId": "891bc669-681c-5dc2-9049-add022ac0de3",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 300.0,
+        "Y": 1180.0
+      }
+    },
+    {
+      "ChildId": "8c75a726-eae6-5833-ab39-f2a006d5e3ce",
+      "SymbolName": "Lib.mesh.generate.CubeMesh",
+      "Position": {
+        "X": 1200.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "8e6bec8f-cdb8-524e-b4b4-3327d4daae4d",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 300.0,
+        "Y": 1620.0
+      }
+    },
+    {
+      "ChildId": "9c98797d-8771-5416-9674-3470db20f8ad",
+      "SymbolName": "Lib.physics.PhysicsWorld",
+      "Position": {
+        "X": 1200.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "9fe72f3a-c50c-5b5e-8de4-97b5e5274960",
+      "SymbolName": "Lib.physics.RigidJoint",
+      "Position": {
+        "X": 700.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "a3d940a0-118e-59a9-9b89-57855eb0438d",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 300.0,
+        "Y": 520.0
+      }
+    },
+    {
+      "ChildId": "b3595834-55c0-5d01-a423-e588dda9a6f5",
+      "SymbolName": "Lib.mesh.modify.TransformMesh",
+      "Position": {
+        "X": 1500.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "be18f4c4-a047-5e39-913a-29368f37c1f7",
+      "SymbolName": "Lib.image.generate.basic.RenderTarget",
+      "Position": {
+        "X": 2700.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "d21dff71-580e-5fea-bd3e-b7f5681a43f5",
+      "SymbolName": "Lib.physics.RigidJoint",
+      "Position": {
+        "X": 700.0,
+        "Y": 1840.0
+      }
+    },
+    {
+      "ChildId": "d3d26066-33aa-57bc-9905-a9b46f002109",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 300.0,
+        "Y": 1400.0
+      }
+    },
+    {
+      "ChildId": "e2112846-28c7-5b52-a24b-3e837781086b",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 300.0,
+        "Y": 2060.0
+      }
+    },
+    {
+      "ChildId": "e64ff883-0744-583b-85bb-6b9b1c29d1ab",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 0.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "e919c67b-8076-5fe8-9120-4246d34606c2",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 300.0,
+        "Y": 740.0
+      }
+    },
+    {
+      "ChildId": "ede96f9b-09ae-5734-b000-f2d47f2fbcc6",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 300.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "f0a44ed3-10fa-5599-8f91-54128bc38b7d",
+      "SymbolName": "Lib.physics.RigidJoint",
+      "Position": {
+        "X": 700.0,
+        "Y": 520.0
+      }
+    }
+  ],
+  "OutputUis": [
+    {
+      "OutputId": "a0a7c7ea-9ccf-5311-bc30-ff789e2c029b"/*Output*/,
+      "Position": {
+        "X": 3000.0,
+        "Y": 0.0
+      }
+    }
+  ],
+  "Settings": {
+    "OutputWindows": [
+      {
+  "ShowGizmos": "On",
+  "TransformGizmoMode": "Move",
+  "BackgroundColor": [
+    0.1,
+    0.1,
+    0.1,
+    1.0
+  ],
+  "CameraControlMode": "AutoUseFirstCam",
+  "CameraPosition": [
+    0.0,
+    0.0,
+    2.4142134
+  ],
+  "CameraTarget": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "CameraRoll": 0.0,
+  "CameraSpeed": 1.0,
+  "ResolutionTitle": "Fill",
+  "ResolutionWidth": 0,
+  "ResolutionHeight": 0,
+  "ResolutionUseAsAspectRatio": true,
+  "IsPinned": true,
+  "PinnedInstancePath": [
+    "5697b652-21f8-4b1f-343d-1be886ca13d0"
+  ],
+  "PinnedOutputId": "00000000-0000-0000-0000-000000000000",
+  "PinnedEntityKind": "None",
+  "PinnedEntityId": "00000000-0000-0000-0000-000000000000"
+}
+    ]
+  }
+}
