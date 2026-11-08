@@ -1,0 +1,12 @@
+{
+  "FormatVersion": 3,
+  "Id": "fc358fd5-f6ba-4971-9d40-2090e51aaa71"/*LoadNanoVdb*/,
+  "Inputs": [
+    {
+      "Id": "69a0c6d6-243c-4cf2-b022-c557955660fd"/*Path*/,
+      "DefaultValue": ""
+    }
+  ],
+  "Children": [],
+  "Connections": []
+}
