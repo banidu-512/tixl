@@ -91,8 +91,19 @@ internal sealed class OnnxModelSession : IDisposable
         var build = OnnxNativeSelector.Select(typeof(InferenceSession).Assembly, wantedBuild);
         if (OperatingSystem.IsWindows() && provider is ExecutionProvider.DirectMl or ExecutionProvider.Cuda or ExecutionProvider.TensorRt && build != wantedBuild)
         {
-            Log.Warning($"[StreamDiffusion] {name}: {OnnxNativeSelector.Describe(wantedBuild)} needs its own ONNX Runtime build, but this session already loaded " +
-                        $"the {OnnxNativeSelector.Describe(build)} one - restart TiXL to switch.");
+            // A runtime that never ships a DirectML native (1.28 and up) cannot be switched to by restarting,
+            // so say that instead of suggesting a restart that would never help.
+            if (wantedBuild == OnnxNativeSelector.Build.DirectMl
+                && !OnnxNativeSelector.IsShipped(typeof(InferenceSession).Assembly, OnnxNativeSelector.Build.DirectMl))
+            {
+                Log.Warning($"[StreamDiffusion] {name}: this ONNX Runtime ships no DirectML provider (DirectML builds ended " +
+                            $"after 1.24); continuing on the {OnnxNativeSelector.Describe(build)} build with CUDA/CPU.");
+            }
+            else
+            {
+                Log.Warning($"[StreamDiffusion] {name}: {OnnxNativeSelector.Describe(wantedBuild)} needs its own ONNX Runtime build, but this session already loaded " +
+                            $"the {OnnxNativeSelector.Describe(build)} one - restart TiXL to switch.");
+            }
         }
 
         foreach (var candidate in chain)

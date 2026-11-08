@@ -28,7 +28,12 @@
         <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
         <PackageReference Include="NuGet.Configuration" Version="7.6.0" />
         <PackageReference Include="Microsoft.NETCore.Platforms" Version="7.0.4" />
-        <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.30.0" />
+        <!-- The GPU build carries the CUDA/TensorRT providers on Windows and Linux; macOS keeps the CoreML-capable
+             CPU build. The managed assembly is shared process-wide by every operator package that loads ONNX
+             models, so this pin decides which native EP can exist in the process. A CPU-only pin here makes GPU
+             operator packages load the CPU native instead (both packages write runtimes/<rid>/native/onnxruntime.dll). -->
+        <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="1.30.0" Condition="$([MSBuild]::IsOSPlatform('Windows')) Or $([MSBuild]::IsOSPlatform('Linux'))" />
+        <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.30.0" Condition="$([MSBuild]::IsOSPlatform('OSX'))" />
         <PackageReference Include="SharpDX.D3DCompiler" Version="4.2.0" />
         <PackageReference Include="SharpDX.Direct2D1" Version="4.2.0" />
         <PackageReference Include="SharpDX.Direct3D11" Version="4.2.0" />
