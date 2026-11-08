@@ -10,7 +10,7 @@ Sparse volume support for TiXL. Loads and writes `.vdb` files, edits volumes wit
 | LZ4/Blosc decoders and `.vdb` reader | `Core/DataTypes/Volume/IO/` |
 | Noise, CSG, filters, meshing, NanoVDB builder | `Core/DataTypes/Volume/Tools/` |
 | Operators (`Lib.volume.*`) | `Operators/Lib/Symbols/volume/` |
-| NanoVDB compute shader | `Operators/Lib/Assets/shaders/volume/NanoVdbVolume.hlsl` |
+| NanoVDB compute shaders | `Operators/Lib/Assets/shaders/volume/` — `NanoVdbVolume.hlsl` (raymarch), `nanovdb-common.hlsl` (shared tree layout and leaf access), `nanovdb-to-points.hlsl` |
 | Example graphs | `Operators/Examples/Symbols/Lib/volume/` |
 | Example assets | `Operators/Examples/Assets/volumes/` |
 | Tests | `Core.Tests/Volume/`, `Core.Tests/VdbLayoutTests.cs` |
@@ -62,7 +62,8 @@ Sparse volume support for TiXL. Loads and writes `.vdb` files, edits volumes wit
 | Operator | What it does |
 |---|---|
 | `VolumeToMesh` | Marching cubes isosurface with shared vertices and gradient normals. |
-| `VolumeToPoints` | Active voxels above a threshold, or a random subset, as a point list. |
+| `VolumeToPoints` | Active voxels above a threshold, or a random subset, as a point list (CPU). |
+| `NanoVdbToPoints` | The same on the GPU: one thread group per leaf, dispatched from the NanoVDB buffer with `Lib:shaders/volume/nanovdb-to-points.hlsl`. Voxel values land in `FX1`. |
 | `VolumeToTexture3D` | Bakes the volume into a dense R32Float texture plus world bounds. |
 | `VolumeToField` | Wraps the volume as a CPU scalar field sampled trilinearly in world space. |
 
