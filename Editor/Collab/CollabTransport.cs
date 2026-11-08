@@ -144,7 +144,7 @@ internal sealed class CollabPeerConnection
 /// </summary>
 internal abstract class CollabTransport : IDisposable
 {
-    /// <summary>Drained by <see cref="CollabManager"/> on the UI thread.</summary>
+    /// <summary>Drained by the session manager on the UI thread.</summary>
     public readonly ConcurrentQueue<InboundMessage> Inbound = new();
 
     /// <summary>Raised on a network thread when a peer disconnected. The manager removes it on the UI thread.</summary>
