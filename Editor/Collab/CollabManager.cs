@@ -45,7 +45,14 @@ internal sealed class CollabManager
     /// <summary>Room code when hosting through a relay; empty for direct sessions.</summary>
     public string RoomCode { get; private set; } = "";
 
+    /// <summary>"host:port" of the relay backing the current session; empty for direct sessions.
+    /// The invite text carries it so a joiner on another network reaches the same room.</summary>
+    public string RelayEndpoint { get; private set; } = "";
+
     public bool IsSessionActive => State is SessionState.Hosting or SessionState.Connected;
+
+    /// <summary>Collaboration on/off — the settings switch gates every session start and join.</summary>
+    public bool IsEnabled => UserSettings.Config.CollabEnabled;
 
     public CollabUserIdentity LocalIdentity => _localIdentity;
 
@@ -119,11 +126,12 @@ internal sealed class CollabManager
             UserSettings.Save();
         }
 
-        var displayName = !string.IsNullOrWhiteSpace(config.CollabDisplayName)
-                              ? config.CollabDisplayName
-                              : (string.IsNullOrWhiteSpace(config.CollabDiscordUserName)
-                                     ? Environment.UserName
-                                     : config.CollabDiscordUserName);
+        // Discord identity wins once logged in; the nickname is the local fallback.
+        var displayName = !string.IsNullOrWhiteSpace(config.CollabDiscordUserName)
+                              ? config.CollabDiscordUserName
+                              : (!string.IsNullOrWhiteSpace(config.CollabDisplayName)
+                                     ? config.CollabDisplayName
+                                     : Environment.UserName);
 
         _localIdentity = new CollabUserIdentity
                              {
@@ -144,6 +152,12 @@ internal sealed class CollabManager
 
     public void StartHost(int tcpPort, string password, bool enableLanDiscovery, string? projectName = null)
     {
+        if (!IsEnabled)
+        {
+            ErrorText = "Collaboration is turned off in the settings.";
+            return;
+        }
+
         // A join from a still-Connecting session (the previous host never answered) must not leak
         // its transport: tear down whatever session object still exists, whatever its state.
         if (State != SessionState.Off)
@@ -193,6 +207,12 @@ internal sealed class CollabManager
     /// </summary>
     public void StartHostViaRelay(string relayHost, int relayPort)
     {
+        if (!IsEnabled)
+        {
+            ErrorText = "Collaboration is turned off in the settings.";
+            return;
+        }
+
         // A join from a still-Connecting session (the previous host never answered) must not leak
         // its transport: tear down whatever session object still exists, whatever its state.
         if (State != SessionState.Off)
@@ -237,6 +257,7 @@ internal sealed class CollabManager
         transport.StartReading();
         _transport = transport;
         RoomCode = transport.AssignedRoomCode;
+        RelayEndpoint = $"{relayHost}:{relayPort}";
         State = SessionState.Hosting;
         StatusText = $"Hosting via relay, room {RoomCode}";
         Log.Info($"Collab: hosting via relay {relayHost}:{relayPort}, room {RoomCode}");
@@ -245,6 +266,12 @@ internal sealed class CollabManager
     /// <summary>Joins a relay-hosted room by code.</summary>
     public void JoinViaRelay(string relayHost, int relayPort, string roomCode, string password)
     {
+        if (!IsEnabled)
+        {
+            ErrorText = "Collaboration is turned off in the settings.";
+            return;
+        }
+
         // A join from a still-Connecting session (the previous host never answered) must not leak
         // its transport: tear down whatever session object still exists, whatever its state.
         if (State != SessionState.Off)
@@ -267,7 +294,7 @@ internal sealed class CollabManager
                     try
                     {
                         var transport = await CollabRelayClientTransport.ConnectAsync(relayHost, relayPort, roomCode, CancellationToken.None);
-                        _uiThreadActions.Enqueue(() => CompleteRelayClientConnect(transport, generation, passwordToUse));
+                        _uiThreadActions.Enqueue(() => CompleteRelayClientConnect(transport, generation, passwordToUse, relayHost, relayPort));
                     }
                     catch (Exception e)
                     {
@@ -277,7 +304,7 @@ internal sealed class CollabManager
     }
 
     /// <summary>UI thread: adopts a joined relay link, unless that join was abandoned meanwhile.</summary>
-    private void CompleteRelayClientConnect(CollabRelayClientTransport transport, int generation, string password)
+    private void CompleteRelayClientConnect(CollabRelayClientTransport transport, int generation, string password, string relayHost, int relayPort)
     {
         if (generation != _sessionGeneration)
         {
@@ -288,6 +315,7 @@ internal sealed class CollabManager
         _password = password;
         _sessionLog.Clear();
         _transport = transport;
+        RelayEndpoint = $"{relayHost}:{relayPort}";
         transport.PeerDisconnected += OnPeerDisconnectedTransport;
         transport.StartReading();
         SendJson(transport.HostPeer, new
@@ -319,6 +347,12 @@ internal sealed class CollabManager
 
     public void JoinDirect(string hostAddress, int tcpPort, string password)
     {
+        if (!IsEnabled)
+        {
+            ErrorText = "Collaboration is turned off in the settings.";
+            return;
+        }
+
         // A join from a still-Connecting session (the previous host never answered) must not leak
         // its transport: tear down whatever session object still exists, whatever its state.
         if (State != SessionState.Off)
@@ -410,6 +444,7 @@ internal sealed class CollabManager
         _localPresence = new PresencePacket();
         _password = "";
         RoomCode = "";
+        RelayEndpoint = "";
         _undoStack.Clear();
         _redoStack.Clear();
         _activeLocks.Clear();
@@ -533,6 +568,10 @@ internal sealed class CollabManager
                 Log.Warning($"Collab: applying a session update failed: {e.Message}");
             }
         }
+
+        // The settings switch ends a running session: no session survives collaboration being off.
+        if (!UserSettings.Config.CollabEnabled && IsSessionActive)
+            Leave();
 
         // Auto-rejoin shortly after launch (e.g. after a project download restarted us).
         if (State == SessionState.Off)

@@ -6,15 +6,25 @@ Sessions are configured in **Settings → Collaboration**. The feature is experi
 
 ## Hosting and joining
 
-- **LAN**: one editor hosts on a configurable TCP port (44700 by default); the others find it through LAN discovery or join with a direct IP address.
-- **Shared project**: **Share project** picks which project the session works on. **Current project** follows whichever project is focused; choosing another one opens it when hosting starts. The **Projects** window offers the same operation per project in its context menu.
-- **Online**: join a direct address (an open port, or a VPN such as Tailscale), or meet in a room on a relay. The relay is the `CollabRelay` project in this repository (`dotnet run --project CollabRelay`, TCP 44710 by default); it must be reachable by everyone. Both sides enter the same address under **Relay server** (persisted; empty means `127.0.0.1:44710`). The host registers a room, gets a six-character code and can **Copy invite** (relay address plus code) for the other people, who use **Paste invite & join** or enter the code themselves. No port forwarding is needed.
+The primary flow is a relay room: **Start Session** gives you a session ID, and everyone joins with that ID — no port forwarding, works across networks.
+
+1. **Log In with Discord** (optional but recommended). TiXL opens discord.com in your browser for the OAuth2 login; the browser returns to TiXL automatically. Your display name and avatar come from Discord. The account must be a member of the TiXL Discord server — the login checks membership and points you at the invite if not. Without a Discord login a local nickname is used.
+2. **Start Session** registers a room on the relay and shows the **session ID**. Copy it (or **Copy Invite**, which carries the relay address and the ID together) and share it.
+3. Others enter the **Session ID** under Join and press **Join Session** — or copy the whole invite and use **Paste Invite and Join**, which adopts the relay address from the invite.
+
+The relay is the `CollabRelay` project in this repository (`dotnet run --project CollabRelay`). Its address defaults to the show LAN's relay; a custom relay is configured under **Advanced → Relay**. The relay only carries the session's traffic while it runs and never stores graph data.
+
+## LAN and direct sessions
+
+- **LAN**: **Advanced → Host on LAN** hosts on a configurable TCP port (44700 by default); the others find it through LAN discovery or join with a direct address under **Advanced → Join by address**.
 - **Projects window**: running LAN sessions are listed next to the projects, and a project's context menu offers **Host Collaboration Session**.
 - **Password**: a session can be password protected. Authentication is a PBKDF2/HMAC challenge-response; the password itself never crosses the network.
-- **Identity**: a local display name, or **Log in with Discord**, which opens discord.com in the browser and uses the verified Discord profile (name and avatar). The login uses OAuth2 with PKCE and needs no client secret. A Discord application is registered once: paste its **Client ID** into the Collaboration settings and add the exact redirect URI shown there (`http://127.0.0.1:38270/callback/`) under OAuth2 → Redirects. Builds that ship a TiXL application id need neither field — only the button. The account must be a member of the TiXL Discord server (https://discord.gg/YmSyQdeH3S): the login requests the `identify` and `guilds` scopes, resolves the invite to its server id and compares it with the account's server list. An account that is not in the server is told to join and can retry with one click.
-- **Network**: the **Interface** dropdown pins hosting, LAN discovery and presence to one adapter. Keep **Automatic** unless the machine also has Wi-Fi, VPN or Hyper-V adapters and the show runs on a specific Ethernet port.
 
-On join a client downloads the host's project if it doesn't have it, restarts into it and rejoins automatically. This also works through a relay: the joiner remembers the relay address and room code, so the restart returns to the same room.
+## Identity
+
+Discord login uses the OAuth2 browser flow (PKCE, a public Discord application, no client secret involved). The identity persists in this machine's user settings until you log out. A local nickname is the fallback.
+
+On join a client downloads the host's project if it doesn't have it, restarts into it and rejoins automatically.
 
 ## What is synchronized
 

@@ -17,6 +17,7 @@ using T3.Core.Animation;
 using T3.Core.Settings;
 using T3.Core.Stats;
 using T3.Core.Show;
+using T3.Editor.Collab;
 using T3.Editor.Show;
 using T3.Editor.Gui.Windows;
 using T3.Editor.Gui.Windows.Analyze;
@@ -629,6 +630,10 @@ internal static class DebugServer
                 break;
             }
 
+            case "collab":
+                HandleCollabControl(request, context);
+                break;
+
             case "boygroup":
                 HandleBoygroupControl(request, context);
                 break;
@@ -644,6 +649,87 @@ internal static class DebugServer
             default:
                 context.SendError("UNKNOWN_METHOD", $"Unknown method '{method}'");
                 break;
+        }
+    }
+
+    /// <summary>Drives the collab session for external agents: op = host | host-relay | join | join-relay | leave | chat | status.</summary>
+    private static void HandleCollabControl(JObject request, RequestContext context)
+    {
+        var collab = CollabManager.Instance;
+        switch (request["op"]?.Value<string>())
+        {
+            case "host":
+                collab.StartHost(request["port"]?.Value<int>() ?? 44700,
+                                 request["password"]?.Value<string>() ?? "",
+                                 request["lan"]?.Value<bool>() ?? true);
+                break;
+
+            case "join":
+                collab.JoinDirect(request["host"]?.Value<string>() ?? "127.0.0.1",
+                                  request["port"]?.Value<int>() ?? 44700,
+                                  request["password"]?.Value<string>() ?? "");
+                break;
+
+            case "host-relay":
+            {
+                ParseRelayParam(request, out var relayHost, out var relayPort);
+                collab.StartHostViaRelay(relayHost, relayPort);
+                break;
+            }
+
+            case "join-relay":
+            {
+                ParseRelayParam(request, out var relayHost, out var relayPort);
+                var room = request["room"]?.Value<string>() ?? "";
+                collab.JoinViaRelay(relayHost, relayPort, room, request["password"]?.Value<string>() ?? "");
+                break;
+            }
+
+            case "leave":
+                collab.Leave();
+                break;
+
+            case "chat":
+                collab.SendChat(request["text"]?.Value<string>() ?? "");
+                break;
+
+            case "status":
+                break;
+
+            default:
+                context.SendError("INVALID_PARAM", "collab requires op = host | host-relay | join | join-relay | leave | chat | status");
+                return;
+        }
+
+        context.SendOk(new JObject
+                           {
+                               ["state"] = collab.State.ToString(),
+                               ["status"] = collab.StatusText,
+                               ["error"] = collab.ErrorText,
+                               ["room"] = collab.RoomCode,
+                               ["peers"] = collab.Peers.Count,
+                               ["chatLines"] = collab.ChatLog.Count,
+                           });
+    }
+
+    /// <summary>Reads "relay" ("host:port") or falls back to the protocol defaults for relay ops.</summary>
+    private static void ParseRelayParam(JObject request, out string host, out int port)
+    {
+        host = CollabProtocol.DefaultRelayHost;
+        port = CollabProtocol.DefaultRelayPort;
+        var relay = request["relay"]?.Value<string>();
+        if (string.IsNullOrWhiteSpace(relay))
+            return;
+
+        var separator = relay.LastIndexOf(':');
+        if (separator > 0 && int.TryParse(relay[(separator + 1)..], out var parsed))
+        {
+            port = parsed;
+            host = relay[..separator];
+        }
+        else
+        {
+            host = relay.Trim();
         }
     }
 
@@ -670,11 +756,15 @@ internal static class DebugServer
                 boygroup.Leave();
                 break;
 
+            case "deploy":
+                boygroup.DeployAndSync();
+                break;
+
             case "status":
                 break;
 
             default:
-                context.SendError("INVALID_PARAM", "boygroup requires op = server | join | leave | status");
+                context.SendError("INVALID_PARAM", "boygroup requires op = server | join | leave | deploy | status");
                 return;
         }
 
@@ -684,6 +774,9 @@ internal static class DebugServer
                                ["status"] = boygroup.StatusText,
                                ["error"] = boygroup.ErrorText,
                                ["group"] = boygroup.GroupName,
+                               ["deploy"] = boygroup.DeploySummary,
+                               ["clients"] = boygroup.Clients.Count,
+                               ["projectOpen"] = Show.BoygroupManager.HasProjectFolder,
                            });
     }
 
@@ -2211,6 +2304,30 @@ internal static class DebugServer
             return;
         }
 
+        // A child whose type is the containing composition references itself; instantiating that
+        // graph recurses forever (Symbol.Child.TryGetOrCreateInstance -> TryGetParentInstance).
+        // Reject it here with an error instead of wedging the editor.
+        if (symbolIdToAdd == compositionSymbol.Id)
+        {
+            context.SendError("INVALID_PARAM", "addOp cannot add a composition into itself");
+            return;
+        }
+
+        if (!SymbolRegistry.TryGetSymbol(symbolIdToAdd, out var symbolToAdd))
+        {
+            context.SendError("NOT_FOUND", $"No symbol with id {symbolIdToAdd}");
+            return;
+        }
+
+        // The same cycle can be reached indirectly (A contains B, B contains A). Refuse when the
+        // candidate already (transitively) contains the composition it would be placed into.
+        if (SymbolContains(symbolToAdd, compositionSymbol.Id, depth: 0))
+        {
+            context.SendError("INVALID_PARAM",
+                              $"'{symbolToAdd.Name}' already contains '{compositionSymbol.Name}' - adding it would create a reference cycle");
+            return;
+        }
+
         // Scripts that pass no position used to pile every op onto the origin, on top of
         // whatever the previous probe left there. Without coordinates, start a fresh row
         // below the lowest existing op instead.
@@ -2229,6 +2346,25 @@ internal static class DebugServer
                                ["childId"] = command.AddedChildId.ToString(),
                                ["symbolId"] = symbolIdToAdd.ToString(),
                            });
+    }
+
+    /// <summary>True when <paramref name="candidate"/> contains <paramref name="targetId"/> at any
+    /// depth — the check that keeps addOp from creating a reference cycle.</summary>
+    private static bool SymbolContains(Symbol candidate, Guid targetId, int depth)
+    {
+        if (depth > 16)
+            return true; // Deeper than any sane graph: treat as a cycle.
+
+        foreach (var child in candidate.Children.Values)
+        {
+            if (child.Symbol.Id == targetId)
+                return true;
+
+            if (SymbolContains(child.Symbol, targetId, depth + 1))
+                return true;
+        }
+
+        return false;
     }
 
     /// <summary>Left edge of the graph, one row's height below its lowest op.</summary>

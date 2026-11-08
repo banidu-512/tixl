@@ -37,6 +37,10 @@ internal static class CollabProtocol
     public const int DefaultTcpPort = 44700;
     public const int DefaultRelayPort = 44710;
 
+    /// <summary>Relay used when the relay address setting is empty. TiXLCollabRelay is expected to
+    /// run there; hosts and joiners must point at the same relay to see each other's rooms.</summary>
+    public const string DefaultRelayHost = "10.0.0.222";
+
     /// <summary>Hard upper bound for one reliable frame including the type byte.</summary>
     public const int MaxFrameSize = 4 * 1024 * 1024;
 
@@ -52,10 +56,12 @@ internal static class CollabProtocol
     /// while costing nothing measurable on a wired LAN.</summary>
     public const int HeartbeatIntervalMs = 500;
     public const int HeartbeatPingSize = 8;
-    /// <summary>Silence for more than ~6 × heartbeat means the peer is gone. TCP keepalive below
-    /// catches half-open links even faster. Show LAN budget; relay peers get
+    /// <summary>Silence for more than ~12 × heartbeat means the peer is gone. Heartbeats ride the
+    /// UI thread, so a peer that momentarily stalls (a snapshot apply, a project compile) must not
+    /// be declared dead: 6 s survives a multi-second stall while still feeling instant on a show
+    /// LAN. TCP keepalive below catches truly dead links as well; relay peers get
     /// <see cref="RelayPeerTimeoutMs"/>.</summary>
-    public const int PeerTimeoutMs = 3_000;
+    public const int PeerTimeoutMs = 6_000;
     /// <summary>Relay sessions ride the internet: a transient 3 s stall must not end a session,
     /// so relay-backed peers tolerate ~10 s of silence.</summary>
     public const int RelayPeerTimeoutMs = 10_000;
@@ -202,16 +208,54 @@ internal static class CollabProtocol
         }
     }
 
+    /// <summary>
+    /// String read that tolerates the token kinds our own writers produce: a Guid field serialized
+    /// as a Guid token (snapshot ops) used to throw InvalidCastException out of the frame loop;
+    /// numbers and booleans read as text instead of failing.
+    /// </summary>
     public static string GetString(JObject json, string property, string fallback = "")
     {
-        return json.TryGetValue(property, out var value) ? value.Value<string>() ?? fallback : fallback;
+        if (!json.TryGetValue(property, out var value))
+            return fallback;
+
+        switch (value.Type)
+        {
+            case JTokenType.String:
+                return value.Value<string>() ?? fallback;
+            case JTokenType.Guid:
+                return value.Value<Guid>().ToString();
+            case JTokenType.Integer:
+            case JTokenType.Float:
+            case JTokenType.Boolean:
+                return value.ToString();
+            case JTokenType.Null:
+            case JTokenType.Undefined:
+                return fallback;
+            default:
+                return fallback;
+        }
     }
 
+    /// <summary>
+    /// Guid read that accepts both representations: names we build by hand go out as strings, while
+    /// <c>new { c = someGuid }</c> serializes as a Guid token. Value&lt;string&gt;() threw on the latter.
+    /// </summary>
     public static bool TryGetGuid(JObject json, string property, out Guid guid)
     {
         guid = Guid.Empty;
-        return json.TryGetValue(property, out var value)
-               && Guid.TryParse(value.Value<string>(), out guid);
+        if (!json.TryGetValue(property, out var value))
+            return false;
+
+        switch (value.Type)
+        {
+            case JTokenType.Guid:
+                guid = value.Value<Guid>();
+                return true;
+            case JTokenType.String:
+                return Guid.TryParse(value.Value<string>(), out guid);
+            default:
+                return false;
+        }
     }
 
     public static bool TryGetInt(JObject json, string property, out int value)
