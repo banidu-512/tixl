@@ -8,6 +8,7 @@
     <IsTestProject>true</IsTestProject>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <Deterministic>true</Deterministic>
+    <RootNamespace>Mediapipe.Tests</RootNamespace>
     <NoWarn>$(NoWarn);NU1701</NoWarn>
   </PropertyGroup>
 
@@ -22,6 +23,9 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Operators\Mediapipe\Mediapipe.csproj" />
+    <!-- The operator package references Logging with Private=false (the editor supplies it at run time),
+         so the test host has to bring it along for the code paths that log. -->
+    <ProjectReference Include="..\Logging\Logging.csproj" />
   </ItemGroup>
 
   <!-- Ship the same mediapipe_c native the editor carries (Dependencies root on Windows, the platform

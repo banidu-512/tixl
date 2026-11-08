@@ -78,14 +78,6 @@
       "Usage": "Default"
     },
     {
-      "InputId": "abcdef12-3456-7890-abcd-ef1234567890"/*ZScale*/,
-      "Position": {
-        "X": -200.0,
-        "Y": 675.0
-      },
-      "Description": "Scale factor for Z coordinate of points."
-    },
-    {
       "InputId": "a1b2c3d4-0006-4a9b-8c2d-101010101010"/*Acceleration*/,
       "Position": {
         "X": -200.0,
@@ -100,8 +92,16 @@
         "Y": 825.0
       },
       "Description": "Worker threads for the Xnnpack acceleration (0 = library default). Ignored by Cpu and Gpu."
+    },
+    {
+      "InputId": "abcdef12-3456-7890-abcd-ef1234567890"/*ZScale*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 675.0
+      },
+      "Description": "Scale factor for Z coordinate of points."
     }
-],
+  ],
   "SymbolChildUis": [],
   "OutputUis": [
     {

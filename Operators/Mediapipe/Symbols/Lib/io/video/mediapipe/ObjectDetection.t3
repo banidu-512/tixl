@@ -2,15 +2,7 @@
   "FormatVersion": 3,
   "Id": "12345678-90ab-cdef-1234-567890abcdef"/*ObjectDetection*/,
   "Inputs": [
-        {
-      "Id": "a1b2c3d4-0006-4a9b-8c2d-101010101010"/*Acceleration*/,
-      "DefaultValue": 1
-    },
     {
-      "Id": "a1b2c3d4-1006-4a9b-8c2d-101010101010"/*InferenceThreads*/,
-      "DefaultValue": 0
-    },
-{
       "Id": "0abcdef1-2345-6789-0abc-def123456789"/*CorrectAspectRatio*/,
       "DefaultValue": false
     },
@@ -45,6 +37,14 @@
     {
       "Id": "90abcdef-1234-5678-90ab-cdef12345678"/*CategoryDenylist*/,
       "DefaultValue": ""
+    },
+    {
+      "Id": "a1b2c3d4-0006-4a9b-8c2d-101010101010"/*Acceleration*/,
+      "DefaultValue": "Xnnpack"
+    },
+    {
+      "Id": "a1b2c3d4-1006-4a9b-8c2d-101010101010"/*InferenceThreads*/,
+      "DefaultValue": 0
     },
     {
       "Id": "abcdef12-3456-7890-abcd-ef1234567890"/*ZScale*/,

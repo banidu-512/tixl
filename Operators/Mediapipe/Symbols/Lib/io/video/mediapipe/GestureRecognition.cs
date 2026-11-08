@@ -232,12 +232,7 @@ public class GestureRecognition : Instance<GestureRecognition>
     private const int MaxInferenceWidth = 640;
     private const int MaxCachedStagingTextures = 4;
     private const int MaxPooledBuffers = 4;
-
     private static readonly int MaxDownscaleThreads = Math.Clamp(Environment.ProcessorCount, 1, 8);
-
-    /// <summary>Xnnpack worker threads used when the InferenceThreads input keeps its default.
-    /// See <see cref="MediaPipeInferenceTuning"/> for why the binding's 0 is a bad default.</summary>
-    private const int DefaultInferenceThreads = MediaPipeInferenceTuning.DefaultThreads;
 
     private HandLandmarker? _handLandmarker;
     private long _frameTimestamp;
@@ -262,6 +257,8 @@ public class GestureRecognition : Instance<GestureRecognition>
     private readonly MediaPipeWorkerReaper _reaper = new();
 
     private readonly ConcurrentDictionary<(int width, int height, T3.Graphics.Format format), T3.Graphics.Compat.Texture2D> _cachedStagingTextures = new();
+    // Last format reported as unreadable, so the warning fires once per change.
+    private T3.Graphics.Format? _warnedInputFormat;
 
     private readonly object _textureCacheLock = new object();
 
@@ -280,7 +277,7 @@ public class GestureRecognition : Instance<GestureRecognition>
         _activeMinHandPresenceConfidence = minHandPresenceConfidence;
 
         // Registry lookup and a cheap file check stay here; the native landmarker creation runs on the worker.
-        var modelFound = MediaPipeModelResolver.TryResolve("hand_landmarker.task", this, out var fullPath);
+        var modelFound = AssetRegistry.TryResolveAddress("Mediapipe:hand_landmarker.task", this, out var fullPath, out _, logWarnings: true);
         if (!modelFound)
         {
             // Not Debug-gated: a missing asset is the one failure a user has to act on, and the retry
@@ -602,38 +599,92 @@ public class GestureRecognition : Instance<GestureRecognition>
 
     private GestureRecognitionRequest? CreateRequestFromTexture(Texture2D texture, float minHandDetectionConfidence, float minHandPresenceConfidence, int maxHands, string categoryAllowlist, string categoryDenylist)
     {
+        var device = ResourceManager.Device;
         var desc = texture.Description;
+        int width = desc.Width;
+        int height = desc.Height;
 
-        // One readback per evaluation frame serves every MediaPipe operator reading this texture: the
-        // mapped copy costs ~2 ms at 1080p and barely less at 640 px, so seven operators on one camera
-        // would otherwise pay it seven times for byte-identical pixels.
-        if (!MediaPipeFrameCache.TryGet(texture, MaxInferenceWidth, 3, out var frame,
-                                        out var inferenceWidth, out var inferenceHeight, out var readbackError))
+        var stagingTexture = GetOrCreateStagingTexture(width, height, desc.Format);
+
+        // Only an 8-bit RGBA/BGRA texture can be walked four bytes at a time; anything else
+        // is either garbage for the model or narrower than the walk, which would read past the
+        // mapping. Checked before the staging copy, so a wrong format costs nothing.
+        if (!MediaPipeTextureReadback.CheckFormat(desc.Format, ref _warnedInputFormat,
+                                                    message => Log.Warning(message, this), "GestureRecognition"))
+            return null;
+
+        // A busy, mismatched or foreign texture must degrade to "no result this frame"
+        // instead of throwing out of the evaluation loop.
+        if (!MediaPipeTextureReadback.TryMap(device.ImmediateContext, texture, stagingTexture,
+                                             out var dataBox, out var readbackError))
         {
             Log.Debug($"[GestureRecognition] Texture readback failed: {readbackError}", this);
             return null;
         }
 
-        // The cached array is shared and read-only for this frame; the worker still gets its own pooled
-        // copy because the native Image keeps that pointer for the duration of the inference.
-        byte[] buffer = GetBuffer(frame.Length);
-        System.Buffer.BlockCopy(frame, 0, buffer, 0, frame.Length);
-
-        long ts;
-        lock(_timestampLock) { ts = _frameTimestamp; _frameTimestamp += 33; }
-
-        return new GestureRecognitionRequest
+        if (!MediaPipeTextureReadback.RowPitchFits(dataBox, width))
         {
-        PixelData = buffer,
-        Width = inferenceWidth,
-        Height = inferenceHeight,
-        Timestamp = ts,
-        MinHandDetectionConfidence = minHandDetectionConfidence,
-        MinHandPresenceConfidence = minHandPresenceConfidence,
-        MaxHands = maxHands,
-        CategoryAllowlist = string.IsNullOrEmpty(categoryAllowlist) ? null : categoryAllowlist.Split(','),
-        CategoryDenylist = string.IsNullOrEmpty(categoryDenylist) ? null : categoryDenylist.Split(',')
-        };
+            device.ImmediateContext.UnmapSubresource(stagingTexture, 0);
+            Log.Debug($"[GestureRecognition] Readback row pitch {dataBox.RowPitch} cannot hold a {width}px row.", this);
+            return null;
+        }
+
+        try
+        {
+            // MediaPipe resizes to its model input (~224px) internally; feeding the full camera
+            // image only burns downsample/memcpy time before hitting that resize.
+            var downscale = Math.Min(1.0f, (float)MaxInferenceWidth / width);
+            var inferenceWidth = Math.Max(1, (int)(width * downscale));
+            var inferenceHeight = Math.Max(1, (int)(height * downscale));
+
+            byte[] buffer = GetBuffer(inferenceWidth * inferenceHeight * 3);
+            unsafe
+            {
+                IntPtr srcPtr = dataBox.DataPointer;
+                int rowPitch = dataBox.RowPitch;
+
+                fixed (byte* dst = buffer)
+                {
+                    IntPtr dstPtr = (IntPtr)dst;
+                    float sourceXStep = (float)width / inferenceWidth;
+                    float sourceYStep = (float)height / inferenceHeight;
+
+                    Parallel.For(0, inferenceHeight, iy =>
+                    {
+                        byte* rowSrc = (byte*)srcPtr + ((int)(iy * sourceYStep)) * rowPitch;
+                        byte* rowDst = (byte*)dstPtr + iy * inferenceWidth * 3;
+
+                        for (int ix = 0; ix < inferenceWidth; ix++)
+                        {
+                            int sx = (int)(ix * sourceXStep);
+                            rowDst[ix * 3] = rowSrc[sx * 4];         // R
+                            rowDst[ix * 3 + 1] = rowSrc[sx * 4 + 1]; // G
+                            rowDst[ix * 3 + 2] = rowSrc[sx * 4 + 2]; // B
+                        }
+                    });
+                }
+            }
+
+            long ts;
+            lock(_timestampLock) { ts = _frameTimestamp; _frameTimestamp += 33; }
+
+            return new GestureRecognitionRequest
+            {
+                PixelData = buffer,
+                Width = inferenceWidth,
+                Height = inferenceHeight,
+                Timestamp = ts,
+                MinHandDetectionConfidence = minHandDetectionConfidence,
+                MinHandPresenceConfidence = minHandPresenceConfidence,
+                MaxHands = maxHands,
+                CategoryAllowlist = string.IsNullOrEmpty(categoryAllowlist) ? null : categoryAllowlist.Split(','),
+                CategoryDenylist = string.IsNullOrEmpty(categoryDenylist) ? null : categoryDenylist.Split(',')
+            };
+        }
+        finally
+        {
+            device.ImmediateContext.UnmapSubresource(stagingTexture, 0);
+        }
     }
     #endregion Memory Management
 
@@ -1330,11 +1381,9 @@ public class GestureRecognition : Instance<GestureRecognition>
     [Input(Guid = "a1b2c3d4-0004-4a9b-8c2d-101010101010")]
     public readonly InputSlot<MediaPipeAcceleration> Acceleration = new(MediaPipeAcceleration.Xnnpack);
 
-    /// <summary>Worker threads for the Xnnpack acceleration (0 = library default, which is effectively
-        /// single-threaded). 4 is ~2x faster than the default on a 20-core machine; use 2 when
-        /// several MediaPipe operators run at once. Ignored by Cpu and Gpu.</summary>
+    /// <summary>Worker threads for the Xnnpack acceleration (0 = library default). Ignored by Cpu and Gpu.</summary>
     [Input(Guid = "a1b2c3d4-1004-4a9b-8c2d-101010101010")]
-    public readonly InputSlot<int> InferenceThreads = new(DefaultInferenceThreads);
+    public readonly InputSlot<int> InferenceThreads = new(0);
 
     [Input(Guid = "B6D7E8F9-0AB1-92C3-45E6-789012345678")]
     public readonly InputSlot<float> ZScale = new(1.0f);

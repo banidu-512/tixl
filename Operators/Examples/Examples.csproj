@@ -10,9 +10,9 @@
     <AssemblyName>$(RootNamespace)</AssemblyName>
     <Configurations>Debug;Release</Configurations>
     <Platforms>AnyCPU</Platforms>
-    <VersionPrefix>1.6.55</VersionPrefix>
+    <VersionPrefix>1.7.55</VersionPrefix>
     <HomeGuid>00000000-0000-0000-0000-000000000000</HomeGuid>
-    <EditorVersion>4.1.0</EditorVersion>
+    <EditorVersion>4.3.0</EditorVersion>
     <IsEditorOnly>false</IsEditorOnly>
     <DisableTransitiveProjectReferences>true</DisableTransitiveProjectReferences>
     <Deterministic>true</Deterministic>
@@ -124,6 +124,7 @@
     <Operators Include="lib" Version="1.0.0" ResourcesOnly="False" />
     <Operators Include="Video" Version="1.0.0" ResourcesOnly="False" />
     <Operators Include="Io" Version="1.0.0" ResourcesOnly="False" />
+    <Operators Include="StreamDiffusion" Version="1.0.0" ResourcesOnly="False" />
     <Operators Include="Mediapipe" Version="1.0.0" ResourcesOnly="False" />
   </ItemGroup>
   <Target Name="ClearBuildOutput" BeforeTargets="BeforeBuild" Condition="'$(Configuration)' == 'Release'">

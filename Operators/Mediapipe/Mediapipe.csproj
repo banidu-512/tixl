@@ -110,6 +110,12 @@
     <ProjectReference Include="../../Logging/Logging.csproj" Private="false" PrivateAssets="all" />
   </ItemGroup>
   <ItemGroup>
+    <!-- The teardown reaper and the pooling helpers are implementation details of the operators, but
+         their invariants (native task closed only after its worker exits, bounded waits) are what the
+         tests exist to pin down. -->
+    <InternalsVisibleTo Include="Mediapipe.Tests" />
+  </ItemGroup>
+  <ItemGroup>
     <PackageReference Include="CppSharp.Runtime" Version="1.1.84.17100" />
     <PackageReference Include="OpenCvSharp4" Version="4.13.0.20260627" />
     <PackageReference Include="OpenCvSharp4.Extensions" Version="4.13.0.20260627" />
@@ -139,6 +145,12 @@
     <PackageSymbols Include="Symbols/**/*.t3" />
     <PackageSymbolUis Include="Symbols/**/*.t3ui" />
     <PackageSourceCode Include="Symbols/**/*.cs" />
+    <!-- The package's shared helpers live outside Symbols/ (they define no operator), but a recompile of
+         the installed package globs SourceCode/** - so they have to ship with it. MediapipeNativeLibrary
+         is in particular not optional: its module initializer registers MediaPipeAcceleration as an input
+         slot type. -->
+    <PackageSourceCode Include="Utils/**/*.cs" />
+    <PackageSourceCode Include="MediapipeNativeLibrary.cs" />
     <PackageMeta Include=".meta/**/*" />
   </ItemGroup>
   <Target Name="CopyPackageContent" AfterTargets="AfterBuild" Condition="'$(Configuration)' == 'Release'">

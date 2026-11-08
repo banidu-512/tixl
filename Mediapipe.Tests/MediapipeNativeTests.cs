@@ -24,10 +24,12 @@ public class MediapipeNativeTests
         => Path.Combine(AppContext.BaseDirectory, "Assets", fileName);
 
     /// <summary>Deterministic SRGB test frame (gradient). Content doesn't matter - the assertions are about
-    /// the pipeline running; on noise images the detectors legitimately find nothing.</summary>
+    /// the pipeline running; on noise images the detectors legitimately find nothing. The buffer is pinned
+    /// on the POH for the same reason the operators pin theirs: the native Image keeps the pointer after
+    /// the constructor's own pin is released, so a compacting GC could move it mid-inference.</summary>
     private static Image CreateTestImage()
     {
-        var pixels = new byte[Width * Height * 3];
+        var pixels = GC.AllocateUninitializedArray<byte>(Width * Height * 3, pinned: true);
         for (var y = 0; y < Height; y++)
         {
             for (var x = 0; x < Width; x++)
@@ -173,8 +175,9 @@ public class MediapipeNativeTests
             using var image = CreateTestImage();
             var result = landmarker.DetectForVideo(image, timestamp);
 
-            // Whether the bundled pose model emits a segmentation-mask packet is model/native
-            // dependent; when it does, the operator path (read + dispose) must work without faults.
+            // Whether the bundled pose model emits a segmentation-mask packet is model/native dependent,
+            // and no assertion here may depend on it: the contract under test is the operator's read +
+            // dispose path, which must work when masks appear and must not fault when they do not.
             if (result.SegmentationMasks is not { Count: > 0 })
                 continue;
 

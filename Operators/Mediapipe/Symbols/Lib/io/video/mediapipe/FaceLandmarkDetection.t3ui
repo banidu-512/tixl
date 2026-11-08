@@ -84,6 +84,22 @@
       "Description": "The image to process."
     },
     {
+      "InputId": "a1b2c3d4-0003-4a9b-8c2d-101010101010"/*Acceleration*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 1125.0
+      },
+      "Description": "Inference acceleration: Cpu = plain single-threaded TF Lite (works everywhere), Xnnpack = multithreaded CPU (the fast default), Gpu = OpenGL/EGL delegate (Linux; the Windows/macOS natives are CPU-only and fall back to Cpu)."
+    },
+    {
+      "InputId": "a1b2c3d4-1003-4a9b-8c2d-101010101010"/*InferenceThreads*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 1200.0
+      },
+      "Description": "Worker threads for the Xnnpack acceleration (0 = library default). Ignored by Cpu and Gpu."
+    },
+    {
       "InputId": "abcdef12-3456-7890-abcd-ef1234567890"/*Enabled*/,
       "Position": {
         "X": -200.0,
@@ -122,24 +138,8 @@
         "Y": 525.0
       },
       "Description": "Whether to normalize landmark coordinates to [0, 1] range."
-    },
-    {
-      "InputId": "a1b2c3d4-0003-4a9b-8c2d-101010101010"/*Acceleration*/,
-      "Position": {
-        "X": -200.0,
-        "Y": 1125.0
-      },
-      "Description": "Inference acceleration: Cpu = plain single-threaded TF Lite (works everywhere), Xnnpack = multithreaded CPU (the fast default), Gpu = OpenGL/EGL delegate (Linux; the Windows/macOS natives are CPU-only and fall back to Cpu)."
-    },
-    {
-      "InputId": "a1b2c3d4-1003-4a9b-8c2d-101010101010"/*InferenceThreads*/,
-      "Position": {
-        "X": -200.0,
-        "Y": 1200.0
-      },
-      "Description": "Worker threads for the Xnnpack acceleration (0 = library default). Ignored by Cpu and Gpu."
     }
-],
+  ],
   "SymbolChildUis": [],
   "OutputUis": [
     {
