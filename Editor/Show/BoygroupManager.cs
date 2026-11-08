@@ -732,6 +732,17 @@ internal sealed class BoygroupManager
     {
         client.Peer.IsAuthenticated = true;
         SendJson(client.Peer, new { t = "authOk", serverName = Environment.MachineName });
+
+        // Late joiners must see the show as it runs: the play broadcast only fires when the
+        // master's playback state changes, so a client that joined mid-show stayed frozen.
+        var playback = Playback.Current;
+        SendJson(client.Peer, new
+                               {
+                                   t = "play",
+                                   playing = (playback?.PlaybackSpeed ?? 0) > 0,
+                                   bars = playback?.TimeInBars ?? 0,
+                               });
+
         Log.Info($"Boygroup: client authenticated: {client.Name} ({client.Address}) group '{client.Group}'");
 
         // A node that appears is served: schedule a deploy shortly after the handshake (the delay
