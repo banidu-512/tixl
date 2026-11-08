@@ -23,6 +23,7 @@ Symptom -> cause -> fix for the laser pipeline. Referenced: [LaserCamera](LaserC
 | Shapes drawn in chaotic order, lots of invisible jumps | Path order unoptimized | `EnableOptimization` on [Laser optimization](LaserOptimizer.md) |
 | Content smaller than the aimed zone / distorted | Frame mapping | Set the output's *Frame mapping* (Fit keeps aspect, Stretch fills, Crop covers); see the output's safety section |
 | Image lands outside the aimed zone | Safe zone vs. content | Check the safe zone and the setup rectangle in the output's safety section |
+| A single static dot (beam effect) renders dark | Static-dwell blanking counts the DAC's frame loop | A lone spot that never moves is blanked by design - add motion or more dwell points; see [Laser safety](Laser%20Safety.md) |
 | PONK content zoomed/cropped wrongly | Sub-rectangle mapping | Set MinX/MaxX/MinY/MaxY on [PONKInput](PONKInput.md) back to -1..1 |
 
 The streams loop the last frame between the driver's ~30 Hz submissions and blank via the watchdog when fresh frames stop - a paused graph never burns a frozen lit frame and never flickers.
