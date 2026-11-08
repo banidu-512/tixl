@@ -102,5 +102,7 @@ internal sealed partial class SettingsWindow
                                   ACTIVE machine stops answering. Heartbeats use multicast so both machines can also be
                                   rehearsed on a single PC.
                                   """);
+
+        DrawNetworkInterface(ref changed);
     }
 }

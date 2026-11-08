@@ -118,6 +118,28 @@ internal sealed class BoygroupManager
         RemoteInputBus.ErrorReported += message => Log.Warning(message);
     }
 
+    /// <summary>Adds the machines this instance is currently linked to: the render nodes on a
+    /// master, the master on a render node — the settings panel's network check compares them
+    /// against the selected adapter.</summary>
+    public void AddLinkedPeers(List<NetworkPeer> peers)
+    {
+        if (State == BoygroupState.Client)
+        {
+            var address = (_transport as BoygroupClientTransport)?.ServerPeer.RemoteAddress;
+            if (address != null)
+                peers.Add(new NetworkPeer("Boygroup master", address));
+        }
+        else if (State == BoygroupState.Server)
+        {
+            foreach (var client in _clients)
+            {
+                var address = client.Peer.RemoteAddress;
+                if (address != null)
+                    peers.Add(new NetworkPeer($"Boygroup node {client.Name}", address));
+            }
+        }
+    }
+
     /// <summary>What the input replication is doing, for the settings panel and the debug bridge.</summary>
     public string InputRelaySummary => State switch
                                            {
@@ -173,7 +195,7 @@ internal sealed class BoygroupManager
         {
             _password = password ?? "";
             GroupName = group;
-            _transport = new BoygroupServerTransport(port, UserSettings.Config.BoygroupGroups.Distinct().ToArray());
+            _transport = new BoygroupServerTransport(port, UserSettings.Config.BoygroupGroups.Distinct().ToArray(), UserSettings.Config.NetworkInterface);
             _transport.PeerDisconnected += OnPeerDisconnected;
             State = BoygroupState.Server;
             StatusText = $"Serving group '{group}' on port {port}";
@@ -1303,7 +1325,7 @@ internal sealed class BoygroupManager
                 directTargets = [resolved];
         }
 
-        _discoveryScanner.Start(UserSettings.Config.BoygroupPort + LanDiscoveryResponder.DiscoveryPortOffset, directTargets);
+        _discoveryScanner.Start(UserSettings.Config.BoygroupPort + LanDiscoveryResponder.DiscoveryPortOffset, directTargets, UserSettings.Config.NetworkInterface);
     }
 
     public void StopDiscovery()

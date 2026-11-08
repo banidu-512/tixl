@@ -213,6 +213,8 @@ internal sealed partial class SettingsWindow
                                           used after a deployment restarts the client to apply new files.
                                           """,
                                           true);
+
+        DrawNetworkInterface(ref changed);
     }
 
     private static string? _boygroupGroup;

@@ -238,6 +238,10 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         /// <summary>Shared password for boygroup and failover handshakes. Edited in the Boygrouping settings tab.</summary>
         public string CollabPassword = "";
 
+        /// <summary>The network adapter TiXL binds to for boygrouping, LAN discovery and failover
+        /// heartbeats (Settings → Boygrouping/Failover → Network). Empty = all interfaces.</summary>
+        public string NetworkInterface = "";
+
         // Boygrouping (show distribution to render nodes)
         /// <summary>Master switch: this machine participates in boygrouping. When set, the role
         /// below starts automatically shortly after launch — a show machine comes up in its role
