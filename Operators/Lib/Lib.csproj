@@ -143,6 +143,9 @@
     <PackageReference Include="SkiaSharp.NativeAssets.macOS" Version="4.148.0" Condition="$([MSBuild]::IsOSPlatform('OSX'))" />
     <PackageReference Include="SixLabors.Fonts" Version="$(SixLaborsFontsVersion)" />
     <PackageReference Include="LibTessDotNet" Version="1.1.15" />
+    <!-- Managed-only DirectShow interop for [WebcamInput]'s camera controls (brightness, pan, zoom...) on
+         Windows; the assembly loads elsewhere but is never called. -->
+    <PackageReference Include="DirectShowLib.Standard" Version="2.1.0" />
   </ItemGroup>
   <!-- Copy package content into this project's own output only (not transitively to other projects).
        Uses a custom Target instead of <Content CopyToOutputDirectory> to prevent MSBuild from
