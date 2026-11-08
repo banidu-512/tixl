@@ -51,9 +51,52 @@ internal sealed partial class SettingsWindow
         FormInputs.AddVerticalSpace();
 
         // -------------------------------------------------------------------------------------
-        // Session
+        // Enable switch and role
         // -------------------------------------------------------------------------------------
         FormInputs.AddSectionSubHeader("Session");
+        FormInputs.AddVerticalSpace();
+
+        var enabledChanged = FormInputs.AddCheckBox("Enable boygrouping",
+                                                   ref config.BoygroupEnabled,
+                                                   """
+                                                   This machine participates in boygrouping. When enabled, the role
+                                                   below is applied at launch too: a master starts its server and a
+                                                   slave joins (or waits for) a master without anyone clicking —
+                                                   that's how a show machine comes up ready after a reboot.
+                                                   """,
+                                                   false);
+        if (enabledChanged)
+            manager.ApplyEnabledSetting();
+
+        changed |= enabledChanged;
+
+        ImGui.TextUnformatted("Role");
+        CustomComponents.TooltipForLastItem("A master hosts the show and deploys to render nodes; a slave renders what the master sends.");
+        ImGui.Indent();
+        var roleChanged = false;
+        if (ImGui.RadioButton("Master (server)", config.BoygroupIsMaster))
+        {
+            config.BoygroupIsMaster = true;
+            roleChanged = true;
+        }
+
+        ImGui.SameLine();
+        if (ImGui.RadioButton("Slave (render node)", !config.BoygroupIsMaster))
+        {
+            config.BoygroupIsMaster = false;
+            roleChanged = true;
+        }
+
+        ImGui.Unindent();
+        if (roleChanged && config.BoygroupEnabled)
+        {
+            UserSettings.Save();
+            manager.Leave();
+            manager.ApplyEnabledSetting();
+        }
+
+        changed |= roleChanged;
+
         FormInputs.AddVerticalSpace();
 
         if (manager.State == BoygroupManager.BoygroupState.Off)

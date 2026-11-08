@@ -111,7 +111,7 @@ internal sealed class BoygroupServerTransport : BoygroupTransport
                 continue;
             }
 
-            client.NoDelay = true;
+            CollabProtocol.ConfigureShowSocket(client);
             CollabPeerConnection peer;
             try
             {
@@ -183,7 +183,7 @@ internal sealed class BoygroupClientTransport : BoygroupTransport
     public static BoygroupClientTransport Connect(IPEndPoint endPoint)
     {
         var client = CollabProtocol.ConnectWithTimeout(endPoint);
-        client.NoDelay = true;
+        CollabProtocol.ConfigureShowSocket(client);
         return new BoygroupClientTransport(client);
     }
 

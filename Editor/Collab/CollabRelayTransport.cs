@@ -138,7 +138,7 @@ internal sealed class CollabRelayHostTransport : CollabTransport
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
             timeout.CancelAfter(CollabProtocol.ConnectTimeoutMs);
             await client.ConnectAsync(relayHost, relayPort, timeout.Token);
-            client.NoDelay = true;
+            CollabProtocol.ConfigureShowSocket(client);
             client.SendTimeout = CollabProtocol.WriteTimeoutMs;
             var stream = client.GetStream();
 
@@ -453,7 +453,7 @@ internal sealed class CollabRelayClientTransport : CollabTransport
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
             timeout.CancelAfter(CollabProtocol.ConnectTimeoutMs);
             await client.ConnectAsync(relayHost, relayPort, timeout.Token);
-            client.NoDelay = true;
+            CollabProtocol.ConfigureShowSocket(client);
             client.SendTimeout = CollabProtocol.WriteTimeoutMs;
             var stream = client.GetStream();
 

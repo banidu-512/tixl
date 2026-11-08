@@ -48,9 +48,13 @@ internal static class CollabProtocol
 
     public const int MaxPeers = 16;
     public const int MaxSelectionIdsPerPresence = 15;
-    public const int HeartbeatIntervalMs = 1000;
+    /// <summary>Show-control heartbeats ride small TCP frames; 500 ms keeps loss detection fast
+    /// while costing nothing measurable on a wired LAN.</summary>
+    public const int HeartbeatIntervalMs = 500;
     public const int HeartbeatPingSize = 8;
-    public const int PeerTimeoutMs = 10_000;
+    /// <summary>Silence for more than ~6 × heartbeat means the peer is gone. TCP keepalive below
+    /// catches half-open links even faster.</summary>
+    public const int PeerTimeoutMs = 3_000;
     public const int PresenceSendIntervalMs = 50;
 
     /// <summary>Writes run on the UI thread: a peer that stops reading stalls it at most this long before it is dropped.</summary>
@@ -58,6 +62,29 @@ internal static class CollabProtocol
 
     /// <summary>Joins dial from the UI thread; an unreachable host must not freeze it for the OS SYN-retry timeout.</summary>
     public const int ConnectTimeoutMs = 5000;
+
+    /// <summary>
+    /// One knob for every show-control socket: no Nagle (frames must leave this frame) and a short
+    /// TCP keepalive (3 s idle, 1 s probe interval) so a half-open link — cable pulled, peer
+    /// crashed without FIN — surfaces as a read failure within seconds instead of minutes.
+    /// Best effort: keepalive tuning throws on some platforms, and a missing one only slows
+    /// detection, never correctness.
+    /// </summary>
+    public static void ConfigureShowSocket(TcpClient client)
+    {
+        client.NoDelay = true;
+        try
+        {
+            var socket = client.Client;
+            socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
+            socket.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveTime, 3);
+            socket.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveInterval, 1);
+        }
+        catch (Exception)
+        {
+            // Older stacks without the TCP-level tuning; plain keepalive is still on.
+        }
+    }
 
     public enum FrameType : byte
     {
