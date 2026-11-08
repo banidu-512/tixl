@@ -119,16 +119,6 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         /// <summary>Relaunch the editor automatically after a crash via a supervisor process.</summary>
         public bool CrashAutoRestart = false;
 
-        // Startup & recovery
-        /// <summary>Project folder that opens automatically on the next launch. Empty starts with the Hub.</summary>
-        public string StartupProjectFolder = "";
-
-        /// <summary>Installs a per-user OS login entry (Windows Run key, Linux XDG autostart, macOS LaunchAgent).</summary>
-        public bool AutostartWithSystem = false;
-
-        /// <summary>Relaunch the editor automatically after a crash via a supervisor process.</summary>
-        public bool CrashAutoRestart = false;
-
         // UI-Elements
         public bool ShowThumbnails = true;
         public bool ShowMainMenu = true;
@@ -268,6 +258,14 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public string CollabDiscordUserAvatar = "";
 
         // Boygrouping (show distribution to render nodes)
+        /// <summary>Master switch: this machine participates in boygrouping. When set, the role
+        /// below starts automatically shortly after launch — a show machine comes up in its role
+        /// without anyone clicking.</summary>
+        public bool BoygroupEnabled = false;
+
+        /// <summary>true = this machine is a master (server); false = slave (render node).</summary>
+        public bool BoygroupIsMaster = false;
+
         public string BoygroupClientName = "";
         public int BoygroupPort = 44720;
         public bool BoygroupAutoJoin = true;
