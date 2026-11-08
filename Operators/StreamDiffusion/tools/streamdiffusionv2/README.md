@@ -57,9 +57,9 @@ prompt is cached on disk, so a known prompt starts in about 1.4 s instead of loa
 
 | Provider | Status | Notes |
 |---|---|---|
-| CUDA | verified | Fastest warm path; used for all measurements above |
+| CUDA | verified | Fastest warm path; used for all measurements above. Needs the CUDA 13 runtime and cuDNN 9 (ONNX Runtime 1.30, driver 580+); CUDA 13 no longer supports Pascal GPUs, which fall back to CPU |
 | TensorRT | verified | Builds engines on first use (about 12 min for all five graphs, 2.8 GB in `trt_cache`); later runs reuse them. The DiT gets an explicit 1-4 batch profile, so Steps can change without a rebuild. TensorRT runs alone here: adding CUDA as a per-node fallback made the DiT roughly 6x slower in testing (7 min vs 1 min 12 s for the same frames) |
-| DirectML | unsupported | ONNX Runtime's DML provider fails the DiT and VAE 5D reshapes (`node_view_*`) with an internal error. The operator rejects the provider at load time |
+| DirectML | not available | ONNX Runtime 1.28 stopped publishing a DirectML build, and its DML provider fails the DiT and VAE 5D reshapes (`node_view_*`) with an internal error anyway. Selecting it logs that the runtime ships no DirectML provider and continues on CUDA or CPU |
 | CPU | works, very slow | Only practical for a one-off test; the 1.3B DiT step takes minutes |
 
 TiXL finds the TensorRT 10 runtime itself - the standard `NVIDIA GPU Computing Toolkit\TensorRT-*\bin` install,

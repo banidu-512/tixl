@@ -73,6 +73,20 @@ public static class OnnxNativeSelector
 
     public static string Describe(Build build) => build == Build.Gpu ? "CUDA" : "DirectML";
 
+    /// <summary>
+    /// Whether <paramref name="build"/>'s native is shipped next to <paramref name="ortAssembly"/>. ONNX Runtime
+    /// 1.28 stopped publishing the DirectML build, so callers that offer DirectML as a choice need this to say
+    /// "not available in this runtime" instead of "restart to switch" (which would never succeed).
+    /// </summary>
+    public static bool IsShipped(Assembly ortAssembly, Build build)
+    {
+        if (!OperatingSystem.IsWindows())
+            return true;
+
+        var assemblyDir = Path.GetDirectoryName(ortAssembly.Location) ?? AppContext.BaseDirectory;
+        return HasNative(assemblyDir, build);
+    }
+
     private static bool HasNative(string assemblyDir, Build build)
         => File.Exists(Path.Combine(assemblyDir, build == Build.Gpu ? GpuFolder : DirectMlFolder, "onnxruntime.dll"));
 

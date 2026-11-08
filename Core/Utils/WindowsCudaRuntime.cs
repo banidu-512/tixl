@@ -12,14 +12,15 @@ namespace T3.Core.Utils;
 /// DLLs in a folder of its own that PATH doesn't name, and the provider then fails with "Failed to load shared
 /// library" without saying which one is missing.
 /// <para>Libraries are looked up through the normal DLL search first, then in a <c>CudaRuntime</c> folder next to the
-/// operator, in <c>CUDA_PATH_V12_*</c> and the usual install folders of toolkit and cuDNN. Loaded by absolute path
-/// they stay resident, which satisfies the provider's own imports by name without PATH having to change.</para></summary>
+/// operator, in <c>CUDA_PATH_V13_*</c>/<c>CUDA_PATH_V12_*</c> and the usual install folders of toolkit and cuDNN.
+/// Loaded by absolute path they stay resident, which satisfies the provider's own imports by name without PATH
+/// having to change.</para></summary>
 public static class WindowsCudaRuntime
 {
-    /** What onnxruntime_providers_cuda.dll of the 1.24 GPU package links against, plus cuDNN. */
+    /** What onnxruntime_providers_cuda.dll of the 1.30 GPU package imports, plus cuDNN. CUDA 13 dropped Pascal. */
     private static readonly string[] RequiredLibraries =
     {
-        "cudart64_12.dll", "cublasLt64_12.dll", "cublas64_12.dll", "curand64_10.dll", "cufft64_11.dll", "cudnn64_9.dll"
+        "cudart64_13.dll", "cublasLt64_13.dll", "cublas64_13.dll", "cufft64_12.dll", "cudnn64_9.dll"
     };
 
     /** The TensorRT 10 runtime the provider DLL imports. Optional helpers are skipped when absent. */
@@ -91,8 +92,8 @@ public static class WindowsCudaRuntime
         if (missing.Count == 0)
             return null;
 
-        return $"{string.Join(", ", missing)} not found. The ONNX Runtime GPU build needs the CUDA 12 runtime and cuDNN 9 " +
-               "(NVIDIA driver 525 or newer, Pascal or newer GPU). Install them, or put their DLLs in a CudaRuntime folder next to the operator";
+        return $"{string.Join(", ", missing)} not found. This ONNX Runtime's GPU build needs the CUDA 13 runtime and cuDNN 9 " +
+               "(NVIDIA driver 580 or newer; CUDA 13 no longer supports Pascal GPUs). Install them, or put their DLLs in a CudaRuntime folder next to the operator";
     }
 
     private static string? ProbeTensorRt()
@@ -188,18 +189,33 @@ public static class WindowsCudaRuntime
         if (!string.IsNullOrEmpty(assemblyDir))
             Add(Path.Combine(assemblyDir, "CudaRuntime"));
 
-        // Newest CUDA 12 toolkit first; a CUDA 13 install doesn't carry the 12 runtime and is never a match
+        // This ONNX Runtime's provider imports the CUDA 13 runtime. Toolkits from 13 on keep their DLLs in
+        // bin\x64, so both layouts are probed; CUDA 12 directories stay in the list because a stray 12 install
+        // can still satisfy nothing here and is harmless to look at.
+        foreach (var variable in Environment.GetEnvironmentVariables().Keys.Cast<string>()
+                                            .Where(name => name.StartsWith("CUDA_PATH_V13_", StringComparison.OrdinalIgnoreCase))
+                                            .OrderByDescending(name => name, StringComparer.OrdinalIgnoreCase))
+        {
+            var root = Environment.GetEnvironmentVariable(variable) ?? string.Empty;
+            Add(Path.Combine(root, "bin", "x64"));
+            Add(Path.Combine(root, "bin"));
+        }
+
         foreach (var variable in Environment.GetEnvironmentVariables().Keys.Cast<string>()
                                             .Where(name => name.StartsWith("CUDA_PATH_V12_", StringComparison.OrdinalIgnoreCase))
                                             .OrderByDescending(name => name, StringComparer.OrdinalIgnoreCase))
         {
             Add(Path.Combine(Environment.GetEnvironmentVariable(variable) ?? string.Empty, "bin"));
+            Add(Path.Combine(Environment.GetEnvironmentVariable(variable) ?? string.Empty, "bin", "x64"));
         }
 
         var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
-        AddSubfolders(Add, Path.Combine(programFiles, "NVIDIA GPU Computing Toolkit", "CUDA"), "v12.*", "bin");
+        var cudaToolkitRoot = Path.Combine(programFiles, "NVIDIA GPU Computing Toolkit", "CUDA");
+        AddSubfolders(Add, cudaToolkitRoot, "v13.*", Path.Combine("bin", "x64"));
+        AddSubfolders(Add, cudaToolkitRoot, "v13.*", "bin");
+        AddSubfolders(Add, cudaToolkitRoot, "v12.*", "bin");
 
-        // cuDNN 9 installs per CUDA major version: CUDNN\v9.x\bin\12.y\x64
+        // cuDNN 9 installs per CUDA major version: CUDNN\v9.x\bin\13.y\x64 for CUDA 13, ...\12.y\x64 for 12
         var cudnnRoot = Path.Combine(programFiles, "NVIDIA", "CUDNN");
         if (Directory.Exists(cudnnRoot))
         {
@@ -209,10 +225,13 @@ public static class WindowsCudaRuntime
                 if (!Directory.Exists(binDir))
                     continue;
 
-                foreach (var cudaMajor in Directory.GetDirectories(binDir, "12*").OrderByDescending(d => d, StringComparer.OrdinalIgnoreCase))
+                foreach (var pattern in new[] { "13*", "12*" })
                 {
-                    Add(Path.Combine(cudaMajor, "x64"));
-                    Add(cudaMajor);
+                    foreach (var cudaMajor in Directory.GetDirectories(binDir, pattern).OrderByDescending(d => d, StringComparer.OrdinalIgnoreCase))
+                    {
+                        Add(Path.Combine(cudaMajor, "x64"));
+                        Add(cudaMajor);
+                    }
                 }
 
                 Add(binDir);
