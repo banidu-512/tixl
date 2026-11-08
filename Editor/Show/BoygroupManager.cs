@@ -816,7 +816,8 @@ internal sealed class BoygroupManager
         }
 
         var mirror = UserSettings.Config.BoygroupDeployMirror;
-        var inventory = BoygroupDeployer.BuildInventory(projectFolder);
+        var setupsFolderRelative = Path.GetRelativePath(projectFolder, SetupFiles.FolderIn(projectFolder));
+        var inventory = BoygroupDeployer.BuildInventory(projectFolder, setupsFolderRelative);
 
         foreach (var client in _clients.Where(c => c.Peer.IsAuthenticated && c.Group == GroupName).ToList())
         {
@@ -995,11 +996,14 @@ internal sealed class BoygroupManager
 
     private void HandleServerInventory(JObject json)
     {
-        // Client answers the server's request with what it has on disk.
+        // Client answers the server's request with what it has on disk. The setups folder is
+        // excluded on both sides: it travels as live setupJson, and mirror mode would otherwise
+        // flag the client's applied setups as extra and delete them.
         var projectFolder = GetProjectFolder();
         var inventory = string.IsNullOrEmpty(projectFolder)
                             ? []
-                            : BoygroupDeployer.BuildInventory(projectFolder);
+                            : BoygroupDeployer.BuildInventory(projectFolder,
+                                                              Path.GetRelativePath(projectFolder, SetupFiles.FolderIn(projectFolder)));
         SendJson(((_transport as BoygroupClientTransport)!).ServerPeer, BoygroupDeployer.BuildInventoryMessage(inventory));
     }
 
@@ -1097,6 +1101,34 @@ internal sealed class BoygroupManager
 
         if (!shouldRestart || !UserSettings.Config.BoygroupAutoJoin)
             return;
+
+        // Flood breaker, persisted across the restarts it guards: a file that perpetually diffs
+        // (should be impossible now that setups are excluded) may never loop a show machine.
+        var config = UserSettings.Config;
+        var now = Environment.TickCount64;
+        if (now < config.BoygroupDeployRestartBlockedUntilTicks)
+        {
+            Log.Warning($"Boygroup: deploy restart blocked for another {(config.BoygroupDeployRestartBlockedUntilTicks - now) / 1000}s (restart-loop guard) - staying up");
+            return;
+        }
+
+        if (config.BoygroupDeployRestartWindowStartTicks == 0 || now - config.BoygroupDeployRestartWindowStartTicks > 120_000)
+        {
+            config.BoygroupDeployRestartWindowStartTicks = now;
+            config.BoygroupDeployRestartCount = 1;
+        }
+        else
+        {
+            config.BoygroupDeployRestartCount++;
+            if (config.BoygroupDeployRestartCount > 4)
+            {
+                config.BoygroupDeployRestartBlockedUntilTicks = now + 300_000;
+                config.BoygroupDeployRestartCount = 0;
+                Log.Warning("Boygroup: more than four deploy restarts in two minutes - blocking further deploy restarts for five minutes (restart-loop guard)");
+            }
+        }
+
+        UserSettings.Save();
 
         RestartPending = true;
         // Brief delay so the panel shows what happened before the process exits.

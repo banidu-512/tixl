@@ -36,14 +36,17 @@ internal static class BoygroupDeployer
         public long LastWriteTicks;
     }
 
-    /// <summary>relPath → (size, mtime). Fast compare, same quick-check model as rsync.</summary>
-    public static Dictionary<string, InventoryEntry> BuildInventory(string projectFolder)
+    /// <summary>relPath → (size, mtime). Fast compare, same quick-check model as rsync. Files under
+    /// <paramref name="excludedRelativeDir"/> (slash-separated, relative to the project root) are left
+    /// out: the output setups travel as live <c>setupJson</c> messages instead, and a client that
+    /// re-serializes its applied setup would otherwise diff against the master's file forever.</summary>
+    public static Dictionary<string, InventoryEntry> BuildInventory(string projectFolder, string? excludedRelativeDir = null)
     {
         var inventory = new Dictionary<string, InventoryEntry>(PathComparer);
         if (string.IsNullOrEmpty(projectFolder) || !Directory.Exists(projectFolder))
             return inventory;
 
-        foreach (var filePath in EnumerateProjectFiles(projectFolder))
+        foreach (var filePath in EnumerateProjectFiles(projectFolder, excludedRelativeDir))
         {
             try
             {
@@ -65,8 +68,13 @@ internal static class BoygroupDeployer
         return inventory;
     }
 
-    private static IEnumerable<string> EnumerateProjectFiles(string projectFolder)
+    private static IEnumerable<string> EnumerateProjectFiles(string projectFolder, string? excludedRelativeDir)
     {
+        var excludedPrefix = string.IsNullOrEmpty(excludedRelativeDir)
+                                 ? null
+                                 : excludedRelativeDir.Replace('\\', '/').TrimEnd('/') + "/";
+        var projectPrefix = projectFolder.Replace('\\', '/').TrimEnd('/') + "/";
+
         // Enumerate depth-first so the exclusion check is per directory segment; obj/bin build
         // outputs never deploy either.
         var stack = new Stack<string>();
@@ -77,6 +85,10 @@ internal static class BoygroupDeployer
             var directoryName = Path.GetFileName(directory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
             if (directory != projectFolder &&
                 (ExcludedDirectories.Contains(directoryName, StringComparer.OrdinalIgnoreCase) || directoryName is "obj" or "bin"))
+                continue;
+
+            var directoryRelative = directory.Replace('\\', '/').TrimEnd('/');
+            if (excludedPrefix != null && (directoryRelative + "/").StartsWith(projectPrefix + excludedPrefix, StringComparison.OrdinalIgnoreCase))
                 continue;
 
             foreach (var file in Directory.EnumerateFiles(directory))
