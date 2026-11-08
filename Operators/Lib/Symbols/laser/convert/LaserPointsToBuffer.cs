@@ -156,12 +156,25 @@ internal sealed class LaserPointsToBuffer : Instance<LaserPointsToBuffer>
                 }
 
                 ResourceManager.CreateStructuredBufferSrv(_buffer, ref _bufferWithViews.Srv);
-                ResourceManager.CreateStructuredBufferUav(_buffer, UnorderedAccessViewBufferFlags.None, ref _bufferWithViews.Uav);
-                if (_bufferWithViews.Srv == null || _bufferWithViews.Uav == null)
+                if (_bufferWithViews.Srv == null)
                 {
-                    Log.Error("Failed to create views for laser point buffer", this);
+                    Log.Error("Failed to create the SRV for the laser point buffer", this);
                     ReleaseBuffer();
                     return false;
+                }
+
+                // The UAV is optional: drawing only needs the SRV, and some graphics backends
+                // (and the newer resource layer) intentionally do not create a UAV for a
+                // draw-only structured buffer. Requiring it used to drop an otherwise valid
+                // frame on every evaluation.
+                try
+                {
+                    ResourceManager.CreateStructuredBufferUav(_buffer, UnorderedAccessViewBufferFlags.None, ref _bufferWithViews.Uav);
+                }
+                catch (Exception e)
+                {
+                    _bufferWithViews.Uav = null;
+                    Log.Debug($"Laser point buffer UAV unavailable ({e.Message}) - SRV-only buffer kept");
                 }
 
                 _bufferWithViews.Buffer = _buffer;
