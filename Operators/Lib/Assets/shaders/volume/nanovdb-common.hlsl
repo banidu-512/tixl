@@ -118,6 +118,151 @@ float3 VdbIndexCornerWorldPosition(in VdbGridInfo info, int3 indexCorner)
     return info.translation + (float3)indexCorner * info.voxelSize;
 }
 
+// ---------- world-space sampling, for fields and other per-sample callers ----------
+//
+// NanoVdbVolume.hlsl carries its own copy of this walk, tuned for a raymarcher that builds the
+// grid info once per pixel. It is deliberately not switched over to these helpers here, because
+// that shader cannot be run by the test suite; when it is next touched, it should include this
+// file and drop its duplicates.
+
+/// Walks root -> upper -> lower and returns the leaf byte offset, or 0 when the voxel lies in a
+/// constant tile, whose value is returned through tileValue.
+uint VdbFindLeaf(StructuredBuffer<uint> g, in VdbGridInfo info, int3 ijk, out float tileValue)
+{
+    tileValue = info.background;
+
+    uint3 key = uint3(ijk >> 12) & 0x1FFFFFu;
+    uint keyLow = key.z | ((key.y & 0x7FFu) << 21);
+    uint keyHigh = (key.y >> 11) | (key.x << 10);
+
+    uint upper = 0;
+    uint firstTile = (info.rootOffset + RootHeaderBytes) >> 2;
+    [loop]
+    for (uint tileIndex = 0; tileIndex < info.tileCount; tileIndex++)
+    {
+        uint tile = firstTile + tileIndex * (RootTileBytes >> 2);
+        if (g[tile] != keyLow || g[tile + 1] != keyHigh)
+            continue;
+
+        uint child = g[tile + 2];
+        if (child == 0)
+        {
+            tileValue = asfloat(g[tile + 5]);
+            return 0;
+        }
+
+        upper = info.rootOffset + child;
+        break;
+    }
+
+    if (upper == 0)
+        return 0;
+
+    uint3 u = uint3(ijk & 4095) >> 7;
+    uint upperSlot = (u.x << 10) | (u.y << 5) | u.z;
+    uint upperWord = g[(upper + UpperChildMaskBytes) / 4 + (upperSlot >> 5)];
+    uint upperEntry = (upper + UpperTableBytes) / 4 + upperSlot * 2;
+    if ((upperWord & (1u << (upperSlot & 31))) == 0)
+    {
+        tileValue = asfloat(g[upperEntry]);
+        return 0;
+    }
+
+    uint lower = upper + g[upperEntry];
+    uint3 l = uint3(ijk & 127) >> 3;
+    uint lowerSlot = (l.x << 8) | (l.y << 4) | l.z;
+    uint lowerWord = g[(lower + LowerChildMaskBytes) / 4 + (lowerSlot >> 5)];
+    uint lowerEntry = (lower + LowerTableBytes) / 4 + lowerSlot * 2;
+    if ((lowerWord & (1u << (lowerSlot & 31))) == 0)
+    {
+        tileValue = asfloat(g[lowerEntry]);
+        return 0;
+    }
+
+    return lower + g[lowerEntry];
+}
+
+/// Word index of a voxel inside its leaf; leaf offsets run x * 64 + y * 8 + z.
+uint VdbLeafValueIndex(uint leaf, int3 ijk)
+{
+    uint3 v = uint3(ijk & 7);
+    return (leaf + LeafValuesBytes) / 4 + ((v.x << 6) | (v.y << 3) | v.z);
+}
+
+float VdbLookup(StructuredBuffer<uint> g, in VdbGridInfo info, int3 ijk)
+{
+    float tileValue;
+    uint leaf = VdbFindLeaf(g, info, ijk, tileValue);
+    return leaf == 0 ? tileValue : asfloat(g[VdbLeafValueIndex(leaf, ijk)]);
+}
+
+/// The last leaf a caller touched. Neighbouring samples nearly always land in the same 8^3 block,
+/// so caching it skips the whole tree walk. One per thread, reused across samples.
+struct VdbLeafCache
+{
+    int3 Block;
+    uint Leaf;
+    float TileValue;
+};
+
+VdbLeafCache VdbNewLeafCache()
+{
+    VdbLeafCache cache;
+    cache.Block = int3(0x7FFFFFFF, 0, 0);
+    cache.Leaf = 0;
+    cache.TileValue = 0;
+    return cache;
+}
+
+/// Trilinear sample in world space; voxel i is sampled at translation + i * voxel size.
+float VdbSampleTrilinear(StructuredBuffer<uint> g, in VdbGridInfo info, float3 worldPos, inout VdbLeafCache cache)
+{
+    float3 q = (worldPos - info.translation) / info.voxelSize;
+    int3 i0 = (int3)floor(q);
+    if (any(i0 < info.indexMin - 1) || any(i0 > info.indexMax))
+        return info.background;
+
+    float3 f = q - i0;
+
+    // All eight corners inside one leaf or one constant tile: at most one tree walk.
+    if (all((i0 & 7) < 7))
+    {
+        int3 block = i0 & ~7;
+        if (any(block != cache.Block))
+        {
+            cache.Leaf = VdbFindLeaf(g, info, i0, cache.TileValue);
+            cache.Block = block;
+        }
+
+        if (cache.Leaf == 0)
+            return cache.TileValue;
+
+        uint corner = VdbLeafValueIndex(cache.Leaf, i0);
+        float c000 = asfloat(g[corner]);
+        float c001 = asfloat(g[corner + 1]);
+        float c010 = asfloat(g[corner + 8]);
+        float c011 = asfloat(g[corner + 9]);
+        float c100 = asfloat(g[corner + 64]);
+        float c101 = asfloat(g[corner + 65]);
+        float c110 = asfloat(g[corner + 72]);
+        float c111 = asfloat(g[corner + 73]);
+        return lerp(lerp(lerp(c000, c100, f.x), lerp(c010, c110, f.x), f.y),
+                    lerp(lerp(c001, c101, f.x), lerp(c011, c111, f.x), f.y), f.z);
+    }
+
+    // The cell straddles leaves: weighted corners, without local arrays (they end up in slow memory).
+    float sum = 0;
+    [loop]
+    for (uint k = 0; k < 8; k++)
+    {
+        int3 offset = int3(k >> 2, (k >> 1) & 1, k & 1);
+        float3 axisWeight = lerp(1.0 - f, f, (float3)offset);
+        sum += axisWeight.x * axisWeight.y * axisWeight.z * VdbLookup(g, info, i0 + offset);
+    }
+
+    return sum;
+}
+
 /// True when voxel `slot` (0..511, order (x<<6)|(y<<3)|z) is active inside this leaf.
 bool VdbLeafIsActive(StructuredBuffer<uint> g, uint leafAddress, uint slot)
 {
