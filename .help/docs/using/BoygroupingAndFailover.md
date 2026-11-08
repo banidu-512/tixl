@@ -8,6 +8,8 @@ Boygrouping distributes a show to render nodes. It is **disabled by default**: e
 
 - **Deploy & Sync** sends the master's Output Setup files to the added render nodes. Project files are not transferred and clients do not restart: each slave writes the setups into its own copy of the project and switches to the master's active setup right away.
 - Setup edits made on the master are forwarded as they are saved, so slaves follow a venue change live.
+- **Live values**: the master keeps publishing the focused composition's input values, so parameter tweaks reach the nodes within a moment as show state - no file deploy and no restart. On a node those values are applied without marking its project modified, so they never look like local edits and never trigger a redeploy.
+- **The group follows the master's project**: a node that shows another project (the master switched shows, or the node reopened its own) is switched to the shared one - in place when it is installed, otherwise it receives it and restarts into it.
 - The master drives playback and the slaves follow its clock: it sends a playback position for a future instant on its own clock, each slave measures the clock offset (NTP-style, best round trip) and switches when its monotonic clock reaches that instant. Timeline phase therefore does not depend on network jitter, and the time cursor advances every frame.
 - Every applied anchor is checked against the position the slave's own timer predicted for that instant. The measured correction is shown per node on the master (`sync` in ms) and on the slave, so a node that drifts can be spotted without watching the outputs.
 - **Delay −10/+10** on a render node shifts its presentation in time (up to ±500 ms, positive = later). The value is remembered per node and re-sent when it reconnects, which lines up projectors or capture chains that process the signal at different speeds.
@@ -35,5 +37,6 @@ Show failover keeps a redundant pair of machines streaming. Both run the same co
 - The higher configured priority wins. Preemption, where a returning higher-priority machine takes the role back, is optional.
 - A role change includes a short mutual mute so both machines never stream at the same time.
 - `[ArtnetOutput]` and `[SacnOutput]` report `Standby` in their status while they are muted.
+- **The standby follows the active node's project**: the heartbeat carries the project name, and the standby opens it when it is installed locally - so a takeover renders the same show instead of whatever the standby happened to have open. Both machines are expected to have the show installed; the heartbeat carries only the name.
 
 Failover is **disabled by default**: switch on **Enable show failover** at the top of **Settings → Show Failover**, then configure show id (machines with the same id form a pair), priority, heartbeat interval, timeout factor, preemption and network interface.
