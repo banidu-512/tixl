@@ -255,6 +255,9 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public int FailoverTimeoutFactor = 3;
         public bool FailoverPreempt = true;
 
+        /// <summary>Lets the other TiXL clients of a boygroup or failover session open this machine's cameras.</summary>
+        public bool ShareCamerasInSessions = true;
+
         public float GizmoSize = 100;
 
 
