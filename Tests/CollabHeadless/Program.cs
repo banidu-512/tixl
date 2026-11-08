@@ -29,6 +29,7 @@ internal static class Program
         Run("framing.roundtrip", TestFramingRoundTrip);
         Run("framing.maxsize", TestFrameSizeLimit);
         Run("json.decode", TestJsonDecode);
+        Run("json.token-tolerance", TestJsonTokenTolerance);
         Run("presence.roundtrip", TestPresencePacket);
         Run("auth.mac", TestAuth);
         Run("heartbeat.answers-not-answered", TestHeartbeatAnswersAreNotAnswered);
@@ -149,6 +150,37 @@ internal static class Program
     // ---------------------------------------------------------------------------------------
     // Presence packet (binary, little-endian)
     // ---------------------------------------------------------------------------------------
+
+    /// <summary>
+    /// Values cross the wire both as strings and as typed tokens (Guid, number). A reader that
+    /// assumes one kind throws InvalidCastException out of the frame loop - the editor crashed on a
+    /// Guid token in a snapshot op. Both accessors must accept either representation.
+    /// </summary>
+    private static void TestJsonTokenTolerance()
+    {
+        var guid = Guid.Parse("9081b6b1-0e6d-4a2b-944a-eff62b9f58ea");
+        var json = new JObject
+                       {
+                           ["asGuid"] = guid,
+                           ["asString"] = guid.ToString(),
+                           ["asNumber"] = 42,
+                           ["asNull"] = JValue.CreateNull(),
+                           ["asObject"] = new JObject { ["x"] = 1 },
+                       };
+
+        Check(CollabProtocol.TryGetGuid(json, "asGuid", out var fromGuid) && fromGuid == guid,
+              "TryGetGuid failed on a Guid token");
+        Check(CollabProtocol.TryGetGuid(json, "asString", out var fromString) && fromString == guid,
+              "TryGetGuid failed on a string token");
+        Check(!CollabProtocol.TryGetGuid(json, "asNumber", out _), "TryGetGuid accepted a number");
+        Check(!CollabProtocol.TryGetGuid(json, "asObject", out _), "TryGetGuid accepted an object");
+
+        Check(CollabProtocol.GetString(json, "asGuid") == guid.ToString(), "GetString failed on a Guid token");
+        Check(CollabProtocol.GetString(json, "asNumber") == "42", "GetString failed on a number");
+        Check(CollabProtocol.GetString(json, "asNull", "fallback") == "fallback", "GetString failed on null");
+        Check(CollabProtocol.GetString(json, "asObject", "fallback") == "fallback", "GetString failed on an object");
+        Check(CollabProtocol.GetString(json, "missing", "fallback") == "fallback", "GetString failed when missing");
+    }
 
     private static void TestPresencePacket()
     {
