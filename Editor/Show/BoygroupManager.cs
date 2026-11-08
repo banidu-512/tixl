@@ -990,6 +990,10 @@ internal sealed class BoygroupManager
         return ProjectView.Focused?.OpenedProject.Package.Folder;
     }
 
+    /// <summary>Whether a project is open — the debug bridge's status reports it, so a master that
+    /// cannot deploy for this reason is diagnosable remotely.</summary>
+    public static bool HasProjectFolder => !string.IsNullOrEmpty(GetProjectFolder());
+
     // ---------------------------------------------------------------------------------------
     // Client: deploy reception
     // ---------------------------------------------------------------------------------------
