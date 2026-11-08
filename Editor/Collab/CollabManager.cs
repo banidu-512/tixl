@@ -54,6 +54,9 @@ internal sealed class CollabManager
 
     public bool IsSessionActive => State is SessionState.Hosting or SessionState.Connected;
 
+    /// <summary>True when the user ended the last session on purpose; the auto-rejoin respects it.</summary>
+    public bool LeftManually { get; private set; }
+
     /// <summary>Collaboration on/off — the settings switch gates every session start and join.</summary>
     public bool IsEnabled => UserSettings.Config.CollabEnabled;
 
@@ -184,6 +187,8 @@ internal sealed class CollabManager
 
     public void StartHost(int tcpPort, string password, bool enableLanDiscovery, string? projectName = null)
     {
+        LeftManually = false;
+
         if (!IsEnabled)
         {
             ErrorText = "Collaboration is turned off in the settings.";
@@ -239,6 +244,8 @@ internal sealed class CollabManager
     /// </summary>
     public void StartHostViaRelay(string relayHost, int relayPort)
     {
+        LeftManually = false;
+
         if (!IsEnabled)
         {
             ErrorText = "Collaboration is turned off in the settings.";
@@ -303,6 +310,8 @@ internal sealed class CollabManager
     /// <summary>Joins a relay-hosted room by code.</summary>
     public void JoinViaRelay(string relayHost, int relayPort, string roomCode, string password)
     {
+        LeftManually = false;
+
         if (!IsEnabled)
         {
             ErrorText = "Collaboration is turned off in the settings.";
@@ -408,6 +417,8 @@ internal sealed class CollabManager
 
     public void JoinDirect(string hostAddress, int tcpPort, string password)
     {
+        LeftManually = false;
+
         if (!IsEnabled)
         {
             ErrorText = "Collaboration is turned off in the settings.";
@@ -471,8 +482,15 @@ internal sealed class CollabManager
         }
     }
 
-    public void Leave()
+    /// <summary>
+    /// Ends the session. <paramref name="manual"/> marks a leave the user asked for: the launch
+    /// auto-rejoin then stays quiet instead of dragging the session back, which made Leave look
+    /// broken. Starting or joining a session clears the mark again.
+    /// </summary>
+    public void Leave(bool manual = false)
     {
+        LeftManually = manual;
+
         // Anything still connecting becomes stale; its completion is discarded.
         ++_sessionGeneration;
 
@@ -693,6 +711,10 @@ internal sealed class CollabManager
 
     private void TryAutoRejoin()
     {
+        // The user ended the last session on purpose; reconnecting would override that choice.
+        if (LeftManually)
+            return;
+
         // A direct join restarts into the host's address...
         var host = UserSettings.Config.CollabLastSessionHost;
         if (!string.IsNullOrEmpty(host))
@@ -1211,40 +1233,12 @@ internal sealed class CollabManager
     /// <summary>Opens a local project by display name (short form accepted) into the visible graph window.</summary>
     internal static bool TryOpenProjectByName(string name)
     {
-        foreach (var p in SymbolPackage.AllPackages)
-        {
-            if (p is not EditorSymbolPackage editorPackage
-                || !(string.Equals(editorPackage.DisplayName, name, StringComparison.OrdinalIgnoreCase)
-                     || editorPackage.DisplayName.StartsWith(name + " (", StringComparison.OrdinalIgnoreCase)))
-                continue;
-
-            if (!OpenedProject.TryCreate(editorPackage, out var openedProject, out var failureLog)
-                || openedProject == null)
-            {
-                Log.Warning($"Collab: could not open project '{name}': {failureLog}");
-                return false;
-            }
-
-            GraphWindow? graphWindow = null;
-            foreach (var window in GraphWindow.GraphWindowInstances)
-            {
-                if (!window.Config.Visible)
-                    continue;
-
-                graphWindow = window;
-                break;
-            }
-
-            graphWindow ??= GraphWindow.GraphWindowInstances.Count > 0 ? GraphWindow.GraphWindowInstances[0] : null;
-            if (graphWindow == null || !graphWindow.TrySetToProject(openedProject, tryRestoreViewArea: false))
-            {
-                Log.Warning($"Collab: could not open project '{name}' in a graph window");
-                return false;
-            }
-
+        // Shared with failover and boygrouping: every mode follows the active machine's project the
+        // same way (in place, without a restart, when the project is installed).
+        if (T3.Editor.Show.ProjectFollower.TrySwitchToName(name))
             return true;
-        }
 
+        Log.Warning($"Collab: project '{name}' is not installed locally");
         return false;
     }
 

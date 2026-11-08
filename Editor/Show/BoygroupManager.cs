@@ -13,7 +13,9 @@ using T3.Core.IO;
 using T3.Core.Output;
 using T3.Editor.Collab;
 using T3.Editor.Compilation;
+using T3.Editor.Gui.Windows.OutputSetup;
 using T3.Editor.Gui.UiHelpers;
+using T3.Editor.SystemUi;
 using T3.Editor.UiModel;
 using T3.Editor.UiModel.Commands;
 using T3.Editor.UiModel.ProjectHandling;
@@ -42,6 +44,9 @@ internal sealed class BoygroupManager
     }
 
     public BoygroupState State { get; private set; } = BoygroupState.Off;
+
+    /// <summary>Set by a manual Leave: the enabled-role automation must not rejoin on its own.</summary>
+    private bool _leftManually;
     public string StatusText { get; private set; } = "Boygrouping is off";
     public string ErrorText { get; private set; } = "";
     public string GroupName { get; private set; } = "";
@@ -52,6 +57,9 @@ internal sealed class BoygroupManager
     public string DeploySummary { get; private set; } = "";
     public bool RestartPending { get; private set; }
 
+    /// <summary>A render node's display as it reported itself; the master offers it as a binding target.</summary>
+    public sealed record RemoteScreen(int Index, string Name, int Width, int Height, int X = 0, int Y = 0, bool Primary = false);
+
     public sealed class ClientInfo
     {
         public required CollabPeerConnection Peer;
@@ -60,6 +68,15 @@ internal sealed class BoygroupManager
         public string Group = "";
         public string StatusText = "connected";
         public bool IsDeployed;
+
+        /// <summary>The node's machine-local output bindings, so the master sees where it presents.</summary>
+        public MachineConfig? MachineConfig;
+
+        /// <summary>The node's displays as reported; ids for them come from <see cref="RemoteDisplayPlugId"/>.</summary>
+        public List<RemoteScreen> Screens = [];
+
+        /// <summary>The project name the node last reported. Empty until it answered an inventory request.</summary>
+        public string KnownProject = "";
 
         // Pending auth challenge (server side)
         public byte[]? PendingSalt;
@@ -191,6 +208,7 @@ internal sealed class BoygroupManager
 
     public void StartServer(int port, string password, string group)
     {
+        _leftManually = false;
         if (State != BoygroupState.Off)
             Leave();
 
@@ -203,7 +221,6 @@ internal sealed class BoygroupManager
             _transport.PeerDisconnected += OnPeerDisconnected;
             State = BoygroupState.Server;
             StatusText = $"Serving group '{group}' on port {port}";
-            PersistJoinTarget("127.0.0.1", group);
             Log.Info($"Boygroup: server started (group '{group}', port {port})");
         }
         catch (SocketException e)
@@ -216,6 +233,7 @@ internal sealed class BoygroupManager
 
     public void JoinServer(string host, int port, string group, string password)
     {
+        _leftManually = false;
         if (State != BoygroupState.Off)
             Leave();
 
@@ -254,8 +272,16 @@ internal sealed class BoygroupManager
         }
     }
 
-    public void Leave()
+    /// <summary>
+    /// Ends the session. <paramref name="manual"/> marks a leave the user asked for: the enabled-role
+    /// automation (auto-join for a slave, auto-restart for a master) then stays quiet instead of
+    /// rejoining a second later, which made the Leave button look broken. Starting or joining a
+    /// session, or switching into the mode, clears the mark.
+    /// </summary>
+    public void Leave(bool manual = false)
     {
+        _leftManually = manual;
+
         if (_transport != null)
         {
             _transport.PeerDisconnected -= OnPeerDisconnected;
@@ -280,7 +306,7 @@ internal sealed class BoygroupManager
         GroupName = "";
         RestartPending = false;
         State = BoygroupState.Off;
-        StatusText = "Boygrouping is off";
+        StatusText = manual ? "Boygrouping left" : "Boygrouping is off";
     }
 
     /// <summary>The name this machine is known by in output assignments (OutputDefinition.MachineName).</summary>
@@ -415,21 +441,28 @@ internal sealed class BoygroupManager
             else if (Environment.TickCount64 > _autoJoinCheckTicks && !_autoJoinAttempted)
             {
                 _autoJoinAttempted = true;
-                if (UserSettings.Config.BoygroupEnabled)
+                if (_leftManually)
+                {
+                    // The user left on purpose; the role automation waits for an explicit start.
+                }
+                else if (UserSettings.Config.BoygroupEnabled)
                 {
                     ApplyEnabledSetting();
                 }
                 else
                 {
-                    TryAutoJoin();
+                    // Auto-join alone must not claim the boygroup mode: joining anywhere else (the
+                    // hub, a collab or failover session) pulled the machine into a group behind the
+                    // operator's back, which made turning boygrouping off look ineffective.
+                    Log.Info("Boygroup: disabled - not auto-joining (enable the mode to follow a master)");
                 }
             }
-            else if (_autoJoinAttempted && UserSettings.Config.BoygroupEnabled && !UserSettings.Config.BoygroupIsMaster)
+            else if (_autoJoinAttempted && !_leftManually && UserSettings.Config.BoygroupEnabled && !UserSettings.Config.BoygroupIsMaster)
             {
                 // Enabled slave still off: keep looking for a master.
                 WaitAndAutoJoinDiscoveredMaster();
             }
-            else if (_autoJoinAttempted && UserSettings.Config.BoygroupEnabled && UserSettings.Config.BoygroupIsMaster
+            else if (_autoJoinAttempted && !_leftManually && UserSettings.Config.BoygroupEnabled && UserSettings.Config.BoygroupIsMaster
                      && Environment.TickCount64 >= _nextServerRestartTicks)
             {
                 // Enabled master whose server dropped (port conflict, transport fault): bring it
@@ -457,12 +490,15 @@ internal sealed class BoygroupManager
         RunScheduledAutoDeploy();
         SendHeartbeats();
         SendTimeSync();
+        MaybeSendBindings();
         ProcessPendingRestart();
 
         if (State == BoygroupState.Server)
         {
             PumpInputReplication();
             ReRequestPendingInventories();
+            FollowSharedProject();
+            SyncLiveValues();
             BroadcastPlayStateOnChange();
         }
 
@@ -618,6 +654,12 @@ internal sealed class BoygroupManager
 
             case "authOk":
                 StatusText = "Joined group";
+
+                // The first report can go out before this node is authenticated on the server, where
+                // it is dropped; the dedup in MaybeSendBindings would then never send it again. Force
+                // one report now that the master is ready to accept it.
+                _lastBindingsSent = "";
+                _nextBindingsSendTicks = 0;
                 break;
 
             case "authFail":
@@ -650,6 +692,7 @@ internal sealed class BoygroupManager
                 _deployFilesTotal = json["count"]?.Value<int>() ?? 0;
                 _deployFilesDone = 0;
                 _deployErrors = 0;
+                _deployedRelativePaths.Clear();
                 DeploySummary = $"Receiving {_deployFilesTotal} file(s)...";
                 break;
 
@@ -683,6 +726,27 @@ internal sealed class BoygroupManager
 
                 break;
 
+            // Live values from the master. Applied without marking the project modified: they are
+            // show state, not edits — a dirty project gets saved, differs from the master's file and
+            // is deployed back with a restart.
+            case "op" when State == BoygroupState.Client:
+                if (json["op"] is JObject valueOp)
+                    CollabCommandWire.ApplyOp(valueOp, markModified: false);
+
+                break;
+
+            case "bindings" when State == BoygroupState.Server:
+                HandleClientBindings(json);
+                break;
+
+            case "bindOutput" when State == BoygroupState.Client:
+                HandleRemoteBinding(json, bind: true);
+                break;
+
+            case "unbindOutput" when State == BoygroupState.Client:
+                HandleRemoteBinding(json, bind: false);
+                break;
+
             case "play" when State == BoygroupState.Client:
                 ApplyPlayControl(json);
                 break;
@@ -699,6 +763,7 @@ internal sealed class BoygroupManager
 
     private int _deployFilesTotal;
     private int _deployFilesDone;
+    private readonly List<string> _deployedRelativePaths = [];
     private int _deployErrors;
 
     // ---------------------------------------------------------------------------------------
@@ -783,6 +848,10 @@ internal sealed class BoygroupManager
 
         Log.Info($"Boygroup: client authenticated: {client.Name} ({client.Address}) group '{client.Group}'");
 
+        // The new node starts from the values saved on disk. Forget the change baseline so the next
+        // sync pass sends every live value, not just the ones that happen to change afterwards.
+        _sentValues.Clear();
+
         // A node that appears is served: schedule a deploy shortly after the handshake (the delay
         // debounces a burst of joins into one pass; clients mid-deploy keep their own transfer).
         if (UserSettings.Config.BoygroupAutoDeployOnJoin)
@@ -866,6 +935,9 @@ internal sealed class BoygroupManager
         }
 
         var mirror = UserSettings.Config.BoygroupDeployMirror;
+        // Remember what this pass is for: _autoDeployOnlyUndeployed leaked from an earlier
+        // join-triggered pass and silently dropped manual deploys for already-deployed nodes.
+        _autoDeployOnlyUndeployed = onlyUndeployed;
         var setupsFolderRelative = Path.GetRelativePath(projectFolder, SetupFiles.FolderIn(projectFolder));
         var inventory = BoygroupDeployer.BuildInventory(projectFolder, setupsFolderRelative);
 
@@ -890,7 +962,11 @@ internal sealed class BoygroupManager
         }
 
         PushSetupToGroup();
-        PushGraphSnapshotToGroup();
+
+        // No graph snapshot: the files below carry the structure, and SyncLiveValues keeps the node
+        // on the master's live values. Rebuilding the node's composition here on every deploy was
+        // what dropped its connections and made it restart in a loop.
+        SendCurrentValuesToGroup();
     }
 
     /// <summary>A node joined without a project open: name ours so it can create the folder and
@@ -928,6 +1004,7 @@ internal sealed class BoygroupManager
         // (two .csproj files in one folder break project loading). Re-bootstrap it instead.
         var masterName = Path.GetFileName(projectFolder.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
         var clientProject = CollabProtocol.GetString(json, "project", "");
+        client.KnownProject = clientProject;
         if (clientProject.Length > 0 && !string.Equals(clientProject, masterName, StringComparison.OrdinalIgnoreCase))
         {
             client.PendingInventory = null;
@@ -1086,6 +1163,49 @@ internal sealed class BoygroupManager
         Log.Info($"Boygroup: deployment to {client.Name} complete ({client.FilesDone} file(s){(transferred ? ", restart requested" : ", no changes")})");
     }
 
+    private long _nextProjectCheckTicks;
+    private const int ProjectCheckIntervalMs = 3000;
+
+    /// <summary>
+    /// Keeps the group on the master's project. A node that still shows another project (the master
+    /// switched shows, or the node reopened its own) is asked for its inventory, and the mismatch
+    /// branch in <see cref="HandleClientInventory"/> switches it to the shared project. Without this
+    /// the master and its nodes can sit on different projects until someone presses Deploy & Sync.
+    /// </summary>
+    private void FollowSharedProject()
+    {
+        if (State != BoygroupState.Server || _clients.Count == 0)
+            return;
+
+        var now = Environment.TickCount64;
+        if (now < _nextProjectCheckTicks)
+            return;
+
+        _nextProjectCheckTicks = now + ProjectCheckIntervalMs;
+
+        var projectFolder = GetProjectFolder();
+        if (string.IsNullOrEmpty(projectFolder))
+            return;
+
+        var masterName = Path.GetFileName(projectFolder.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+        foreach (var client in _clients)
+        {
+            if (!client.Peer.IsAuthenticated || client.PendingFiles != null || client.PendingInventory != null)
+                continue;
+
+            if (client.KnownProject.Length == 0
+                || string.Equals(client.KnownProject, masterName, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            // Reuse the deploy diff: the inventory answer runs the same mismatch check.
+            client.PendingInventory = BoygroupDeployer.BuildInventory(projectFolder,
+                                                                      Path.GetRelativePath(projectFolder, SetupFiles.FolderIn(projectFolder)));
+            client.Mirror = UserSettings.Config.BoygroupDeployMirror;
+            client.StatusText = "checking project";
+            SendJson(client.Peer, new { t = "requestInventory" });
+        }
+    }
+
     /// <summary>Pushes the active output setup file so clients render the master's output config.</summary>
     private void PushSetupToGroup()
     {
@@ -1112,19 +1232,135 @@ internal sealed class BoygroupManager
         }
     }
 
-    private void PushGraphSnapshotToGroup()
+    /// <summary>
+    /// Master side: sends only the input values that changed since the last pass. The project files
+    /// (graph structure, operators, assets) are deployed once; everything after that is live show
+    /// state. The old full graph snapshot deleted and rebuilt the node's whole composition on every
+    /// deploy — which is what made nodes restart in a loop and crash while rendering.
+    /// </summary>
+    private void SyncLiveValues()
     {
-        var focused = ProjectView.Focused;
-        var compositionUi = focused?.InstView?.Symbol.GetSymbolUi();
-        if (compositionUi == null)
-        {
-            Log.Info("Boygroup: no open composition to snapshot");
+        if (State != BoygroupState.Server || _clients.Count == 0)
             return;
+
+        var now = Environment.TickCount64;
+        if (now < _nextValueSyncTicks)
+            return;
+
+        _nextValueSyncTicks = now + ValueSyncIntervalMs;
+
+        var compositionUi = ProjectView.Focused?.InstView?.Symbol.GetSymbolUi();
+        if (compositionUi == null)
+            return;
+
+        // A different composition means a different set of keys; comparing against the old baseline
+        // would suppress the first values of the new one.
+        if (compositionUi.Symbol.Id != _valueSyncCompositionId)
+        {
+            _valueSyncCompositionId = compositionUi.Symbol.Id;
+            _sentValues.Clear();
         }
 
-        var snapshotOp = CollabCommandWire.BuildSnapshotOp(compositionUi);
-        BroadcastToGroup(new { t = "snapshot", op = snapshotOp });
+        var ops = new List<JObject>();
+        foreach (var childUi in compositionUi.ChildUis.Values)
+        {
+            var child = childUi.SymbolChild;
+            foreach (var (inputId, input) in child.Inputs)
+            {
+                var token = CollabCommandWire.InputValueToToken(input.IsDefault ? input.DefaultValue : input.Value);
+                if (token == null || token.Type == JTokenType.Null)
+                    continue;
+
+                var valueJson = token.ToString(Formatting.None);
+                var key = $"{child.Id:N}/{inputId:N}";
+                if (_sentValues.TryGetValue(key, out var previous) && previous == valueJson)
+                    continue;
+
+                _sentValues[key] = valueJson;
+                ops.Add(new JObject
+                            {
+                                ["type"] = "set_input",
+                                ["c"] = compositionUi.Symbol.Id,
+                                ["ch"] = child.Id,
+                                ["i"] = inputId,
+                                ["v"] = token,
+                            });
+            }
+        }
+
+        BroadcastValueOps(ops);
     }
+
+    /// <summary>
+    /// Sends value ops in bounded batches. A big composition's first pass covers every input; one
+    /// unbounded message would run into the session's JSON payload cap and kill the link.
+    /// </summary>
+    private void BroadcastValueOps(List<JObject> ops)
+    {
+        for (var offset = 0; offset < ops.Count; offset += MaxValueOpsPerMessage)
+        {
+            var batch = new JArray();
+            for (var i = offset; i < Math.Min(offset + MaxValueOpsPerMessage, ops.Count); i++)
+                batch.Add(ops[i]);
+
+            BroadcastToGroup(new
+                                 {
+                                     t = "op",
+                                     op = new JObject
+                                              {
+                                                  ["type"] = "batch",
+                                                  ["ops"] = batch,
+                                              },
+                                 });
+        }
+    }
+
+    private const int MaxValueOpsPerMessage = 400;
+
+    /// <summary>
+    /// Sends every current value of the focused composition, ignoring the change baseline. A node
+    /// that just joined or received files starts from the values saved on disk; this puts it on the
+    /// master's live values immediately instead of waiting for each one to change again.
+    /// </summary>
+    private void SendCurrentValuesToGroup()
+    {
+        var compositionUi = ProjectView.Focused?.InstView?.Symbol.GetSymbolUi();
+        if (compositionUi == null)
+            return;
+
+        var ops = new List<JObject>();
+        foreach (var childUi in compositionUi.ChildUis.Values)
+        {
+            var child = childUi.SymbolChild;
+            foreach (var (inputId, input) in child.Inputs)
+            {
+                var token = CollabCommandWire.InputValueToToken(input.IsDefault ? input.DefaultValue : input.Value);
+                if (token == null || token.Type == JTokenType.Null)
+                    continue;
+
+                _sentValues[$"{child.Id:N}/{inputId:N}"] = token.ToString(Formatting.None);
+                ops.Add(new JObject
+                            {
+                                ["type"] = "set_input",
+                                ["c"] = compositionUi.Symbol.Id,
+                                ["ch"] = child.Id,
+                                ["i"] = inputId,
+                                ["v"] = token,
+                            });
+            }
+        }
+
+        // A full push covers every value, so the incremental baseline restarts from it.
+        _valueSyncCompositionId = compositionUi.Symbol.Id;
+        BroadcastValueOps(ops);
+    }
+
+    /// <summary>Values last broadcast per child/input, so only changes travel.</summary>
+    private readonly Dictionary<string, string> _sentValues = [];
+
+    private Guid _valueSyncCompositionId;
+    private long _nextValueSyncTicks;
+    private const int ValueSyncIntervalMs = 500;
 
     private static string? GetProjectFolder()
     {
@@ -1162,7 +1398,20 @@ internal sealed class BoygroupManager
 
         var inventory = BoygroupDeployer.BuildInventory(projectFolder,
                                                         Path.GetRelativePath(projectFolder, SetupFiles.FolderIn(projectFolder)));
-        SendJson(((_transport as BoygroupClientTransport)!).ServerPeer,
+        SendInventoryToMaster(inventory);
+    }
+
+    /// <summary>Sends this machine's project inventory, answering the master's requestInventory.</summary>
+    private void SendInventoryToMaster(Dictionary<string, BoygroupDeployer.InventoryEntry>? inventory = null)
+    {
+        var projectFolder = GetProjectFolder();
+        if (string.IsNullOrEmpty(projectFolder) || _transport is not BoygroupClientTransport transport)
+            return;
+
+        inventory ??= BoygroupDeployer.BuildInventory(projectFolder,
+                                                      Path.GetRelativePath(projectFolder, SetupFiles.FolderIn(projectFolder)));
+
+        SendJson(transport.ServerPeer,
                  new JObject
                      {
                          ["t"] = "inventory",
@@ -1180,6 +1429,21 @@ internal sealed class BoygroupManager
         var name = CollabProtocol.GetString(json, "name", "");
         if (string.IsNullOrEmpty(name))
             return;
+
+        // The master runs a project this machine already has: switch to it in place (a no-op when it
+        // is already shown). Receiving a second copy into a bootstrap folder would restart the node
+        // for a project that is right here — and the deploy then diffs against what it really shows.
+        if (ProjectFollower.TrySwitchToName(name))
+        {
+            _bootstrapProjectFolder = null;
+            DeploySummary = $"Following the master's project '{name}'";
+            Log.Info($"Boygroup: following the master onto project '{name}' without a restart");
+
+            // Answer the pending inventory request with the project we just opened, so the deploy
+            // diffs against it instead of waiting for the next re-request.
+            SendInventoryToMaster();
+            return;
+        }
 
         var root = UserSettings.Config.ProjectDirectories.FirstOrDefault();
         if (string.IsNullOrEmpty(root))
@@ -1237,6 +1501,9 @@ internal sealed class BoygroupManager
     private void FinishReceivingFile(JObject json)
     {
         var error = _fileReceiver.Finish(json);
+        if (error == null && _fileReceiver.RelativePath.Length > 0)
+            _deployedRelativePaths.Add(_fileReceiver.RelativePath);
+
         _deployFilesDone++;
         if (error != null)
         {
@@ -1294,6 +1561,211 @@ internal sealed class BoygroupManager
         }
     }
 
+    // ---------------------------------------------------------------------------------------
+    // Remote displays: what the nodes present, offered as binding targets on the master
+    // ---------------------------------------------------------------------------------------
+
+    // ---------------------------------------------------------------------------------------
+    // Remote displays: what the nodes present, offered as binding targets on the master
+    // ---------------------------------------------------------------------------------------
+
+    /// <summary>Master side: adopts a node's reported machine config and display list.</summary>
+    private void HandleClientBindings(JObject json)
+    {
+        // The message carries the node's name (it also rides every hello); match on that.
+        var name = CollabProtocol.GetString(json, "name", "");
+        var client = _clients.FirstOrDefault(c => c.Peer.IsAuthenticated && c.Name == name);
+        if (client == null)
+            return;
+
+        var configJson = json["config"]?.Value<string>();
+        if (string.IsNullOrEmpty(configJson))
+            return;
+
+        try
+        {
+            client.MachineConfig = MachineConfig.ReadFromJson(JObject.Parse(configJson));
+            client.Screens = ReadScreens(json["screens"]);
+            Log.Info($"Boygroup: bindings from {client.Name}: {DescribeBindings(client.MachineConfig)}");
+        }
+        catch (JsonException e)
+        {
+            Log.Warning($"Boygroup: malformed bindings from {client.Name}: {e.Message}");
+        }
+    }
+
+    private static List<RemoteScreen> ReadScreens(JToken? token)
+    {
+        var screens = new List<RemoteScreen>();
+        if (token is not JArray array)
+            return screens;
+
+        foreach (var screen in array)
+        {
+            var index = screen["index"]?.Value<int>() ?? screens.Count;
+            screens.Add(new RemoteScreen(index,
+                                         screen.Value<string>("name") ?? $"Display {index + 1}",
+                                         screen["width"]?.Value<int>() ?? 0,
+                                         screen["height"]?.Value<int>() ?? 0,
+                                         screen["x"]?.Value<int>() ?? 0,
+                                         screen["y"]?.Value<int>() ?? 0,
+                                         screen["primary"]?.Value<bool>() ?? false));
+        }
+
+        return screens;
+    }
+
+    /// <summary>The master's list of a client's displays; the id is stable across reconnects and frames.</summary>
+    public static Guid RemoteDisplayPlugId(ClientInfo client, int displayIndex)
+    {
+        var key = $"boygroup:{client.Address}:{client.Name}:{displayIndex}";
+        var hash = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(key));
+        return new Guid(hash.AsSpan(0, 16));
+    }
+
+    /// <summary>Resolves an outliner/board plug id back to the render node display it stands for.</summary>
+    public bool TryGetRemoteDisplayPlug(Guid plugId, out ClientInfo client, out int displayIndex)
+    {
+        foreach (var candidate in _clients)
+        {
+            foreach (var screen in candidate.Screens)
+            {
+                if (RemoteDisplayPlugId(candidate, screen.Index) != plugId)
+                    continue;
+
+                client = candidate;
+                displayIndex = screen.Index;
+                return true;
+            }
+        }
+
+        client = null!;
+        displayIndex = -1;
+        return false;
+    }
+
+    /// <summary>Master side: asks a render node to present an output on one of its own displays.</summary>
+    public void BindRemoteOutput(ClientInfo client, Guid outputId, int displayIndex)
+    {
+        if (State != BoygroupState.Server || !client.Peer.IsAuthenticated)
+            return;
+
+        SendJson(client.Peer, new { t = "bindOutput", output = outputId.ToString(), display = displayIndex });
+        StatusText = $"Binding {client.Name}'s Display {displayIndex + 1}...";
+    }
+
+    public void UnbindRemoteOutput(ClientInfo client, Guid outputId, int displayIndex)
+    {
+        if (State != BoygroupState.Server || !client.Peer.IsAuthenticated)
+            return;
+
+        SendJson(client.Peer, new { t = "unbindOutput", output = outputId.ToString(), display = displayIndex });
+    }
+
+    /// <summary>Output to plug pairs from one machine's config, for the log line.</summary>
+    public static string DescribeBindings(MachineConfig? machineConfig)
+    {
+        if (machineConfig == null || machineConfig.Bindings.Count == 0)
+            return "no display bindings";
+
+        var parts = new List<string>();
+        foreach (var binding in machineConfig.Bindings)
+        {
+            var plug = binding.IsStream ? "stream" : $"Display {binding.DisplayIndex + 1}";
+            parts.Add($"output {binding.OutputId.ToString()[..8]} -> {plug}");
+        }
+
+        return string.Join(" - ", parts);
+    }
+
+    private long _nextBindingsSendTicks;
+    private string _lastBindingsSent = "";
+
+    /// <summary>Client side: sends this machine's machine config and displays when they changed.</summary>
+    private void MaybeSendBindings()
+    {
+        if (State != BoygroupState.Client)
+            return;
+
+        var now = Environment.TickCount64;
+        if (now < _nextBindingsSendTicks)
+            return;
+
+        _nextBindingsSendTicks = now + 2000;
+
+        var projectFolder = GetProjectFolder();
+        if (string.IsNullOrEmpty(projectFolder))
+            return;
+
+        var path = Path.Combine(SetupFiles.FolderIn(projectFolder), MachineConfig.FileName);
+        try
+        {
+            // The master also needs this machine's displays before anything is bound, and a fresh
+            // client may not have written a machine config yet.
+            var json = File.Exists(path) ? File.ReadAllText(path) : new MachineConfig().ToJsonString();
+            var screens = DescribeScreens();
+            var key = json + "|" + screens.ToString(Formatting.None);
+            if (key == _lastBindingsSent)
+                return;
+
+            _lastBindingsSent = key;
+            Log.Debug($"Boygroup: reporting output bindings from '{path}'");
+            if (_transport is BoygroupClientTransport clientTransport)
+                SendJson(clientTransport.ServerPeer, new { t = "bindings", name = ClientDisplayName(), config = json, screens });
+        }
+        catch (IOException e)
+        {
+            Log.Debug($"Boygroup: can't read machine bindings: {e.Message}");
+        }
+    }
+
+    /// <summary>This machine's displays, sent so a master can offer them as binding targets.</summary>
+    private static JArray DescribeScreens()
+    {
+        var result = new JArray();
+        var screens = EditorUi.Instance.AllScreens;
+        for (var i = 0; i < screens.Count; i++)
+        {
+            result.Add(new JObject
+                           {
+                               ["index"] = i,
+                               ["name"] = screens[i].DeviceName,
+                               ["width"] = screens[i].Bounds.Width,
+                               ["height"] = screens[i].Bounds.Height,
+                               ["x"] = screens[i].Bounds.X,
+                               ["y"] = screens[i].Bounds.Y,
+                               ["primary"] = screens[i].Primary,
+                           });
+        }
+
+        return result;
+    }
+
+    /// <summary>Client side: applies a binding the master routed to one of this machine's displays.</summary>
+    private void HandleRemoteBinding(JObject json, bool bind)
+    {
+        if (!Guid.TryParse(CollabProtocol.GetString(json, "output"), out var outputId))
+            return;
+
+        var displayIndex = json["display"]?.Value<int>() ?? -1;
+        if (displayIndex < 0 || displayIndex >= EditorUi.Instance.AllScreens.Count)
+            return;
+
+        if (!OutputSetupHandling.TryGetActiveSetup(out _, out var machineConfig))
+            return;
+
+        var plugId = Plugs.DisplayPlugId(displayIndex);
+        if (bind)
+            Plugs.BindOutput(machineConfig, outputId, plugId);
+        else
+            Plugs.UnbindOutput(machineConfig, outputId, plugId);
+
+        // Report right away: the master's binding column is driven by what this machine says it presents.
+        _lastBindingsSent = "";
+        _nextBindingsSendTicks = 0;
+        MaybeSendBindings();
+    }
+
     private void HandleDeployDone(JObject json)
     {
         var shouldRestart = json["restart"]?.Value<bool>() ?? true;
@@ -1321,7 +1793,10 @@ internal sealed class BoygroupManager
             return;
         }
 
-        if (config.BoygroupDeployRestartWindowStartTicks == 0 || now - config.BoygroupDeployRestartWindowStartTicks > 120_000)
+        // A window of ten minutes, not two: restarts that follow each reboot by a few minutes (the
+        // join -> deploy -> restart cycle) always fell outside the old window, so the counter reset
+        // and the guard could never trip. Tripping it now really keeps the node up.
+        if (config.BoygroupDeployRestartWindowStartTicks == 0 || now - config.BoygroupDeployRestartWindowStartTicks > DeployRestartWindowMs)
         {
             config.BoygroupDeployRestartWindowStartTicks = now;
             config.BoygroupDeployRestartCount = 1;
@@ -1329,11 +1804,14 @@ internal sealed class BoygroupManager
         else
         {
             config.BoygroupDeployRestartCount++;
-            if (config.BoygroupDeployRestartCount > 4)
+            if (config.BoygroupDeployRestartCount > MaxDeployRestartsPerWindow)
             {
                 config.BoygroupDeployRestartBlockedUntilTicks = now + 300_000;
                 config.BoygroupDeployRestartCount = 0;
-                Log.Warning("Boygroup: more than four deploy restarts in two minutes - blocking further deploy restarts for five minutes (restart-loop guard)");
+                UserSettings.Save();
+                Log.Warning($"Boygroup: more than {MaxDeployRestartsPerWindow} deploy restarts in ten minutes - blocking further deploy restarts for five minutes (restart-loop guard) - staying up");
+                DeploySummary += " - restart blocked (loop guard)";
+                return;
             }
         }
 
@@ -1349,38 +1827,65 @@ internal sealed class BoygroupManager
             return;
         }
 
-        // A render node must come back into the show it was deployed, not into the Hub: pin the
-        // deployed project as the startup project so the restart reopens it (StartupProjectLoader).
-        // Only for the slave role - a master's editor restarts are the operator's business.
-        if (State == BoygroupState.Client && config.BoygroupEnabled && !config.BoygroupIsMaster)
+        // Deployed files the running editor can pick up live need no reload at all: assets are
+        // invalidated by the resource watcher, and setups travel as live setupJson anyway. Only
+        // symbol data (.t3/.t3ui) and operator code (.cs/.csproj) require a reload - and TiXL has
+        // no runtime loader for those, so the node restarts into the updated show.
+        // Everything this node received belongs to the deployed show project: it joins the
+        // Hub's "Network projects" group.
+        if (GetProjectFolder() is { Length: > 0 } receivedProject)
+            NetworkProjectRegistry.Register(NetworkProjectRegistry.BoygroupKind, receivedProject);
+
+        var needsReload = _deployedRelativePaths.Any(IsStructureFile);
+        _deployedRelativePaths.Clear();
+        if (!needsReload)
         {
-            if (GetProjectFolder() is { Length: > 0 } deployedProject)
+            // Nothing the running editor can't hot-apply arrived — but the node may still be showing
+            // a different project than the master. Follow it in place instead of restarting.
+            if (GetProjectFolder() is { Length: > 0 } deployedFolder
+                && !ProjectFollower.IsOpen(deployedFolder)
+                && ProjectFollower.TrySwitchTo(deployedFolder))
             {
-                config.StartupProjectFolder = deployedProject;
-
-                // Hot reload first: unload the deployed project's package and load it fresh from
-                // disk in place. The boygroup session keeps running; only a failed reload falls
-                // back to the process restart below.
-                if (ProjectSetup.TryReloadProject(deployedProject))
-                {
-                    Log.Info("Boygroup: applied deployed files by reloading the project in place - no restart");
-                    DeploySummary += " - reloaded without restart";
-                    UserSettings.Save();
-                    return;
-                }
-
-                Log.Info("Boygroup: in-place reload not possible - restarting");
+                DeploySummary += " - followed the master's project";
+                return;
             }
+
+            Log.Info($"Boygroup: deploy changed {_deployFilesDone} live-applicable file(s) - staying up without a restart");
+            DeploySummary += " - applied live";
+            return;
         }
 
-        UserSettings.Save();
+        // A render node must come back into the show it was deployed, not into the Hub: pin the
+        // deployed project for the restart. Both restart paths are covered — the reopen-last-session
+        // loader (the default) and the startup-project one. Only for the slave role; a master's
+        // editor restarts are the operator's business.
+        if (State == BoygroupState.Client && config.BoygroupEnabled && !config.BoygroupIsMaster
+            && GetProjectFolder() is { Length: > 0 } deployedProject)
+        {
+            ProjectFollower.PinForRestart(deployedProject);
+        }
+        else
+        {
+            UserSettings.Save();
+        }
 
         RestartPending = true;
         // Brief delay so the panel shows what happened before the process exits.
         _restartAtTicks = Environment.TickCount64 + 1500;
     }
 
+    /// <summary>Files that define operators or operator code - the editor cannot hot-apply them.</summary>
+    private static bool IsStructureFile(string relativePath)
+    {
+        var extension = Path.GetExtension(relativePath);
+        return extension is ".t3" or ".t3ui" or ".cs" or ".csproj";
+    }
+
     private long _restartAtTicks;
+
+    /// <summary>Restart-flood window and budget; see <see cref="HandleDeployDone"/>.</summary>
+    private const long DeployRestartWindowMs = 10 * 60_000;
+    private const int MaxDeployRestartsPerWindow = 4;
 
     private void ProcessPendingRestart()
     {
