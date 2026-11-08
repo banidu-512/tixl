@@ -25,6 +25,14 @@ internal static class StartupProjectLoader
         if (_checked || ImGui.GetFrameCount() <= 2)
             return;
 
+        // The Startup master switch gates the autoload: an editor with it disabled starts
+        // normally with the Hub even when a startup project is still configured.
+        if (!UserSettings.Config.StartupEnabled)
+        {
+            _checked = true;
+            return;
+        }
+
         var folder = UserSettings.Config.StartupProjectFolder;
         if (string.IsNullOrWhiteSpace(folder))
         {

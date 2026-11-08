@@ -21,6 +21,25 @@ internal sealed partial class SettingsWindow
         var manager = BoygroupManager.Instance;
         var config = UserSettings.Config;
 
+        var enabledChanged = FormInputs.AddCheckBox("Enable boygrouping",
+                                                   ref config.BoygroupEnabled,
+                                                   """
+                                                   This machine participates in boygrouping. When enabled, the role
+                                                   below is applied at launch too: a master starts its server and a
+                                                   slave joins (or waits for) a master without anyone clicking —
+                                                   that's how a show machine comes up ready after a reboot.
+                                                   """,
+                                                   false);
+        if (enabledChanged)
+            manager.ApplyEnabledSetting();
+
+        changed |= enabledChanged;
+
+        if (!config.BoygroupEnabled)
+            return;
+
+        FormInputs.AddVerticalSpace();
+
         // -------------------------------------------------------------------------------------
         // Identity & connection
         // -------------------------------------------------------------------------------------
@@ -55,20 +74,6 @@ internal sealed partial class SettingsWindow
         // -------------------------------------------------------------------------------------
         FormInputs.AddSectionSubHeader("Session");
         FormInputs.AddVerticalSpace();
-
-        var enabledChanged = FormInputs.AddCheckBox("Enable boygrouping",
-                                                   ref config.BoygroupEnabled,
-                                                   """
-                                                   This machine participates in boygrouping. When enabled, the role
-                                                   below is applied at launch too: a master starts its server and a
-                                                   slave joins (or waits for) a master without anyone clicking —
-                                                   that's how a show machine comes up ready after a reboot.
-                                                   """,
-                                                   false);
-        if (enabledChanged)
-            manager.ApplyEnabledSetting();
-
-        changed |= enabledChanged;
 
         ImGui.TextUnformatted("Role");
         CustomComponents.TooltipForLastItem("A master hosts the show and deploys to render nodes; a slave renders what the master sends.");

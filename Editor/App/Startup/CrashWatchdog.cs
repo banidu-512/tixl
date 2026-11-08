@@ -69,6 +69,7 @@ internal static class CrashWatchdog
     {
         if (IsChildProcess
             || Debugger.IsAttached
+            || !UserSettings.Config.StartupEnabled
             || !UserSettings.Config.CrashAutoRestart
             || string.IsNullOrEmpty(LaunchCommands.HostPath))
         {

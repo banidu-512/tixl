@@ -4,7 +4,7 @@ Two features for running a show on more than one computer. Both are experimental
 
 ## Boygrouping
 
-Boygrouping distributes a show to render nodes. Enable it in **Settings → Boygrouping** and pick a role: **Master** on the machine that edits the show, **Slave** on every render node. Enabled instances announce themselves on the LAN — there is no address, password or scan step. The master lists the TiXL instances it finds and **Add** invites one to connect.
+Boygrouping distributes a show to render nodes. It is **disabled by default**: enable it at the top of **Settings → Boygrouping** and pick a role: **Master** on the machine that edits the show, **Slave** on every render node. Enabled instances announce themselves on the LAN — there is no address, password or scan step. The master lists the TiXL instances it finds and **Add** invites one to connect.
 
 - **Deploy & Sync** sends the master's Output Setup files to the added render nodes. Project files are not transferred and clients do not restart: each slave writes the setups into its own copy of the project and switches to the master's active setup right away.
 - Setup edits made on the master are forwarded as they are saved, so slaves follow a venue change live.
@@ -36,4 +36,4 @@ Show failover keeps a redundant pair of machines streaming. Both run the same co
 - A role change includes a short mutual mute so both machines never stream at the same time.
 - `[ArtnetOutput]` and `[SacnOutput]` report `Standby` in their status while they are muted.
 
-Configure it in **Settings → Show Failover**: show id (machines with the same id form a pair), priority, heartbeat interval, timeout factor, preemption and network interface.
+Failover is **disabled by default**: switch on **Enable show failover** at the top of **Settings → Show Failover**, then configure show id (machines with the same id form a pair), priority, heartbeat interval, timeout factor, preemption and network interface.
