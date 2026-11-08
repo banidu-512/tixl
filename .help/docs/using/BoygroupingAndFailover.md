@@ -4,6 +4,8 @@ Two features for running a show on more than one computer. Both are experimental
 
 ## Boygrouping
 
+The menu bar shows the machine's current **show-control mode** — Boygroup, Failover, Collab or Off — and clicking it switches modes: the three features are mutually exclusive, and entering one tears the others down (leaving sessions, disabling the others' switches).
+
 Boygrouping distributes a show to render nodes. It is **disabled by default**: enable it at the top of **Settings → Boygrouping** and pick a role: **Master** on the machine that edits the show, **Slave** on every render node. Enabled instances announce themselves on the LAN — there is no address, password or scan step. The master lists the TiXL instances it finds and **Add** invites one to connect.
 
 - **Deploy & Sync** sends the master's changed project files, the Output Setup files and the live graph state to the render nodes, hash-diffed. What a node can apply without reloading depends on what changed: **assets and setups apply live** — the node keeps running, no restart. **Operator data (.t3/.t3ui) and operator code (.cs/.csproj) require a reload**, and the node restarts into the updated show (reopening the deployed project and rejoining automatically). A deploy that transfers nothing leaves the node up. Repeated restarts are fenced by a flood guard (more than four in two minutes pauses restarts for five minutes).
