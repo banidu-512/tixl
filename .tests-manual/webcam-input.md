@@ -102,6 +102,18 @@ Add a second `[WebcamInput]`, enable `Active` on it and pin it to the output.
 - Its `Status` reports that the camera is already opened, and the first operator keeps running.
 - After deleting or deactivating the first operator, the second one starts within a few seconds.
 
+## Step: Pausing an unused camera
+
+**Action:**
+Enable `DeactivateWhenNotShowing`, then make the operator stop being rendered — for example, disconnect its
+`Texture` output from what feeds the output window. Wait five seconds.
+
+**Expected:**
+- Close the camera in another application first: it must be able to open the camera once the operator has been
+  idle for a few seconds.
+- `Status` reports `Paused (not rendered)` while nothing renders the operator.
+- Reconnecting `Texture` makes the image reappear within about a second.
+
 ## Step: Unplugging
 
 **Action:**
