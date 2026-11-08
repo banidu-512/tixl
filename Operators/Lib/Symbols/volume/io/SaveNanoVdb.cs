@@ -63,7 +63,7 @@ internal sealed class SaveNanoVdb : Instance<SaveNanoVdb>
                                      SaveResult result;
                                      try
                                      {
-                                         NanoVdbBuffer? buffer = volume.GetFloatGrid() is { } floatGrid ? NanoVdbBuffer.FromGrid(floatGrid)
+                                         NanoVdbBuffer buffer = volume.GetFloatGrid() is { } floatGrid ? NanoVdbBuffer.FromGrid(floatGrid)
                                                                      : volume.GetVectorGrid() is { } vecGrid ? NanoVdbBuffer.FromGrid(vecGrid)
                                                                      : null;
 
@@ -116,12 +116,12 @@ internal sealed class SaveNanoVdb : Instance<SaveNanoVdb>
     private sealed class SaveResult
     {
         public long VoxelCount;
-        public string? Error;
+        public string Error;
         public string Path = string.Empty;
     }
 
     private bool _wasSave;
-    private Task<SaveResult>? _saveTask;
+    private Task<SaveResult> _saveTask;
 
     [Input(Guid = "7ddbba10-4371-5f6e-ba1f-ce3f26c47d6e")]
     public readonly InputSlot<VdbVolume> Volume = new();

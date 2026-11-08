@@ -1,336 +1,470 @@
 {
   "FormatVersion": 3,
-  "Id": "37449751-31a8-5ead-9525-88759fdfd1b0",
-  "Description": "The container is an open box: a box minus a slightly smaller box with [VolumeCsg] Difference. The water is a slab displaced by [VolumeNoise] and clipped by Intersection to the inside of the box. Two [OscillateVec3] make the box shake and the water slosh.\n\nAKA: water, liquid, slosh, container, csg, noise, animation\n\nTips\n- Smaller VoxelSize means sharper surfaces and more memory and time; start coarse and refine.\n- Level sets store signed distance in world units (negative inside); fog volumes store density.",
+  "Id": "37449751-31a8-5ead-9525-88759fdfd1b0"/*VolumeShakingWaterExample*/,
+  "Description": "Shaking water in an open box: a box minus a slightly smaller box gives a hollow, open-topped container. The water is a [VolumeNoise] displaced level set clipped to the cavity and drawn as a surface. Two [OscillateVec3] nodes do the shaking - one translates the container, one tilts the water with a slower phase so the liquid lags behind the box. They run on the idle-motion clock, so it animates without pressing Play; drag their Amplitude/Period inputs to change the shake.",
   "InputUis": [],
   "SymbolChildUis": [
     {
-      "ChildId": "a17dc958-11dc-56c0-a3a6-675e3b23e02d",
+      "ChildId": "08da8260-6549-5b31-bbeb-e3477742de41",
       "SymbolName": "Lib.volume.generate.VolumePrimitive",
+      "SectionId": "8228052a-2fab-5daa-b647-04b9e80fb8d2",
+      "Comment": "The outside of the container.",
       "Position": {
-        "X": 0.0,
-        "Y": 110.0
+        "X": 60.0,
+        "Y": 130.0
       }
     },
     {
-      "ChildId": "6dc61edc-2a0f-5a10-aeee-f9f0b485cd51",
-      "SymbolName": "Lib.volume.generate.VolumePrimitive",
-      "Position": {
-        "X": 0.0,
-        "Y": 220.0
-      }
-    },
-    {
-      "ChildId": "60b97808-8e37-5f9b-9da2-08c58f3965ab",
-      "SymbolName": "Lib.volume.modify.VolumeCsg",
-      "Position": {
-        "X": 260.0,
-        "Y": 110.0
-      }
-    },
-    {
-      "ChildId": "3096bbca-3778-578d-9dc9-f2bfa1477588",
-      "SymbolName": "Lib.volume.convert.VolumeToMesh",
-      "Position": {
-        "X": 520.0,
-        "Y": 110.0
-      }
-    },
-    {
-      "ChildId": "b16f9990-367f-5f46-9ef3-d8cc55ef3b10",
-      "SymbolName": "Lib.volume.generate.VolumePrimitive",
-      "Position": {
-        "X": 0.0,
-        "Y": 440.0
-      }
-    },
-    {
-      "ChildId": "de102d78-f5e3-5394-96e1-49c4126d347d",
-      "SymbolName": "Lib.volume.modify.VolumeNoise",
-      "Position": {
-        "X": 260.0,
-        "Y": 440.0
-      }
-    },
-    {
-      "ChildId": "27067283-9589-5f02-8080-152b242d2a17",
-      "SymbolName": "Lib.volume.generate.VolumePrimitive",
-      "Position": {
-        "X": 0.0,
-        "Y": 550.0
-      }
-    },
-    {
-      "ChildId": "11da8e15-3354-50e1-ac37-2980ee022a5c",
-      "SymbolName": "Lib.volume.modify.VolumeCsg",
-      "Position": {
-        "X": 520.0,
-        "Y": 440.0
-      }
-    },
-    {
-      "ChildId": "fee826a1-ba0b-5a7b-b483-04d096979c2f",
-      "SymbolName": "Lib.volume.convert.VolumeToMesh",
-      "Position": {
-        "X": 780.0,
-        "Y": 440.0
-      }
-    },
-    {
-      "ChildId": "69ab0ba0-e61a-58b3-8a06-f85a2cee83bd",
+      "ChildId": "11004a87-290e-5ee2-9637-de8347f2af48",
       "SymbolName": "Lib.geometry.GeometryToMesh",
+      "SectionId": "b672c2e4-e523-5b54-8289-acd3e4d51c5d",
+      "Comment": "Uploads a mesh to the GPU as a drawable buffer.",
       "Position": {
-        "X": 1040.0,
-        "Y": 110.0
+        "X": 660.0,
+        "Y": 240.0
       }
     },
     {
-      "ChildId": "fe01eb3f-493f-5af5-9133-ce7a9506e7bf",
-      "SymbolName": "Lib.mesh.draw.DrawMeshWithShadow",
+      "ChildId": "3c1c7a98-5be5-52c8-bb5b-df08c093595b",
+      "SymbolName": "Lib.volume.generate.VolumePrimitive",
+      "Comment": "Same inner cavity, used to clip the water.",
       "Position": {
-        "X": 1300.0,
-        "Y": 110.0
+        "X": 660.0,
+        "Y": 900.0
       }
     },
     {
-      "ChildId": "c4290551-e8a2-5d93-8e64-5e8ee9e0593c",
-      "SymbolName": "Lib.geometry.GeometryToMesh",
-      "Position": {
-        "X": 1300.0,
-        "Y": 440.0
-      }
-    },
-    {
-      "ChildId": "5ed5afe1-b761-5c2f-8ba2-f67f239ff134",
-      "SymbolName": "Lib.mesh.draw.DrawMeshWithShadow",
-      "Position": {
-        "X": 1560.0,
-        "Y": 440.0
-      }
-    },
-    {
-      "ChildId": "70264ce5-55f0-5cb1-9fac-bb86c0ef4ccc",
-      "SymbolName": "Lib.numbers.anim.animators.OscillateVec3",
-      "Position": {
-        "X": 1560.0,
-        "Y": 0.0
-      }
-    },
-    {
-      "ChildId": "c456db78-9ea5-5c3b-9689-26abef9efcef",
-      "SymbolName": "Lib.numbers.anim.animators.OscillateVec3",
-      "Position": {
-        "X": 1820.0,
-        "Y": 330.0
-      }
-    },
-    {
-      "ChildId": "7cd2e716-6d08-5a39-9672-4a347a9a0950",
+      "ChildId": "42622f50-febe-5bdd-9e52-a37812ec1f3a",
       "SymbolName": "Lib.render.transform.Group",
+      "SectionId": "b672c2e4-e523-5b54-8289-acd3e4d51c5d",
+      "Comment": "Applies the BoxShake translation to the container mesh only, at draw time - the volume is not rebuilt, so the shake costs nothing.",
       "Position": {
-        "X": 1820.0,
-        "Y": 110.0
+        "X": 1180.0,
+        "Y": 300.0
       }
     },
     {
-      "ChildId": "e13d8528-20a0-5bd5-a871-c58f5afb07c4",
-      "SymbolName": "Lib.render.transform.Group",
+      "ChildId": "430d2878-7951-514d-a5d1-a2bdd973f3a1",
+      "SymbolName": "Lib.volume.modify.VolumeCsg",
+      "SectionId": "b672c2e4-e523-5b54-8289-acd3e4d51c5d",
+      "Comment": "Intersection with the inner box keeps the water inside the walls.",
       "Position": {
-        "X": 2080.0,
-        "Y": 440.0
+        "X": 660.0,
+        "Y": 610.0
       }
     },
     {
-      "ChildId": "173e7705-da92-509a-b61b-e1232312fbed",
-      "SymbolName": "Lib.mesh.generate.QuadMesh",
-      "Position": {
-        "X": 1820.0,
-        "Y": 660.0
-      }
-    },
-    {
-      "ChildId": "2892f867-b023-5b4c-90ad-10c48c7a2019",
-      "SymbolName": "Lib.mesh.draw.DrawMeshWithShadow",
-      "Position": {
-        "X": 2340.0,
-        "Y": 660.0
-      }
-    },
-    {
-      "ChildId": "20f9443f-c05e-5964-9200-86ca586cb57a",
-      "SymbolName": "Lib.flow.Execute",
-      "Position": {
-        "X": 2600.0,
-        "Y": 0.0
-      }
-    },
-    {
-      "ChildId": "9a3238b4-03c8-5ee6-ab36-6332a237e014",
-      "SymbolName": "Lib.render.shading.SetShadow",
-      "Position": {
-        "X": 2600.0,
-        "Y": 110.0
-      }
-    },
-    {
-      "ChildId": "6008125f-2469-592a-b591-1de425b8a874",
-      "SymbolName": "Lib.render.shading.PointLight",
-      "Position": {
-        "X": 2600.0,
-        "Y": 220.0
-      }
-    },
-    {
-      "ChildId": "eb2c53f5-62d9-57c8-bf0a-95bd7cf72ad2",
-      "SymbolName": "Lib.render.shading.PointLight",
-      "Position": {
-        "X": 2600.0,
-        "Y": 330.0
-      }
-    },
-    {
-      "ChildId": "1583a406-fedd-5d6c-b50c-82df7faff498",
-      "SymbolName": "Lib.render.shading.SetFog",
-      "Position": {
-        "X": 2600.0,
-        "Y": 440.0
-      }
-    },
-    {
-      "ChildId": "0445b698-4382-58ce-bc7b-0e85f34fe341",
-      "SymbolName": "Lib.render.camera.Camera",
-      "Position": {
-        "X": 2600.0,
-        "Y": 550.0
-      }
-    },
-    {
-      "ChildId": "4f8faaa1-11bb-514e-81bf-43aa27eabde1",
+      "ChildId": "4a60b9c4-fe80-5357-8d0c-c84cb9a3956d",
       "SymbolName": "Lib.image.generate.basic.RenderTarget",
+      "Comment": "Renders the command stream into an image.",
       "Position": {
-        "X": 2860.0,
-        "Y": 550.0
+        "X": 2240.0,
+        "Y": 300.0
       }
     },
     {
-      "ChildId": "91be0ccf-6441-5094-a315-25d884750175",
-      "SymbolName": "Lib.render.postfx.SSAO",
+      "ChildId": "4c87d71f-fe39-5403-99d1-0d275719b1b4",
+      "SymbolName": "Lib.numbers.anim.animators.OscillateVec3",
+      "SectionId": "9174ec11-c941-520a-b40c-7844c56b9690",
+      "Comment": "World-space jitter for the container. Amplitude is in meters, Period in seconds-ish (bars). It animates on its own - no Play needed.",
       "Position": {
-        "X": 3120.0,
-        "Y": 550.0
+        "X": 60.0,
+        "Y": 430.0
+      }
+    },
+    {
+      "ChildId": "63e771ca-4707-58ef-842a-0c577c237326",
+      "SymbolName": "Lib.render.camera.OrbitCamera",
+      "SectionId": "b672c2e4-e523-5b54-8289-acd3e4d51c5d",
+      "Comment": "Camera that orbits its target.",
+      "Position": {
+        "X": 2000.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "6e6754ea-ba8b-512b-af9c-4e0450090d4f",
+      "SymbolName": "Lib.volume.convert.VolumeToMesh",
+      "SectionId": "8228052a-2fab-5daa-b647-04b9e80fb8d2",
+      "Comment": "Draw the container as a surface so the water reads against it.",
+      "Position": {
+        "X": 380.0,
+        "Y": 240.0
+      }
+    },
+    {
+      "ChildId": "7402bdc5-aacb-55e0-a233-b00b2101d5d4",
+      "SymbolName": "Lib.geometry.GeometryToMesh",
+      "SectionId": "23901332-a70a-5274-96e4-55f4a86c1582",
+      "Comment": "Uploads the water mesh to the GPU.",
+      "Position": {
+        "X": 1200.0,
+        "Y": 610.0
+      }
+    },
+    {
+      "ChildId": "7f8226c5-07be-5b63-8891-bdfb1fdf4e3e",
+      "SymbolName": "Lib.numbers.anim.animators.OscillateVec3",
+      "SectionId": "9174ec11-c941-520a-b40c-7844c56b9690",
+      "Comment": "Tilts the water surface by a degree or two, slower than the box, so it lags and slops instead of moving rigidly with the container.",
+      "Position": {
+        "X": 60.0,
+        "Y": 700.0
+      }
+    },
+    {
+      "ChildId": "8918d77d-ff2d-56ae-8bbf-367dce386a51",
+      "SymbolName": "Lib.mesh.draw.DrawMeshUnlit",
+      "SectionId": "23901332-a70a-5274-96e4-55f4a86c1582",
+      "Comment": "Draws the water surface in blue.",
+      "Position": {
+        "X": 1460.0,
+        "Y": 610.0
+      }
+    },
+    {
+      "ChildId": "a12c3236-2bb8-5f9b-a5d5-d92e62585bdc",
+      "SymbolName": "Lib.render.transform.Group",
+      "SectionId": "23901332-a70a-5274-96e4-55f4a86c1582",
+      "Comment": "Applies the WaterSlosh tilt to the water mesh only.",
+      "Position": {
+        "X": 1500.0,
+        "Y": 860.0
+      }
+    },
+    {
+      "ChildId": "a6f4424b-50b9-5e8c-8e8c-60e295e8203d",
+      "SymbolName": "Lib.volume.modify.VolumeCsg",
+      "SectionId": "8228052a-2fab-5daa-b647-04b9e80fb8d2",
+      "Comment": "Difference: outer minus inner = open box.",
+      "Position": {
+        "X": 380.0,
+        "Y": 240.0
+      }
+    },
+    {
+      "ChildId": "acc1ef1a-04dd-5541-b255-5407522b029e",
+      "SymbolName": "Lib.mesh.draw.DrawMeshUnlit",
+      "SectionId": "b672c2e4-e523-5b54-8289-acd3e4d51c5d",
+      "Comment": "Draws a mesh with a flat colour.",
+      "Position": {
+        "X": 920.0,
+        "Y": 240.0
+      }
+    },
+    {
+      "ChildId": "b4709138-7ea5-5209-a76a-eefee36858e5",
+      "SymbolName": "Lib.volume.modify.VolumeNoise",
+      "SectionId": "8f94d0b2-14b3-581b-bfb2-829b8b907634",
+      "Comment": "Mode 2 = Displace. Time-driven Offset animates the displacement.",
+      "Position": {
+        "X": 380.0,
+        "Y": 610.0
+      }
+    },
+    {
+      "ChildId": "c1c3fb47-8c8c-5f61-9bc6-11b20d981b8e",
+      "SymbolName": "Lib.volume.generate.VolumePrimitive",
+      "SectionId": "8228052a-2fab-5daa-b647-04b9e80fb8d2",
+      "Comment": "Lifted on Y so the top stays open - subtracting it leaves four walls and a floor.",
+      "Position": {
+        "X": 60.0,
+        "Y": 360.0
+      }
+    },
+    {
+      "ChildId": "dfeaf8e9-1b77-54c8-983d-0a157707a406",
+      "SymbolName": "Lib.volume.generate.VolumePrimitive",
+      "SectionId": "9174ec11-c941-520a-b40c-7844c56b9690",
+      "Comment": "A block of water sitting inside the box. Its surface sits above the floor so it stays visible over the front wall.",
+      "Position": {
+        "X": 60.0,
+        "Y": 610.0
+      }
+    },
+    {
+      "ChildId": "ec2afad0-2a6b-5662-9c3e-c9fd2b00dc6e",
+      "SymbolName": "Lib.volume.convert.VolumeToMesh",
+      "SectionId": "23901332-a70a-5274-96e4-55f4a86c1582",
+      "Comment": "Extracts the water surface as a mesh.",
+      "Position": {
+        "X": 940.0,
+        "Y": 610.0
+      }
+    },
+    {
+      "ChildId": "f4a23355-00ad-518e-b164-f2f08ebced52",
+      "SymbolName": "Lib.render.transform.Group",
+      "SectionId": "b672c2e4-e523-5b54-8289-acd3e4d51c5d",
+      "Comment": "OrbitCamera.Command takes a single command, so both shake groups are combined here: Group.Commands is a multi-input.",
+      "Position": {
+        "X": 1760.0,
+        "Y": 300.0
       }
     }
   ],
   "OutputUis": [
     {
-      "OutputId": "e29b2d3c-8e83-55d0-a789-f484a390fffc",
+      "OutputId": "e29b2d3c-8e83-55d0-a789-f484a390fffc"/*ColorBuffer*/,
       "Position": {
-        "X": 3380.0,
-        "Y": 0.0
+        "X": 2300.0,
+        "Y": 300.0
       }
     }
   ],
   "Sections": [
     {
-      "Id": "434d06ff-d1ec-5988-836d-332c31cb6034",
-      "Title": "1  An open box from CSG",
+      "Id": "23901332-a70a-5274-96e4-55f4a86c1582",
+      "Label": "3 - Surface and water draw",
+      "ParentSectionId": "b672c2e4-e523-5b54-8289-acd3e4d51c5d",
       "Color": {
         "X": 0.35,
+        "Y": 0.75,
+        "Z": 0.8,
+        "W": 1.0
+      },
+      "Position": {
+        "X": 930.0,
+        "Y": 560.0
+      },
+      "Size": {
+        "X": 780.0,
+        "Y": 620.0
+      }
+    },
+    {
+      "Id": "8228052a-2fab-5daa-b647-04b9e80fb8d2",
+      "Label": "1 - Open box (difference)",
+      "Color": {
+        "X": 0.45,
         "Y": 0.5,
         "Z": 0.65,
         "W": 1.0
       },
       "Position": {
-        "X": -40.0,
-        "Y": 40.0
+        "X": 20.0,
+        "Y": 80.0
       },
       "Size": {
-        "X": 800.0,
-        "Y": 280.0
+        "X": 660.0,
+        "Y": 560.0
       }
     },
     {
-      "Id": "a7fa1b67-52cc-5a66-a128-bbcd3c397c68",
-      "Title": "3  Shake and slosh",
+      "Id": "8f94d0b2-14b3-581b-bfb2-829b8b907634",
+      "Label": "2 - Water and slosh",
       "Color": {
-        "X": 0.6,
-        "Y": 0.3,
-        "Z": 0.35,
+        "X": 0.3,
+        "Y": 0.55,
+        "Z": 0.85,
         "W": 1.0
       },
       "Position": {
-        "X": 1520.0,
-        "Y": -70.0
+        "X": 20.0,
+        "Y": 560.0
       },
       "Size": {
-        "X": 800.0,
-        "Y": 610.0
+        "X": 660.0,
+        "Y": 520.0
       }
     },
     {
-      "Id": "edf64184-154f-594a-840b-0a59e6f62d9c",
-      "Title": "2  Water: a noisy slab clipped to the box",
+      "Id": "9174ec11-c941-520a-b40c-7844c56b9690",
+      "Label": "Shake it",
+      "ParentSectionId": "8f94d0b2-14b3-581b-bfb2-829b8b907634",
       "Color": {
-        "X": 0.65,
-        "Y": 0.45,
-        "Z": 0.25,
+        "X": 0.85,
+        "Y": 0.75,
+        "Z": 0.3,
         "W": 1.0
       },
       "Position": {
-        "X": -40.0,
-        "Y": 370.0
+        "X": 20.0,
+        "Y": 380.0
       },
       "Size": {
-        "X": 1060.0,
-        "Y": 280.0
+        "X": 300.0,
+        "Y": 460.0
       }
     },
     {
-      "Id": "f0bf2da7-905d-542c-85e2-73704d248c41",
-      "Title": "Render: light, shadow and camera",
+      "Id": "b672c2e4-e523-5b54-8289-acd3e4d51c5d",
+      "Label": "4 - Render",
       "Color": {
         "X": 0.4,
-        "Y": 0.4,
-        "Z": 0.45,
+        "Y": 0.7,
+        "Z": 0.5,
         "W": 1.0
       },
       "Position": {
-        "X": 2560.0,
-        "Y": -70.0
+        "X": 350.0,
+        "Y": 190.0
       },
       "Size": {
-        "X": 800.0,
-        "Y": 720.0
+        "X": 1980.0,
+        "Y": 700.0
       }
     }
   ],
-  "TourPoints": [
-    {
-      "Id": "da738e95-d5d7-529c-9a3a-72c1efa3e5b6",
-      "ChildId": "60b97808-8e37-5f9b-9da2-08c58f3965ab",
-      "Description": "Difference carves the inner box out of the outer one, leaving walls and a floor.",
-      "Style": "InfoFor",
-      "InputId": "e0616bd7-2a4a-5953-95a5-a11929871bd9"
-    },
-    {
-      "Id": "734c1f18-2b8e-5d4b-9ce1-f7f1cfb06bec",
-      "ChildId": "de102d78-f5e3-5394-96e1-49c4126d347d",
-      "Description": "Displacing the water slab with noise gives it waves.",
-      "Style": "InfoFor",
-      "InputId": "fa3b21cd-383f-5f82-9b5a-57c316cdef7d"
-    },
-    {
-      "Id": "06ca6692-b140-5832-862a-43674abaf1b4",
-      "ChildId": "11da8e15-3354-50e1-ac37-2980ee022a5c",
-      "Description": "Intersection keeps only the water inside the box, so no wave pokes through a wall.",
-      "Style": "InfoFor",
-      "InputId": "e0616bd7-2a4a-5953-95a5-a11929871bd9"
-    },
-    {
-      "Id": "9ba42933-2e37-5415-8ee7-9b65b82ec210",
-      "ChildId": "70264ce5-55f0-5cb1-9fac-bb86c0ef4ccc",
-      "Description": "[OscillateVec3] moves the whole box a little: the meshes stay, only their [Group] moves.",
-      "Style": "InfoFor"
+  "Settings": {
+    "OutputWindows": [
+      {
+  "ShowGizmos": "On",
+  "TransformGizmoMode": "Move",
+  "BackgroundColor": [
+    0.1,
+    0.1,
+    0.1,
+    1.0
+  ],
+  "CameraControlMode": "AutoUseFirstCam",
+  "CameraPosition": [
+    0.0,
+    0.0,
+    2.4142134
+  ],
+  "CameraTarget": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "CameraRoll": 0.0,
+  "CameraSpeed": 1.0,
+  "ResolutionTitle": "Fill",
+  "ResolutionWidth": 0,
+  "ResolutionHeight": 0,
+  "ResolutionUseAsAspectRatio": true,
+  "IsPinned": true,
+  "PinnedInstancePath": [
+    "ccab3c44-8e49-9553-3a3a-c4b259de5334"
+  ],
+  "PinnedOutputId": "00000000-0000-0000-0000-000000000000",
+  "PinnedEntityKind": "None",
+  "PinnedEntityId": "00000000-0000-0000-0000-000000000000"
+}
+    ],
+    "WindowLayout": "[Window][DockSpaceViewport_11111111]\nPos=0,26\nSize=1920,1054\nCollapsed=0\n\n[Window][Graph View##1]\nPos=201,26\nSize=349,1001\nCollapsed=0\nDockId=0x00000003,0\n\n[Window][Parameters]\nPos=1661,710\nSize=442,568\nCollapsed=0\nDockId=0x00000005,0\n\n[Window][Variations]\nPos=1079,489\nSize=601,538\nCollapsed=0\nDockId=0x0000000A,0\n\n[Window][Output View##0]\nPos=552,26\nSize=1128,461\nCollapsed=0\nDockId=0x00000007,0\n\n[Window][Debug##Default]\nPos=60,60\nSize=400,400\nCollapsed=0\n\n[Window][Explore Variations]\nPos=810,306\nSize=768,283\nCollapsed=0\n\n[Window][Console]\nPos=1336,1004\nSize=584,76\nCollapsed=0\nDockId=0x00000006,0\n\n[Window][Output View##1]\nPos=0,26\nSize=2304,712\nCollapsed=0\n\n[Window][Symbol Library]\nPos=0,26\nSize=199,355\nCollapsed=0\nDockId=0x0000000D,0\n\n[Window][Render as Video]\nPos=2105,710\nSize=455,568\nCollapsed=0\nDockId=0x00000006,1\n\n[Window][##typeAheadSearchPopup]\nPos=1692,821\nSize=450,300\nCollapsed=0\n\n[Window][Combine into symbol]\nPos=1030,545\nSize=500,350\nCollapsed=0\n\n[Window][Parameters##98]\nPos=0,576\nSize=323,864\nCollapsed=0\n\n[Window][Add output]\nPos=1030,595\nSize=500,250\nCollapsed=0\n\n[Window][Duplicate as new symbol]\nPos=1030,580\nSize=500,280\nCollapsed=0\n\n[Window][Output View##97]\nPos=0,26\nSize=1728,927\nCollapsed=0\n\n[Window][Output View##98]\nPos=0,26\nSize=2304,593\nCollapsed=0\n\n[Window][Parameters##1]\nPos=552,489\nSize=525,538\nCollapsed=0\nDockId=0x00000009,0\n\n[Window][Render To File]\nPos=1336,536\nSize=584,423\nCollapsed=0\nDockId=0x00000006,1\n\n[Window][Add parameter input]\nPos=1030,533\nSize=500,350\nCollapsed=0\n\n[Window][Variation Explorer]\nPos=0,26\nSize=1315,1414\nCollapsed=0\n\n[Window][Dear ImGui Demo]\nPos=650,46\nSize=550,680\nCollapsed=0\n\n[Window][Search]\nPos=710,390\nSize=500,300\nCollapsed=0\n\n[Window][##CurvePopup]\nPos=1164,199\nSize=500,400\nCollapsed=0\n\n[Window][Settings]\nPos=60,60\nSize=550,681\nCollapsed=0\n\n[Window][Output View##99]\nPos=763,26\nSize=1157,948\nCollapsed=0\n\n[Window][Rename symbol]\nPos=710,365\nSize=500,350\nCollapsed=0\n\n[Window][Edit description]\nPos=410,190\nSize=1100,700\nCollapsed=0\n\n[Window][Rename input]\nPos=710,365\nSize=500,350\nCollapsed=0\n\n[Window][Edit comment]\nPos=710,315\nSize=500,450\nCollapsed=0\n\n[Window][Output View##100]\nSize=550,448\nCollapsed=0\n\n[Window][WindowOverViewport_11111111]\nPos=0,26\nSize=1680,1001\nCollapsed=0\n\n[Window][Assets]\nPos=0,383\nSize=199,644\nCollapsed=0\nDockId=0x0000000E,0\n\n[Window][Output View##101]\nPos=1821,26\nSize=739,1272\nCollapsed=0\n\n[Window][ProgressionPopup]\nPos=930,578\nSize=700,260\nCollapsed=0\n\n[Window][Skill Quest Overview]\nPos=880,408\nSize=800,600\nCollapsed=0\n\n[Window][###ExitDialog]\nPos=1070,620\nSize=420,200\nCollapsed=0\n\n[Window][Editor Feature Tests]\nPos=389,265\nSize=588,457\nCollapsed=0\n\n[Window][Welcome to the TiXL Alpha]\nPos=60,60\nSize=680,480\nCollapsed=0\n\n[Window][Composition Settings]\nPos=705,117\nSize=553,453\nCollapsed=0\n\n[Window][Help]\nPos=1079,489\nSize=601,538\nCollapsed=0\nDockId=0x0000000A,1\n\n[Docking][Data]\nDockSpace         ID=0x08BD597D Window=0x1BBC0F80 Pos=0,26 Size=1680,1001 Split=X Selected=0x8995E68A\n  DockNode        ID=0x0000000B Parent=0x08BD597D SizeRef=199,1391 Split=Y Selected=0x42C24103\n    DockNode      ID=0x0000000D Parent=0x0000000B SizeRef=549,493 HiddenTabBar=1 Selected=0xD41FC2E2\n    DockNode      ID=0x0000000E Parent=0x0000000B SizeRef=549,896 HiddenTabBar=1 Selected=0x42C24103\n  DockNode        ID=0x0000000C Parent=0x08BD597D SizeRef=3140,1391 Split=X\n    DockNode      ID=0x00000003 Parent=0x0000000C SizeRef=2010,1391 CentralNode=1 HiddenTabBar=1 Selected=0x8995E68A\n    DockNode      ID=0x00000004 Parent=0x0000000C SizeRef=1128,1391 Split=Y Selected=0xC9567BC1\n      DockNode    ID=0x00000007 Parent=0x00000004 SizeRef=916,641 HiddenTabBar=1 Selected=0xC9567BC1\n      DockNode    ID=0x00000008 Parent=0x00000004 SizeRef=916,748 Split=X Selected=0x35577784\n        DockNode  ID=0x00000009 Parent=0x00000008 SizeRef=525,446 HiddenTabBar=1 Selected=0x35577784\n        DockNode  ID=0x0000000A Parent=0x00000008 SizeRef=601,446 Selected=0x742F3B5B\nDockSpace         ID=0x7C6B3D9B Pos=0,26 Size=1953,1101 CentralNode=1 HiddenTabBar=1 Selected=0xF7A0F8A9\nDockSpace         ID=0x8B93E3BD Pos=0,26 Size=1920,1054 Split=X Selected=0x1F46795C\n  DockNode        ID=0x00000001 Parent=0x8B93E3BD SizeRef=824,1391 CentralNode=1 Selected=0xF7A0F8A9\n  DockNode        ID=0x00000002 Parent=0x8B93E3BD SizeRef=916,1391 Split=X Selected=0x9CE63BF6\n    DockNode      ID=0x00000005 Parent=0x00000002 SizeRef=442,365 Selected=0x9CE63BF6\n    DockNode      ID=0x00000006 Parent=0x00000002 SizeRef=455,365 Selected=0x3BC11B9B\n\n",
+    "WindowLayoutImGuiVersion": "1.91.6",
+    "WindowVisibility": {
+      "Variations": true,
+      "Output View##0": true,
+      "Output View##1": false,
+      "Output View##2": false,
+      "Output View##3": false,
+      "Output View##4": false,
+      "Output View##5": false,
+      "Output View##6": false,
+      "Output View##7": false,
+      "Output View##8": false,
+      "Output View##9": false,
+      "Output View##10": false,
+      "Output View##11": false,
+      "Output View##12": false,
+      "Output View##13": false,
+      "Output View##14": false,
+      "Output View##15": false,
+      "Output View##16": false,
+      "Output View##17": false,
+      "Output View##18": false,
+      "Output View##19": false,
+      "Output View##20": false,
+      "Output View##21": false,
+      "Output View##22": false,
+      "Output View##23": false,
+      "Output View##24": false,
+      "Output View##25": false,
+      "Output View##26": false,
+      "Output View##27": false,
+      "Output View##28": false,
+      "Output View##29": false,
+      "Output View##30": false,
+      "Output View##31": false,
+      "Output View##32": false,
+      "Output View##33": false,
+      "Output View##34": false,
+      "Output View##35": false,
+      "Output View##36": false,
+      "Output View##37": false,
+      "Output View##38": false,
+      "Output View##39": false,
+      "Output View##40": false,
+      "Output View##41": false,
+      "Output View##42": false,
+      "Output View##43": false,
+      "Output View##44": false,
+      "Output View##45": false,
+      "Output View##46": false,
+      "Output View##47": false,
+      "Output View##48": false,
+      "Output View##49": false,
+      "Output View##50": false,
+      "Output View##51": false,
+      "Output View##52": false,
+      "Output View##53": false,
+      "Output View##54": false,
+      "Output View##55": false,
+      "Output View##56": false,
+      "Output View##57": false,
+      "Output View##58": false,
+      "Output View##59": false,
+      "Output View##60": false,
+      "Output View##61": false,
+      "Output View##62": false,
+      "Output View##63": false,
+      "Output View##64": false,
+      "Output View##65": false,
+      "Output View##66": false,
+      "Output View##67": false,
+      "Output View##68": false,
+      "Output View##69": false,
+      "Output View##70": false,
+      "Output View##71": false,
+      "Output View##72": false,
+      "Output View##73": false,
+      "Output View##74": false,
+      "Output View##75": false,
+      "Output View##76": false,
+      "Output View##77": false,
+      "Output View##78": false,
+      "Output View##79": false,
+      "Output View##80": false,
+      "Output View##81": false,
+      "Output View##82": false,
+      "Output View##83": false,
+      "Output View##84": false,
+      "Output View##85": false,
+      "Output View##86": false,
+      "Output View##87": false,
+      "Output View##88": false,
+      "Output View##89": false,
+      "Output View##90": false,
+      "Output View##91": false,
+      "Output View##92": false,
+      "Output View##93": false,
+      "Output View##94": false,
+      "Output View##95": false,
+      "Output View##96": false,
+      "Output View##97": false,
+      "Output View##98": false,
+      "Output View##99": false,
+      "Output View##100": false,
+      "Graph View##0": false,
+      "Graph View##1": true,
+      "Parameters##1": true,
+      "Symbol Library": true,
+      "Assets": true,
+      "Variation Explorer": false,
+      "Render To File": false,
+      "IO Events": false,
+      "Performance": false,
+      "Help": true,
+      "Console": false,
+      "Utilities": false,
+      "Guided Feature Tests": false,
+      "Settings": false,
+      "Composition Settings": false,
+      "Welcome to the TiXL Alpha": false,
+      "Collab": false
     }
-  ]
+  }
 }

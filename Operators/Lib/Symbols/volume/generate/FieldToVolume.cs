@@ -1,5 +1,4 @@
 using System;
-using Lib.Utils;
 using System.Collections.Generic;
 using System.Numerics;
 using T3.Core.DataTypes;
@@ -14,10 +13,9 @@ namespace Lib.volume.generate;
 [Guid("34203fa5-2ff2-548b-98ee-fc427923ebb1")]
 internal sealed class FieldToVolume : Instance<FieldToVolume>
 {
-    private readonly record struct Key(ScalarField Field, Vector3 Center, Vector3 Size, float VoxelSize, Modes Mode);
-
     [Output(Guid = "a34b2f67-46e3-58ab-9cd0-c6c137869fa1")]
     public readonly Slot<VdbVolume> Volume = new();
+
 
     private enum Modes
     {
@@ -31,7 +29,6 @@ internal sealed class FieldToVolume : Instance<FieldToVolume>
     public FieldToVolume()
     {
         Volume.UpdateAction = Update;
-        _job = new BackgroundJob<Key, VdbVolume>(this, nameof(FieldToVolume), Compute, Volume);
     }
 
     private void Update(EvaluationContext context)
@@ -42,44 +39,30 @@ internal sealed class FieldToVolume : Instance<FieldToVolume>
         var voxelSize = VoxelSize.GetValue(context);
         var mode = (Modes)Mode.GetValue(context);
 
-        // Negated comparisons so NaN inputs are rejected too.
-        if (field == null || !(size.X > 0) || !(size.Y > 0) || !(size.Z > 0) || !(voxelSize > 0)
-            || !float.IsFinite(size.X + size.Y + size.Z + voxelSize) || !float.IsFinite(center.X + center.Y + center.Z))
+        if (field == null || size.X <= 0 || size.Y <= 0 || size.Z <= 0 || voxelSize <= 0)
         {
-            _job.Reset();
             Volume.Value = null;
+            _hasLastKey = false;
             return;
         }
 
-        // Sampling the box is expensive and fully determined by these inputs, so it runs once per change on a
-        // worker. Fields are immutable snapshots that are safe to sample from any thread.
-        var key = new Key(field, center, size, voxelSize, mode);
-        switch (_job.Poll(context, key, out var result))
-        {
-            case BackgroundJobOutcome.Ready:
-                Volume.Value = result;
-                break;
-            case BackgroundJobOutcome.Failed:
-                Volume.Value = null;
-                break;
-        }
-    }
+        // Sampling the box is expensive and the result is fully determined by these inputs. Without this
+        // early-out a static graph re-samples (and re-inserts) up to MaxSampleCount voxels every frame.
+        var key = (field, center, size, voxelSize, mode);
+        if (_hasLastKey && key == _lastKey)
+            return;
 
-    private static VdbVolume Compute(Key key)
-    {
-        var field = key.Field;
-        var voxelSize = key.VoxelSize;
         var bandWorld = 3f * voxelSize;
-        var min = key.Center - key.Size * 0.5f;
-        var max = key.Center + key.Size * 0.5f;
+        var min = center - size * 0.5f;
+        var max = center + size * 0.5f;
 
-        var isSdf = key.Mode == Modes.Sdf;
+        var isSdf = mode == Modes.Sdf;
         var grid = new VdbGrid<float>(isSdf ? bandWorld : 0f, voxelSize,
                                       isSdf ? "LS" : "density",
                                       isSdf ? VdbGridClass.LevelSet : VdbGridClass.FogVolume)
-                       {
-                           Transform = new VdbTransform(voxelSize, Vector3.Zero),
-                       };
+        {
+            Transform = new VdbTransform(voxelSize, Vector3.Zero),
+        };
 
         var indexMin = grid.Transform.WorldToIndex(min - new Vector3(bandWorld));
         var indexMax = grid.Transform.WorldToIndex(max + new Vector3(bandWorld));
@@ -92,7 +75,19 @@ internal sealed class FieldToVolume : Instance<FieldToVolume>
         var extentZ = (double)indexMax.Z - indexMin.Z + 1;
         var sampleCount = extentX * extentY * extentZ;
         if (sampleCount > MaxSampleCount)
-            throw new ArgumentException($"{sampleCount:e1} samples exceed the limit of {MaxSampleCount}; increase VoxelSize or reduce Size.");
+        {
+            // One line per offending configuration, not one per frame (this ran at 60 Hz before).
+            if (!_hasWarningKey || _lastWarningKey != key)
+            {
+                _lastWarningKey = key;
+                _hasWarningKey = true;
+                Log.Warning($"FieldToVolume: {sampleCount:e1} samples exceed the limit of {MaxSampleCount}; increase VoxelSize or reduce Size.", this);
+            }
+
+            Volume.Value = null;
+            _hasLastKey = false;
+            return;
+        }
 
         for (var z = indexMin.Z; z <= indexMax.Z; z++)
         {
@@ -102,9 +97,6 @@ internal sealed class FieldToVolume : Instance<FieldToVolume>
                 {
                     var coord = new VdbCoord(x, y, z);
                     var value = field.Sample(grid.Transform.IndexToWorld(coord));
-                    if (!float.IsFinite(value))
-                        continue;
-
                     if (isSdf)
                     {
                         if (value > bandWorld)
@@ -129,10 +121,15 @@ internal sealed class FieldToVolume : Instance<FieldToVolume>
         }
 
         grid.Tree.Prune();
-        return new VdbVolume(grid);
+        Volume.Value = new VdbVolume(grid);
+        _lastKey = key;
+        _hasLastKey = true;
     }
 
-    private readonly BackgroundJob<Key, VdbVolume> _job;
+    private (ScalarField Field, Vector3 Center, Vector3 Size, float VoxelSize, Modes Mode) _lastKey;
+    private (ScalarField Field, Vector3 Center, Vector3 Size, float VoxelSize, Modes Mode) _lastWarningKey;
+    private bool _hasLastKey;
+    private bool _hasWarningKey;
 
     [Input(Guid = "623c40fb-5337-5a30-98c8-a0542cc6ee09")]
     public readonly InputSlot<ScalarField> Field = new();

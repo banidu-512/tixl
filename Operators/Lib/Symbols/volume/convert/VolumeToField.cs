@@ -68,8 +68,8 @@ internal sealed class VolumeToField : Instance<VolumeToField>
         }
     }
 
-    private (VdbVolume?, float, float, float) _last = (null, float.NaN, float.NaN, float.NaN);
-    private string? _lastError;
+    private (VdbVolume, float, float, float) _last = (null, float.NaN, float.NaN, float.NaN);
+    private string _lastError;
 
     [Input(Guid = "b878129b-860f-5060-97e3-7ac2d09b3b9d")]
     public readonly InputSlot<VdbVolume> Volume = new();

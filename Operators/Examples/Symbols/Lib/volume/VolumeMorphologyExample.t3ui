@@ -1,0 +1,218 @@
+{
+  "FormatVersion": 3,
+  "Id": "0148a58c-2d83-5cd2-bb39-1b54fc2d6791"/*VolumeMorphologyExample*/,
+  "Description": "Offset-based sculpting: [VolumeMorphology] grows and shrinks level sets in world units. Open and Close are the classic closing/opening operators - they fill concave crevices or shave convex spikes. Compare Dilate, Erode, Open and Close side by side.",
+  "InputUis": [],
+  "SymbolChildUis": [
+    {
+      "ChildId": "06caeeb9-4269-5d98-aed3-9b678e6182b8",
+      "SymbolName": "Lib.volume.generate.VolumePrimitive",
+      "SectionId": "6108021c-adbc-59ce-936c-88f7caf211ad",
+      "Comment": "A thin bar unioned onto the sphere gives a concave crease to fill.",
+      "Position": {
+        "X": 60.0,
+        "Y": 380.0
+      }
+    },
+    {
+      "ChildId": "0d772afa-251f-5fcc-ab10-efb12314b038",
+      "SymbolName": "Lib.render.camera.OrbitCamera",
+      "SectionId": "919794d5-e11e-51b3-9c8c-c1a1bb519682",
+      "Comment": "Camera that orbits its target.",
+      "Position": {
+        "X": 1940.0,
+        "Y": 250.0
+      }
+    },
+    {
+      "ChildId": "269d4c48-ddb1-5247-bbdd-42cb6cf69a5b",
+      "SymbolName": "Lib.volume.modify.VolumeMorphology",
+      "SectionId": "63b3916b-cd2f-5e61-9356-f58ba887358b",
+      "Comment": "Operation 3 = Close (dilate then erode): fills narrow concavities, keeps the overall size.",
+      "Position": {
+        "X": 640.0,
+        "Y": 250.0
+      }
+    },
+    {
+      "ChildId": "492bf2d3-b670-5a93-ad80-7e4d76f5b96e",
+      "SymbolName": "Lib.mesh.draw.DrawMeshUnlit",
+      "SectionId": "919794d5-e11e-51b3-9c8c-c1a1bb519682",
+      "Comment": "Draws a mesh with a flat colour.",
+      "Position": {
+        "X": 1420.0,
+        "Y": 250.0
+      }
+    },
+    {
+      "ChildId": "4d0208e6-5601-543d-9684-d38e7fe6ca5e",
+      "SymbolName": "Lib.volume.convert.VolumeToMesh",
+      "SectionId": "5847fe72-545f-54fa-870e-5cd8bda1f591",
+      "Comment": "Extracts a watertight isosurface mesh from a volume.",
+      "Position": {
+        "X": 900.0,
+        "Y": 250.0
+      }
+    },
+    {
+      "ChildId": "9353423e-a1ba-5ba4-8416-e6ec59889c54",
+      "SymbolName": "Lib.volume.generate.VolumePrimitive",
+      "SectionId": "6108021c-adbc-59ce-936c-88f7caf211ad",
+      "Comment": "Generates a level set primitive (sphere, box, torus, ...) on a sparse grid.",
+      "Position": {
+        "X": 60.0,
+        "Y": 140.0
+      }
+    },
+    {
+      "ChildId": "a2a796a7-1597-5b67-bf96-6973e17d5c67",
+      "SymbolName": "Lib.geometry.GeometryToMesh",
+      "SectionId": "919794d5-e11e-51b3-9c8c-c1a1bb519682",
+      "Comment": "Uploads a mesh to the GPU as a drawable buffer.",
+      "Position": {
+        "X": 1160.0,
+        "Y": 250.0
+      }
+    },
+    {
+      "ChildId": "af54bda9-6871-55e4-b5b5-6dc909baa535",
+      "SymbolName": "Lib.volume.modify.VolumeCsg",
+      "SectionId": "6108021c-adbc-59ce-936c-88f7caf211ad",
+      "Comment": "Combines two level sets with a boolean operation (union / intersection / difference).",
+      "Position": {
+        "X": 380.0,
+        "Y": 250.0
+      }
+    },
+    {
+      "ChildId": "ce7eca48-720a-57f8-bc0a-1d2479f2f74a",
+      "SymbolName": "Lib.image.generate.basic.RenderTarget",
+      "Comment": "Renders the command stream into an image.",
+      "Position": {
+        "X": 2200.0,
+        "Y": 250.0
+      }
+    }
+  ],
+  "OutputUis": [
+    {
+      "OutputId": "27758cf4-281d-53bb-a386-9366b4a7b8e1"/*ColorBuffer*/,
+      "Position": {
+        "X": 2300.0,
+        "Y": 300.0
+      }
+    }
+  ],
+  "Sections": [
+    {
+      "Id": "5847fe72-545f-54fa-870e-5cd8bda1f591",
+      "Label": "3 - Extract",
+      "Color": {
+        "X": 0.75,
+        "Y": 0.6,
+        "Z": 0.3,
+        "W": 1.0
+      },
+      "Position": {
+        "X": 870.0,
+        "Y": 190.0
+      },
+      "Size": {
+        "X": 280.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "Id": "6108021c-adbc-59ce-936c-88f7caf211ad",
+      "Label": "1 - Shape with a crease",
+      "Color": {
+        "X": 0.4,
+        "Y": 0.6,
+        "Z": 0.8,
+        "W": 1.0
+      },
+      "Position": {
+        "X": 20.0,
+        "Y": 90.0
+      },
+      "Size": {
+        "X": 660.0,
+        "Y": 620.0
+      }
+    },
+    {
+      "Id": "63b3916b-cd2f-5e61-9356-f58ba887358b",
+      "Label": "2 - Close the crease",
+      "Color": {
+        "X": 0.75,
+        "Y": 0.45,
+        "Z": 0.5,
+        "W": 1.0
+      },
+      "Position": {
+        "X": 610.0,
+        "Y": 190.0
+      },
+      "Size": {
+        "X": 300.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "Id": "919794d5-e11e-51b3-9c8c-c1a1bb519682",
+      "Label": "4 - Render",
+      "Color": {
+        "X": 0.4,
+        "Y": 0.7,
+        "Z": 0.5,
+        "W": 1.0
+      },
+      "Position": {
+        "X": 1130.0,
+        "Y": 190.0
+      },
+      "Size": {
+        "X": 1150.0,
+        "Y": 560.0
+      }
+    }
+  ],
+  "Settings": {
+    "OutputWindows": [
+      {
+  "ShowGizmos": "On",
+  "TransformGizmoMode": "Move",
+  "BackgroundColor": [
+    0.1,
+    0.1,
+    0.1,
+    1.0
+  ],
+  "CameraControlMode": "AutoUseFirstCam",
+  "CameraPosition": [
+    0.0,
+    0.0,
+    2.4142134
+  ],
+  "CameraTarget": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "CameraRoll": 0.0,
+  "CameraSpeed": 1.0,
+  "ResolutionTitle": "Fill",
+  "ResolutionWidth": 0,
+  "ResolutionHeight": 0,
+  "ResolutionUseAsAspectRatio": true,
+  "IsPinned": true,
+  "PinnedInstancePath": [
+    "2ca404fd-5bb2-3ef8-062b-3a42f4b7a07f"
+  ],
+  "PinnedOutputId": "00000000-0000-0000-0000-000000000000",
+  "PinnedEntityKind": "None",
+  "PinnedEntityId": "00000000-0000-0000-0000-000000000000"
+}
+    ]
+  }
+}

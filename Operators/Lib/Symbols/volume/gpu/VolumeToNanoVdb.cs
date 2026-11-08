@@ -44,8 +44,10 @@ internal sealed class VolumeToNanoVdb : Instance<VolumeToNanoVdb>
     {
         var volume = Volume.GetValue(context);
         var grid = volume?.GetFloatGrid();
-        if (grid == null)
+        if (grid == null || grid.ActiveVoxelCount == 0)
         {
+            // An empty grid flattens with an inverted bounding box, which the raymarcher's bounds
+            // intersection turns into an infinite march range - a GPU hang. Clear instead.
             ClearOutputs();
             _lastVolume = null;
             return;
@@ -109,7 +111,7 @@ internal sealed class VolumeToNanoVdb : Instance<VolumeToNanoVdb>
         base.Dispose(disposing);
     }
 
-    private VdbVolume? _lastVolume;
+    private VdbVolume _lastVolume;
     private readonly BufferWithViews _bufferWithViews = new();
 
     [Input(Guid = "8a677502-fd4d-5284-ab06-fd659490a4fa")]

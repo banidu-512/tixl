@@ -40,6 +40,8 @@ internal sealed class VolumeToTexture3D : Instance<VolumeToTexture3D>
         var grid = volume?.GetFloatGrid();
         if (grid == null)
         {
+            _extractTask = null;
+            _pendingKey = default;
             ReleaseTexture();
             ClearOutputs();
             _last = default;
@@ -47,20 +49,93 @@ internal sealed class VolumeToTexture3D : Instance<VolumeToTexture3D>
         }
 
         var key = (volume, maxResolution);
-        if (key == _last)
+        if (key == _last && _extractTask == null)
             return;
 
-        var dense = VolumeDense.ExtractDense(grid, maxResolution);
-        if (dense == null)
+        // Extracting a dense volume is serial and can touch tens of millions of voxels. The bake runs on
+        // a worker; the eval thread only uploads a finished result and otherwise keeps the previous texture.
+        if (_extractTask != null && _extractTask.IsCompleted)
         {
-            ReleaseTexture();
-            ClearOutputs();
-            _last = default;
+            var task = _extractTask;
+            var completedKey = _pendingKey;
+            var completedGrid = _pendingGrid;
+            _extractTask = null;
+            _pendingKey = default;
+            _pendingGrid = null;
+
+            DenseVolume dense;
+            try
+            {
+                dense = task.Result;
+            }
+            catch (Exception e)
+            {
+                if (e.InnerException?.Message != _lastError)
+                    Log.Warning($"VolumeToTexture3D failed: {e.InnerException?.Message ?? e.Message}", this);
+                _lastError = e.InnerException?.Message ?? e.Message;
+                _failedKey = key;
+                ReleaseTexture();
+                ClearOutputs();
+                _last = default;
+                return;
+            }
+
+            // A volume that changes every frame (animated noise) makes completedKey != key on almost
+            // every bake. Uploading the finished bake anyway keeps the texture alive and one frame
+            // behind, instead of discarding every bake and never publishing a texture at all.
+            if (dense != null && completedGrid != null)
+            {
+                if (TryUpload(dense, completedGrid))
+                {
+                    _last = completedKey;
+                    _failedKey = default;
+                    _lastError = null;
+
+                    // The bake finished on a worker; wake the consumers that read these slots.
+                    Texture.DirtyFlag.Invalidate();
+                    BoundsMin.DirtyFlag.Invalidate();
+                    BoundsMax.DirtyFlag.Invalidate();
+                }
+                else
+                {
+                    // Do not retry a deterministic upload failure every frame.
+                    _failedKey = completedKey;
+                }
+            }
+            else
+            {
+                ReleaseTexture();
+                ClearOutputs();
+                _last = default;
+            }
+
+            // The input moved on while that bake ran; start the current volume now rather than
+            // waiting for another evaluation that a clean static graph may never make.
+            if (key != _last && key != _failedKey && _extractTask == null)
+            {
+                _pendingKey = key;
+                _pendingGrid = grid;
+                _extractTask = Task.Run(() => VolumeDense.ExtractDense(grid, maxResolution));
+            }
+
             return;
         }
 
-        Texture3D? texture = null;
-        Texture3dWithViews? withViews = null;
+        if (_extractTask != null)
+            return;
+
+        if (key == _failedKey)
+            return;
+
+        _pendingKey = key;
+        _pendingGrid = grid;
+        _extractTask = Task.Run(() => VolumeDense.ExtractDense(grid, maxResolution));
+    }
+
+    private bool TryUpload(DenseVolume dense, VdbGrid<float> grid)
+    {
+        Texture3D texture = null;
+        Texture3dWithViews withViews = null;
         try
         {
             var description = new Texture3DDescription
@@ -107,7 +182,9 @@ internal sealed class VolumeToTexture3D : Instance<VolumeToTexture3D>
             Texture.Value = withViews;
 
             var worldMin = grid.Transform.IndexCornerToWorld(dense.Origin.ToVector3());
-            var worldMax = grid.Transform.IndexCornerToWorld(new Vector3(dense.Origin.X + dense.SizeX, dense.Origin.Y + dense.SizeY, dense.Origin.Z + dense.SizeZ));
+            var worldMax = grid.Transform.IndexCornerToWorld(dense.Origin.ToVector3()
+                                                            + new Vector3(dense.SizeX - 1, dense.SizeY - 1, dense.SizeZ - 1) * dense.IndexStep
+                                                            + Vector3.One);
             BoundsMin.Value = Vector3.Min(worldMin, worldMax);
             BoundsMax.Value = Vector3.Max(worldMin, worldMax);
 
@@ -115,8 +192,7 @@ internal sealed class VolumeToTexture3D : Instance<VolumeToTexture3D>
             _lastTexture = withViews;
             withViews = null; // ownership moved to _lastTexture
             texture = null;
-            _last = key;
-            _lastError = null;
+            return true;
         }
         catch (Exception e)
         {
@@ -128,10 +204,10 @@ internal sealed class VolumeToTexture3D : Instance<VolumeToTexture3D>
                 texture?.Dispose();
             ReleaseTexture();
             ClearOutputs();
-            _last = default;
             if (_lastError != e.Message)
                 Log.Warning($"VolumeToTexture3D failed: {e.Message}", this);
             _lastError = e.Message;
+            return false;
         }
     }
 
@@ -162,9 +238,13 @@ internal sealed class VolumeToTexture3D : Instance<VolumeToTexture3D>
         base.Dispose(disposing);
     }
 
-    private Texture3dWithViews? _lastTexture;
-    private (VdbVolume?, int) _last = (null, -1);
-    private string? _lastError;
+    private Texture3dWithViews _lastTexture;
+    private (VdbVolume, int) _last = (null, -1);
+    private (VdbVolume, int) _pendingKey;
+    private VdbGrid<float> _pendingGrid;
+    private (VdbVolume, int) _failedKey;
+    private Task<DenseVolume> _extractTask;
+    private string _lastError;
 
     [Input(Guid = "208b3d98-a7d7-5453-96cc-b29c89d1141b")]
     public readonly InputSlot<VdbVolume> Volume = new();

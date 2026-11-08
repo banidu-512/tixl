@@ -169,10 +169,10 @@ internal sealed class VolumeToPoints : Instance<VolumeToPoints>
     }
 
     private bool _lastWasEmpty;
-    private StructuredList<Point>? _pointList;
-    private BufferWithViews? _pointsBuffer;
-    private (VdbVolume?, Modes, float, int, int) _last = (null, (Modes)(-1), float.NaN, -1, -1);
-    private string? _lastError;
+    private StructuredList<Point> _pointList;
+    private BufferWithViews _pointsBuffer;
+    private (VdbVolume, Modes, float, int, int) _last = (null, (Modes)(-1), float.NaN, -1, -1);
+    private string _lastError;
 
     [Input(Guid = "a82acc1d-bacb-5839-90b5-53b2ae36ca7d")]
     public readonly InputSlot<VdbVolume> Volume = new();

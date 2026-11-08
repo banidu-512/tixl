@@ -27,6 +27,13 @@
       "Outputs": []
     },
     {
+      "Id": "37564d8e-8266-42b2-9d62-78dfb0a7c4c5"/*DrawMesh*/,
+      "SymbolId": "a3c5471e-079b-4d4b-886a-ec02d6428ff6",
+      "SymbolName": "Lib.mesh.draw.DrawMesh",
+      "InputValues": [],
+      "Outputs": []
+    },
+    {
       "Id": "73761d62-4033-5776-a587-229f4d69d143"/*RenderTarget*/,
       "SymbolId": "f9fe78c5-43a6-48ae-8e8c-6cdbbc330dd1",
       "SymbolName": "Lib.image.generate.basic.RenderTarget",
@@ -71,7 +78,7 @@
         {
           "Id": "e16c0dad-a228-5a6f-964b-82986746836e"/*Path*/,
           "Type": "System.String",
-          "Value": "artonurban.VDB:waterfall_points.vdb"
+          "Value": "Examples:volumes/bunny.vdb"
         }
       ],
       "Outputs": []
@@ -155,6 +162,12 @@
       "SourceSlotId": "f25cded9-8ca1-5431-9399-8d1285e00703",
       "TargetParentOrChildId": "13f4e167-6b70-57df-ace0-f5182ba7a83f",
       "TargetSlotId": "6db4a395-2245-58f4-9db8-3e6e5ae814e1"
+    },
+    {
+      "SourceParentOrChildId": "7b20cf03-0f4e-5881-a367-ddeb547c3dba",
+      "SourceSlotId": "4bf00eb5-a39c-4567-a81e-46c2276d1418",
+      "TargetParentOrChildId": "37564d8e-8266-42b2-9d62-78dfb0a7c4c5",
+      "TargetSlotId": "97429e1f-3f30-4789-89a6-8e930e356ee6"
     },
     {
       "SourceParentOrChildId": "c2ed723d-a5d8-5574-b602-42ed4ba7759a",

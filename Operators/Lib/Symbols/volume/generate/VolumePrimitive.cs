@@ -74,7 +74,7 @@ internal sealed class VolumePrimitive : Instance<VolumePrimitive>
     }
 
     private (VolumePrimitives.Shape, Vector3, Vector3, float, int) _last = ((VolumePrimitives.Shape)(-1), Vector3.Zero, Vector3.Zero, -1, -1);
-    private string? _lastError;
+    private string _lastError;
 
     [Input(Guid = "d2cf0b36-bd51-5f39-9ae4-ea24893f1222", MappedType = typeof(Shapes))]
     public readonly InputSlot<int> Shape = new();

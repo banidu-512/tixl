@@ -57,8 +57,8 @@ internal sealed class VolumeResample : Instance<VolumeResample>
         }
     }
 
-    private (VdbVolume?, float) _last = (null, -1);
-    private string? _lastError;
+    private (VdbVolume, float) _last = (null, -1);
+    private string _lastError;
 
     [Input(Guid = "3b90bbbd-0607-5c2b-8e65-61c8a7e04030")]
     public readonly InputSlot<VdbVolume> Volume = new();

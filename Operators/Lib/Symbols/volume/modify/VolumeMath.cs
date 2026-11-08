@@ -80,8 +80,8 @@ internal sealed class VolumeMath : Instance<VolumeMath>
         }
     }
 
-    private (VdbVolume?, VdbVolume?, T3.Core.DataTypes.Volume.Tools.VolumeMath.BinaryOp, bool, float) _last = (null, null, (T3.Core.DataTypes.Volume.Tools.VolumeMath.BinaryOp)(-1), false, 0);
-    private string? _lastError;
+    private (VdbVolume, VdbVolume, T3.Core.DataTypes.Volume.Tools.VolumeMath.BinaryOp, bool, float) _last = (null, null, (T3.Core.DataTypes.Volume.Tools.VolumeMath.BinaryOp)(-1), false, 0);
+    private string _lastError;
 
     [Input(Guid = "db65839e-a02b-58a2-b1f7-341ea1b5b390")]
     public readonly InputSlot<VdbVolume> VolumeA = new();

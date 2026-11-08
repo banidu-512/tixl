@@ -283,7 +283,7 @@ public class VolumeNoiseTests
                                           octaves: 2, VdbNoiseType.Perlin, VdbNoiseFractalType.Fbm,
                                           VolumeNoise.Mode.Displace);
 
-        Assert.NotEqual(grid.ActiveVoxelCount, 0);
+        Assert.NotEqual(0, grid.ActiveVoxelCount);
         Assert.True(displaced.ActiveVoxelCount > 0);
     }
 }

@@ -594,9 +594,9 @@ public sealed class NanoVdbBuffer
             // 80% of the whole build (measured 9 ms per rebuild on a 100-leaf grid), so float
             // grids fill it with the background in bulk and patch the handful of real children.
             var slotsStart = ms.Position;
-            if (typeof(T) == typeof(float))
+            if (typeof(T) == typeof(float) && tree.Root.Background is float upperBackground)
             {
-                FillFloatSlotTable(w, UpperSlots, (float)(object)tree.Root.Background);
+                FillFloatSlotTable(w, UpperSlots, upperBackground);
                 for (var slot = 0; slot < UpperSlots; slot++)
                 {
                     var node1 = node2.Children[slot];
@@ -649,9 +649,9 @@ public sealed class NanoVdbBuffer
             WriteZeroed(w, (int)(lowerHeaderPadded - written));
 
             var lowerSlotsStart = ms.Position;
-            if (typeof(T) == typeof(float))
+            if (typeof(T) == typeof(float) && tree.Root.Background is float lowerBackground)
             {
-                FillFloatSlotTable(w, LowerSlots, (float)(object)tree.Root.Background);
+                FillFloatSlotTable(w, LowerSlots, lowerBackground);
                 for (var slot = 0; slot < LowerSlots; slot++)
                 {
                     var leaf = node1.Children[slot];

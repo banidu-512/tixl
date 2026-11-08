@@ -1,375 +1,211 @@
 {
   "FormatVersion": 3,
-  "Id": "379fc9b9-e255-5630-9254-3fad8b5cb8fa",
-  "Description": "[VolumeCsg] combines level sets like a sculptor: Union merges, Intersection keeps the overlap, Difference carves. Read the row from left to right: a rounded box intersected with a sphere gives the classic CSG body, three bars joined with Union make the drill, and the body minus the drill is the result on the right.\n\nBecause every step is again a level set, the steps chain without ever building a mesh in between.\n\nAKA: boolean, union, intersection, difference, subtract, carve, csg\n\nTips\n- Smaller VoxelSize means sharper surfaces and more memory and time; start coarse and refine.\n- Level sets store signed distance in world units (negative inside); fog volumes store density.\n- Volumes with different voxel sizes are combined into the finer grid.",
+  "Id": "379fc9b9-e255-5630-9254-3fad8b5cb8fa"/*VolumeCsgExample*/,
+  "Description": "OpenVDB level sets in TiXL: build primitives with [VolumePrimitive], combine them with boolean CSG in [VolumeCsg] and raymarch the result on the GPU through [VolumeToTexture3D] + [VolumeField] + [RaymarchField].",
   "InputUis": [],
   "SymbolChildUis": [
     {
-      "ChildId": "0f0e8efe-37f1-55f8-b5b2-c568c227159c",
+      "ChildId": "447f2a7b-282e-5720-afb9-11f11f937e24",
       "SymbolName": "Lib.volume.generate.VolumePrimitive",
+      "SectionId": "b9e67023-d195-50f4-b2d2-6620d2a13c79",
+      "Comment": "Shape 5 = Cylinder. Size.Y is the height.",
       "Position": {
-        "X": 0.0,
-        "Y": 110.0
+        "X": 60.0,
+        "Y": 540.0
       }
     },
     {
-      "ChildId": "ffc91c9f-1f2c-5d88-8d42-fd4b5d00a5c9",
+      "ChildId": "847e8f72-9010-52b3-bf16-196104b64e4e",
       "SymbolName": "Lib.volume.generate.VolumePrimitive",
+      "SectionId": "b9e67023-d195-50f4-b2d2-6620d2a13c79",
+      "Comment": "Shape 1 = Box. Both volumes must share the same VoxelSize.",
       "Position": {
-        "X": 0.0,
-        "Y": 220.0
-      }
-    },
-    {
-      "ChildId": "d7427bf8-6881-54bd-82e2-a59450cfd69b",
-      "SymbolName": "Lib.volume.modify.VolumeCsg",
-      "Position": {
-        "X": 260.0,
-        "Y": 110.0
-      }
-    },
-    {
-      "ChildId": "fcfca7a3-6d7d-5e12-a4a5-1ea3f52c2e65",
-      "SymbolName": "Lib.volume.generate.VolumePrimitive",
-      "Position": {
-        "X": 0.0,
-        "Y": 440.0
-      }
-    },
-    {
-      "ChildId": "e0ea6c71-a9db-54e7-b7c4-fc0fc5dda031",
-      "SymbolName": "Lib.volume.generate.VolumePrimitive",
-      "Position": {
-        "X": 0.0,
-        "Y": 550.0
-      }
-    },
-    {
-      "ChildId": "4dba0e8e-1b63-530c-a1c9-ea8e1884a524",
-      "SymbolName": "Lib.volume.generate.VolumePrimitive",
-      "Position": {
-        "X": 0.0,
-        "Y": 660.0
-      }
-    },
-    {
-      "ChildId": "e3037869-e045-5ec1-82cd-bface5ce53c6",
-      "SymbolName": "Lib.volume.modify.VolumeCsg",
-      "Position": {
-        "X": 260.0,
-        "Y": 440.0
-      }
-    },
-    {
-      "ChildId": "8ee00a6d-953a-5d68-8ec9-f72435fabd2c",
-      "SymbolName": "Lib.volume.modify.VolumeCsg",
-      "Position": {
-        "X": 520.0,
-        "Y": 550.0
-      }
-    },
-    {
-      "ChildId": "afac1586-426c-5395-9c8c-87a99625e10b",
-      "SymbolName": "Lib.volume.modify.VolumeCsg",
-      "Position": {
-        "X": 780.0,
-        "Y": 220.0
-      }
-    },
-    {
-      "ChildId": "5646aa3e-1123-5085-b21f-866b82a8cdbb",
-      "SymbolName": "Lib.volume.convert.VolumeToMesh",
-      "Position": {
-        "X": 1040.0,
-        "Y": 110.0
-      }
-    },
-    {
-      "ChildId": "3bd27020-f1c3-58da-b88e-7c3ce06b39eb",
-      "SymbolName": "Lib.volume.convert.VolumeToMesh",
-      "Position": {
-        "X": 1040.0,
-        "Y": 440.0
-      }
-    },
-    {
-      "ChildId": "2e394fad-29aa-592c-83d8-6ce2d278b4fc",
-      "SymbolName": "Lib.volume.convert.VolumeToMesh",
-      "Position": {
-        "X": 1040.0,
-        "Y": 220.0
-      }
-    },
-    {
-      "ChildId": "1160b931-66c9-5aa0-9e26-f32e327c4f6c",
-      "SymbolName": "Lib.mesh.generate.QuadMesh",
-      "Position": {
-        "X": 1300.0,
-        "Y": 0.0
-      }
-    },
-    {
-      "ChildId": "16583864-483f-558e-8923-500cd0fc7d91",
-      "SymbolName": "Lib.mesh.draw.DrawMeshWithShadow",
-      "Position": {
-        "X": 1820.0,
-        "Y": 0.0
-      }
-    },
-    {
-      "ChildId": "a8880903-ced7-5f95-8512-b04efabc4687",
-      "SymbolName": "Lib.geometry.TransformGeometry",
-      "Position": {
-        "X": 1300.0,
-        "Y": 110.0
-      }
-    },
-    {
-      "ChildId": "31076343-02c8-597a-90c4-bf21c692a35c",
-      "SymbolName": "Lib.geometry.GeometryToMesh",
-      "Position": {
-        "X": 1560.0,
-        "Y": 110.0
-      }
-    },
-    {
-      "ChildId": "d9e8477e-6f8e-50af-afdd-3003f96bd045",
-      "SymbolName": "Lib.mesh.draw.DrawMeshWithShadow",
-      "Position": {
-        "X": 1820.0,
-        "Y": 110.0
-      }
-    },
-    {
-      "ChildId": "5571d763-0810-55e2-90cb-a6201b657518",
-      "SymbolName": "Lib.geometry.TransformGeometry",
-      "Position": {
-        "X": 1300.0,
-        "Y": 440.0
-      }
-    },
-    {
-      "ChildId": "d16085f3-1161-5c22-963e-b88e1debbc00",
-      "SymbolName": "Lib.geometry.GeometryToMesh",
-      "Position": {
-        "X": 1560.0,
-        "Y": 440.0
-      }
-    },
-    {
-      "ChildId": "5f955363-8851-5450-aa37-cc2b3438231f",
-      "SymbolName": "Lib.mesh.draw.DrawMeshWithShadow",
-      "Position": {
-        "X": 1820.0,
-        "Y": 440.0
-      }
-    },
-    {
-      "ChildId": "ac92331e-600c-5a2f-a72e-a5c4b3438bff",
-      "SymbolName": "Lib.geometry.TransformGeometry",
-      "Position": {
-        "X": 1300.0,
-        "Y": 220.0
-      }
-    },
-    {
-      "ChildId": "4cce5804-541e-5266-8e32-88c14e55c2a6",
-      "SymbolName": "Lib.geometry.GeometryToMesh",
-      "Position": {
-        "X": 1560.0,
-        "Y": 220.0
-      }
-    },
-    {
-      "ChildId": "8cb988b0-537a-5097-907c-7c653528764c",
-      "SymbolName": "Lib.mesh.draw.DrawMeshWithShadow",
-      "Position": {
-        "X": 1820.0,
-        "Y": 220.0
-      }
-    },
-    {
-      "ChildId": "494973d9-35aa-5933-9a5c-fae4745b8320",
-      "SymbolName": "Lib.flow.Execute",
-      "Position": {
-        "X": 2340.0,
-        "Y": 0.0
-      }
-    },
-    {
-      "ChildId": "c468b8dd-9650-5ae4-a191-7b6dc337045b",
-      "SymbolName": "Lib.render.shading.SetShadow",
-      "Position": {
-        "X": 2340.0,
-        "Y": 110.0
-      }
-    },
-    {
-      "ChildId": "0855034d-aa60-57cc-85fd-22f777a1ee1d",
-      "SymbolName": "Lib.render.shading.PointLight",
-      "Position": {
-        "X": 2340.0,
-        "Y": 220.0
-      }
-    },
-    {
-      "ChildId": "7593850a-2229-5a06-98cf-fde0edfb1b78",
-      "SymbolName": "Lib.render.shading.PointLight",
-      "Position": {
-        "X": 2340.0,
+        "X": 60.0,
         "Y": 330.0
       }
     },
     {
-      "ChildId": "2f0379b7-2a38-5859-ae28-86b17f266932",
-      "SymbolName": "Lib.render.shading.SetFog",
+      "ChildId": "9ea7a1d6-294e-5dd0-902b-0fe5f9332d2c",
+      "SymbolName": "Lib.volume.generate.VolumePrimitive",
+      "SectionId": "b9e67023-d195-50f4-b2d2-6620d2a13c79",
+      "Comment": "Shape 0 = Sphere. Size.X is the diameter.",
       "Position": {
-        "X": 2340.0,
-        "Y": 440.0
+        "X": 60.0,
+        "Y": 120.0
       }
     },
     {
-      "ChildId": "6b02e7ec-22ce-586d-b845-475fc1d8ffa3",
-      "SymbolName": "Lib.render.camera.Camera",
+      "ChildId": "c767f3ff-9243-563a-8a9e-01d9bebc7af5",
+      "SymbolName": "Lib.render.camera.OrbitCamera",
+      "SectionId": "2c460050-8ae6-525f-a970-3d5d8942dd98",
+      "Comment": "SpinRate drives an orbit so the shape is visible from all sides.",
       "Position": {
-        "X": 2340.0,
-        "Y": 550.0
+        "X": 2020.0,
+        "Y": 200.0
       }
     },
     {
-      "ChildId": "c943ba43-55a2-54b1-9f13-0b7b083d27b0",
+      "ChildId": "cdbbeaa5-7a24-542c-bbd7-3a4f54c5430f",
+      "SymbolName": "Lib.volume.modify.VolumeCsg",
+      "SectionId": "b9e67023-d195-50f4-b2d2-6620d2a13c79",
+      "Comment": "Operation 0 = Union (level set min).",
+      "Position": {
+        "X": 430.0,
+        "Y": 160.0
+      }
+    },
+    {
+      "ChildId": "d6a35005-7aa7-5699-b408-3b4f30231032",
+      "SymbolName": "Lib.mesh.draw.DrawMeshUnlit",
+      "SectionId": "2c460050-8ae6-525f-a970-3d5d8942dd98",
+      "Comment": "Draws a mesh with a flat colour.",
+      "Position": {
+        "X": 1500.0,
+        "Y": 200.0
+      }
+    },
+    {
+      "ChildId": "ec273016-75ec-5ee1-8c07-54a9c321dc31",
+      "SymbolName": "Lib.geometry.GeometryToMesh",
+      "SectionId": "2c460050-8ae6-525f-a970-3d5d8942dd98",
+      "Comment": "Uploads a mesh to the GPU as a drawable buffer.",
+      "Position": {
+        "X": 1240.0,
+        "Y": 200.0
+      }
+    },
+    {
+      "ChildId": "f11e75a1-e8d0-51ea-9ece-6ced1a9468ef",
+      "SymbolName": "Lib.volume.convert.VolumeToMesh",
+      "SectionId": "e9a3db14-6d85-59c4-a7fc-8e8ff1decf97",
+      "Comment": "Extracts a watertight isosurface mesh from a volume.",
+      "Position": {
+        "X": 980.0,
+        "Y": 200.0
+      }
+    },
+    {
+      "ChildId": "f990bd33-a94b-5787-a507-3e51e3cfd88a",
+      "SymbolName": "Lib.volume.modify.VolumeCsg",
+      "SectionId": "e9a3db14-6d85-59c4-a7fc-8e8ff1decf97",
+      "Comment": "Operation 2 = Difference: A minus B carves the cylinder out.",
+      "Position": {
+        "X": 700.0,
+        "Y": 330.0
+      }
+    },
+    {
+      "ChildId": "fa1b39f2-b0dd-50ce-b407-39a8a20af433",
       "SymbolName": "Lib.image.generate.basic.RenderTarget",
+      "SectionId": "2c460050-8ae6-525f-a970-3d5d8942dd98",
+      "Comment": "Final image output.",
       "Position": {
-        "X": 2600.0,
-        "Y": 550.0
-      }
-    },
-    {
-      "ChildId": "f5039bc4-3022-5fba-ad53-052593ab0f72",
-      "SymbolName": "Lib.render.postfx.SSAO",
-      "Position": {
-        "X": 2860.0,
-        "Y": 550.0
+        "X": 2280.0,
+        "Y": 200.0
       }
     }
   ],
   "OutputUis": [
     {
-      "OutputId": "b5c7f13e-5e01-5753-9fea-027da689e7fd",
+      "OutputId": "b5c7f13e-5e01-5753-9fea-027da689e7fd"/*ColorBuffer*/,
       "Position": {
-        "X": 3120.0,
-        "Y": 0.0
+        "X": 2300.0,
+        "Y": 300.0
       }
     }
   ],
   "Sections": [
     {
-      "Id": "100bfeea-541f-5e6e-be57-d5b1048bf2c7",
-      "Title": "3  Body minus drill",
-      "Color": {
-        "X": 0.6,
-        "Y": 0.3,
-        "Z": 0.35,
-        "W": 1.0
-      },
-      "Position": {
-        "X": 740.0,
-        "Y": 40.0
-      },
-      "Size": {
-        "X": 540.0,
-        "Y": 500.0
-      }
-    },
-    {
-      "Id": "5d401e83-db5f-5439-9d78-cd7d11239f61",
-      "Title": "Render: light, shadow and camera",
+      "Id": "2c460050-8ae6-525f-a970-3d5d8942dd98",
+      "Label": "3 - Bake to texture and raymarch on the GPU",
       "Color": {
         "X": 0.4,
-        "Y": 0.4,
-        "Z": 0.45,
+        "Y": 0.7,
+        "Z": 0.5,
         "W": 1.0
       },
       "Position": {
-        "X": 2300.0,
-        "Y": -70.0
+        "X": 960.0,
+        "Y": 90.0
       },
       "Size": {
-        "X": 800.0,
-        "Y": 720.0
+        "X": 1480.0,
+        "Y": 700.0
       }
     },
     {
-      "Id": "6ad8d69d-ee27-52bc-82c5-77588d9ce152",
-      "Title": "1  Body: rounded box AND sphere",
+      "Id": "b9e67023-d195-50f4-b2d2-6620d2a13c79",
+      "Label": "1 - Build level sets",
       "Color": {
         "X": 0.35,
         "Y": 0.5,
-        "Z": 0.65,
+        "Z": 0.75,
         "W": 1.0
       },
       "Position": {
-        "X": -40.0,
-        "Y": 40.0
+        "X": 20.0,
+        "Y": 60.0
       },
       "Size": {
-        "X": 540.0,
-        "Y": 280.0
+        "X": 560.0,
+        "Y": 760.0
       }
     },
     {
-      "Id": "982ab6f0-4eae-5ad4-80fd-a8a5b564b1e3",
-      "Title": "2  Drill: three bars joined",
+      "Id": "e9a3db14-6d85-59c4-a7fc-8e8ff1decf97",
+      "Label": "2 - Boolean CSG",
       "Color": {
-        "X": 0.65,
-        "Y": 0.45,
-        "Z": 0.25,
+        "X": 0.75,
+        "Y": 0.5,
+        "Z": 0.3,
         "W": 1.0
       },
       "Position": {
-        "X": -40.0,
-        "Y": 370.0
+        "X": 620.0,
+        "Y": 100.0
       },
       "Size": {
-        "X": 800.0,
-        "Y": 390.0
+        "X": 500.0,
+        "Y": 640.0
       }
     }
   ],
-  "TourPoints": [
-    {
-      "Id": "2d77f5af-2a05-521e-9736-1d45c103ac35",
-      "ChildId": "d7427bf8-6881-54bd-82e2-a59450cfd69b",
-      "Description": "Intersection keeps only what is inside both: the rounded box with its corners cut off by the sphere.",
-      "Style": "InfoFor",
-      "InputId": "e0616bd7-2a4a-5953-95a5-a11929871bd9"
-    },
-    {
-      "Id": "22ba0376-70c9-5bc0-8243-054bdecdd8ee",
-      "ChildId": "8ee00a6d-953a-5d68-8ec9-f72435fabd2c",
-      "Description": "Union merges the three bars into one cutting tool.",
-      "Style": "InfoFor",
-      "InputId": "e0616bd7-2a4a-5953-95a5-a11929871bd9"
-    },
-    {
-      "Id": "d3944104-f6a3-52a9-81dc-b2534c72145c",
-      "ChildId": "afac1586-426c-5395-9c8c-87a99625e10b",
-      "Description": "Difference carves VolumeB out of VolumeA: the body with three square and round holes.",
-      "Style": "InfoFor",
-      "InputId": "e0616bd7-2a4a-5953-95a5-a11929871bd9"
-    },
-    {
-      "Id": "f242f423-f88c-5ea6-999b-2ac3a0010723",
-      "ChildId": "2e394fad-29aa-592c-83d8-6ce2d278b4fc",
-      "Description": "Only the end of the chain is meshed; every step before it stays a level set.",
-      "Style": "InfoFor"
-    },
-    {
-      "Id": "4644fb16-1d72-5370-999c-cd7bd3704ce6",
-      "ChildId": "d7427bf8-6881-54bd-82e2-a59450cfd69b",
-      "Description": "Switch the first CSG to Union or Difference and watch the whole chain update.",
-      "Style": "CallToAction",
-      "InputId": "e0616bd7-2a4a-5953-95a5-a11929871bd9"
-    }
-  ]
+  "Settings": {
+    "OutputWindows": [
+      {
+  "ShowGizmos": "On",
+  "TransformGizmoMode": "Move",
+  "BackgroundColor": [
+    0.1,
+    0.1,
+    0.1,
+    1.0
+  ],
+  "CameraControlMode": "AutoUseFirstCam",
+  "CameraPosition": [
+    0.0,
+    0.0,
+    2.4142134
+  ],
+  "CameraTarget": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "CameraRoll": 0.0,
+  "CameraSpeed": 1.0,
+  "ResolutionTitle": "Fill",
+  "ResolutionWidth": 0,
+  "ResolutionHeight": 0,
+  "ResolutionUseAsAspectRatio": true,
+  "IsPinned": true,
+  "PinnedInstancePath": [
+    "f20e2713-73ef-248f-0eea-f4dfb8dae824"
+  ],
+  "PinnedOutputId": "00000000-0000-0000-0000-000000000000",
+  "PinnedEntityKind": "None",
+  "PinnedEntityId": "00000000-0000-0000-0000-000000000000"
+}
+    ]
+  }
 }

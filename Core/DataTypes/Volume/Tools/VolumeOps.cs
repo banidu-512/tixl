@@ -169,7 +169,9 @@ public static class VolumePrimitives
                          voxelSize, translation, halfWidthVoxels);
     }
 
-    /// <summary>World-space bounds of a primitive (pre-translation), for band rasterization.</summary>
+    /// <summary>World-space bounds of a primitive (pre-translation), for band rasterization. Each
+    /// case must match the extent its <see cref="LocalSdf"/> actually evaluates — the box is the
+    /// only region that gets rasterized, so a smaller box clips the shape.</summary>
     public static (Vector3 Min, Vector3 Max) BoundingBoxOf(Shape shape, Vector3 size)
     {
         var half = size * 0.5f;
@@ -179,13 +181,19 @@ public static class VolumePrimitives
             Shape.Box => new(-half, half),
             Shape.RoundedBox => new(-half - new Vector3(0.1f * MathF.Min(size.X, MathF.Min(size.Y, size.Z))),
                                     half + new Vector3(0.1f * MathF.Min(size.X, MathF.Min(size.Y, size.Z)))),
-            Shape.Torus => new(new Vector3(-(half.X + half.Y), -half.Y, -(half.X + half.Y)),
-                               new Vector3(half.X + half.Y, half.Y, half.X + half.Y)),
-            Shape.Capsule => new(new Vector3(-half.X, -half.Y, -half.X), new Vector3(half.X, half.Y, half.X)),
+            // The torus ring lies in the XY plane (see LocalSdf): the ring reaches ±(R+r) in X and
+            // Y, the tube only ±r in Z. The old box swapped those, clipping the ring top/bottom.
+            Shape.Torus => new(new Vector3(-(half.X + half.Y), -(half.X + half.Y), -half.Y),
+                               new Vector3(half.X + half.Y, half.X + half.Y, half.Y)),
+            // A capsule with a Y size below its diameter degenerates into a sphere of the tube
+            // radius (LocalSdf clamps the segment to zero length), so Y must reach the tube radius.
+            Shape.Capsule => new(new Vector3(-half.X, -MathF.Max(half.X, half.Y), -half.X),
+                                 new Vector3(half.X, MathF.Max(half.X, half.Y), half.X)),
             Shape.Cylinder => new(new Vector3(-half.X, -half.Y, -half.X), new Vector3(half.X, half.Y, half.X)),
             Shape.Cone => new(new Vector3(-half.X, -half.Y, -half.X), new Vector3(half.X, half.Y, half.X)),
-            Shape.Octahedron => new(-half, half),
-            Shape.Plane => new(new Vector3(-half.X, -half.Y, -half.X), new Vector3(half.X, half.Y, half.X)),
+            // The octahedron SDF scales all axes by size.X (see LocalSdf); per-axis halves clip it.
+            Shape.Octahedron => new(new Vector3(-size.X * 0.5f), new Vector3(size.X * 0.5f)),
+            Shape.Plane => new(new Vector3(-half.X, -half.Y, -half.Z), new Vector3(half.X, half.Y, half.Z)),
             _ => new(-half, half),
         };
     }

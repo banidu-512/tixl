@@ -75,7 +75,7 @@ public sealed class VdbTree<T>
             if (tile2Active)
                 node1.ValueMask.SetAll();
             node2.ValueMask.SetOff(slot2);
-            node2.Values[slot2] = default;
+            node2.Values[slot2] = default!;
         }
 
         var slot1 = VdbInternalNode1<T>.LocalSlot(coord - node1.Origin);
@@ -91,7 +91,7 @@ public sealed class VdbTree<T>
             else
                 leaf.Deactivate(Root.Background); // inactive tiles read as background; stored tile values are ignored
             node1.ValueMask.SetOff(slot1);
-            node1.Values[slot1] = default;
+            node1.Values[slot1] = default!;
         }
 
         return leaf;
@@ -351,7 +351,7 @@ public sealed class VdbTree<T>
                 {
                     node2.Children[slot2] = null;
                     node2.ChildMask.SetOff(slot2);
-                    node2.Values[slot2] = default;
+                    node2.Values[slot2] = default!;
                 }
             }
         }

@@ -87,9 +87,9 @@ internal sealed class VolumeNoise : Instance<VolumeNoise>
         }
     }
 
-    private (VdbVolume?, int, VdbNoiseType, VdbNoiseFractalType, int, float, float, Vector3, T3.Core.DataTypes.Volume.Tools.VolumeNoise.Mode) _last
+    private (VdbVolume, int, VdbNoiseType, VdbNoiseFractalType, int, float, float, Vector3, T3.Core.DataTypes.Volume.Tools.VolumeNoise.Mode) _last
         = (null, -1, (VdbNoiseType)(-1), (VdbNoiseFractalType)(-1), -1, -1, -1, Vector3.Zero, (T3.Core.DataTypes.Volume.Tools.VolumeNoise.Mode)(-1));
-    private string? _lastError;
+    private string _lastError;
 
     [Input(Guid = "20af828b-f18e-5822-95e1-e9708aa8fd01")]
     public readonly InputSlot<VdbVolume> Volume = new();
