@@ -13,7 +13,9 @@ using T3.Core.IO;
 using T3.Core.Output;
 using T3.Editor.Collab;
 using T3.Editor.Compilation;
+using T3.Editor.Gui.Windows.OutputSetup;
 using T3.Editor.Gui.UiHelpers;
+using T3.Editor.SystemUi;
 using T3.Editor.UiModel;
 using T3.Editor.UiModel.Commands;
 using T3.Editor.UiModel.ProjectHandling;
@@ -52,6 +54,9 @@ internal sealed class BoygroupManager
     public string DeploySummary { get; private set; } = "";
     public bool RestartPending { get; private set; }
 
+    /// <summary>A render node's display as it reported itself; the master offers it as a binding target.</summary>
+    public sealed record RemoteScreen(int Index, string Name, int Width, int Height, int X = 0, int Y = 0, bool Primary = false);
+
     public sealed class ClientInfo
     {
         public required CollabPeerConnection Peer;
@@ -60,6 +65,12 @@ internal sealed class BoygroupManager
         public string Group = "";
         public string StatusText = "connected";
         public bool IsDeployed;
+
+        /// <summary>The node's machine-local output bindings, so the master sees where it presents.</summary>
+        public MachineConfig? MachineConfig;
+
+        /// <summary>The node's displays as reported; ids for them come from <see cref="RemoteDisplayPlugId"/>.</summary>
+        public List<RemoteScreen> Screens = [];
 
         // Pending auth challenge (server side)
         public byte[]? PendingSalt;
@@ -457,6 +468,7 @@ internal sealed class BoygroupManager
         RunScheduledAutoDeploy();
         SendHeartbeats();
         SendTimeSync();
+        MaybeSendBindings();
         ProcessPendingRestart();
 
         if (State == BoygroupState.Server)
@@ -682,6 +694,18 @@ internal sealed class BoygroupManager
                 if (json["op"] is JObject op)
                     CollabCommandWire.ApplyOp(op);
 
+                break;
+
+            case "bindings" when State == BoygroupState.Server:
+                HandleClientBindings(json);
+                break;
+
+            case "bindOutput" when State == BoygroupState.Client:
+                HandleRemoteBinding(json, bind: true);
+                break;
+
+            case "unbindOutput" when State == BoygroupState.Client:
+                HandleRemoteBinding(json, bind: false);
                 break;
 
             case "play" when State == BoygroupState.Client:
@@ -1297,6 +1321,211 @@ internal sealed class BoygroupManager
         {
             Log.Warning($"Boygroup: can't write setup: {e.Message}");
         }
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Remote displays: what the nodes present, offered as binding targets on the master
+    // ---------------------------------------------------------------------------------------
+
+    // ---------------------------------------------------------------------------------------
+    // Remote displays: what the nodes present, offered as binding targets on the master
+    // ---------------------------------------------------------------------------------------
+
+    /// <summary>Master side: adopts a node's reported machine config and display list.</summary>
+    private void HandleClientBindings(JObject json)
+    {
+        // The message carries the node's name (it also rides every hello); match on that.
+        var name = CollabProtocol.GetString(json, "name", "");
+        var client = _clients.FirstOrDefault(c => c.Peer.IsAuthenticated && c.Name == name);
+        if (client == null)
+            return;
+
+        var configJson = json["config"]?.Value<string>();
+        if (string.IsNullOrEmpty(configJson))
+            return;
+
+        try
+        {
+            client.MachineConfig = MachineConfig.ReadFromJson(JObject.Parse(configJson));
+            client.Screens = ReadScreens(json["screens"]);
+            Log.Info($"Boygroup: bindings from {client.Name}: {DescribeBindings(client.MachineConfig)}");
+        }
+        catch (JsonException e)
+        {
+            Log.Warning($"Boygroup: malformed bindings from {client.Name}: {e.Message}");
+        }
+    }
+
+    private static List<RemoteScreen> ReadScreens(JToken? token)
+    {
+        var screens = new List<RemoteScreen>();
+        if (token is not JArray array)
+            return screens;
+
+        foreach (var screen in array)
+        {
+            var index = screen["index"]?.Value<int>() ?? screens.Count;
+            screens.Add(new RemoteScreen(index,
+                                         screen.Value<string>("name") ?? $"Display {index + 1}",
+                                         screen["width"]?.Value<int>() ?? 0,
+                                         screen["height"]?.Value<int>() ?? 0,
+                                         screen["x"]?.Value<int>() ?? 0,
+                                         screen["y"]?.Value<int>() ?? 0,
+                                         screen["primary"]?.Value<bool>() ?? false));
+        }
+
+        return screens;
+    }
+
+    /// <summary>The master's list of a client's displays; the id is stable across reconnects and frames.</summary>
+    public static Guid RemoteDisplayPlugId(ClientInfo client, int displayIndex)
+    {
+        var key = $"boygroup:{client.Address}:{client.Name}:{displayIndex}";
+        var hash = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(key));
+        return new Guid(hash.AsSpan(0, 16));
+    }
+
+    /// <summary>Resolves an outliner/board plug id back to the render node display it stands for.</summary>
+    public bool TryGetRemoteDisplayPlug(Guid plugId, out ClientInfo client, out int displayIndex)
+    {
+        foreach (var candidate in _clients)
+        {
+            foreach (var screen in candidate.Screens)
+            {
+                if (RemoteDisplayPlugId(candidate, screen.Index) != plugId)
+                    continue;
+
+                client = candidate;
+                displayIndex = screen.Index;
+                return true;
+            }
+        }
+
+        client = null!;
+        displayIndex = -1;
+        return false;
+    }
+
+    /// <summary>Master side: asks a render node to present an output on one of its own displays.</summary>
+    public void BindRemoteOutput(ClientInfo client, Guid outputId, int displayIndex)
+    {
+        if (State != BoygroupState.Server || !client.Peer.IsAuthenticated)
+            return;
+
+        SendJson(client.Peer, new { t = "bindOutput", output = outputId.ToString(), display = displayIndex });
+        StatusText = $"Binding {client.Name}'s Display {displayIndex + 1}...";
+    }
+
+    public void UnbindRemoteOutput(ClientInfo client, Guid outputId, int displayIndex)
+    {
+        if (State != BoygroupState.Server || !client.Peer.IsAuthenticated)
+            return;
+
+        SendJson(client.Peer, new { t = "unbindOutput", output = outputId.ToString(), display = displayIndex });
+    }
+
+    /// <summary>Output to plug pairs from one machine's config, for the log line.</summary>
+    public static string DescribeBindings(MachineConfig? machineConfig)
+    {
+        if (machineConfig == null || machineConfig.Bindings.Count == 0)
+            return "no display bindings";
+
+        var parts = new List<string>();
+        foreach (var binding in machineConfig.Bindings)
+        {
+            var plug = binding.IsStream ? "stream" : $"Display {binding.DisplayIndex + 1}";
+            parts.Add($"output {binding.OutputId.ToString()[..8]} -> {plug}");
+        }
+
+        return string.Join(" - ", parts);
+    }
+
+    private long _nextBindingsSendTicks;
+    private string _lastBindingsSent = "";
+
+    /// <summary>Client side: sends this machine's machine config and displays when they changed.</summary>
+    private void MaybeSendBindings()
+    {
+        if (State != BoygroupState.Client)
+            return;
+
+        var now = Environment.TickCount64;
+        if (now < _nextBindingsSendTicks)
+            return;
+
+        _nextBindingsSendTicks = now + 2000;
+
+        var projectFolder = GetProjectFolder();
+        if (string.IsNullOrEmpty(projectFolder))
+            return;
+
+        var path = Path.Combine(SetupFiles.FolderIn(projectFolder), MachineConfig.FileName);
+        try
+        {
+            // The master also needs this machine's displays before anything is bound, and a fresh
+            // client may not have written a machine config yet.
+            var json = File.Exists(path) ? File.ReadAllText(path) : new MachineConfig().ToJsonString();
+            var screens = DescribeScreens();
+            var key = json + "|" + screens.ToString(Formatting.None);
+            if (key == _lastBindingsSent)
+                return;
+
+            _lastBindingsSent = key;
+            Log.Debug($"Boygroup: reporting output bindings from '{path}'");
+            if (_transport is BoygroupClientTransport clientTransport)
+                SendJson(clientTransport.ServerPeer, new { t = "bindings", name = ClientDisplayName(), config = json, screens });
+        }
+        catch (IOException e)
+        {
+            Log.Debug($"Boygroup: can't read machine bindings: {e.Message}");
+        }
+    }
+
+    /// <summary>This machine's displays, sent so a master can offer them as binding targets.</summary>
+    private static JArray DescribeScreens()
+    {
+        var result = new JArray();
+        var screens = EditorUi.Instance.AllScreens;
+        for (var i = 0; i < screens.Count; i++)
+        {
+            result.Add(new JObject
+                           {
+                               ["index"] = i,
+                               ["name"] = screens[i].DeviceName,
+                               ["width"] = screens[i].Bounds.Width,
+                               ["height"] = screens[i].Bounds.Height,
+                               ["x"] = screens[i].Bounds.X,
+                               ["y"] = screens[i].Bounds.Y,
+                               ["primary"] = screens[i].Primary,
+                           });
+        }
+
+        return result;
+    }
+
+    /// <summary>Client side: applies a binding the master routed to one of this machine's displays.</summary>
+    private void HandleRemoteBinding(JObject json, bool bind)
+    {
+        if (!Guid.TryParse(CollabProtocol.GetString(json, "output"), out var outputId))
+            return;
+
+        var displayIndex = json["display"]?.Value<int>() ?? -1;
+        if (displayIndex < 0 || displayIndex >= EditorUi.Instance.AllScreens.Count)
+            return;
+
+        if (!OutputSetupHandling.TryGetActiveSetup(out _, out var machineConfig))
+            return;
+
+        var plugId = Plugs.DisplayPlugId(displayIndex);
+        if (bind)
+            Plugs.BindOutput(machineConfig, outputId, plugId);
+        else
+            Plugs.UnbindOutput(machineConfig, outputId, plugId);
+
+        // Report right away: the master's binding column is driven by what this machine says it presents.
+        _lastBindingsSent = "";
+        _nextBindingsSendTicks = 0;
+        MaybeSendBindings();
     }
 
     private void HandleDeployDone(JObject json)

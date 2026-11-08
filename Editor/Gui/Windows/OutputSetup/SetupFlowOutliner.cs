@@ -19,6 +19,7 @@ using T3.Editor.UiModel.InputsAndTypes;
 using T3.Editor.UiModel.Modification;
 using T3.Editor.UiModel.ProjectHandling;
 using T3.Editor.UiModel.Selection;
+using T3.Editor.Show;
 
 namespace T3.Editor.Gui.Windows.OutputSetup;
 
@@ -37,6 +38,7 @@ internal sealed class SetupFlowOutliner
         _requestAddPlugMenu = _ => _addPlugMenuRequested = true;
         _requestAddContentMenu = _ => _addContentMenuRequested = true;
         _drawDisplayTooltip = DrawDisplayTooltip;
+        _drawRemoteDisplayTooltip = DrawRemoteDisplayTooltip;
         _drawSendParentTooltip = DrawSendParentTooltip;
     }
 
@@ -660,6 +662,7 @@ internal sealed class SetupFlowOutliner
             }
 
             SetupPopup.End();
+            DrawRemoteBindings(selection, setup);
         }
     }
 
@@ -683,6 +686,54 @@ internal sealed class SetupFlowOutliner
     private void DrawDisplayTooltip()
     {
         DisplayLayoutView.DrawTooltip(_tooltipDisplayIndex);
+    }
+
+    /// <summary>
+    /// Displays of the connected render nodes, next to this machine's own. Dropping an output on one
+    /// binds it inside that client's machine config; the master never presents it itself, it only
+    /// asks the render node to.
+    /// </summary>
+    private void DrawRemoteBindings(SetupEntitySelection selection, Setup setup)
+    {
+        var manager = Show.BoygroupManager.Instance;
+        if (manager.State != Show.BoygroupManager.BoygroupState.Server || manager.Clients.Count == 0)
+            return;
+
+        foreach (var client in manager.Clients)
+        {
+            if (!client.Peer.IsAuthenticated || client.Screens.Count == 0)
+                continue;
+
+            FormInputs.AddVerticalSpace(10);
+            ImGui.TextDisabled($"{client.Name.ToUpperInvariant()} - RENDER NODE");
+
+            foreach (var screen in client.Screens)
+            {
+                var bound = client.MachineConfig == null
+                                ? null
+                                : Plugs.TryGetBoundOutput(setup, client.MachineConfig, Plugs.DisplayPlugId(screen.Index));
+                _tooltipRemoteClient = client;
+                _tooltipRemoteDisplayIndex = screen.Index;
+                var args = new OutlinerItem.Args
+                               {
+                                   Kind = SetupEntityKinds.Plug,
+                                   Id = Show.BoygroupManager.RemoteDisplayPlugId(client, screen.Index),
+                                   Name = $"{client.Name} / {screen.Name}",
+                                   Status = $"{screen.Width} x {screen.Height}",
+                                   LeadingIcon = Icon.ConnectedOutput,
+                                   IsMuted = bound == null,
+                                   DrawTooltip = _drawRemoteDisplayTooltip,
+                               };
+                DrawItem(selection, setup, ref args);
+            }
+        }
+    }
+
+    /// <summary>A render node's displays are displays too: the same arrangement hover, from what that node reported.</summary>
+    private void DrawRemoteDisplayTooltip()
+    {
+        if (_tooltipRemoteClient != null)
+            DisplayLayoutView.DrawRemoteTooltip(_tooltipRemoteClient, _tooltipRemoteDisplayIndex);
     }
 
     /// <summary>
@@ -1142,6 +1193,9 @@ internal sealed class SetupFlowOutliner
     // would allocate a closure for every plug row every frame.
     private int _tooltipDisplayIndex;
     private readonly Action _drawDisplayTooltip;
+    private Show.BoygroupManager.ClientInfo? _tooltipRemoteClient;
+    private int _tooltipRemoteDisplayIndex;
+    private readonly Action _drawRemoteDisplayTooltip;
 
     // The parent op of the content row being drawn, read by its tooltip — a field for the same reason as above.
     private Instance? _tooltipSendParent;
