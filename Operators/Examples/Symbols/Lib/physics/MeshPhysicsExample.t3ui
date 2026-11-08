@@ -1,0 +1,233 @@
+{
+  "FormatVersion": 3,
+  "Id": "1fdc5221-e9f8-4abc-980f-7a58bc3fd919"/*MeshPhysicsExample*/,
+  "Description": "Mesh physics with rigid bodies and joints: a tower of boxes collapses while a chain of bodies swings from a kinematic anchor. All bodies are rendered as meshes at their simulated positions, rotations and scales.",
+  "InputUis": [],
+  "SymbolChildUis": [
+    {
+      "ChildId": "04662503-f5be-b208-ce64-26d234cbc2a3",
+      "SymbolName": "Lib.render.camera.Camera",
+      "Position": {
+        "X": 3300.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "053b3bcf-a734-3446-b5ac-c48d5a263174",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": -600.0
+      }
+    },
+    {
+      "ChildId": "091ea2f7-26cc-67a1-f5ad-5e33e88b35ce",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 700.0
+      }
+    },
+    {
+      "ChildId": "0e63ada1-9330-ff47-4d69-fb50b9ccc24d",
+      "SymbolName": "Lib.physics.RigidJoint",
+      "Position": {
+        "X": 1850.0,
+        "Y": 1060.0
+      }
+    },
+    {
+      "ChildId": "0f29e058-ce28-955b-b8b4-e76ebe475be1",
+      "SymbolName": "Lib.mesh.draw.DrawMeshAtPoints",
+      "Position": {
+        "X": 2600.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "16cd03b2-fd09-e6d4-0d63-c0d92379b7d4",
+      "SymbolName": "Lib.render.transform.Group",
+      "Position": {
+        "X": 3000.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "1c1bc71c-9109-04f5-e865-cd220c263e38",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": -330.0
+      }
+    },
+    {
+      "ChildId": "1d2226b8-05c5-bae8-6d80-d913b53aa7d7",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 960.0
+      }
+    },
+    {
+      "ChildId": "378b4294-f69b-12bc-c969-86d51ea074d1",
+      "SymbolName": "Lib.image.generate.basic.RenderTarget",
+      "Position": {
+        "X": 3600.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "3a2992c9-51b3-f65a-75fc-91d111faf581",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": -450.0
+      }
+    },
+    {
+      "ChildId": "45b43c71-e7cc-dba5-bd53-0a3d869a5f59",
+      "SymbolName": "Lib.physics.PhysicsWorld",
+      "Position": {
+        "X": 2000.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "7130a078-64a1-297b-773b-7d31c93df065",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 1020.0
+      }
+    },
+    {
+      "ChildId": "76922ca9-31ec-9512-1267-6afada81da28",
+      "SymbolName": "Lib.mesh.generate.CubeMesh",
+      "Position": {
+        "X": 2300.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "81fa3fbb-c74f-f438-70c7-bd581059f6b2",
+      "SymbolName": "Lib.physics.RigidJoint",
+      "Position": {
+        "X": 1850.0,
+        "Y": 1240.0
+      }
+    },
+    {
+      "ChildId": "872015f2-2da1-6206-9ba2-94e3448383d3",
+      "SymbolName": "Lib.mesh.modify.TransformMesh",
+      "Position": {
+        "X": 2550.0,
+        "Y": -200.0
+      }
+    },
+    {
+      "ChildId": "8a577b6f-51d6-68ee-ecd1-ed19bafe1004",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": -210.0
+      }
+    },
+    {
+      "ChildId": "8b3cfc12-8ce2-7b3e-14ff-1aecfdfdf192",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 840.0
+      }
+    },
+    {
+      "ChildId": "8e9967be-7d15-bc6e-b73a-fe73f002f1d4",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": -390.0
+      }
+    },
+    {
+      "ChildId": "abd1c8dc-0979-eb74-7a21-eb421c489b36",
+      "SymbolName": "Lib.physics.RigidJoint",
+      "Position": {
+        "X": 1850.0,
+        "Y": 1000.0
+      }
+    },
+    {
+      "ChildId": "aeccc5d4-62e8-8a74-7afc-61b82e87d7cb",
+      "SymbolName": "Lib.mesh.draw.DrawMeshUnlit",
+      "Position": {
+        "X": 2800.0,
+        "Y": -200.0
+      }
+    },
+    {
+      "ChildId": "b40a872d-9209-8e1b-0aff-0622e8f55b07",
+      "SymbolName": "Lib.physics.RigidJoint",
+      "Position": {
+        "X": 1850.0,
+        "Y": 1180.0
+      }
+    },
+    {
+      "ChildId": "ccf4f8e2-bf1c-8394-ec59-3e877c8a0b43",
+      "SymbolName": "Lib.mesh.generate.CubeMesh",
+      "Position": {
+        "X": 2300.0,
+        "Y": -200.0
+      }
+    },
+    {
+      "ChildId": "ced230db-0c45-c924-1d8e-c5998eacb02b",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": -270.0
+      }
+    },
+    {
+      "ChildId": "d701afa6-e6cb-d552-3fdb-f56d7ab1a143",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": -150.0
+      }
+    },
+    {
+      "ChildId": "e37b5cc4-8426-e4cf-2b1e-c2d083a5ea59",
+      "SymbolName": "Lib.physics.RigidJoint",
+      "Position": {
+        "X": 1850.0,
+        "Y": 1120.0
+      }
+    },
+    {
+      "ChildId": "e9407868-f021-b1eb-e910-8c5c8e2001b8",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 900.0
+      }
+    },
+    {
+      "ChildId": "ed8c7f25-a78d-deca-c332-b4b33befe614",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 780.0
+      }
+    }
+  ],
+  "OutputUis": [
+    {
+      "OutputId": "f71dffd9-de57-4831-be25-821b8ef96a3c"/*Output*/,
+      "Position": {
+        "X": 3920.0,
+        "Y": 0.0
+      }
+    }
+  ]
+}

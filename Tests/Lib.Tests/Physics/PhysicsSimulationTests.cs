@@ -694,6 +694,37 @@ public class PhysicsSimulationTests
         }
     }
 
+    [Fact]
+    public void NonFiniteFixedRateFallsBackToTheDefault()
+    {
+        using var harness = new Harness();
+        var sphere = harness.AddBody(Sphere(new Vector3(0, 100, 0)));
+        harness.Settings.FixedRate = float.NaN;
+        harness.Step(1f);
+
+        // A NaN rate would compare as changed every frame and build a NaN step size; the fallback
+        // keeps the world stepping at its default rate instead of rebuilding forever.
+        Assert.InRange(harness.Sim.SimTime, 0.95f, 1.02f);
+        harness.Sim.TryGetBodyPosition(sphere.Id, out var position);
+        Assert.True(position.Y < 99f);
+    }
+
+    [Fact]
+    public void NonFiniteGravityKeepsTheLastValidValue()
+    {
+        using var harness = new Harness();
+        var sphere = harness.AddBody(Sphere(new Vector3(0, 100, 0)));
+        harness.Step(0.1f);
+
+        // NaN would propagate through the integrator into every body and never recover.
+        harness.Settings.Gravity = new Vector3(float.NaN, float.NaN, float.NaN);
+        harness.Step(1f);
+
+        harness.Sim.TryGetBodyPosition(sphere.Id, out var position);
+        Assert.False(float.IsNaN(position.Y), "a NaN gravity must not poison body positions");
+        Assert.InRange(position.Y, 93.5f, 95f);
+    }
+
     private static PhysicsBody Box(Vector3 position, Vector3 size, PhysicsBodyKind kind = PhysicsBodyKind.Dynamic)
     {
         return new PhysicsBody { Id = Guid.NewGuid(), Shape = PhysicsShapeType.Box, Kind = kind, Position = position, Size = size };

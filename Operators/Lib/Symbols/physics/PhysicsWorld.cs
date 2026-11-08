@@ -46,11 +46,23 @@ internal sealed class PhysicsWorld : Instance<PhysicsWorld>
                 _hasLoggedError = true;
             }
 
-            _simulation.Release();
+            // Release disposes Bepu state and can itself fail while the simulation is already broken;
+            // a throw here would escape the catch and defeat the handler above.
+            try
+            {
+                _simulation.Release();
+            }
+            catch (Exception releaseException)
+            {
+                Log.Error($"PhysicsWorld release after failure failed: {releaseException.Message}", this);
+            }
+
             OutBuffer.Value = null;
             OutBuffer.DirtyFlag.Invalidate();
             BodyCount.Value = 0;
             BodyCount.DirtyFlag.Invalidate();
+            SimTime.Value = 0;
+            SimTime.DirtyFlag.Invalidate();
         }
     }
 

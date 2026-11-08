@@ -1,0 +1,105 @@
+{
+  "FormatVersion": 3,
+  "Id": "f3ce9edf-04d2-4169-b2fe-1d850d3650b5"/*RigidJoint*/,
+  "Description": "Declares a constraint between two bodies.\n\nThe world creates, updates and removes the actual constraint. Both bodies must be Dynamic or Kinematic; use a Kinematic body as the fixed anchor when you need a hinge or pendulum. The Weld type reads LocalOffsetB only, as the position of body B in the local space of body A.\n\nAKA: constraint, hinge, ball socket, weld, distance servo\n\nTips\n- For a ball socket, LocalOffsetA and LocalOffsetB are the same world point seen from each body.\n- Hinge axes are given in each body's local space.",
+  "InputUis": [
+    {
+      "InputId": "1afa70ca-48d2-4466-bb58-e626ddad58bd"/*DampingRatio*/,
+      "Position": {
+        "X": 0.0,
+        "Y": 90.0
+      },
+      "Description": "1 is critically damped; lower adds springiness."
+    },
+    {
+      "InputId": "29e6a3fb-2b44-4d19-9962-641e9fc8c479"/*Frequency*/,
+      "Position": {
+        "X": 0.0,
+        "Y": 180.0
+      },
+      "Description": "Spring frequency in Hz. Higher is stiffer."
+    },
+    {
+      "InputId": "4e0ce046-5f3b-4f57-8ca2-cbea40152c62"/*LocalOffsetA*/,
+      "Position": {
+        "X": 0.0,
+        "Y": 360.0
+      },
+      "Description": "Anchor point in body A's local space."
+    },
+    {
+      "InputId": "5704514e-be1d-4fff-89d0-dfbe94963cb8"/*BodyB*/,
+      "Position": {
+        "X": 0.0,
+        "Y": 45.0
+      },
+      "Description": "Second body. Must be Dynamic or Kinematic."
+    },
+    {
+      "InputId": "6e24ef86-ece5-4972-8ceb-8f67cc24407c"/*HingeAxisA*/,
+      "Position": {
+        "X": 0.0,
+        "Y": 225.0
+      },
+      "Description": "Hinge axis in body A's local space."
+    },
+    {
+      "InputId": "8cd42379-133b-419e-8bf6-ef810b3e7f92"/*BodyA*/,
+      "Position": {
+        "X": 0.0,
+        "Y": 0.0
+      },
+      "Description": "First body. Must be Dynamic or Kinematic."
+    },
+    {
+      "InputId": "aa42544d-b3a1-4f00-85d3-a7e7780c132e"/*LocalOffsetB*/,
+      "Position": {
+        "X": 0.0,
+        "Y": 405.0
+      },
+      "Description": "Anchor point in body B's local space. Weld uses this as its translation."
+    },
+    {
+      "InputId": "b254f1b9-ea4e-4634-b469-d384caa032a9"/*TargetDistance*/,
+      "Position": {
+        "X": 0.0,
+        "Y": 450.0
+      },
+      "Description": "Distance held by the DistanceServo type."
+    },
+    {
+      "InputId": "d204c5b2-35b1-47cc-8997-134d6897a75e"/*HingeAxisB*/,
+      "Position": {
+        "X": 0.0,
+        "Y": 270.0
+      },
+      "Description": "Hinge axis in body B's local space."
+    },
+    {
+      "InputId": "da042534-228c-44e5-8f92-37626fb97964"/*JointType*/,
+      "Position": {
+        "X": 0.0,
+        "Y": 315.0
+      },
+      "Description": "Constraint type: BallSocket, Hinge, Weld or DistanceServo."
+    },
+    {
+      "InputId": "e3722753-f66c-4e44-a9fd-1d72f809ce5e"/*Enabled*/,
+      "Position": {
+        "X": 0.0,
+        "Y": 135.0
+      },
+      "Description": "Turns the constraint off without deleting the joint node."
+    }
+  ],
+  "SymbolChildUis": [],
+  "OutputUis": [
+    {
+      "OutputId": "80ed0637-9fe2-4377-83b9-9f4e949cac70"/*OutJoint*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 0.0
+      }
+    }
+  ]
+}
