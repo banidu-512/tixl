@@ -456,7 +456,11 @@ internal sealed class BoygroupManager
         ProcessPendingRestart();
 
         if (State == BoygroupState.Server)
+        {
             PumpInputReplication();
+            ReRequestPendingInventories();
+            BroadcastPlayStateOnChange();
+        }
 
         RefreshDiscoveredServers();
     }
@@ -904,6 +908,48 @@ internal sealed class BoygroupManager
         }
     }
 
+    /// <summary>
+    /// Clients still loading their project stay silent when asked for their inventory (see
+    /// <see cref="HandleServerInventory"/>), so a deploy request would otherwise dangle. Re-ask
+    /// every few seconds until the client answers or the session ends.
+    /// </summary>
+    private void ReRequestPendingInventories()
+    {
+        var now = Environment.TickCount64;
+        foreach (var client in _clients)
+        {
+            if (!client.Peer.IsAuthenticated || client.PendingInventory == null)
+                continue;
+
+            if (_inventoryRequestedAt.TryGetValue(client.Peer.AssignedId, out var requestedAt)
+                && now - requestedAt < ReRequestInventoryIntervalMs)
+                continue;
+
+            _inventoryRequestedAt[client.Peer.AssignedId] = now;
+            client.StatusText = "waiting for project to load...";
+            SendJson(client.Peer, new { t = "requestInventory" });
+        }
+    }
+
+    private const int ReRequestInventoryIntervalMs = 4000;
+    private readonly Dictionary<int, long> _inventoryRequestedAt = [];
+
+    /// <summary>
+    /// The play broadcast must follow the master's playback however it is driven - timeline
+    /// space bar, panel buttons or an external agent. Broadcast when the running state changes.
+    /// </summary>
+    private void BroadcastPlayStateOnChange()
+    {
+        var playing = (Playback.Current?.PlaybackSpeed ?? 0) > 0;
+        if (playing == _lastBroadcastPlaying)
+            return;
+
+        _lastBroadcastPlaying = playing;
+        BroadcastToGroup(new { t = "play", playing, bars = Playback.Current?.TimeInBars ?? 0 });
+    }
+
+    private bool _lastBroadcastPlaying;
+
     /// <summary>Runs one deploy step per client per frame; returns true when a frame budget is spent.</summary>
     private void PumpDeploy()
     {
@@ -1031,12 +1077,15 @@ internal sealed class BoygroupManager
     {
         // Client answers the server's request with what it has on disk. The setups folder is
         // excluded on both sides: it travels as live setupJson, and mirror mode would otherwise
-        // flag the client's applied setups as extra and delete them.
+        // flag the client's applied setups as extra and delete them. While the project is still
+        // loading there is nothing to answer with: staying silent makes the server re-request
+        // instead of deploying the whole project into a folder that does not exist yet.
         var projectFolder = GetProjectFolder();
-        var inventory = string.IsNullOrEmpty(projectFolder)
-                            ? []
-                            : BoygroupDeployer.BuildInventory(projectFolder,
-                                                              Path.GetRelativePath(projectFolder, SetupFiles.FolderIn(projectFolder)));
+        if (string.IsNullOrEmpty(projectFolder))
+            return;
+
+        var inventory = BoygroupDeployer.BuildInventory(projectFolder,
+                                                        Path.GetRelativePath(projectFolder, SetupFiles.FolderIn(projectFolder)));
         SendJson(((_transport as BoygroupClientTransport)!).ServerPeer, BoygroupDeployer.BuildInventoryMessage(inventory));
     }
 
