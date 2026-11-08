@@ -14,8 +14,10 @@ Reference and how-tos for the day-to-day work: the UI, the graph, connecting inp
 
 ## Working with graphs
 
+- [Procedural geometry](ProceduralGeometry.md) — bevel, displace, fracture and extrude
+  meshes and text on the CPU. *Experimental.*
 - [Character animation](CharacterAnimation.md) — play glTF animation clips, blend and
-  retarget poses, rig procedural geometry to skeletons.
+  retarget poses, rig procedural geometry to skeletons. *Experimental.*
 
 *Still to write:*
 
@@ -49,7 +51,9 @@ Reference and how-tos for the day-to-day work: the UI, the graph, connecting inp
 
 - [TiXL for VJ and live performances](LivePerformances.md)
 - [Output Setup](OutputSetup.md) — projection mapping, multi-display and Spout / NDI outputs.
-- [Laser operators](LaserOperators.md) — laser cameras, PONK input and streaming to EtherDream / PONK / CITP scanners.
+- [Live collaboration](Collaboration.md) — several editors on one graph, over LAN or a relay.
+- [Boygrouping and show failover](BoygroupingAndFailover.md) — render nodes and redundant show machines.
+- [Startup and recovery](StartupAndRecovery.md) — startup project, start with the system, restart after a crash.
 - [Using backups](Backups.md)
 - [Sharing example projects](SharingExampleProjects.md)
 - [FAQ](FAQ.md)
