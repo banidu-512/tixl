@@ -17,8 +17,7 @@ namespace T3.Editor.Gui;
 /// The master laser enable / emergency button in the app menu bar. Appears whenever a
 /// laser operator is placed in any opened project. A plain click toggles the global
 /// <see cref="LaserMasterEnable"/> state - all laser output operators blank their frames
-/// while it is off. Ctrl+Click switches between the plain red/green button and the
-/// "Imma firin mah lazer" face rendering (firing = enabled, closed = disabled).
+/// while it is off.
 /// </summary>
 internal static class LaserMasterButton
 {
@@ -85,7 +84,6 @@ internal static class LaserMasterButton
         if (ctrlHeld)
         {
             _faceMode = !_faceMode;
-            Log.Debug($"Laser master button: switching to {(_faceMode ? "Imma-firin-mah-lazer" : "standard")} rendering");
         }
         else
         {
@@ -118,7 +116,6 @@ internal static class LaserMasterButton
         }
         ImGui.Separator();
         ImGui.TextUnformatted("Click: enable / disable all laser output");
-        ImGui.TextUnformatted("Ctrl+Click: toggle Imma-firin-mah-lazer face");
         ImGui.EndTooltip();
     }
 
