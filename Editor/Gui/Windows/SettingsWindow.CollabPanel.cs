@@ -435,5 +435,7 @@ internal sealed partial class SettingsWindow
                 CustomComponents.TooltipForLastItem("Optional: use your Discord identity in collaboration sessions instead of a local nickname.");
             }
         }
+
+        DrawNetworkInterface(ref changed);
     }
 }

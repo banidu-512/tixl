@@ -236,6 +236,10 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public bool EnableAutoBackup = true;
         public bool MinimalBackup = true;
 
+        /// <summary>The network adapter TiXL binds to for hosting collaboration and boygrouping,
+        /// LAN discovery and failover heartbeats (Settings → Network). Empty = all interfaces.</summary>
+        public string NetworkInterface = "";
+
         // Collaboration
         /// <summary>Persistent participant id; also seeds the per-user accent color.</summary>
         public string CollabUserId = "";

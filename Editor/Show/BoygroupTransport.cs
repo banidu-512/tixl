@@ -37,9 +37,11 @@ internal sealed class BoygroupServerTransport : BoygroupTransport
 
     public LanDiscoveryResponder DiscoveryResponder { get; }
 
-    public BoygroupServerTransport(int tcpPort, string[] groups)
+    public BoygroupServerTransport(int tcpPort, string[] groups, string? interfaceName = null)
     {
-        _listener = new TcpListener(IPAddress.Any, tcpPort);
+        // Pinned adapter (Settings → Network); empty keeps the all-interface bind.
+        var bindAddress = T3.Core.Utils.LanInterfaces.ResolveAddress(interfaceName) ?? IPAddress.Any;
+        _listener = new TcpListener(bindAddress, tcpPort);
         _listener.Start();
         try
         {
@@ -50,7 +52,8 @@ internal sealed class BoygroupServerTransport : BoygroupTransport
                                                                          ["server"] = Environment.MachineName,
                                                                          ["port"] = tcpPort,
                                                                          ["groups"] = new JArray(groups),
-                                                                     });
+                                                                     },
+                                                           bindAddress == IPAddress.Any ? null : bindAddress);
         }
         catch
         {

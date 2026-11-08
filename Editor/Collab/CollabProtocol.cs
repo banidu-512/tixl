@@ -217,8 +217,50 @@ internal static class CollabProtocol
     public static bool TryGetInt(JObject json, string property, out int value)
     {
         value = 0;
-        return json.TryGetValue(property, out var token)
-               && int.TryParse(token.Value<string>(), out value);
+        if (!json.TryGetValue(property, out var token))
+            return false;
+
+        switch (token.Type)
+        {
+            case JTokenType.Integer:
+                value = token.Value<int>();
+                return true;
+            case JTokenType.String:
+                return int.TryParse(token.Value<string>(), out value);
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>
+    /// Type-tolerant bool read for fields from UNTRUSTED senders (LAN discovery announcements): a
+    /// string like "x" or an object token must be a miss, not a FormatException out of the frame loop.
+    /// </summary>
+    public static bool TryGetBool(JObject json, string property, out bool value)
+    {
+        value = false;
+        if (!json.TryGetValue(property, out var token))
+            return false;
+
+        switch (token.Type)
+        {
+            case JTokenType.Boolean:
+                value = token.Value<bool>();
+                return true;
+            case JTokenType.Integer:
+            {
+                var number = token.Value<long>();
+                if (number is < 0 or > 1)
+                    return false;
+
+                value = number == 1;
+                return true;
+            }
+            case JTokenType.String:
+                return bool.TryParse(token.Value<string>(), out value);
+            default:
+                return false;
+        }
     }
 }
 

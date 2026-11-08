@@ -16,7 +16,7 @@ Boygrouping distributes a show to render nodes. Enable it in **Settings → Boyg
 
 The master shows the added nodes, their local output bindings and their deployment status, plus per-node diagnostics: round trip, clock offset, measured sync error, time since the last sync, frame rate and version. Heartbeats run at 1 Hz on both sides and a silent peer is dropped after 4 s, so a cable pull or a crashed master is noticed immediately instead of leaving the slave dead-reckoning a show that no longer exists. A slave keeps its role after a master disappears and reconnects on its own: it remembers the master's name and rejoins as soon as that master — or, for a slave that never joined one, the first master that appears — is on the network. Boygrouping therefore always wins over whatever the machine was doing before once it is enabled.
 
-The **Network** section of the Boygrouping and Failover settings is shared: pick the show network's Ethernet adapter there when the machine also has Wi-Fi, VPN or Hyper-V adapters. **Automatic** keeps the previous behavior. A pinned adapter takes effect the next time boygrouping is enabled; failover rebinds immediately.
+The **Network** section of the Collaboration, Boygrouping and Failover settings is shared: pick the show network's Ethernet adapter there when the machine also has Wi-Fi, VPN or Hyper-V adapters. **Automatic** keeps the previous behavior. A pinned adapter takes effect the next time boygrouping is enabled; failover rebinds immediately.
 
 ## Input replication
 
