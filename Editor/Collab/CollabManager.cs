@@ -294,7 +294,7 @@ internal sealed class CollabManager
                     try
                     {
                         var transport = await CollabRelayClientTransport.ConnectAsync(relayHost, relayPort, roomCode, CancellationToken.None);
-                        _uiThreadActions.Enqueue(() => CompleteRelayClientConnect(transport, generation, passwordToUse, relayHost, relayPort));
+                        _uiThreadActions.Enqueue(() => CompleteRelayClientConnect(transport, generation, passwordToUse, relayHost, relayPort, roomCode));
                     }
                     catch (Exception e)
                     {
@@ -304,13 +304,20 @@ internal sealed class CollabManager
     }
 
     /// <summary>UI thread: adopts a joined relay link, unless that join was abandoned meanwhile.</summary>
-    private void CompleteRelayClientConnect(CollabRelayClientTransport transport, int generation, string password, string relayHost, int relayPort)
+    private void CompleteRelayClientConnect(CollabRelayClientTransport transport, int generation, string password, string relayHost, int relayPort, string roomCode)
     {
         if (generation != _sessionGeneration)
         {
             transport.Dispose();
             return;
         }
+
+        // Persist the room anchor BEFORE anything can restart us: the project-download restart
+        // must come back through the same room, or the client sits idle after its relaunch.
+        UserSettings.Config.CollabLastRelayHost = $"{relayHost}:{relayPort}";
+        UserSettings.Config.CollabLastRelayRoom = roomCode;
+        UserSettings.Config.CollabLastSessionHost = "";
+        UserSettings.Save();
 
         _password = password;
         _sessionLog.Clear();
@@ -435,6 +442,8 @@ internal sealed class CollabManager
         _hostProjectName = "";
         _sessionProjectName = "";
         UserSettings.Config.CollabLastSessionHost = "";
+        UserSettings.Config.CollabLastRelayHost = "";
+        UserSettings.Config.CollabLastRelayRoom = "";
         UserSettings.Save();
         while (_pendingDisconnects.TryDequeue(out _))
         {
@@ -622,16 +631,31 @@ internal sealed class CollabManager
 
     private void TryAutoRejoin()
     {
+        // A direct join restarts into the host's address...
         var host = UserSettings.Config.CollabLastSessionHost;
-        if (string.IsNullOrEmpty(host))
-            return;
+        if (!string.IsNullOrEmpty(host))
+        {
+            var separator = host.LastIndexOf(':');
+            if (separator > 0 && int.TryParse(host[(separator + 1)..], out var port))
+            {
+                Log.Info($"Collab: auto-rejoining last session {host}");
+                JoinDirect(host[..separator], port, UserSettings.Config.CollabPassword ?? "");
+                return;
+            }
+        }
 
-        var separator = host.LastIndexOf(':');
-        if (separator <= 0 || !int.TryParse(host[(separator + 1)..], out var port))
-            return;
-
-        Log.Info($"Collab: auto-rejoining last session {host}");
-        JoinDirect(host[..separator], port, UserSettings.Config.CollabPassword ?? "");
+        // ...a relay join that restarted for a project download comes back through the same room.
+        var relayHost = UserSettings.Config.CollabLastRelayHost;
+        var roomCode = UserSettings.Config.CollabLastRelayRoom;
+        if (!string.IsNullOrEmpty(relayHost) && !string.IsNullOrEmpty(roomCode))
+        {
+            var relaySeparator = relayHost.LastIndexOf(':');
+            if (relaySeparator > 0 && int.TryParse(relayHost[(relaySeparator + 1)..], out var relayPort))
+            {
+                Log.Info($"Collab: auto-rejoining relay room {roomCode} at {relayHost}");
+                JoinViaRelay(relayHost[..relaySeparator], relayPort, roomCode, UserSettings.Config.CollabPassword ?? "");
+            }
+        }
     }
 
     private void ProcessPendingDisconnects()
@@ -1078,6 +1102,8 @@ internal sealed class CollabManager
         // Remember the session so a restart (e.g. after a project download) can rejoin, then make
         // sure the host's project is open locally — download it when this machine doesn't have it.
         UserSettings.Config.CollabLastSessionHost = _joinedHost;
+        UserSettings.Config.CollabLastRelayHost = "";
+        UserSettings.Config.CollabLastRelayRoom = "";
         UserSettings.Save();
         _hostProjectName = CollabProtocol.GetString(json, "project");
         EnsureHostProjectAvailable();

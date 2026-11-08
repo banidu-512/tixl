@@ -288,6 +288,11 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         /// <summary>host:port of the relay used for room-code sessions. Empty = default relay.</summary>
         public string CollabRelayAddress = "";
 
+        /// <summary>Relay room join anchor: rejoin after a restart (e.g. a project download)
+        /// comes back through the same room. Cleared on leave and by a direct-session join.</summary>
+        public string CollabLastRelayHost = "";
+        public string CollabLastRelayRoom = "";
+
         /// <summary>host:port of the last joined collab session — auto-rejoined on launch, which is
         /// what brings a client back after a project download restarted the editor.</summary>
         public string CollabLastSessionHost = "";
