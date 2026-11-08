@@ -37,6 +37,7 @@ internal static class Program
         Run("deploy.transfer", TestDeployFileTransfer);
         Run("deploy.pathsafety", TestDeployPathSafety);
         Run("deploy.mtime-tolerance", TestDeployMtimeTolerance);
+        Run("deploy.hash-over-mtime", TestDeployHashOverMtime);
         Run("boygroup.discovery", TestBoygroupDiscovery);
         Run("failover.election", TestFailoverElection);
         Run("failover.no-dual-active", TestFailoverNoDualActive);
@@ -459,6 +460,34 @@ internal static class Program
         var missing = BoygroupDeployer.ComputeMissingFiles(server, client);
         Check(missing.Count == 3 && missing.Contains("c.txt") && missing.Contains("d.txt") && missing.Contains("e.txt"),
               $"expected [c.txt, d.txt, e.txt] missing, got [{string.Join(", ", missing)}]");
+    }
+
+    /// <summary>
+    /// Identical content whose mtime moved (a render node re-saves an unchanged project file on
+    /// launch) must not be re-sent: the hash decides when size matches and time does not.
+    /// </summary>
+    private static void TestDeployHashOverMtime()
+    {
+        const long t0 = 638_000_000_000_000_000;
+        var server = new Dictionary<string, BoygroupDeployer.InventoryEntry>
+                         {
+                             ["same.txt"] = new() { RelativePath = "same.txt", Size = 10, LastWriteTicks = t0, Hash = "AAAA" },
+                             ["diff.txt"] = new() { RelativePath = "diff.txt", Size = 10, LastWriteTicks = t0, Hash = "BBBB" },
+                             ["unhashed.txt"] = new() { RelativePath = "unhashed.txt", Size = 10, LastWriteTicks = t0 },
+                         };
+        var client = new Dictionary<string, BoygroupDeployer.InventoryEntry>
+                         {
+                             // Same content, 30 s newer (the node rewrote it on launch): current.
+                             ["same.txt"] = new() { RelativePath = "same.txt", Size = 10, LastWriteTicks = t0 + 300_000_000, Hash = "AAAA" },
+                             // Different content, newer: missing.
+                             ["diff.txt"] = new() { RelativePath = "diff.txt", Size = 10, LastWriteTicks = t0 + 300_000_000, Hash = "CCCC" },
+                             // No hashes available (large file): time decides, so missing.
+                             ["unhashed.txt"] = new() { RelativePath = "unhashed.txt", Size = 10, LastWriteTicks = t0 + 300_000_000 },
+                         };
+
+        var missing = BoygroupDeployer.ComputeMissingFiles(server, client);
+        Check(missing.Count == 2 && missing.Contains("diff.txt") && missing.Contains("unhashed.txt"),
+              $"expected [diff.txt, unhashed.txt] missing, got [{string.Join(", ", missing)}]");
     }
 
     private static void TestDeployPathSafety()
