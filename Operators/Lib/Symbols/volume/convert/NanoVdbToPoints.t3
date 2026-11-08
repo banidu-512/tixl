@@ -1,0 +1,20 @@
+{
+  "FormatVersion": 3,
+  "Id": "cb09f697-7b35-4f7c-b1bd-243cfd102137"/*NanoVdbToPoints*/,
+  "Inputs": [
+    {
+      "Id": "4db54dc7-b227-433a-8442-56fe0a3374df"/*Threshold*/,
+      "DefaultValue": 0.0010000000474974513
+    },
+    {
+      "Id": "c48d37c8-ea1d-4207-9bad-0dd8d0bffe94"/*MaxLeaves*/,
+      "DefaultValue": 4096
+    },
+    {
+      "Id": "d998b43d-d4b5-4029-90ec-6c90eb14a1b2"/*MaxPoints*/,
+      "DefaultValue": 262144
+    }
+  ],
+  "Children": [],
+  "Connections": []
+}
