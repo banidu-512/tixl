@@ -239,6 +239,14 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public string CollabPassword = "";
 
         // Boygrouping (show distribution to render nodes)
+        /// <summary>Master switch: this machine participates in boygrouping. When set, the role
+        /// below starts automatically shortly after launch — a show machine comes up in its role
+        /// without anyone clicking.</summary>
+        public bool BoygroupEnabled = false;
+
+        /// <summary>true = this machine is a master (server); false = slave (render node).</summary>
+        public bool BoygroupIsMaster = false;
+
         public string BoygroupClientName = "";
         public int BoygroupPort = 44720;
         public bool BoygroupAutoJoin = true;

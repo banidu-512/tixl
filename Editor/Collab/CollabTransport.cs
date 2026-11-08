@@ -1,7 +1,9 @@
 #nullable enable
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.IO;
 using System.Net;
+using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Text;
 using System.Threading;
@@ -51,13 +53,15 @@ internal sealed class CollabPeerConnection
         client.SendTimeout = CollabProtocol.WriteTimeoutMs;
     }
 
-    /// <summary>Relay-backed peer: shares the relay stream; closing only detaches this peer.</summary>
+    /// <summary>Relay-backed peer: shares the relay stream; closing only detaches this peer.
+    /// Relay paths ride the internet, so their silence timeout is looser than a show LAN's.</summary>
     public CollabPeerConnection(Stream sharedStream, int assignedId, Action? onDetach)
     {
         Client = null;
         AssignedId = assignedId;
         Stream = sharedStream;
         _onDetach = onDetach;
+        TimeoutMs = CollabProtocol.RelayPeerTimeoutMs;
     }
 
     public readonly TcpClient? Client;
@@ -84,9 +88,13 @@ internal sealed class CollabPeerConnection
     private long _lastHeardFromTicks = Environment.TickCount64;
     private readonly object _writeLock = new();
 
+    /// <summary>How long this peer may stay silent before it is considered gone. Show LAN peers
+    /// use <see cref="CollabProtocol.PeerTimeoutMs"/>; relay-backed peers a looser internet budget.</summary>
+    public int TimeoutMs { get; init; } = CollabProtocol.PeerTimeoutMs;
+
     public void MarkHeardFrom() => Interlocked.Exchange(ref _lastHeardFromTicks, Environment.TickCount64);
 
-    public bool IsTimedOut => Environment.TickCount64 - Interlocked.Read(ref _lastHeardFromTicks) > CollabProtocol.PeerTimeoutMs;
+    public bool IsTimedOut => Environment.TickCount64 - Interlocked.Read(ref _lastHeardFromTicks) > TimeoutMs;
 
     /// <summary>Thread-safe framed write. Callers must pass a payload already encoded for the frame type.</summary>
     public void Write(CollabProtocol.FrameType type, ReadOnlySpan<byte> payload)
@@ -416,7 +424,7 @@ internal sealed class CollabHostTransport : CollabTransport
                 continue;
             }
 
-            client.NoDelay = true;
+            CollabProtocol.ConfigureShowSocket(client);
             CollabPeerConnection peer;
             try
             {
@@ -546,7 +554,7 @@ internal sealed class CollabClientTransport : CollabTransport
     public void Connect()
     {
         var client = CollabProtocol.ConnectWithTimeout(_hostEndPoint);
-        client.NoDelay = true;
+        CollabProtocol.ConfigureShowSocket(client);
         _hostPeer = new CollabPeerConnection(client, 0);
         _ = Task.Run(() => ReadLoop(_hostPeer));
         _ = Task.Run(() => UdpLoopAsync(_cancellation.Token));
@@ -693,10 +701,17 @@ internal sealed class LanDiscoveryScanner : IDisposable
     private UdpClient? _udp;
     private CancellationTokenSource? _cancellation;
     private Task? _loopTask;
+    private IReadOnlyList<IPAddress> _directTargets = [];
 
-    public void Start(int discoveryPort)
+    /// <summary>
+    /// Starts the scan. <paramref name="directTargets"/> are probed by unicast alongside the
+    /// broadcasts — a master whose address is already known is re-found even on networks that
+    /// block broadcast (Wi-Fi client isolation, guest VLANs).
+    /// </summary>
+    public void Start(int discoveryPort, IReadOnlyList<IPAddress>? directTargets = null)
     {
         Stop();
+        _directTargets = directTargets ?? [];
         var cancellation = new CancellationTokenSource();
         var udp = new UdpClient();
         udp.Client.EnableBroadcast = true;
@@ -712,12 +727,78 @@ internal sealed class LanDiscoveryScanner : IDisposable
     private async Task LoopAsync(int discoveryPort, UdpClient udp, CancellationToken cancellation)
     {
         var probe = Encoding.UTF8.GetBytes(LanDiscoveryResponder.ProbePayload);
-        var interval = TimeSpan.FromMilliseconds(700);
+        var interval = TimeSpan.FromMilliseconds(500);
+
+        // Probe every route out of this machine: the limited broadcast reaches the same subnet,
+        // each interface's directed broadcast covers multi-adapter machines (Hyper-V, Wi-Fi plus
+        // Ethernet) and routed subnets, the loopback covers rehearsing on one computer, and the
+        // direct targets re-find a master whose address we already know on networks that block
+        // broadcast entirely (Wi-Fi client isolation, guest VLANs).
+        var targets = new List<IPEndPoint>();
+        void RebuildTargets()
+        {
+            targets.Clear();
+            targets.Add(new IPEndPoint(IPAddress.Broadcast, discoveryPort));
+            try
+            {
+                foreach (var @interface in NetworkInterface.GetAllNetworkInterfaces())
+                {
+                    if (@interface.OperationalStatus != OperationalStatus.Up
+                        || @interface.NetworkInterfaceType == NetworkInterfaceType.Loopback)
+                        continue;
+
+                    foreach (var address in @interface.GetIPProperties().UnicastAddresses)
+                    {
+                        if (address.Address.AddressFamily != AddressFamily.InterNetwork
+                            || address.PrefixLength is < 8 or > 32)
+                            continue;
+
+                        var local = address.Address.GetAddressBytes();
+                        var mask = PrefixToMask(address.PrefixLength);
+                        var broadcast = new byte[4];
+                        for (var i = 0; i < 4; i++)
+                            broadcast[i] = (byte)(local[i] | (byte)~mask[i]);
+
+                        targets.Add(new IPEndPoint(new IPAddress(broadcast), discoveryPort));
+                    }
+                }
+            }
+            catch (Exception)
+            {
+                // Interface enumeration can fail on machines with exotic virtual adapters; the
+                // limited broadcast and the direct targets below still go out.
+            }
+
+            targets.Add(new IPEndPoint(IPAddress.Loopback, discoveryPort));
+            foreach (var direct in _directTargets)
+                targets.Add(new IPEndPoint(direct, discoveryPort));
+        }
+
+        RebuildTargets();
+        var nextTargetsRefresh = Environment.TickCount64 + 15_000; // adapters come and go
+
         while (!cancellation.IsCancellationRequested)
         {
             try
             {
-                await udp.SendAsync(probe, probe.Length, new IPEndPoint(IPAddress.Broadcast, discoveryPort));
+                if (Environment.TickCount64 >= nextTargetsRefresh)
+                {
+                    RebuildTargets();
+                    nextTargetsRefresh = Environment.TickCount64 + 15_000;
+                }
+
+                foreach (var target in targets)
+                {
+                    try
+                    {
+                        udp.Send(probe, probe.Length, target);
+                    }
+                    catch (SocketException)
+                    {
+                        // One unrouteable interface (broken virtual adapter, VPN tunnel) must not
+                        // starve the remaining targets of this round.
+                    }
+                }
 
                 using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
                 timeout.CancelAfter(interval);
@@ -725,10 +806,20 @@ internal sealed class LanDiscoveryScanner : IDisposable
                 {
                     var result = await udp.ReceiveAsync(timeout.Token);
                     var text = Encoding.UTF8.GetString(result.Buffer);
-                    if (!text.StartsWith("{\"collab\""))
-                        continue;
 
-                    var json = JObject.Parse(text);
+                    // No prefix gate here: collab and boygroup announcements discriminate by
+                    // content at the consumer, and junk replies throw JsonException below.
+                    JObject json;
+                    try
+                    {
+                        json = JObject.Parse(text);
+                    }
+                    catch (JsonException)
+                    {
+                        // Some other tool answered our probe; ignore.
+                        continue;
+                    }
+
                     var source = result.RemoteEndPoint as IPEndPoint ?? new IPEndPoint(IPAddress.None, 0);
                     Results.Enqueue((json, source, DateTime.UtcNow));
                 }
@@ -745,11 +836,31 @@ internal sealed class LanDiscoveryScanner : IDisposable
             {
                 try { await Task.Delay(200, cancellation); } catch (OperationCanceledException) { break; }
             }
-            catch (JsonException)
+            catch (ObjectDisposedException)
             {
-                // Some other tool answered our broadcast; ignore.
+                // Stop() closed the socket while a receive/send was in flight.
+                break;
+            }
+            catch (Exception e)
+            {
+                // The scan must never die silently: report and keep going after a pause.
+                Console.WriteLine($"[discovery-scanner] retrying after: {e.Message}");
+                try { await Task.Delay(500, cancellation); } catch (OperationCanceledException) { break; }
             }
         }
+    }
+
+    /// <summary>Prefix length to the network mask's bytes; the host bits are set to form the directed broadcast address.</summary>
+    private static byte[] PrefixToMask(int prefixLength)
+    {
+        var mask = new byte[4];
+        for (var i = 0; i < 4; i++)
+        {
+            var bits = Math.Clamp(prefixLength - i * 8, 0, 8);
+            mask[i] = bits == 0 ? (byte)0 : (byte)(0xFF << (8 - bits));
+        }
+
+        return mask;
     }
 
     public void Stop()
