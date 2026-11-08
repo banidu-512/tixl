@@ -1,4 +1,5 @@
 using System;
+using System.Numerics;
 using T3.Graphics.Compat;
 using T3.Core.DataTypes;
 using T3.Core.Operator;
@@ -7,6 +8,7 @@ using T3.Core.Operator.Interfaces;
 using T3.Core.Rendering;
 using T3.Core.Resource;
 using T3.Core.Utils;
+using static Lib.Utils.LaserProjection;
 
 namespace Lib.laser.convert;
 
@@ -28,7 +30,10 @@ internal sealed class MeshToLaserPoints : Instance<MeshToLaserPoints>
 
     public MeshToLaserPoints()
     {
+        // Both outputs must run the update: a consumer wired to PointCount alone would otherwise
+        // read the initial 0 forever, and with both pulled in one frame the value lags a frame.
         LaserPoints.UpdateAction += Update;
+        PointCount.UpdateAction += Update;
     }
 
     private void Update(EvaluationContext context)
@@ -62,6 +67,11 @@ internal sealed class MeshToLaserPoints : Instance<MeshToLaserPoints>
             return;
         }
 
+        // The projection depends on the camera pose as much as on the mesh: a static mesh
+        // viewed by a moving camera must re-project even when nothing else changed.
+        var worldToCamera = camera.WorldToCamera;
+        var cameraToClipSpace = camera.CameraToClipSpace;
+
         var wasTriggered = MathUtils.WasTriggered(TriggerUpdate.GetValue(context), ref _triggerUpdate);
         if (wasTriggered)
         {
@@ -70,22 +80,32 @@ internal sealed class MeshToLaserPoints : Instance<MeshToLaserPoints>
 
         var updateContinuously = UpdateContinuously.GetValue(context);
         var mode = (PrimitiveMode)Mode.GetValue(context).Clamp(0, 1);
-        var maxEdgeStep = MathF.Max(1f, MaxEdgeStep.GetValue(context));
+        var maxEdgeStep = MaxEdgeStep.GetValue(context);
+        maxEdgeStep = float.IsFinite(maxEdgeStep) ? MathF.Max(1f, maxEdgeStep) : 4000f;
         var dotDwell = DotDwellPoints.GetValue(context).Clamp(1, MaxDotDwellPoints);
         var brightness = Math.Clamp(Brightness.GetValue(context), 0f, 1f);
 
         var sourceVertexBytes = mesh.VertexBuffer.Buffer.Description.SizeInBytes;
         var sourceIndexBytes = mesh.IndicesBuffer.Buffer.Description.SizeInBytes;
+        var geometryChanged = !ReferenceEquals(mesh.VertexBuffer.Buffer, _lastVertexBuffer)
+                              || !ReferenceEquals(mesh.IndicesBuffer.Buffer, _lastIndexBuffer)
+                              || sourceVertexBytes != _lastVertexBytes
+                              || sourceIndexBytes != _lastIndexBytes;
 
         // Keep the last frame unless something actually changed - GPU readback stalls
-        // the pipeline, so it must not run every evaluation for a static mesh.
+        // the pipeline, so it must not run every evaluation for a static mesh. Comparing the
+        // mesh version (not the staging buffer size) means an animated Brightness or
+        // MaxEdgeStep rebuilds from the cached CPU copy instead of reading the GPU again.
         if (!wasTriggered && !updateContinuously && _hasResult
             && _lastMode == mode
             && _lastMaxEdgeStep.Equals(maxEdgeStep)
             && _lastDotDwell == dotDwell
             && _lastBrightness.Equals(brightness)
-            && _vertexCpuAccess.Buffer?.Description.SizeInBytes == sourceVertexBytes
-            && _indexCpuAccess.Buffer?.Description.SizeInBytes == sourceIndexBytes)
+            && !geometryChanged
+            && _lastWorldToCamera.Equals(worldToCamera)
+            && _lastCameraToClipSpace.Equals(cameraToClipSpace)
+            && _cachedVertices != null
+            && _cachedFaces != null)
         {
             LaserPoints.DirtyFlag.Trigger = updateContinuously ? DirtyFlagTrigger.Animated : DirtyFlagTrigger.None;
             return;
@@ -94,8 +114,28 @@ internal sealed class MeshToLaserPoints : Instance<MeshToLaserPoints>
         var vertexCount = Math.Min(mesh.VertexBuffer.Srv.Description.Buffer.ElementCount, MaxMeshVertices);
         var faceCount = Math.Min(mesh.IndicesBuffer.Srv.Description.Buffer.ElementCount, MaxMeshFaces);
 
-        var vertices = ReadBuffer<PbrVertex>(mesh.VertexBuffer.Buffer, sourceVertexBytes, PbrVertex.Stride, ref _vertexCpuAccess, vertexCount);
-        var faces = ReadBuffer<Int3>(mesh.IndicesBuffer.Buffer, sourceIndexBytes, 3 * 4, ref _indexCpuAccess, faceCount);
+        PbrVertex[]? vertices;
+        Int3[]? faces;
+        if (!geometryChanged && _cachedVertices != null && _cachedFaces != null)
+        {
+            vertices = _cachedVertices;
+            faces = _cachedFaces;
+        }
+        else
+        {
+            vertices = ReadBuffer<PbrVertex>(mesh.VertexBuffer.Buffer, sourceVertexBytes, PbrVertex.Stride, ref _vertexCpuAccess, vertexCount);
+            faces = ReadBuffer<Int3>(mesh.IndicesBuffer.Buffer, sourceIndexBytes, 3 * 4, ref _indexCpuAccess, faceCount);
+
+            if (vertices != null && faces != null)
+            {
+                _cachedVertices = vertices;
+                _cachedFaces = faces;
+                _lastVertexBuffer = mesh.VertexBuffer.Buffer;
+                _lastIndexBuffer = mesh.IndicesBuffer.Buffer;
+                _lastVertexBytes = sourceVertexBytes;
+                _lastIndexBytes = sourceIndexBytes;
+            }
+        }
 
         if (vertices == null || faces == null || vertices.Length == 0)
         {
@@ -113,6 +153,8 @@ internal sealed class MeshToLaserPoints : Instance<MeshToLaserPoints>
         _lastMaxEdgeStep = maxEdgeStep;
         _lastDotDwell = dotDwell;
         _lastBrightness = brightness;
+        _lastWorldToCamera = worldToCamera;
+        _lastCameraToClipSpace = cameraToClipSpace;
 
         LaserPoints.DirtyFlag.Trigger = updateContinuously ? DirtyFlagTrigger.Animated : DirtyFlagTrigger.None;
     }
@@ -144,7 +186,8 @@ internal sealed class MeshToLaserPoints : Instance<MeshToLaserPoints>
                 haveLast = true;
             }
 
-            ToColor(vertices[i].ColorRgb, brightness, out var r, out var g, out var b);
+            var vertexColor = vertices[i].ColorRgb;
+            ToColor(vertexColor.X, vertexColor.Y, vertexColor.Z, brightness, out var r, out var g, out var b);
             for (var d = 0; d < dotDwell && count < _scratch.Length; d++)
             {
                 _scratch[count++] = new LaserPoint(x, y, r, g, b);
@@ -186,12 +229,12 @@ internal sealed class MeshToLaserPoints : Instance<MeshToLaserPoints>
                     break;
                 }
 
-                if (!TryProject(vertices[i0].Position, combined, out var x0, out var y0)
-                    || !TryProject(vertices[i1].Position, combined, out var x1, out var y1))
+                if (!TryProjectSegment(vertices[i0].Position, vertices[i1].Position, combined,
+                                       out var x0, out var y0, out var x1, out var y1))
                     continue;
 
-                var dx = (float)(x1 - x0);
-                var dy = (float)(y1 - y0);
+                var dx = x1 - x0;
+                var dy = y1 - y0;
                 var distance = MathF.Sqrt(dx * dx + dy * dy);
                 var steps = Math.Max(1, (int)MathF.Ceiling(distance / maxEdgeStep));
                 steps = Math.Min(steps, MaxSamplesPerEdge);
@@ -211,9 +254,10 @@ internal sealed class MeshToLaserPoints : Instance<MeshToLaserPoints>
                     break;
                 }
 
-                _scratch[count++] = LaserPoint.CreateBlanked(x0, y0);
+                _scratch[count++] = LaserPoint.CreateBlanked((int)MathF.Round(x0), (int)MathF.Round(y0));
 
-                ToColor(vertices[i0].ColorRgb, brightness, out var r, out var g, out var bl);
+                var color = vertices[i0].ColorRgb;
+                ToColor(color.X, color.Y, color.Z, brightness, out var r, out var g, out var bl);
                 for (var s = 0; s <= steps && count < _scratch.Length; s++)
                 {
                     var t = s / (float)steps;
@@ -250,43 +294,6 @@ internal sealed class MeshToLaserPoints : Instance<MeshToLaserPoints>
 
         var newSize = Math.Min(Math.Max(_scratch.Length * 2, required), MaxOutputPoints);
         Array.Resize(ref _scratch, newSize);
-    }
-
-    private static bool TryProject(Vector3 position, Matrix4x4 combined, out int x, out int y)
-    {
-        var posCs = Vector3.Transform(position, combined);
-
-        // Same culling window as LaserCamera
-        if (posCs.Z <= 0.001f || posCs.Z > 1000f)
-        {
-            x = 0;
-            y = 0;
-            return false;
-        }
-
-        var ndcX = posCs.X / posCs.Z;
-        var ndcY = posCs.Y / posCs.Z;
-
-        if (ndcX < -10 || ndcX > 10 || ndcY < -10 || ndcY > 10)
-        {
-            x = 0;
-            y = 0;
-            return false;
-        }
-
-        ndcX = Math.Clamp(ndcX, -1, 1);
-        ndcY = Math.Clamp(ndcY, -1, 1);
-
-        x = (int)(ndcX * 32767f);
-        y = (int)(ndcY * 32767f);
-        return true;
-    }
-
-    private static void ToColor(Vector3 colorRgb, float brightness, out int r, out int g, out int b)
-    {
-        r = (int)(Math.Clamp(colorRgb.X * brightness, 0f, 1f) * 65535f);
-        g = (int)(Math.Clamp(colorRgb.Y * brightness, 0f, 1f) * 65535f);
-        b = (int)(Math.Clamp(colorRgb.Z * brightness, 0f, 1f) * 65535f);
     }
 
     /// <summary>
@@ -339,7 +346,7 @@ internal sealed class MeshToLaserPoints : Instance<MeshToLaserPoints>
         }
         catch (Exception e)
         {
-            Log.Error($"MeshToLaserPoints: GPU readback of {typeof(T).Name} failed - {e.Message}", null);
+            Log.Error($"MeshToLaserPoints: GPU readback of {typeof(T).Name} failed - {e.Message}");
             return null;
         }
     }
@@ -356,13 +363,15 @@ internal sealed class MeshToLaserPoints : Instance<MeshToLaserPoints>
 
     protected override void Dispose(bool disposing)
     {
-        if (!disposing)
-            return;
+        if (disposing)
+        {
+            _vertexCpuAccess.Buffer?.Dispose();
+            _vertexCpuAccess.Buffer = null;
+            _indexCpuAccess.Buffer?.Dispose();
+            _indexCpuAccess.Buffer = null;
+        }
 
-        _vertexCpuAccess.Buffer?.Dispose();
-        _vertexCpuAccess.Buffer = null;
-        _indexCpuAccess.Buffer?.Dispose();
-        _indexCpuAccess.Buffer = null;
+        base.Dispose(disposing);
     }
 
     private static readonly StructuredList s_emptyList = new StructuredList<LaserPoint>(Array.Empty<LaserPoint>());
@@ -375,8 +384,16 @@ internal sealed class MeshToLaserPoints : Instance<MeshToLaserPoints>
     private float _lastMaxEdgeStep;
     private int _lastDotDwell;
     private float _lastBrightness;
+    private Matrix4x4 _lastWorldToCamera;
+    private Matrix4x4 _lastCameraToClipSpace;
     private BufferWithViews _vertexCpuAccess = new();
     private BufferWithViews _indexCpuAccess = new();
+    private PbrVertex[]? _cachedVertices;
+    private Int3[]? _cachedFaces;
+    private Buffer? _lastVertexBuffer;
+    private Buffer? _lastIndexBuffer;
+    private int _lastVertexBytes = -1;
+    private int _lastIndexBytes = -1;
 
     private enum PrimitiveMode
     {
