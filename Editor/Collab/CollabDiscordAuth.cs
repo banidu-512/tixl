@@ -114,12 +114,28 @@ internal static class CollabDiscordAuth
             var context = await listener.GetContextAsync().WaitAsync(TimeSpan.FromMinutes(3));
             var query = context.Request.QueryString;
 
+            // Validate before answering: a rejected callback (CSRF mismatch, cancel, no code) must
+            // tell the browser so, not show "Login complete" for a login that never happened.
+            var stateMismatch = query["state"] != state;
+            var error = query["error"];
+            var code = query["code"];
+            var rejection = stateMismatch
+                                ? "This login response did not belong to your TiXL login attempt and was ignored."
+                                : !string.IsNullOrEmpty(error)
+                                    ? $"The login was cancelled ({error})."
+                                    : string.IsNullOrEmpty(code)
+                                        ? "Discord did not return an authorization code."
+                                        : null;
+
             try
             {
+                var title = rejection == null
+                                ? "Login complete &mdash; you can close this tab and return to TiXL."
+                                : $"Login failed &mdash; {rejection} You can close this tab.";
                 context.Response.ContentType = "text/html";
                 var responseBytes = Encoding.UTF8.GetBytes(
                                                             "<html><body style=\"font-family:sans-serif;background:#1a1a1e;color:#eee;display:flex;align-items:center;justify-content:center;height:100vh\">"
-                                                            + "<h2>Login complete &mdash; you can close this tab and return to TiXL.</h2></body></html>");
+                                                            + $"<h2>{title}</h2></body></html>");
                 context.Response.ContentLength64 = responseBytes.Length;
                 context.Response.OutputStream.Write(responseBytes);
                 context.Response.OutputStream.Close();
@@ -129,14 +145,12 @@ internal static class CollabDiscordAuth
                 // The browser may have already closed the connection.
             }
 
-            if (query["state"] != state)
+            if (stateMismatch)
                 throw new Exception("OAuth state mismatch (possible CSRF) — aborting");
 
-            var error = query["error"];
             if (!string.IsNullOrEmpty(error))
                 throw new Exception($"Discord login was cancelled: {error}");
 
-            var code = query["code"];
             if (string.IsNullOrEmpty(code))
                 throw new Exception("No authorization code received from Discord");
 
