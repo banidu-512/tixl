@@ -5,8 +5,6 @@ using System.Linq;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
-using System.Threading;
-using System.Threading.Tasks;
 
 namespace T3.Core.Utils;
 
@@ -79,57 +77,7 @@ public static class LanInterfaces
     /// Up, non-tunnel IPv4 adapters, wired first. Loopback is excluded: it cannot carry a session
     /// between machines, and the transports fall back to all interfaces when none is selected.
     /// </summary>
-    /// <remarks>
-    /// Cached and refreshed in the background. Enumerating adapters calls
-    /// <see cref="NetworkInterface.GetIPProperties"/> per adapter, which stalls for hundreds of
-    /// milliseconds on Windows; this is read every UI frame by the network panel and every failover
-    /// tick. Callers must treat the returned list as read-only.
-    /// </remarks>
     public static List<LanInterface> GetUsable()
-    {
-        var snapshot = Volatile.Read(ref _cachedUsable);
-        if (snapshot == null)
-        {
-            snapshot = EnumerateUsable();
-            Volatile.Write(ref _cachedUsable, snapshot);
-            Volatile.Write(ref _cachedAtTicks, Environment.TickCount64);
-            return snapshot;
-        }
-
-        if (Environment.TickCount64 - Volatile.Read(ref _cachedAtTicks) > CacheLifetimeMs
-            && Interlocked.CompareExchange(ref _refreshing, 1, 0) == 0)
-        {
-            _ = Task.Run(() =>
-            {
-                try
-                {
-                    var fresh = EnumerateUsable();
-                    Volatile.Write(ref _cachedUsable, fresh);
-                    Volatile.Write(ref _cachedAtTicks, Environment.TickCount64);
-                }
-                finally
-                {
-                    Volatile.Write(ref _refreshing, 0);
-                }
-            });
-        }
-
-        return snapshot;
-    }
-
-    /// <summary>Forces the next <see cref="GetUsable"/> caller to wait for a fresh enumeration.</summary>
-    public static void InvalidateCache()
-    {
-        Volatile.Write(ref _cachedUsable, null);
-        Volatile.Write(ref _cachedAtTicks, 0);
-    }
-
-    private const int CacheLifetimeMs = 5_000;
-    private static List<LanInterface>? _cachedUsable;
-    private static long _cachedAtTicks;
-    private static int _refreshing;
-
-    private static List<LanInterface> EnumerateUsable()
     {
         var result = new List<(int Priority, LanInterface Interface)>();
         try
