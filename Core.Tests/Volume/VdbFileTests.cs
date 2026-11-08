@@ -281,6 +281,92 @@ public class NanoVdbTests
         Assert.Equal((ulong)NanoVdbBuffer.TreeDataSize, rootOffset);
         Assert.True(leafOffset < (ulong)buffer.Buffer.Length);
     }
+
+    [Fact]
+    public void ShaderLeafLayoutMatchesTheWriter()
+    {
+        // The compute shaders read leaves through constants of their own (nanovdb-common.hlsl):
+        // bbox at +0, value mask at +16, values at +96, and a stride of 96 + 512 * 4 bytes. Those
+        // numbers are duplicated in HLSL, so a change to the writer has to break a test here
+        // rather than silently scramble what the GPU reads.
+        const int shaderLeafValuesOffset = 96;
+        const int shaderLeafMaskOffset = 16;
+        const int shaderLeafStride = 96 + 512 * 4;
+        const int shaderLeafValueMaskWords = 16;   // 64 bytes of mask
+
+        var grid = VolumePrimitives.Create(VolumePrimitives.Shape.Sphere, new Vector3(1f, 1f, 1f), 0.1f, Vector3.Zero, 3);
+        var buffer = NanoVdbBuffer.FromGrid(grid);
+        var summary = buffer.ReadSummary();
+        Assert.True(summary.LeafNodes > 0, "the test grid should have leaves");
+
+        var treeStart = NanoVdbBuffer.GridDataSize;
+        var leafSection = treeStart + (long)BitConverter.ToUInt64(buffer.Buffer, treeStart);
+
+        // Every leaf the shader would visit has to fit, with its values and mask inside it.
+        Assert.True(leafSection + (long)summary.LeafNodes * shaderLeafStride <= buffer.Buffer.Length,
+                    "shader leaf stride runs past the buffer the writer produced");
+
+        // Walk the first few leaves the way the shader does and check each voxel value against the
+        // tree. A mask or stride that disagreed with the writer would land on a different number.
+        var leaves = CollectLeaves(grid.Tree);
+        Assert.Equal(summary.LeafNodes, leaves.Count);
+
+        for (var index = 0; index < Math.Min(leaves.Count, 8); index++)
+        {
+            var leaf = leaves[index];
+            var address = (int)(leafSection + index * shaderLeafStride);
+
+            Assert.Equal(leaf.Origin.X, BitConverter.ToInt32(buffer.Buffer, address));
+            Assert.Equal(leaf.Origin.Y, BitConverter.ToInt32(buffer.Buffer, address + 4));
+            Assert.Equal(leaf.Origin.Z, BitConverter.ToInt32(buffer.Buffer, address + 8));
+
+            var maskOffset = address + shaderLeafMaskOffset;
+            for (var slot = 0; slot < 512; slot++)
+            {
+                var word = BitConverter.ToUInt32(buffer.Buffer, maskOffset + (slot >> 5) * 4);
+                var active = (word & (1u << (slot & 31))) != 0;
+                if (active != leaf.ValueMask.IsOn(slot))
+                    Assert.Fail($"leaf {index} slot {slot}: shader mask says {active}, tree says {leaf.ValueMask.IsOn(slot)}");
+            }
+
+            Assert.Equal(shaderLeafValueMaskWords, 64 / sizeof(uint));
+
+            for (var slot = 0; slot < 512; slot++)
+            {
+                var value = BitConverter.ToSingle(buffer.Buffer, address + shaderLeafValuesOffset + slot * 4);
+                if (value != leaf.Values[slot])
+                    Assert.Fail($"leaf {index} slot {slot}: shader reads {value}, tree holds {leaf.Values[slot]}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Leaves in the order the writer emits them - sorted by Z, then Y, then X, the same key the
+    /// buffer builder uses - which is the order the shaders index them by.
+    /// </summary>
+    private static List<VdbLeafNode<float>> CollectLeaves(VdbTree<float> tree)
+    {
+        var leaves = new List<VdbLeafNode<float>>();
+        foreach (var upper in tree.Root.Children.Values)
+        {
+            foreach (var lower in upper.Children)
+            {
+                if (lower == null)
+                    continue;
+
+                foreach (var leaf in lower.Children)
+                {
+                    if (leaf != null)
+                        leaves.Add(leaf);
+                }
+            }
+        }
+
+        leaves.Sort((a, b) => a.Origin.Z != b.Origin.Z ? a.Origin.Z.CompareTo(b.Origin.Z)
+                                  : a.Origin.Y != b.Origin.Y ? a.Origin.Y.CompareTo(b.Origin.Y)
+                                      : a.Origin.X.CompareTo(b.Origin.X));
+        return leaves;
+    }
 }
 
 public class Lz4BloscTests

@@ -74,6 +74,50 @@ uint VdbLeafStride()
     return LeafValuesBytes + LeafValueCount * LeafValueStride;
 }
 
+// ---------- internal nodes, for diagnostics that walk the tree itself ----------
+
+static const uint LowerNodeStride = LowerTableBytes + 4096 * 8;     // 16^3 slots of child+value
+static const uint UpperNodeStride = UpperTableBytes + 32768 * 8;    // 32^3 slots of child+value
+static const uint LowerNodeDim    = 128;                            // extent of one lower node
+static const uint UpperNodeDim    = 4096;                           // extent of one upper node
+
+/// Byte offset of the section holding the node level: 0 leaf, 1 lower, 2 upper.
+uint VdbNodeSection(StructuredBuffer<uint> g, uint level)
+{
+    uint pointer = level == 0 ? GridDataBytes : (level == 1 ? GridDataBytes + 8 : GridDataBytes + 16);
+    return GridDataBytes + g[pointer >> 2];
+}
+
+/// How many nodes the level holds, as stored in the tree header.
+uint VdbNodeCount(StructuredBuffer<uint> g, uint level)
+{
+    uint pointer = level == 0 ? (GridDataBytes + 32) : (level == 1 ? (GridDataBytes + 36) : (GridDataBytes + 40));
+    return g[pointer >> 2];
+}
+
+uint VdbNodeStride(uint level)
+{
+    return level == 0 ? VdbLeafStride() : (level == 1 ? LowerNodeStride : UpperNodeStride);
+}
+
+uint VdbNodeDim(uint level)
+{
+    return level == 0 ? 8 : (level == 1 ? LowerNodeDim : UpperNodeDim);
+}
+
+/// Every node begins with the same bbox triple, so one reader covers all three levels.
+int3 VdbNodeBBoxMin(StructuredBuffer<uint> g, uint nodeAddress)
+{
+    uint b = nodeAddress >> 2;
+    return int3(g[b], g[b + 1], g[b + 2]);
+}
+
+/// World position of an index-space corner, without the half-voxel offset used for samples.
+float3 VdbIndexCornerWorldPosition(in VdbGridInfo info, int3 indexCorner)
+{
+    return info.translation + (float3)indexCorner * info.voxelSize;
+}
+
 /// True when voxel `slot` (0..511, order (x<<6)|(y<<3)|z) is active inside this leaf.
 bool VdbLeafIsActive(StructuredBuffer<uint> g, uint leafAddress, uint slot)
 {

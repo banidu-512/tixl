@@ -73,6 +73,7 @@ Sparse volume support for TiXL. Loads and writes `.vdb` files, edits volumes wit
 |---|---|
 | `VolumeToNanoVdb` | Flattens the volume into a NanoVDB buffer and uploads it as a structured buffer for HLSL. |
 | `NanoVdbRender` | Raymarches up to three NanoVDB grids (liquid, smoke, fire) inside a glass box. |
+| `DrawVdbBounds` | Wireframe box per leaf, lower or upper node, as line points. The debug view that proves the tree, bounds and transform are read correctly. |
 | `VolumeField` | Samples a baked 3D texture as a field for `RaymarchField`. |
 
 ### `Lib.volume.analyze`
