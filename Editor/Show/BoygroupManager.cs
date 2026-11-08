@@ -794,11 +794,12 @@ internal sealed class BoygroupManager
             return;
 
         _autoDeployAtTicks = 0;
+        _autoDeployOnlyUndeployed = true;
         if (State != BoygroupState.Server || string.IsNullOrEmpty(GetProjectFolder()))
             return; // No project open: a manual Deploy & Sync will report it properly.
 
-        Log.Info("Boygroup: node joined - running deploy & sync");
-        DeployAndSync();
+        Log.Info("Boygroup: node joined - running deploy & sync for new nodes");
+        DeployAndSync(onlyUndeployed: true);
     }
 
     private void Reject(CollabPeerConnection peer, string reason)
@@ -845,7 +846,7 @@ internal sealed class BoygroupManager
     // ---------------------------------------------------------------------------------------
 
     /// <summary>Server action: push project files, the output setup, and live graph state to the group.</summary>
-    public void DeployAndSync()
+    public void DeployAndSync(bool onlyUndeployed = false)
     {
         if (State != BoygroupState.Server)
         {
@@ -868,6 +869,13 @@ internal sealed class BoygroupManager
         {
             if (client.PendingFiles != null)
                 continue; // A deploy is already in flight for this client.
+
+            // The automatic pass serves only never-deployed nodes. A node that rewrites an
+            // unchanged project file at launch (asset-path migration normalizes it) would
+            // otherwise be re-sent, restart, rewrite, and loop forever; its updates ride the
+            // explicit Deploy & Sync button instead.
+            if (onlyUndeployed && client.IsDeployed)
+                continue;
 
             client.Mirror = mirror;
             client.PendingInventory = inventory;
@@ -955,6 +963,8 @@ internal sealed class BoygroupManager
     /// <see cref="HandleServerInventory"/>), so a deploy request would otherwise dangle. Re-ask
     /// every few seconds until the client answers or the session ends.
     /// </summary>
+    private bool _autoDeployOnlyUndeployed;
+
     private void ReRequestPendingInventories()
     {
         var now = Environment.TickCount64;
@@ -962,6 +972,12 @@ internal sealed class BoygroupManager
         {
             if (!client.Peer.IsAuthenticated || client.PendingInventory == null)
                 continue;
+
+            if (_autoDeployOnlyUndeployed && client.IsDeployed)
+            {
+                client.PendingInventory = null;
+                continue;
+            }
 
             if (_inventoryRequestedAt.TryGetValue(client.Peer.AssignedId, out var requestedAt)
                 && now - requestedAt < ReRequestInventoryIntervalMs)
