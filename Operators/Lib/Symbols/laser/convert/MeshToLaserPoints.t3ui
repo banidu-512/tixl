@@ -87,14 +87,16 @@
       "Position": {
         "X": 300.0,
         "Y": 100.0
-      }
+      },
+      "Description": "Projected laser frame: isolated lit edges (Wireframe) or dwell dots (Vertices) with blanked approaches. Capped by MaxOutputPoints; consume through LaserPointsToBuffer or a laser output."
     },
     {
       "OutputId": "d54e2936-e57a-4e3c-b31e-394f14491d62"/*PointCount*/,
       "Position": {
         "X": 300.0,
         "Y": 200.0
-      }
+      },
+      "Description": "Number of valid points in the emitted frame (may be capped by the operator's hard limit)."
     }
   ]
 }

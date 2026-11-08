@@ -167,10 +167,7 @@ internal sealed class LaserPointsToBuffer : Instance<LaserPointsToBuffer>
                 _bufferWithViews.Buffer = _buffer;
             }
 
-            // Upload only the written prefix. The array overload copies the whole capacity (which can be
-            // 64 MB after one burst) even when this frame produced a handful of points.
-            var bytes = System.Runtime.InteropServices.MemoryMarshal.AsBytes(_points.AsSpan(0, count));
-            ResourceManager.Device.ImmediateContext.UpdateSubresource(_buffer, 0, bytes, 0, 0);
+            ResourceManager.Device.ImmediateContext.UpdateSubresource(_points, _buffer);
             // Laser-frame data drawn back into a scene is a preview - mark the buffer so a
             // LaserCamera capturing that scene never captures its own output (feedback echo).
             T3.Core.Rendering.GeometryCapture.MarkExcludedFromCapture(_buffer);

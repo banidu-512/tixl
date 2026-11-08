@@ -10,5 +10,13 @@ namespace T3.Core.Output;
 /// </summary>
 public static class LaserDriverEnabled
 {
-    public static bool Enabled = true;
+    private static volatile bool _enabled = true;
+
+    /// <summary>Read by the render thread each pump and written by the debug/UI thread; volatile
+    /// keeps the kill-switch visible immediately instead of only after the next JIT reload.</summary>
+    public static bool Enabled
+    {
+        get => _enabled;
+        set => _enabled = value;
+    }
 }
