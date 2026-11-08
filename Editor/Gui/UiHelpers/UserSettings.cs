@@ -144,6 +144,11 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public string StartupProjectFolder = "";
 
         /// <summary>Installs a per-user OS login entry (Windows Run key, Linux XDG autostart, macOS LaunchAgent).</summary>
+        /// <summary>Master switch for the Startup panel: project autoload, login autostart and
+        /// crash restart only act while this is on. Disabled by default: an editor is a plain
+        /// editor until startup automation is switched on.</summary>
+        public bool StartupEnabled = false;
+
         public bool AutostartWithSystem = false;
 
         /// <summary>Relaunch the editor automatically after a crash via a supervisor process.</summary>
@@ -278,8 +283,9 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public string CollabDisplayName = "";
 
         /// <summary>Master switch: collaboration sessions can be hosted or joined. When off, no
-        /// session is hosted or joined and nothing is discovered on the network.</summary>
-        public bool CollabEnabled = true;
+        /// session is hosted or joined and nothing is discovered on the network. Disabled by default:
+        /// a show machine does nothing on the network until it is switched on.</summary>
+        public bool CollabEnabled = false;
 
         public int CollabPort = CollabProtocol.DefaultTcpPort;
         public bool CollabLanDiscovery = true;

@@ -19,6 +19,38 @@ internal sealed partial class SettingsWindow
     {
         var config = UserSettings.Config;
 
+        var enabled = config.StartupEnabled;
+        if (FormInputs.AddCheckBox("Enable",
+                                   ref enabled,
+                                   """
+                                   Turns startup automation on: the startup project, login autostart and
+                                   crash restart. When off, TiXL starts normally with the Hub and nothing
+                                   runs or restarts automatically.
+                                   """,
+                                   false))
+        {
+            config.StartupEnabled = enabled;
+            if (!enabled && config.AutostartWithSystem)
+            {
+                // The OS autostart entry is externally visible; removing it keeps the machine
+                // clean instead of leaving TiXL launching at login without its automation.
+                if (OsAutostart.TrySetEnabled(false, out var error))
+                {
+                    config.AutostartWithSystem = false;
+                }
+                else
+                {
+                    Log.Warning($"Could not remove the autostart entry: {error}");
+                }
+            }
+
+            changed = true;
+        }
+
+        if (!config.StartupEnabled)
+            return;
+
+        FormInputs.AddVerticalSpace();
         FormInputs.AddSectionSubHeader("Project autoload");
         FormInputs.AddVerticalSpace();
 
