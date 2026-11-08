@@ -78,8 +78,12 @@ internal static class ShowControlBarStatus
         if (ImGui.IsItemClicked(ImGuiMouseButton.Left))
             ImGui.OpenPopup("##showModeMenu");
 
-        if (!ImGui.BeginPopup("##showModeMenu"))
+        var modeMenuOpen = ImGui.BeginPopup("##showModeMenu");
+        if (!modeMenuOpen)
+        {
+            DrawJoinRoomModal();
             return;
+        }
 
         ImGui.TextDisabled("Show-control mode - one at a time");
         ImGui.Separator();
@@ -147,13 +151,27 @@ internal static class ShowControlBarStatus
             ImGui.EndMenu();
         }
 
-        foreach (var candidate in new[] { ShowControlMode.Failover, ShowControlMode.Collab })
+        if (ImGui.Selectable("Failover", mode == ShowControlMode.Failover))
         {
-            var selected = candidate == mode;
-            var candidateLabel = ModeDisplayName(candidate);
-            if (ImGui.Selectable(candidateLabel, selected))
+            var error = ShowControlMode.SwitchTo(ShowControlMode.Failover);
+            if (error != null)
+                Log.Warning($"Show mode: {error}");
+            ImGui.CloseCurrentPopup();
+        }
+
+        if (ImGui.IsItemHovered())
+        {
+            CustomComponents.BeginTooltip(300);
+            ImGui.TextWrapped("Redundant pair: two machines run the same composition, one streams, the other takes over on failure.");
+            CustomComponents.EndTooltip();
+        }
+
+        // Collaboration carries a choice like boygrouping's role: host a room or join one.
+        if (ImGui.BeginMenu("Collab"))
+        {
+            if (ImGui.Selectable("Host a room", mode == ShowControlMode.Collab))
             {
-                var error = ShowControlMode.SwitchTo(candidate);
+                var error = ShowControlMode.SwitchTo(ShowControlMode.Collab);
                 if (error != null)
                     Log.Warning($"Show mode: {error}");
                 ImGui.CloseCurrentPopup();
@@ -162,17 +180,94 @@ internal static class ShowControlBarStatus
             if (ImGui.IsItemHovered())
             {
                 CustomComponents.BeginTooltip(300);
-                ImGui.TextWrapped(candidate switch
-                                      {
-                                          ShowControlMode.Failover => "Redundant pair: two machines run the same composition, one streams, the other takes over on failure.",
-                                          ShowControlMode.Collab => "Edit one graph together: starts a relay room and shares the session ID.",
-                                          _ => "",
-                                      });
+                ImGui.TextWrapped("Register a room on the relay and share the session ID.");
                 CustomComponents.EndTooltip();
             }
+
+            var lastRoom = UserSettings.Config.CollabLastRelayRoom;
+            if (!string.IsNullOrEmpty(lastRoom) && ImGui.Selectable($"Join last room ({lastRoom})", false))
+            {
+                ShowControlMode.Activate(ShowControlMode.Collab);
+                var (host, port) = ParseRelayEndpoint(UserSettings.Config.CollabLastRelayHost);
+                CollabManager.Instance.JoinViaRelay(host, port, lastRoom, UserSettings.Config.CollabPassword ?? "");
+                ImGui.CloseCurrentPopup();
+            }
+
+            if (!string.IsNullOrEmpty(lastRoom) && ImGui.IsItemHovered())
+            {
+                CustomComponents.BeginTooltip(300);
+                ImGui.TextWrapped("Rejoin the room this machine joined last.");
+                CustomComponents.EndTooltip();
+            }
+
+            if (ImGui.Selectable("Join a room..."))
+            {
+                // Open the modal after this menu closes: OpenPopup must run in the same id scope
+                // as BeginPopupModal, which is the menu bar's.
+                _openJoinRoomModal = true;
+                ImGui.CloseCurrentPopup();
+            }
+
+            ImGui.EndMenu();
         }
 
         ImGui.EndPopup();
+
+        DrawJoinRoomModal();
+    }
+
+    /// <summary>The join modal lives at menu-bar id scope, outside the mode popup.</summary>
+    private static void DrawJoinRoomModal()
+    {
+        if (_openJoinRoomModal)
+        {
+            _openJoinRoomModal = false;
+            ImGui.OpenPopup("Join a room");
+        }
+
+    var joinCenter = ImGui.GetWindowWidth() * 0.5f;
+    ImGui.SetNextWindowPos(ImGui.GetWindowPos() + new System.Numerics.Vector2(joinCenter - 140, ImGui.GetFrameHeight() + 8),
+                           ImGuiCond.Appearing);
+    if (ImGui.BeginPopupModal("Join a room", ImGuiWindowFlags.AlwaysAutoResize))
+    {
+        ImGui.TextDisabled("Enter the session ID the host shared.");
+        _joinRoomInput ??= "";
+        var submit = ImGui.InputText("##roomCode", ref _joinRoomInput, 12,
+                                     ImGuiInputTextFlags.EnterReturnsTrue | ImGuiInputTextFlags.CharsUppercase | ImGuiInputTextFlags.CharsNoBlank);
+        if (ImGui.Button("Join") || submit)
+        {
+            var room = _joinRoomInput.Trim();
+            if (room.Length > 0)
+            {
+                ShowControlMode.Activate(ShowControlMode.Collab);
+                var (host, port) = ParseRelayEndpoint(UserSettings.Config.CollabRelayAddress);
+                CollabManager.Instance.JoinViaRelay(host, port, room, UserSettings.Config.CollabPassword ?? "");
+                ImGui.CloseCurrentPopup();
+            }
+        }
+
+        ImGui.SameLine();
+        if (ImGui.Button("Cancel"))
+            ImGui.CloseCurrentPopup();
+
+        ImGui.EndPopup();
+    }
+    }
+
+    private static bool _openJoinRoomModal;
+    private static string _joinRoomInput;
+
+    private static (string Host, int Port) ParseRelayEndpoint(string? configured)
+    {
+        var text = configured?.Trim();
+        if (string.IsNullOrEmpty(text))
+            return (CollabProtocol.DefaultRelayHost, CollabProtocol.DefaultRelayPort);
+
+        var separator = text.LastIndexOf(':');
+        if (separator > 0 && int.TryParse(text[(separator + 1)..], out var port))
+            return (text[..separator], port);
+
+        return (text, CollabProtocol.DefaultRelayPort);
     }
 
     private static string ModeDisplayName(string mode) => mode switch
