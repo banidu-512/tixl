@@ -173,7 +173,7 @@ internal sealed class BoygroupManager
         {
             _password = password ?? "";
             GroupName = group;
-            _transport = new BoygroupServerTransport(port, UserSettings.Config.BoygroupGroups.ToArray());
+            _transport = new BoygroupServerTransport(port, UserSettings.Config.BoygroupGroups.Distinct().ToArray());
             _transport.PeerDisconnected += OnPeerDisconnected;
             State = BoygroupState.Server;
             StatusText = $"Serving group '{group}' on port {port}";
