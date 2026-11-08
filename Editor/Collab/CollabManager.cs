@@ -2075,6 +2075,7 @@ internal sealed class CollabManager
                 {
                     UserSettings.Config.StartupProjectFolder = _projectDownloadFolder;
                     UserSettings.Config.LastOpenProjectFolder = _projectDownloadFolder;
+                    NetworkProjectRegistry.Register(NetworkProjectRegistry.CollabKind, _projectDownloadFolder);
                     UserSettings.Save();
                 }
 

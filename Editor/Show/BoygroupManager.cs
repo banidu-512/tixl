@@ -12,6 +12,7 @@ using T3.Core.Animation;
 using T3.Core.IO;
 using T3.Core.Output;
 using T3.Editor.Collab;
+using T3.Editor.Compilation;
 using T3.Editor.Gui.UiHelpers;
 using T3.Editor.UiModel;
 using T3.Editor.UiModel.Commands;
@@ -1196,6 +1197,9 @@ internal sealed class BoygroupManager
                 Log.Info($"Boygroup: receiving the master's project into {folder}");
                 _bootstrapProjectFolder = folder;
 
+                // The received project shows up in the Hub's "Network projects" group.
+                NetworkProjectRegistry.Register(NetworkProjectRegistry.BoygroupKind, folder);
+
                 // Receiving a project is a one-time event per project, not a restart loop: the
                 // flood guard from a previous project must not block opening this one.
                 UserSettings.Config.BoygroupDeployRestartCount = 0;
@@ -1351,7 +1355,22 @@ internal sealed class BoygroupManager
         if (State == BoygroupState.Client && config.BoygroupEnabled && !config.BoygroupIsMaster)
         {
             if (GetProjectFolder() is { Length: > 0 } deployedProject)
+            {
                 config.StartupProjectFolder = deployedProject;
+
+                // Hot reload first: unload the deployed project's package and load it fresh from
+                // disk in place. The boygroup session keeps running; only a failed reload falls
+                // back to the process restart below.
+                if (ProjectSetup.TryReloadProject(deployedProject))
+                {
+                    Log.Info("Boygroup: applied deployed files by reloading the project in place - no restart");
+                    DeploySummary += " - reloaded without restart";
+                    UserSettings.Save();
+                    return;
+                }
+
+                Log.Info("Boygroup: in-place reload not possible - restarting");
+            }
         }
 
         UserSettings.Save();

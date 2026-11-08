@@ -42,9 +42,47 @@ internal static class ProjectsPanel
             // 0. Live collaboration sessions — join straight from the hub.
             DrawCollabSessions();
 
+            // Show-control projects (boygroup deploy targets, collab downloads) get their own
+            // group so an operator sees which projects belong to the distributed show.
+            var networkKinds = new Dictionary<string, string>();
+            foreach (var (kind, folder) in NetworkProjectRegistry.All())
+                networkKinds[folder] = kind;
+
+            FormInputs.AddSectionHeader("Network projects");
+            var hasNetworkProjects = false;
+            foreach (var package in EditableSymbolProject.AllProjects)
+            {
+                var kind = networkKinds.GetValueOrDefault(package.Folder);
+                if (kind == null)
+                    continue;
+
+                hasNetworkProjects = true;
+                DrawProjectItem(window, package);
+                DrawNetworkBadge(kind);
+            }
+
+            foreach (var (kind, folder) in NetworkProjectRegistry.All())
+            {
+                if (EditableSymbolProject.AllProjects.Any(p => p.Folder == folder))
+                    continue;
+
+                hasNetworkProjects = true;
+                ImGui.Bullet();
+                ImGui.TextUnformatted(Path.GetFileName(folder.TrimEnd(Path.DirectorySeparatorChar)));
+                ImGui.SameLine();
+                ImGui.TextDisabled("not loaded - starts with the show");
+            }
+
+            if (!hasNetworkProjects)
+                ImGui.TextDisabled("none yet - a boygroup deploy or a collab download adds this machine's show projects here");
+
+            ImGui.Separator();
             FormInputs.AddSectionHeader("Local projects");
             foreach (var package in EditableSymbolProject.AllProjects)
             {
+                if (networkKinds.ContainsKey(package.Folder))
+                    continue;
+
                 DrawProjectItem(window, package);
             }
             
@@ -513,6 +551,16 @@ internal static class ProjectsPanel
 
         ImGui.PopID();
         return wasOpened;
+    }
+
+    /// <summary>A small kind tag after a network project row (boygroup / collab).</summary>
+    private static void DrawNetworkBadge(string kind)
+    {
+        ImGui.SameLine();
+        var color = kind == NetworkProjectRegistry.CollabKind ? UiColors.StatusActivated : UiColors.StatusOkay;
+        ImGui.PushStyleColor(ImGuiCol.Text, color.Rgba);
+        ImGui.TextUnformatted($"[{kind}]");
+        ImGui.PopStyleColor();
     }
 
     private static void DrawArchivedItem(ProjectSetup.ArchivedProjectInfo archivedProject)
