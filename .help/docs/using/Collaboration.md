@@ -2,7 +2,7 @@
 
 Several TiXL editors can work on the same graph at the same time. Everyone sees the other participants' cursors, selections and "editing" badges, and every graph edit is replayed on all machines.
 
-Sessions are configured in **Settings → Collaboration**. The feature is experimental and **disabled by default** — switch on **Enable** at the top of the panel; a running session ends when it is switched off.
+Sessions are configured in **Settings → Collaboration**. The feature is experimental. Collaboration is one of three mutually exclusive show-control modes (Boygroup / Failover / Collab) selected in the menu bar — starting a session from this panel claims the Collab mode and ends the others on this machine.
 
 ## Hosting and joining
 

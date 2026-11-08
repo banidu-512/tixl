@@ -3,6 +3,7 @@ using ImGuiNET;
 using Newtonsoft.Json.Linq;
 using T3.Core.DataTypes.Vector;
 using T3.Editor.Collab;
+using T3.Editor.Show;
 using T3.Editor.Gui.Input;
 using T3.Editor.Gui.Styling;
 using T3.Editor.Gui.UiHelpers;
@@ -23,25 +24,9 @@ internal sealed partial class SettingsWindow
         var manager = CollabManager.Instance;
         var config = UserSettings.Config;
 
-        // The settings switch ends a running session (CollabManager.Update enforces it), so the
-        // session controls must not be reachable while collaboration is off.
-        var enabled = config.CollabEnabled;
-        if (FormInputs.AddCheckBox("Enable",
-                                   ref enabled,
-                                   """
-                                   Turns collaboration on. When off, no session is hosted or joined,
-                                   nothing is discovered on the network, and a running session ends.
-                                   """,
-                                   true))
-        {
-            config.CollabEnabled = enabled;
-            changed = true;
-        }
-
-        if (!config.CollabEnabled)
-            return;
-
-        FormInputs.AddVerticalSpace();
+        // Collaboration is switched through the menu-bar mode selector; this panel only
+        // configures and runs sessions. Session actions below claim the collab mode, which ends
+        // a boygroup/failover session on this machine (the modes are mutually exclusive).
 
         // -------------------------------------------------------------------------------------
         // Identity
@@ -112,6 +97,7 @@ internal sealed partial class SettingsWindow
         if (CustomComponents.DrawCtaButton("Start Session", Icon.None, UiColors.ForegroundFull, UiColors.StatusActivated, Color.Transparent))
         {
             ParseRelayAddress(config.CollabRelayAddress, out var host, out var port);
+            ShowControlMode.Activate(ShowControlMode.Collab);
             manager.StartHostViaRelay(host, port);
         }
 
@@ -131,6 +117,7 @@ internal sealed partial class SettingsWindow
         if (ImGui.Button("Join Session") || submitted)
         {
             ParseRelayAddress(config.CollabRelayAddress, out var host, out var port);
+            ShowControlMode.Activate(ShowControlMode.Collab);
             manager.JoinViaRelay(host, port, _roomCode, config.CollabPassword);
         }
 
@@ -151,6 +138,7 @@ internal sealed partial class SettingsWindow
                 _roomCode = room;
                 _inviteMessage = "";
                 ParseRelayAddress(config.CollabRelayAddress, out var host, out var port);
+                ShowControlMode.Activate(ShowControlMode.Collab);
                 manager.JoinViaRelay(host, port, room, config.CollabPassword);
             }
             else
@@ -317,6 +305,7 @@ internal sealed partial class SettingsWindow
             ImGui.PushID(session.Address + session.Port);
             if (ImGui.SmallButton("Join"))
             {
+                ShowControlMode.Activate(ShowControlMode.Collab);
                 manager.JoinDirect(session.Address, session.Port, UserSettings.Config.CollabPassword);
             }
 
@@ -472,6 +461,7 @@ internal sealed partial class SettingsWindow
         ImGui.SetNextItemWidth(FormInputs.GetAvailableInputSize(null, false, true).X);
         if (ImGui.InputText("##collabJoinAddress", ref _joinAddress, 256, ImGuiInputTextFlags.EnterReturnsTrue))
         {
+            ShowControlMode.Activate(ShowControlMode.Collab);
             ParseJoinAddress(_joinAddress, config.CollabPort, out var host, out var port);
             manager.JoinDirect(host, port, config.CollabPassword);
         }
@@ -490,6 +480,7 @@ internal sealed partial class SettingsWindow
         FormInputs.SetCursorToParameterEdit();
         if (CustomComponents.DrawCtaButton("Host on LAN", Icon.None, UiColors.ForegroundFull, UiColors.StatusActivated, Color.Transparent))
         {
+            ShowControlMode.Activate(ShowControlMode.Collab);
             manager.StartHost(config.CollabPort, config.CollabPassword, config.CollabLanDiscovery);
         }
 

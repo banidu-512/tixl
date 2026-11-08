@@ -79,15 +79,12 @@ internal static class ShowControlMode
     }
 
     /// <summary>
-    /// Switches this machine to a mode: tears down the other two features and starts the target
-    /// one (boygrouping applies its persisted role, failover enables the arbiter, collaboration
-    /// opens a relay room others can join). Returns an error message or null on success.
+    /// Claims a mode without starting anything: tears the other features down and flips the
+    /// enable flags, so a session started manually from a settings panel (a direct LAN host, a
+    /// specific room join) runs inside the right mode.
     /// </summary>
-    public static string? SwitchTo(string mode)
+    public static void Activate(string mode)
     {
-        if (mode != Off && mode != Boygroup && mode != Failover && mode != Collab)
-            return $"unknown mode '{mode}'";
-
         if (mode != Boygroup)
             TearDownBoygroup();
 
@@ -109,18 +106,39 @@ internal static class ShowControlMode
         switch (mode)
         {
             case Boygroup:
-            {
                 UserSettings.Config.BoygroupEnabled = true;
-                UserSettings.Save();
+                break;
+            case Failover:
+                UserSettings.Config.FailoverEnabled = true;
+                break;
+            case Collab:
+                UserSettings.Config.CollabEnabled = true;
+                break;
+        }
+
+        UserSettings.Save();
+    }
+
+    /// <summary>
+    /// Switches this machine to a mode: claims it (tearing the other features down) and starts
+    /// the target one - boygrouping applies its persisted role, failover enables the arbiter,
+    /// collaboration opens a relay room others can join. Returns an error message or null.
+    /// </summary>
+    public static string? SwitchTo(string mode)
+    {
+        if (mode != Off && mode != Boygroup && mode != Failover && mode != Collab)
+            return $"unknown mode '{mode}'";
+
+        Activate(mode);
+
+        switch (mode)
+        {
+            case Boygroup:
                 BoygroupManager.Instance.ApplyEnabledSetting();
                 break;
-            }
             case Failover:
-            {
                 // Like the debug bridge and the settings panel: enable through the persisted
-                // settings, then push the config — the arbiter reconciles from settings each frame.
-                UserSettings.Config.FailoverEnabled = true;
-                UserSettings.Save();
+                // settings, then push the config - the arbiter reconciles from settings each frame.
                 FailoverArbiter.ApplyConfig(new FailoverConfig
                                                 {
                                                     Enabled = true,
@@ -131,11 +149,8 @@ internal static class ShowControlMode
                                                     Preempt = UserSettings.Config.FailoverPreempt,
                                                 });
                 break;
-            }
             case Collab:
             {
-                UserSettings.Config.CollabEnabled = true;
-                UserSettings.Save();
                 var (host, port) = ParseRelay(UserSettings.Config.CollabRelayAddress);
                 CollabManager.Instance.StartHostViaRelay(host, port);
                 break;
