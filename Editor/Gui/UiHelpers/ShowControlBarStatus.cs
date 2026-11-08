@@ -34,7 +34,7 @@ internal static class ShowControlBarStatus
         var mode = ShowControlMode.Current;
         var role = ShowControlMode.RoleLabel;
         var label = mode == ShowControlMode.Off
-                        ? "Show: Off"
+                        ? "Editor mode"
                         : role.Length > 0
                             ? $"{ModeDisplayName(mode)} · {role}"
                             : ModeDisplayName(mode);
@@ -83,7 +83,71 @@ internal static class ShowControlBarStatus
 
         ImGui.TextDisabled("Show-control mode - one at a time");
         ImGui.Separator();
-        foreach (var candidate in ShowControlMode.All)
+
+        // Plain editing: no show-control feature runs.
+        if (ImGui.Selectable("Editor mode", mode == ShowControlMode.Off))
+        {
+            var error = ShowControlMode.SwitchTo(ShowControlMode.Off);
+            if (error != null)
+                Log.Warning($"Show mode: {error}");
+            ImGui.CloseCurrentPopup();
+        }
+
+        if (ImGui.IsItemHovered())
+        {
+            CustomComponents.BeginTooltip(300);
+            ImGui.TextWrapped("No show-control feature runs on this machine.");
+            CustomComponents.EndTooltip();
+        }
+
+        // Boygrouping carries a role: pick master or slave right here.
+        if (ImGui.BeginMenu("Boygroup"))
+        {
+            var isMaster = UserSettings.Config.BoygroupIsMaster;
+            if (ImGui.Selectable("as Master", mode == ShowControlMode.Boygroup && isMaster))
+            {
+                ShowControlMode.SetBoygroupRole(true);
+                if (mode != ShowControlMode.Boygroup)
+                {
+                    var error = ShowControlMode.SwitchTo(ShowControlMode.Boygroup);
+                    if (error != null)
+                        Log.Warning($"Show mode: {error}");
+                }
+
+                ImGui.CloseCurrentPopup();
+            }
+
+            if (ImGui.IsItemHovered())
+            {
+                CustomComponents.BeginTooltip(300);
+                ImGui.TextWrapped("Serve the show: deploy files and live state to the render nodes and drive playback.");
+                CustomComponents.EndTooltip();
+            }
+
+            if (ImGui.Selectable("as Slave", mode == ShowControlMode.Boygroup && !isMaster))
+            {
+                ShowControlMode.SetBoygroupRole(false);
+                if (mode != ShowControlMode.Boygroup)
+                {
+                    var error = ShowControlMode.SwitchTo(ShowControlMode.Boygroup);
+                    if (error != null)
+                        Log.Warning($"Show mode: {error}");
+                }
+
+                ImGui.CloseCurrentPopup();
+            }
+
+            if (ImGui.IsItemHovered())
+            {
+                CustomComponents.BeginTooltip(300);
+                ImGui.TextWrapped("Render what the master sends: join (or wait for) a master and follow its clock.");
+                CustomComponents.EndTooltip();
+            }
+
+            ImGui.EndMenu();
+        }
+
+        foreach (var candidate in new[] { ShowControlMode.Failover, ShowControlMode.Collab })
         {
             var selected = candidate == mode;
             var candidateLabel = ModeDisplayName(candidate);
@@ -100,10 +164,9 @@ internal static class ShowControlBarStatus
                 CustomComponents.BeginTooltip(300);
                 ImGui.TextWrapped(candidate switch
                                       {
-                                          ShowControlMode.Boygroup => "Distribute the show to render nodes: this machine becomes a master or slave by its Boygrouping settings.",
                                           ShowControlMode.Failover => "Redundant pair: two machines run the same composition, one streams, the other takes over on failure.",
                                           ShowControlMode.Collab => "Edit one graph together: starts a relay room and shares the session ID.",
-                                          _ => "No show-control feature runs on this machine.",
+                                          _ => "",
                                       });
                 CustomComponents.EndTooltip();
             }
@@ -117,7 +180,7 @@ internal static class ShowControlBarStatus
                                                                  ShowControlMode.Boygroup => "Boygroup",
                                                                  ShowControlMode.Failover => "Failover",
                                                                  ShowControlMode.Collab   => "Collab",
-                                                                 _                        => "Off",
+                                                                 _                        => "Editor mode",
                                                              };
 
     /// <summary>Status color and hover detail for the current mode; falls back to the pill word when nothing runs.</summary>
