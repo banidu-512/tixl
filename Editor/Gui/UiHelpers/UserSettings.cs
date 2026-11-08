@@ -277,9 +277,16 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         /// <summary>Display name override. Falls back to the Discord name, then the OS user name.</summary>
         public string CollabDisplayName = "";
 
+        /// <summary>Master switch: collaboration sessions can be hosted or joined. When off, no
+        /// session is hosted or joined and nothing is discovered on the network.</summary>
+        public bool CollabEnabled = true;
+
         public int CollabPort = CollabProtocol.DefaultTcpPort;
         public bool CollabLanDiscovery = true;
         public string CollabPassword = "";
+
+        /// <summary>host:port of the relay used for room-code sessions. Empty = default relay.</summary>
+        public string CollabRelayAddress = "";
 
         /// <summary>host:port of the last joined collab session — auto-rejoined on launch, which is
         /// what brings a client back after a project download restarted the editor.</summary>

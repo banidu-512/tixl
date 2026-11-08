@@ -652,7 +652,7 @@ internal static class DebugServer
         }
     }
 
-    /// <summary>Drives the collab session for external agents: op = host | join | leave | status.</summary>
+    /// <summary>Drives the collab session for external agents: op = host | host-relay | join | join-relay | leave | chat | status.</summary>
     private static void HandleCollabControl(JObject request, RequestContext context)
     {
         var collab = CollabManager.Instance;
@@ -670,6 +670,21 @@ internal static class DebugServer
                                   request["password"]?.Value<string>() ?? "");
                 break;
 
+            case "host-relay":
+            {
+                ParseRelayParam(request, out var relayHost, out var relayPort);
+                collab.StartHostViaRelay(relayHost, relayPort);
+                break;
+            }
+
+            case "join-relay":
+            {
+                ParseRelayParam(request, out var relayHost, out var relayPort);
+                var room = request["room"]?.Value<string>() ?? "";
+                collab.JoinViaRelay(relayHost, relayPort, room, request["password"]?.Value<string>() ?? "");
+                break;
+            }
+
             case "leave":
                 collab.Leave();
                 break;
@@ -682,7 +697,7 @@ internal static class DebugServer
                 break;
 
             default:
-                context.SendError("INVALID_PARAM", "collab requires op = host | join | leave | status");
+                context.SendError("INVALID_PARAM", "collab requires op = host | host-relay | join | join-relay | leave | chat | status");
                 return;
         }
 
@@ -691,9 +706,31 @@ internal static class DebugServer
                                ["state"] = collab.State.ToString(),
                                ["status"] = collab.StatusText,
                                ["error"] = collab.ErrorText,
+                               ["room"] = collab.RoomCode,
                                ["peers"] = collab.Peers.Count,
                                ["chatLines"] = collab.ChatLog.Count,
                            });
+    }
+
+    /// <summary>Reads "relay" ("host:port") or falls back to the protocol defaults for relay ops.</summary>
+    private static void ParseRelayParam(JObject request, out string host, out int port)
+    {
+        host = CollabProtocol.DefaultRelayHost;
+        port = CollabProtocol.DefaultRelayPort;
+        var relay = request["relay"]?.Value<string>();
+        if (string.IsNullOrWhiteSpace(relay))
+            return;
+
+        var separator = relay.LastIndexOf(':');
+        if (separator > 0 && int.TryParse(relay[(separator + 1)..], out var parsed))
+        {
+            port = parsed;
+            host = relay[..separator];
+        }
+        else
+        {
+            host = relay.Trim();
+        }
     }
 
     /// <summary>Drives boygrouping for external agents: op = server | join | leave | status.</summary>

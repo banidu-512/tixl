@@ -37,6 +37,10 @@ internal static class CollabProtocol
     public const int DefaultTcpPort = 44700;
     public const int DefaultRelayPort = 44710;
 
+    /// <summary>Relay used when the relay address setting is empty. TiXLCollabRelay is expected to
+    /// run there; hosts and joiners must point at the same relay to see each other's rooms.</summary>
+    public const string DefaultRelayHost = "10.0.0.222";
+
     /// <summary>Hard upper bound for one reliable frame including the type byte.</summary>
     public const int MaxFrameSize = 4 * 1024 * 1024;
 

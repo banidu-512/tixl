@@ -36,8 +36,8 @@ Please follow the [installation guide](https://github.com/tixl3d/tixl/wiki/help.
 This branch adds live multi-user editing of a shared graph. Sessions are configured in **Settings → Collaboration**:
 
 - **LAN**: one instance hosts on a configurable port; others join via network discovery or a direct IP. Optionally password protected (PBKDF2/HMAC challenge-response; the password never crosses the wire).
-- **Online**: either a direct address (open port or VPN such as Tailscale), or a room on a relay via the included `CollabRelay` server project (`dotnet run --project CollabRelay` — the host shares the generated room code, joiners enter it; no port forwarding needed).
-- **Identity**: local nickname, or Discord login (OAuth2, configured with a client id/secret from the Discord Developer Portal).
+- **Primary flow**: **Start Session** registers a relay room and shows the **session ID**; joiners enter it (**Join Session**, or **Paste Invite and Join** with a copied invite that carries the relay address). No port forwarding needed. The relay is the included `CollabRelay` server project (`dotnet run --project CollabRelay`).
+- **Identity**: a Discord login (the OAuth2 browser popup, PKCE — no client secret involved; the account must be a member of the TiXL Discord server), or a local nickname as fallback.
 
 Synced edits: adding/deleting operators, connections, parameter value changes, renames and node moves. Participants see each other's cursors, selection outlines and "editing" lock badges in the graph. Parameters someone is editing are soft-locked and appear disabled for everyone else until released. **Undo/Redo are session-wide while connected**: Ctrl+Z reverts the last edit of any participant — the host keeps the shared history, and late joiners receive the replay including undo operations. On join, clients receive full snapshots of every composition the session has touched (their local state in those compositions is replaced by the host's), so a matching project is still required but manual re-editing of missed changes is not.
 
