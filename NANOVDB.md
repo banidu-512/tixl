@@ -24,6 +24,7 @@ Sparse volume support for TiXL. Loads and writes `.vdb` files, edits volumes wit
 - **`VdbFile`** — reads uncompressed, zip and Blosc-compressed files as written by Houdini and Blender, and writes them back.
 - **`Compression`** — LZ4 block format and the Blosc frame format, implemented in managed code. These are the only two codecs OpenVDB produces in practice.
 - **`NanoVdbBuffer`** — serializes a tree into the NanoVDB binary layout for float and Vector3 grids, and reads `.nvdb` files back. Bulk slot-table fills and word-wise mask scans replaced per-slot writes, cutting the slot-table portion of a rebuild by roughly 10× on a 100-leaf grid.
+- **Sequences** — `VdbSequence.Expand` resolves `####` and `%0Nd` tokens to frame paths, and `VdbFrameCache` holds preloaded frames under a byte budget with least-recently-used eviction. The cache is process-wide, so two nodes reading the same sequence share their read-ahead.
 - **Reading that layout back** — `LoadFile` reads a file straight into one grid-sized array (no second copy of the whole file), `ReadInfo` exposes name, class, value type, voxel size, world bounds and node counts, and `TryValidate` rejects tree offsets or leaf counts that would point a shader past the end of the buffer.
 
 ## Operators
@@ -33,7 +34,7 @@ Sparse volume support for TiXL. Loads and writes `.vdb` files, edits volumes wit
 | Operator | What it does |
 |---|---|
 | `LoadVdb` | Reads grids from a disk path or package address. Reloads when the file changes. |
-| `LoadNanoVdb` | Reads a pre-converted `.nvdb` straight to the GPU buffer, with no CPU grid and no rebuild. Outputs mirror `VolumeToNanoVdb`, plus the grid name and world bounds. |
+| `LoadNanoVdb` | Reads a pre-converted `.nvdb` straight to the GPU buffer, with no CPU grid and no rebuild. `Path` also takes a sequence pattern (`cache_####.nvdb`) driven by `Frame`, with read-ahead into a shared 512 MB cache. Outputs mirror `VolumeToNanoVdb`, plus the grid name and world bounds. |
 | `SaveVdb` | Writes the grids as a `.vdb` file readable by Houdini, Blender and Maya. |
 | `SaveNanoVdb` | Writes the GPU-flattened grid as an `.nvdb` file. |
 
