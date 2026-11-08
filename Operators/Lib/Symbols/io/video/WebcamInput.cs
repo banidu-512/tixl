@@ -129,6 +129,9 @@ public class WebcamInput : Instance<WebcamInput>, ICustomDropdownHolder, IStatus
 
     private void Update(EvaluationContext context)
     {
+        // The capture thread watches this to honour DeactivateWhenNotShowing: an operator that stops being
+        // evaluated cannot be told about it, so the thread times the gap itself.
+        _lastEvaluationMs = Environment.TickCount64;
         CameraSources.Provider?.EnsureStarted();
 
         // Edge-triggered: a connected input held at true must not restart the camera on every frame.
@@ -148,6 +151,8 @@ public class WebcamInput : Instance<WebcamInput>, ICustomDropdownHolder, IStatus
                                                 ApplyRotationData.GetValue(context),
                                                 Scale.GetValue(context),
                                                 Reposition.GetValue(context));
+
+        _deactivateWhenIdle = DeactivateWhenNotShowing.GetValue(context);
 
         if (Active.GetValue(context))
         {
@@ -286,6 +291,16 @@ public class WebcamInput : Instance<WebcamInput>, ICustomDropdownHolder, IStatus
 
             while (!token.IsCancellationRequested)
             {
+                // Nothing evaluates this operator any more, so stop holding the camera (and the bus
+                // bandwidth) for a graph that is not being rendered. Parking here keeps the thread ready
+                // to reopen the moment the operator is evaluated again.
+                if (IsPausedForIdleFrame())
+                {
+                    SetStatus("Paused (not rendered)");
+                    token.WaitHandle.WaitOne(IdlePollIntervalMs);
+                    continue;
+                }
+
                 using (var stream = provider.TryOpen(settings.DeviceName, settings.Mode, out var error))
                 {
                     if (stream == null)
@@ -326,6 +341,10 @@ public class WebcamInput : Instance<WebcamInput>, ICustomDropdownHolder, IStatus
 
         while (!token.IsCancellationRequested && stream.State == CameraStreamState.Open)
         {
+            // Leaving closes the stream; the caller's loop parks until the operator is evaluated again.
+            if (IsPausedForIdleFrame())
+                return;
+
             if (!stream.TryReadFrame(ref capturedPixels, out var width, out var height))
             {
                 Thread.Sleep(FramePollIntervalMs);
@@ -488,6 +507,13 @@ public class WebcamInput : Instance<WebcamInput>, ICustomDropdownHolder, IStatus
             ResourceManager.Device.ImmediateContext.UpdateSubresource(dataBox, _gpuTexture, 0);
         }
     }
+
+    /// <summary>
+    /// True once DeactivateWhenNotShowing is on and no evaluation has run for a while — the only way an
+    /// operator can notice that nothing renders it, since an unrendered operator is never updated again.
+    /// </summary>
+    private bool IsPausedForIdleFrame()
+        => _deactivateWhenIdle && Environment.TickCount64 - _lastEvaluationMs > DeactivateTimeoutMs;
 
     private void SetStatus(string message) => _lastStatusMessage = message;
 
@@ -728,6 +754,10 @@ public class WebcamInput : Instance<WebcamInput>, ICustomDropdownHolder, IStatus
     private const int BytesPerPixel = 4;
     private const int FramePollIntervalMs = 2;
     private const int ReopenIntervalMs = 1000;
+
+    /** How long capture may stay unused before DeactivateWhenNotShowing releases the camera. */
+    private const int DeactivateTimeoutMs = 3000;
+    private const int IdlePollIntervalMs = 250;
     private const string NoDevicesOption = "No devices found";
 
     private readonly Lock _frameLock = new();
@@ -736,6 +766,11 @@ public class WebcamInput : Instance<WebcamInput>, ICustomDropdownHolder, IStatus
 
     /** Set by the capture thread when a camera opened, consumed by the next evaluation. */
     private int _streamReopenSignal;
+
+    /** Written by the evaluation thread, read by the capture thread; a stale read only delays a pause. */
+    private volatile bool _deactivateWhenIdle;
+
+    private long _lastEvaluationMs = Environment.TickCount64;
     private CameraMode _activeMode;
 
     /** Camera list for the dropdowns; see <see cref="GetCameraOptions"/>. */
