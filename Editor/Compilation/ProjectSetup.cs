@@ -263,60 +263,6 @@ internal static partial class ProjectSetup
         }
     }
     
-    /// <summary>
-    /// Reloads a project in place: closes its views, unloads the package (watchers, assembly),
-    /// loads it fresh from disk and reopens the composition. This is how a boygroup node applies
-    /// deployed files without a process restart. Returns false (with the project untouched or
-    /// logged) when the folder has no loadable project — callers fall back to restarting.
-    /// </summary>
-    internal static bool TryReloadProject(string projectFolder)
-    {
-        try
-        {
-            var folder = Path.GetFullPath(projectFolder).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-            var oldPackage = _activePackages.OfType<EditableSymbolProject>()
-                                             .FirstOrDefault(p => string.Equals(Path.GetFullPath(p.Folder), folder, StringComparison.OrdinalIgnoreCase));
-            if (oldPackage == null)
-            {
-                Log.Debug($"ProjectSetup: not reloading '{projectFolder}' - it is not a loaded project");
-                return false;
-            }
-
-            var csProjectFile = oldPackage.CsProjectFile;
-
-            // Close the open composition first: it saves session, layout and output setup, and
-            // releases the instances that would otherwise pin the old assembly.
-            if (ProjectView.Focused?.OpenedProject.Package == oldPackage)
-                ProjectView.Focused.Close();
-
-            // Undo entries hold references into the dying assembly; replaying them would crash.
-            T3.Editor.UiModel.Commands.UndoRedoStack.Clear();
-
-            RemoveSymbolPackage(oldPackage, needsDispose: true);
-
-            // The reactivate sequence from SetProjectArchived(archive: false).
-            Migrations.ProjectFormatMigration.MigrateIfNeeded(csProjectFile);
-            var newProject = new EditableSymbolProject(csProjectFile);
-            AssetRegistry.RegisterAssetsFromPackage(newProject);
-            AddToLoadedPackages(newProject);
-            newProject.AssemblyInformation.GenerateLoadContext();
-            UpdateSymbolPackages(newProject);
-            InitializePackageResources(newProject);
-            foreach (var symbol in newProject.Symbols.Values)
-                SymbolPackage.UpdateSymbolInstances(symbol);
-
-            EditorSymbolPackage.NotifySymbolStructureChange();
-
-            Log.Info($"ProjectSetup: reloaded '{newProject.DisplayName}' in place");
-            return T3.Editor.App.Startup.StartupProjectLoader.TryOpen(folder);
-        }
-        catch (Exception e)
-        {
-            Log.Warning($"ProjectSetup: reloading '{projectFolder}' failed: {e.Message}");
-            return false;
-        }
-    }
-
     public static void SetProjectArchived(CsProjectFile projectFile, bool archive)
     {
         projectFile.IsArchived = archive;

@@ -650,6 +650,7 @@ internal sealed class BoygroupManager
                 _deployFilesTotal = json["count"]?.Value<int>() ?? 0;
                 _deployFilesDone = 0;
                 _deployErrors = 0;
+                _deployedRelativePaths.Clear();
                 DeploySummary = $"Receiving {_deployFilesTotal} file(s)...";
                 break;
 
@@ -699,6 +700,7 @@ internal sealed class BoygroupManager
 
     private int _deployFilesTotal;
     private int _deployFilesDone;
+    private readonly List<string> _deployedRelativePaths = [];
     private int _deployErrors;
 
     // ---------------------------------------------------------------------------------------
@@ -1237,6 +1239,9 @@ internal sealed class BoygroupManager
     private void FinishReceivingFile(JObject json)
     {
         var error = _fileReceiver.Finish(json);
+        if (error == null && _fileReceiver.RelativePath.Length > 0)
+            _deployedRelativePaths.Add(_fileReceiver.RelativePath);
+
         _deployFilesDone++;
         if (error != null)
         {
@@ -1349,28 +1354,26 @@ internal sealed class BoygroupManager
             return;
         }
 
+        // Deployed files the running editor can pick up live need no reload at all: assets are
+        // invalidated by the resource watcher, and setups travel as live setupJson anyway. Only
+        // symbol data (.t3/.t3ui) and operator code (.cs/.csproj) require a reload - and TiXL has
+        // no runtime loader for those, so the node restarts into the updated show.
+        var needsReload = _deployedRelativePaths.Any(IsStructureFile);
+        _deployedRelativePaths.Clear();
+        if (!needsReload)
+        {
+            Log.Info($"Boygroup: deploy changed {_deployFilesDone} live-applicable file(s) - staying up without a restart");
+            DeploySummary += " - applied live";
+            return;
+        }
+
         // A render node must come back into the show it was deployed, not into the Hub: pin the
         // deployed project as the startup project so the restart reopens it (StartupProjectLoader).
         // Only for the slave role - a master's editor restarts are the operator's business.
         if (State == BoygroupState.Client && config.BoygroupEnabled && !config.BoygroupIsMaster)
         {
             if (GetProjectFolder() is { Length: > 0 } deployedProject)
-            {
                 config.StartupProjectFolder = deployedProject;
-
-                // Hot reload first: unload the deployed project's package and load it fresh from
-                // disk in place. The boygroup session keeps running; only a failed reload falls
-                // back to the process restart below.
-                if (ProjectSetup.TryReloadProject(deployedProject))
-                {
-                    Log.Info("Boygroup: applied deployed files by reloading the project in place - no restart");
-                    DeploySummary += " - reloaded without restart";
-                    UserSettings.Save();
-                    return;
-                }
-
-                Log.Info("Boygroup: in-place reload not possible - restarting");
-            }
         }
 
         UserSettings.Save();
@@ -1378,6 +1381,13 @@ internal sealed class BoygroupManager
         RestartPending = true;
         // Brief delay so the panel shows what happened before the process exits.
         _restartAtTicks = Environment.TickCount64 + 1500;
+    }
+
+    /// <summary>Files that define operators or operator code - the editor cannot hot-apply them.</summary>
+    private static bool IsStructureFile(string relativePath)
+    {
+        var extension = Path.GetExtension(relativePath);
+        return extension is ".t3" or ".t3ui" or ".cs" or ".csproj";
     }
 
     private long _restartAtTicks;
