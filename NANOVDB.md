@@ -67,6 +67,15 @@ Sparse volume support for TiXL. Loads and writes `.vdb` files, edits volumes wit
 | `VolumeToTexture3D` | Bakes the volume into a dense R32Float texture plus world bounds. |
 | `VolumeToField` | Wraps the volume as a CPU scalar field sampled trilinearly in world space. |
 
+### `Lib.volume.fields`
+
+| Operator | What it does |
+|---|---|
+| `VdbToSdfField` | NanoVDB level set as a signed-distance `ShaderGraphNode`, so `RaymarchField`, `FieldVolumeForce`, `FieldDistanceForce`, `SampleFieldPoints` and `SDFToColor` work on it unchanged. |
+| `VdbDensityField` | Fog volume as a field: `IsoValue − density`, so dense regions read as inside. |
+
+Both declare one `StructuredBuffer<uint>` per grid through `SrvBufferReference`, and inject `volume/nanovdb-common.hlsl` once per generated shader — the include key is constant, so a graph with several Vdb fields still compiles one copy of the tree walk.
+
 ### `Lib.volume.render` and `.gpu`
 
 | Operator | What it does |
