@@ -25,7 +25,7 @@ namespace T3.Editor.Show;
 /// The server deploys project files and live output state, drives playback, and each client renders
 /// only the outputs assigned to it in the Output Setup (OutputDefinition.MachineName).
 ///
-/// Threading contract matches CollabManager: network threads only enqueue inbound messages; every
+/// Threading contract matches the collab session manager: network threads only enqueue inbound messages; every
 /// state change and every graph/file write happens in <see cref="Update"/> on the UI thread. File
 /// transfers run per client in small steps per frame so large deployments never stall rendering.
 /// </summary>
