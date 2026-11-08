@@ -299,6 +299,17 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public string CollabLastRelayHost = "";
         public string CollabLastRelayRoom = "";
 
+        /// <summary>Relay sessions authenticate over the relay, then try a direct WebRTC path between
+        /// the machines. Falls back to the relay when no direct path is possible.</summary>
+        public bool CollabWebRtcEnabled = true;
+
+        /// <summary>Streams the host's rendered output to the participants over the peer-to-peer
+        /// video track ("Share preview"). Applies to peers that join afterwards.</summary>
+        public bool CollabSharePreview = true;
+
+        /// <summary>Comma-separated STUN/TURN URLs for the direct path. Empty = a public STUN server.</summary>
+        public string CollabWebRtcIceServers = "";
+
         /// <summary>Project folders participating in show-control features ("kind:folder" entries,
         /// kind = boygroup | collab). The Hub lists them under "Network projects".</summary>
         public List<string> NetworkProjectRefs = [];

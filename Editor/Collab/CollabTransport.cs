@@ -95,7 +95,39 @@ internal sealed class CollabPeerConnection
 
     public void MarkHeardFrom() => Interlocked.Exchange(ref _lastHeardFromTicks, Environment.TickCount64);
 
+    /// <summary>Last frame received on any path, for a transport that checks its own liveness.</summary>
+    public long LastHeardFromTicks => Interlocked.Read(ref _lastHeardFromTicks);
+
     public bool IsTimedOut => Environment.TickCount64 - Interlocked.Read(ref _lastHeardFromTicks) > TimeoutMs;
+
+    /// <summary>
+    /// A path that can carry frames without the stream, e.g. a WebRTC data channel. The transport
+    /// offers every frame here first; false means "not available", and the stream is used instead.
+    /// </summary>
+    public delegate bool FrameSender(CollabProtocol.FrameType type, ReadOnlySpan<byte> payload);
+
+    /// <summary>
+    /// Set while a peer has a lower-latency path than its relay stream. Cleared when that path dies,
+    /// so the peer silently falls back to the relay instead of losing the session.
+    /// </summary>
+    public volatile FrameSender? PreferredSender;
+
+    public bool TrySendPreferred(CollabProtocol.FrameType type, ReadOnlySpan<byte> payload)
+    {
+        var sender = PreferredSender;
+        if (sender == null)
+            return false;
+
+        try
+        {
+            return sender(type, payload);
+        }
+        catch
+        {
+            // A dying data channel must not take the peer down; the relay path still works.
+            return false;
+        }
+    }
 
     /// <summary>Thread-safe framed write. Callers must pass a payload already encoded for the frame type.</summary>
     public void Write(CollabProtocol.FrameType type, ReadOnlySpan<byte> payload)
@@ -172,6 +204,21 @@ internal abstract class CollabTransport : IDisposable
     /// </summary>
     public virtual CollabPeerConnection? HostLink => null;
 
+    /// <summary>Called for peers that may take a direct data-channel path instead of the session's
+    /// relay link. The relay-based transports override this to start WebRTC negotiation; the
+    /// default does nothing, keeping every frame on the session link.</summary>
+    public virtual void EnablePeerToPeer(CollabPeerConnection peer)
+    {
+    }
+
+    /// <summary>Human-readable name of the link a peer uses ("relay", "direct", "p2p").</summary>
+    public virtual string DescribePeerLink(CollabPeerConnection peer) => "";
+
+    /// <summary>Writes a JSON message on the session link even when the peer prefers a data channel
+    /// (control messages must survive a data channel that is about to close).</summary>
+    public virtual void SendJsonOverRelay(CollabPeerConnection peer, object message)
+        => SendJson(peer, message);
+
     public abstract void SendToPeer(CollabPeerConnection peer, CollabProtocol.FrameType type, ReadOnlySpan<byte> payload);
 
     public void SendJson(CollabPeerConnection peer, object message)
@@ -204,10 +251,27 @@ internal abstract class CollabTransport : IDisposable
     /// </summary>
     protected void ReadLoop(CollabPeerConnection peer)
     {
+        ReadFrameLoop(peer, peer.Stream);
+
+        // A transport that keeps the peer on another path (the WebRTC data channel) can keep it
+        // alive after its original stream dies.
+        if (!ShouldReportLostPeer(peer))
+            return;
+
+        peer.Close();
+        CleanupPeer(peer);
+        OnPeerDisconnected(peer);
+    }
+
+    /// <summary>
+    /// Reads and dispatches frames from one stream until it ends. Shared by the socket transports
+    /// and a peer's WebRTC data channel; the caller decides what a dead stream means.
+    /// </summary>
+    protected void ReadFrameLoop(CollabPeerConnection peer, Stream stream)
+    {
         var buffer = new byte[CollabProtocol.MaxFrameSize];
         try
         {
-            var stream = peer.Stream;
             while (!peer.SessionClosed)
             {
                 if (!CollabProtocol.TryReadFrameLength(stream, out var length))
@@ -224,7 +288,7 @@ internal abstract class CollabTransport : IDisposable
 
                 // Any frame counts as a life sign, not just heartbeats.
                 peer.MarkHeardFrom();
-                DispatchFrame(peer, buffer.AsSpan(0, length));
+                DispatchFrame(peer, buffer.AsSpan(0, length), stream);
             }
         }
         catch (Exception e) when (e is IOException or SocketException or ObjectDisposedException)
@@ -237,15 +301,22 @@ internal abstract class CollabTransport : IDisposable
         {
             Log.Warning($"Collab: unexpected error reading from {peer}: {e.Message}");
         }
-
-        peer.Close();
-        CleanupPeer(peer);
-        OnPeerDisconnected(peer);
     }
 
     /// <summary>Removes a dead peer from this transport's list. Called from the network thread.</summary>
+    /// <summary>Whether losing this peer ends the session (a host loss on a client does; relayed
+    /// members of other clients do not).</summary>
+    protected virtual bool ShouldReportLostPeer(CollabPeerConnection peer) => true;
+
     protected virtual void CleanupPeer(CollabPeerConnection peer)
     {
+    }
+
+    /// <summary>The stream a frame arrived on: the WebRTC client distinguishes relay-kept-alive
+    /// traffic from data-channel traffic by it.</summary>
+    protected virtual void DispatchFrame(CollabPeerConnection peer, ReadOnlySpan<byte> frame, Stream source)
+    {
+        DispatchFrame(peer, frame);
     }
 
     private void DispatchFrame(CollabPeerConnection peer, ReadOnlySpan<byte> frame)
