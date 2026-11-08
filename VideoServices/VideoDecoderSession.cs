@@ -1,6 +1,8 @@
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Threading;
 using Sdcb.FFmpeg.Codecs;
+using Sdcb.FFmpeg.Common;
 using Sdcb.FFmpeg.Formats;
 using Sdcb.FFmpeg.Raw;
 using Sdcb.FFmpeg.Utils;
@@ -22,7 +24,9 @@ namespace T3.VideoServices;
 /// exposes a CPU frame, so the controller is unaffected by the decode backend.
 ///
 /// Not thread-safe: a session is owned by exactly one decode worker thread. FFmpeg's contexts are not
-/// reentrant, so single ownership avoids locking them.
+/// reentrant, so single ownership avoids locking them. The one cross-thread entry point is the
+/// <see cref="CancellationToken"/> passed to <see cref="TryOpen"/>: cancelling it aborts a blocking network
+/// open or read from any thread.
 /// </summary>
 public sealed class VideoDecoderSession : IDisposable
 {
@@ -64,9 +68,21 @@ public sealed class VideoDecoderSession : IDisposable
     /// <summary>
     /// Opens <paramref name="url"/> (file or network stream) and selects the best video stream. Returns null
     /// on failure. <paramref name="demuxerOptions"/> passes demuxer options (e.g. <c>rtsp_transport=tcp</c>).
+    /// <paramref name="inputFormat"/> forces the demuxer by short name (e.g. <c>v4l2</c>, <c>dshow</c>) for
+    /// URLs that content probing cannot identify, like capture device nodes.
     /// </summary>
+    /// <param name="cancellationToken">Aborts a blocking open, and every later blocking read of this session,
+    /// when cancelled from another thread. FFmpeg polls it during network I/O, so a dead or stalled source
+    /// cannot hold the calling thread hostage.</param>
+    /// <param name="ioTimeout">The longest a single blocking open or packet read may take before it is
+    /// abandoned as stalled; <see cref="TimeSpan.Zero"/> waits indefinitely. Protocols without a socket
+    /// timeout of their own (plain HTTP, RTMP) rely on this to detect a source that stopped sending.</param>
     public static unsafe VideoDecoderSession? TryOpen(string url, VideoPlaybackOptimization optimization, out string? error,
-                                                      IReadOnlyDictionary<string, string>? demuxerOptions = null)
+                                                      IReadOnlyDictionary<string, string>? demuxerOptions = null,
+                                                      string? inputFormat = null,
+                                                      bool lowLatency = false,
+                                                      CancellationToken cancellationToken = default,
+                                                      TimeSpan ioTimeout = default)
     {
         error = null;
         if (!FfmpegLibrary.EnsureInitialized())
@@ -75,19 +91,62 @@ public sealed class VideoDecoderSession : IDisposable
             return null;
         }
 
+        InputFormat? forcedFormat = null;
+        if (!string.IsNullOrEmpty(inputFormat))
+        {
+            try
+            {
+                var found = InputFormat.FindByShortName(inputFormat);
+                if (found == null)
+                {
+                    // Means the demuxer was never registered (no avdevice_register_all) or the name is
+                    // wrong — passing an empty format would silently fall back to byte-probing the URL.
+                    error = $"Input format '{inputFormat}' not found in this FFmpeg build.";
+                    return null;
+                }
+
+                forcedFormat = found;
+            }
+            catch (Exception e)
+            {
+                error = $"Unknown input format '{inputFormat}': {e.Message}";
+                return null;
+            }
+        }
+
+        // The watchdog outlives this method on success (the session frees the handle after closing the
+        // format context); on failure it is freed in the finally below, after any context was closed.
+        var watchdog = new IoWatchdog(cancellationToken, ioTimeout);
+        var watchdogHandle = GCHandle.Alloc(watchdog);
+        var sessionCreated = false;
+
         FormatContext? formatContext = null;
         MediaDictionary? options = null;
         try
         {
+            options = new MediaDictionary();
             if (demuxerOptions != null)
             {
-                options = new MediaDictionary();
                 foreach (var pair in demuxerOptions)
                     options[pair.Key] = pair.Value;
             }
 
-            formatContext = FormatContext.OpenInputUrl(url, null, options);
+            if (lowLatency)
+            {
+                // Live capture: skip the demuxer's probe/frame buffering and hand decoded frames straight
+                // through. fflags are comma/plus-composed — merge with any caller-provided value.
+                var fflags = options.ContainsKey("fflags") ? options["fflags"] + "+nobuffer" : "nobuffer";
+                options["fflags"] = fflags;
+                options["avioflags"] = "direct";
+            }
+
+            watchdog.BeginBlockingCall();
+            formatContext = OpenInputInterruptible(url, forcedFormat, options, watchdogHandle);
+            watchdog.EndBlockingCall();
+
+            watchdog.BeginBlockingCall();
             formatContext.LoadStreamInfo();
+            watchdog.EndBlockingCall();
 
             var stream = formatContext.FindBestStreamOrNull(AVMediaType.Video);
             if (stream == null)
@@ -130,6 +189,8 @@ public sealed class VideoDecoderSession : IDisposable
             {
                 codecContext = new CodecContext(codec);
                 codecContext.FillParameters(codecParameters);
+                if (lowLatency)
+                    codecContext.Flags |= AV_CODEC_FLAG.LowDelay;
                 codecContext.Open();
             }
 
@@ -143,18 +204,52 @@ public sealed class VideoDecoderSession : IDisposable
                 Log.Info("Zero-copy decode skipped: stream pixel format isn't a supported 4:2:0 surface. "
                          + "Using hardware decode with CPU read-back.");
 
-            return new VideoDecoderSession(formatContext, codecContext, videoStream, usesHardware, zeroCopy, hwDeviceCtx);
+            var session = new VideoDecoderSession(formatContext, codecContext, videoStream, usesHardware, zeroCopy, hwDeviceCtx,
+                                                  watchdog, watchdogHandle);
+            sessionCreated = true;
+            return session;
         }
         catch (Exception e)
         {
-            error = "Failed to open video: " + e.Message;
+            error = watchdog.DescribeAbort() ?? "Failed to open video: " + e.Message;
             formatContext?.Dispose();
             return null;
         }
         finally
         {
             options?.Dispose();
+            if (!sessionCreated)
+                watchdogHandle.Free();
         }
+    }
+
+    /// <summary>
+    /// <c>avformat_open_input</c> on a context that carries <see cref="OnInterruptCheck"/> from the start, so
+    /// the connect/handshake itself is already abortable (<c>FormatContext.OpenInputUrl</c> allocates the
+    /// context internally and offers no way to install the callback before it blocks).
+    /// </summary>
+    private static unsafe FormatContext OpenInputInterruptible(string url, InputFormat? format, MediaDictionary options,
+                                                               GCHandle watchdogHandle)
+    {
+        var context = ffmpeg.avformat_alloc_context();
+        if (context == null)
+            throw new OutOfMemoryException("avformat_alloc_context failed.");
+
+        context->interrupt_callback = new AVIOInterruptCB
+                                          {
+                                              callback = new AVIOInterruptCB_callback_func(InterruptCallbackPointer),
+                                              opaque = (void*)GCHandle.ToIntPtr(watchdogHandle),
+                                          };
+
+        AVDictionary* dictionary = options;
+        AVInputFormat* inputFormat = format;
+        var result = ffmpeg.avformat_open_input(&context, url, inputFormat, &dictionary);
+        options.Reset(dictionary);
+
+        // On failure FFmpeg has already freed the caller-allocated context.
+        if (result < 0)
+            throw new FFmpegException($"Could not open input: {DescribeFfmpegError(result)}");
+        return FormatContext.FromNative(context, isOwner: true);
     }
 
     /// <summary>
@@ -361,6 +456,7 @@ public sealed class VideoDecoderSession : IDisposable
     public unsafe bool TryReadNextFrame(out long framePts)
     {
         framePts = 0;
+        var pendingReads = 0;
         while (true)
         {
             var receive = _codecContext.ReceiveFrame(_frame);
@@ -389,7 +485,7 @@ public sealed class VideoDecoderSession : IDisposable
             if (_draining)
                 return false;
 
-            var read = _formatContext.ReadFrame(_packet);
+            var read = ReadPacketInterruptible();
             if (read == CodecResult.EOF)
             {
                 // Flush the decoder so it emits any buffered frames, then drain on the next receive.
@@ -398,17 +494,79 @@ public sealed class VideoDecoderSession : IDisposable
                 continue;
             }
 
-            try
+            if (read == CodecResult.Again)
             {
-                if (_packet.StreamIndex == _videoStreamIndex)
-                    _codecContext.SendPacket(_packet);
+                // Non-blocking demuxers (avfoundation, live devices) have no packet ready yet. The packet is
+                // unfilled, and sending it would put the decoder into drain mode and end the stream.
+                if (++pendingReads > MaxPendingReads || _watchdog.IsCancellationRequested)
+                    return false;
+
+                Thread.Sleep(1);
+                continue;
             }
-            finally
+
+            if (_packet.StreamIndex == _videoStreamIndex)
             {
-                _packet.Unref();
+                // Raw call instead of CodecContext.SendPacket: Sdcb's wrapper throws on any negative
+                // return without exposing the code, but AVERROR_INVALIDDATA must be skippable — live
+                // capture devices start streaming mid-frame, so the first buffer(s) are fragments the
+                // decoder rejects. The ffmpeg CLI drops those packets and carries on; so does this.
+                var sendResult = ffmpeg.avcodec_send_packet(_codecContext, _packet);
+                if (sendResult == AvErrorInvalidData)
+                {
+                    Log.Debug("Skipped an undecodable packet (fragmentary start of a live stream).");
+                }
+                else if (sendResult < 0)
+                {
+                    _packet.Unref();
+                    throw new FFmpegException($"Error sending a packet for decoding: [FFmpeg error {sendResult}]");
+                }
             }
+
+            _packet.Unref();
         }
     }
+
+    private static unsafe string DescribeFfmpegError(int errorCode)
+    {
+        const int bufferSize = 256;
+        var buffer = stackalloc byte[bufferSize];
+        return ffmpeg.av_strerror(errorCode, buffer, bufferSize) == 0
+                   ? Marshal.PtrToStringUTF8((IntPtr)buffer) ?? $"FFmpeg error {errorCode}"
+                   : $"FFmpeg error {errorCode}";
+    }
+
+    /// <summary>
+    /// One <c>av_read_frame</c> under the I/O watchdog. A read the watchdog abandoned surfaces as a
+    /// <see cref="TimeoutException"/> (stalled source) or <see cref="OperationCanceledException"/> instead of
+    /// FFmpeg's generic "exit" error.
+    /// </summary>
+    private CodecResult ReadPacketInterruptible()
+    {
+        _watchdog.BeginBlockingCall();
+        try
+        {
+            return _formatContext.ReadFrame(_packet);
+        }
+        catch (FFmpegException) when (_watchdog.DeadlineExceeded)
+        {
+            throw new TimeoutException(_watchdog.DescribeAbort());
+        }
+        catch (FFmpegException) when (_watchdog.IsCancellationRequested)
+        {
+            throw new OperationCanceledException(_watchdog.CancellationToken);
+        }
+        finally
+        {
+            _watchdog.EndBlockingCall();
+        }
+    }
+
+    // AVERROR_INVALIDDATA — see the send-packet handling above.
+    private const int AvErrorInvalidData = -1094995529;
+
+    /** How many consecutive 1 ms EAGAIN waits a read tolerates (at least ~5 s) before reporting the stream as lost. */
+    private const int MaxPendingReads = 5000;
 
     /// <summary>
     /// Seeks to the keyframe at or before <paramref name="targetPts"/> and flushes the decoder. The caller
@@ -447,7 +605,12 @@ public sealed class VideoDecoderSession : IDisposable
         _swFrame.Dispose();
         _packet.Dispose();
         _codecContext.Dispose();
+
+        // Closing (an RTSP TEARDOWN, for example) can still poll the interrupt callback, so the watchdog
+        // handle is released only once the context is gone.
         _formatContext.Dispose();
+        if (_watchdogHandle.IsAllocated)
+            _watchdogHandle.Free();
 
         if (_hwDeviceCtx != null)
         {
@@ -458,9 +621,12 @@ public sealed class VideoDecoderSession : IDisposable
     }
 
     private unsafe VideoDecoderSession(FormatContext formatContext, CodecContext codecContext,
-                                       MediaStream videoStream, bool usesHardware, bool zeroCopy, AVBufferRef* hwDeviceCtx)
+                                       MediaStream videoStream, bool usesHardware, bool zeroCopy, AVBufferRef* hwDeviceCtx,
+                                       IoWatchdog watchdog, GCHandle watchdogHandle)
     {
         _formatContext = formatContext;
+        _watchdog = watchdog;
+        _watchdogHandle = watchdogHandle;
         _codecContext = codecContext;
         _videoStreamIndex = videoStream.Index;
         _hwDeviceCtx = hwDeviceCtx;
@@ -516,6 +682,26 @@ public sealed class VideoDecoderSession : IDisposable
     // A null packet puts the decoder into drain mode so it emits its remaining buffered frames.
     private unsafe void SendDrainPacket() => ffmpeg.avcodec_send_packet(_codecContext, null);
 
+    /// <summary>
+    /// FFmpeg's <c>AVIOInterruptCallback</c>: polled (roughly every 100 ms) on the thread blocked in network
+    /// I/O; returning 1 makes the pending call fail with <c>AVERROR_EXIT</c>.
+    /// </summary>
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static unsafe int OnInterruptCheck(void* opaque)
+    {
+        // An exception escaping into native code would take the process down; fail open instead.
+        try
+        {
+            return GCHandle.FromIntPtr((IntPtr)opaque).Target is IoWatchdog watchdog && watchdog.ShouldAbort() ? 1 : 0;
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
+    private static readonly unsafe IntPtr InterruptCallbackPointer = (IntPtr)(delegate* unmanaged[Cdecl]<void*, int>)&OnInterruptCheck;
+
     private static readonly long NoPts = ffmpeg.AV_NOPTS_VALUE;
 
     private readonly FormatContext _formatContext;
@@ -528,4 +714,48 @@ public sealed class VideoDecoderSession : IDisposable
     private readonly bool _zeroCopy;
     private bool _lastFrameReadBack;
     private bool _draining;
+    private readonly IoWatchdog _watchdog;
+    private GCHandle _watchdogHandle;
+
+    /// <summary>
+    /// Decides when FFmpeg should abandon a blocking I/O call: once the session's token is cancelled, or once
+    /// a single call has blocked longer than the I/O timeout. Its timestamps are written on the decode thread
+    /// and read from the interrupt callback, which FFmpeg may invoke from its own I/O threads.
+    /// </summary>
+    private sealed class IoWatchdog(CancellationToken cancellationToken, TimeSpan ioTimeout)
+    {
+        public CancellationToken CancellationToken => cancellationToken;
+        public bool IsCancellationRequested => cancellationToken.IsCancellationRequested;
+        public bool DeadlineExceeded => _deadlineExceeded;
+
+        public void BeginBlockingCall() => Volatile.Write(ref _blockingSinceMs, Environment.TickCount64);
+
+        public void EndBlockingCall() => Volatile.Write(ref _blockingSinceMs, 0);
+
+        public bool ShouldAbort()
+        {
+            if (cancellationToken.IsCancellationRequested)
+                return true;
+
+            var blockingSince = Volatile.Read(ref _blockingSinceMs);
+            if (_timeoutMs <= 0 || blockingSince == 0 || Environment.TickCount64 - blockingSince <= _timeoutMs)
+                return false;
+
+            _deadlineExceeded = true;
+            return true;
+        }
+
+        /// <summary>Why the last blocking call was aborted, or null when the watchdog did not intervene.</summary>
+        public string? DescribeAbort()
+        {
+            if (_deadlineExceeded)
+                return $"No data from the source for {_timeoutMs / 1000.0:0.#} s.";
+
+            return cancellationToken.IsCancellationRequested ? "Cancelled." : null;
+        }
+
+        private readonly long _timeoutMs = (long)ioTimeout.TotalMilliseconds;
+        private long _blockingSinceMs;
+        private volatile bool _deadlineExceeded;
+    }
 }
