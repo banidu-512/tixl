@@ -1242,6 +1242,17 @@ public sealed unsafe class VulkanBackend : IGraphicsBackend, IDisposable
         }
     }
 
+    public bool TryMapForRead(GpuResource resource, int subresource, out MappedMemory memory)
+    {
+        // This backend keeps host-visible readback memory mapped for the resource's lifetime, but it has no
+        // per-resource write tracking, so a copy recorded into the frame being built cannot be checked for
+        // readiness without submitting it. The conservative answer flushes the frame first, which is the
+        // blocking MapForRead contract; StreamDiffusion's caller polls and keeps its last good read, so the
+        // stall is bounded by one submit. The D3D11 backend implements the genuinely non-blocking variant.
+        memory = MapForRead(resource, subresource);
+        return memory.Data != null;
+    }
+
     public void Unmap(GpuResource resource, int subresource)
     {
         // Host-visible memory stays mapped for the resource's lifetime; only a write the command list deferred is left.
