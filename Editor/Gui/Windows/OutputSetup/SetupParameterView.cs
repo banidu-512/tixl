@@ -54,6 +54,14 @@ internal static class SetupParameterView
         FormInputs.AddVerticalSpace(5);
         DrawHeader(setup, kind, id);
 
+        // Entity cards can be far taller than the panel (a laser output: frame preview + scanner
+        // camera + optimization + safety) and the parameter window deliberately has no scrollbar,
+        // so the card body scrolls here. The header stays fixed. The EndChild pair below belongs to
+        // this child and to setupEntity: it had been left without its BeginChild, which made every
+        // frame end one window too many (Missing PopStyleVar / End() too many times / ImGui-ID).
+        ImGui.BeginChild("##setupEntityCard", Vector2.Zero, ImGuiChildFlags.None,
+                         ImGuiWindowFlags.AlwaysVerticalScrollbar);
+
         switch (kind)
         {
             case SetupEntityKinds.Surface:
