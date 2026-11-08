@@ -46,7 +46,6 @@ public static partial class T3Ui
         _failoverConfig.NetworkInterfaceName = UserSettings.Config.NetworkInterface;
         T3.Core.Show.FailoverArbiter.ApplyConfig(_failoverConfig);
         Show.BoygroupManager.Instance.Update();
-        Collab.CollabManager.Instance.Update();
         //ImGui.PushStyleColor(ImGuiCol.Text, UiColors.Text.Rgba);
         DragAndDropHandling.Update();
         MagGraph.Ui.DropHandling.DrawDragIndicator();

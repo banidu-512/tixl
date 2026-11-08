@@ -11,7 +11,6 @@ using T3.Editor.Gui.Windows.RenderExport;
 using T3.Editor.Gui.Windows.TimeLine;
 
 using T3.Editor.Gui.Windows.OutputSetup;
-using T3.Editor.Collab;
 
 namespace T3.Editor.Gui.UiHelpers;
 
@@ -236,30 +235,12 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public bool EnableAutoBackup = true;
         public bool MinimalBackup = true;
 
-        /// <summary>The network adapter TiXL binds to for hosting collaboration and boygrouping,
-        /// LAN discovery and failover heartbeats (Settings → Network). Empty = all interfaces.</summary>
-        public string NetworkInterface = "";
-
-        // Collaboration
-        /// <summary>Persistent participant id; also seeds the per-user accent color.</summary>
-        public string CollabUserId = "";
-
-        /// <summary>Display name override. Falls back to the Discord name, then the OS user name.</summary>
-        public string CollabDisplayName = "";
-
-        public int CollabPort = CollabProtocol.DefaultTcpPort;
-        public bool CollabLanDiscovery = true;
+        /// <summary>Shared password for boygroup and failover handshakes. Edited in the Boygrouping settings tab.</summary>
         public string CollabPassword = "";
 
-        /// <summary>host:port of the last joined collab session — auto-rejoined on launch, which is
-        /// what brings a client back after a project download restarted the editor.</summary>
-        public string CollabLastSessionHost = "";
-
-        public string CollabDiscordClientId = "";
-        public string CollabDiscordClientSecret = "";
-        public string CollabDiscordUserId = "";
-        public string CollabDiscordUserName = "";
-        public string CollabDiscordUserAvatar = "";
+        /// <summary>The network adapter TiXL binds to for boygrouping, LAN discovery and failover
+        /// heartbeats (Settings → Boygrouping/Failover → Network). Empty = all interfaces.</summary>
+        public string NetworkInterface = "";
 
         // Boygrouping (show distribution to render nodes)
         /// <summary>Master switch: this machine participates in boygrouping. When set, the role
@@ -297,6 +278,7 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public int FailoverHeartbeatMs = 500;
         public int FailoverTimeoutFactor = 3;
         public bool FailoverPreempt = true;
+
 
         public float GizmoSize = 100;
 

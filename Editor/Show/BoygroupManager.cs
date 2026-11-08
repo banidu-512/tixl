@@ -25,7 +25,7 @@ namespace T3.Editor.Show;
 /// The server deploys project files and live output state, drives playback, and each client renders
 /// only the outputs assigned to it in the Output Setup (OutputDefinition.MachineName).
 ///
-/// Threading contract matches CollabManager: network threads only enqueue inbound messages; every
+/// Threading contract matches the collab session manager: network threads only enqueue inbound messages; every
 /// state change and every graph/file write happens in <see cref="Update"/> on the UI thread. File
 /// transfers run per client in small steps per frame so large deployments never stall rendering.
 /// </summary>
@@ -1022,10 +1022,6 @@ internal sealed class BoygroupManager
     {
         return ProjectView.Focused?.OpenedProject.Package.Folder;
     }
-
-    /// <summary>Whether a project is open — the debug bridge's status reports it, so a master that
-    /// cannot deploy for this reason is diagnosable remotely.</summary>
-    public static bool HasProjectFolder => !string.IsNullOrEmpty(GetProjectFolder());
 
     // ---------------------------------------------------------------------------------------
     // Client: deploy reception

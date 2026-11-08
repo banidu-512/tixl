@@ -17,7 +17,6 @@ using T3.Core.Animation;
 using T3.Core.Settings;
 using T3.Core.Stats;
 using T3.Core.Show;
-using T3.Editor.Collab;
 using T3.Editor.Show;
 using T3.Editor.Gui.Windows;
 using T3.Editor.Gui.Windows.Analyze;
@@ -630,10 +629,6 @@ internal static class DebugServer
                 break;
             }
 
-            case "collab":
-                HandleCollabControl(request, context);
-                break;
-
             case "boygroup":
                 HandleBoygroupControl(request, context);
                 break;
@@ -650,50 +645,6 @@ internal static class DebugServer
                 context.SendError("UNKNOWN_METHOD", $"Unknown method '{method}'");
                 break;
         }
-    }
-
-    /// <summary>Drives the collab session for external agents: op = host | join | leave | status.</summary>
-    private static void HandleCollabControl(JObject request, RequestContext context)
-    {
-        var collab = CollabManager.Instance;
-        switch (request["op"]?.Value<string>())
-        {
-            case "host":
-                collab.StartHost(request["port"]?.Value<int>() ?? 44700,
-                                 request["password"]?.Value<string>() ?? "",
-                                 request["lan"]?.Value<bool>() ?? true);
-                break;
-
-            case "join":
-                collab.JoinDirect(request["host"]?.Value<string>() ?? "127.0.0.1",
-                                  request["port"]?.Value<int>() ?? 44700,
-                                  request["password"]?.Value<string>() ?? "");
-                break;
-
-            case "leave":
-                collab.Leave();
-                break;
-
-            case "chat":
-                collab.SendChat(request["text"]?.Value<string>() ?? "");
-                break;
-
-            case "status":
-                break;
-
-            default:
-                context.SendError("INVALID_PARAM", "collab requires op = host | join | leave | status");
-                return;
-        }
-
-        context.SendOk(new JObject
-                           {
-                               ["state"] = collab.State.ToString(),
-                               ["status"] = collab.StatusText,
-                               ["error"] = collab.ErrorText,
-                               ["peers"] = collab.Peers.Count,
-                               ["chatLines"] = collab.ChatLog.Count,
-                           });
     }
 
     /// <summary>Drives boygrouping for external agents: op = server | join | leave | status.</summary>
@@ -719,15 +670,11 @@ internal static class DebugServer
                 boygroup.Leave();
                 break;
 
-            case "deploy":
-                boygroup.DeployAndSync();
-                break;
-
             case "status":
                 break;
 
             default:
-                context.SendError("INVALID_PARAM", "boygroup requires op = server | join | leave | deploy | status");
+                context.SendError("INVALID_PARAM", "boygroup requires op = server | join | leave | status");
                 return;
         }
 
@@ -737,9 +684,6 @@ internal static class DebugServer
                                ["status"] = boygroup.StatusText,
                                ["error"] = boygroup.ErrorText,
                                ["group"] = boygroup.GroupName,
-                               ["deploy"] = boygroup.DeploySummary,
-                               ["clients"] = boygroup.Clients.Count,
-                               ["projectOpen"] = Show.BoygroupManager.HasProjectFolder,
                            });
     }
 
