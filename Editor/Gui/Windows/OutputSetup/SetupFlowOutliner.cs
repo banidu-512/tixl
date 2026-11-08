@@ -719,12 +719,41 @@ internal sealed class SetupFlowOutliner
                                    Kind = SetupEntityKinds.Plug,
                                    Id = Show.BoygroupManager.RemoteDisplayPlugId(client, screen.Index),
                                    Name = $"{client.Name} / {screen.Name}",
-                                   Status = $"{screen.Width} x {screen.Height}",
+                                   // What presents on the node's display, said next to its resolution.
+                                   Status = bound == null
+                                                ? $"{screen.Width} x {screen.Height}"
+                                                : $"{SetupLabels.OutputLabel(bound)} - {screen.Width} x {screen.Height}",
                                    LeadingIcon = Icon.ConnectedOutput,
                                    IsMuted = bound == null,
                                    DrawTooltip = _drawRemoteDisplayTooltip,
                                };
                 DrawItem(selection, setup, ref args);
+            }
+
+            // The outputs the node presents, under its displays: the master sees the slave's
+            // show side by side with its own, from what the node reported.
+            if (client.MachineConfig == null)
+                continue;
+
+            var listedOutputs = new List<Guid>();
+            foreach (var binding in client.MachineConfig.Bindings)
+            {
+                var output = setup.FindOutput(binding.OutputId);
+                if (output == null || listedOutputs.Contains(output.Id))
+                    continue;
+
+                listedOutputs.Add(output.Id);
+                var plugLabel = binding.IsStream ? "stream" : $"Display {binding.DisplayIndex + 1}";
+                var outputArgs = new OutlinerItem.Args
+                                     {
+                                         Kind = SetupEntityKinds.Output,
+                                         Id = output.Id,
+                                         Name = SetupLabels.OutputLabel(output),
+                                         Status = $"on {client.Name} / {plugLabel}",
+                                         IsMuted = !output.IsSending,
+                                         HasStruckIcon = !output.IsSending,
+                                     };
+                DrawItem(selection, setup, ref outputArgs);
             }
         }
     }
