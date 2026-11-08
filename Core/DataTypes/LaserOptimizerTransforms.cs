@@ -101,11 +101,24 @@ public static class LaserOptimizerTransforms
     public static LaserPoint[] ApplyIntoBuffer(LaserPoint[] input, int count, in Config config, Scratch scratch, out int outputCount)
     {
         outputCount = 0;
+        scratch ??= new Scratch();
         if (input == null || count <= 0)
+            return scratch.Output;
+
+        // Public entry point: a caller-supplied count must never index past the array it
+        // describes. The transforms promise to degrade, not throw.
+        count = Math.Min(count, input.Length);
+        if (count <= 0)
             return scratch.Output;
 
         var blankingDelay = Math.Clamp(config.BlankingDelayPoints, 0, 100);
         var cornerAnchors = Math.Clamp(config.CornerAnchorCount, 1, 10);
+        var maxJumpDistance = float.IsFinite(config.MaxJumpDistance) && config.MaxJumpDistance > 0f
+                                  ? config.MaxJumpDistance
+                                  : Config.Default.MaxJumpDistance;
+        var cornerAngleThreshold = float.IsFinite(config.CornerAngleThreshold)
+                                       ? config.CornerAngleThreshold
+                                       : Config.Default.CornerAngleThreshold;
 
         var resultSize = EstimateResultSize(count, blankingDelay, cornerAnchors);
         if (scratch.Output.Length < resultSize)
@@ -113,13 +126,13 @@ public static class LaserOptimizerTransforms
 
         if (config.EnableOptimization)
         {
-            OptimizePath(input, count, scratch.Output, config.MaxJumpDistance, blankingDelay,
-                         config.CornerAngleThreshold, cornerAnchors, scratch, out outputCount);
+            OptimizePath(input, count, scratch.Output, maxJumpDistance, blankingDelay,
+                         cornerAngleThreshold, cornerAnchors, scratch, out outputCount);
         }
         else
         {
-            ApplyCornerDwellingAndBlanking(input, count, scratch.Output, config.MaxJumpDistance, blankingDelay,
-                                           config.CornerAngleThreshold, cornerAnchors, out outputCount);
+            ApplyCornerDwellingAndBlanking(input, count, scratch.Output, maxJumpDistance, blankingDelay,
+                                           cornerAngleThreshold, cornerAnchors, out outputCount);
         }
 
         return scratch.Output;
@@ -611,11 +624,13 @@ public static class LaserOptimizerTransforms
             return;
 
         var segmentStart = 0;
-        var isBlanked = input[0].I == 0;
+        // Non-positive intensity is dark, not just exactly zero: a negative gate is a
+        // malformed frame and must never be promoted into a lit segment.
+        var isBlanked = input[0].I <= 0;
 
         for (var i = 1; i < inputCount; i++)
         {
-            var currentlyBlanked = input[i].I == 0;
+            var currentlyBlanked = input[i].I <= 0;
 
             if (currentlyBlanked != isBlanked)
             {
@@ -744,7 +759,7 @@ public static class LaserOptimizerTransforms
         if (outputCount == 0)
             return;
 
-        if (maxJumpDistance <= 0 || blankingDelayPoints <= 0)
+        if (!float.IsFinite(maxJumpDistance) || maxJumpDistance <= 0 || blankingDelayPoints <= 0)
             return;
 
         // Cast to float before squaring: int dx*dx overflows for jumps beyond 46341 units and the

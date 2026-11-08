@@ -4,6 +4,14 @@ using T3.Core.DataTypes;
 
 namespace Lib.laser.convert;
 
+/// <summary>
+/// Converts an ILDA-style laser point list into a GPU structured buffer so laser frames can be
+/// drawn or fed back into a scene. Positions are scaled by <see cref="Scale"/>; RGBA carries
+/// R/G/B and the blanking gate I. The buffer keeps a capacity with a separator-filled tail, so a
+/// frame whose length changes does not recreate GPU resources every evaluation. Allocation and
+/// upload are bounded to <c>MaxPoints</c>; every failure degrades to an empty buffer instead of
+/// escaping into TiXL's evaluator.
+/// </summary>
 [Guid("624747a6-e974-4650-b60c-a7bdb078a104")]
 internal sealed class LaserPointsToBuffer : Instance<LaserPointsToBuffer>
 {
@@ -36,6 +44,9 @@ internal sealed class LaserPointsToBuffer : Instance<LaserPointsToBuffer>
             }
 
             var scale = Scale.GetValue(context);
+            if (!float.IsFinite(scale) || scale == 0f)
+                scale = DefaultScale; // an unconnected slot used to collapse every point to the origin
+
             var source = laserPoints.TypedElements;
             // Glitchy input (e.g. malformed network frames) must not allocate a gigantic GPU buffer.
             var count = Math.Min(laserPoints.NumElements, MaxPoints);
@@ -198,12 +209,18 @@ internal sealed class LaserPointsToBuffer : Instance<LaserPointsToBuffer>
     private const int MinCapacity = 256;
     private const int ShrinkAfterFrames = 120;
 
+    /// <summary>ILDA units -> roughly [-1, 1] world units (the value authored by the .t3 asset).</summary>
+    private const float DefaultScale = 1f / 32767f;
+
     /// <summary>Hard cap on converted points (1M points = 64 MB GPU buffer) - bounds damage from corrupt input.</summary>
     private const int MaxPoints = 1 << 20;
 
+    /// <summary>Laser frame to convert. Blanked points (I = 0) are preserved as zero-alpha entries.</summary>
     [Input(Guid = "55ed02f0-2cd5-4566-b15a-580fddda2484")]
     public readonly InputSlot<StructuredList> LaserPoints = new();
 
+    /// <summary>Multiplier applied to X/Y. The default maps the ILDA ±32767 field to roughly ±1;
+    /// non-finite or zero values fall back to it so the buffer can never collapse to the origin.</summary>
     [Input(Guid = "112189ef-6929-4cee-b54b-c2dfafa12ee5")]
-    public readonly InputSlot<float> Scale = new();
+    public readonly InputSlot<float> Scale = new(DefaultScale);
 }

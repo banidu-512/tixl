@@ -93,7 +93,7 @@
         "X": -200.0,
         "Y": -75.0
       },
-      "Description": "Subtree to render and capture. Wire your scene here and route this op's Output into a render pass; every point/line/mesh drawn inside is merged into the laser frame, transformed by the Group/transform scopes active at draw time. Capture cost: one CPU readback per unique buffer per frame."
+      "Description": "Subtree to evaluate and capture. Wire the scene here; every point/line/mesh drawn inside is merged into the laser frame, transformed by the Group/transform scopes active at draw time. The Command output renders nothing — route the frame with OutputRef instead. Capture cost: one CPU readback per unique buffer per frame."
     },
     {
       "InputId": "73241494-c686-4013-96c0-ef40d5932f7f"/*PrintToLog*/,

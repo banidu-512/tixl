@@ -123,35 +123,40 @@
       "Position": {
         "X": 300.0,
         "Y": 100.0
-      }
+      },
+      "Description": "Latest complete frame from the accepted sender, in ILDA-style 16-bit coordinates. Blanked to an empty list when no complete frame arrived within Timeout."
     },
     {
       "OutputId": "f2e3d4c5-b6a7-8901-abcd-ef1234567891"/*StatusMessage*/,
       "Position": {
         "X": 300.0,
         "Y": 200.0
-      }
+      },
+      "Description": "Listener/session status: bind errors, listening address, CRC rejects, watchdog blanking."
     },
     {
       "OutputId": "a3b4c5d6-c7d8-9012-abcd-ef1234567892"/*FrameCount*/,
       "Position": {
         "X": 300.0,
         "Y": 300.0
-      }
+      },
+      "Description": "Total complete frames accepted since the operator started."
     },
     {
       "OutputId": "b4c5d6e7-d8e9-0123-abcd-ef1234567893"/*SenderName*/,
       "Position": {
         "X": 300.0,
         "Y": 400.0
-      }
+      },
+      "Description": "Name from the last completed frame's PONK header."
     },
     {
       "OutputId": "c5d6e7f8-e9f0-1234-abcd-ef1234567894"/*SenderId*/,
       "Position": {
         "X": 300.0,
         "Y": 500.0
-      }
+      },
+      "Description": "Sender id from the last completed frame's PONK header (use it to set ExpectedSenderId)."
     }
   ]
 }

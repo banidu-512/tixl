@@ -170,6 +170,11 @@ public static class LaserPipeline
         if (mode == LaserFrameMappingMode.Off || input == null || count <= 0)
             return input;
 
+        // The caller's count is a contract with the array; never read past it.
+        count = Math.Min(count, input.Length);
+        if (count <= 0)
+            return input;
+
         RectFromSafety(safety, out var cx, out var cy, out var halfW, out var halfH);
 
         const float field = 32767f;
@@ -236,6 +241,10 @@ public static class LaserPipeline
     public static LaserPoint[]? WarpFrameIntoQuad(LaserPoint[]? input, int count, LaserProcessingSettings.SafetySettings safety, LaserPoint[]? destination = null)
     {
         if (input == null || count <= 0)
+            return input;
+
+        count = Math.Min(count, input.Length);
+        if (count <= 0)
             return input;
 
         const float field = 32767f;
@@ -305,17 +314,40 @@ public static class LaserPipeline
         return pts;
     }
 
-    /// <summary>Rejects quads without a meaningful interior — a repeated corner collapses an edge
-    /// and the homography would smear the frame across the field instead of warping it.</summary>
+    /// <summary>Rejects quads without a meaningful, non-self-intersecting interior — a repeated
+    /// corner collapses an edge, three collinear corners collapse the area, and a bow-tie
+    /// ordering makes the homography fold the frame over itself. In every case the input is
+    /// returned unchanged instead of a broken warp.</summary>
     private static bool IsSimpleQuad(Vector2[] corners)
     {
+        if (corners is not { Length: >= 4 })
+            return false;
+
+        // Shoelace area: a degenerate quad has no surface for the homography to map onto.
+        var twiceArea = 0f;
+        var positiveTurns = 0;
+        var negativeTurns = 0;
         for (var i = 0; i < 4; i++)
         {
-            if (Vector2.DistanceSquared(corners[i], corners[(i + 1) % 4]) < 1f)
+            var a = corners[i];
+            var b = corners[(i + 1) % 4];
+            var c = corners[(i + 2) % 4];
+            if (!float.IsFinite(a.X) || !float.IsFinite(a.Y)
+                || Vector2.DistanceSquared(a, b) < 1f)
                 return false;
+
+            twiceArea += a.X * b.Y - b.X * a.Y;
+
+            // Cross product of consecutive edges: a simple (convex) quad turns the same way
+            // at every corner. Opposing signs are the signature of a self-intersecting bow-tie.
+            var cross = (b.X - a.X) * (c.Y - b.Y) - (b.Y - a.Y) * (c.X - b.X);
+            if (cross > 1f)
+                positiveTurns++;
+            else if (cross < -1f)
+                negativeTurns++;
         }
 
-        return true;
+        return MathF.Abs(twiceArea) >= 2f && (positiveTurns == 0 || negativeTurns == 0);
     }
 
     /// <summary>
@@ -324,6 +356,9 @@ public static class LaserPipeline
     /// </summary>
     public static LaserPoint[] BuildSetupQuad(Vector2[] cornersField)
     {
+        if (cornersField is not { Length: >= 4 })
+            return [];
+
         const int steps = 40;          // samples per side
         const int cornerDwell = 3;     // extra lit points per corner
         var pts = new LaserPoint[4 * (2 + cornerDwell + steps) + 8];

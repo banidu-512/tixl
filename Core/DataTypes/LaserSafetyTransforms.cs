@@ -97,7 +97,8 @@ public static class LaserSafetyTransforms
 
     /// <summary>
     /// Runs the full safety stage. Returns the processed point list (the source list
-    /// when no subdivision points were needed).
+    /// when no subdivision points were needed). Counters are reset for this run, so a
+    /// caller can safely reuse one <see cref="Stats"/> instance across frames.
     /// </summary>
     public static List<LaserPoint> Apply(List<LaserPoint> points, in Config config, ref Stats stats)
     {
@@ -111,6 +112,17 @@ public static class LaserSafetyTransforms
     /// </summary>
     public static List<LaserPoint> Apply(List<LaserPoint> points, List<LaserPoint> subdivisionScratch, in Config config, ref Stats stats)
     {
+        // Stats describe THIS call ("counters from the last Apply"). Reset up front so a
+        // long-lived stream that reuses its Stats does not accumulate a show-long history
+        // and report every frame as unsafe.
+        stats = default;
+
+        if (points == null)
+            return [];
+
+        if (points.Count == 0)
+            return points;
+
         if (!config.BeamEnable)
         {
             for (var i = 0; i < points.Count; i++)
@@ -138,9 +150,11 @@ public static class LaserSafetyTransforms
     {
         var result = config;
 
-        if (float.IsNaN(result.ZoneCenterX))
+        // A non-finite center has no meaningful location; the field origin is the only
+        // conservative answer and keeps the zone intersected with the physical field.
+        if (!float.IsFinite(result.ZoneCenterX))
             result.ZoneCenterX = 0f;
-        if (float.IsNaN(result.ZoneCenterY))
+        if (!float.IsFinite(result.ZoneCenterY))
             result.ZoneCenterY = 0f;
 
         // An infinite or negative extent is already intersected with the physical field, so only
@@ -153,6 +167,12 @@ public static class LaserSafetyTransforms
 
         if (!float.IsFinite(result.MaxBrightness))
             result.MaxBrightness = 0f;
+
+        // The dwell cap and the motion threshold are counts, not geometry: clamp them into
+        // the range the stage can actually express instead of letting negative/overflow
+        // values silently blank or pass every point.
+        result.MaxStaticPoints = Math.Clamp(result.MaxStaticPoints, 0, 100_000);
+        result.StaticDistance = Math.Clamp(result.StaticDistance, 0, FieldMax * 2);
 
         return result;
     }
@@ -259,9 +279,11 @@ public static class LaserSafetyTransforms
     /// </summary>
     public static void LimitStaticDwell(List<LaserPoint> points, in Config config, ref Stats stats)
     {
+        var safeConfig = Sanitize(in config);
         // Widened before squaring: a full-field step squared overflows int and would read as "not moving".
-        var staticDistance = (long)Math.Clamp(config.StaticDistance, 0, FieldMax * 2);
+        var staticDistance = (long)safeConfig.StaticDistance;
         var thresholdSq = staticDistance * staticDistance;
+        var maxStaticPoints = safeConfig.MaxStaticPoints;
         var run = 0;
 
         for (var i = 0; i < points.Count; i++)
@@ -282,7 +304,7 @@ public static class LaserSafetyTransforms
             }
 
             run = moving ? 1 : run + 1;
-            if (run > config.MaxStaticPoints)
+            if (run > maxStaticPoints)
             {
                 points[i] = LaserPoint.CreateBlanked(p.X, p.Y);
                 stats.StaticBlanked++;

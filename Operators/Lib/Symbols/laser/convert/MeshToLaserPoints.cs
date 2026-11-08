@@ -1,4 +1,5 @@
 using System;
+using System.Numerics;
 using T3.Graphics.Compat;
 using T3.Core.DataTypes;
 using T3.Core.Operator;
@@ -63,6 +64,11 @@ internal sealed class MeshToLaserPoints : Instance<MeshToLaserPoints>
             return;
         }
 
+        // The projection depends on the camera pose as much as on the mesh: a static mesh
+        // viewed by a moving camera must re-project even when nothing else changed.
+        var worldToCamera = camera.WorldToCamera;
+        var cameraToClipSpace = camera.CameraToClipSpace;
+
         var wasTriggered = MathUtils.WasTriggered(TriggerUpdate.GetValue(context), ref _triggerUpdate);
         if (wasTriggered)
         {
@@ -81,11 +87,16 @@ internal sealed class MeshToLaserPoints : Instance<MeshToLaserPoints>
 
         // Keep the last frame unless something actually changed - GPU readback stalls
         // the pipeline, so it must not run every evaluation for a static mesh.
+        var geometryChanged = !ReferenceEquals(mesh.VertexBuffer.Buffer, _lastVertexBuffer)
+                              || !ReferenceEquals(mesh.IndicesBuffer.Buffer, _lastIndexBuffer);
         if (!wasTriggered && !updateContinuously && _hasResult
             && _lastMode == mode
             && _lastMaxEdgeStep.Equals(maxEdgeStep)
             && _lastDotDwell == dotDwell
             && _lastBrightness.Equals(brightness)
+            && !geometryChanged
+            && _lastWorldToCamera.Equals(worldToCamera)
+            && _lastCameraToClipSpace.Equals(cameraToClipSpace)
             && _vertexCpuAccess.Buffer?.Description.SizeInBytes == sourceVertexBytes
             && _indexCpuAccess.Buffer?.Description.SizeInBytes == sourceIndexBytes)
         {
@@ -115,6 +126,10 @@ internal sealed class MeshToLaserPoints : Instance<MeshToLaserPoints>
         _lastMaxEdgeStep = maxEdgeStep;
         _lastDotDwell = dotDwell;
         _lastBrightness = brightness;
+        _lastWorldToCamera = worldToCamera;
+        _lastCameraToClipSpace = cameraToClipSpace;
+        _lastVertexBuffer = mesh.VertexBuffer.Buffer;
+        _lastIndexBuffer = mesh.IndicesBuffer.Buffer;
 
         LaserPoints.DirtyFlag.Trigger = updateContinuously ? DirtyFlagTrigger.Animated : DirtyFlagTrigger.None;
     }
@@ -344,6 +359,10 @@ internal sealed class MeshToLaserPoints : Instance<MeshToLaserPoints>
     private float _lastMaxEdgeStep;
     private int _lastDotDwell;
     private float _lastBrightness;
+    private Matrix4x4 _lastWorldToCamera;
+    private Matrix4x4 _lastCameraToClipSpace;
+    private Buffer? _lastVertexBuffer;
+    private Buffer? _lastIndexBuffer;
     private BufferWithViews _vertexCpuAccess = new();
     private BufferWithViews _indexCpuAccess = new();
 

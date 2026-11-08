@@ -58,7 +58,7 @@ internal static class LaserOutputPreview
 
         // Count, not Length: the buffer is a reused capacity-sized array whose tail is padding.
         var points = frame.Points;
-        var count = frame.Count;
+        var count = points == null ? 0 : Math.Min(frame.Count, points.Length);
         if (points != null && count > 0)
         {
             var posScale = half / 32767f;
@@ -114,7 +114,9 @@ internal static class LaserOutputPreview
         dl.PopClipRect();
     }
 
-    private static bool IsLit(in LaserPoint p) => (p.R | p.G | p.B) != 0;
+    /// <summary>The laser blanking gate is I, not the RGB payload: a point can carry color and
+    /// still be blanked (I = 0), and a black point can be lit (I &gt; 0, RGB = 0).</summary>
+    private static bool IsLit(in LaserPoint p) => p.I > 0;
 
     private static Color PointColor(in LaserPoint p, float alpha)
     {

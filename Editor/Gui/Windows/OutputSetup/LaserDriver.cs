@@ -80,11 +80,14 @@ internal static class LaserDriver
         OutputContentResolver.PrepareContext(default);
         var context = OutputContentResolver.Context;
 
-        PumpLaserOutputs.Clear();
-        foreach (var output in setup.Outputs)
+        lock (_diagnosticsLock)
         {
-            if (output.Kind == OutputDefinition.Kinds.Laser)
-                PumpLaserOutputs.Add(output);
+            PumpLaserOutputs.Clear();
+            foreach (var output in setup.Outputs)
+            {
+                if (output.Kind == OutputDefinition.Kinds.Laser)
+                    PumpLaserOutputs.Add(output);
+            }
         }
 
         var livePlugIds = LivePlugIds;
@@ -194,6 +197,10 @@ internal static class LaserDriver
     /// <summary>Pumps between sweeps of the per-output state of outputs that no longer exist.</summary>
     private const int PruneEveryPumps = 256;
 
+    /// <summary>Guards the pump's diagnostic snapshot lists against the debug server's reader
+    /// thread; the pump only holds it for list bookkeeping, never for camera evaluation.</summary>
+    private static readonly object _diagnosticsLock = new();
+
     /// <summary>The output the next pump starts with (round-robin over the laser outputs).</summary>
     private static int _pumpRotation;
 
@@ -245,7 +252,12 @@ internal static class LaserDriver
                 // instead of one per frame - and then applies the new values live.
                 var rebuildNow = Stopwatch.GetTimestamp();
                 if (!_recreateDue.TryGetValue(plug.Id, out var due))
+                {
+                    // First mismatch starts the settle window; do not reconnect on the very
+                    // frame the edit began, or a drag rebuilds the stream once per frame.
                     _recreateDue[plug.Id] = rebuildNow + RecreateSettleTicks;
+                    continue;
+                }
 
                 if (rebuildNow < due)
                     continue;
@@ -275,13 +287,10 @@ internal static class LaserDriver
             _submitStreams.Add(stream);
         }
 
-        if (!output.IsSending)
-            return;
-
-        // Compute once per output - also when nothing is bound to it. The Board cards and the
-        // parameter previews read this cache, so a setup without devices (a test rig, an output
-        // still being aimed) previews at the pump rate instead of falling back to the slow
-        // on-demand path (one frame per 250ms while the driver is enabled).
+        // Compute once per output - also when it is muted or has no bindings. The Board cards and
+        // the parameter previews read this cache, so a preview never has to pull the camera on
+        // the UI thread while the pump is running (a data race on the pipeline scratch).
+        var sending = output.IsSending;
         var now = Stopwatch.GetTimestamp();
 
         // The first compute of a pump always runs - even a camera heavier than the whole budget
@@ -301,17 +310,21 @@ internal static class LaserDriver
         var computeStart = Stopwatch.GetTimestamp();
         var frame = ComputeFrame(output, context);
         var computeTicks = Stopwatch.GetTimestamp() - computeStart;
-        _computeEstimateTicks[output.Id] = estimateNext(_computeEstimateTicks.GetValueOrDefault(output.Id), computeTicks);
         var computeMs = computeTicks * 1000.0 / Stopwatch.Frequency;
+        lock (_diagnosticsLock)
+        {
+            _computeEstimateTicks[output.Id] = estimateNext(_computeEstimateTicks.GetValueOrDefault(output.Id), computeTicks);
+            _lastComputeMsByOutput[output.Id] = computeMs;
+        }
+
         _lastComputeTotalMs += computeMs;
-        _lastComputeMsByOutput[output.Id] = computeMs;
         if (computeMs > _lastHeaviestComputeMs)
             _lastHeaviestComputeMs = computeMs;
 
         _lastOutputsComputed++;
         _frameCache[output.Id] = (Stopwatch.GetTimestamp(), frame);
 
-        if (frame.IsEmpty)
+        if (frame.IsEmpty || !sending)
             return;
 
         // A calibrated frame already went through this exact safety config in the pipeline session,
@@ -347,13 +360,15 @@ internal static class LaserDriver
         {
             // While the driver is pumping, its cache is the streamed truth even when it is a
             // pump or two old: recomputing here would pull the camera a second time on the UI
-            // thread (a full scene capture and readback) and stutter the editor, while the pump
-            // is about to refresh it anyway. The on-demand pull remains for the driver switched
-            // off and for muted outputs the pump skips.
-            if (now - cached.Timestamp < PreviewStaleAfter
-                || (LaserDriverEnabled.Enabled && output.IsSending))
+            // thread (a full scene capture and readback) and race the pump on the pipeline
+            // scratch. The pump now computes muted/no-binding outputs too, so this cache always
+            // exists once it has run. The on-demand pull remains only for the driver disabled.
+            if (LaserDriverEnabled.Enabled || now - cached.Timestamp < PreviewStaleAfter)
                 return cached.Frame;
         }
+
+        if (LaserDriverEnabled.Enabled)
+            return LaserFrame.Empty;
 
         _frameCache[output.Id] = cached = (now, ComputeFrame(output, null));
         return cached.Frame;
@@ -628,13 +643,16 @@ internal static class LaserDriver
                 StaleIds.Add(outputId);
         }
 
-        foreach (var outputId in StaleIds)
+        lock (_diagnosticsLock)
         {
-            _pipelineSessions.Remove(outputId);
-            _computeEstimateTicks.Remove(outputId);
-            _lastComputeMsByOutput.Remove(outputId);
-            _testFrames.Remove(outputId);
-            _frameCache.TryRemove(outputId, out _);
+            foreach (var outputId in StaleIds)
+            {
+                _pipelineSessions.Remove(outputId);
+                _computeEstimateTicks.Remove(outputId);
+                _lastComputeMsByOutput.Remove(outputId);
+                _testFrames.Remove(outputId);
+                _frameCache.TryRemove(outputId, out _);
+            }
         }
 
         StaleCameras.Clear();
@@ -664,13 +682,16 @@ internal static class LaserDriver
     /// <summary>Everything cached per output and camera, for when the setup goes away altogether.</summary>
     private static void ClearOutputState()
     {
-        _pipelineSessions.Clear();
-        _cameraPulls.Clear();
-        _frameCache.Clear();
-        _computeEstimateTicks.Clear();
-        _lastComputeMsByOutput.Clear();
-        _testFrames.Clear();
-        _recreateDue.Clear();
+        lock (_diagnosticsLock)
+        {
+            _pipelineSessions.Clear();
+            _cameraPulls.Clear();
+            _frameCache.Clear();
+            _computeEstimateTicks.Clear();
+            _lastComputeMsByOutput.Clear();
+            _testFrames.Clear();
+            _recreateDue.Clear();
+        }
     }
 
     private static readonly List<Guid> StaleIds = [];
@@ -778,16 +799,26 @@ internal static class LaserDriver
     /// it, and each output's learned compute estimate - answers "why do the previews lag".</summary>
     public static object GetPumpStats()
     {
-        var outputs = new List<object>();
-        foreach (var output in PumpLaserOutputs)
+        OutputDefinition[] snapshot;
+        Dictionary<Guid, long> estimates;
+        Dictionary<Guid, double> lastCompute;
+        lock (_diagnosticsLock)
         {
-            var estimateTicks = _computeEstimateTicks.GetValueOrDefault(output.Id);
+            snapshot = PumpLaserOutputs.ToArray();
+            estimates = new Dictionary<Guid, long>(_computeEstimateTicks);
+            lastCompute = new Dictionary<Guid, double>(_lastComputeMsByOutput);
+        }
+
+        var outputs = new List<object>();
+        foreach (var output in snapshot)
+        {
+            var estimateTicks = estimates.GetValueOrDefault(output.Id);
             _frameCache.TryGetValue(output.Id, out var cached);
             outputs.Add(new
                             {
                                 name = output.Name,
                                 estimateMs = Math.Round(estimateTicks * 1000.0 / Stopwatch.Frequency, 2),
-                                lastComputeMs = Math.Round(_lastComputeMsByOutput.GetValueOrDefault(output.Id), 2),
+                                lastComputeMs = Math.Round(lastCompute.GetValueOrDefault(output.Id), 2),
                                 cachedFramePoints = cached.Frame.Count,
                                 cachedAgeMs = cached.Frame.Points != null
                                                   ? Math.Round((Stopwatch.GetTimestamp() - cached.Timestamp) * 1000.0 / Stopwatch.Frequency, 1)

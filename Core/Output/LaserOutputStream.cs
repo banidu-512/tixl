@@ -68,37 +68,68 @@ public sealed class LaserOutputStream : IDisposable
 
     private readonly IStream _inner;
     private readonly List<LaserPoint> _safetyWorkList = new(4096);
+    private readonly List<LaserPoint> _safetySpareList = new(4096);
+    private LaserPoint[] _safetyOutput = Array.Empty<LaserPoint>();
     private LaserSafetyTransforms.Stats _safetyStats;
+    private readonly object _safetyLock = new();
+    private int _disposed;
+
+    /// <summary>
+    /// Thread-safe status snapshot. The send/connection threads write it while the UI and the
+    /// driver read it; a two-field write (message + level) could otherwise be observed torn.
+    /// </summary>
+    private sealed record StatusInfo(string Message, IStatusProvider.StatusLevel Level);
 
     /// <summary>
     /// Queues a frame for the send thread, re-applying the output's safety limits at the door -
     /// the non-bypassable stage that runs no matter what the caller did upstream. Copies out of
-    /// the caller's buffer; call from one thread only (the render thread). Callers whose pipeline
-    /// already ran the same config this frame pass <paramref name="alreadySafetyApplied"/> to skip
-    /// the identical second pass (and its two array copies per frame).
+    /// the caller's buffer. Safe to call from the render thread and from a preview/debug caller:
+    /// the safety scratch is serialized, and the transports copy the submitted frame before
+    /// returning, so the reusable output buffer is never visible to two threads at once.
+    /// Callers whose pipeline already ran the same config this frame pass
+    /// <paramref name="alreadySafetyApplied"/> to skip the identical second pass.
     /// </summary>
     public void SubmitFrame(in LaserFrame frame, in LaserSafetyTransforms.Config safety, bool alreadySafetyApplied = false)
     {
-        var count = frame.Count;
-        if (count <= 0 || frame.Points == null)
+        if (Volatile.Read(ref _disposed) != 0)
             return;
 
+        var points = frame.Points;
+        if (points == null)
+            return;
+
+        var count = Math.Min(frame.Count, points.Length);
+        if (count <= 0)
+            return;
+
+        // The submitted frame may carry a Count smaller than its capacity; always hand the
+        // transport an exact frame so it never streams the producer's blanked tail.
+        var exactFrame = new LaserFrame(points, count, frame.SafetyApplied);
         if (alreadySafetyApplied)
         {
-            _inner.SubmitFrame(frame);
+            _inner.SubmitFrame(exactFrame);
             return;
         }
 
-        // The safety transforms are idempotent (clamps, subdivision, dwell blanking), so
-        // re-applying the stage the setup pipeline already ran is safe and never inflates
-        // the point count.
-        _safetyWorkList.Clear();
-        for (var i = 0; i < count; i++)
-            _safetyWorkList.Add(frame.Points[i]);
+        lock (_safetyLock)
+        {
+            // The safety transforms are idempotent (clamps, subdivision, dwell blanking), so
+            // re-applying the stage the setup pipeline already ran is safe and never inflates
+            // the point count. Stats reset inside Apply, so a reused instance stays per-frame.
+            _safetyWorkList.Clear();
+            for (var i = 0; i < count; i++)
+                _safetyWorkList.Add(points[i]);
 
-        var result = LaserSafetyTransforms.Apply(_safetyWorkList, in safety, ref _safetyStats);
-        var exact = result.ToArray();
-        _inner.SubmitFrame(new LaserFrame(exact, exact.Length));
+            var result = LaserSafetyTransforms.Apply(_safetyWorkList, _safetySpareList, in safety, ref _safetyStats);
+            var resultCount = Math.Min(result.Count, result.Capacity);
+            if (_safetyOutput.Length < resultCount)
+                _safetyOutput = new LaserPoint[resultCount];
+
+            for (var i = 0; i < resultCount; i++)
+                _safetyOutput[i] = result[i];
+
+            _inner.SubmitFrame(new LaserFrame(_safetyOutput, resultCount, true));
+        }
     }
 
     public bool IsConnected => _inner.IsConnected;
@@ -125,12 +156,21 @@ public sealed class LaserOutputStream : IDisposable
 
     public void Dispose()
     {
-        var inner = _inner;
-        _ = Task.Run(() =>
-                         {
-                             try { inner.Dispose(); }
-                             catch { /* sockets may already be dead */ }
-                         });
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            return;
+
+        // Dispose synchronously: the transport teardown itself is non-blocking (sockets are
+        // closed/cancelled, DAC disposal is gated by the transport's own pending-disposal
+        // table). Fire-and-forget here used to make a rebuilt stream race the old one for the
+        // same DAC - both connected, both sending, the old one's Stop halting the new show.
+        try
+        {
+            _inner.Dispose();
+        }
+        catch
+        {
+            // Sockets may already be dead during shutdown.
+        }
     }
 
     /// <summary>Protocol-specific transport behind a <see cref="LaserOutputStream"/>.</summary>
@@ -348,6 +388,7 @@ public sealed class LaserOutputStream : IDisposable
         // Library instances / connection state
         private Dac? _dac;
         private CancellationTokenSource? _connectionCts;
+        private Task? _connectionTask;
         private readonly ConcurrentQueue<LaserPoint[]> _pointQueue = new();
         private volatile LaserPoint[]? _lastFrame;   // written by the send loop, cleared on teardown
 
@@ -365,8 +406,8 @@ public sealed class LaserOutputStream : IDisposable
         private const int DiscoveryPollDelayMs = 500;
 
         public bool IsConnected => _isConnected;
-        public IStatusProvider.StatusLevel StatusLevel => _statusLevel;
-        public string StatusMessage => _statusMessage;
+        public IStatusProvider.StatusLevel StatusLevel => _status.Level;
+        public string StatusMessage => _status.Message;
 
         /// <summary>A plug left at its default scan rate (0) streams at 30 kpps.</summary>
         internal static int NormalizeScanRate(int scanRate)
@@ -409,6 +450,9 @@ public sealed class LaserOutputStream : IDisposable
 
         public void SubmitFrame(in LaserFrame frame)
         {
+            if (Volatile.Read(ref _disposed) != 0)
+                return;
+
             var copy = CopyForQueue(frame, _pointQueue, MaxQueuedFrames);
             if (copy == null)
                 return;
@@ -420,12 +464,15 @@ public sealed class LaserOutputStream : IDisposable
 
         private void StartConnection()
         {
+            if (Volatile.Read(ref _disposed) != 0)
+                return;
+
             TearDown();
 
             var cts = new CancellationTokenSource();
             _connectionCts = cts;
             var token = cts.Token;
-            _ = Task.Run(async () =>
+            _connectionTask = Task.Run(async () =>
                             {
                                 try
                                 {
@@ -528,6 +575,16 @@ public sealed class LaserOutputStream : IDisposable
                 catch (ObjectDisposedException) { }
             }
 
+            // Give the send loop a bounded chance to leave before its Dac is disposed; otherwise
+            // it can call Stop/Ping/StreamPoints on a disposed library object while the teardown
+            // task runs. Cancellation aborts its waits, so this is normally milliseconds.
+            var connectionTask = Interlocked.Exchange(ref _connectionTask, null);
+            if (connectionTask is { IsCompleted: false })
+            {
+                try { connectionTask.Wait(500); }
+                catch { /* the loop's own catch handles its failure */ }
+            }
+
             var dac = Interlocked.Exchange(ref _dac, null);
             if (dac != null)
             {
@@ -597,7 +654,7 @@ public sealed class LaserOutputStream : IDisposable
         {
             var attempt = 0;
 
-            while (!token.IsCancellationRequested)
+            while (!token.IsCancellationRequested && Volatile.Read(ref _disposed) == 0)
             {
                 attempt++;
                 Dac? dac = null;
@@ -644,9 +701,23 @@ public sealed class LaserOutputStream : IDisposable
                     }
                     catch { /* the normal send path reports connection failures */ }
 
-                    dac.StatusUpdated += HandleStatusUpdate;
-                    dac.DeviceConnected += () => HandleConnectionStateChanged(true);
-                    dac.DeviceDisconnected += () => HandleConnectionStateChanged(false);
+                    // A stale Dac can still raise events after a reconnect; only the current
+                    // session may write this stream's shared playback state.
+                    dac.StatusUpdated += (ack, play, light, fullness) =>
+                                         {
+                                             if (ReferenceEquals(Volatile.Read(ref _dac), dac))
+                                                 HandleStatusUpdate(ack, play, light, fullness);
+                                         };
+                    dac.DeviceConnected += () =>
+                                           {
+                                               if (ReferenceEquals(Volatile.Read(ref _dac), dac))
+                                                   HandleConnectionStateChanged(true);
+                                           };
+                    dac.DeviceDisconnected += () =>
+                                              {
+                                                  if (ReferenceEquals(Volatile.Read(ref _dac), dac))
+                                                      HandleConnectionStateChanged(false);
+                                              };
                     dac.SafetyFaultDetected += reason => Log.Warning($"EtherDream stream: safety fault - {reason}");
 
                     // A connected DAC stops its discovery broadcasts — report it so the plug picker
@@ -674,7 +745,7 @@ public sealed class LaserOutputStream : IDisposable
                     // Arm the stall watchdog from connect time: the light engine NACKs prepare/begin
                     // for a moment while warming up, and a kick fired from stale (default) timestamps
                     // would flag that normal warmup as a stall on the very first send.
-                    _lastPlayingUtc = DateTime.UtcNow;
+                    Interlocked.Exchange(ref _lastPlayingUtcTicks, DateTime.UtcNow.Ticks);
                     SetStatus($"Connected to {ipAddress}", IStatusProvider.StatusLevel.Success);
 
                     // Runs until cancelled or until a fatal error is thrown
@@ -768,7 +839,7 @@ public sealed class LaserOutputStream : IDisposable
             // device does not have.
             PollDac(dac, ref lastPingUtc, ref pingFailures);
 
-            while (!token.IsCancellationRequested)
+            while (!token.IsCancellationRequested && Volatile.Read(ref _disposed) == 0)
             {
                 if (_isPlaying)
                     recoverEscalation = 0;
@@ -836,6 +907,7 @@ public sealed class LaserOutputStream : IDisposable
                 if (_sendFrame == null || _sendOffset >= _sendFrame.Length)
                 {
                     LaserPoint[]? frame = null;
+                    var previousFrame = _lastFrame;
                     if (_pointQueue.TryDequeue(out var points) && points.Length > 0)
                     {
                         frame = points;
@@ -844,7 +916,7 @@ public sealed class LaserOutputStream : IDisposable
                         // so a pattern flip can never streak the beam across the show.
                         _needsDarkApproach = true;
                     }
-                    else if (_lastFrame is { Length: > 0 })
+                    else if (previousFrame is { Length: > 0 })
                     {
                         // The loop seam (this frame's exit back to its own start) gets the same
                         // dark ramp as a fresh frame: the DAC replays the frame ~40 times a
@@ -859,11 +931,11 @@ public sealed class LaserOutputStream : IDisposable
                                 Log.Warning("EtherDream stream: frame watchdog - no new frames, blanking output");
                                 SetStatus("Frame watchdog - no new frames, output blanked", IStatusProvider.StatusLevel.Warning);
                             }
-                            frame = BlankFrame(_lastFrame, ref _blankFrameScratch);
+                            frame = BlankFrame(previousFrame, ref _blankFrameScratch);
                         }
                         else
                         {
-                            frame = _lastFrame;
+                            frame = previousFrame;
                         }
                     }
 
@@ -885,7 +957,7 @@ public sealed class LaserOutputStream : IDisposable
                     _sendFrameRaw = frame;
                     if (_needsDarkApproach && frame.Length > 0)
                     {
-                        if (_lastFrame is { Length: > 0 } last)
+                        if (previousFrame is { Length: > 0 } last)
                         {
                             var lastPoint = last[last.Length - 1];
                             frame = PrependDarkApproach(frame, lastPoint.X, lastPoint.Y, ref _approachScratch);
@@ -913,7 +985,7 @@ public sealed class LaserOutputStream : IDisposable
                 // would fight the streaming and reset playback every couple of seconds.
                 if (!_isPlaying
                     && room < MinChunkPoints
-                    && DateTime.UtcNow - _lastPlayingUtc > TimeSpan.FromMilliseconds(PlaybackStallDelayMs)
+                    && DateTime.UtcNow.Ticks - Interlocked.Read(ref _lastPlayingUtcTicks) > TimeSpan.FromMilliseconds(PlaybackStallDelayMs).Ticks
                     && DateTime.UtcNow - lastRecoverUtc > TimeSpan.FromMilliseconds(RebeginMinIntervalMs))
                 {
                     lastRecoverUtc = DateTime.UtcNow;
@@ -964,14 +1036,10 @@ public sealed class LaserOutputStream : IDisposable
                     // Each chunk fits the reported room, so this returns after a single data
                     // command. The bounded wait is belt and braces for a socket-level hang; on
                     // timeout the socket is killed (unwinding the abandoned call) and the
-                    // connection recycled.
+                    // connection recycled. Await (not blocking Wait) keeps the send loop off
+                    // a thread-pool thread while the library's synchronous call runs.
                     var sendTask = Task.Run(() => dac.StreamPoints(ConvertPoints(chunk), (uint)_scanRate));
-                    if (!sendTask.Wait(SendStallTimeoutMs, token))
-                    {
-                        _killedSocket = true;
-                        KillDacSocket(dac);
-                        throw new TimeoutException("DAC send stalled - connection recycled");
-                    }
+                    await sendTask.WaitAsync(TimeSpan.FromMilliseconds(SendStallTimeoutMs), token).ConfigureAwait(false);
 
                     consecutiveErrors = 0;
                     warmupRetries = 0;
@@ -985,11 +1053,20 @@ public sealed class LaserOutputStream : IDisposable
 
                         // A completed frame after a warning (stall, halt recovery) means the show
                         // is back - the status line must not stay on the old warning forever.
-                        if (_statusLevel != IStatusProvider.StatusLevel.Success)
+                        if (_status.Level != IStatusProvider.StatusLevel.Success)
                             SetStatus("Streaming", IStatusProvider.StatusLevel.Success);
                     }
                 }
-                catch (AggregateException ae) when (!token.IsCancellationRequested && ae.InnerException is InvalidOperationException ex)
+                catch (TimeoutException) when (!token.IsCancellationRequested)
+                {
+                    // WaitAsync timed out: the library call is abandoned inside the socket
+                    // lock. Kill the TCP socket first so that call unwinds, then recycle the
+                    // connection - reusing it would deadlock every later command.
+                    _killedSocket = true;
+                    KillDacSocket(dac);
+                    throw;
+                }
+                catch (InvalidOperationException ex) when (!token.IsCancellationRequested)
                 {
                     // Light engine not ready yet - warm-up needs waiting out
                     if (++warmupRetries > MaxWarmupRetries)
@@ -1043,7 +1120,7 @@ public sealed class LaserOutputStream : IDisposable
                 _isPlaying = playing;
                 if (playing)
                 {
-                    _lastPlayingUtc = DateTime.UtcNow;
+                    Interlocked.Exchange(ref _lastPlayingUtcTicks, DateTime.UtcNow.Ticks);
                 }
                 else
                 {
@@ -1092,7 +1169,7 @@ public sealed class LaserOutputStream : IDisposable
             _isPlaying = playing;
             if (playing)
             {
-                _lastPlayingUtc = DateTime.UtcNow;
+                Interlocked.Exchange(ref _lastPlayingUtcTicks, DateTime.UtcNow.Ticks);
             }
             else
             {
@@ -1148,16 +1225,26 @@ public sealed class LaserOutputStream : IDisposable
             // reports as "buffer full while idle"; Prepare clears it. Killing the connection
             // mid-data is what leaves stale points behind in the first place. The stop travels
             // on the still-open socket; the grace lets both commands flush.
-            try
-            {
-                dac.Stop();
-                dac.Prepare();
-                Thread.Sleep(50);
-            }
-            catch
-            {
-                // Already dead - the kill below is all that's left
-            }
+            //
+            // Both commands take the library's socket lock. On a wedged/half-open DAC they can
+            // block forever, so they run on a bounded task: once the bound expires, the socket
+            // is killed to unwind them rather than leaking the task and holding the DAC session
+            // open for the next stream's connect.
+            var graceful = Task.Run(() =>
+                                        {
+                                            try
+                                            {
+                                                dac.Stop();
+                                                dac.Prepare();
+                                                Thread.Sleep(50);
+                                            }
+                                            catch
+                                            {
+                                                // Already dead - the kill below is all that's left
+                                            }
+                                        });
+            if (!graceful.Wait(300))
+                KillDacSocket(dac);
 
             try
             {
@@ -1186,9 +1273,12 @@ public sealed class LaserOutputStream : IDisposable
         /// </summary>
         private static void KillDacSocket(Dac dac)
         {
-            var field = typeof(Dac).GetField("_socket", BindingFlags.Instance | BindingFlags.NonPublic);
-            if (field?.GetValue(dac) is not TcpClient socket)
+            if (DacSocketField?.GetValue(dac) is not TcpClient socket)
+            {
+                if (Interlocked.Exchange(ref _socketFieldMissingLogged, 1) == 0)
+                    Log.Warning("EtherDream stream: Dac._socket is unavailable - a stalled send can no longer be unwound by closing the socket");
                 return;
+            }
 
             try { socket.Client?.Close(); }
             catch { }
@@ -1197,21 +1287,33 @@ public sealed class LaserOutputStream : IDisposable
             catch { }
         }
 
-        public void Dispose() => TearDown();
+        /// <summary>Cached once: reflection on the library's private socket is the only way to
+        /// unwind an abandoned StreamPoints call, and a per-call lookup on a trimmed build costs
+        /// the teardown path its escape hatch.</summary>
+        private static readonly FieldInfo? DacSocketField = typeof(Dac).GetField("_socket", BindingFlags.Instance | BindingFlags.NonPublic);
+        private static int _socketFieldMissingLogged;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+                return;
+
+            TearDown();
+        }
 
         private void SetStatus(string message, IStatusProvider.StatusLevel level)
         {
-            _statusMessage = message;
-            _statusLevel = level;
+            // One immutable snapshot: the UI must never see the new message with the old level.
+            _status = new StatusInfo(message, level);
         }
 
-        // State (same volatile discipline as the operator: send-thread writers, UI readers)
-        private string _statusMessage = "Disconnected";
-        private IStatusProvider.StatusLevel _statusLevel = IStatusProvider.StatusLevel.Notice;
+        // State (send/connection threads write, UI reads)
+        private volatile StatusInfo _status = new("Disconnected", IStatusProvider.StatusLevel.Notice);
+        private int _disposed;
         private volatile bool _isConnected;
         private volatile bool _isPlaying;
-        private DateTime _lastPlayingUtc;
-        private string? _lastConnectIp;
+        private long _lastPlayingUtcTicks = DateTime.UtcNow.Ticks;
+        private volatile string? _lastConnectIp;
         private volatile int _bufferFullness;
         private long _lastEnqueueTimestamp;
         private volatile bool _watchdogBlanked;
@@ -1240,6 +1342,7 @@ public sealed class LaserOutputStream : IDisposable
     {
         #region PONK Protocol Constants (from Common/Cpp/PonkDefs.h in the MadMapper/Ponk repo)
         private const string HeaderString = "PONK-UDP";
+        private static readonly byte[] HeaderMagicBytes = Encoding.ASCII.GetBytes(HeaderString);
         private const byte ProtocolVersion = 0;
         // 8 magic + 1 version + 4 sender id + 32 name + 1 frame + 1 chunk count + 1 chunk number + 4 crc.
         private const int HeaderSize = 52;
@@ -1275,6 +1378,8 @@ public sealed class LaserOutputStream : IDisposable
             var device = plug.PonkSettings;
             _useMulticast = device.UseMulticast;
             _senderName = ResolveSenderName(plug, device.SenderName);
+            var senderNameBytes = Encoding.ASCII.GetBytes(_senderName);
+            Array.Copy(senderNameBytes, _senderNameBytes, Math.Min(senderNameBytes.Length, _senderNameBytes.Length));
             _maxScanSpeed = MathF.Max(0.01f, device.MaxScanSpeed);
             _maxBrightness = Math.Clamp(device.MaxBrightness, 0f, 1f);
             _swapColorChannels = device.SwapColorChannels;
@@ -1316,12 +1421,16 @@ public sealed class LaserOutputStream : IDisposable
         private volatile LaserPoint[]? _lastFrame; // replaced wholesale (never mutated)
         private byte _frameNumber;
 
-        private volatile bool _disposed;
+        private int _disposed;
         private volatile bool _isSending;
+        private volatile StatusInfo _status = new("Disconnected", IStatusProvider.StatusLevel.Notice);
+
+        // Fixed 32-byte header field, encoded once instead of once per chunk.
+        private readonly byte[] _senderNameBytes = new byte[MaxSenderNameBytes];
 
         public bool IsConnected => _isSending;
-        public IStatusProvider.StatusLevel StatusLevel => _statusLevel;
-        public string StatusMessage => _statusMessage;
+        public IStatusProvider.StatusLevel StatusLevel => _status.Level;
+        public string StatusMessage => _status.Message;
 
         public string? DescribeMismatch(LaserPlug plug)
         {
@@ -1354,6 +1463,9 @@ public sealed class LaserOutputStream : IDisposable
 
         public void SubmitFrame(in LaserFrame frame)
         {
+            if (Volatile.Read(ref _disposed) != 0)
+                return;
+
             var copy = CopyForQueue(frame, _pointQueue, MaxQueuedFrames);
             if (copy == null)
                 return;
@@ -1365,6 +1477,9 @@ public sealed class LaserOutputStream : IDisposable
 
         private void StartConnection()
         {
+            if (Volatile.Read(ref _disposed) != 0)
+                return;
+
             TearDown();
 
             if (!IPAddress.TryParse(_targetAddress, out var targetIp))
@@ -1428,7 +1543,7 @@ public sealed class LaserOutputStream : IDisposable
                                                int port, CancellationToken token)
         {
             var attempt = 0;
-            while (!token.IsCancellationRequested && !_disposed)
+            while (!token.IsCancellationRequested && Volatile.Read(ref _disposed) == 0)
             {
                 attempt++;
                 Socket? socket = null;
@@ -1549,11 +1664,9 @@ public sealed class LaserOutputStream : IDisposable
         private async Task SendLoopAsync(Socket socket, IPEndPoint target, CancellationToken token)
         {
             var headerBuffer = new byte[MaxDatagramSize];
-            var payload = new MemoryStream(capacity: MaxDatagramSize);
-            var writer = new BinaryWriter(payload);
             var lastSendTicks = 0L;
 
-            while (!token.IsCancellationRequested && !_disposed)
+            while (!token.IsCancellationRequested && Volatile.Read(ref _disposed) == 0)
             {
                 // Master off: settled blanking. The blanked copy of the last frame must keep
                 // being SENT - receivers render whatever arrived last, so going silent leaves
@@ -1562,12 +1675,14 @@ public sealed class LaserOutputStream : IDisposable
                 // deliberate preview override (PONK receivers can drive real scanners, so the
                 // default is off). The pick below ignores queued frames while blanked.
                 var masterOff = !LaserMasterEnable.Enabled && !_keepalive;
+                var lastFrame = _lastFrame;
                 if (masterOff)
                 {
                     _pointQueue.Clear();
-                    if (_lastFrame is { Length: > 0 } && !_masterBlankApplied)
+                    if (lastFrame is { Length: > 0 } && !_masterBlankApplied)
                     {
-                        _lastFrame = BlankFrameCopy(_lastFrame);
+                        lastFrame = BlankFrameCopy(lastFrame);
+                        _lastFrame = lastFrame;
                         _lastFrameBlanked = true;
                         _masterBlankApplied = true;
                     }
@@ -1583,11 +1698,11 @@ public sealed class LaserOutputStream : IDisposable
                 {
                     frame = points;
                 }
-                else if (_lastFrame is { Length: > 0 } && Environment.TickCount64 - lastSendTicks >= RepeatIntervalMs)
+                else if (lastFrame is { Length: > 0 } && Environment.TickCount64 - lastSendTicks >= RepeatIntervalMs)
                 {
                     if (masterOff)
                     {
-                        frame = _lastFrame;
+                        frame = lastFrame;
                     }
                     else
                     {
@@ -1602,7 +1717,7 @@ public sealed class LaserOutputStream : IDisposable
                             SetStatus("Frame watchdog - no new frames, output blanked", IStatusProvider.StatusLevel.Warning);
                         }
 
-                        frame = watchdogBlank && !_lastFrameBlanked ? BlankFrameCopy(_lastFrame) : _lastFrame;
+                        frame = watchdogBlank && !_lastFrameBlanked ? BlankFrameCopy(lastFrame) : lastFrame;
                         frameIsBlanked = watchdogBlank || _lastFrameBlanked;
                     }
                 }
@@ -1658,13 +1773,16 @@ public sealed class LaserOutputStream : IDisposable
             var written = 0;
             for (var chunkNumber = 0; chunkNumber < chunkCount; chunkNumber++)
             {
+                token.ThrowIfCancellationRequested();
+
                 var payloadSize = Math.Min(MaxChunkPayload, frameLength - written);
                 var totalSize = HeaderSize + payloadSize;
 
-                WriteHeader(headerBuffer, _senderName, _senderId, _frameNumber, (byte)chunkCount, (byte)chunkNumber, crc);
+                WriteHeader(headerBuffer, _senderNameBytes, _senderId, _frameNumber, (byte)chunkCount, (byte)chunkNumber, crc);
                 Array.Copy(frameData, written, headerBuffer, HeaderSize, payloadSize);
 
                 var sent = 0;
+                var deadline = Environment.TickCount64 + 10;
                 while (sent < totalSize)
                 {
                     try
@@ -1678,6 +1796,13 @@ public sealed class LaserOutputStream : IDisposable
                     {
                         if (token.IsCancellationRequested)
                             throw new OperationCanceledException(token);
+
+                        // UDP is best-effort: a saturated send buffer means this frame is
+                        // dropped, not that the send loop should stall (and stop applying the
+                        // master-off/watchdog transitions). The receiver's CRC drops a partial
+                        // frame too.
+                        if (Environment.TickCount64 >= deadline)
+                            return;
 
                         Thread.Sleep(1); // brief yield; the next SendTo resumes
                     }
@@ -1734,14 +1859,14 @@ public sealed class LaserOutputStream : IDisposable
         /** float32 X, float32 Y, uint8 R, G, B. */
         private const int BytesPerPoint = 11;
 
-        private static void WriteHeader(byte[] buffer, string senderName, int senderId, byte frameNumber, byte chunkCount, byte chunkNumber, uint crc)
+        private static void WriteHeader(byte[] buffer, byte[] senderNameBytes, int senderId, byte frameNumber, byte chunkCount,
+                                        byte chunkNumber, uint crc)
         {
             // All multi-byte fields are little-endian per the PONK reference implementation:
             //  0-7 "PONK-UDP", 8 version, 9-12 sender id LE, 13-44 name (32B null-padded ASCII),
             //  45 frameNumber, 46 chunkCount, 47 chunkNumber, 48-51 dataCrc LE.
-            var nameBytes = Encoding.ASCII.GetBytes(HeaderString);
             for (var i = 0; i < 8; i++)
-                buffer[i] = i < nameBytes.Length ? nameBytes[i] : (byte)' ';
+                buffer[i] = i < HeaderMagicBytes.Length ? HeaderMagicBytes[i] : (byte)' ';
 
             buffer[8] = ProtocolVersion;
 
@@ -1750,9 +1875,8 @@ public sealed class LaserOutputStream : IDisposable
             buffer[11] = (byte)((senderId >> 16) & 0xFF);
             buffer[12] = (byte)((senderId >> 24) & 0xFF);
 
-            var senderBytes = Encoding.ASCII.GetBytes(senderName);
             for (var i = 0; i < MaxSenderNameBytes; i++)
-                buffer[13 + i] = i < senderBytes.Length ? senderBytes[i] : (byte)0;
+                buffer[13 + i] = senderNameBytes[i];
 
             buffer[45] = frameNumber;
             buffer[46] = chunkCount;
@@ -1795,18 +1919,17 @@ public sealed class LaserOutputStream : IDisposable
 
         public void Dispose()
         {
-            _disposed = true;
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+                return;
+
             TearDown();
         }
 
         private void SetStatus(string message, IStatusProvider.StatusLevel level)
         {
-            _statusMessage = message;
-            _statusLevel = level;
+            _status = new StatusInfo(message, level);
         }
 
-        private string _statusMessage = "Disconnected";
-        private IStatusProvider.StatusLevel _statusLevel = IStatusProvider.StatusLevel.Notice;
         private int _consecutiveErrors;
         private long _lastEnqueueTimestamp;
         private volatile bool _watchdogBlanked;
@@ -1901,7 +2024,7 @@ public sealed class LaserOutputStream : IDisposable
         private NetworkStream? _tcpStream;
         private int _connectInProgress;
 
-        private volatile bool _disposed;
+        private int _disposed;
         private volatile bool _feedActive;
         private volatile int _requiredFps;
         private uint _frameSequenceNo;
@@ -1909,20 +2032,29 @@ public sealed class LaserOutputStream : IDisposable
         private int _captureTcpPort; // staged before StartConnection; 0 = PLoc discovery
         private string _captureIp = string.Empty;
 
-        private string _statusMessage = "Disconnected";
-        private IStatusProvider.StatusLevel _statusLevel = IStatusProvider.StatusLevel.Notice;
+        /// <summary>Last successful TCP read or write. `TcpClient.Connected` is a cached bit
+        /// that never clears for a peer that vanished without a FIN, so a silent cable pull
+        /// would otherwise leave the control session "connected" forever.</summary>
+        private long _lastPeerActivityTicks = Environment.TickCount64;
+
+        private const int PeerTimeoutMs = 15_000;
+
+        private volatile StatusInfo _status = new("Disconnected", IStatusProvider.StatusLevel.Notice);
 
         public bool IsConnected
         {
             get
             {
                 lock (_connectionLock)
-                    return _tcpClient is { Connected: true };
+                {
+                    return _tcpClient is { Connected: true }
+                           && Environment.TickCount64 - Volatile.Read(ref _lastPeerActivityTicks) < PeerTimeoutMs;
+                }
             }
         }
 
-        public IStatusProvider.StatusLevel StatusLevel => _statusLevel;
-        public string StatusMessage => _statusMessage;
+        public IStatusProvider.StatusLevel StatusLevel => _status.Level;
+        public string StatusMessage => _status.Message;
 
         public bool MatchesPlug(LaserPlug plug)
         {
@@ -1974,7 +2106,7 @@ public sealed class LaserOutputStream : IDisposable
 
         public void SubmitFrame(in LaserFrame frame)
         {
-            if (_disposed || !IsConnected || !_feedActive)
+            if (Volatile.Read(ref _disposed) != 0 || !IsConnected || !_feedActive)
                 return;
 
             var copy = CopyForQueue(frame, _frameQueue, MaxQueuedFrames);
@@ -1986,13 +2118,12 @@ public sealed class LaserOutputStream : IDisposable
 
         private void SetStatus(string message, IStatusProvider.StatusLevel level)
         {
-            _statusMessage = message;
-            _statusLevel = level;
+            _status = new StatusInfo(message, level);
         }
 
         private void StartConnection()
         {
-            if (_disposed)
+            if (Volatile.Read(ref _disposed) != 0)
                 return;
 
             // Host AND port on the plug = direct connect; anything else keeps PLoc discovery.
@@ -2000,7 +2131,8 @@ public sealed class LaserOutputStream : IDisposable
             _captureTcpPort = IsDirectConnect ? _directPort : 0;
 
             var cts = new CancellationTokenSource();
-            _cts = cts;
+            lock (_connectionLock)
+                _cts = cts;
             _feedActive = false;
             _requiredFps = 0;
 
@@ -2024,7 +2156,23 @@ public sealed class LaserOutputStream : IDisposable
 
             // TcpClient.Connect blocks for seconds when unreachable - never on the caller's thread.
             var token = cts.Token;
-            _ = Task.Run(() => ReconnectLoopAsync(token));
+            _ = Task.Run(async () =>
+                            {
+                                try
+                                {
+                                    await ReconnectLoopAsync(token).ConfigureAwait(false);
+                                }
+                                finally
+                                {
+                                    lock (_connectionLock)
+                                    {
+                                        if (ReferenceEquals(_cts, cts))
+                                            _cts = null;
+                                    }
+
+                                    cts.Dispose();
+                                }
+                            });
         }
 
         /// <summary>
@@ -2046,16 +2194,20 @@ public sealed class LaserOutputStream : IDisposable
                 if (peer.TcpPort == _captureTcpPort)
                     return false;
 
+                string? announcement = null;
                 lock (_connectionLock)
                 {
-                    if (_disposed || _tcpClient is { Connected: true })
+                    if (Volatile.Read(ref _disposed) != 0 || _tcpClient is { Connected: true })
                         return false;
 
-                    Log.Info($"CITP: Capture at {_captureIp} announces port {peer.TcpPort} "
-                             + $"(plug has {_captureTcpPort}) - following the announced port");
+                    announcement = $"CITP: Capture at {_captureIp} announces port {peer.TcpPort} "
+                                   + $"(plug has {_captureTcpPort}) - following the announced port";
                     _captureTcpPort = peer.TcpPort;
                 }
 
+                // Log outside the connection lock: writers can block, and SubmitFrame's
+                // IsConnected takes this lock on the render thread every pump.
+                Log.Info(announcement);
                 return true;
             }
 
@@ -2088,7 +2240,7 @@ public sealed class LaserOutputStream : IDisposable
             var consecutiveFailures = 0;
             try
             {
-                while (!token.IsCancellationRequested && !_disposed)
+                while (!token.IsCancellationRequested && Volatile.Read(ref _disposed) == 0)
                 {
                     if (!IsConnected)
                     {
@@ -2163,26 +2315,28 @@ public sealed class LaserOutputStream : IDisposable
             if (best == null)
                 return false;
 
+            string? message = null;
             lock (_connectionLock)
             {
-                if (_disposed || _tcpClient is { Connected: true })
+                if (Volatile.Read(ref _disposed) != 0 || _tcpClient is { Connected: true })
                     return false;
 
                 if (best.Ip == _captureIp && best.TcpPort == _captureTcpPort)
                     return false;
 
-                Log.Debug($"CITP: {_captureIp}:{_captureTcpPort} is not answering - using the announced Capture "
-                          + $"{best.Ip}:{best.TcpPort} for feed '{_feedName}'");
+                message = $"CITP: {_captureIp}:{_captureTcpPort} is not answering - using the announced Capture "
+                          + $"{best.Ip}:{best.TcpPort} for feed '{_feedName}'";
                 _captureIp = best.Ip;
                 _captureTcpPort = best.TcpPort;
             }
 
+            Log.Debug(message);
             return true;
         }
 
         private void OnPeerAnnounced(CitpPeerDiscovery.Peer peer)
         {
-            if (_disposed || IsConnected || IsDirectConnect)
+            if (Volatile.Read(ref _disposed) != 0 || IsConnected || IsDirectConnect)
                 return;
 
             // With a local interface selected, prefer peers from its subnet: peers announcing
@@ -2190,7 +2344,8 @@ public sealed class LaserOutputStream : IDisposable
             // announce on their own subnets - Capture on a vEthernet looks like that).
             // "0.0.0.0" is the picker's "any interface" and has no subnet to prefer - treating it
             // as one rejected every non-loopback peer, so discovery silently fell back to localhost.
-            var peerIp = IPAddress.Parse(peer.Ip);
+            if (!IPAddress.TryParse(peer.Ip, out var peerIp))
+                return;
             if (IPAddress.TryParse(_localAddress, out var selectedLocal)
                 && !selectedLocal.Equals(IPAddress.Any)
                 && !IPAddress.IsLoopback(peerIp)
@@ -2203,7 +2358,7 @@ public sealed class LaserOutputStream : IDisposable
 
             lock (_connectionLock)
             {
-                if (_disposed || _tcpClient is { Connected: true })
+                if (Volatile.Read(ref _disposed) != 0 || _tcpClient is { Connected: true })
                     return;
 
                 _captureIp = peer.Ip;
@@ -2252,7 +2407,14 @@ public sealed class LaserOutputStream : IDisposable
             {
                 StopTcpConnection();
 
-                tcpClient = new TcpClient(ip.AddressFamily);
+                tcpClient = new TcpClient(ip.AddressFamily)
+                                {
+                                    // A peer that stops reading must not block the UDP feed thread
+                                    // forever. The receive side stays untimed (idle control
+                                    // sessions are normal); activity is tracked separately.
+                                    SendTimeout = 2000,
+                                };
+                tcpClient.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
 
                 // With a pinned interface, bind the socket to it so the session leaves on the
                 // chosen NIC. A bind that fails (NIC gone since the pick) falls back to OS
@@ -2301,9 +2463,9 @@ public sealed class LaserOutputStream : IDisposable
 
                     _tcpClient = tcpClient;
                     _tcpStream = tcpStream;
+                    Volatile.Write(ref _lastPeerActivityTicks, Environment.TickCount64);
 
                     SetStatus($"Connected to Capture at {ip}:{targetPort}", IStatusProvider.StatusLevel.Success);
-                    Log.Debug($"CITP: control session established with {ip}:{targetPort} (feed '{_feedName}')");
 
                     var token = _cts.Token;
                     var client = tcpClient;
@@ -2314,13 +2476,16 @@ public sealed class LaserOutputStream : IDisposable
                             Name = "CITP_TCP_Receiver",
                         }
                         .Start();
-                    new Thread(() => SendLoop(client))
+                    new Thread(() => SendLoop(client, token))
                         {
                             IsBackground = true,
                             Name = "CITP_UDP_Sender",
                         }
                         .Start();
                 }
+
+                // Log outside the lock: a slow log writer must not stall SubmitFrame's IsConnected.
+                Log.Debug($"CITP: control session established with {ip}:{targetPort} (feed '{_feedName}')");
 
                 // Handshake first
                 SendPeerName();
@@ -2382,6 +2547,9 @@ public sealed class LaserOutputStream : IDisposable
         {
             // TCP carries no message boundaries: one read may hold several CITP messages or part
             // of one, so messages are cut from an accumulating buffer by their MessageSize.
+            // The buffer grows for legitimate large control messages; anything larger than the
+            // cap is skipped by its declared size instead of being allowed to claim memory.
+            const int MaxControlMessageSize = 1 << 20;
             var buffer = new byte[4096];
             var buffered = 0;
             var skipRemaining = 0; // rest of a message too large for the buffer (not a laser control message)
@@ -2390,7 +2558,20 @@ public sealed class LaserOutputStream : IDisposable
                 try
                 {
                     if (buffered == buffer.Length)
-                        buffered = 0;
+                    {
+                        var grown = Math.Min(buffer.Length * 2, MaxControlMessageSize);
+                        if (grown == buffer.Length)
+                        {
+                            // A message that fills the cap without a complete header is garbage:
+                            // drop it and resync on the next read.
+                            buffered = 0;
+                            skipRemaining = 0;
+                        }
+                        else
+                        {
+                            Array.Resize(ref buffer, grown);
+                        }
+                    }
 
                     var bytesRead = stream.Read(buffer, buffered, buffer.Length - buffered);
                     if (bytesRead == 0)
@@ -2400,6 +2581,7 @@ public sealed class LaserOutputStream : IDisposable
                         break;
                     }
 
+                    Volatile.Write(ref _lastPeerActivityTicks, Environment.TickCount64);
                     buffered += bytesRead;
                     var consumed = 0;
                     while (consumed < buffered)
@@ -2425,8 +2607,18 @@ public sealed class LaserOutputStream : IDisposable
 
                         if (size > buffer.Length)
                         {
-                            skipRemaining = size;
-                            continue;
+                            if (size > MaxControlMessageSize)
+                            {
+                                // Skip only the bytes that follow the already-buffered header;
+                                // the caller must not lose the next message's start.
+                                skipRemaining = size - (buffered - consumed);
+                                consumed = buffered;
+                                break;
+                            }
+
+                            // Legitimate large message: grow and read its remainder first.
+                            Array.Resize(ref buffer, size);
+                            break;
                         }
 
                         if (size > buffered - consumed)
@@ -2636,7 +2828,7 @@ public sealed class LaserOutputStream : IDisposable
                       IStatusProvider.StatusLevel.Success);
         }
 
-        private static void SendTcpMessage(NetworkStream stream, MemoryStream ms)
+        private void SendTcpMessage(NetworkStream stream, MemoryStream ms)
         {
             var data = ms.ToArray();
             var length = (uint)data.Length;
@@ -2649,6 +2841,9 @@ public sealed class LaserOutputStream : IDisposable
             // The TCP receive thread and any handshake triggered on connect share this stream.
             lock (stream)
                 stream.Write(data, 0, data.Length);
+
+            // SendTimeout bounds this write; a successful write is proof the peer is alive.
+            Volatile.Write(ref _lastPeerActivityTicks, Environment.TickCount64);
         }
         #endregion
 
@@ -2659,9 +2854,10 @@ public sealed class LaserOutputStream : IDisposable
 
         /// <summary>Runs for the lifetime of one control session: a reconnect starts a new loop, so
         /// this one exits once <paramref name="client"/> is no longer the live connection.</summary>
-        private void SendLoop(TcpClient client)
+        private void SendLoop(TcpClient client, CancellationToken token)
         {
-            var token = _cts?.Token ?? default;
+            try
+            {
             using var udpSender = new UdpClient();
             var target = new IPEndPoint(MulticastAddress, MulticastPort);
             LaserPoint[]? lastFrame = null;
@@ -2669,7 +2865,8 @@ public sealed class LaserOutputStream : IDisposable
             var lastAnnounceUtc = DateTime.UtcNow;
             var nextSendTimestamp = 0L;
 
-            while (!token.IsCancellationRequested && !_disposed && ReferenceEquals(Volatile.Read(ref _tcpClient), client))
+            while (!token.IsCancellationRequested && Volatile.Read(ref _disposed) == 0
+                                                   && ReferenceEquals(Volatile.Read(ref _tcpClient), client))
             {
                 // Keepalive: CITP is a previz path that never drives projectors, so with the
                 // plug's keepalive on the feed keeps streaming content while the LASER master
@@ -2737,6 +2934,18 @@ public sealed class LaserOutputStream : IDisposable
                 {
                     lastAnnounceUtc = DateTime.UtcNow;
                     SendLaserFeedList();
+                }
+            }
+            }
+            catch (Exception e) when (!token.IsCancellationRequested)
+            {
+                // A manually created thread must never let an exception escape: it would take
+                // the whole editor down. Treat it as session loss and let discovery reconnect.
+                if (Volatile.Read(ref _disposed) == 0)
+                {
+                    SetStatus($"CITP send loop failed: {e.Message}", IStatusProvider.StatusLevel.Warning);
+                    Log.Warning($"CITP send loop failed for feed '{_feedName}' - {e.Message}");
+                    StopTcpConnection(client);
                 }
             }
         }
@@ -2888,13 +3097,16 @@ public sealed class LaserOutputStream : IDisposable
 
         public void Dispose()
         {
-            if (_disposed)
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
                 return;
 
-            _disposed = true;
             CitpPeerDiscovery.PeerAnnounced -= OnPeerAnnounced;
-            var cts = _cts;
-            cts?.Cancel();
+            CancellationTokenSource? cts;
+            lock (_connectionLock)
+                cts = _cts;
+
+            try { cts?.Cancel(); }
+            catch (ObjectDisposedException) { /* the reconnect task already finished */ }
 
             lock (_connectionLock)
             {
@@ -2904,6 +3116,7 @@ public sealed class LaserOutputStream : IDisposable
                 try { _tcpClient?.Close(); } catch { /* ignore */ }
                 _tcpClient = null;
 
+                _cts = null;
                 _frameQueue.Clear();
             }
 

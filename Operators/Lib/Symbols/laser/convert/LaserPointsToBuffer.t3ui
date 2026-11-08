@@ -32,14 +32,16 @@
       "Position": {
         "X": 300.0,
         "Y": 200.0
-      }
+      },
+      "Description": "GPU structured buffer in T3.Core.DataTypes.Point layout (Position, Color RGBA, orientation). The capacity can exceed PointCount; the tail is filled with separators and is never drawn."
     },
     {
       "OutputId": "fcee2f07-b573-4dd0-a365-36bad0cce3c5"/*PointCount*/,
       "Position": {
         "X": 300.0,
         "Y": 300.0
-      }
+      },
+      "Description": "Number of valid points at the start of the buffer. Use this, not the SRV length, as the draw/consume count."
     }
   ]
 }

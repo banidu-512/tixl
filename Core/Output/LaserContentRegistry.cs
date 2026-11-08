@@ -1,4 +1,5 @@
 #nullable enable
+using System;
 using System.Collections.Generic;
 using System.Threading;
 using T3.Core.DataTypes;
@@ -42,9 +43,17 @@ public static class LaserContentRegistry
     /// <summary>Upper bound on laser points the content suppliers generate per pull; 0 = uncapped.
     /// The driver derives it from the routed output's bound plugs: a CITP LaserFeedFrame travels as
     /// ONE datagram capped at 12,000 points and the encode drops everything beyond, so converting
-    /// more would be work whose result is thrown away. Set before a pull, read during it — render
-    /// thread only, like every laser cache.</summary>
-    public static int PointBudget;
+    /// more would be work whose result is thrown away. Set before a pull and read during it on the
+    /// same evaluation thread; thread-static so an on-demand preview pull can never overwrite the
+    /// budget of a pump running concurrently on the render thread.</summary>
+    public static int PointBudget
+    {
+        get => _pointBudget;
+        set => _pointBudget = value;
+    }
+
+    [ThreadStatic]
+    private static int _pointBudget;
 
     public static void Register(ILaserContentSupplier supplier)
     {

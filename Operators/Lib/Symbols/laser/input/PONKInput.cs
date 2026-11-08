@@ -1,4 +1,5 @@
 #nullable enable
+using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net;
@@ -14,9 +15,21 @@ using T3.Core.Utils;
 
 namespace Lib.laser.input;
 
+/// <summary>
+/// Receives laser frames from PONK-over-UDP senders (MadMapper, another TiXL instance, ...).
+/// A background listener binds <see cref="Port"/> on <see cref="LocalIpAddress"/> and joins the
+/// default multicast group; chunked frames are reassembled per sender, checksummed, decoded and
+/// republished as ILDA-style <see cref="LaserPoint"/>s. The listener is generation-owned and
+/// joined on stop so a settings change can never leave two threads feeding the same scratch.
+/// Inputs are snapshotted on the evaluator thread; packet decoding never touches input slots.
+/// </summary>
 [Guid("B2C3D4E5-F6A7-8901-ABCD-EF1234567890")]
 internal sealed class PONKInput : Instance<PONKInput>, IStatusProvider, ICustomDropdownHolder, IDisposable
 {
+    /// <summary>Immutable status snapshot: the listener thread writes it while the evaluator and
+    /// UI read it; two separate fields could pair a new message with an old level.</summary>
+    private sealed record StatusInfo(string Message, IStatusProvider.StatusLevel Level);
+
     #region PONK Protocol Constants (must match the sender in T3.Core.Output.LaserOutputStream and the C++ reference implementation)
     // Header layout (52 bytes, little-endian):
     //  0-7:  "PONK-UDP" (8 ASCII bytes)
@@ -97,9 +110,11 @@ internal sealed class PONKInput : Instance<PONKInput>, IStatusProvider, ICustomD
     #endregion
 
     #region Private Fields
-    // Listener state
+    // Listener state. A generation is joined before a replacement starts, so two listener
+    // threads can never own the same port and race on the per-frame scratch.
     private Thread? _listenerThread;
     private UdpClient? _udpClient;
+    private readonly object _listenerLock = new();
     private volatile bool _runListener;
     private volatile bool _printToLog;
     private string _lastLocalIp = string.Empty;
@@ -123,14 +138,16 @@ internal sealed class PONKInput : Instance<PONKInput>, IStatusProvider, ICustomD
     // TiXL next to MadMapper) both count 0..255, and merging their chunks made every packet reset the
     // buffer - nothing ever completed and the receiver starved although it lists both senders.
     private readonly ConcurrentDictionary<(int SenderId, byte FrameNumber), FrameBuffer> _frameBuffers = new();
-    private readonly object _frameResetLock = new();
-    private byte _lastCompletedFrame;
     private volatile int _lastCompletedSenderId;            // listener thread writes, evaluator reads
     private volatile string _lastCompletedSenderName = string.Empty;
     private long _lastFrameTicks;
 
     /** Frames waiting for their remaining chunks; beyond this the table is dropped. */
-    private const int MaxPendingFrames = 1024;
+    private const int MaxPendingFrames = 256;
+
+    /** Hard bound on the bytes held by in-progress frames across all senders. */
+    private const long MaxPendingBytes = 64L * 1024 * 1024;
+    private long _pendingBytes;
 
     /** Distinct sender names kept for the filter dropdown. */
     private const int MaxKnownStreams = 256;
@@ -153,9 +170,12 @@ internal sealed class PONKInput : Instance<PONKInput>, IStatusProvider, ICustomD
     // Converted point buffer (re-used to avoid per-frame allocations on the listener thread)
     private readonly List<LaserPoint> _pointAccumulator = new(2048);
 
-    // Status
-    private string _statusMessage = "Inactive";
-    private IStatusProvider.StatusLevel _statusLevel = IStatusProvider.StatusLevel.Notice;
+    // Status (one immutable snapshot for lock-free readers)
+    private volatile StatusInfo _status = new("Inactive", IStatusProvider.StatusLevel.Notice);
+
+    // Discovery writes every valid header; skip the dictionary churn while the pair is unchanged.
+    private string _lastRecordedName = string.Empty;
+    private IPAddress? _lastRecordedAddress;
 
     // Output snapshot
     private volatile StructuredList? _currentPoints;
@@ -169,6 +189,7 @@ internal sealed class PONKInput : Instance<PONKInput>, IStatusProvider, ICustomD
         public uint DataCrc;
         public int SenderId;
         public DateTime FirstChunkTime;
+        public DateTime LastChunkTime;
         public readonly Dictionary<byte, byte[]> Chunks = new(8);
     }
     #endregion
@@ -235,8 +256,8 @@ internal sealed class PONKInput : Instance<PONKInput>, IStatusProvider, ICustomD
     #endregion
 
     #region IStatusProvider
-    public IStatusProvider.StatusLevel GetStatusLevel() => _statusLevel;
-    public string GetStatusMessage() => _statusMessage;
+    public IStatusProvider.StatusLevel GetStatusLevel() => _status.Level;
+    public string GetStatusMessage() => _status.Message;
     #endregion
 
     #region ICustomDropdownHolder
@@ -335,14 +356,30 @@ internal sealed class PONKInput : Instance<PONKInput>, IStatusProvider, ICustomD
                 }
             }
 
-            CleanupStaleFrames(Timeout.GetValue(context));
+            var timeout = Timeout.GetValue(context);
+            CleanupStaleFrames(timeout);
+
+            // A sender that vanished mid-show must not leave its last frame replaying forever:
+            // the scanner would keep drawing stale content with no live source behind it.
+            if (_currentPoints != null && float.IsFinite(timeout) && timeout > 0)
+            {
+                var lastTicks = Interlocked.Read(ref _lastFrameTicks);
+                var ageSeconds = lastTicks == 0
+                                     ? double.MaxValue
+                                     : (Stopwatch.GetTimestamp() - lastTicks) / (double)Stopwatch.Frequency;
+                if (ageSeconds > timeout)
+                {
+                    _currentPoints = null;
+                    SetStatus($"No data for {timeout:0.0}s - output blanked", IStatusProvider.StatusLevel.Warning);
+                }
+            }
 
             // Surface the most recent frame on the output slot
             LaserPoints.Value = _currentPoints ?? s_emptyList;
             FrameCount.Value = (int)Math.Min(Interlocked.Read(ref _totalFramesReceived), int.MaxValue);
             SenderId.Value = _lastCompletedSenderId;
             SenderName.Value = _lastCompletedSenderName;
-            StatusMessage.Value = _statusMessage;
+            StatusMessage.Value = _status.Message;
         }
         catch (Exception e)
         {
@@ -362,37 +399,70 @@ internal sealed class PONKInput : Instance<PONKInput>, IStatusProvider, ICustomD
     #region Listener Lifecycle
     private void StartListening(string localIpString, int port)
     {
-        if (_listenerThread is { IsAlive: true } || _disposed) return;
-        _runListener = true;
-
-        // Resolve the bind settings on the evaluation thread - the listener reads only
-        // its parameters from here on, never input slots
-        var listenIp = IPAddress.Any;
-        if (!string.IsNullOrWhiteSpace(localIpString) && IPAddress.TryParse(localIpString, out var parsed))
-            listenIp = parsed;
-
-        _listenerThread = new Thread(() => ListenLoop(listenIp, port))
+        lock (_listenerLock)
         {
-            IsBackground = true,
-            Name = "PONKInputListener"
-        };
-        _listenerThread.Start();
-        if (_printToLog) Log.Debug($"PONK Input: Starting listener thread on {listenIp}:{port}.", this);
+            if (_disposed || _listenerThread is { IsAlive: true })
+                return;
+
+            _runListener = true;
+
+            // Resolve the bind settings on the evaluation thread - the listener reads only
+            // its parameters from here on, never input slots.
+            var listenIp = IPAddress.Any;
+            if (!string.IsNullOrWhiteSpace(localIpString) && IPAddress.TryParse(localIpString, out var parsed))
+                listenIp = parsed;
+
+            _listenerThread = new Thread(() => ListenLoop(listenIp, port))
+                                  {
+                                      IsBackground = true,
+                                      Name = "PONKInputListener",
+                                  };
+            _listenerThread.Start();
+        }
+
+        if (_printToLog) Log.Debug($"PONK Input: Starting listener thread on {localIpString}:{port}.", this);
     }
 
     private void StopListening()
     {
-        if (!_runListener) return;
-        _runListener = false;
-        if (_printToLog) Log.Debug("PONK Input: Stopping listener.", this);
-        try { _udpClient?.Close(); } catch { /* ignore */ }
-        // Join-free teardown: closing the socket unblocks the loop's pending Receive and it
-        // exits on its own within microseconds; its own socket is never rebound. Dropping the
-        // thread reference here lets the IsAlive guard in StartListening accept the
-        // replacement listener - waiting here would stall the evaluation thread for up to
-        // 200ms on every settings change.
-        _listenerThread = null;
-        SetStatus("Listener stopped", IStatusProvider.StatusLevel.Notice);
+        Thread? thread;
+        lock (_listenerLock)
+        {
+            if (!_runListener && _listenerThread == null)
+                return;
+
+            _runListener = false;
+            if (_printToLog) Log.Debug("PONK Input: Stopping listener.", this);
+
+            // Close the socket owned by the current generation. It may have been assigned
+            // before Bind, so a stop during bring-up still releases the port.
+            try { Interlocked.Exchange(ref _udpClient, null)?.Close(); }
+            catch { /* ignore */ }
+
+            thread = _listenerThread;
+        }
+
+        // Join before allowing a replacement: two listeners on the same port would both
+        // receive every packet and feed the same per-frame scratch from two threads.
+        if (thread != null && thread != Thread.CurrentThread && thread.IsAlive)
+        {
+            try { thread.Join(300); }
+            catch { /* ignore */ }
+        }
+
+        lock (_listenerLock)
+        {
+            if (thread == null || !thread.IsAlive)
+            {
+                _listenerThread = null;
+                SetStatus("Listener stopped", IStatusProvider.StatusLevel.Notice);
+            }
+            else
+            {
+                SetStatus("Listener is still shutting down - retrying", IStatusProvider.StatusLevel.Warning);
+                _runListener = true; // let the update loop try the stop again
+            }
+        }
     }
     #endregion
 
@@ -403,6 +473,8 @@ internal sealed class PONKInput : Instance<PONKInput>, IStatusProvider, ICustomD
         try
         {
             currentUdpClient = new UdpClient(AddressFamily.InterNetwork) { ExclusiveAddressUse = false };
+            // Publish before Bind so a stop during bring-up can still close this socket.
+            Interlocked.Exchange(ref _udpClient, currentUdpClient);
             currentUdpClient.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
             currentUdpClient.Client.Bind(new IPEndPoint(listenIp, port));
 
@@ -418,7 +490,6 @@ internal sealed class PONKInput : Instance<PONKInput>, IStatusProvider, ICustomD
                 if (_printToLog) Log.Warning($"PONK Input: AddMembership failed ({ex.Message}); continuing unicast-only", this);
             }
 
-            _udpClient = currentUdpClient;
             SetStatus($"Listening on {listenIp}:{port} (multicast {DefaultMulticastAddress}:{DefaultPort})",
                       IStatusProvider.StatusLevel.Notice);
             if (_printToLog)
@@ -445,7 +516,7 @@ internal sealed class PONKInput : Instance<PONKInput>, IStatusProvider, ICustomD
                 }
 
                 if (data.Length == 0) continue;
-                _packetsReceived++;
+                Interlocked.Increment(ref _packetsReceived);
                 ProcessPacket(data, remoteEndPoint.Address);
             }
         }
@@ -457,7 +528,7 @@ internal sealed class PONKInput : Instance<PONKInput>, IStatusProvider, ICustomD
         finally
         {
             try { currentUdpClient?.Close(); } catch { /* ignore */ }
-            if (currentUdpClient == _udpClient) _udpClient = null;
+            Interlocked.CompareExchange(ref _udpClient, null, currentUdpClient);
         }
     }
     #endregion
@@ -467,16 +538,16 @@ internal sealed class PONKInput : Instance<PONKInput>, IStatusProvider, ICustomD
     {
         try
         {
-            if (data.Length < HeaderSize) { _invalidPackets++; return; }
+            if (data.Length < HeaderSize) { Interlocked.Increment(ref _invalidPackets); return; }
 
             // Magic
             for (var i = 0; i < 8; i++)
             {
-                if (data[i] != (byte)HeaderString[i]) { _invalidPackets++; return; }
+                if (data[i] != (byte)HeaderString[i]) { Interlocked.Increment(ref _invalidPackets); return; }
             }
 
             // Version
-            if (data[8] > ProtocolVersion) { _invalidPackets++; return; }
+            if (data[8] > ProtocolVersion) { Interlocked.Increment(ref _invalidPackets); return; }
 
             var senderId = data[9] | (data[10] << 8) | (data[11] << 16) | (data[12] << 24);
             var senderName = ReadSenderName(data, 13, 32);
@@ -486,7 +557,19 @@ internal sealed class PONKInput : Instance<PONKInput>, IStatusProvider, ICustomD
             var chunkNumber = data[47];
             var dataCrc = (uint)(data[48] | (data[49] << 8) | (data[50] << 16) | (data[51] << 24));
 
-            if (chunkCount == 0 || chunkNumber >= chunkCount) { _invalidPackets++; return; }
+            if (chunkCount == 0 || chunkNumber >= chunkCount)
+            {
+                Interlocked.Increment(ref _invalidPackets);
+                return;
+            }
+
+            // UDP itself bounds a datagram at 65,507 bytes; reject a claimed payload beyond
+            // that instead of letting a malformed packet size the reassembly allocation.
+            if (data.Length - HeaderSize > 65507)
+            {
+                Interlocked.Increment(ref _invalidPackets);
+                return;
+            }
 
             // Discovery: record every valid-header sender before any filtering, so the
             // FilterSenderName dropdown lists streams we are deliberately ignoring.
@@ -499,11 +582,13 @@ internal sealed class PONKInput : Instance<PONKInput>, IStatusProvider, ICustomD
             var nameFilter = _cachedNameFilter;
             if (!string.IsNullOrEmpty(nameFilter) && !string.Equals(senderName, nameFilter, StringComparison.Ordinal)) return;
 
-            // Get or create the per-frame buffer
-            if (_frameBuffers.Count > MaxPendingFrames)
+            // Get or create the per-frame buffer. Bound both the frame count and the bytes
+            // held by partially reassembled frames: an unauthenticated UDP sender must not
+            // be able to reserve hundreds of megabytes by claiming chunks it never sends.
+            if (_frameBuffers.Count > MaxPendingFrames
+                || Interlocked.Read(ref _pendingBytes) > MaxPendingBytes)
             {
-                _chunksOrphaned += _frameBuffers.Count;
-                _frameBuffers.Clear();
+                ClearPendingFrames();
             }
 
             var frameKey = (senderId, frameNumber);
@@ -511,9 +596,11 @@ internal sealed class PONKInput : Instance<PONKInput>, IStatusProvider, ICustomD
             {
                 FrameNumber = frameNumber,
                 FirstChunkTime = DateTime.UtcNow,
+                LastChunkTime = DateTime.UtcNow,
             });
 
             // First chunk for this frame number - lock to make sure the chunk count/CRC are consistent
+            var complete = false;
             lock (frame)
             {
                 if (frame.Chunks.Count == 0)
@@ -525,11 +612,12 @@ internal sealed class PONKInput : Instance<PONKInput>, IStatusProvider, ICustomD
                 else if (frame.ChunkCount != chunkCount || frame.DataCrc != dataCrc || frame.SenderId != senderId)
                 {
                     // A later chunk disagrees with the first - drop the frame and start over
+                    Interlocked.Add(ref _pendingBytes, -SumChunkBytes(frame));
                     frame.Chunks.Clear();
                     frame.ChunkCount = chunkCount;
                     frame.DataCrc = dataCrc;
                     frame.SenderId = senderId;
-                    _chunksOrphaned++;
+                    Interlocked.Increment(ref _chunksOrphaned);
                 }
 
                 // Copy payload (data.Length - HeaderSize bytes). Zero-length chunks are
@@ -540,10 +628,19 @@ internal sealed class PONKInput : Instance<PONKInput>, IStatusProvider, ICustomD
                 var payload = new byte[payloadLength];
                 if (payloadLength > 0)
                     Array.Copy(data, HeaderSize, payload, 0, payloadLength);
+
+                // A repeated chunk replaces its previous buffer; account for the difference.
+                if (frame.Chunks.TryGetValue(chunkNumber, out var previous))
+                    Interlocked.Add(ref _pendingBytes, payloadLength - previous.Length);
+                else
+                    Interlocked.Add(ref _pendingBytes, payloadLength);
+
                 frame.Chunks[chunkNumber] = payload;
+                frame.LastChunkTime = DateTime.UtcNow;
+                complete = frame.Chunks.Count >= frame.ChunkCount;
             }
 
-            if (frame.Chunks.Count < frame.ChunkCount) return;
+            if (!complete) return;
 
             // All chunks received - reassemble and verify CRC
             byte[] frameData;
@@ -555,32 +652,57 @@ internal sealed class PONKInput : Instance<PONKInput>, IStatusProvider, ICustomD
             var actualCrc = ComputeChecksum(frameData);
             if (actualCrc != dataCrc)
             {
-                _invalidPackets++;
+                Interlocked.Increment(ref _invalidPackets);
                 if (_printToLog)
                     Log.Warning($"PONK Input: Frame {frameNumber} CRC mismatch (expected {dataCrc:X8}, got {actualCrc:X8})", this);
-                _frameBuffers.TryRemove(frameKey, out _);
+                if (_frameBuffers.TryRemove(frameKey, out var rejected))
+                    Interlocked.Add(ref _pendingBytes, -SumChunkBytes(rejected));
                 return;
             }
 
             // Parse the frame and publish points
             ParseFrameAndPublish(frameData, senderId, senderName);
-            _frameBuffers.TryRemove(frameKey, out _);
+            if (_frameBuffers.TryRemove(frameKey, out var completed))
+                Interlocked.Add(ref _pendingBytes, -SumChunkBytes(completed));
             Interlocked.Increment(ref _totalFramesReceived);
-            _lastCompletedFrame = frameNumber;
             _lastCompletedSenderId = senderId;
             _lastCompletedSenderName = senderName;
-            _lastFrameTicks = Stopwatch.GetTimestamp();
+            Interlocked.Exchange(ref _lastFrameTicks, Stopwatch.GetTimestamp());
             // No dirty-flag invalidations here: this runs on the listener thread and the
             // output slots are Animated, so the evaluator republishes them every frame.
 
             if (_printToLog)
-                Log.Debug($"PONK Input: Frame {frameNumber} from '{senderName}' (id {senderId}) - {_totalPointsReceived} points total", this);
+                Log.Debug($"PONK Input: Frame {frameNumber} from '{senderName}' (id {senderId}) - {Interlocked.Read(ref _totalPointsReceived)} points total", this);
         }
         catch (Exception ex)
         {
-            _invalidPackets++;
+            Interlocked.Increment(ref _invalidPackets);
             if (_printToLog) Log.Warning($"PONK Input: Packet parse error - {ex.Message}", this);
         }
+    }
+
+    private static long SumChunkBytes(FrameBuffer frame)
+    {
+        long sum = 0;
+        foreach (var chunk in frame.Chunks.Values)
+            sum += chunk.Length;
+        return sum;
+    }
+
+    /// <summary>Drops every partially reassembled frame and its byte accounting. Listener thread only.</summary>
+    private void ClearPendingFrames()
+    {
+        var removed = 0;
+        foreach (var pair in _frameBuffers)
+        {
+            if (!_frameBuffers.TryRemove(pair.Key, out var frame))
+                continue;
+
+            Interlocked.Add(ref _pendingBytes, -SumChunkBytes(frame));
+            removed++;
+        }
+
+        Interlocked.Add(ref _chunksOrphaned, removed);
     }
 
     private static byte[] CombineChunks(FrameBuffer frame)
@@ -604,6 +726,15 @@ internal sealed class PONKInput : Instance<PONKInput>, IStatusProvider, ICustomD
 
     private void RecordStream(string senderName, IPAddress remoteAddress)
     {
+        // The dropdown only needs one entry per sender; rewriting it for every chunk at
+        // PONK packet rates was pure allocation and dictionary churn.
+        if (string.Equals(senderName, _lastRecordedName, StringComparison.Ordinal)
+            && Equals(remoteAddress, _lastRecordedAddress))
+            return;
+
+        _lastRecordedName = senderName;
+        _lastRecordedAddress = remoteAddress;
+
         var remoteIp = remoteAddress.ToString();
         var key = string.IsNullOrEmpty(senderName) ? remoteIp : senderName;
         if (_knownStreams.Count > MaxKnownStreams)
@@ -642,7 +773,6 @@ internal sealed class PONKInput : Instance<PONKInput>, IStatusProvider, ICustomD
 
         _pointAccumulator.Clear();
         var offset = 0;
-        var pathCount = 0;
 
         while (offset < data.Length)
         {
@@ -681,8 +811,10 @@ internal sealed class PONKInput : Instance<PONKInput>, IStatusProvider, ICustomD
 
                 if (dataFormat == DataFormatXyF32RgbU8)
                 {
-                    x = BitConverter.ToSingle(data, offset);
-                    y = BitConverter.ToSingle(data, offset + 4);
+                    // PONK is explicitly little-endian; BitConverter.ToSingle is machine-endian
+                    // and would decode garbage on a big-endian host.
+                    x = BinaryPrimitives.ReadSingleLittleEndian(data.AsSpan(offset, 4));
+                    y = BinaryPrimitives.ReadSingleLittleEndian(data.AsSpan(offset + 4, 4));
                     r = data[offset + 8];
                     g = data[offset + 9];
                     b = data[offset + 10];
@@ -711,11 +843,9 @@ internal sealed class PONKInput : Instance<PONKInput>, IStatusProvider, ICustomD
                 var ly = RemapAndScale(y, minY, maxY);
                 _pointAccumulator.Add(new LaserPoint(lx, ly, Scale8To16(r), Scale8To16(g), Scale8To16(b)));
             }
-
-            pathCount++;
         }
 
-        _totalPointsReceived += _pointAccumulator.Count;
+        Interlocked.Add(ref _totalPointsReceived, _pointAccumulator.Count);
 
         if (_pointAccumulator.Count == 0) return;
 
@@ -728,7 +858,21 @@ internal sealed class PONKInput : Instance<PONKInput>, IStatusProvider, ICustomD
     private static int RemapAndScale(float value, float min, float max)
     {
         // Map the PONK normal range onto the user-specified range, then scale to ILDA 16-bit.
-        if (Math.Abs(max - min) < 1e-6f) return 0;
+        // Broken range inputs (NaN/infinity/reversed) collapse to the full field instead of
+        // producing NaN coordinates that the scanner cannot reject.
+        if (!float.IsFinite(min) || !float.IsFinite(max))
+        {
+            min = -1f;
+            max = 1f;
+        }
+        else if (min > max)
+        {
+            (min, max) = (max, min);
+        }
+
+        if (max - min < 1e-6f)
+            return 0;
+
         var t = Math.Clamp((value - min) / (max - min), 0f, 1f);
         return (int)(t * 2f * LaserPointCoordMax) - LaserPointCoordMax;
     }
@@ -740,19 +884,29 @@ internal sealed class PONKInput : Instance<PONKInput>, IStatusProvider, ICustomD
     #region Cleanup & Status
     private void CleanupStaleFrames(float timeoutSeconds)
     {
-        if (timeoutSeconds <= 0) return;
+        if (!float.IsFinite(timeoutSeconds) || timeoutSeconds <= 0)
+            return;
+
         var cutoff = DateTime.UtcNow.AddSeconds(-timeoutSeconds);
         _staleFrameKeys.Clear();
         foreach (var kvp in _frameBuffers)
         {
-            if (kvp.Value.FirstChunkTime < cutoff) _staleFrameKeys.Add(kvp.Key);
+            // Expire on the LAST chunk: a large frame still arriving on a slow link must not
+            // be purged merely because its first chunk is older than the timeout.
+            var lastSeen = kvp.Value.LastChunkTime > kvp.Value.FirstChunkTime
+                               ? kvp.Value.LastChunkTime
+                               : kvp.Value.FirstChunkTime;
+            if (lastSeen < cutoff)
+                _staleFrameKeys.Add(kvp.Key);
         }
+
         foreach (var key in _staleFrameKeys)
         {
-            if (_frameBuffers.TryRemove(key, out var frame))
-            {
-                _chunksOrphaned += frame.Chunks.Count;
-            }
+            if (!_frameBuffers.TryRemove(key, out var frame))
+                continue;
+
+            Interlocked.Add(ref _pendingBytes, -SumChunkBytes(frame));
+            Interlocked.Add(ref _chunksOrphaned, frame.Chunks.Count);
         }
 
         // Streams that went quiet drop out of the FilterSenderName dropdown
@@ -769,8 +923,7 @@ internal sealed class PONKInput : Instance<PONKInput>, IStatusProvider, ICustomD
 
     private void SetStatus(string message, IStatusProvider.StatusLevel level)
     {
-        _statusMessage = message;
-        _statusLevel = level;
+        _status = new StatusInfo(message, level);
     }
     #endregion
 }

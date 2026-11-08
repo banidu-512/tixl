@@ -657,6 +657,7 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
     private int AppendDots(Point[] points, int pointCount, Matrix4x4 objectToClip, int dotDwell, int cap, int count, out int dotsEmitted)
     {
         dotsEmitted = 0;
+        pointCount = Math.Min(pointCount, points.Length);
         var haveLast = false;
         var lastX = 0;
         var lastY = 0;
@@ -726,6 +727,7 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
     private int AppendLineSegments(Point[] points, int pointCount, Matrix4x4 objectToClip, float maxEdgeStep, int cap, int count, out int segmentsEmitted)
     {
         segmentsEmitted = 0;
+        pointCount = Math.Min(pointCount, points.Length);
         var haveStroke = false;
         var strokeEndX = 0;
         var strokeEndY = 0;
@@ -826,11 +828,15 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
                                     out int edgesEmitted)
     {
         edgesEmitted = 0;
+        if (edgeIndices == null || vertices == null)
+            return count;
 
-        for (var e = 0; e < edgeIndexCount - 1; e += 2)
+        for (var e = 0; e < edgeIndexCount - 1 && e + 1 < edgeIndices.Length; e += 2)
         {
             var i0 = edgeIndices[e];
             var i1 = edgeIndices[e + 1];
+            if ((uint)i0 >= (uint)vertices.Length || (uint)i1 >= (uint)vertices.Length)
+                continue;
 
             // Clipped, not clamped: an edge that leaves the frame is cut at the border; one
             // entirely outside the camera is not drawn at all.
@@ -1377,11 +1383,13 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
                     else
                     {
                         LastReadWasStale = true;
-                    }
 
-                    // Otherwise the GPU has not finished the previous copy yet: the last good frame
-                    // is served and the write target is left alone, so the pending copy is not
-                    // overwritten before it can be read.
+                        // The GPU has not finished the previous copy yet. Flip the write target so
+                        // the NEXT copy goes into the already-read buffer and the freshly copied
+                        // frame is preserved for the next read - leaving the target alone would
+                        // overwrite that pending copy on the very next pass.
+                        _writeIndex = readIndex;
+                    }
                 }
 
                 _failureLogged = false;
