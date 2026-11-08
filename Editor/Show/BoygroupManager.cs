@@ -1214,6 +1214,15 @@ internal sealed class BoygroupManager
             }
         }
 
+        // A render node must come back into the show it was deployed, not into the Hub: pin the
+        // deployed project as the startup project so the restart reopens it (StartupProjectLoader).
+        // Only for the slave role - a master's editor restarts are the operator's business.
+        if (State == BoygroupState.Client && config.BoygroupEnabled && !config.BoygroupIsMaster)
+        {
+            if (GetProjectFolder() is { Length: > 0 } deployedProject)
+                config.StartupProjectFolder = deployedProject;
+        }
+
         UserSettings.Save();
 
         RestartPending = true;
