@@ -621,6 +621,10 @@ internal sealed class BoygroupManager
                 Leave();
                 break;
 
+            case "noProject" when State == BoygroupState.Server:
+                HandleNoProject(peer);
+                break;
+
             case "inventory" when State == BoygroupState.Server:
             {
                 // The client answered our requestInventory with what it has on disk.
@@ -632,6 +636,10 @@ internal sealed class BoygroupManager
 
             case "requestInventory" when State == BoygroupState.Client:
                 HandleServerInventory(json);
+                break;
+
+            case "projectName" when State == BoygroupState.Client:
+                HandleBootstrapProject(json);
                 break;
 
             case "deployStart" when State == BoygroupState.Client:
@@ -873,6 +881,28 @@ internal sealed class BoygroupManager
         PushGraphSnapshotToGroup();
     }
 
+    /// <summary>A node joined without a project open: name ours so it can create the folder and
+    /// receive the whole project (then restart into it).</summary>
+    private void HandleNoProject(CollabPeerConnection peer)
+    {
+        var client = _clients.FirstOrDefault(c => ReferenceEquals(c.Peer, peer));
+        if (client == null)
+            return;
+
+        var projectFolder = ProjectView.Focused?.OpenedProject.Package.Folder;
+        if (string.IsNullOrEmpty(projectFolder))
+            return; // No project open here either; nothing to serve.
+
+        var name = Path.GetFileName(projectFolder.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+        if (_bootstrapSentTo.Add(peer.AssignedId))
+            Log.Info($"Boygroup: {client.Name} joined without a project - sending '{name}'");
+
+        client.StatusText = $"bootstrapping project '{name}'";
+        SendJson(peer, new { t = "projectName", name });
+    }
+
+    private readonly HashSet<int> _bootstrapSentTo = [];
+
     private void HandleClientInventory(ClientInfo client, JObject json)
     {
         if (client.PendingInventory == null)
@@ -1066,7 +1096,7 @@ internal sealed class BoygroupManager
 
     private static string? GetProjectFolder()
     {
-        return ProjectView.Focused?.OpenedProject.Package.Folder;
+        return ProjectView.Focused?.OpenedProject.Package.Folder ?? Instance._bootstrapProjectFolder;
     }
 
     /// <summary>Whether a project is open — the debug bridge's status reports it, so a master that
@@ -1086,11 +1116,48 @@ internal sealed class BoygroupManager
         // instead of deploying the whole project into a folder that does not exist yet.
         var projectFolder = GetProjectFolder();
         if (string.IsNullOrEmpty(projectFolder))
+        {
+            // Nothing opened yet: tell the master, which answers with the project it deploys, and
+            // this node creates that folder and receives the whole project (bootstrap).
+            SendJson(((_transport as BoygroupClientTransport)!).ServerPeer, new { t = "noProject" });
             return;
+        }
 
         var inventory = BoygroupDeployer.BuildInventory(projectFolder,
                                                         Path.GetRelativePath(projectFolder, SetupFiles.FolderIn(projectFolder)));
         SendJson(((_transport as BoygroupClientTransport)!).ServerPeer, BoygroupDeployer.BuildInventoryMessage(inventory));
+    }
+
+    /// <summary>Folder this node is bootstrap-receiving the master's project into (no project was
+    /// open when it joined). Becomes the startup project so the deploy restart reopens it.</summary>
+    private string? _bootstrapProjectFolder;
+
+    private void HandleBootstrapProject(JObject json)
+    {
+        var name = CollabProtocol.GetString(json, "name", "");
+        if (string.IsNullOrEmpty(name))
+            return;
+
+        var root = UserSettings.Config.ProjectDirectories.FirstOrDefault();
+        if (string.IsNullOrEmpty(root))
+        {
+            Log.Warning("Boygroup: no project directory configured - cannot receive the master's project");
+            return;
+        }
+
+        try
+        {
+            var folder = Path.Combine(root, name);
+            Directory.CreateDirectory(folder);
+            _bootstrapProjectFolder = folder;
+            Log.Info($"Boygroup: receiving the master's project into {folder}");
+            SendJson(((_transport as BoygroupClientTransport)!).ServerPeer,
+                     BoygroupDeployer.BuildInventoryMessage([]));
+        }
+        catch (Exception e)
+        {
+            Log.Warning($"Boygroup: cannot create the project folder for '{name}': {e.Message}");
+        }
     }
 
     private void StartReceivingFile(JObject json)
