@@ -425,13 +425,6 @@ internal sealed partial class SettingsWindow
             manager.StartHost(config.CollabPort, config.CollabPassword, config.CollabLanDiscovery);
         }
 
-        FormInputs.AddVerticalSpace();
-        FormInputs.SetCursorToParameterEdit();
-        if (CustomComponents.DrawCtaButton("Host on LAN", Icon.None, UiColors.ForegroundFull, UiColors.StatusActivated, Color.Transparent))
-        {
-            manager.StartHost(config.CollabPort, config.CollabPassword, config.CollabLanDiscovery);
-        }
-
         CustomComponents.TooltipForLastItem("Start a session on this machine without a relay. Others join by LAN discovery or by your address.");
 
         FormInputs.AddVerticalSpace();
