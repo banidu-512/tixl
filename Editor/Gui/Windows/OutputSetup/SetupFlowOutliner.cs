@@ -726,6 +726,83 @@ internal sealed class SetupFlowOutliner
     }
 
     /// <summary>
+    /// Displays of the connected render nodes, next to this machine's own. Dropping an output on one
+    /// binds it inside that client's machine config; the master never presents it itself, it only
+    /// asks the render node to.
+    /// </summary>
+    private void DrawRemoteBindings(SetupEntitySelection selection, Setup setup)
+    {
+        var manager = Show.BoygroupManager.Instance;
+        if (manager.State != Show.BoygroupManager.BoygroupState.Server || manager.Clients.Count == 0)
+            return;
+
+        foreach (var client in manager.Clients)
+        {
+            if (!client.Peer.IsAuthenticated || client.Screens.Count == 0)
+                continue;
+
+            FormInputs.AddVerticalSpace(10);
+            ImGui.TextDisabled($"{client.Name.ToUpperInvariant()} - RENDER NODE");
+
+            foreach (var screen in client.Screens)
+            {
+                var bound = client.MachineConfig == null
+                                ? null
+                                : Plugs.TryGetBoundOutput(setup, client.MachineConfig, Plugs.DisplayPlugId(screen.Index));
+                _tooltipRemoteClient = client;
+                _tooltipRemoteDisplayIndex = screen.Index;
+                var args = new OutlinerItem.Args
+                               {
+                                   Kind = SetupEntityKinds.Plug,
+                                   Id = Show.BoygroupManager.RemoteDisplayPlugId(client, screen.Index),
+                                   Name = $"{client.Name} / {screen.Name}",
+                                   // What presents on the node's display, said next to its resolution.
+                                   Status = bound == null
+                                                ? $"{screen.Width} x {screen.Height}"
+                                                : $"{SetupLabels.OutputLabel(bound)} - {screen.Width} x {screen.Height}",
+                                   LeadingIcon = Icon.ConnectedOutput,
+                                   IsMuted = bound == null,
+                                   DrawTooltip = _drawRemoteDisplayTooltip,
+                               };
+                DrawItem(selection, setup, ref args);
+            }
+
+            // The outputs the node presents, under its displays: the master sees the slave's
+            // show side by side with its own, from what the node reported.
+            if (client.MachineConfig == null)
+                continue;
+
+            var listedOutputs = new List<Guid>();
+            foreach (var binding in client.MachineConfig.Bindings)
+            {
+                var output = setup.FindOutput(binding.OutputId);
+                if (output == null || listedOutputs.Contains(output.Id))
+                    continue;
+
+                listedOutputs.Add(output.Id);
+                var plugLabel = binding.IsStream ? "stream" : $"Display {binding.DisplayIndex + 1}";
+                var outputArgs = new OutlinerItem.Args
+                                     {
+                                         Kind = SetupEntityKinds.Output,
+                                         Id = output.Id,
+                                         Name = SetupLabels.OutputLabel(output),
+                                         Status = $"on {client.Name} / {plugLabel}",
+                                         IsMuted = !output.IsSending,
+                                         HasStruckIcon = !output.IsSending,
+                                     };
+                DrawItem(selection, setup, ref outputArgs);
+            }
+        }
+    }
+
+    /// <summary>A render node's displays are displays too: the same arrangement hover, from what that node reported.</summary>
+    private void DrawRemoteDisplayTooltip()
+    {
+        if (_tooltipRemoteClient != null)
+            DisplayLayoutView.DrawRemoteTooltip(_tooltipRemoteClient, _tooltipRemoteDisplayIndex);
+    }
+
+    /// <summary>
     /// Where a send lives when it isn't in the composition open in the graph, so a row whose op can't be seen there
     /// still says where to find it.
     /// </summary>
