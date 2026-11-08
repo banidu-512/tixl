@@ -863,4 +863,165 @@ public sealed class NanoVdbBuffer
         var name = System.Text.Encoding.UTF8.GetString(Buffer, nameStart, nameEnd - nameStart);
         return ((int)leafCount, (int)lowerCount, (int)upperCount, voxelCount, name);
     }
+
+    /// <summary>
+    /// Loads a .nvdb file without the extra copy <see cref="LoadBytes"/> makes for the file
+    /// header: the grid bytes are read straight into one array of their own, which matters for
+    /// production caches that run to hundreds of megabytes.
+    /// </summary>
+    public static NanoVdbBuffer LoadFile(string path)
+    {
+        using var stream = File.OpenRead(path);
+        Span<byte> magic = stackalloc byte[8];
+        if (stream.Read(magic) != 8)
+            throw new InvalidDataException("NanoVDB file too small");
+
+        var magicValue = BinaryPrimitives.ReadUInt64LittleEndian(magic);
+        long gridStart;
+        switch (magicValue)
+        {
+            case MagicFile:
+                gridStart = 16;      // FileHeader: magic 8 + version 4 + gridCount 2 + codec 2
+                break;
+            case MagicNumber:
+            case MagicGrid:
+                gridStart = 0;
+                break;
+            default:
+                throw new InvalidDataException("Not a NanoVDB file");
+        }
+
+        var gridLength = stream.Length - gridStart;
+        if (gridLength < GridDataSize || gridLength > int.MaxValue)
+            throw new InvalidDataException($"NanoVDB grid of {gridLength} bytes is not a usable size");
+
+        var grid = new byte[gridLength];
+        stream.Position = gridStart;
+        stream.ReadExactly(grid);
+
+        if (BinaryPrimitives.ReadUInt64LittleEndian(grid) == MagicGrid)
+            BinaryPrimitives.WriteUInt64LittleEndian(grid, MagicNumber);
+
+        var valueType = BinaryPrimitives.ReadUInt32LittleEndian(grid.AsSpan(636)) switch
+        {
+            1 => VdbValueType.Float,
+            6 => VdbValueType.Vec3Float,
+            _ => VdbValueType.Float,
+        };
+        var gridClass = BinaryPrimitives.ReadUInt32LittleEndian(grid.AsSpan(632)) switch
+        {
+            1 => VdbGridClass.LevelSet,
+            2 => VdbGridClass.FogVolume,
+            3 => VdbGridClass.Staggered,
+            _ => VdbGridClass.Unknown,
+        };
+
+        return new NanoVdbBuffer(grid, valueType, gridClass, new long[4]);
+    }
+
+    /// <summary>The header fields an operator needs to label, frame and validate a grid.</summary>
+    public readonly struct GridInfo
+    {
+        public readonly float VoxelSize;
+        public readonly Vector3 WorldMin;
+        public readonly Vector3 WorldMax;
+        public readonly string Name;
+        public readonly VdbGridClass GridClass;
+        public readonly VdbValueType ValueType;
+        public readonly int LeafNodes;
+        public readonly int LowerNodes;
+        public readonly int UpperNodes;
+        public readonly long VoxelCount;
+
+        internal GridInfo(float voxelSize, Vector3 worldMin, Vector3 worldMax, string name,
+                          VdbGridClass gridClass, VdbValueType valueType,
+                          int leafNodes, int lowerNodes, int upperNodes, long voxelCount)
+        {
+            VoxelSize = voxelSize;
+            WorldMin = worldMin;
+            WorldMax = worldMax;
+            Name = name;
+            GridClass = gridClass;
+            ValueType = valueType;
+            LeafNodes = leafNodes;
+            LowerNodes = lowerNodes;
+            UpperNodes = upperNodes;
+            VoxelCount = voxelCount;
+        }
+    }
+
+    public GridInfo ReadInfo()
+    {
+        var summary = ReadSummary();
+        return new GridInfo((float)ReadDouble(608),
+                            new Vector3((float)ReadDouble(560), (float)ReadDouble(568), (float)ReadDouble(576)),
+                            new Vector3((float)ReadDouble(584), (float)ReadDouble(592), (float)ReadDouble(600)),
+                            summary.Name, GridClass, ValueType,
+                            summary.LeafNodes, summary.LowerNodes, summary.UpperNodes, summary.VoxelCount);
+    }
+
+    private double ReadDouble(int offset) => BinaryPrimitives.ReadDoubleLittleEndian(Buffer.AsSpan(offset));
+
+    /// <summary>
+    /// Checks that the tree offsets and node counts describe a buffer that actually fits in
+    /// <see cref="Buffer"/>. A shader that follows an offset past the end of the buffer reads
+    /// undefined memory, so a loader must call this before uploading a file it did not write.
+    /// </summary>
+    public bool TryValidate(out string error)
+    {
+        error = null;
+
+        if (Buffer.Length < GridDataSize + TreeDataSize)
+        {
+            error = $"buffer of {Buffer.Length} bytes is smaller than a NanoVDB grid header";
+            return false;
+        }
+
+        var tree = GridDataSize;
+        var leafOffset = (long)BinaryPrimitives.ReadUInt64LittleEndian(Buffer.AsSpan(tree));
+        var lowerOffset = (long)BinaryPrimitives.ReadUInt64LittleEndian(Buffer.AsSpan(tree + 8));
+        var upperOffset = (long)BinaryPrimitives.ReadUInt64LittleEndian(Buffer.AsSpan(tree + 16));
+        var rootOffset = (long)BinaryPrimitives.ReadUInt64LittleEndian(Buffer.AsSpan(tree + 24));
+
+        if (!IsPlausibleTreeOffset(leafOffset) || !IsPlausibleTreeOffset(lowerOffset)
+            || !IsPlausibleTreeOffset(upperOffset) || !IsPlausibleTreeOffset(rootOffset))
+        {
+            error = "tree offsets point outside the buffer";
+            return false;
+        }
+
+        var summary = ReadSummary();
+        if (summary.LeafNodes < 0 || summary.LowerNodes < 0 || summary.UpperNodes < 0 || summary.VoxelCount < 0)
+        {
+            error = "negative node or voxel count";
+            return false;
+        }
+
+        // Leaves are the last section and the only one whose stride is small enough to check
+        // cheaply; every other offset is already known to be inside the buffer.
+        var leafEnd = tree + leafOffset + (long)summary.LeafNodes * LeafStride(ValueType);
+        if (leafEnd > Buffer.Length)
+        {
+            error = $"{summary.LeafNodes} leaves need {leafEnd - tree - leafOffset} bytes but the buffer ends at {Buffer.Length}";
+            return false;
+        }
+
+        return true;
+
+        bool IsPlausibleTreeOffset(long offset) => offset > 0 && tree + offset < Buffer.Length;
+    }
+
+    /// <summary>Bytes per leaf node, following the layout the writer emits for this value type.</summary>
+    private static int LeafStride(VdbValueType valueType)
+    {
+        var valueBytes = valueType switch
+        {
+            VdbValueType.Vec3Float => 12,
+            VdbValueType.Int64 => 8,
+            VdbValueType.Double => 8,
+            _ => 4,
+        };
+        var stats = valueType == VdbValueType.Vec3Float ? 32 : 16;
+        return 80 + stats + VdbLeafNode<float>.Size * valueBytes;
+    }
 }

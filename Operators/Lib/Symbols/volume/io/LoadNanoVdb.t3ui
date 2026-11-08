@@ -1,0 +1,75 @@
+{
+  "FormatVersion": 3,
+  "Id": "fc358fd5-f6ba-4971-9d40-2090e51aaa71"/*LoadNanoVdb*/,
+  "Description": "Loads a NanoVDB .nvdb file and uploads it as a GPU buffer.\n\nNanoVDB is the flattened grid layout that Houdini, Blender and EmberGen export with nanovdb_convert, and that [SaveNanoVdb] writes. Nothing is parsed into a CPU volume, so a pre-converted cache goes straight to the renderer without a rebuild.\n\nOutputs mirror [VolumeToNanoVdb]: feed ShaderResourceView to [NanoVdbRender] or your own shader, and WorldMin/WorldMax frame the box. Use [LoadVdb] instead when you want to edit the volume.\n\nThe file is reloaded when it changes. Reading happens on a background thread; the outputs appear once the read has finished, and stay null while no valid grid is loaded.\n\nAKA: load nvdb, import nanovdb, gpu volume\n\nTips\n- nanovdb_convert writes one grid per file; a multi-grid .vdb has to be split first.\n- Only float and vec3 grids have a renderer here; other value types will validate but render as garbage.\n- Grids above 1 GB are rejected, because the buffer is also copied once for upload.",
+  "InputUis": [
+    {
+      "InputId": "69a0c6d6-243c-4cf2-b022-c557955660fd"/*Path*/,
+      "Position": {
+        "X": 0.0,
+        "Y": 0.0
+      },
+      "Description": "File path of the .nvdb file.",
+      "Usage": "FilePath"
+    }
+  ],
+  "SymbolChildUis": [],
+  "OutputUis": [
+    {
+      "OutputId": "4e4faeca-b648-4704-98b8-f0785bf6953d"/*Buffer*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "OutputId": "fb21f061-79e7-486c-b08c-dcce202daf34"/*ShaderResourceView*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 30.0
+      }
+    },
+    {
+      "OutputId": "0b6b0f47-6272-4f4e-ad92-a90bf1d9c911"/*TreeOffsets*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 60.0
+      }
+    },
+    {
+      "OutputId": "676f0880-d184-40ad-9df9-f05c49c06b20"/*VoxelCount*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 90.0
+      }
+    },
+    {
+      "OutputId": "ff56e7b9-b7de-4d27-b025-5a70033803d8"/*VoxelSize*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 120.0
+      }
+    },
+    {
+      "OutputId": "8ec10b96-380d-4043-8a15-b4dec1b3daf7"/*GridName*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 150.0
+      }
+    },
+    {
+      "OutputId": "cd870b7c-8aa0-4761-8273-9c0d1ca36008"/*WorldMin*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 180.0
+      }
+    },
+    {
+      "OutputId": "30f4d753-17da-4610-b704-6cceaf334407"/*WorldMax*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 210.0
+      }
+    }
+  ]
+}

@@ -199,6 +199,60 @@ public class NanoVdbTests
     }
 
     [Fact]
+    public void LoadFileReadsAGridWithoutTheFileHeader()
+    {
+        var grid = VolumePrimitives.Create(VolumePrimitives.Shape.Sphere, new Vector3(1f, 1f, 1f), 0.1f, Vector3.Zero, 3);
+        var written = NanoVdbBuffer.FromGrid(grid);
+
+        var path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tixl-{Guid.NewGuid():N}.nvdb");
+        try
+        {
+            written.Save(path);
+
+            var loaded = NanoVdbBuffer.LoadFile(path);
+
+            Assert.Equal(written.Buffer.Length, loaded.Buffer.Length);
+            Assert.Equal(written.Buffer, loaded.Buffer);
+            Assert.True(loaded.TryValidate(out var error), error);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void ReadInfoMatchesTheSourceGrid()
+    {
+        var grid = VolumePrimitives.Create(VolumePrimitives.Shape.Sphere, new Vector3(1f, 1f, 1f), 0.1f, Vector3.Zero, 3);
+        grid.Name = "density";
+        var buffer = NanoVdbBuffer.FromGrid(grid);
+
+        var info = buffer.ReadInfo();
+
+        Assert.Equal("density", info.Name);
+        Assert.Equal(grid.Transform.VoxelSize, info.VoxelSize, 4);
+        Assert.Equal(VdbValueType.Float, info.ValueType);
+        Assert.Equal(buffer.ReadSummary().VoxelCount, info.VoxelCount);
+        Assert.True(info.WorldMax.X > info.WorldMin.X);
+    }
+
+    [Fact]
+    public void ValidationRejectsTreeOffsetsOutsideTheBuffer()
+    {
+        var grid = VolumePrimitives.Create(VolumePrimitives.Shape.Sphere, new Vector3(1f, 1f, 1f), 0.1f, Vector3.Zero, 3);
+        var buffer = NanoVdbBuffer.FromGrid(grid);
+        Assert.True(buffer.TryValidate(out _));
+
+        // Point the leaf section far past the end, the way a truncated or forged file would.
+        var treeStart = NanoVdbBuffer.GridDataSize;
+        BitConverter.TryWriteBytes(buffer.Buffer.AsSpan(treeStart), (ulong)(buffer.Buffer.Length * 4L));
+
+        Assert.False(buffer.TryValidate(out var error));
+        Assert.Contains("outside the buffer", error);
+    }
+
+    [Fact]
     public void RootKeyPackingMatchesNanoVdb()
     {
         // NanoVDB: key = ((x>>12)&0x1FFFFF)<<42 | ((y>>12)&0x1FFFFF)<<21 | ((z>>12)&0x1FFFFF).
