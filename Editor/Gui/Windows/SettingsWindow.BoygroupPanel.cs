@@ -35,8 +35,21 @@ internal sealed partial class SettingsWindow
 
         changed |= enabledChanged;
 
+        // A running session must stay visible even with the switch off (it may have been started
+        // before the switch was turned off, or remotely): hiding the panel hid the slave list on
+        // a serving master. The switch only gates the configuration controls.
+        var sessionRunning = manager.State != BoygroupManager.BoygroupState.Off;
         if (!config.BoygroupEnabled)
+        {
+            if (!sessionRunning)
+                return;
+
+            FormInputs.AddVerticalSpace();
+            ImGui.TextDisabled("Boygrouping is switched off, but a session is still running on this machine:");
+            FormInputs.AddVerticalSpace(4);
+            DrawBoygroupSession(manager);
             return;
+        }
 
         FormInputs.AddVerticalSpace();
 
