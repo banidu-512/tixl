@@ -733,31 +733,34 @@ internal sealed class SetupFlowOutliner
                 DrawItem(selection, setup, ref args);
             }
 
-            // The outputs the node presents, under its displays: the master sees the slave's
-            // show side by side with its own, from what the node reported.
-            if (client.MachineConfig == null)
+            // What the node presents, in words: the master reads the slave's show next to its own
+            // without a second set of output rows (those carry the card/expander machinery and do
+            // not belong in a plug column).
+            if (client.MachineConfig == null || client.MachineConfig.Bindings.Count == 0)
+            {
+                ImGui.TextDisabled("	no output bound on this node yet");
                 continue;
+            }
 
-            var listedOutputs = new List<Guid>();
+            var presented = new List<string>();
+            var seen = new HashSet<Guid>();
             foreach (var binding in client.MachineConfig.Bindings)
             {
                 var output = setup.FindOutput(binding.OutputId);
-                if (output == null || listedOutputs.Contains(output.Id))
+                if (output == null || !seen.Add(output.Id))
                     continue;
 
-                listedOutputs.Add(output.Id);
                 var plugLabel = binding.IsStream ? "stream" : $"Display {binding.DisplayIndex + 1}";
-                var outputArgs = new OutlinerItem.Args
-                                     {
-                                         Kind = SetupEntityKinds.Output,
-                                         Id = output.Id,
-                                         Name = SetupLabels.OutputLabel(output),
-                                         Status = $"on {client.Name} / {plugLabel}",
-                                         IsMuted = !output.IsSending,
-                                         HasStruckIcon = !output.IsSending,
-                                     };
-                DrawItem(selection, setup, ref outputArgs);
+                presented.Add($"{SetupLabels.OutputLabel(output)} on {plugLabel}");
             }
+
+            if (presented.Count == 0)
+            {
+                ImGui.TextDisabled("	bindings name outputs this setup does not have");
+                continue;
+            }
+
+            ImGui.TextDisabled($"	Presents: {string.Join(", ", presented)}");
         }
     }
 
