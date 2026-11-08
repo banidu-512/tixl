@@ -1176,6 +1176,12 @@ internal sealed class BoygroupManager
             {
                 Log.Info($"Boygroup: receiving the master's project into {folder}");
                 _bootstrapProjectFolder = folder;
+
+                // Receiving a project is a one-time event per project, not a restart loop: the
+                // flood guard from a previous project must not block opening this one.
+                UserSettings.Config.BoygroupDeployRestartCount = 0;
+                UserSettings.Config.BoygroupDeployRestartWindowStartTicks = 0;
+                UserSettings.Config.BoygroupDeployRestartBlockedUntilTicks = 0;
             }
             SendJson(((_transport as BoygroupClientTransport)!).ServerPeer,
                      BoygroupDeployer.BuildInventoryMessage([]));
@@ -1285,7 +1291,8 @@ internal sealed class BoygroupManager
         // (should be impossible now that setups are excluded) may never loop a show machine.
         var config = UserSettings.Config;
         var now = Environment.TickCount64;
-        if (now < config.BoygroupDeployRestartBlockedUntilTicks)
+        var isBootstrapRestart = _bootstrapProjectFolder is { Length: > 0 };
+        if (!isBootstrapRestart && now < config.BoygroupDeployRestartBlockedUntilTicks)
         {
             Log.Warning($"Boygroup: deploy restart blocked for another {(config.BoygroupDeployRestartBlockedUntilTicks - now) / 1000}s (restart-loop guard) - staying up");
             return;
