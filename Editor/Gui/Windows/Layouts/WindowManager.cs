@@ -53,6 +53,8 @@ internal static partial class WindowManager
         // Draw SNiXL window separately (easter egg - not in main windows list)
         SnixlWindow.Draw();
 
+        CameraSettingsDialog.Draw();
+
         if (DemoWindowVisible)
             ImGui.ShowDemoWindow(ref DemoWindowVisible);
 
