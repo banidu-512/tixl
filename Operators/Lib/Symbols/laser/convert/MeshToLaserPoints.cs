@@ -30,7 +30,10 @@ internal sealed class MeshToLaserPoints : Instance<MeshToLaserPoints>
 
     public MeshToLaserPoints()
     {
+        // Both outputs must run the update: a consumer wired to PointCount alone would otherwise
+        // read the initial 0 forever, and with both pulled in one frame the value lags a frame.
         LaserPoints.UpdateAction += Update;
+        PointCount.UpdateAction += Update;
     }
 
     private void Update(EvaluationContext context)
@@ -84,11 +87,15 @@ internal sealed class MeshToLaserPoints : Instance<MeshToLaserPoints>
 
         var sourceVertexBytes = mesh.VertexBuffer.Buffer.Description.SizeInBytes;
         var sourceIndexBytes = mesh.IndicesBuffer.Buffer.Description.SizeInBytes;
+        var geometryChanged = !ReferenceEquals(mesh.VertexBuffer.Buffer, _lastVertexBuffer)
+                              || !ReferenceEquals(mesh.IndicesBuffer.Buffer, _lastIndexBuffer)
+                              || sourceVertexBytes != _lastVertexBytes
+                              || sourceIndexBytes != _lastIndexBytes;
 
         // Keep the last frame unless something actually changed - GPU readback stalls
-        // the pipeline, so it must not run every evaluation for a static mesh.
-        var geometryChanged = !ReferenceEquals(mesh.VertexBuffer.Buffer, _lastVertexBuffer)
-                              || !ReferenceEquals(mesh.IndicesBuffer.Buffer, _lastIndexBuffer);
+        // the pipeline, so it must not run every evaluation for a static mesh. Comparing the
+        // mesh version (not the staging buffer size) means an animated Brightness or
+        // MaxEdgeStep rebuilds from the cached CPU copy instead of reading the GPU again.
         if (!wasTriggered && !updateContinuously && _hasResult
             && _lastMode == mode
             && _lastMaxEdgeStep.Equals(maxEdgeStep)
@@ -97,8 +104,8 @@ internal sealed class MeshToLaserPoints : Instance<MeshToLaserPoints>
             && !geometryChanged
             && _lastWorldToCamera.Equals(worldToCamera)
             && _lastCameraToClipSpace.Equals(cameraToClipSpace)
-            && _vertexCpuAccess.Buffer?.Description.SizeInBytes == sourceVertexBytes
-            && _indexCpuAccess.Buffer?.Description.SizeInBytes == sourceIndexBytes)
+            && _cachedVertices != null
+            && _cachedFaces != null)
         {
             LaserPoints.DirtyFlag.Trigger = updateContinuously ? DirtyFlagTrigger.Animated : DirtyFlagTrigger.None;
             return;
@@ -107,8 +114,28 @@ internal sealed class MeshToLaserPoints : Instance<MeshToLaserPoints>
         var vertexCount = Math.Min(mesh.VertexBuffer.Srv.Description.Buffer.ElementCount, MaxMeshVertices);
         var faceCount = Math.Min(mesh.IndicesBuffer.Srv.Description.Buffer.ElementCount, MaxMeshFaces);
 
-        var vertices = ReadBuffer<PbrVertex>(mesh.VertexBuffer.Buffer, sourceVertexBytes, PbrVertex.Stride, ref _vertexCpuAccess, vertexCount);
-        var faces = ReadBuffer<Int3>(mesh.IndicesBuffer.Buffer, sourceIndexBytes, 3 * 4, ref _indexCpuAccess, faceCount);
+        PbrVertex[]? vertices;
+        Int3[]? faces;
+        if (!geometryChanged && _cachedVertices != null && _cachedFaces != null)
+        {
+            vertices = _cachedVertices;
+            faces = _cachedFaces;
+        }
+        else
+        {
+            vertices = ReadBuffer<PbrVertex>(mesh.VertexBuffer.Buffer, sourceVertexBytes, PbrVertex.Stride, ref _vertexCpuAccess, vertexCount);
+            faces = ReadBuffer<Int3>(mesh.IndicesBuffer.Buffer, sourceIndexBytes, 3 * 4, ref _indexCpuAccess, faceCount);
+
+            if (vertices != null && faces != null)
+            {
+                _cachedVertices = vertices;
+                _cachedFaces = faces;
+                _lastVertexBuffer = mesh.VertexBuffer.Buffer;
+                _lastIndexBuffer = mesh.IndicesBuffer.Buffer;
+                _lastVertexBytes = sourceVertexBytes;
+                _lastIndexBytes = sourceIndexBytes;
+            }
+        }
 
         if (vertices == null || faces == null || vertices.Length == 0)
         {
@@ -128,8 +155,6 @@ internal sealed class MeshToLaserPoints : Instance<MeshToLaserPoints>
         _lastBrightness = brightness;
         _lastWorldToCamera = worldToCamera;
         _lastCameraToClipSpace = cameraToClipSpace;
-        _lastVertexBuffer = mesh.VertexBuffer.Buffer;
-        _lastIndexBuffer = mesh.IndicesBuffer.Buffer;
 
         LaserPoints.DirtyFlag.Trigger = updateContinuously ? DirtyFlagTrigger.Animated : DirtyFlagTrigger.None;
     }
@@ -361,10 +386,14 @@ internal sealed class MeshToLaserPoints : Instance<MeshToLaserPoints>
     private float _lastBrightness;
     private Matrix4x4 _lastWorldToCamera;
     private Matrix4x4 _lastCameraToClipSpace;
-    private Buffer? _lastVertexBuffer;
-    private Buffer? _lastIndexBuffer;
     private BufferWithViews _vertexCpuAccess = new();
     private BufferWithViews _indexCpuAccess = new();
+    private PbrVertex[]? _cachedVertices;
+    private Int3[]? _cachedFaces;
+    private Buffer? _lastVertexBuffer;
+    private Buffer? _lastIndexBuffer;
+    private int _lastVertexBytes = -1;
+    private int _lastIndexBytes = -1;
 
     private enum PrimitiveMode
     {
