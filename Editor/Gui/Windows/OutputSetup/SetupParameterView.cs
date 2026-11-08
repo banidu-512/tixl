@@ -996,8 +996,59 @@ internal static class SetupParameterView
     /// stream carries the settings its kind honours — the host asks the provider which those are, so a kind
     /// that has no notion of frame rate or alpha simply doesn't offer them.
     /// </summary>
+    /// <summary>
+    /// Properties of a render node's display: its reported mode, what the node presents there, and who
+    /// the node is. Read-only - the display and its bindings belong to that machine; the binding is
+    /// changed by dropping an output on the row and released from its context menu.
+    /// </summary>
+    private static void DrawRemoteDisplayCard(Setup setup, Show.BoygroupManager.ClientInfo client, int displayIndex)
+    {
+        Show.BoygroupManager.RemoteScreen? screen = null;
+        foreach (var candidate in client.Screens)
+        {
+            if (candidate.Index != displayIndex)
+                continue;
+
+            screen = candidate;
+            break;
+        }
+
+        Span<int> mode = [screen?.Width ?? 0, screen?.Height ?? 0];
+        DrawIntsRow("Resolution (px)", mode, "The render node display's current mode (read-only).", readOnly: true);
+
+        var boundOutput = client.MachineConfig == null
+                              ? null
+                              : Plugs.TryGetBoundOutput(setup, client.MachineConfig, Plugs.DisplayPlugId(displayIndex));
+        FormInputs.AddHint(boundOutput == null ? "nothing bound" : $"presenting {SetupLabels.OutputLabel(boundOutput)}");
+        FormInputs.AddHint($"Display {displayIndex + 1}{(screen == null ? "" : $" · {screen.Name}")}");
+
+        FormInputs.AddVerticalSpace(6);
+        FormInputs.AddSectionSubHeader("Render node");
+        DrawInfoRow("Name", client.Name);
+        DrawInfoRow("Address", client.Address);
+        DrawInfoRow("Status", client.IsDeployed ? $"{client.StatusText} · project deployed" : client.StatusText);
+        if (!string.IsNullOrEmpty(client.Group))
+            DrawInfoRow("Group", client.Group);
+    }
+
+    /// <summary>A read-only label and value, aligned with the editable rows above and below it.</summary>
+    private static void DrawInfoRow(string label, string value)
+    {
+        FormInputs.DrawInputLabel(label);
+        ImGui.AlignTextToFramePadding();
+        ImGui.TextUnformatted(value);
+    }
+
     private static void DrawPlugCard(Setup setup, MachineConfig machineConfig, Guid id)
     {
+        // A render node's display is not this machine's plug: it gets its own card, and without this
+        // branch the local plug lookups below find nothing and the card stays empty.
+        if (Show.BoygroupManager.Instance.TryGetRemoteDisplayPlug(id, out var remoteClient, out var remoteDisplayIndex))
+        {
+            DrawRemoteDisplayCard(setup, remoteClient, remoteDisplayIndex);
+            return;
+        }
+
         var boundOutput = Plugs.TryGetBoundOutput(setup, machineConfig, id);
         var boundLabel = boundOutput == null ? "nothing bound" : $"presenting {SetupLabels.OutputLabel(boundOutput)}";
 

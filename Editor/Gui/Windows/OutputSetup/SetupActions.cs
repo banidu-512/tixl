@@ -808,7 +808,7 @@ internal static class SetupActions
     /// are named by the OS — see <see cref="CanRenamePlug"/>).</summary>
     internal static bool CanRename(SetupEntityKinds kind) => SetupEntityKindInfo.Of(kind).CanRename;
 
-    internal static bool CanRenamePlug(Guid plugId) => !Plugs.TryGetDisplayIndex(plugId, out _);
+    internal static bool CanRenamePlug(Guid plugId) => !Plugs.TryGetDisplayIndex(plugId, out _) && !Plugs.IsRemoteDisplay(plugId);
 
     /// <summary>Renames an entity by kind. A content source has no name of its own — renaming it renames its
     /// op (already undoable as a graph command), which flows back through the sync.</summary>
