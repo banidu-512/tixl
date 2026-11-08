@@ -1660,6 +1660,17 @@ internal sealed class CollabManager
         {
             if (peer.IsTimedOut)
             {
+                // On a client the host link's death IS the session's death: a relay peer has no
+                // socket of its own to close, so the generic path below would only mark it and
+                // leave the session hanging Connected. End the session here instead.
+                if (State is SessionState.Connected or SessionState.Connecting && _transport?.HostLink == peer)
+                {
+                    Log.Info($"Collab: the host link ({peer}) timed out — ending the session");
+                    Leave();
+                    ErrorText = "Lost connection to the session host";
+                    return;
+                }
+
                 Log.Info($"Collab: peer {peer} timed out");
                 peer.SessionClosed = true;
                 peer.Close();
