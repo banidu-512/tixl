@@ -630,6 +630,12 @@ internal sealed class BoygroupManager
 
             case "authOk":
                 StatusText = "Joined group";
+
+                // The first report can go out before this node is authenticated on the server, where
+                // it is dropped; the dedup in MaybeSendBindings would then never send it again. Force
+                // one report now that the master is ready to accept it.
+                _lastBindingsSent = "";
+                _nextBindingsSendTicks = 0;
                 break;
 
             case "authFail":

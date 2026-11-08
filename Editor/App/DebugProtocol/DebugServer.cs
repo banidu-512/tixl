@@ -866,6 +866,12 @@ internal static class DebugServer
                                ["group"] = boygroup.GroupName,
                                ["deploy"] = boygroup.DeploySummary,
                                ["clients"] = boygroup.Clients.Count,
+                               ["clientDetails"] = new JArray(boygroup.Clients.Select(c => new JObject
+                                                                                           {
+                                                                                               ["name"] = c.Name,
+                                                                                               ["screens"] = c.Screens.Count,
+                                                                                               ["bindings"] = c.MachineConfig?.Bindings.Count ?? -1,
+                                                                                           })),
                                ["projectOpen"] = Show.BoygroupManager.HasProjectFolder,
                            });
     }
