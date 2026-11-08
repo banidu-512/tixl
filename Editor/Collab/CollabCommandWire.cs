@@ -4,6 +4,7 @@ using System.IO;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using T3.Core.Animation;
+using T3.Core.Logging;
 using T3.Core.Operator;
 using T3.Core.Operator.Slots;
 using T3.Editor.UiModel;
@@ -517,7 +518,18 @@ internal static class CollabCommandWire
             return;
 
         var newValue = input.Value.Clone();
-        newValue.SetValueFromJson(valueToken);
+        try
+        {
+            newValue.SetValueFromJson(valueToken);
+        }
+        catch (Exception e)
+        {
+            // One input whose wire token disagrees with its stored type must not kill the whole
+            // op; the log names the input and both types so the mismatch is fixable.
+            Log.Warning($"Collab: set_input skipped for {input.InputDefinition.Name} "
+                      + $"(wire token {valueToken.Type}, stored type {input.Value.ValueType}): {e.Message}");
+            return;
+        }
 
         var command = new ChangeInputValueCommand(compositionUi.Symbol, childId, input, newValue);
         command.Do();
