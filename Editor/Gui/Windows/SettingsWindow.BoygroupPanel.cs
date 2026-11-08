@@ -189,6 +189,15 @@ internal sealed partial class SettingsWindow
         // Deploy options
         // -------------------------------------------------------------------------------------
         FormInputs.AddSectionSubHeader("Deployment");
+        changed |= FormInputs.AddCheckBox("Deploy & sync when a node joins",
+                                          ref config.BoygroupAutoDeployOnJoin,
+                                          """
+                                          The master runs Deploy & Sync automatically shortly after a render node
+                                          joins the group, so an added slave is current without anyone clicking.
+                                          Nodes that are already up to date are left running (no restart).
+                                          """,
+                                          true);
+
         changed |= FormInputs.AddCheckBox("Mirror project folder",
                                           ref config.BoygroupDeployMirror,
                                           """
