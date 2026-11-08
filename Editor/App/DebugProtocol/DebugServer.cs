@@ -729,6 +729,21 @@ internal static class DebugServer
                 break;
             }
 
+            case "login":
+                CollabDiscordAuth.StartLogin();
+                break;
+
+            case "loginStatus":
+                break;
+
+            case "logout":
+                UserSettings.Config.CollabDiscordUserId = "";
+                UserSettings.Config.CollabDiscordUserName = "";
+                UserSettings.Config.CollabDiscordUserAvatar = "";
+                UserSettings.Save();
+                collab.RefreshLocalIdentity();
+                break;
+
             case "leave":
                 collab.Leave();
                 break;
@@ -753,6 +768,9 @@ internal static class DebugServer
                                ["room"] = collab.RoomCode,
                                ["peers"] = collab.Peers.Count,
                                ["chatLines"] = collab.ChatLog.Count,
+                               ["identity"] = collab.LocalIdentity.DisplayName,
+                               ["loginState"] = CollabDiscordAuth.State.ToString(),
+                               ["loginStatus"] = CollabDiscordAuth.StatusText,
                            });
     }
 
