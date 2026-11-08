@@ -24,11 +24,41 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
     internal UserSettings(bool saveOnQuit) : base("userSettings.json", saveOnQuit: saveOnQuit)
     {
         RemoveDuplicateProjectDirectories();
+        RemoveDuplicateBoygroupGroups();
     }
 
     protected override void OnBeforeSave()
     {
         RemoveDuplicateProjectDirectories();
+        RemoveDuplicateBoygroupGroups();
+    }
+
+    /// <summary>
+    /// Repeated server starts used to append the same group over and over, leaving the panel with a
+    /// column of identical "Main" rows. Strip duplicates and blanks on load and save.
+    /// </summary>
+    private static void RemoveDuplicateBoygroupGroups()
+    {
+        var groups = Config.BoygroupGroups;
+        if (groups == null || groups.Count < 2)
+            return;
+
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var keptCount = 0;
+        for (var index = 0; index < groups.Count; index++)
+        {
+            var name = groups[index].Trim();
+            if (name.Length == 0 || !seen.Add(name))
+                continue;
+
+            groups[keptCount++] = name;
+        }
+
+        if (keptCount < groups.Count)
+            groups.RemoveRange(keptCount, groups.Count - keptCount);
+
+        if (groups.Count == 0)
+            groups.Add("Main");
     }
 
     /// Duplicated entries make project loading fail on the next start, so they are stripped on load and save.
