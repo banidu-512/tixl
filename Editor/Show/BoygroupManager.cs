@@ -1358,6 +1358,11 @@ internal sealed class BoygroupManager
         // invalidated by the resource watcher, and setups travel as live setupJson anyway. Only
         // symbol data (.t3/.t3ui) and operator code (.cs/.csproj) require a reload - and TiXL has
         // no runtime loader for those, so the node restarts into the updated show.
+        // Everything this node received belongs to the deployed show project: it joins the
+        // Hub's "Network projects" group.
+        if (GetProjectFolder() is { Length: > 0 } receivedProject)
+            NetworkProjectRegistry.Register(NetworkProjectRegistry.BoygroupKind, receivedProject);
+
         var needsReload = _deployedRelativePaths.Any(IsStructureFile);
         _deployedRelativePaths.Clear();
         if (!needsReload)
