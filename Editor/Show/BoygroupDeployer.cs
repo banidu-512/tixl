@@ -160,6 +160,11 @@ internal static class BoygroupDeployer
     }
 
     /// <summary>Files the client needs, in stable order (smallest first so most files land early).</summary>
+    /// <summary>Timestamp comparison slack: a write time round-tripped through another filesystem
+    /// (NTFS 100 ns vs ext4 ns) does not reproduce the master's ticks bit-exactly, so exact
+    /// equality would re-send every transferred file on every deploy.</summary>
+    public static readonly long MtimeToleranceTicks = TimeSpan.FromSeconds(2).Ticks;
+
     public static List<string> ComputeMissingFiles(Dictionary<string, InventoryEntry> serverInventory,
                                                    Dictionary<string, InventoryEntry> clientInventory)
     {
@@ -168,7 +173,7 @@ internal static class BoygroupDeployer
         {
             if (!clientInventory.TryGetValue(relativePath, out var clientEntry)
                 || clientEntry.Size != serverEntry.Size
-                || clientEntry.LastWriteTicks != serverEntry.LastWriteTicks)
+                || Math.Abs(clientEntry.LastWriteTicks - serverEntry.LastWriteTicks) > MtimeToleranceTicks)
             {
                 missing.Add(relativePath);
             }
