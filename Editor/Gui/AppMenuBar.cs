@@ -100,22 +100,10 @@ internal static class AppMenuBar
         ImGui.PopStyleVar(3);
     }
 
-    /// <summary>The centered show-control line: what is running, in which role, on which address.</summary>
+    /// <summary>The centered show-control indicator: one short role word per active feature; details on hover.</summary>
     private static void DrawShowControlStatus()
     {
-        var status = ShowControlBarStatus.Compose();
-        if (string.IsNullOrEmpty(status))
-            return;
-
-        ImGui.SameLine();
-        var width = ImGui.CalcTextSize(status).X;
-        var centerX = (ImGui.GetWindowWidth() - width) * 0.5f;
-        if (centerX > ImGui.GetCursorPosX())
-            ImGui.SetCursorPosX(centerX);
-
-        ImGui.PushStyleColor(ImGuiCol.Text, UiColors.TextMuted.Rgba);
-        ImGui.TextUnformatted(status);
-        ImGui.PopStyleColor();
+        ShowControlBarStatus.DrawMenuBarIndicator();
     }
 
     private static void DrawDebugServerIndicator()
