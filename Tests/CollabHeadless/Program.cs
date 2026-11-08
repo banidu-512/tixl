@@ -37,6 +37,7 @@ internal static class Program
         Run("deploy.transfer", TestDeployFileTransfer);
         Run("deploy.pathsafety", TestDeployPathSafety);
         Run("deploy.mtime-tolerance", TestDeployMtimeTolerance);
+        Run("deploy.hash-over-mtime", TestDeployHashOverMtime);
         Run("boygroup.discovery", TestBoygroupDiscovery);
         Run("failover.election", TestFailoverElection);
         Run("failover.no-dual-active", TestFailoverNoDualActive);
@@ -158,27 +159,16 @@ internal static class Program
                              CompositionId = Guid.NewGuid(),
                              CursorOnCanvas = new Vector2(-123.5f, 88.25f),
                              SelectedChildIds = [Guid.NewGuid(), Guid.NewGuid()],
-                             ColorRgb = 0x12ab34,
-                             WheelSpin = -3,
-                             PressedKeys = [17, 88],
                          };
 
         var buffer = new byte[128];
         var size = packet.Encode(buffer);
-        Check(size == 2 + 16 + 8 + 1 + 2 * 16 + 1 + 3 + 1 + 2, $"encoded size {size} unexpected");
+        Check(size == 2 + 16 + 8 + 1 + 2 * 16, $"encoded size {size} unexpected");
         Check(PresencePacket.TryDecode(buffer.AsSpan(0, size), out var decoded), "decode failed");
         Check(decoded.PeerId == 7 && decoded.Flags == packet.Flags, "header fields mismatch");
         Check(decoded.CompositionId == packet.CompositionId, "composition id mismatch");
         Check(MathF.Abs(decoded.CursorOnCanvas.X - packet.CursorOnCanvas.X) < 0.001f, "cursor x drifted");
         Check(decoded.SelectedChildIds.SequenceEqual(packet.SelectedChildIds), "selection mismatch");
-        Check(decoded.ColorRgb == packet.ColorRgb, $"cursor color lost ({decoded.ColorRgb:x6})");
-        Check(decoded.WheelSpin == -3, "wheel spin lost");
-        Check(decoded.PressedKeys.SequenceEqual(packet.PressedKeys), "pressed keys lost");
-
-        // An older peer's packet (no appended bytes) must still decode: color 0, no keys, no wheel.
-        Check(PresencePacket.TryDecode(buffer.AsSpan(0, 27 + 2 * 16), out var oldPeer), "short packet rejected");
-        Check(oldPeer.ColorRgb == 0 && oldPeer.WheelSpin == 0 && oldPeer.PressedKeys.Length == 0,
-              "appended fields decoded from a packet that has none");
 
         Check(!PresencePacket.TryDecode(buffer.AsSpan(0, 26), out _), "truncated packet accepted");
     }
@@ -470,6 +460,34 @@ internal static class Program
         var missing = BoygroupDeployer.ComputeMissingFiles(server, client);
         Check(missing.Count == 3 && missing.Contains("c.txt") && missing.Contains("d.txt") && missing.Contains("e.txt"),
               $"expected [c.txt, d.txt, e.txt] missing, got [{string.Join(", ", missing)}]");
+    }
+
+    /// <summary>
+    /// Identical content whose mtime moved (a render node re-saves an unchanged project file on
+    /// launch) must not be re-sent: the hash decides when size matches and time does not.
+    /// </summary>
+    private static void TestDeployHashOverMtime()
+    {
+        const long t0 = 638_000_000_000_000_000;
+        var server = new Dictionary<string, BoygroupDeployer.InventoryEntry>
+                         {
+                             ["same.txt"] = new() { RelativePath = "same.txt", Size = 10, LastWriteTicks = t0, Hash = "AAAA" },
+                             ["diff.txt"] = new() { RelativePath = "diff.txt", Size = 10, LastWriteTicks = t0, Hash = "BBBB" },
+                             ["unhashed.txt"] = new() { RelativePath = "unhashed.txt", Size = 10, LastWriteTicks = t0 },
+                         };
+        var client = new Dictionary<string, BoygroupDeployer.InventoryEntry>
+                         {
+                             // Same content, 30 s newer (the node rewrote it on launch): current.
+                             ["same.txt"] = new() { RelativePath = "same.txt", Size = 10, LastWriteTicks = t0 + 300_000_000, Hash = "AAAA" },
+                             // Different content, newer: missing.
+                             ["diff.txt"] = new() { RelativePath = "diff.txt", Size = 10, LastWriteTicks = t0 + 300_000_000, Hash = "CCCC" },
+                             // No hashes available (large file): time decides, so missing.
+                             ["unhashed.txt"] = new() { RelativePath = "unhashed.txt", Size = 10, LastWriteTicks = t0 + 300_000_000 },
+                         };
+
+        var missing = BoygroupDeployer.ComputeMissingFiles(server, client);
+        Check(missing.Count == 2 && missing.Contains("diff.txt") && missing.Contains("unhashed.txt"),
+              $"expected [diff.txt, unhashed.txt] missing, got [{string.Join(", ", missing)}]");
     }
 
     private static void TestDeployPathSafety()
