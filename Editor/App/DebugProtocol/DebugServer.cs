@@ -771,6 +771,7 @@ internal static class DebugServer
                                ["identity"] = collab.LocalIdentity.DisplayName,
                                ["loginState"] = CollabDiscordAuth.State.ToString(),
                                ["loginStatus"] = CollabDiscordAuth.StatusText,
+                               ["links"] = new JArray(collab.PeerLinks.Select(l => $"{l.PeerId}:{l.Link}")),
                            });
     }
 

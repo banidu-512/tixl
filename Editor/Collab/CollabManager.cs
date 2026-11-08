@@ -62,6 +62,19 @@ internal sealed class CollabManager
     /// <summary>Peers currently in the session (UI thread only).</summary>
     public IReadOnlyList<CollabPeerConnection> Peers => _transport?.Peers ?? [];
 
+    /// <summary>How each peer is reached ("direct" data channel, relay fallback); empty when unknown.</summary>
+    public IReadOnlyList<(int PeerId, string Link)> PeerLinks
+    {
+        get
+        {
+            var result = new List<(int, string)>();
+            foreach (var peer in Peers)
+                result.Add((peer.AssignedId, _transport?.DescribePeerLink(peer) ?? ""));
+
+            return result;
+        }
+    }
+
     internal CollabWebRtcHostTransport? WebRtcHost => _transport as CollabWebRtcHostTransport;
     internal CollabWebRtcClientTransport? WebRtcClient => _transport as CollabWebRtcClientTransport;
 
