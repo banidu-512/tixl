@@ -336,7 +336,7 @@ internal class CollabRelayHostTransport : CollabTransport
                 RemovePeer(FindPeer(slot));
 
                 CollabPeerConnection? member = null;
-                member = new CollabPeerConnection(_relayStream, slot, () => RemovePeer(member));
+                member = CreateMemberPeer(slot, () => RemovePeer(member));
                 lock (_peers)
                 {
                     _peers.Add(member);
@@ -344,6 +344,9 @@ internal class CollabRelayHostTransport : CollabTransport
                 }
 
                 OnStatus($"Peer joining via relay (slot {slot})");
+
+                // The WebRTC host builds its peer link here; the relay transport ignores it.
+                OnMemberJoined(member);
             }
             else if (type == "left")
             {
@@ -387,6 +390,7 @@ internal class CollabRelayHostTransport : CollabTransport
         }
 
         peer.SessionClosed = true;
+        OnMemberRemoved(peer);
         OnPeerDisconnected(peer);
     }
 
