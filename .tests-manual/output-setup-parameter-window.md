@@ -40,7 +40,7 @@ Click the "Surface 1" item.
   editable **Name** field reading "Surface 1".
 - Below: **Render** checkbox (on), **Position (m)** (3 fields, all 0),
   **Size (m)** (1 × 1) with the lock-aspect and measure icons,
-  **Show size raster** (off), **Anchor (-1..1)** (0 × -1, the bottom-centre).
+  **Show size raster** (off), **Show measuring lines** (off), **Anchor (-1..1)** (0 × -1, the bottom-centre).
 - The outliner itself shows **no** properties card anymore.
 
 ## Step: Picking takes the window and deselects the other side
@@ -153,12 +153,24 @@ Image**. Click the new person card, then the new image card.
 
 **Action:**
 1. Route one SendToOutput with two slices to two outputs of different sizes (1920×1080 and 2560×1440), with the
-   op's **Resolution** at 0×0. Click the op in the graph window.
-2. Set the op's **Resolution** to 3840×1080.
-3. Set **Resolution** back to 0×0.
+   op's **Resolution Override** at 0×0. Click the op in the graph window.
+2. Set the op's **Resolution Override** to 3840×1080.
+3. Set **Resolution Override** back to 0×0.
 
 **Expected:**
 - After 1: the op shows the "Routed to outputs of different sizes" warning on hover, and the Parameter window shows
   a magenta "also routed to an output of..." line under **Rendered (px)**.
 - After 2: the warning and the magenta line disappear, and **Rendered (px)** reads 3840×1080.
 - After 3: the warning and the magenta line come back.
+
+## Step: Raster and measuring lines are separate switches
+
+**Action:**
+1. Select a surface that is mapped onto an output and has at least one measuring line. Tick **Show size raster** only.
+2. Untick it and tick **Show measuring lines** only.
+3. Tick both, save, and open the setup in an exported Player build.
+
+**Expected:**
+- After 1: the output shows the metre raster over the surface, without the measuring lines.
+- After 2: the output shows the measuring lines, without the raster.
+- After 3: the editor shows both; the Player shows neither the raster nor the lines.
