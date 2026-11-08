@@ -1988,6 +1988,17 @@ internal sealed class CollabManager
                 _projectDownload = null;
                 StatusText = $"Project '{name}' downloaded — restarting to load it...";
                 Log.Info($"Collab: project '{name}' downloaded; restarting to load it (session will rejoin automatically)");
+
+                // The restart must land IN the downloaded project. Without pinning it, the editor
+                // reopened whatever the startup project was (the host's other project), rejoined,
+                // saw the mismatch and downloaded again - an endless restart cycle.
+                if (_projectDownloadFolder.Length > 0)
+                {
+                    UserSettings.Config.StartupProjectFolder = _projectDownloadFolder;
+                    UserSettings.Config.LastOpenProjectFolder = _projectDownloadFolder;
+                    UserSettings.Save();
+                }
+
                 _restartAtTicks = Environment.TickCount64 + 1500;
                 break;
             }
