@@ -143,6 +143,40 @@ internal sealed class PeerCameraService
                    };
     }
 
+    /// <summary>What the settings panel shows. Rebuilt at most twice a second and only read on the UI thread.</summary>
+    public sealed class Overview
+    {
+        public int SessionCount;
+        public readonly List<string> LocalCameras = [];
+        public readonly List<string> PeerCameras = [];
+        public readonly List<string> Streaming = [];
+        public readonly List<string> Receiving = [];
+    }
+
+    public Overview GetOverview()
+    {
+        var now = Environment.TickCount64;
+        if (now < _nextOverviewTicks)
+            return _overview;
+
+        _nextOverviewTicks = now + 500;
+        _overview.SessionCount = _sessions.Count;
+        _overview.LocalCameras.Clear();
+        _overview.LocalCameras.AddRange(_localCameras);
+        _overview.PeerCameras.Clear();
+        PeerCameraDirectory.AppendReferences(_overview.PeerCameras);
+
+        _overview.Streaming.Clear();
+        foreach (var (camera, share) in _shares)
+            _overview.Streaming.Add($"{camera}: {share.Status} ({share.RequesterCount} viewer{(share.RequesterCount == 1 ? "" : "s")})");
+
+        _overview.Receiving.Clear();
+        foreach (var state in _wantStates.Values)
+            _overview.Receiving.Add($"{state.Camera} from {state.Machine}");
+
+        return _overview;
+    }
+
     private void CollectSessions()
     {
         _sessions.Clear();
@@ -637,4 +671,6 @@ internal sealed class PeerCameraService
     private long _nextCameraScanTicks;
     private long _nextPruneTicks;
     private int _lastSourcesHash;
+    private readonly Overview _overview = new();
+    private long _nextOverviewTicks;
 }
