@@ -43,7 +43,7 @@ internal sealed class BoygroupServerTransport : BoygroupTransport
         _listener.Start();
         try
         {
-            DiscoveryResponder = new LanDiscoveryResponder(tcpPort + LanDiscoveryResponder.DiscoveryPortOffset,
+            DiscoveryResponder = new LanDiscoveryResponder(tcpPort,
                                                            () => new JObject
                                                                      {
                                                                          ["boygroup"] = true,

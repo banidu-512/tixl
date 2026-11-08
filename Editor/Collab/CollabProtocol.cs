@@ -53,8 +53,12 @@ internal static class CollabProtocol
     public const int HeartbeatIntervalMs = 500;
     public const int HeartbeatPingSize = 8;
     /// <summary>Silence for more than ~6 × heartbeat means the peer is gone. TCP keepalive below
-    /// catches half-open links even faster.</summary>
+    /// catches half-open links even faster. Show LAN budget; relay peers get
+    /// <see cref="RelayPeerTimeoutMs"/>.</summary>
     public const int PeerTimeoutMs = 3_000;
+    /// <summary>Relay sessions ride the internet: a transient 3 s stall must not end a session,
+    /// so relay-backed peers tolerate ~10 s of silence.</summary>
+    public const int RelayPeerTimeoutMs = 10_000;
     public const int PresenceSendIntervalMs = 50;
 
     /// <summary>Writes run on the UI thread: a peer that stops reading stalls it at most this long before it is dropped.</summary>

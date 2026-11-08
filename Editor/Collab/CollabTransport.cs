@@ -53,13 +53,15 @@ internal sealed class CollabPeerConnection
         client.SendTimeout = CollabProtocol.WriteTimeoutMs;
     }
 
-    /// <summary>Relay-backed peer: shares the relay stream; closing only detaches this peer.</summary>
+    /// <summary>Relay-backed peer: shares the relay stream; closing only detaches this peer.
+    /// Relay paths ride the internet, so their silence timeout is looser than a show LAN's.</summary>
     public CollabPeerConnection(Stream sharedStream, int assignedId, Action? onDetach)
     {
         Client = null;
         AssignedId = assignedId;
         Stream = sharedStream;
         _onDetach = onDetach;
+        TimeoutMs = CollabProtocol.RelayPeerTimeoutMs;
     }
 
     public readonly TcpClient? Client;
@@ -86,9 +88,13 @@ internal sealed class CollabPeerConnection
     private long _lastHeardFromTicks = Environment.TickCount64;
     private readonly object _writeLock = new();
 
+    /// <summary>How long this peer may stay silent before it is considered gone. Show LAN peers
+    /// use <see cref="CollabProtocol.PeerTimeoutMs"/>; relay-backed peers a looser internet budget.</summary>
+    public int TimeoutMs { get; init; } = CollabProtocol.PeerTimeoutMs;
+
     public void MarkHeardFrom() => Interlocked.Exchange(ref _lastHeardFromTicks, Environment.TickCount64);
 
-    public bool IsTimedOut => Environment.TickCount64 - Interlocked.Read(ref _lastHeardFromTicks) > CollabProtocol.PeerTimeoutMs;
+    public bool IsTimedOut => Environment.TickCount64 - Interlocked.Read(ref _lastHeardFromTicks) > TimeoutMs;
 
     /// <summary>Thread-safe framed write. Callers must pass a payload already encoded for the frame type.</summary>
     public void Write(CollabProtocol.FrameType type, ReadOnlySpan<byte> payload)
@@ -782,7 +788,17 @@ internal sealed class LanDiscoveryScanner : IDisposable
                 }
 
                 foreach (var target in targets)
-                    udp.Send(probe, probe.Length, target);
+                {
+                    try
+                    {
+                        udp.Send(probe, probe.Length, target);
+                    }
+                    catch (SocketException)
+                    {
+                        // One unrouteable interface (broken virtual adapter, VPN tunnel) must not
+                        // starve the remaining targets of this round.
+                    }
+                }
 
                 using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
                 timeout.CancelAfter(interval);
@@ -790,10 +806,20 @@ internal sealed class LanDiscoveryScanner : IDisposable
                 {
                     var result = await udp.ReceiveAsync(timeout.Token);
                     var text = Encoding.UTF8.GetString(result.Buffer);
-                    if (!text.StartsWith("{\"collab\""))
-                        continue;
 
-                    var json = JObject.Parse(text);
+                    // No prefix gate here: collab and boygroup announcements discriminate by
+                    // content at the consumer, and junk replies throw JsonException below.
+                    JObject json;
+                    try
+                    {
+                        json = JObject.Parse(text);
+                    }
+                    catch (JsonException)
+                    {
+                        // Some other tool answered our probe; ignore.
+                        continue;
+                    }
+
                     var source = result.RemoteEndPoint as IPEndPoint ?? new IPEndPoint(IPAddress.None, 0);
                     Results.Enqueue((json, source, DateTime.UtcNow));
                 }
@@ -810,9 +836,16 @@ internal sealed class LanDiscoveryScanner : IDisposable
             {
                 try { await Task.Delay(200, cancellation); } catch (OperationCanceledException) { break; }
             }
-            catch (JsonException)
+            catch (ObjectDisposedException)
             {
-                // Some other tool answered our broadcast; ignore.
+                // Stop() closed the socket while a receive/send was in flight.
+                break;
+            }
+            catch (Exception e)
+            {
+                // The scan must never die silently: report and keep going after a pause.
+                Console.WriteLine($"[discovery-scanner] retrying after: {e.Message}");
+                try { await Task.Delay(500, cancellation); } catch (OperationCanceledException) { break; }
             }
         }
     }

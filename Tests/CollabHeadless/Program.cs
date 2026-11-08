@@ -36,6 +36,7 @@ internal static class Program
         Run("deploy.inventory", TestDeployInventoryDiff);
         Run("deploy.transfer", TestDeployFileTransfer);
         Run("deploy.pathsafety", TestDeployPathSafety);
+        Run("boygroup.discovery", TestBoygroupDiscovery);
         Run("failover.election", TestFailoverElection);
         Run("failover.no-dual-active", TestFailoverNoDualActive);
 
@@ -352,6 +353,77 @@ internal static class Program
         {
             try { root.Delete(recursive: true); }
             catch { /* temp cleanup is best-effort in tests */ }
+        }
+    }
+
+    /// <summary>
+    /// The boygroup responder answers a scanner probe with an announcement the boygroup consumer
+    /// accepts. This locks in the wire contract between LanDiscoveryResponder and
+    /// LanDiscoveryScanner — the scanner once filtered for a collab prefix and silently dropped
+    /// every boygroup announcement.
+    /// </summary>
+    private static void TestBoygroupDiscovery()
+    {
+        var port = FreeTcpPort();
+        using var server = new BoygroupServerTransport(port, ["Main"]);
+        var scanner = new LanDiscoveryScanner();
+        try
+        {
+            scanner.Start(port + LanDiscoveryResponder.DiscoveryPortOffset, [IPAddress.Loopback]);
+
+            JObject? announcement = null;
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(4);
+            var rawSeen = 0;
+
+            // Independent control: one raw probe straight at the responder, bypassing the scanner.
+            string? rawProbeOutcome;
+            using (var raw = new UdpClient())
+            {
+                raw.Client.ReceiveTimeout = 1000;
+                var probe = Encoding.UTF8.GetBytes(LanDiscoveryResponder.ProbePayload);
+                raw.Send(probe, probe.Length, new IPEndPoint(IPAddress.Loopback, port + LanDiscoveryResponder.DiscoveryPortOffset));
+                try
+                {
+                    var endpoint = new IPEndPoint(IPAddress.Any, 0);
+                    var reply = raw.Receive(ref endpoint);
+                    rawProbeOutcome = $"raw probe answered ({Encoding.UTF8.GetString(reply)[..Math.Min(40, reply.Length)]}...)";
+                }
+                catch (SocketException)
+                {
+                    rawProbeOutcome = "raw probe got NO answer";
+                }
+            }
+
+            while (DateTime.UtcNow < deadline && announcement == null)
+            {
+                while (scanner.Results.TryDequeue(out var result))
+                {
+                    rawSeen++;
+                    if (result.Announcement["boygroup"] != null)
+                    {
+                        announcement = result.Announcement;
+                        break;
+                    }
+                }
+
+                if (announcement == null)
+                    Thread.Sleep(50);
+            }
+
+            Check(announcement != null,
+                  $"no boygroup announcement via scanner (raw results: {rawSeen}; responder alive: {server.DiscoveryResponder != null}; control probe: {rawProbeOutcome})");
+            if (announcement == null)
+                return;
+
+            Check(announcement["server"]?.Value<string>() == Environment.MachineName,
+                  "announcement carries the server name");
+            Check(announcement["port"]?.Value<int>() == port, "announcement carries the TCP port");
+            Check(announcement["groups"] is JArray groups && groups.Count == 1 && groups[0].Value<string>() == "Main",
+                  "announcement carries the groups");
+        }
+        finally
+        {
+            scanner.Stop();
         }
     }
 

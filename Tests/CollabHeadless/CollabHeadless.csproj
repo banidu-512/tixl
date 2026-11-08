@@ -26,6 +26,7 @@
     <Compile Include="../../Editor/Collab/CollabAuth.cs" Link="Included/CollabAuth.cs" />
     <Compile Include="../../Editor/Collab/CollabTransport.cs" Link="Included/CollabTransport.cs" />
     <Compile Include="../../Editor/Show/BoygroupDeployer.cs" Link="Included/BoygroupDeployer.cs" />
+    <Compile Include="../../Editor/Show/BoygroupTransport.cs" Link="Included/BoygroupTransport.cs" />
     <Compile Include="../../Core/Show/FailoverArbiter.cs" Link="Included/FailoverArbiter.cs" />
   </ItemGroup>
 </Project>
