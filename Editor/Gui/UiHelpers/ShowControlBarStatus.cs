@@ -88,14 +88,17 @@ internal static class ShowControlBarStatus
         ImGui.TextDisabled("Show-control mode - one at a time");
         ImGui.Separator();
 
+        // Menu clicks only record what was chosen. Switching inside the open menu would tear down a
+        // live session - and with it whatever window is mid-render this frame - while ImGui still
+        // holds the menu's window stack, which left the frame's ID/style stacks unbalanced.
+        string? requestedMode = null;
+        bool? requestedMaster = null;
+        var requestedJoinLast = false;
+        var requestedJoinDialog = false;
+
         // Plain editing: no show-control feature runs.
         if (ImGui.Selectable("Editor mode", mode == ShowControlMode.Off))
-        {
-            var error = ShowControlMode.SwitchTo(ShowControlMode.Off);
-            if (error != null)
-                Log.Warning($"Show mode: {error}");
-            ImGui.CloseCurrentPopup();
-        }
+            requestedMode = ShowControlMode.Off;
 
         if (ImGui.IsItemHovered())
         {
@@ -110,15 +113,8 @@ internal static class ShowControlBarStatus
             var isMaster = UserSettings.Config.BoygroupIsMaster;
             if (ImGui.Selectable("as Master", mode == ShowControlMode.Boygroup && isMaster))
             {
-                ShowControlMode.SetBoygroupRole(true);
-                if (mode != ShowControlMode.Boygroup)
-                {
-                    var error = ShowControlMode.SwitchTo(ShowControlMode.Boygroup);
-                    if (error != null)
-                        Log.Warning($"Show mode: {error}");
-                }
-
-                ImGui.CloseCurrentPopup();
+                requestedMode = ShowControlMode.Boygroup;
+                requestedMaster = true;
             }
 
             if (ImGui.IsItemHovered())
@@ -130,15 +126,8 @@ internal static class ShowControlBarStatus
 
             if (ImGui.Selectable("as Slave", mode == ShowControlMode.Boygroup && !isMaster))
             {
-                ShowControlMode.SetBoygroupRole(false);
-                if (mode != ShowControlMode.Boygroup)
-                {
-                    var error = ShowControlMode.SwitchTo(ShowControlMode.Boygroup);
-                    if (error != null)
-                        Log.Warning($"Show mode: {error}");
-                }
-
-                ImGui.CloseCurrentPopup();
+                requestedMode = ShowControlMode.Boygroup;
+                requestedMaster = false;
             }
 
             if (ImGui.IsItemHovered())
@@ -159,14 +148,7 @@ internal static class ShowControlBarStatus
             const int backupPriority = 50;
 
             if (ImGui.Selectable("as Main", mode == ShowControlMode.Failover && UserSettings.Config.FailoverPriority > backupPriority))
-            {
-                UserSettings.Config.FailoverPriority = mainPriority;
-                UserSettings.Save();
-                var error = ShowControlMode.SwitchTo(ShowControlMode.Failover);
-                if (error != null)
-                    Log.Warning($"Show mode: {error}");
-                ImGui.CloseCurrentPopup();
-            }
+                requestedMode = ShowControlMode.Failover;
 
             if (ImGui.IsItemHovered())
             {
@@ -176,14 +158,7 @@ internal static class ShowControlBarStatus
             }
 
             if (ImGui.Selectable("as Backup", mode == ShowControlMode.Failover && UserSettings.Config.FailoverPriority <= backupPriority))
-            {
-                UserSettings.Config.FailoverPriority = backupPriority;
-                UserSettings.Save();
-                var error = ShowControlMode.SwitchTo(ShowControlMode.Failover);
-                if (error != null)
-                    Log.Warning($"Show mode: {error}");
-                ImGui.CloseCurrentPopup();
-            }
+                requestedMode = ShowControlMode.Failover + ":backup";
 
             if (ImGui.IsItemHovered())
             {
@@ -195,16 +170,11 @@ internal static class ShowControlBarStatus
             ImGui.EndMenu();
         }
 
-        // Collaboration carries a choice like boygrouping's role: host a room or join one.
+        // Collaboration carries a choice like boygrouping's role: host a session or join one.
         if (ImGui.BeginMenu("Collab"))
         {
             if (ImGui.Selectable("Host session", mode == ShowControlMode.Collab))
-            {
-                var error = ShowControlMode.SwitchTo(ShowControlMode.Collab);
-                if (error != null)
-                    Log.Warning($"Show mode: {error}");
-                ImGui.CloseCurrentPopup();
-            }
+                requestedMode = ShowControlMode.Collab;
 
             if (ImGui.IsItemHovered())
             {
@@ -215,12 +185,7 @@ internal static class ShowControlBarStatus
 
             var lastRoom = UserSettings.Config.CollabLastRelayRoom;
             if (!string.IsNullOrEmpty(lastRoom) && ImGui.Selectable($"Join last session ({lastRoom})", false))
-            {
-                ShowControlMode.Activate(ShowControlMode.Collab);
-                var (host, port) = ParseRelayEndpoint(UserSettings.Config.CollabLastRelayHost);
-                CollabManager.Instance.JoinViaRelay(host, port, lastRoom, UserSettings.Config.CollabPassword ?? "");
-                ImGui.CloseCurrentPopup();
-            }
+                requestedJoinLast = true;
 
             if (!string.IsNullOrEmpty(lastRoom) && ImGui.IsItemHovered())
             {
@@ -230,19 +195,60 @@ internal static class ShowControlBarStatus
             }
 
             if (ImGui.Selectable("Join session..."))
-            {
-                // Open the modal after this menu closes: OpenPopup must run in the same id scope
-                // as BeginPopupModal, which is the menu bar's.
-                _openJoinRoomModal = true;
-                ImGui.CloseCurrentPopup();
-            }
+                requestedJoinDialog = true;
 
             ImGui.EndMenu();
         }
 
         ImGui.EndPopup();
 
+        // Everything happens here, with the menu stack closed again.
+        if (requestedMode != null)
+            ApplyModeRequest(requestedMode, requestedMaster);
+
+        if (requestedJoinLast)
+            JoinLastSession();
+
+        if (requestedJoinDialog)
+            _openJoinRoomModal = true;
+
         DrawJoinRoomModal();
+    }
+
+    /// <summary>Applies a menu choice once the menu is closed. "Failover:backup" carries the Backup preference.</summary>
+    private static void ApplyModeRequest(string requestedMode, bool? requestedMaster)
+    {
+        const int mainPriority = 100;
+        const int backupPriority = 50;
+
+        var mode = requestedMode;
+        if (mode.StartsWith(ShowControlMode.Failover + ":", StringComparison.Ordinal))
+        {
+            mode = ShowControlMode.Failover;
+            UserSettings.Config.FailoverPriority = requestedMode.EndsWith(":backup", StringComparison.Ordinal) ? backupPriority : mainPriority;
+            UserSettings.Save();
+        }
+
+        if (requestedMaster is { } isMaster)
+            ShowControlMode.SetBoygroupRole(isMaster);
+
+        if (mode == ShowControlMode.Boygroup && ShowControlMode.Current == ShowControlMode.Boygroup && requestedMaster != null)
+            return; // The role switch already re-applied the session.
+
+        var error = ShowControlMode.SwitchTo(mode);
+        if (error != null)
+            Log.Warning($"Show mode: {error}");
+    }
+
+    private static void JoinLastSession()
+    {
+        var lastRoom = UserSettings.Config.CollabLastRelayRoom;
+        if (string.IsNullOrEmpty(lastRoom))
+            return;
+
+        ShowControlMode.Activate(ShowControlMode.Collab);
+        var (host, port) = ParseRelayEndpoint(UserSettings.Config.CollabLastRelayHost);
+        CollabManager.Instance.JoinViaRelay(host, port, lastRoom, UserSettings.Config.CollabPassword ?? "");
     }
 
     /// <summary>The join modal lives at menu-bar id scope, outside the mode popup.</summary>
