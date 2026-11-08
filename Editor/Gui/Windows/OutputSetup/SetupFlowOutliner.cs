@@ -19,6 +19,7 @@ using T3.Editor.UiModel.InputsAndTypes;
 using T3.Editor.UiModel.Modification;
 using T3.Editor.UiModel.ProjectHandling;
 using T3.Editor.UiModel.Selection;
+using T3.Editor.Show;
 
 namespace T3.Editor.Gui.Windows.OutputSetup;
 
@@ -37,6 +38,7 @@ internal sealed class SetupFlowOutliner
         _requestAddPlugMenu = _ => _addPlugMenuRequested = true;
         _requestAddContentMenu = _ => _addContentMenuRequested = true;
         _drawDisplayTooltip = DrawDisplayTooltip;
+        _drawRemoteDisplayTooltip = DrawRemoteDisplayTooltip;
         _drawSendParentTooltip = DrawSendParentTooltip;
     }
 
@@ -367,51 +369,11 @@ internal sealed class SetupFlowOutliner
         var color = emphasized ? kindColor : kindColor.Fade(0.6f);
         var thickness = (emphasized ? 2.5f : 1.5f) * scale;
 
-        // Flush with the items: a connection grows out of one pill and into the next. Into an output, the ends
-        // spread along its pill in layer order, front at the top, so the stacking reads off the lines.
+        // Flush with the items: a connection grows out of one pill and into the next.
         var a = new Vector2(from.Right, from.Y);
-        var b = new Vector2(to.Left, to.Y + OutputLayerEndOffset(setup, to, fromKind, fromId, toKind, toId));
+        var b = new Vector2(to.Left, to.Y);
         var reach = MathF.Max(24 * scale, MathF.Abs(b.X - a.X) * 0.4f);
         dl.AddBezierCubic(a, a + new Vector2(reach, 0), b - new Vector2(reach, 0), b, color, thickness);
-    }
-
-    /// <summary>
-    /// How far below the pill's centre a connection into an output ends: its layer's place in the stack, front
-    /// at the top. A surface mapped onto the output is its own layer; a patch drawn folded into its output is too.
-    /// </summary>
-    private float OutputLayerEndOffset(Setup setup, in Anchor to, SetupEntityKinds fromKind, Guid fromId, SetupEntityKinds toKind, Guid toId)
-    {
-        if (to.Kind != SetupEntityKinds.Output)
-            return 0;
-
-        var layerId = toKind switch
-                          {
-                              SetupEntityKinds.Output when fromKind == SetupEntityKinds.Surface => fromId,
-                              SetupEntityKinds.Patch                                          => toId,
-                              _                                                               => Guid.Empty,
-                          };
-        if (layerId == Guid.Empty || setup.FindOutput(to.Id) is not { } output)
-            return 0;
-
-        OutputLayers.Collect(setup, output, _layerScratch);
-        var count = _layerScratch.Count;
-        if (count < 2)
-            return 0;
-
-        for (var index = 0; index < count; index++)
-        {
-            if (_layerScratch[index].Id != layerId)
-                continue;
-
-            // Inset by the pill's round caps, so the outermost lines end on its straight part.
-            var scale = T3Ui.UiScaleFactor;
-            var halfHeight = MathF.Round(OutlinerItem.InputPillHalfHeight * scale)
-                             - MathF.Max(1, MathF.Round(OutlinerItem.InputPillHalfWidth * scale));
-            var fromFront = count - 1 - index;
-            return -halfHeight + 2 * halfHeight * fromFront / (count - 1);
-        }
-
-        return 0;
     }
 
     private bool IsEmphasized(SetupEntitySelection selection, SetupEntityKinds kind, Guid id)
@@ -700,11 +662,8 @@ internal sealed class SetupFlowOutliner
             }
 
             SetupPopup.End();
+            DrawRemoteBindings(selection, setup);
         }
-
-        // After this machine's own plugs: the connected render nodes' displays, which take a drop
-        // the same way but bind inside the node.
-        DrawRemoteBindings(selection, setup);
     }
 
     private static string MissingPackageStatus(string kind)
@@ -760,45 +719,13 @@ internal sealed class SetupFlowOutliner
                                    Kind = SetupEntityKinds.Plug,
                                    Id = Show.BoygroupManager.RemoteDisplayPlugId(client, screen.Index),
                                    Name = $"{client.Name} / {screen.Name}",
-                                   // What presents on the node's display, said next to its resolution.
-                                   Status = bound == null
-                                                ? $"{screen.Width} x {screen.Height}"
-                                                : $"{SetupLabels.OutputLabel(bound)} - {screen.Width} x {screen.Height}",
+                                   Status = $"{screen.Width} x {screen.Height}",
                                    LeadingIcon = Icon.ConnectedOutput,
                                    IsMuted = bound == null,
                                    DrawTooltip = _drawRemoteDisplayTooltip,
                                };
                 DrawItem(selection, setup, ref args);
             }
-
-            // What the node presents, in words: the master reads the slave's show next to its own
-            // without a second set of output rows (those carry the card/expander machinery and do
-            // not belong in a plug column).
-            if (client.MachineConfig == null || client.MachineConfig.Bindings.Count == 0)
-            {
-                ImGui.TextDisabled("	no output bound on this node yet");
-                continue;
-            }
-
-            var presented = new List<string>();
-            var seen = new HashSet<Guid>();
-            foreach (var binding in client.MachineConfig.Bindings)
-            {
-                var output = setup.FindOutput(binding.OutputId);
-                if (output == null || !seen.Add(output.Id))
-                    continue;
-
-                var plugLabel = binding.IsStream ? "stream" : $"Display {binding.DisplayIndex + 1}";
-                presented.Add($"{SetupLabels.OutputLabel(output)} on {plugLabel}");
-            }
-
-            if (presented.Count == 0)
-            {
-                ImGui.TextDisabled("	bindings name outputs this setup does not have");
-                continue;
-            }
-
-            ImGui.TextDisabled($"	Presents: {string.Join(", ", presented)}");
         }
     }
 
@@ -1266,6 +1193,9 @@ internal sealed class SetupFlowOutliner
     // would allocate a closure for every plug row every frame.
     private int _tooltipDisplayIndex;
     private readonly Action _drawDisplayTooltip;
+    private Show.BoygroupManager.ClientInfo? _tooltipRemoteClient;
+    private int _tooltipRemoteDisplayIndex;
+    private readonly Action _drawRemoteDisplayTooltip;
 
     // The parent op of the content row being drawn, read by its tooltip — a field for the same reason as above.
     private Instance? _tooltipSendParent;
@@ -1291,7 +1221,6 @@ internal sealed class SetupFlowOutliner
 
     // Items drawn this frame, for the connections (cleared per frame; a few dozen entries, searched linearly).
     private readonly List<Anchor> _anchors = [];
-    private readonly List<OutputLayers.Layer> _layerScratch = [];
 
     private const float ColumnGap = 28; // unscaled px; the gutter the connections run through
 

@@ -664,6 +664,9 @@ internal static class DebugServer
             case "set":
             {
                 var value = request["value"]?.Value<string>() ?? "off";
+                if (value == Show.ShowControlMode.Boygroup && request["role"] is { } roleToken)
+                    Show.ShowControlMode.SetBoygroupRole(roleToken.Value<string>() == "master");
+
                 var error = Show.ShowControlMode.SwitchTo(value);
                 if (error != null)
                 {
@@ -798,6 +801,31 @@ internal static class DebugServer
             case "leave":
                 boygroup.Leave();
                 break;
+
+            case "bind":
+            {
+                var clientName = request["node"]?.Value<string>() ?? "";
+                var client = boygroup.Clients.FirstOrDefault(c => c.Name.Equals(clientName, StringComparison.OrdinalIgnoreCase));
+                if (client == null)
+                {
+                    context.SendError("INVALID_PARAM", $"no connected node named '{clientName}'");
+                    return;
+                }
+
+                if (!Guid.TryParse(request["output"]?.Value<string>(), out var outputId))
+                {
+                    context.SendError("INVALID_PARAM", "bind requires output = <guid>");
+                    return;
+                }
+
+                var display = request["display"]?.Value<int>() ?? 0;
+                if (request["unbind"] is { } unbind && unbind.Value<bool>())
+                    boygroup.UnbindRemoteOutput(client, outputId, display);
+                else
+                    boygroup.BindRemoteOutput(client, outputId, display);
+
+                break;
+            }
 
             case "deploy":
                 boygroup.DeployAndSync();

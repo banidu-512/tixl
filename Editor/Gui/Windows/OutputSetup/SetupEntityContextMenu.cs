@@ -4,6 +4,7 @@ using T3.Core.Output;
 using T3.Editor.Gui.Styling;
 using T3.Editor.UiModel.ProjectHandling;
 using T3.Editor.UiModel.Selection;
+using T3.Editor.Show;
 
 namespace T3.Editor.Gui.Windows.OutputSetup;
 
@@ -236,6 +237,22 @@ internal static class SetupEntityContextMenu
                 break;
 
             case SetupEntityKinds.Plug:
+                // A render node's display belongs to that machine; only its binding is offered here.
+                if (Show.BoygroupManager.Instance.TryGetRemoteDisplayPlug(id, out var remoteClient, out var remoteDisplayIndex))
+                {
+                    var remoteConfig = remoteClient.MachineConfig;
+                    var remoteBound = remoteConfig == null
+                                          ? null
+                                          : Plugs.TryGetBoundOutput(setup, remoteConfig, Plugs.DisplayPlugId(remoteDisplayIndex));
+                    if (remoteBound != null
+                        && CustomComponents.DrawMenuItem(15, $"Unbind {remoteBound.Name}"))
+                    {
+                        Show.BoygroupManager.Instance.UnbindRemoteOutput(remoteClient, remoteBound.Id, remoteDisplayIndex);
+                    }
+
+                    break;
+                }
+
                 if (!OutputSetupHandling.TryGetActiveSetup(out _, out var plugMachineConfig))
                     break;
 
@@ -353,14 +370,14 @@ internal static class SetupEntityContextMenu
                 if (surface == null)
                     break;
 
-                // A pin can be taken off again. Its alignment is parked, so connecting the surface to that output restores it.
+                // A pin can be taken off again: the surface then follows a same-named patch, or is simply unmapped.
                 for (var m = 0; m < surface.OutputMappings.Count; m++)
                 {
                     var mapping = surface.OutputMappings[m];
                     var pinnedOutputId = mapping.OutputId;
                     var pinnedOutputName = setup.FindOutput(pinnedOutputId)?.Name ?? "Output";
                     if (CustomComponents.DrawMenuItem(400 + m, $"Unpin from {pinnedOutputName}"))
-                        SetupUndo.RunUndoable("Unpin surface", setup, () => SetupActions.ParkMappings(surface, x => x.OutputId == pinnedOutputId));
+                        SetupUndo.RunUndoable("Unpin surface", setup, () => surface.OutputMappings.RemoveAll(x => x.OutputId == pinnedOutputId));
 
                     // The way back to the whole canvas after a corner was dragged — how a display normally shows a surface.
                     if (!mapping.IsFilling && CustomComponents.DrawMenuItem(500 + m, $"Fill {pinnedOutputName}"))
