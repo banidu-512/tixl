@@ -1,6 +1,7 @@
 #nullable enable
 using System.IO;
 using System.Security.Cryptography;
+using System.Security.Cryptography;
 using Newtonsoft.Json.Linq;
 using T3.Core.Logging;
 
@@ -34,7 +35,14 @@ internal static class BoygroupDeployer
         public string RelativePath = "";
         public long Size;
         public long LastWriteTicks;
+
+        /// <summary>Content hash, computed for small project files only (large media would make a
+        /// join slow). Lets the diff recognize identical content whose mtime moved — a client that
+        /// rewrites an unchanged project file on launch must not be re-sent and restarted forever.</summary>
+        public string? Hash;
     }
+
+    private const long MaxHashedBytes = 8 * 1024 * 1024;
 
     /// <summary>relPath → (size, mtime). Fast compare, same quick-check model as rsync. Files under
     /// <paramref name="excludedRelativeDir"/> (slash-separated, relative to the project root) are left
@@ -57,6 +65,7 @@ internal static class BoygroupDeployer
                                               RelativePath = relative,
                                               Size = info.Length,
                                               LastWriteTicks = info.LastWriteTimeUtc.Ticks,
+                                              Hash = info.Length <= MaxHashedBytes ? ComputeHash(filePath) : null,
                                           };
             }
             catch (IOException)
@@ -118,16 +127,33 @@ internal static class BoygroupDeployer
         }
     }
 
+    private static string? ComputeHash(string filePath)
+    {
+        try
+        {
+            using var stream = File.OpenRead(filePath);
+            return Convert.ToHexString(SHA256.HashData(stream));
+        }
+        catch (IOException)
+        {
+            return null; // Locked or vanished mid-inventory; the mtime path still decides.
+        }
+    }
+
     public static JObject BuildInventoryMessage(Dictionary<string, InventoryEntry> inventory)
     {
         var files = new JObject();
         foreach (var (relativePath, entry) in inventory)
         {
-            files[relativePath] = new JObject
-                                      {
-                                          ["s"] = entry.Size,
-                                          ["m"] = entry.LastWriteTicks,
-                                      };
+            var fileEntry = new JObject
+                                {
+                                    ["s"] = entry.Size,
+                                    ["m"] = entry.LastWriteTicks,
+                                };
+            if (entry.Hash != null)
+                fileEntry["h"] = entry.Hash;
+
+            files[relativePath] = fileEntry;
         }
 
         return new JObject
@@ -153,6 +179,7 @@ internal static class BoygroupDeployer
                                               RelativePath = relativePath,
                                               Size = entry["s"]?.Value<long>() ?? 0,
                                               LastWriteTicks = entry["m"]?.Value<long>() ?? 0,
+                                              Hash = entry["h"]?.Value<string>(),
                                           };
         }
 
@@ -172,11 +199,28 @@ internal static class BoygroupDeployer
         foreach (var (relativePath, serverEntry) in serverInventory)
         {
             if (!clientInventory.TryGetValue(relativePath, out var clientEntry)
-                || clientEntry.Size != serverEntry.Size
-                || Math.Abs(clientEntry.LastWriteTicks - serverEntry.LastWriteTicks) > MtimeToleranceTicks)
+                || clientEntry.Size != serverEntry.Size)
             {
                 missing.Add(relativePath);
+                continue;
             }
+
+            if (Math.Abs(clientEntry.LastWriteTicks - serverEntry.LastWriteTicks) <= MtimeToleranceTicks)
+                continue; // Same size, same time: current.
+
+            // Same size, moved time: the content decides. A render node rewrites an unchanged
+            // project file on launch (migrations, re-save), which moved its mtime; re-sending it
+            // would restart the node every cycle. Both sides hash small files, so identical
+            // content is provably current.
+            if (clientEntry.Hash != null && serverEntry.Hash != null)
+            {
+                if (!string.Equals(clientEntry.Hash, serverEntry.Hash, StringComparison.OrdinalIgnoreCase))
+                    missing.Add(relativePath);
+
+                continue;
+            }
+
+            missing.Add(relativePath);
         }
 
         missing.Sort((a, b) =>
