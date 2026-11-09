@@ -1,0 +1,85 @@
+using System;
+using System.IO;
+using System.Linq;
+using Newtonsoft.Json.Linq;
+using TiXL.DebugClient;
+using Xunit;
+using Xunit.Abstractions;
+
+namespace Editor.IntegrationTests;
+
+/// <summary>
+/// Renders a .vdb through the field pipeline in a real editor and screenshots it:
+/// LoadVdb reads the shipped bunny, VolumeToNanoVdb flattens it, VdbToSdfField exposes it as a
+/// signed-distance field and RaymarchField draws it. The raymarcher itself is pinned, because
+/// pinning a compound does not route it to the output window.
+///
+/// This is the only check that shows the traversal producing pixels. It needs a machine where the
+/// fragment shaders compile, which a Windows box without spirv-opt is not.
+/// </summary>
+[Collection("Editor")]
+public sealed class NanoVdbRenderSmokeTests(EditorFixture editor, ITestOutputHelper output)
+{
+    [Fact]
+    public void TheBunnyRendersThroughTheFieldPipeline()
+    {
+        var client = editor.Client;
+        EnsureAGraphIsOpen(client);
+        var since = client.GetLatestLogSeq();
+
+        var load = client.AddOp("LoadVdb", 0, 0);
+        client.SetInput(load, "Path", JToken.FromObject("Examples:volumes/bunny.vdb"));
+
+        var toNano = client.AddOp("VolumeToNanoVdb", 300, 0);
+        client.ConnectOps(load, "Volume", toNano, "Volume");
+
+        var sdf = client.AddOp("VdbToSdfField", 600, 0);
+        client.ConnectOps(toNano, "Buffer", sdf, "Grid");
+        client.ConnectOps(toNano, "WorldMin", sdf, "BoundsMin");
+        client.ConnectOps(toNano, "WorldMax", sdf, "BoundsMax");
+
+        var march = client.AddOp("RaymarchField", 900, 0);
+        client.ConnectOps(sdf, "Result", march, "SdfField");
+        client.Pin(march);
+
+        client.PumpFrames(90);
+
+        var shotDir = Path.Combine(Path.GetTempPath(), "tixl-debug");
+        Directory.CreateDirectory(shotDir);
+        var shot = Path.Combine(shotDir, "nanovdb-bunny.png");
+        client.Screenshot(shot);
+        client.PumpFrames(10);
+        output.WriteLine($"screenshot: {shot} ({new FileInfo(shot).Length} bytes)");
+
+        foreach (var entry in client.GetLogTail(since, "warning"))
+            output.WriteLine($"log {entry["level"]}: {entry["message"]}");
+
+        var errors = client.GetLogTail(since, "error");
+        Assert.True(errors.Count == 0, "errors: " + string.Join(" | ", errors.Select(e => e["message"])));
+        Assert.True(new FileInfo(shot).Length > 2000, "the screenshot should have content");
+    }
+
+    /// <summary>The playground exists on the dev machine; anywhere else make one scratch project, once.</summary>
+    private static void EnsureAGraphIsOpen(DebugProtocolClient client)
+    {
+        try
+        {
+            client.OpenProject(EditorFixture.PlaygroundProject).Require("playground");
+            return;
+        }
+        catch (DebugProtocolException)
+        {
+            // not this machine
+        }
+
+        client.Call("newProject", new { name = "artonurban.vdbRender" });
+        client.PumpFrames(15);
+
+        var opened = client.OpenProject("vdbRender");
+        if (!opened.Ok)
+            opened = client.OpenProject("artonurban.vdbRender");
+
+        opened.Require("scratch project");
+        client.PumpFrames(15);
+    }
+}
