@@ -33,6 +33,7 @@ The streams loop the last frame between the driver's ~30 Hz submissions and blan
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | `FrameCount` stays 0 | Sender/receiver mismatch | Same port (default 5583), same multicast group, `ExpectedSenderId` = 0, firewall allows UDP |
+| Receiver loses the sender after a while (or never sees it) while TiXL's own [PONKInput] still receives | Multicast leaves on the wrong network adapter (WSL/Hyper-V virtual adapters can grab the default route) | Set the plug's `Local interface` to your LAN NIC's IP; empty = the OS default route |
 | `ExpectedSenderId` filtering drops everything | Id persisted per sender plug | Read the current value from the `SenderId` output, then set it |
 | Receiver shows a duplicate sender per restart | Old sessions keyed on old ids | Sender ids persist on the plug now; delete the receiver's accumulated duplicate inputs once |
 | Chunks never complete | Fragment loss or timeout too low | Raise `Timeout`; check network for UDP loss |
@@ -43,6 +44,7 @@ The streams loop the last frame between the driver's ~30 Hz submissions and blan
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | Discovery finds nothing | DAC on another subnet/broadcast blocked | Type the DAC's IP directly; check `Local interface` matches the DAC's subnet |
+| DAC speaks the protocol (connects, "Streaming") but no analog output | The DAC's own **arm/enable** gates its ILDA stage | Arm the DAC (its physical switch/button) - a disarmed DAC accepts the full network protocol while its outputs stay dead |
 | "Discovery port 7654 already in use" warning | Another app owns discovery | Harmless - the shared discovery results are reused |
 | Second app can't connect to the DAC | Ether Dream allows one TCP session | Close the other app or unbind this output |
 | Send errors repeat, then reconnect loop | Unstable network/DAC, or a wedged DAC (see above) | Check cabling; if the status reports the wedge, power-cycle the DAC |
