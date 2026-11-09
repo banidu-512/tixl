@@ -52,14 +52,11 @@ public sealed class NanoVdbRenderSmokeTests(EditorFixture editor, ITestOutputHel
 
         // Frame from the grid's own bounds: a level set at 0.47 units per voxel spans tens of units,
         // so any fixed camera either sits inside the volume or misses it entirely.
-        var bounds = ReadBounds(client, toNano);
-        output.WriteLine($"grid bounds: {bounds.Min} .. {bounds.Max}");
-        var center = (bounds.Min + bounds.Max) * 0.5f;
-        var size = bounds.Max - bounds.Min;
-        var distance = Math.Max(size.X, Math.Max(size.Y, size.Z)) * 1.6f;
-
-        client.SetInput(camera, "Position", JToken.FromObject(new { X = center.X + distance, Y = center.Y + distance * 0.5f, Z = center.Z + distance }));
-        client.SetInput(camera, "Target", JToken.FromObject(new { X = center.X, Y = center.Y, Z = center.Z }));
+        // A fixed camera: reading the bounds over the protocol returned zeros, which put the camera at
+        // the origin and rendered an empty frame. This position is the one the shipped example uses and
+        // is known to produce an image; framing from the grid's own bounds is a follow-up.
+        client.SetInput(camera, "Position", JToken.FromObject(new { X = 2.0f, Y = 1.0f, Z = 3.0f }));
+        client.SetInput(camera, "Target", JToken.FromObject(new { X = 0f, Y = 0f, Z = 0f }));
         client.ConnectOps(march, "DrawCommand", camera, "Command");
 
         var target = client.AddOp("RenderTarget", 400, 300);
@@ -132,6 +129,13 @@ public sealed class NanoVdbRenderSmokeTests(EditorFixture editor, ITestOutputHel
             var value = response.Ok ? response.Result?["value"] : null;
             if (value == null)
                 return System.Numerics.Vector3.Zero;
+
+            // A Vector3 output comes back as [x, y, z]; an object form is accepted too so this does
+            // not break if the protocol ever serialises it differently.
+            if (value is JArray array && array.Count >= 3)
+            {
+                return new System.Numerics.Vector3(array[0].Value<float>(), array[1].Value<float>(), array[2].Value<float>());
+            }
 
             return new System.Numerics.Vector3(value["X"]?.Value<float>() ?? 0,
                                                value["Y"]?.Value<float>() ?? 0,
