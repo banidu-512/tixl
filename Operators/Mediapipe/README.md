@@ -15,6 +15,10 @@ Seven vision operators wrapping the MediaPipe Tasks C API through the vendored b
 The operator documentation the editor shows is generated from each symbol's `.t3ui` description; the
 user-facing reference lives in `.help/docs/operators/lib/io/video/mediapipe/`.
 
+Installed as a package, `Symbols/` and the operators' sources are mirrored into `SourceCode/`; the
+`Utils/` helpers are not part of that mirror (the editor only uses it to map a symbol to the file it came
+from, and warns about every file there that declares no operator).
+
 ## Threading model
 
 An operator never runs inference on the evaluation thread. `Update` only does three things:
