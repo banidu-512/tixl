@@ -194,6 +194,7 @@ internal static class KeyActionHandling
         RegisterActionsFlags(UserActions.ToggleOutputSetup, Flags.KeyPressOnly);
         RegisterActionsFlags(UserActions.ToggleFocusMode, Flags.KeyPressOnly);
         RegisterActionsFlags(UserActions.FocusGraphWindow, Flags.KeyPressOnly);
+        RegisterActionsFlags(UserActions.OpenSettingsWindow, Flags.KeyPressOnly);
         RegisterActionsFlags(UserActions.DisplayImageAsBackground, Flags.KeyPressOnly);
         RegisterActionsFlags(UserActions.ClearBackgroundImage, Flags.NeedsWindowFocus);
 

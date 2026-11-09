@@ -168,6 +168,9 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         /// <summary>When true, the Welcome window opens automatically at startup. Toggled from that window.</summary>
         public bool ShowWelcomeOnStartup = true;
 
+        /// <summary>When true, a warning lists symbols with operators that could not be found, once after startup.</summary>
+        public bool ShowMissingSymbolsWarningOnStartup = true;
+
         /// <summary>Whether the next launch offers crashes that were never reported.</summary>
         public bool AskToSendCrashReports = true;
 

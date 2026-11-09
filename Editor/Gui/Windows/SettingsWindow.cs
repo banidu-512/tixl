@@ -235,6 +235,14 @@ internal sealed partial class SettingsWindow : Window
                                                       "Short messages in the menu bar that tell what a keyboard shortcut did, and tips about related shortcuts.",
                                                       UserSettings.Defaults.Toasts.Enabled);
 
+                    changed |= FormInputs.AddCheckBox("Show missing symbols warning at startup",
+                                                      ref UserSettings.Config.ShowMissingSymbolsWarningOnStartup,
+                                                      """
+                                                      Warning shown once after startup when symbols use operators that could not be found (missing package or deleted operator).
+                                                      The operators stay in your files and the gaps still show in the graph and the startup log; this only hides the summary.
+                                                      """,
+                                                      UserSettings.Defaults.ShowMissingSymbolsWarningOnStartup);
+
                     FormInputs.ApplyIndent();
                     if (ImGui.Button("Show Tips Again"))
                     {
