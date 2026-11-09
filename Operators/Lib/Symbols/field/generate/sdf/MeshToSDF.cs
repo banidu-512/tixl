@@ -32,8 +32,10 @@ namespace Lib.field.generate.sdf;
 ///   Every kernel loop is bounded (no data-dependent loop lengths), all numeric inputs are
 ///   sanitized against NaN/Infinity, and the face count is validated against the D3D11
 ///   dispatch cap - so a bad mesh or a bad parameter can fail a bake but cannot produce an
-///   unbounded GPU loop or crash the application. Deliberately expensive exact-mode bakes
-///   are reported as a warning. A failed bake is retried only after an input changes.
+///   unbounded GPU loop or crash the application. The exact closest-point mode additionally
+///   splits each slice into row bands, so no single dispatch can outrun the OS GPU watchdog
+///   and reset the device. Deliberately expensive exact-mode bakes are reported as a warning.
+///   A failed bake is retried only after an input changes.
 /// - Peak GPU memory scales with <see cref="Resolution"/>: seven volumes at 30 bytes per
 ///   voxel total ~8 MB at 64, ~63 MB at 128 and ~500 MB at 256.
 /// </summary>
@@ -418,6 +420,7 @@ internal sealed class MeshToSDF : Instance<MeshToSDF>, IGraphNodeOp, IStatusProv
         _params.MaxSamples = MaxSamplesPerTriangle;
         _params.Signed = mode == ConversionModes.JumpFlood_Unsigned ? 0f : 1f;
         _params.SliceZ = 0;
+        _params.BandRowStart = 0;
         _params.Smoothing = 0;
         _params.SmoothingRadius = smoothingRadius;
         _params.Invert = invert ? 1f : 0f;
@@ -605,30 +608,40 @@ internal sealed class MeshToSDF : Instance<MeshToSDF>, IGraphNodeOp, IStatusProv
             {
                 // 4. Exact distance from every voxel center to the nearest triangle.
                 //    Each z slice is its own work unit so the bake can be spread over
-                //    frames and the GPU can be preempted in between.
+                //    frames and the GPU can be preempted in between. Inside a slice the
+                //    rows are split into bands, because the work per dispatch is
+                //    rows * dims.X * faceCount and a single dispatch that runs longer than
+                //    the OS GPU watchdog (~2s) resets the device and takes the app with it.
+                var rowsPerBand = ComputeRowsPerBand(dims, faceCount);
                 for (var z = 0; z < dims.Z; z++)
                 {
-                    var sliceZ = z;
-                    steps.Enqueue(() =>
-                                  {
-                                      _params.SliceZ = sliceZ;
-                                      UpdateParamsBuffer(device);
-                                      csStage.Set(closestPointShader);
-                                      csStage.SetShaderResource(0, vertexSrv);
-                                      csStage.SetShaderResource(1, indexSrv);
-                                      csStage.SetUnorderedAccessView(UavVoxelWrite, voxelsB.Uav);
-                                      try
+                    for (var rowStart = 0; rowStart < dims.Y; rowStart += rowsPerBand)
+                    {
+                        var sliceZ = z;
+                        var bandStart = rowStart;
+                        var bandRows = Math.Min(rowsPerBand, dims.Y - rowStart);
+                        steps.Enqueue(() =>
                                       {
-                                          context.Dispatch(CeilDiv(dims.X, 8), CeilDiv(dims.Y, 8), 1);
-                                      }
-                                      finally
-                                      {
-                                          csStage.SetShaderResource(0, null);
-                                          csStage.SetShaderResource(1, null);
-                                          csStage.SetUnorderedAccessView(UavVoxelWrite, null);
-                                          csStage.Set(null);
-                                      }
-                                  });
+                                          _params.SliceZ = sliceZ;
+                                          _params.BandRowStart = bandStart;
+                                          UpdateParamsBuffer(device);
+                                          csStage.Set(closestPointShader);
+                                          csStage.SetShaderResource(0, vertexSrv);
+                                          csStage.SetShaderResource(1, indexSrv);
+                                          csStage.SetUnorderedAccessView(UavVoxelWrite, voxelsB.Uav);
+                                          try
+                                          {
+                                              context.Dispatch(CeilDiv(dims.X, 8), CeilDiv(bandRows, 8), 1);
+                                          }
+                                          finally
+                                          {
+                                              csStage.SetShaderResource(0, null);
+                                              csStage.SetShaderResource(1, null);
+                                              csStage.SetUnorderedAccessView(UavVoxelWrite, null);
+                                              csStage.Set(null);
+                                          }
+                                      });
+                    }
                 }
 
                 // 5. Apply the inside mask sign ----------------------------------
@@ -1047,6 +1060,20 @@ internal sealed class MeshToSDF : Instance<MeshToSDF>, IGraphNodeOp, IStatusProv
     private static void DispatchVolume(DeviceContext context, Int3 dims)
     {
         context.Dispatch(CeilDiv(dims.X, 8), CeilDiv(dims.Y, 8), CeilDiv(dims.Z, 8));
+    }
+
+    /**
+     * Rows of one z slice that a single ClosestPointBrute dispatch may cover.
+     * The work of a dispatch is rows * dims.X * faceCount distance tests; keeping that
+     * near 1e9 keeps each dispatch well inside the OS GPU watchdog window (~2s), so a
+     * heavy exact-mode bake is slow but can never reset the graphics device.
+     */
+    private static int ComputeRowsPerBand(Int3 dims, int faceCount)
+    {
+        const long testsPerDispatchBudget = 1_000_000_000L;
+        var testsPerRow = (long)dims.X * Math.Max(1, faceCount);
+        var rows = testsPerDispatchBudget / testsPerRow;
+        return (int)Math.Clamp(rows, 1, dims.Y);
     }
 
     private static float DistanceSquared(Vector3 a, Vector3 b)
@@ -1494,7 +1521,8 @@ internal sealed class MeshToSDF : Instance<MeshToSDF>, IGraphNodeOp, IStatusProv
         public float Smoothing;
         public float SmoothingRadius;
         public float Invert;
-        public float Padding4;
+        /** First row of the z slice handled by this ClosestPointBrute dispatch. */
+        public float BandRowStart;
         public float Padding5;
     }
 
