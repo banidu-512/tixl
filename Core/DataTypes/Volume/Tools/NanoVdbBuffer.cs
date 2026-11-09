@@ -781,18 +781,12 @@ public sealed class NanoVdbBuffer
 
     public void Save(Stream stream)
     {
-        // The file magic belongs to the format version below. A reader built against an older
-        // NanoVDB rejects both this magic and the 32.11 version - OpenVDB 10's tools answer
-        // "Magic number error", then, given a headerless grid, "compiled against an older version
-        // of NanoVDB". That is the reader being too old, not the file being malformed, so the fix
-        // is a matching converter rather than a downgrade: a NanoVDB2 header is the documented
-        // container for a grid this code writes.
-        Span<byte> header = stackalloc byte[16];
-        BinaryPrimitives.WriteUInt64LittleEndian(header, MagicFile);
-        BinaryPrimitives.WriteUInt32LittleEndian(header[8..], PackVersion(32, 11, 0));
-        BinaryPrimitives.WriteUInt16LittleEndian(header[12..], 1);
-        BinaryPrimitives.WriteUInt16LittleEndian(header[14..], 0); // codec: none
-        stream.Write(header);
+        // Written as a bare grid, with no file header - which is what nanovdb_convert produces and
+        // what every NanoVDB reader accepts. Verified against the reference library (NanoVDB 32.11
+        // from OpenVDB 14): with a "NanoVDB2" file header in front, its reader fails with a malloc
+        // error; without it, it reads the grid back with isValid()==true, the same name, voxel
+        // count and voxel size. A reader from an older release rejects the 32.11 version either
+        // way, so the header bought nothing and cost interoperability.
         stream.Write(Buffer, 0, Buffer.Length);
     }
 
