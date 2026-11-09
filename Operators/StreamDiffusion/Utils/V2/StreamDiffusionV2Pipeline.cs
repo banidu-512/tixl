@@ -50,8 +50,9 @@ internal sealed class StreamDiffusionV2Pipeline : IGenerationPipeline
     public int PromptVersion => _promptVersion;
 
     /// <summary>
-    /// Decode only the newest latent instead of a three-latent window. Saves about 20 ms per frame on TensorRT
-    /// (40 ms -> 19 ms) at the cost of less temporal smoothing; changing it restarts the stream.
+    /// Decode only the newest latent instead of a three-latent window. Cuts the decode stage to about 10 ms on
+    /// TensorRT (from 11-26 ms) and about 28 ms on CUDA (from 70-105 ms) at the cost of less temporal smoothing;
+    /// changing it restarts the stream.
     /// </summary>
     public volatile bool FastDecodeEnabled;
 
@@ -124,6 +125,14 @@ internal sealed class StreamDiffusionV2Pipeline : IGenerationPipeline
             _promptEmbeddings.Clear();
             while (_promptCacheOrder.TryDequeue(out _)) { }
 
+            // Re-initialization (the TensorRT -> CUDA fallback below) must release the previous sessions and
+            // GPU-resident caches first; on a fresh instance both calls are no-ops.
+            DisposeStreamState();
+            DisposeSessions();
+            _provider = provider;
+            _fallbackAttempted = false;
+            _needsPrime = true;
+
             var error = ValidateModelDirectory(modelDirectory);
             if (error.Length > 0)
             {
@@ -160,7 +169,8 @@ internal sealed class StreamDiffusionV2Pipeline : IGenerationPipeline
                 _crossKv = OnnxModelSession.Create(Path.Combine(modelDirectory, "cross_kv.onnx"), deviceId, "V2 CrossKV", provider);
                 _kvZeros = OnnxModelSession.Create(Path.Combine(modelDirectory, "kv_zeros.onnx"), deviceId, "V2 KvZeros", provider);
                 _vaeEncoder = OnnxModelSession.Create(Path.Combine(modelDirectory, "vae_encoder.onnx"), deviceId, "V2 VaeEncoder", provider);
-                _vaeDecoder = OnnxModelSession.Create(Path.Combine(modelDirectory, "vae_decoder.onnx"), deviceId, "V2 VaeDecoder", provider);
+                _vaeDecoder = OnnxModelSession.Create(Path.Combine(modelDirectory, "vae_decoder.onnx"), deviceId, "V2 VaeDecoder", provider,
+                                                      CreateDecoderTensorRtProfile(provider));
                 if (_dit == null || _crossKv == null || _kvZeros == null || _vaeEncoder == null || _vaeDecoder == null)
                 {
                     DisposeSessions();
@@ -170,6 +180,27 @@ internal sealed class StreamDiffusionV2Pipeline : IGenerationPipeline
                 _device = _dit.ProviderLabel is "CUDA" or "TensorRT"
                               ? new OrtMemoryInfo("Cuda", OrtAllocatorType.ArenaAllocator, deviceId, OrtMemType.Default)
                               : OrtMemoryInfo.DefaultInstance;
+
+                // The decoder's engine is the one that cannot be built later: the DiT engine (about 5 GB) and the
+                // KV caches are resident by then. Building it here, while the card is still mostly empty, is what
+                // keeps TensorRT usable on 16 GB GPUs. If it still cannot be built, the decoder moves to CUDA
+                // while the DiT stays on TensorRT - the decoder runs through plain Session.Run, so mixed
+                // providers are safe and the expensive path keeps its engine.
+                if (provider == ExecutionProvider.TensorRt
+                    && !WarmUpDecoderEngine()
+                    && _vaeDecoder?.ProviderLabel == "TensorRT")
+                {
+                    Log.Warning("[StreamDiffusion] V2 VaeDecoder: retrying the decoder on CUDA; the DiT stays on TensorRT.");
+                    _vaeDecoder.Dispose();
+                    _vaeDecoder = OnnxModelSession.Create(Path.Combine(modelDirectory, "vae_decoder.onnx"), deviceId,
+                                                          "V2 VaeDecoder", ExecutionProvider.Cuda);
+                    if (_vaeDecoder == null)
+                    {
+                        DisposeSessions();
+                        return false;
+                    }
+                }
+
                 return true;
             }
             catch (Exception ex)
@@ -204,7 +235,9 @@ internal sealed class StreamDiffusionV2Pipeline : IGenerationPipeline
             error = null;
             if (!IsInitialized)
             {
-                error = "Pipeline not initialized";
+                // A provider fallback that itself failed must say why; otherwise this reads like the pipeline
+                // was never set up and hides the real reason (the status line shows the same text).
+                error = _initializationError ?? "Pipeline not initialized";
                 return null;
             }
 
@@ -279,6 +312,27 @@ internal sealed class StreamDiffusionV2Pipeline : IGenerationPipeline
             catch (Exception ex)
             {
                 Log.Error($"[StreamDiffusion] V2 {stage} failed: {ex}");
+
+                // A TensorRT engine is built on the first run of each graph, and that build can fail on a card
+                // that is full (the 16 GB laptop cards cannot hold the decoder builder next to the DiT engine).
+                // Without this the stream would report the same error every frame and stay wedged; one automatic
+                // re-initialization on CUDA recovers it and is reported only once.
+                if (_provider == ExecutionProvider.TensorRt
+                    && !_fallbackAttempted
+                    && IsTensorRtEngineBuildFailure(ex)
+                    && _modelDirectory != null)
+                {
+                    _fallbackAttempted = true;
+                    Log.Warning("[StreamDiffusion] TensorRT could not build an engine (out of GPU memory or an " +
+                                "unsupported shape); switching this model to CUDA. Change ExecutionProvider or free " +
+                                "GPU memory to try TensorRT again.");
+                    if (Initialize(_modelDirectory, _deviceId, ExecutionProvider.Cuda))
+                    {
+                        error = $"V2 {stage}: TensorRT engine build failed, switched to CUDA - streaming resumes on the next frame";
+                        return null;
+                    }
+                }
+
                 error = $"V2 {stage} error: {ex.Message}";
                 return null;
             }
@@ -340,6 +394,52 @@ internal sealed class StreamDiffusionV2Pipeline : IGenerationPipeline
 
         return new OnnxModelSession.TensorRtProfile(
             Shapes(1), Shapes(Math.Min(2, DenoisingTimesteps.Length)), Shapes(DenoisingTimesteps.Length));
+    }
+
+    /// <summary>
+    /// The decoder's second axis is the number of latents in its window: 1 with <c>FastDecode</c>, 3 by default.
+    /// The export keeps that axis dynamic, so without a profile the TensorRT EP builds a separate engine for each
+    /// window at run time - after the DiT engine and the KV caches already occupy the card, which is where engine
+    /// builds fail on a 16 GB GPU. One explicit 1-3 profile is built during initialization instead.
+    /// </summary>
+    private OnnxModelSession.TensorRtProfile? CreateDecoderTensorRtProfile(ExecutionProvider provider)
+    {
+        if (provider != ExecutionProvider.TensorRt)
+            return null;
+
+        // The export names the decoder input "latents" (see tools/streamdiffusionv2/export-vae.py)
+        string Shapes(int window) => $"latents:1x{window}x{LatentChannels}x{_latentHeight}x{_latentWidth}";
+        return new OnnxModelSession.TensorRtProfile(
+            Shapes(1), Shapes(DefaultDecoderWindowLatents), Shapes(DefaultDecoderWindowLatents));
+    }
+
+    /// <summary>
+    /// Runs the decoder once with a zero latent so its TensorRT engine is built while the card is still mostly
+    /// empty. The engine is cached next to the model (trt_cache), so later starts load it instead of rebuilding.
+    /// Returns false when the engine could not be built, so the caller can put the decoder on CUDA right away
+    /// rather than retrying the build later with the DiT engine and KV caches resident.
+    /// </summary>
+    private bool WarmUpDecoderEngine()
+    {
+        if (_vaeDecoder == null || _latentLength <= 0 || _vaeDecoder.ProviderLabel != "TensorRT")
+            return true;
+
+        try
+        {
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+            var dummy = new float[_latentLength];
+            var tensor = new DenseTensor<float>(dummy, new[] { 1, 1, LatentChannels, _latentHeight, _latentWidth });
+            using var outputs = _vaeDecoder.Session.Run(new[] { NamedOnnxValue.CreateFromTensor(_vaeDecoder.PrimaryInputName, tensor) });
+            Log.Info($"[StreamDiffusion] V2 VaeDecoder: TensorRT engine ready after {stopwatch.ElapsedMilliseconds} ms " +
+                     "(built during initialization, cached in trt_cache)");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log.Warning($"[StreamDiffusion] V2 VaeDecoder: TensorRT engine warm-up failed " +
+                        $"({ex.Message.Split('\n')[0].Trim()})");
+            return false;
+        }
     }
 
     /// <summary>Appends a frame to the encoder window and returns the RMS change against the previous frame in [-1, 1] units.</summary>
@@ -471,6 +571,21 @@ internal sealed class StreamDiffusionV2Pipeline : IGenerationPipeline
     private static byte ToByte(float value) => (byte)(Math.Clamp(value, 0f, 1f) * 255f + 0.5f);
 
     /// <summary>
+    /// The TensorRT EP reports an engine that could not be built (builder workspace OOM on a full card, or a
+    /// shape its parser rejects) as "failed to create engine"; that is the one failure worth retrying on CUDA.
+    /// </summary>
+    private static bool IsTensorRtEngineBuildFailure(Exception exception)
+    {
+        for (var current = exception; current != null; current = current.InnerException)
+        {
+            if (current.Message.Contains("failed to create engine", StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
     /// Switches to a new prompt. The first prompt is encoded synchronously because the DiT cannot run without
     /// cross-attention K/V; later prompts are encoded on a background task while the stream keeps using the
     /// previous one, so a prompt change never stalls live playback. Encoded prompts are cached.
@@ -568,6 +683,15 @@ internal sealed class StreamDiffusionV2Pipeline : IGenerationPipeline
                 return;
 
             var embeddings = LoadPromptEmbeddings(prompt, modelDirectory, acquireGate: false, token);
+
+            // Release the encode gate BEFORE taking the stream lock. StreamStep holds the stream lock and can wait
+            // on this gate (the synchronous first-prompt path after a provider re-initialization), so holding the
+            // gate while waiting for the lock would deadlock the worker and the job against each other.
+            if (acquired)
+            {
+                acquired = false;
+                _promptEncodeGate.Release();
+            }
 
             // The stream lock serializes the swap with StreamStep; the expensive encode above runs without it
             lock (_lock)
@@ -1101,6 +1225,8 @@ internal sealed class StreamDiffusionV2Pipeline : IGenerationPipeline
     private OrtMemoryInfo? _device;
     private string? _modelDirectory;
     private int _deviceId;
+    private ExecutionProvider _provider = ExecutionProvider.Cuda;
+    private bool _fallbackAttempted;
 
     private int _latentHeight;
     private int _latentWidth;

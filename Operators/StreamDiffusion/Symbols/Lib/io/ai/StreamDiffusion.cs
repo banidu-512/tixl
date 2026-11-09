@@ -1250,6 +1250,18 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
         if (pipeline == null || _initFailed)
             return IStatusProvider.StatusLevel.Warning;
 
+        try
+        {
+            // A pipeline whose provider fallback failed is still published but cannot stream; the status text
+            // already says "Initialization failed", so the light must not stay green.
+            if (!pipeline.IsInitialized)
+                return IStatusProvider.StatusLevel.Warning;
+        }
+        catch (ObjectDisposedException)
+        {
+            return IStatusProvider.StatusLevel.Warning;
+        }
+
         return string.IsNullOrEmpty(_lastStatusMessage)
             ? IStatusProvider.StatusLevel.Success
             : IStatusProvider.StatusLevel.Warning;

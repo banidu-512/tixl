@@ -75,7 +75,7 @@ public static class OnnxNativeSelector
 
     /// <summary>
     /// Whether <paramref name="build"/>'s native is shipped next to <paramref name="ortAssembly"/>. ONNX Runtime
-    /// 1.28 stopped publishing the DirectML build, so callers that offer DirectML as a choice need this to say
+    /// DirectML builds stopped after 1.24.4, so callers that offer DirectML as a choice need this to say
     /// "not available in this runtime" instead of "restart to switch" (which would never succeed).
     /// </summary>
     public static bool IsShipped(Assembly ortAssembly, Build build)

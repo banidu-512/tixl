@@ -76,16 +76,23 @@ Prompts are cached: the encoded UMT5 embeddings are written to `%LOCALAPPDATA%\T
 32 prompts) and reused across restarts, so a known prompt starts streaming without loading the 11 GB text encoder. A
 prompt change is encoded on a background task while the previous prompt keeps producing frames; the status line shows
 `encoding new prompt` until the swap lands. The status also reports the last step as `enc / dit / dec` milliseconds.
-`FastDecode` decodes one latent instead of a three-latent window: on TensorRT the decode drops from about 45 ms to 19 ms,
+`FastDecode` decodes one latent instead of a three-latent window: on TensorRT the decode drops from about 11-26 ms to about 10 ms
+(and on CUDA from about 70-105 ms to about 28 ms),
 with slightly less temporal smoothing. Changing it restarts the stream.
 
 Execution providers: **CUDA** and **TensorRT** are supported. TensorRT builds an engine on first use (several minutes,
 cached in `trt_cache` next to the model, with a 1-4 batch profile so changing `Steps` reuses it); TiXL preloads the
 TensorRT 10 runtime from the standard NVIDIA install or `TENSORRT_ROOT`, so `PATH` does not need to change, and falls
-back to CUDA with a readable reason when it is missing. **DirectML is not available**: ONNX Runtime 1.28 stopped
-publishing a DirectML build (and its DML provider fails the DiT/VAE 5D reshapes anyway), so selecting it logs that the
-runtime ships no DirectML provider and continues on CUDA or CPU. **CPU** runs but is far too slow for streaming. GPU
-memory scales with resolution and step count.
+back to CUDA with a readable reason when it is missing. The TensorRT builder needs transient workspace on top of the
+resident sessions; if it cannot get it, the build fails and the operator reports that once and re-initializes the model
+on CUDA, so the stream recovers instead of erroring on every frame. The workspace cap defaults to 4096 MB and can be
+changed with `TIXL_SD_TRT_WORKSPACE_MB`. **DirectML is not available**: ONNX Runtime stopped publishing DirectML
+build (and its DML provider fails the DiT/VAE 5D reshapes anyway), so selecting it logs that the runtime ships no
+DirectML provider and continues on CUDA or CPU. **CPU** runs but is far too slow for streaming. GPU memory scales with
+resolution and step count.
+
+Fastest configuration: TensorRT, `FastDecode` on, `Steps` 1, and the fp16 256x256 export. That is roughly 10x the
+throughput of the default CUDA path at the same export; use `Steps` 2 when the temporal context matters more than rate.
 
 `InputImage` accepts RGBA images and float render targets. Float textures hold linear color, so their values are encoded to
 sRGB on readback before they reach the model, which keeps a render chain (for example through `AdjustColors`) looking the
@@ -96,10 +103,12 @@ GPU the 256x256 export runs all 4 steps, while the 512x512 export fits 1 step; m
 the cache does not fit, inference slows to a crawl rather than reporting an error, so pick the resolution and step count
 for the card.
 
-Measured on a 16 GB RTX 3080 Ti Laptop GPU with CUDA and the fp16 256x256 export: after warm-up a frame takes about
-0.32 s with Steps=1 (encode 35 ms, DiT 170 ms, decode 110 ms). Steps=2 runs at about the same rate and doubles the
-temporal context; Steps=4 slows to about 2.8 s because the 4x KV cache leaves little VRAM headroom on 16 GB. With
-TensorRT the same frame is about 120 ms (encode 20 ms, DiT 55 ms, decode 45 ms), or about 95 ms with `FastDecode`.
+Measured on a 16 GB RTX 3080 Ti Laptop GPU with the fp16 256x256 export (ONNX Runtime 1.30, CUDA 13.3, TensorRT
+10.16): after warm-up a frame takes about 0.31-0.35 s on CUDA with Steps=1 (encode 35 ms, DiT 205 ms, decode
+70-105 ms), or about 0.25-0.27 s with `FastDecode` (decode ~28 ms). With TensorRT the same frame is about
+0.17-0.19 s, and about 0.12-0.14 s with `FastDecode` - the fastest configuration. Steps=2 runs at about the same
+rate and doubles the temporal context; Steps=4 slows to about 2.8 s because the 4x KV cache leaves little VRAM
+headroom on 16 GB.
 The first frame is about 1.4 s when the prompt is already in the disk cache, and 40-60 s when the 11 GB text encoder
 has to load and encode. Open the composition once before a show so the prompt cache and CUDA context are warm; later
 prompt changes encode in the background while the stream keeps running.

@@ -31,17 +31,23 @@ The resolution is baked into `dit_step.onnx`; export once per size (multiples of
 count: the GPU-resident KV cache is `layers x denoising steps x 6 frames x tokens` fp16 pairs, plus the same again while a
 step runs.
 
-Measured on a 16 GB RTX 3080 Ti Laptop GPU, fp16, TAEHV, CUDA, after warm-up (the operator's own stage timers):
+Measured on a 16 GB RTX 3080 Ti Laptop GPU, fp16, TAEHV, after warm-up, with ONNX Runtime 1.30, CUDA 13.3 and
+TensorRT 10.16 (the operator's own stage timers):
 
-| Export | Steps | Steady state | Notes |
-|---|---|---|---|
-| 256x256 (`tokensPerFrame` 256) | 1 | ~0.32 s/frame (3 fps) | CUDA: encode ~35 ms, DiT ~170 ms, decode ~110 ms |
-| 256x256 | 1 | ~0.12 s/frame | TensorRT: encode ~20 ms, DiT ~55 ms, decode ~45 ms |
-| 256x256 | 1 | ~0.095 s/frame | TensorRT + `FastDecode`: decode ~19 ms, less temporal smoothing |
-| 256x256 | 2 | ~0.31-0.41 s/frame | CUDA; about the same fps as 1 step and twice the temporal context, 2x KV cache |
-| 256x256 | 4 | ~2.8 s/frame | CUDA; the 4x KV cache plus the in-flight copy leaves little VRAM headroom on 16 GB |
-| 512x512 (`tokensPerFrame` 1024) | 1 | ~3.3-5 s/frame | CUDA; decode dominates, not realtime on a 16 GB laptop |
-| 512x512 | 2 | fills the 16 GB card | throughput collapses; not practical |
+| Export | Provider | Steps | Decode window | Steady state | Notes |
+|---|---|---|---|---|---|
+| 256x256 (`tokensPerFrame` 256) | TensorRT | 1 | 1 (`FastDecode`) | **~0.12-0.14 s/frame (~8 fps)** | fastest; encode ~10 ms, DiT ~100 ms, decode ~10 ms |
+| 256x256 | TensorRT | 1 | 3 | ~0.17-0.19 s/frame | decode ~11-26 ms, better temporal smoothing |
+| 256x256 | CUDA | 1 | 1 (`FastDecode`) | ~0.25-0.27 s/frame | encode ~35 ms, DiT ~190 ms, decode ~28 ms |
+| 256x256 | CUDA | 1 | 3 | ~0.31-0.35 s/frame | encode ~35 ms, DiT ~205 ms, decode ~70-105 ms |
+| 256x256 | CUDA | 2 | 3 | ~0.33-0.43 s/frame | twice the temporal context, 2x KV cache |
+| 256x256 | CUDA | 4 | 3 | ~2.8 s/frame | the 4x KV cache plus the in-flight copy leaves little VRAM headroom on 16 GB |
+| 512x512 (`tokensPerFrame` 1024) | CUDA | 1 | 3 | ~3.3-5 s/frame | decode dominates, not realtime on a 16 GB laptop |
+| 512x512 | CUDA | 2 | 3 | fills the 16 GB card | throughput collapses; not practical |
+
+`FastDecode` is the single cheapest speed-up: it decodes one latent instead of a three-latent window, so the decode
+stage drops to ~10 ms on TensorRT and ~28 ms on CUDA, at the cost of temporal smoothing. It is an operator input and
+restarts the stream when toggled.
 
 The step count is the batch size, so every extra step doubles the KV cache. Attention cost grows with the square of
 `cacheFrames * tokensPerFrame`, so 512x512 is roughly 16x more expensive per step than 256x256 at the same batch size.
@@ -59,13 +65,19 @@ prompt is cached on disk, so a known prompt starts in about 1.4 s instead of loa
 |---|---|---|
 | CUDA | verified | Fastest warm path; used for all measurements above. Needs the CUDA 13 runtime and cuDNN 9 (ONNX Runtime 1.30, driver 580+); CUDA 13 no longer supports Pascal GPUs, which fall back to CPU |
 | TensorRT | verified | Builds engines on first use (about 12 min for all five graphs, 2.8 GB in `trt_cache`); later runs reuse them. The DiT gets an explicit 1-4 batch profile, so Steps can change without a rebuild. TensorRT runs alone here: adding CUDA as a per-node fallback made the DiT roughly 6x slower in testing (7 min vs 1 min 12 s for the same frames) |
-| DirectML | not available | ONNX Runtime 1.28 stopped publishing a DirectML build, and its DML provider fails the DiT and VAE 5D reshapes (`node_view_*`) with an internal error anyway. Selecting it logs that the runtime ships no DirectML provider and continues on CUDA or CPU |
+| DirectML | not available | ONNX Runtime stopped publishing DirectML builds after 1.24.4, and its DML provider fails the DiT and VAE 5D reshapes (`node_view_*`) with an internal error anyway. Selecting it logs that the runtime ships no DirectML provider and continues on CUDA or CPU |
 | CPU | works, very slow | Only practical for a one-off test; the 1.3B DiT step takes minutes |
 
 TiXL finds the TensorRT 10 runtime itself - the standard `NVIDIA GPU Computing Toolkit\TensorRT-*\bin` install,
 `TENSORRT_ROOT`, or a `TensorRTRuntime` folder next to the editor - and preloads `nvinfer_10.dll` and the ONNX parser
 before ONNX Runtime asks for the provider, so `PATH` does not need to change. If no runtime is found, the operator falls
-back to CUDA with a readable reason. The provider cache lives in `trt_cache` next to the model files and can be deleted
+back to CUDA with a readable reason.
+
+TensorRT builds those engines on the first run of each graph, and the builder needs transient workspace on top of the
+resident sessions; when the card cannot supply it the build fails (TensorRT reports its workspace cap as
+`OutOfMemory`). The operator reports that failure once and re-initializes the model on CUDA, so the stream recovers
+instead of repeating the error every frame. The cap defaults to 4096 MB and can be overridden with
+`TIXL_SD_TRT_WORKSPACE_MB` (set it lower on cards with little free memory). The provider cache lives in `trt_cache` next to the model files and can be deleted
 to force a rebuild.
 
 ## Design notes
