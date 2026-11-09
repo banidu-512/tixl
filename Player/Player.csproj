@@ -56,6 +56,16 @@
         </Content>
     </ItemGroup>
 
+    <!-- See Editor.csproj: exported projects can contain MediaPipe operators, so the player needs the
+         macOS OpenCL stub in its output directory as well. -->
+    <Target Name="BuildMediapipeOpenClStub" BeforeTargets="BeforeBuild" Condition="$([MSBuild]::IsOSPlatform('OSX'))">
+        <MakeDir Directories="$(OutputPath)" />
+        <Exec Command="clang -arch x86_64 -arch arm64 -shared -o &quot;$(OutputPath)libmediapipe_opencl_stub.dylib&quot; &quot;$(MSBuildThisFileDirectory)../Dependencies/osx/mediapipe-opencl-stub.c&quot;"
+              ContinueOnError="true" />
+        <Warning Condition="!Exists('$(OutputPath)libmediapipe_opencl_stub.dylib')"
+                 Text="libmediapipe_opencl_stub.dylib was not built (clang missing?); the MediaPipe operators will be unavailable in this build." />
+    </Target>
+
 
     <ItemGroup>
         <ProjectReference Include="..\Core\Core.csproj" />

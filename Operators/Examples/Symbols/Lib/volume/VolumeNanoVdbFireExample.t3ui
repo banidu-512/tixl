@@ -1,0 +1,150 @@
+{
+  "FormatVersion": 3,
+  "Id": "a939eda2-b435-590f-824b-85ca030dc2cd"/*VolumeNanoVdbFireExample*/,
+  "Description": "A flame rendered from a NanoVDB level set.\n\nA capsule is displaced by animated [VolumeNoise]. [NanoVdbRender] maps the depth below its surface to temperature, so the core glows hotter than the edge. Liquid and smoke are switched off.\n\nAKA: flame, emissive volume, torch\n\nTips\n- FireSoftness is the depth over which the flame goes from cool to hottest; FireIntensity scales its brightness.",
+  "InputUis": [],
+  "SymbolChildUis": [
+    {
+      "ChildId": "057fab96-c579-560d-b6ad-d224654f04e8",
+      "SymbolName": "Lib.volume.render.NanoVdbRender",
+      "Position": {
+        "X": 2000.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "14daf1dc-43cd-54ae-8067-8c998fd11c04",
+      "SymbolName": "Lib.volume.generate.VolumePrimitive",
+      "Position": {
+        "X": 600.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "7e377d70-2345-5e6d-8969-c854eab5e3a1",
+      "SymbolName": "Lib.image.generate.basic.RenderTarget",
+      "Position": {
+        "X": 2600.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "867ff628-8c5e-5311-a94b-c94b039bbf1d",
+      "SymbolName": "Lib.volume.gpu.VolumeToNanoVdb",
+      "Position": {
+        "X": 1700.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "a88c5dea-39fd-5f05-bb13-f6ec503a93b1",
+      "SymbolName": "Lib.render.camera.OrbitCamera",
+      "Position": {
+        "X": 2300.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "ae036c83-e394-55a1-a48e-8735e54c8622",
+      "SymbolName": "Lib.volume.modify.VolumeNoise",
+      "Position": {
+        "X": 1100.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "b2e5826d-8875-5382-8972-73a7466094d4",
+      "SymbolName": "Lib.numbers.anim.time.Time",
+      "Position": {
+        "X": 0.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "c56488d9-474b-5c8d-b4ea-401cbc53577e",
+      "SymbolName": "Types.Values.Vector3",
+      "Position": {
+        "X": 300.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "e7a7adb6-82b5-5f75-914a-d936856d8661",
+      "SymbolName": "Lib.numbers.anim.time.Time",
+      "Position": {
+        "X": 0.0,
+        "Y": 0.0
+      }
+    }
+  ],
+  "OutputUis": [
+    {
+      "OutputId": "a53726cd-4ed6-5320-832e-be767323e7a7"/*ColorBuffer*/,
+      "Position": {
+        "X": 2900.0,
+        "Y": 300.0
+      }
+    }
+  ],
+  "Settings": {
+    "OutputWindows": [
+      {
+  "ShowGizmos": "On",
+  "TransformGizmoMode": "Move",
+  "BackgroundColor": [
+    0.1,
+    0.1,
+    0.1,
+    1.0
+  ],
+  "CameraControlMode": "AutoUseFirstCam",
+  "CameraPosition": [
+    0.0,
+    0.0,
+    2.4142134
+  ],
+  "CameraTarget": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "CameraRoll": 0.0,
+  "CameraSpeed": 1.0,
+  "ResolutionTitle": "Fill",
+  "ResolutionWidth": 0,
+  "ResolutionHeight": 0,
+  "ResolutionUseAsAspectRatio": true,
+  "IsPinned": true,
+  "PinnedInstancePath": [
+    "57f73af5-08c1-2691-cb21-2d93f0623a28"
+  ],
+  "PinnedOutputId": "00000000-0000-0000-0000-000000000000",
+  "PinnedEntityKind": "None",
+  "PinnedEntityId": "00000000-0000-0000-0000-000000000000"
+}
+    ],
+    "WindowLayout": "[Window][Graph View##1]\nPos=71,27\nSize=672,1000\nCollapsed=0\nDockId=0x00000003,0\n\n[Window][Variations]\nPos=1388,591\nSize=292,436\nCollapsed=0\nDockId=0x0000000A,0\n\n[Window][Output View##0]\nPos=745,27\nSize=935,562\nCollapsed=0\nDockId=0x00000007,0\n\n[Window][Symbol Library]\nPos=0,27\nSize=69,1000\nCollapsed=0\nDockId=0x0000000D,0\n\n[Window][Parameters##1]\nPos=745,591\nSize=641,436\nCollapsed=0\nDockId=0x00000009,0\n\n[Window][Help]\nPos=1388,591\nSize=292,436\nCollapsed=0\nDockId=0x0000000A,1\n\n[Window][Collab]\nPos=1388,591\nSize=292,436\nCollapsed=0\nDockId=0x0000000A,2\n\n[Docking][Data]\nDockSpace         ID=0x08BD597D Window=0x1BBC0F80 Pos=0,27 Size=1680,1000 Split=X Selected=0x8995E68A\n  DockNode        ID=0x0000000B Parent=0x08BD597D SizeRef=69,1391 Split=Y Selected=0x42C24103\n    DockNode      ID=0x0000000D Parent=0x0000000B SizeRef=549,881 HiddenTabBar=1 Selected=0xD41FC2E2\n    DockNode      ID=0x0000000E Parent=0x0000000B SizeRef=549,508 HiddenTabBar=1 Selected=0x42C24103\n  DockNode        ID=0x0000000C Parent=0x08BD597D SizeRef=1609,1391 Split=X\n    DockNode      ID=0x00000003 Parent=0x0000000C SizeRef=672,1391 CentralNode=1 HiddenTabBar=1 Selected=0x8995E68A\n    DockNode      ID=0x00000004 Parent=0x0000000C SizeRef=935,1391 Split=Y Selected=0xC9567BC1\n      DockNode    ID=0x00000007 Parent=0x00000004 SizeRef=916,562 HiddenTabBar=1 Selected=0xC9567BC1\n      DockNode    ID=0x00000008 Parent=0x00000004 SizeRef=916,436 Split=X Selected=0x35577784\n        DockNode  ID=0x00000009 Parent=0x00000008 SizeRef=641,446 HiddenTabBar=1 Selected=0x35577784\n        DockNode  ID=0x0000000A Parent=0x00000008 SizeRef=292,446 Selected=0xF2F5D81D\n\n",
+    "WindowLayoutImGuiVersion": "1.91.6",
+    "WindowVisibility": {
+      "Variations": true,
+      "Output View##0": true,
+      "Graph View##0": false,
+      "Graph View##1": true,
+      "Parameters##1": true,
+      "Symbol Library": true,
+      "Assets": false,
+      "Variation Explorer": false,
+      "Render To File": false,
+      "IO Events": false,
+      "Performance": false,
+      "Help": true,
+      "Console": false,
+      "Utilities": false,
+      "Guided Feature Tests": false,
+      "Settings": false,
+      "Composition Settings": false,
+      "Welcome to the TiXL Alpha": false,
+      "Collab": true
+    }
+  }
+}

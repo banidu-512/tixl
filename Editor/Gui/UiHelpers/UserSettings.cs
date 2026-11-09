@@ -138,6 +138,12 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         /// <summary>0 keeps them for as long as their project is loaded, which avoids rebuild hitches.</summary>
         public int ReleaseUnusedRenderTargetsAfterSeconds = 0;
 
+        /// <summary>
+        /// Set when the user confirms the laser safety warning shown the first time the LASER
+        /// master button is armed. While false, arming opens the warning dialog first.
+        /// </summary>
+        public bool LaserSafetyWarningAcknowledged = false;
+
         /// <summary>Folder of the project that was open when the editor closed; empty if it closed in the project hub.</summary>
         public string LastOpenProjectFolder = string.Empty;
 
@@ -183,6 +189,10 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public bool EnableIdleMotion = true;
         public bool SuspendRenderingWhenHidden = true;
         public bool UseVSync = true;
+
+        /// <summary>Caps the short side of outputs sized by their window ("Fill" and aspect presets), e.g. in focus mode on high-res displays.</summary>
+        [JsonConverter(typeof(StringEnumConverter))]
+        public WindowFillResolutionLimits MaxWindowFillResolution = WindowFillResolutionLimits.Unlimited;
 
         /** Frames per second to render at with vsync; 0 renders every refresh of the pacing display. */
         public int TargetFrameRate = 0;
@@ -477,6 +487,16 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
     {
         Legacy,
         Magnetic,
+    }
+
+    /** Values are the largest short side in pixels; 0 means no limit. */
+    public enum WindowFillResolutionLimits
+    {
+        Unlimited = 0,
+        Max720p = 720,
+        Max1080p = 1080,
+        Max1440p = 1440,
+        Max2160p = 2160,
     }
 
     /** Who an input device drives; Editor means the camera of the output. Stored by name. */

@@ -1,7 +1,7 @@
 # StreamDiffusion Operator
 
 ## Overview
-AI image generation using Stable Diffusion models with ONNX Runtime and DirectML acceleration. Supports text-to-image and image-to-image generation with SD 1.x / SD-Turbo model exports. Works on any Direct3D 12 GPU (NVIDIA, AMD, Intel) — no CUDA or TensorRT required.
+AI image and video generation with ONNX Runtime. Supports text-to-image, image-to-image and continuous video restyling, with Stable Diffusion 1.x / SD-Turbo / SDXL exports and the StreamDiffusion V2 (causal Wan2.1 DiT) export. GPU acceleration uses the CUDA or TensorRT execution provider (ONNX Runtime 1.30, CUDA 13 + cuDNN 9, NVIDIA driver 580+); macOS uses CoreML. Without a usable GPU provider the operator falls back to CPU and says so in its status line.
 
 ## Inputs
 - **string EnginePath** - Path to the model folder with the ONNX models (see below)
@@ -16,7 +16,7 @@ AI image generation using Stable Diffusion models with ONNX Runtime and DirectML
 - **int Steps** - Number of denoising steps (1-50)
 - **Texture2D? InputImage** - Source image for img2img mode
 - **int ModelType** - Informational label; the exported models define the actual model
-- **int CudaDevice** - DirectML device (GPU adapter) index
+- **int CudaDevice** - CUDA/TensorRT device index (the dropdown lists the adapters found by the driver)
 - **bool TriggerGenerate** - Momentarily true to trigger single generation
 - **bool AutoGenerate** - Continuously regenerate on input changes
 
@@ -76,15 +76,23 @@ Prompts are cached: the encoded UMT5 embeddings are written to `%LOCALAPPDATA%\T
 32 prompts) and reused across restarts, so a known prompt starts streaming without loading the 11 GB text encoder. A
 prompt change is encoded on a background task while the previous prompt keeps producing frames; the status line shows
 `encoding new prompt` until the swap lands. The status also reports the last step as `enc / dit / dec` milliseconds.
-`FastDecode` decodes one latent instead of a three-latent window: on TensorRT the decode drops from about 45 ms to 19 ms,
+`FastDecode` decodes one latent instead of a three-latent window: on TensorRT the decode drops from about 11-26 ms to about 10 ms
+(and on CUDA from about 70-105 ms to about 28 ms),
 with slightly less temporal smoothing. Changing it restarts the stream.
 
 Execution providers: **CUDA** and **TensorRT** are supported. TensorRT builds an engine on first use (several minutes,
 cached in `trt_cache` next to the model, with a 1-4 batch profile so changing `Steps` reuses it); TiXL preloads the
 TensorRT 10 runtime from the standard NVIDIA install or `TENSORRT_ROOT`, so `PATH` does not need to change, and falls
-back to CUDA with a readable reason when it is missing. **DirectML is not supported** - ONNX Runtime's DML provider fails
-the DiT/VAE 5D reshapes and the operator reports that at load time. **CPU** runs but is far too slow for streaming. GPU
-memory scales with resolution and step count.
+back to CUDA with a readable reason when it is missing. The TensorRT builder needs transient workspace on top of the
+resident sessions; if it cannot get it, the build fails and the operator reports that once and re-initializes the model
+on CUDA, so the stream recovers instead of erroring on every frame. The workspace cap defaults to 4096 MB and can be
+changed with `TIXL_SD_TRT_WORKSPACE_MB`. **DirectML is not available**: ONNX Runtime stopped publishing DirectML
+build (and its DML provider fails the DiT/VAE 5D reshapes anyway), so selecting it logs that the runtime ships no
+DirectML provider and continues on CUDA or CPU. **CPU** runs but is far too slow for streaming. GPU memory scales with
+resolution and step count.
+
+Fastest configuration: TensorRT, `FastDecode` on, `Steps` 1, and the fp16 256x256 export. That is roughly 10x the
+throughput of the default CUDA path at the same export; use `Steps` 2 when the temporal context matters more than rate.
 
 `InputImage` accepts RGBA images and float render targets. Float textures hold linear color, so their values are encoded to
 sRGB on readback before they reach the model, which keeps a render chain (for example through `AdjustColors`) looking the
@@ -95,22 +103,39 @@ GPU the 256x256 export runs all 4 steps, while the 512x512 export fits 1 step; m
 the cache does not fit, inference slows to a crawl rather than reporting an error, so pick the resolution and step count
 for the card.
 
-Measured on a 16 GB RTX 3080 Ti Laptop GPU with CUDA and the fp16 256x256 export: after warm-up a frame takes about
-0.32 s with Steps=1 (encode 35 ms, DiT 170 ms, decode 110 ms). Steps=2 runs at about the same rate and doubles the
-temporal context; Steps=4 slows to about 2.8 s because the 4x KV cache leaves little VRAM headroom on 16 GB. With
-TensorRT the same frame is about 120 ms (encode 20 ms, DiT 55 ms, decode 45 ms), or about 95 ms with `FastDecode`.
+Measured on a 16 GB RTX 3080 Ti Laptop GPU with the fp16 256x256 export (ONNX Runtime 1.30, CUDA 13.3, TensorRT
+10.16): after warm-up a frame takes about 0.31-0.35 s on CUDA with Steps=1 (encode 35 ms, DiT 205 ms, decode
+70-105 ms), or about 0.25-0.27 s with `FastDecode` (decode ~28 ms). With TensorRT the same frame is about
+0.17-0.19 s, and about 0.12-0.14 s with `FastDecode` - the fastest configuration. Steps=2 runs at about the same
+rate and doubles the temporal context; Steps=4 slows to about 2.8 s because the 4x KV cache leaves little VRAM
+headroom on 16 GB.
 The first frame is about 1.4 s when the prompt is already in the disk cache, and 40-60 s when the 11 GB text encoder
 has to load and encode. Open the composition once before a show so the prompt cache and CUDA context are warm; later
 prompt changes encode in the background while the stream keeps running.
 
-A process can bind only one ONNX Runtime native build. If another ONNX operator (for example DepthAnything on its default
-DirectML provider) has already loaded the DirectML build, V2 cannot use CUDA in that session: the log warns, the status
-shows CPU, and restarting TiXL after selecting CUDA is required.
+A process binds exactly one ONNX Runtime native build, shared with Core and every other ONNX operator package. Core
+pins the GPU build (`Microsoft.ML.OnnxRuntime.Gpu` 1.30.0) and this operator matches that pin, so CUDA, TensorRT and
+CPU are all available in the same process; a package that shipped a conflicting native would make the managed
+assembly load the wrong one, which shows up as "Unable to find an entry point ... in DLL 'onnxruntime'" in the log and
+a CPU status line.
 
 ## Prerequisites
-- Any GPU with Direct3D 12 support (DirectML execution provider)
-- Falls back to CPU automatically when DirectML is unavailable
-- ONNX Runtime is delivered via NuGet (`Microsoft.ML.OnnxRuntime.DirectML`) — no native build step
+- NVIDIA GPU supported by CUDA 13 (Pascal and older were dropped) with driver 580 or newer
+- CUDA 13 runtime and cuDNN 9 installed, or their DLLs in a `CudaRuntime` folder next to the editor/operator
+- TensorRT 10 is optional; it is picked up from the NVIDIA install or `TENSORRT_ROOT`
+- macOS: CoreML via the CPU build
+- Without a GPU provider the operator falls back to CPU automatically and says so
+- ONNX Runtime is delivered via NuGet (`Microsoft.ML.OnnxRuntime.Gpu` 1.30.0) — no native build step
+
+## Platforms
+| OS | Status | Notes |
+|---|---|---|
+| Windows | verified | CUDA 13, TensorRT 10.16 and CPU all stream; measured numbers above are from Windows |
+| Linux | builds and the operator tests pass; GPU path not exercised on hardware | Same CUDA/TensorRT code path; CUDA 13 dropped Pascal, so a GTX 1070 falls back to CPU. The input readback goes through the Vulkan backend, which maps the staging texture after submitting the copy (one short stall per frame, negligible next to inference) |
+| macOS (arm64) | builds; runtime not exercised | ONNX Runtime's CoreML provider is used when the export's graph is supported, otherwise CPU. The editor's graphics layer runs through MoltenVK; the DiT's 5D reshapes have not been validated on CoreML |
+
+The managed code is portable: Windows-only calls (DXGI adapter names) are guarded by `OperatingSystem.IsWindows()` and the
+other platforms simply list a single "Default" device.
 
 ## Recommended Settings
 | Model | Steps | Guidance | Resolution |
@@ -122,7 +147,7 @@ shows CPU, and restarting TiXL after selecting CUDA is required.
 - **"Model path is empty"**: Set `EnginePath` to the model folder
 - **"Model directory not found" / "Missing in ..."**: The folder must contain the required .onnx files listed above
 - **"img2img requires vae_encoder.onnx"**: Export the VAE encoder too, or use Text to Image mode
-- **Slow generation**: Prefer SD-Turbo with 1 step and Guidance 1.0; keep resolution at 512x512; check the status line — "(CPU)" means DirectML failed to initialize
+- **Slow generation**: Prefer SD-Turbo with 1 step and Guidance 1.0; keep resolution at 512x512; check the status line — "(CPU)" means no GPU provider initialized (read the log line that names the reason)
 - **Black output with non-turbo models at 1 step**: SD 1.5 needs 20+ steps and Guidance 7.5+
 
 ## Performance Notes

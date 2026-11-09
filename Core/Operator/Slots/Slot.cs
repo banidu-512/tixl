@@ -247,15 +247,15 @@ public class Slot<T> : ISlot, ITimeClipRemapTarget
 
     public void ConnectedUpdate(EvaluationContext context)
     {
-        // Rewiring during evaluation can leave a slot in connected-update mode after its connection is
-        // already gone; indexing the empty array used to take the editor down. Keeping the last value
-        // degrades to a stale input instead.
+        // Defensive: a slot can be left with the connected update action but no connections after
+        // a malformed graph edit. Returning the current value beats throwing out of the evaluator,
+        // which is fatal to the editor.
         if (InputConnections.Length == 0)
         {
-            if (!_warnedAboutMissingConnection)
+            if (!_reportedEmptyConnection)
             {
-                _warnedAboutMissingConnection = true;
-                Log.Warning($"{Parent}: update with no input connection - keeping the last value.");
+                Log.Warning($"Slot {Parent?.Symbol.Name}.{Id} runs ConnectedUpdate without a connection; keeping its value.");
+                _reportedEmptyConnection = true;
             }
 
             return;
@@ -263,7 +263,7 @@ public class Slot<T> : ISlot, ITimeClipRemapTarget
 
         Value = InputConnections[0].GetValue(context)!;
     }
-        
+
     protected void ByPassUpdate(EvaluationContext context)
     {
         Value = _targetInputForBypass!.GetValue(context)!;
@@ -278,6 +278,16 @@ public class Slot<T> : ISlot, ITimeClipRemapTarget
 
     public void AddConnection(ISlot sourceSlot, int index = 0)
     {
+        // Check before touching UpdateAction: setting ConnectedUpdate and then bailing out on a
+        // type mismatch left the input connected-but-empty, so its first evaluation indexed an
+        // empty InputConnections array and crashed the whole editor.
+        if (sourceSlot.ValueType != _valueType)
+        {
+            Log.Warning($"Type mismatch during connection: {sourceSlot.Parent?.Symbol.Name}.{sourceSlot.Id} "
+                        + $"({sourceSlot.ValueType.Name}) -> {Parent?.Symbol.Name}.{Id} ({_valueType.Name})");
+            return;
+        }
+
         if (!HasInputConnections)
         {
             if (UpdateAction != null)
@@ -295,17 +305,12 @@ public class Slot<T> : ISlot, ITimeClipRemapTarget
             _dirtyFlag.SourceVersion = sourceSlot.DirtyFlag.SourceVersion;
             _dirtyFlag.ValueVersion = -1;
         }
-            
-        if (sourceSlot.ValueType != _valueType)
-        {
-            Log.Warning("Type mismatch during connection");
-            return;
-        }
 
         ArrayUtils.InsertAtIndexOrEnd(ref InputConnections, (Slot<T>)sourceSlot, index);
     }
 
     private Action<EvaluationContext>? _actionBeforeAddingConnecting;
+    private bool _reportedEmptyConnection;
 
     public void RemoveConnection(int index = 0)
     {
@@ -353,8 +358,7 @@ public class Slot<T> : ISlot, ITimeClipRemapTarget
     }
 
     protected Slot<T>[] InputConnections = [];
-
-    private bool _warnedAboutMissingConnection;
+    private bool _reportedEmptyConnection;
 
     public int InvalidateGraph()
     {

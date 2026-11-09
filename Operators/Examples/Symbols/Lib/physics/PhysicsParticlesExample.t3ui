@@ -1,0 +1,705 @@
+{
+  "FormatVersion": 3,
+  "Id": "f1632cf1-8515-412c-b645-7897556edce8"/*PhysicsParticlesExample*/,
+  "Description": "A fountain of rigid-body spheres: 72 dynamic bodies burst upwards, collide with an invisible containment and settle on the floor, rendered as glowing mesh particles.",
+  "InputUis": [],
+  "SymbolChildUis": [
+    {
+      "ChildId": "0021815c-3d30-f4a7-e4fb-5c61bbcee225",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 6.0
+      }
+    },
+    {
+      "ChildId": "02dab68d-fde0-78d1-e973-e6b8f57c3679",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 344.0
+      }
+    },
+    {
+      "ChildId": "02f26a1b-c47f-b9a4-a3b4-6fd645bb8a29",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 58.0
+      }
+    },
+    {
+      "ChildId": "07ba80a8-8488-72a0-7c6f-dc071150b459",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 1410.0
+      }
+    },
+    {
+      "ChildId": "0af8f8de-cdbe-5497-4429-ca449b59e2b1",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 500.0
+      }
+    },
+    {
+      "ChildId": "123783c4-b204-3c71-fde0-dcd049c0a8ae",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 1618.0
+      }
+    },
+    {
+      "ChildId": "13f6bf51-361d-dcfa-7bf3-7e76d8a73f24",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 630.0
+      }
+    },
+    {
+      "ChildId": "1479dd06-6662-ebdc-99df-73fc4899c7da",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 968.0
+      }
+    },
+    {
+      "ChildId": "182d27df-a15d-77d3-cb48-90c12b6246e9",
+      "SymbolName": "Lib.render.camera.Camera",
+      "Position": {
+        "X": 3200.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "1a48b0b1-200e-9965-a66c-a2e531695f0c",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 864.0
+      }
+    },
+    {
+      "ChildId": "1c4b740e-f297-bc01-d364-001eb1367a3e",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 370.0
+      }
+    },
+    {
+      "ChildId": "25046c09-c0c8-d500-7f6c-fc8e41651cc0",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 448.0
+      }
+    },
+    {
+      "ChildId": "26cbd99a-0e06-8073-cef5-9f1d81c9258e",
+      "SymbolName": "Lib.mesh.generate.CubeMesh",
+      "Position": {
+        "X": 2300.0,
+        "Y": -200.0
+      }
+    },
+    {
+      "ChildId": "2ddddd39-0b74-ffb1-c137-a5771b0a19c5",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 656.0
+      }
+    },
+    {
+      "ChildId": "35b1865a-8833-f2fb-fba0-726e1ca3eba7",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 1202.0
+      }
+    },
+    {
+      "ChildId": "36c96d32-075d-7528-78e7-eddfe91fc0ba",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 1306.0
+      }
+    },
+    {
+      "ChildId": "370598be-dda4-6c74-4bd9-b68370a4a226",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 266.0
+      }
+    },
+    {
+      "ChildId": "4774d242-ac63-bfcc-d60d-37dae042032c",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 84.0
+      }
+    },
+    {
+      "ChildId": "4db1be4e-b315-d4f0-8a1b-b4f000df6286",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 1488.0
+      }
+    },
+    {
+      "ChildId": "51e5c712-df1f-df7e-c382-2d644a36c741",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": -320.0
+      }
+    },
+    {
+      "ChildId": "56ed08af-98a7-589e-9643-ef27cc97dde2",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 1254.0
+      }
+    },
+    {
+      "ChildId": "5ebd7cef-66e4-c6ba-593b-fb5cfe618902",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 318.0
+      }
+    },
+    {
+      "ChildId": "61f369d2-00ce-fa4b-fc2e-94b15b6ad64a",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 136.0
+      }
+    },
+    {
+      "ChildId": "64ed36ef-a39a-d92d-5eb7-bccd1d6b7333",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 760.0
+      }
+    },
+    {
+      "ChildId": "672edddd-190e-1d10-4a05-72f603a8fba7",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 1592.0
+      }
+    },
+    {
+      "ChildId": "6c16382b-4b5c-b2b6-06dd-20793fe8aca6",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 1046.0
+      }
+    },
+    {
+      "ChildId": "6cded260-8b35-ed48-9301-dbdefe2bed61",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 1150.0
+      }
+    },
+    {
+      "ChildId": "6fb2c3d0-159a-738c-7ec7-9dd31db7cb81",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 188.0
+      }
+    },
+    {
+      "ChildId": "7026be75-ee0f-fd89-9659-fd0187a8dd92",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 786.0
+      }
+    },
+    {
+      "ChildId": "76b1b609-b12f-24c3-12f9-2ac5e88023c2",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": -124.0
+      }
+    },
+    {
+      "ChildId": "781ff8c1-6602-2fb8-b736-683dfc09a3d4",
+      "SymbolName": "Lib.image.generate.basic.RenderTarget",
+      "Position": {
+        "X": 3500.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "787dcd25-9770-15ce-31a9-cf6d94fc5255",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 1098.0
+      }
+    },
+    {
+      "ChildId": "7bcae36d-c554-8c12-6d71-b74c36bfbeac",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 1020.0
+      }
+    },
+    {
+      "ChildId": "7fbf39d6-bd09-d752-de06-0a20a20adda0",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 1644.0
+      }
+    },
+    {
+      "ChildId": "829c44f3-c17f-a7f2-ec34-2811ce151698",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 812.0
+      }
+    },
+    {
+      "ChildId": "84f0472c-f5d0-f761-393a-7a3f72a0b82f",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 994.0
+      }
+    },
+    {
+      "ChildId": "85adf58a-1b56-33ae-fdf7-9cce9d187b5c",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 162.0
+      }
+    },
+    {
+      "ChildId": "8860f049-0296-68c6-49d5-48b1783aa345",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 1228.0
+      }
+    },
+    {
+      "ChildId": "8a4bc6ce-0aec-ba5a-98de-91ead8308f74",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 708.0
+      }
+    },
+    {
+      "ChildId": "8bc2607f-edd5-5229-3ab7-e1a0f48990c0",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 1514.0
+      }
+    },
+    {
+      "ChildId": "8cd1ac28-924f-2ae8-1aa7-cd2b158874ff",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 214.0
+      }
+    },
+    {
+      "ChildId": "8f64ddfd-a71a-5b0d-5f89-2d11a551a5ca",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 422.0
+      }
+    },
+    {
+      "ChildId": "924c753e-26b7-6a5e-9ad1-62f3cac04e70",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 916.0
+      }
+    },
+    {
+      "ChildId": "939a7817-6e41-a43f-21da-c2f5c1b432f6",
+      "SymbolName": "Lib.mesh.modify.TransformMesh",
+      "Position": {
+        "X": 2550.0,
+        "Y": -200.0
+      }
+    },
+    {
+      "ChildId": "9945f5e0-f86c-ca32-cece-d1a1d1ab1d75",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": -98.0
+      }
+    },
+    {
+      "ChildId": "a02acf53-46dd-4e3b-5b44-c58f4c7e97e6",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 1384.0
+      }
+    },
+    {
+      "ChildId": "a5466402-1371-c3ef-7237-7172a065687e",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 32.0
+      }
+    },
+    {
+      "ChildId": "aa1b99b0-21d5-93ee-e7e6-25c5e812a7e1",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 942.0
+      }
+    },
+    {
+      "ChildId": "aaef6e7e-27bb-458a-bf60-e0c4983b535b",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 890.0
+      }
+    },
+    {
+      "ChildId": "abccfedb-4d79-9a79-c852-237241bd5aab",
+      "SymbolName": "Lib.render.transform.Group",
+      "Position": {
+        "X": 2900.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "afae8c21-5866-6b88-5e5d-a103114125c1",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": -46.0
+      }
+    },
+    {
+      "ChildId": "b08e1b90-dba4-aa90-feaf-80c315103dcc",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 578.0
+      }
+    },
+    {
+      "ChildId": "b205a748-bd43-dbfe-ffaf-01213018947c",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 240.0
+      }
+    },
+    {
+      "ChildId": "b3e50c6a-77f2-0f00-ac85-922ba81bd994",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 1072.0
+      }
+    },
+    {
+      "ChildId": "b9c5e51a-2aa2-95e2-c61e-357cec5eac9a",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 552.0
+      }
+    },
+    {
+      "ChildId": "ba96aacb-b0f8-f491-a2ec-3b19226d520f",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 682.0
+      }
+    },
+    {
+      "ChildId": "babf473b-f64a-8cc1-b2dd-13478ab25df1",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": -150.0
+      }
+    },
+    {
+      "ChildId": "c724985e-80ba-43c8-5001-f0e6653679f7",
+      "SymbolName": "Lib.physics.PhysicsWorld",
+      "Position": {
+        "X": 2000.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "c8ca9e89-0803-bc2b-4f74-03270a505d49",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 734.0
+      }
+    },
+    {
+      "ChildId": "ca9e50f4-b868-05fe-17fc-33bed3b594dd",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 474.0
+      }
+    },
+    {
+      "ChildId": "cda20ca3-8263-6e66-54dc-52120152f1de",
+      "SymbolName": "Lib.mesh.draw.DrawMeshAtPoints",
+      "Position": {
+        "X": 2600.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "ce1b13e9-76ee-3bfb-7d9f-b70fd9b3241d",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 1176.0
+      }
+    },
+    {
+      "ChildId": "d2aff827-caf4-a369-2ba3-91c0c475e297",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 1332.0
+      }
+    },
+    {
+      "ChildId": "d657d51d-cee4-2cc7-ad88-de47facf6bab",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 396.0
+      }
+    },
+    {
+      "ChildId": "d823371d-c8c8-6863-e781-988c4f5dc2c0",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 1566.0
+      }
+    },
+    {
+      "ChildId": "daa31f1e-abf8-cb6d-86a3-50c0f08b3b91",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 604.0
+      }
+    },
+    {
+      "ChildId": "dbc20ab5-fc7d-cb5f-7ef9-6f2324f11178",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 838.0
+      }
+    },
+    {
+      "ChildId": "dbd60d2e-3b37-a064-46cd-28a0a8b15ed1",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": -20.0
+      }
+    },
+    {
+      "ChildId": "dc52c29a-ae52-1644-995c-4c613126a43d",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": -440.0
+      }
+    },
+    {
+      "ChildId": "dd408195-a500-8d23-256c-4ddf85496c90",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 1540.0
+      }
+    },
+    {
+      "ChildId": "e03bb4d5-8027-55d2-e81a-0b01cc632932",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 1462.0
+      }
+    },
+    {
+      "ChildId": "e1fec7d8-36d5-c04d-e4a7-8900ada9c1ee",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": -600.0
+      }
+    },
+    {
+      "ChildId": "e2834a0b-525f-499b-e8c4-779ca5f76f0e",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 1436.0
+      }
+    },
+    {
+      "ChildId": "e29f11fa-f77e-b1c3-6bbe-85bcfd273bd8",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": -380.0
+      }
+    },
+    {
+      "ChildId": "e39a7516-46a8-afb9-661f-143e78507488",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 1124.0
+      }
+    },
+    {
+      "ChildId": "e4478995-e63a-9661-c5ac-8e31390be66e",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 1670.0
+      }
+    },
+    {
+      "ChildId": "e4cbb45b-8d77-28b1-19b2-835302d9779f",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 292.0
+      }
+    },
+    {
+      "ChildId": "e614836d-34e4-765e-13a3-a98d1ef49f93",
+      "SymbolName": "Lib.mesh.generate.SphereMesh",
+      "Position": {
+        "X": 2300.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "ea83ca20-da2c-3678-0769-7595a8ca3091",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 1358.0
+      }
+    },
+    {
+      "ChildId": "eb7e5923-75f4-4bc5-75f4-864256d3d88c",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 110.0
+      }
+    },
+    {
+      "ChildId": "ec5eb5cd-ef9b-46bc-9529-be52ab7425f7",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": -500.0
+      }
+    },
+    {
+      "ChildId": "f0d2711a-aba6-7d9f-18d5-0d7c99589eba",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 1280.0
+      }
+    },
+    {
+      "ChildId": "f6a370a6-754d-f8ce-1df3-9f95cf112826",
+      "SymbolName": "Lib.mesh.draw.DrawMeshUnlit",
+      "Position": {
+        "X": 2800.0,
+        "Y": -200.0
+      }
+    },
+    {
+      "ChildId": "f986df8d-e05b-06b5-3e94-353861eb14b0",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": -72.0
+      }
+    },
+    {
+      "ChildId": "fa2729ee-526e-fa5d-4c15-16d2d2d928e5",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 526.0
+      }
+    },
+    {
+      "ChildId": "fe1fd0fb-4481-13dd-65ad-9885d5e144f1",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 1600.0,
+        "Y": 1696.0
+      }
+    }
+  ],
+  "OutputUis": [
+    {
+      "OutputId": "5a69fb54-9ca6-4f37-a236-bc82a4db7dd4"/*Output*/,
+      "Position": {
+        "X": 3820.0,
+        "Y": 0.0
+      }
+    }
+  ]
+}

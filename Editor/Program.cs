@@ -14,6 +14,7 @@ using T3.Core.Resource.ShaderCompiling;
 using T3.Core.SystemUi;
 using T3.SystemUi;
 using T3.Core.Settings;
+using T3.Core.Utils;
 using T3.IoServices.Midi;
 using T3.Editor.App;
 using T3.Editor.Compilation;
@@ -120,6 +121,15 @@ internal static class Program
 
     private static void Main(string[] args)
     {
+        // Isolated Assimp worker: this process was started by [AssimpImport]/[AssimpExport] and must
+        // not boot the editor. Must run before settings, logging, graphics or the crash watchdog.
+        if (IsolatedAssimpHost.TryRun(args, out var hostExitCode))
+        {
+            Console.Out.Flush();
+            Console.Error.Flush();
+            Environment.Exit(hostExitCode);
+        }
+
         // Must run before any code that may trigger assembly resolution.
         T3.Core.Diagnostics.AssemblyLoadDiagnostics.Install();
 
@@ -430,12 +440,31 @@ internal static class Program
     private static void ApplyWindowArgs(string[] args)
     {
         const string windowFlag = "--window";
+        const string projectFlag = "--project";
         for (var i = 0; i < args.Length; i++)
         {
             var arg = args[i];
             if (arg.Equals("--no-splash", StringComparison.OrdinalIgnoreCase))
             {
                 SkipSplash = true;
+                continue;
+            }
+
+            if (arg.Equals(App.Startup.OsAutostart.ArgMarker, StringComparison.OrdinalIgnoreCase))
+            {
+                StartedByOsAutostart = true;
+                continue;
+            }
+
+            if (arg.StartsWith(projectFlag + "=", StringComparison.OrdinalIgnoreCase))
+            {
+                ProjectFolderArgument = arg[(projectFlag.Length + 1)..];
+                continue;
+            }
+
+            if (arg.Equals(projectFlag, StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+            {
+                ProjectFolderArgument = args[i + 1];
                 continue;
             }
 

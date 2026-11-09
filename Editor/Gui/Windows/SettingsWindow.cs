@@ -23,6 +23,10 @@ internal sealed partial class SettingsWindow : Window
     internal SettingsWindow()
     {
         Config.Title = "Settings";
+
+        // The sidebar plus the 560px content column; tall enough that the Collaboration
+        // participant table (and its per-row actions) is visible without manual resizing.
+        WindowSizeOverride = new Vector2(700, 700);
     }
 
     private enum Categories
@@ -105,7 +109,7 @@ internal sealed partial class SettingsWindow : Window
         }
         NavigationSidebar.EndColumn();
 
-        NavigationSidebar.BeginContentPanel(CategoryTitle(_activeCategory), this);
+        NavigationSidebar.BeginContentPanel(CategoryTitle(_activeCategory), this, alwaysShowScrollbar: true);
         {
             if (_scrollContentToTop)
             {
@@ -114,6 +118,7 @@ internal sealed partial class SettingsWindow : Window
             }
 
             FormInputs.SetIndentToParameters();
+            FormInputs.PushMaxContentWidth(560);
             switch (_activeCategory)
             {
                 case Categories.Interface:
@@ -280,6 +285,17 @@ internal sealed partial class SettingsWindow : Window
 
                     FormInputs.AddVerticalSpace();
                     FormInputs.AddSectionSubHeader("Output");
+
+                    changed |= FormInputs.AddEnumDropdown(ref UserSettings.Config.MaxWindowFillResolution,
+                                                          "Max Fill Resolution",
+                                                          """
+                                                          Limits the render resolution of outputs that take their size from the window,
+                                                          like "Fill" in the Output Window and the background in focus mode.
+                                                          On high-resolution displays this keeps the frame rate reasonable;
+                                                          the image is upscaled to fill the window. Fixed resolutions like 4k are not affected.
+                                                          """,
+                                                          UserSettings.Defaults.MaxWindowFillResolution,
+                                                          GetWindowFillLimitLabel);
 
                     changed |= FormInputs.AddFloat("Sequential screenshots",
                                                    ref UserSettings.Config.ContinuousScreenshotDelay,
@@ -703,6 +719,8 @@ internal sealed partial class SettingsWindow : Window
                 }
             }
 
+            FormInputs.PopMaxContentWidth();
+
             if (changed)
                 UserSettings.Save();
 
@@ -878,6 +896,13 @@ internal sealed partial class SettingsWindow : Window
         ImGui.GetWindowDrawList().AddCircleFilled(new Vector2(pos.X + radius, MathF.Round(pos.Y + height * 0.5f)), radius, color);
         ImGui.SetCursorScreenPos(pos + new Vector2(radius * 2 + 6 * T3Ui.UiScaleFactor, 0));
         ImGui.TextUnformatted(text);
+    }
+
+    private static string GetWindowFillLimitLabel(UserSettings.WindowFillResolutionLimits limit)
+    {
+        return limit == UserSettings.WindowFillResolutionLimits.Unlimited
+                   ? "Unlimited"
+                   : $"{(int)limit}p";
     }
 
     private static string CategoryTitle(Categories category) => category switch

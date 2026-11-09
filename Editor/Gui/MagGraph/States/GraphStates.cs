@@ -25,7 +25,6 @@ namespace T3.Editor.Gui.MagGraph.States
             item = null;
             if (context.StateMachine.CurrentState != Default
                 || !context.View.IsFocused
-                || !context.View.IsHovered
                 || ImGui.IsAnyItemActive()
                 || context.Selector.Selection.Count != 1)
                 return false;
@@ -373,7 +372,7 @@ namespace T3.Editor.Gui.MagGraph.States
 
                               if (!ImGui.IsMouseDown(ImGuiMouseButton.Left))
                               {
-                                  MagItemMovement.SelectActiveItem(context);
+                                  MagItemMovement.SelectActiveItem(context, openParametersIfSelected: true);
                                   context.ItemMovement.Reset();
                                   context.StateMachine.SetState(Default, context);
                                   return;

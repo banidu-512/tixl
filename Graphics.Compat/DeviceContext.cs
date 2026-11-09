@@ -364,12 +364,49 @@ public sealed class DeviceContext
         return new DataBox(mapped);
     }
 
+    /// <summary>
+    /// Maps for reading without waiting for queued GPU work. Returns false when the backend
+    /// cannot hand over stable contents yet; callers keep their last good read instead of
+    /// stalling the render thread. Used by the depth operators' pipelined readback staging.
+    /// </summary>
+    public unsafe bool TryMapSubresourceForRead(Resource resource, int subresource, out DataStream stream)
+    {
+        // Callers read the stream only after the bool; false means there is nothing to read.
+        stream = null!;
+        if (resource.Native == null)
+            return false;
+
+        if (!Backend.TryMapForRead(resource.Native, subresource, out var mapped))
+            return false;
+
+        stream = new DataStream((IntPtr)mapped.Data, mapped.SizeInBytes, canRead: true, canWrite: false);
+        return true;
+    }
+
     public DataBox MapSubresource(Resource resource, int subresource, MapMode mode, MapFlags flags, out DataStream stream)
     {
         var box = MapSubresource(resource, subresource, mode, flags);
         var size = SizeOf(resource);
         stream = new DataStream(box.DataPointer, size, mode != MapMode.WriteDiscard, mode != MapMode.Read);
         return box;
+    }
+
+    /// <summary>
+    /// Maps for reading without waiting for queued GPU work. Returns false when the backend
+    /// cannot hand over stable contents yet; callers keep their last good read instead of
+    /// stalling the render thread. Used by the laser camera's pipelined capture staging.
+    /// </summary>
+    public unsafe bool TryMapSubresourceForRead(Resource resource, int subresource, out DataStream stream)
+    {
+        stream = null;
+        if (resource.Native == null)
+            return false;
+
+        if (!Backend.TryMapForRead(resource.Native, subresource, out var mapped))
+            return false;
+
+        stream = new DataStream((IntPtr)mapped.Data, mapped.SizeInBytes, canRead: true, canWrite: false);
+        return true;
     }
 
     /// <summary>Reports how large the mapped mip is, which the dynamic-texture upload path uses.</summary>
