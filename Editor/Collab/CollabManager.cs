@@ -65,6 +65,35 @@ internal sealed class CollabManager
     /// <summary>Peers currently in the session (UI thread only).</summary>
     public IReadOnlyList<CollabPeerConnection> Peers => _transport?.Peers ?? [];
 
+    /// <summary>How each peer is reached ("direct" data channel, relay fallback); empty when unknown.</summary>
+    public IReadOnlyList<(int PeerId, string Link)> PeerLinks
+    {
+        get
+        {
+            var result = new List<(int, string)>();
+            foreach (var peer in Peers)
+                result.Add((peer.AssignedId, _transport?.DescribePeerLink(peer) ?? ""));
+
+            return result;
+        }
+    }
+
+    internal CollabWebRtcHostTransport? WebRtcHost => _transport as CollabWebRtcHostTransport;
+    internal CollabWebRtcClientTransport? WebRtcClient => _transport as CollabWebRtcClientTransport;
+
+    private CollabVideoHostStreamer? _videoStreamer;
+    private CollabVideoReceiver? _videoReceiver;
+
+    /// <summary>The host's preview on a joined session, or null when no video is arriving.</summary>
+    public CollabVideoReceiver? VideoReceiver => _videoReceiver;
+
+    /// <summary>True while the host is encoding its preview for members.</summary>
+    public bool IsStreamingPreview => _videoStreamer is { IsEncoding: true };
+
+    public string PreviewEncoderName => _videoStreamer?.EncoderName ?? "";
+
+    internal CollabVideoHostStreamer? VideoStreamer => _videoStreamer;
+
     /// <summary>The machines this instance is linked to right now — the settings panel's network
     /// check compares them against the selected adapter.</summary>
     public void AddLinkedPeers(List<NetworkPeer> peers)
@@ -92,6 +121,8 @@ internal sealed class CollabManager
     private const int MaxSessionLogEntries = 10_000;
 
     private long _nextHeartbeatTicks;
+    private long _nextRttProbeTicks;
+    private const int RttProbeIntervalMs = 2000;
     private long _nextPresenceSendTicks;
     private long _nextRateResetTicks;
 
@@ -238,7 +269,9 @@ internal sealed class CollabManager
                 {
                     try
                     {
-                        var transport = await CollabRelayHostTransport.ConnectAsync(relayHost, relayPort, "", CancellationToken.None);
+                        var transport = UserSettings.Config.CollabWebRtcEnabled
+                                            ? await CollabWebRtcHostTransport.ConnectAsync(relayHost, relayPort, "", CancellationToken.None)
+                                            : await CollabRelayHostTransport.ConnectAsync(relayHost, relayPort, "", CancellationToken.None);
                         _uiThreadActions.Enqueue(() => CompleteRelayHostConnect(transport, generation, password, relayHost, relayPort));
                     }
                     catch (Exception e)
@@ -268,6 +301,9 @@ internal sealed class CollabManager
         _transport = transport;
         RoomCode = transport.AssignedRoomCode;
         RelayEndpoint = $"{relayHost}:{relayPort}";
+        if (transport is CollabWebRtcHostTransport rtcHost)
+            _videoStreamer = new CollabVideoHostStreamer(rtcHost);
+
         State = SessionState.Hosting;
         StatusText = $"Hosting via relay, room {RoomCode}";
         Log.Info($"Collab: hosting via relay {relayHost}:{relayPort}, room {RoomCode}");
@@ -305,7 +341,9 @@ internal sealed class CollabManager
                 {
                     try
                     {
-                        var transport = await CollabRelayClientTransport.ConnectAsync(relayHost, relayPort, roomCode, CancellationToken.None);
+                        var transport = UserSettings.Config.CollabWebRtcEnabled
+                                            ? await CollabWebRtcClientTransport.ConnectAsync(relayHost, relayPort, roomCode, CancellationToken.None)
+                                            : await CollabRelayClientTransport.ConnectAsync(relayHost, relayPort, roomCode, CancellationToken.None);
                         _uiThreadActions.Enqueue(() => CompleteRelayClientConnect(transport, generation, passwordToUse, relayHost, relayPort, roomCode));
                     }
                     catch (Exception e)
@@ -313,6 +351,15 @@ internal sealed class CollabManager
                         ReportRelayFailure(generation, "Relay join failed", "Connection failed", e);
                     }
                 });
+    }
+
+    private void RequestResyncAfterFallback(int generation)
+    {
+        if (generation != _sessionGeneration || State != SessionState.Connected || HostLink is not { } host)
+            return;
+
+        Log.Info("Collab: data channel lost, asking the host for a fresh state");
+        SendJson(host, new { t = "requestSync" });
     }
 
     /// <summary>UI thread: adopts a joined relay link, unless that join was abandoned meanwhile.</summary>
@@ -337,6 +384,12 @@ internal sealed class CollabManager
         RelayEndpoint = $"{relayHost}:{relayPort}";
         transport.PeerDisconnected += OnPeerDisconnectedTransport;
         transport.StartReading();
+        if (transport is CollabWebRtcClientTransport rtcClient)
+        {
+            _videoReceiver = new CollabVideoReceiver(rtcClient);
+            rtcClient.FellBackToRelay += () => _uiThreadActions.Enqueue(() => RequestResyncAfterFallback(generation));
+        }
+
         SendJson(transport.HostPeer, new
                                          {
                                              t = "hello",
@@ -443,6 +496,11 @@ internal sealed class CollabManager
         // Anything still connecting becomes stale; its completion is discarded.
         ++_sessionGeneration;
 
+        _videoStreamer?.Dispose();
+        _videoStreamer = null;
+        _videoReceiver?.Dispose();
+        _videoReceiver = null;
+
         if (_transport != null)
         {
             _transport.PeerDisconnected -= OnPeerDisconnectedTransport;
@@ -466,6 +524,7 @@ internal sealed class CollabManager
         UserSettings.Config.CollabLastRelayHost = "";
         UserSettings.Config.CollabLastRelayRoom = "";
         UserSettings.Save();
+        _pendingKicks.Clear();
         while (_pendingDisconnects.TryDequeue(out _))
         {
             // Drop disconnect events from the dead session; replaying them into a future
@@ -504,9 +563,61 @@ internal sealed class CollabManager
 
     private readonly ConcurrentQueue<CollabPeerConnection> _pendingDisconnects = new();
 
+    /// <summary>A kicked peer is told first and closed a moment later so the message flushes.</summary>
+    private readonly List<(CollabPeerConnection Peer, long CloseAtTicks)> _pendingKicks = [];
+    private const int KickCloseDelayMs = 600;
+
     /// <summary>Session participant names by session id, for display on hosts and clients alike.</summary>
     private readonly Dictionary<int, string> _roster = new();
     public IReadOnlyDictionary<int, string> Roster => _roster;
+
+    /// <summary>
+    /// Round trip to one participant in ms, or -1 while none of our heartbeats has come back yet.
+    /// Relay-backed peers include the relay hop; peers on a data channel measure the direct path.
+    /// </summary>
+    public int GetPeerRttMs(int peerId)
+    {
+        foreach (var peer in Peers)
+        {
+            if (peer.AssignedId == peerId)
+                return peer.LastRttMs;
+        }
+
+        return -1;
+    }
+
+    /// <summary>
+    /// Host-side removal of one participant. The peer is told first so a current client can leave
+    /// cleanly; closing the connection then enforces it for clients that ignore the message.
+    /// There is no ban: the participant can rejoin unless the session password keeps them out.
+    /// </summary>
+    public bool KickParticipant(int peerId)
+    {
+        if (State != SessionState.Hosting || peerId == 0)
+            return false;
+
+        CollabPeerConnection? target = null;
+        foreach (var peer in Peers)
+        {
+            if (peer.AssignedId != peerId)
+                continue;
+
+            target = peer;
+            break;
+        }
+
+        if (target is not { IsAuthenticated: true })
+            return false;
+
+        // Ride the relay/socket rather than a preferred data channel: that write is flushed before
+        // the close below, and the client accepts this one relay message even while P2P is active.
+        _transport?.SendJsonOverRelay(target, new { t = "kicked", reason = "Removed by the host" });
+        Log.Info($"Collab: removed {target.Name}#{peerId} from the session");
+        _pendingKicks.Add((target, Environment.TickCount64 + KickCloseDelayMs));
+        return true;
+    }
+
+
 
     /// <summary>User ids by session id; seeds participant colors on the client side too.</summary>
     private readonly Dictionary<int, Guid> _rosterUserIds = new();
@@ -542,7 +653,7 @@ internal sealed class CollabManager
                        CompositionId = presence?.CompositionId ?? Guid.Empty,
                        IsHoveringCanvas = presence?.IsHoveringCanvas ?? false,
                        CursorOnCanvas = presence?.CursorOnCanvas ?? Vector2.Zero,
-                       AccentColor = CollabColors.FromId(userId),
+                       AccentColor = CollabColors.FromPacked(presence?.ColorRgb ?? 0, userId),
                        SelectedChildIds = presence?.SelectedChildIds ?? [],
                    };
     }
@@ -627,12 +738,16 @@ internal sealed class CollabManager
         if (State == SessionState.Off)
             return;
 
+        ProcessPendingKicks();
         ProcessPendingDisconnects();
 
         // A disconnect handled above can end the session (host loss, relay link death), and
         // Leave() disposes the transport — nothing below may run against it.
         if (State == SessionState.Off)
             return;
+
+        _videoStreamer?.Update();
+        _videoReceiver?.Update();
 
         DrainInboundQueue();
 
@@ -680,6 +795,36 @@ internal sealed class CollabManager
                 Log.Info($"Collab: auto-rejoining relay room {roomCode} at {relayHost}");
                 JoinViaRelay(relayHost[..relaySeparator], relayPort, roomCode, UserSettings.Config.CollabPassword ?? "");
             }
+        }
+    }
+
+    /// <summary>Closes the focused project when it is the one the session shared.</summary>
+    private static void CloseSharedProject(string projectName)
+    {
+        if (string.IsNullOrEmpty(projectName) || ProjectView.Focused is not { } view)
+            return;
+
+        var displayName = view.OpenedProject.Package?.DisplayName ?? "";
+        if (string.Equals(displayName, projectName, StringComparison.OrdinalIgnoreCase)
+            || displayName.StartsWith(projectName + " (", StringComparison.OrdinalIgnoreCase))
+            view.Close();
+    }
+
+    private void ProcessPendingKicks()
+    {
+        if (_pendingKicks.Count == 0)
+            return;
+
+        var now = Environment.TickCount64;
+        for (var i = _pendingKicks.Count - 1; i >= 0; i--)
+        {
+            if (now < _pendingKicks[i].CloseAtTicks)
+                continue;
+
+            var peer = _pendingKicks[i].Peer;
+            _pendingKicks.RemoveAt(i);
+            peer.SessionClosed = true;
+            peer.Close();
         }
     }
 
@@ -879,6 +1024,21 @@ internal sealed class CollabManager
                 Log.Info($"Collab: replay complete ({_syncBatch} ops)");
                 break;
 
+            case "rttPing":
+                if (CollabProtocol.TryGetLong(json, "stamp", out var probeStamp))
+                    SendJson(peer, new { t = "rttPong", stamp = probeStamp });
+                break;
+
+            case "rttPong":
+                if (CollabProtocol.TryGetLong(json, "stamp", out var answered) && peer.AssignedId != int.MaxValue)
+                {
+                    var rtt = Environment.TickCount64 - answered;
+                    if (rtt is >= 0 and <= 10_000)
+                        peer.LastRttMs = (int)rtt;
+                }
+
+                break;
+
             case "peerJoined" when State == SessionState.Connected:
             {
                 var name = CollabProtocol.GetString(json, "name", "?");
@@ -905,6 +1065,19 @@ internal sealed class CollabManager
 
                 Log.Info($"Collab: {name} left");
                 AppendChat(null, $"{name} left");
+                break;
+            }
+
+            case "kicked" when State == SessionState.Connected:
+            {
+                var kickReason = CollabProtocol.GetString(json, "reason", "Removed by the host");
+                ErrorText = kickReason;
+                Log.Info($"Collab: removed by the host: {kickReason}");
+
+                // A kicked participant lands in the project hub rather than inside the host's show.
+                var sharedProject = _hostProjectName;
+                Leave(manual: true);
+                CloseSharedProject(sharedProject);
                 break;
             }
 
@@ -1048,6 +1221,9 @@ internal sealed class CollabManager
                                project = _sessionProjectName,
                            });
 
+        // The handshake runs on the relay first; only a fully authenticated peer may switch paths.
+        _transport?.EnablePeerToPeer(peer);
+
         BroadcastSystemMessage(new
                                    {
                                        t = "peerJoined",
@@ -1122,6 +1298,7 @@ internal sealed class CollabManager
 
         State = SessionState.Connected;
         StatusText = $"Connected as {_localIdentity.DisplayName}";
+        _transport?.EnablePeerToPeer(peer);
         SendJson(peer, new { t = "requestSync" });
 
         // Remember the session so a restart (e.g. after a project download) can rejoin, then make
@@ -1170,40 +1347,12 @@ internal sealed class CollabManager
     /// <summary>Opens a local project by display name (short form accepted) into the visible graph window.</summary>
     internal static bool TryOpenProjectByName(string name)
     {
-        foreach (var p in SymbolPackage.AllPackages)
-        {
-            if (p is not EditorSymbolPackage editorPackage
-                || !(string.Equals(editorPackage.DisplayName, name, StringComparison.OrdinalIgnoreCase)
-                     || editorPackage.DisplayName.StartsWith(name + " (", StringComparison.OrdinalIgnoreCase)))
-                continue;
-
-            if (!OpenedProject.TryCreate(editorPackage, out var openedProject, out var failureLog)
-                || openedProject == null)
-            {
-                Log.Warning($"Collab: could not open project '{name}': {failureLog}");
-                return false;
-            }
-
-            GraphWindow? graphWindow = null;
-            foreach (var window in GraphWindow.GraphWindowInstances)
-            {
-                if (!window.Config.Visible)
-                    continue;
-
-                graphWindow = window;
-                break;
-            }
-
-            graphWindow ??= GraphWindow.GraphWindowInstances.Count > 0 ? GraphWindow.GraphWindowInstances[0] : null;
-            if (graphWindow == null || !graphWindow.TrySetToProject(openedProject, tryRestoreViewArea: false))
-            {
-                Log.Warning($"Collab: could not open project '{name}' in a graph window");
-                return false;
-            }
-
+        // Shared with failover and boygrouping: every mode follows the active machine's project the
+        // same way (in place, without a restart, when the project is installed).
+        if (T3.Editor.Show.ProjectFollower.TrySwitchToName(name))
             return true;
-        }
 
+        Log.Warning($"Collab: project '{name}' is not installed locally");
         return false;
     }
 
@@ -1608,6 +1757,7 @@ internal sealed class CollabManager
         _localPresence.CursorOnCanvas = cursorOnCanvas;
         _localPresence.Flags = hoveringCanvas ? PresencePacket.FlagHoveringCanvas : (byte)0;
         _localPresence.SelectedChildIds = selectedChildIds;
+        _localPresence.ColorRgb = UserSettings.Config.CollabCursorColor;
     }
 
     private void SendLocalPresence()
@@ -1681,6 +1831,13 @@ internal sealed class CollabManager
         _nextHeartbeatTicks = now + CollabProtocol.HeartbeatIntervalMs;
         var timestamp = BitConverter.GetBytes(Environment.TickCount64);
 
+        // Round-trip probe: the binary heartbeat echo only comes back on some transports (a data
+        // channel answers on the relay, or not at all), so latency rides a JSON message instead —
+        // the same path chat uses, which works on every transport.
+        var sendRttProbe = now >= _nextRttProbeTicks;
+        if (sendRttProbe)
+            _nextRttProbeTicks = now + RttProbeIntervalMs;
+
         foreach (var peer in Peers)
         {
             if (peer.IsTimedOut)
@@ -1703,7 +1860,11 @@ internal sealed class CollabManager
             }
 
             if (peer.IsAuthenticated)
+            {
                 _transport?.SendToPeer(peer, CollabProtocol.FrameType.Heartbeat, timestamp);
+                if (sendRttProbe)
+                    SendJson(peer, new { t = "rttPing", stamp = Environment.TickCount64 });
+            }
         }
     }
 
@@ -2097,6 +2258,7 @@ internal sealed class CollabManager
                 {
                     UserSettings.Config.StartupProjectFolder = _projectDownloadFolder;
                     UserSettings.Config.LastOpenProjectFolder = _projectDownloadFolder;
+                    NetworkProjectRegistry.Register(NetworkProjectRegistry.CollabKind, _projectDownloadFolder);
                     UserSettings.Save();
                 }
 
