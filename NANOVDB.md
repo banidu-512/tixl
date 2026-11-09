@@ -77,6 +77,8 @@ Sparse volume support for TiXL. Loads and writes `.vdb` files, edits volumes wit
 
 Both declare one `StructuredBuffer<uint>` per grid through `SrvBufferReference`, and inject `volume/nanovdb-common.hlsl` once per generated shader — the include key is constant, so a graph with several Vdb fields still compiles one copy of the tree walk.
 
+**Include placement is not free.** The engine rewrites every `#include` to `Lib:shaders/<name>` before asking the asset registry, so a shared shader include has to live under `Operators/Lib/Assets/shaders/`. A helper placed in an operator package of its own would never be found, whatever address it was given. `Core.Tests/NanoVdbShaderTests.cs` asserts that on-disk convention and compiles the shipping shaders through the engine compiler instead of a hand-built command line.
+
 ### `Lib.volume.render` and `.gpu`
 
 | Operator | What it does |
