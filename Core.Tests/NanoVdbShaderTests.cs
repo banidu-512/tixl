@@ -23,6 +23,8 @@ namespace Core.Tests;
 /// <remarks>
 /// Skips itself where slangc or a Vulkan device is missing, following the other shader tests.
 /// </remarks>
+// ShaderCompiler.Instance is process-wide, so these classes must not run in parallel.
+[Collection("ShaderCompiler")]
 public class NanoVdbShaderTests(ITestOutputHelper output)
 {
     [Fact]

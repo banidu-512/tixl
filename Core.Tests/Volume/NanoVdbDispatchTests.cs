@@ -28,6 +28,8 @@ namespace Core.Tests.Volume;
 /// after the counter must be a separator.
 /// </summary>
 /// <remarks>Skips itself where slangc or a Vulkan device is missing.</remarks>
+// ShaderCompiler.Instance is process-wide, so these classes must not run in parallel.
+[Collection("ShaderCompiler")]
 public class NanoVdbDispatchTests(ITestOutputHelper output)
 {
     [Fact]
