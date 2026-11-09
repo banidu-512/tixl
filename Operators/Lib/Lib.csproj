@@ -143,6 +143,9 @@
     <PackageReference Include="SkiaSharp.NativeAssets.macOS" Version="4.148.0" Condition="$([MSBuild]::IsOSPlatform('OSX'))" />
     <PackageReference Include="SixLabors.Fonts" Version="$(SixLaborsFontsVersion)" />
     <PackageReference Include="LibTessDotNet" Version="1.1.15" />
+    <!-- Assimp model import/export ([AssimpImport], [AssimpExport]). Ships native builds for win/linux/osx
+         x64 and arm64 under runtimes/; AssimpNet loads them with its own resolver (see AssimpNative). -->
+    <PackageReference Include="AssimpNetter" Version="6.0.5" />
   </ItemGroup>
   <!-- Copy package content into this project's own output only (not transitively to other projects).
        Uses a custom Target instead of <Content CopyToOutputDirectory> to prevent MSBuild from
