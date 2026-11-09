@@ -134,10 +134,11 @@ public class ImageSegmentation : Instance<ImageSegmentation>
 
         while (_outputQueue.TryDequeue(out var result))
         {
-            if (result.MaskData != null)
-            {
-                _currentResult = result;
-            }
+            // Assign every packet, including the empty one the worker enqueues when the segmenter
+            // returned no mask. Keeping only the last non-null mask latched the outputs (and froze
+            // UpdateCount/Confidence) on the last good frame, hiding a segmenter that stopped
+            // producing masks; UpdateOutputsWithResult clears the outputs for a null mask.
+            _currentResult = result;
         }
 
         if (_currentResult != null)
