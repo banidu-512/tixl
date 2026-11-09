@@ -166,7 +166,22 @@ public static class PlaybackUtils
                 return false;
             }
 
-            settings = instanceWithSettings.Symbol.CompositionSettings;
+            // A composition whose symbol is not registered (a project created or removed while the
+            // editor was running, or one whose package failed to load) used to throw straight out of
+            // the render loop and kill the editor. Treat it as "no settings here" and keep walking.
+            if (!TryGetCompositionSettings(instanceWithSettings, out var candidate))
+            {
+                if (!_reportedMissingSymbol)
+                {
+                    _reportedMissingSymbol = true;
+                    Log.Warning($"No composition settings: symbol for '{instanceWithSettings}' is not registered. Using the default playback settings.");
+                }
+
+                instanceWithSettings = instanceWithSettings.Parent;
+                continue;
+            }
+
+            settings = candidate;
             if (settings.Enabled)
             {
                 return true;
@@ -175,6 +190,23 @@ public static class PlaybackUtils
             instanceWithSettings = instanceWithSettings.Parent;
         }
     }
+
+    private static bool TryGetCompositionSettings(Instance instance, [NotNullWhen(true)] out CompositionSettings? settings)
+    {
+        try
+        {
+            settings = instance.Symbol.CompositionSettings;
+            return settings != null;
+        }
+        catch (Exception)
+        {
+            // InstanceView.Symbol throws when the symbol is not in the registry.
+            settings = null;
+            return false;
+        }
+    }
+
+    private static bool _reportedMissingSymbol;
 
     private static readonly CompositionSettings _defaultCompositionSettings = new()
                                                                       {
