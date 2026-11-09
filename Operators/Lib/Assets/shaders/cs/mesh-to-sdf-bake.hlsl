@@ -56,7 +56,7 @@ cbuffer Params : register(b0)
     float Smoothing;                // 0..1 blend toward the local average
     float SmoothingRadius;          // smoothing reach in voxels
     float Invert;                   // 1 = flip inside/outside sign
-    float Padding4;
+    float BandRowStart;            // ClosestPointBrute: first row of this dispatch's band
     float Padding5;
 }
 
@@ -384,7 +384,9 @@ float PointTriangleDistSq(float3 p, float3 a, float3 b, float3 c)
 [numthreads(8, 8, 1)]
 void ClosestPointBrute(uint3 tid : SV_DispatchThreadID)
 {
-    uint3 id = uint3(tid.x, tid.y, (uint)SliceZ);
+    // The slice is split into row bands on the CPU so one dispatch can never run past
+    // the OS GPU watchdog; BandRowStart is this dispatch's first row.
+    uint3 id = uint3(tid.x, (uint)BandRowStart + tid.y, (uint)SliceZ);
     if (any(id >= VoxelSize))
         return;
 
