@@ -114,21 +114,26 @@ Enable `DeactivateWhenNotShowing`, then make the operator stop being rendered �
 - `Status` reports `Paused (not rendered)` while nothing renders the operator.
 - Reconnecting `Texture` makes the image reappear within about a second.
 
-## Known issue: rapid start/stop cycles can lose the camera
+## Known issue: rapid start/stop cycles and the camera list
 
-**Observed:**
-Toggling `Active` off and on several times in quick succession can leave the image frozen or empty while
-`Status` reports `Error: Camera disconnected.` for the rest of the session. Closing and reopening the project
-does not restore it.
+**Status:** not reproducible any more, cause never identified — treat it as unexplained rather than fixed.
 
-**Notes:**
-Measured on a laptop camera (BisonCam,NB Pro) with `Tests/Editor.IntegrationTests/WebcamInputTests`, which
-covered this sequence before it was narrowed to a single connect/stop/reconnect cycle. The capture thread
-keeps retrying once per second and never recovers, because the camera has dropped out of SDL's camera list
-and reopening it yields a stream that is reported as gone. Restarting SDL camera support is the only
-re-enumeration path, and that did not clear it in testing either — so this is unfixed and needs a proper
-investigation of how often the device may be reopened on Windows. After heavy cycling the device also needed
-a cooldown before it streamed reliably again.
+**Observed 2026-11-08:**
+After roughly four or five rapid `Active` toggles the camera dropped out of SDL's camera list and capture
+never recovered in that session: `Status` stayed `Error: Camera disconnected.`, reopening produced a stream
+that was reported as gone, and a forced camera-support restart did not help either. The device also needed
+a cooldown before it streamed reliably again, and the wedge persisted across freshly started editor
+processes.
+
+**Observed 2026-11-09:**
+The same sequence — now automated, up to ten activations including six rapid cycles — passes repeatedly.
+An A/B run with the reopen backoff disabled passed as well, so the backoff is *not* what changed the
+outcome; the likeliest explanation is that the device itself had been left in a bad state by the earlier
+runs. The two changes that did land in that window are the reopen backoff in `WebcamInput` (do not reopen a
+failing camera more often than every 1, 2, 4, 5 s) and the per-stream locks plus open-outside-the-lock in
+`SdlCameraProvider`; neither has been shown to address this.
+
+Do not hammer a single camera with repeated test runs when investigating this.
 
 ## Step: Unplugging
 
