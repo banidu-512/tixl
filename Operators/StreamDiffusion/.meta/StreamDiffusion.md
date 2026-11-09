@@ -127,6 +127,16 @@ a CPU status line.
 - Without a GPU provider the operator falls back to CPU automatically and says so
 - ONNX Runtime is delivered via NuGet (`Microsoft.ML.OnnxRuntime.Gpu` 1.30.0) — no native build step
 
+## Platforms
+| OS | Status | Notes |
+|---|---|---|
+| Windows | verified | CUDA 13, TensorRT 10.16 and CPU all stream; measured numbers above are from Windows |
+| Linux | builds and the operator tests pass; GPU path not exercised on hardware | Same CUDA/TensorRT code path; CUDA 13 dropped Pascal, so a GTX 1070 falls back to CPU. The input readback goes through the Vulkan backend, which maps the staging texture after submitting the copy (one short stall per frame, negligible next to inference) |
+| macOS (arm64) | builds; runtime not exercised | ONNX Runtime's CoreML provider is used when the export's graph is supported, otherwise CPU. The editor's graphics layer runs through MoltenVK; the DiT's 5D reshapes have not been validated on CoreML |
+
+The managed code is portable: Windows-only calls (DXGI adapter names) are guarded by `OperatingSystem.IsWindows()` and the
+other platforms simply list a single "Default" device.
+
 ## Recommended Settings
 | Model | Steps | Guidance | Resolution |
 |-------|-------|----------|------------|
