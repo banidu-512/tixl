@@ -19,6 +19,9 @@
         <RuntimeIdentifiers>win-x64;linux-x64;osx-arm64</RuntimeIdentifiers>
         <EnableUnsafeBinaryFormatterSerialization>true</EnableUnsafeBinaryFormatterSerialization>
         <Deterministic>true</Deterministic>
+        <!-- Startup reads and parses thousands of small symbol files, which is allocation heavy; server GC
+             parallelizes collection across cores instead of stalling the load on single-threaded GC. -->
+        <ServerGarbageCollection>true</ServerGarbageCollection>
         <Configurations>Debug;Release</Configurations>
         <Platforms>AnyCPU</Platforms>
         <AssemblyName>TiXL</AssemblyName>
@@ -203,6 +206,7 @@
         <PackageNames Include="Skills" />
         <PackageNames Include="Spout" />
         <PackageNames Include="Ndi" />
+        <PackageNames Include="Omt" />
         <PackageNames Include="Video" />
         <PackageNames Include="Io" />
         <PackageNames Include="Mediapipe">

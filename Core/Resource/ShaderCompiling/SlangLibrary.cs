@@ -35,6 +35,14 @@ internal static unsafe class SlangLibrary
             if (Environment.GetEnvironmentVariable("TIXL_SLANG_IN_PROCESS") == "0")
                 return false;
 
+            // Slang loads its downstream compilers (slang-glslang for SPIR-V linking and optimization)
+            // through a plain LoadLibrary by base name, which on Windows searches the executable's
+            // directory but not the folder the compiler library itself was loaded from. Registering that
+            // folder keeps the in-process compiler working when slangc and the library live outside the
+            // application directory, as in the pinned ~/.local/opt install and the release's slang/bin.
+            if (OperatingSystem.IsWindows())
+                _ = SetDllDirectory(GetBinFolder(compiler));
+
             foreach (var candidate in LibraryCandidates(compiler))
             {
                 if (!File.Exists(candidate) || !NativeLibrary.TryLoad(candidate, out var library))
@@ -104,14 +112,19 @@ internal static unsafe class SlangLibrary
         }
     }
 
+    private static string? GetBinFolder(string compiler)
+    {
+        var resolved = new FileInfo(compiler).ResolveLinkTarget(returnFinalTarget: true)?.FullName ?? compiler;
+        return Path.GetDirectoryName(Path.GetFullPath(resolved));
+    }
+
     /// <summary>
     /// Where a Slang release keeps the library relative to slangc: beside it on Windows, in <c>../lib</c>
     /// elsewhere. A symlinked slangc (distribution packages) is followed to its release folder first.
     /// </summary>
     private static IEnumerable<string> LibraryCandidates(string compiler)
     {
-        var resolved = new FileInfo(compiler).ResolveLinkTarget(returnFinalTarget: true)?.FullName ?? compiler;
-        var binFolder = Path.GetDirectoryName(Path.GetFullPath(resolved));
+        var binFolder = GetBinFolder(compiler);
         if (binFolder == null)
             yield break;
 
@@ -156,6 +169,9 @@ internal static unsafe class SlangLibrary
     }
 
     private static readonly object _lock = new();
+
+    [DllImport("kernel32", SetLastError = true)]
+    private static extern bool SetDllDirectory(string lpPathName);
     private static bool _loadAttempted;
 
     /** Lives as long as the process: creating it is the cost this class exists to avoid. */
