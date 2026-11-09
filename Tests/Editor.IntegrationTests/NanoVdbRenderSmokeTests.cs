@@ -34,13 +34,37 @@ public sealed class NanoVdbRenderSmokeTests(EditorFixture editor, ITestOutputHel
         client.ConnectOps(load, "Volume", toNano, "Volume");
 
         var sdf = client.AddOp("VdbToSdfField", 600, 0);
+
+        // The field reports "distance to the box + value" outside the grid, so a generous clamp turns
+        // the grid's bounding box into a visible shell that hides the surface inside it. Keep it just
+        // above the band so rays stop at the volume instead of at the box.
+        client.SetInput(sdf, "OutsideValue", JToken.FromObject(1.5f));
         client.ConnectOps(toNano, "Buffer", sdf, "Grid");
         client.ConnectOps(toNano, "WorldMin", sdf, "BoundsMin");
         client.ConnectOps(toNano, "WorldMax", sdf, "BoundsMax");
 
         var march = client.AddOp("RaymarchField", 900, 0);
         client.ConnectOps(sdf, "Result", march, "SdfField");
-        client.Pin(march);
+
+        // Frame the volume: the raymarcher draws into a camera, which renders into a target. Pinning
+        // RaymarchField alone renders with the editor's own camera, which sits inside the bunny.
+        var camera = client.AddOp("Camera", 0, 300);
+
+        // Frame from the grid's own bounds: a level set at 0.47 units per voxel spans tens of units,
+        // so any fixed camera either sits inside the volume or misses it entirely.
+        var bounds = ReadBounds(client, toNano);
+        output.WriteLine($"grid bounds: {bounds.Min} .. {bounds.Max}");
+        var center = (bounds.Min + bounds.Max) * 0.5f;
+        var size = bounds.Max - bounds.Min;
+        var distance = Math.Max(size.X, Math.Max(size.Y, size.Z)) * 1.6f;
+
+        client.SetInput(camera, "Position", JToken.FromObject(new { X = center.X + distance, Y = center.Y + distance * 0.5f, Z = center.Z + distance }));
+        client.SetInput(camera, "Target", JToken.FromObject(new { X = center.X, Y = center.Y, Z = center.Z }));
+        client.ConnectOps(march, "DrawCommand", camera, "Command");
+
+        var target = client.AddOp("RenderTarget", 400, 300);
+        client.ConnectOps(camera, "Output", target, "Command");
+        client.Pin(target);
 
         client.PumpFrames(90);
 
@@ -50,6 +74,19 @@ public sealed class NanoVdbRenderSmokeTests(EditorFixture editor, ITestOutputHel
         client.Screenshot(shot);
         client.PumpFrames(10);
         output.WriteLine($"screenshot: {shot} ({new FileInfo(shot).Length} bytes)");
+
+        // Does the frame come from this graph at all? Recolour the raymarcher and compare. A picture
+        // that does not change is the project's own scene, not our volume.
+        var control = Path.Combine(shotDir, "nanovdb-bunny-red.png");
+        client.SetVector4Input(march, "Color", 1f, 0.1f, 0.05f, 1f);
+        client.PumpFrames(20);
+        client.Screenshot(control);
+        client.PumpFrames(10);
+
+        var before = File.ReadAllBytes(shot);
+        var after = File.ReadAllBytes(control);
+        var changed = !before.AsSpan().SequenceEqual(after);
+        output.WriteLine($"frame changes when the raymarcher is recoloured: {changed}");
 
         foreach (var entry in client.GetLogTail(since, "warning"))
             output.WriteLine($"log {entry["level"]}: {entry["message"]}");
@@ -62,24 +99,45 @@ public sealed class NanoVdbRenderSmokeTests(EditorFixture editor, ITestOutputHel
     /// <summary>The playground exists on the dev machine; anywhere else make one scratch project, once.</summary>
     private static void EnsureAGraphIsOpen(DebugProtocolClient client)
     {
-        try
+        // Prefer a project that already exists: a project created by the protocol can leave the
+        // editor's playback settings pointing at a composition symbol that is not registered yet,
+        // which crashes the render loop. That is an editor bug, unrelated to volumes.
+        foreach (var name in new[] { EditorFixture.PlaygroundProject, "TestOPS" })
         {
-            client.OpenProject(EditorFixture.PlaygroundProject).Require("playground");
-            return;
-        }
-        catch (DebugProtocolException)
-        {
-            // not this machine
+            try
+            {
+                client.OpenProject(name).Require(name);
+                client.PumpFrames(10);
+                return;
+            }
+            catch (DebugProtocolException)
+            {
+                // try the next one
+            }
         }
 
         client.Call("newProject", new { name = "artonurban.vdbRender" });
         client.PumpFrames(15);
-
-        var opened = client.OpenProject("vdbRender");
-        if (!opened.Ok)
-            opened = client.OpenProject("artonurban.vdbRender");
-
+        var opened = client.OpenProject("artonurban.vdbRender");
         opened.Require("scratch project");
         client.PumpFrames(15);
+    }
+
+    /// <summary>Reads the world bounds VolumeToNanoVdb derives from the grid header.</summary>
+    private static (System.Numerics.Vector3 Min, System.Numerics.Vector3 Max) ReadBounds(DebugProtocolClient client, Guid childId)
+    {
+        static System.Numerics.Vector3 Read(DebugProtocolClient c, Guid id, string name)
+        {
+            var response = c.Call("getOutput", new { childId = id, outputName = name });
+            var value = response.Ok ? response.Result?["value"] : null;
+            if (value == null)
+                return System.Numerics.Vector3.Zero;
+
+            return new System.Numerics.Vector3(value["X"]?.Value<float>() ?? 0,
+                                               value["Y"]?.Value<float>() ?? 0,
+                                               value["Z"]?.Value<float>() ?? 0);
+        }
+
+        return (Read(client, childId, "WorldMin"), Read(client, childId, "WorldMax"));
     }
 }
