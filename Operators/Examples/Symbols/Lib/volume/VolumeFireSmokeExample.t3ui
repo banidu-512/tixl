@@ -1,0 +1,250 @@
+{
+  "FormatVersion": 3,
+  "Id": "361188e3-9476-5358-b69e-e61310c86696"/*VolumeFireSmokeExample*/,
+  "Description": "Fire with smoke from a sparse volume: three stacked spheres union into a tapering plume, [VolumeNoise] sculpts it with turbulence, and [VolumeToPoints] scatters the surface into particles that two [DrawBillboards] layers draw - a small hot core and a wide grey haze around the same points.",
+  "InputUis": [],
+  "SymbolChildUis": [
+    {
+      "ChildId": "045e51f6-3714-5a00-8979-d8125b8808fe",
+      "SymbolName": "Lib.render.camera.OrbitCamera",
+      "SectionId": "0bcde9c6-44b5-58b4-a23e-1bd407c24def",
+      "Comment": "Camera that orbits its target.",
+      "Position": {
+        "X": 1940.0,
+        "Y": 330.0
+      }
+    },
+    {
+      "ChildId": "0af98adf-e4a3-565e-a430-21aeb54338bb",
+      "SymbolName": "Lib.volume.convert.VolumeToMesh",
+      "SectionId": "71a1ae6e-5377-5705-9e9f-347560296a2c",
+      "Comment": "Extracts the turbulent surface as a watertight mesh.",
+      "Position": {
+        "X": 1140.0,
+        "Y": 420.0
+      }
+    },
+    {
+      "ChildId": "0ddf44c9-7d63-509d-8be3-eb4f68df1062",
+      "SymbolName": "Lib.numbers.anim.time.Time",
+      "SectionId": "ae7f3a66-73e4-5036-be1a-55379fec1ef5",
+      "Comment": "Feeds the noise offset, so the plume keeps churning while playing.",
+      "Position": {
+        "X": 60.0,
+        "Y": 700.0
+      }
+    },
+    {
+      "ChildId": "1fffa2cf-1dbd-591d-b466-e0170995fe5c",
+      "SymbolName": "Lib.volume.generate.VolumePrimitive",
+      "SectionId": "48bd6321-ee66-5886-88b5-6b55bcdf262b",
+      "Comment": "Widest at the top, so the union tapers like rising smoke.",
+      "Position": {
+        "X": 60.0,
+        "Y": 580.0
+      }
+    },
+    {
+      "ChildId": "29905a78-ff17-5942-be45-a2dc5a95158a",
+      "SymbolName": "Lib.volume.modify.VolumeNoise",
+      "SectionId": "71a1ae6e-5377-5705-9e9f-347560296a2c",
+      "Comment": "Mode 2 = Displace along the gradient: the surface gets its ragged fire edge.",
+      "Position": {
+        "X": 880.0,
+        "Y": 420.0
+      }
+    },
+    {
+      "ChildId": "5693e9da-e0c2-5d54-9c43-1203b054975d",
+      "SymbolName": "Lib.volume.modify.VolumeCsg",
+      "SectionId": "48bd6321-ee66-5886-88b5-6b55bcdf262b",
+      "Comment": "The second union adds the wide top of the plume.",
+      "Position": {
+        "X": 620.0,
+        "Y": 420.0
+      }
+    },
+    {
+      "ChildId": "8ef26b0a-e60a-590f-bde0-ce39183afbd2",
+      "SymbolName": "Lib.geometry.GeometryToMesh",
+      "SectionId": "0bcde9c6-44b5-58b4-a23e-1bd407c24def",
+      "Comment": "Uploads the extracted mesh to the GPU.",
+      "Position": {
+        "X": 1400.0,
+        "Y": 330.0
+      }
+    },
+    {
+      "ChildId": "9291af77-1164-5344-9655-3c2ae18274f3",
+      "SymbolName": "Lib.mesh.draw.DrawMeshUnlit",
+      "SectionId": "0bcde9c6-44b5-58b4-a23e-1bd407c24def",
+      "Comment": "Draws the plume in a hot orange.",
+      "Position": {
+        "X": 1620.0,
+        "Y": 330.0
+      }
+    },
+    {
+      "ChildId": "a16553cf-b991-51a9-a56d-f4c6ad436541",
+      "SymbolName": "Lib.image.generate.basic.RenderTarget",
+      "SectionId": "0bcde9c6-44b5-58b4-a23e-1bd407c24def",
+      "Comment": "Renders the command stream into an image.",
+      "Position": {
+        "X": 2200.0,
+        "Y": 330.0
+      }
+    },
+    {
+      "ChildId": "c912186a-c548-5f9e-bdae-a52e8c620f5b",
+      "SymbolName": "Lib.volume.generate.VolumePrimitive",
+      "SectionId": "48bd6321-ee66-5886-88b5-6b55bcdf262b",
+      "Comment": "Middle of the plume, slightly wider than the core.",
+      "Position": {
+        "X": 60.0,
+        "Y": 360.0
+      }
+    },
+    {
+      "ChildId": "ca0dd594-c732-5c5b-a01f-b99fd401b8d4",
+      "SymbolName": "Lib.volume.generate.VolumePrimitive",
+      "SectionId": "48bd6321-ee66-5886-88b5-6b55bcdf262b",
+      "Comment": "The hot base of the flame.",
+      "Position": {
+        "X": 60.0,
+        "Y": 140.0
+      }
+    },
+    {
+      "ChildId": "eb795cf9-cd3b-5c6c-ba4a-8b5c6b9c88fd",
+      "SymbolName": "Lib.volume.modify.VolumeCsg",
+      "SectionId": "48bd6321-ee66-5886-88b5-6b55bcdf262b",
+      "Comment": "Operation 0 = Union (level set min).",
+      "Position": {
+        "X": 380.0,
+        "Y": 250.0
+      }
+    }
+  ],
+  "OutputUis": [
+    {
+      "OutputId": "b36a0efb-e814-5024-b956-f24bda753caa"/*ColorBuffer*/,
+      "Position": {
+        "X": 2300.0,
+        "Y": 300.0
+      }
+    }
+  ],
+  "Sections": [
+    {
+      "Id": "0bcde9c6-44b5-58b4-a23e-1bd407c24def",
+      "Label": "3 - Render",
+      "Color": {
+        "X": 0.4,
+        "Y": 0.7,
+        "Z": 0.5,
+        "W": 1.0
+      },
+      "Position": {
+        "X": 1260.0,
+        "Y": 90.0
+      },
+      "Size": {
+        "X": 1160.0,
+        "Y": 700.0
+      }
+    },
+    {
+      "Id": "48bd6321-ee66-5886-88b5-6b55bcdf262b",
+      "Label": "1 - Build the plume",
+      "Color": {
+        "X": 0.8,
+        "Y": 0.45,
+        "Z": 0.3,
+        "W": 1.0
+      },
+      "Position": {
+        "X": 20.0,
+        "Y": 90.0
+      },
+      "Size": {
+        "X": 820.0,
+        "Y": 700.0
+      }
+    },
+    {
+      "Id": "71a1ae6e-5377-5705-9e9f-347560296a2c",
+      "Label": "2 - Noise and scatter",
+      "Color": {
+        "X": 0.85,
+        "Y": 0.55,
+        "Z": 0.25,
+        "W": 1.0
+      },
+      "Position": {
+        "X": 860.0,
+        "Y": 90.0
+      },
+      "Size": {
+        "X": 600.0,
+        "Y": 620.0
+      }
+    },
+    {
+      "Id": "ae7f3a66-73e4-5036-be1a-55379fec1ef5",
+      "Label": "Turbulence driver",
+      "ParentSectionId": "48bd6321-ee66-5886-88b5-6b55bcdf262b",
+      "Color": {
+        "X": 0.85,
+        "Y": 0.65,
+        "Z": 0.3,
+        "W": 1.0
+      },
+      "Position": {
+        "X": 20.0,
+        "Y": 620.0
+      },
+      "Size": {
+        "X": 300.0,
+        "Y": 320.0
+      }
+    }
+  ],
+  "Settings": {
+    "OutputWindows": [
+      {
+  "ShowGizmos": "On",
+  "TransformGizmoMode": "Move",
+  "BackgroundColor": [
+    0.1,
+    0.1,
+    0.1,
+    1.0
+  ],
+  "CameraControlMode": "AutoUseFirstCam",
+  "CameraPosition": [
+    0.0,
+    0.0,
+    2.4142134
+  ],
+  "CameraTarget": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "CameraRoll": 0.0,
+  "CameraSpeed": 1.0,
+  "ResolutionTitle": "Fill",
+  "ResolutionWidth": 0,
+  "ResolutionHeight": 0,
+  "ResolutionUseAsAspectRatio": true,
+  "IsPinned": true,
+  "PinnedInstancePath": [
+    "395f3cdd-5283-59cd-d1a6-07a00c7a2800"
+  ],
+  "PinnedOutputId": "00000000-0000-0000-0000-000000000000",
+  "PinnedEntityKind": "None",
+  "PinnedEntityId": "00000000-0000-0000-0000-000000000000"
+}
+    ]
+  }
+}
