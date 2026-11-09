@@ -14,6 +14,7 @@ using T3.Core.Resource.ShaderCompiling;
 using T3.Core.SystemUi;
 using T3.SystemUi;
 using T3.Core.Settings;
+using T3.Core.Utils;
 using T3.IoServices.Midi;
 using T3.Editor.App;
 using T3.Editor.Compilation;
@@ -120,6 +121,15 @@ internal static class Program
 
     private static void Main(string[] args)
     {
+        // Isolated Assimp worker: this process was started by [AssimpImport]/[AssimpExport] and must
+        // not boot the editor. Must run before settings, logging, graphics or the crash watchdog.
+        if (IsolatedAssimpHost.TryRun(args, out var hostExitCode))
+        {
+            Console.Out.Flush();
+            Console.Error.Flush();
+            Environment.Exit(hostExitCode);
+        }
+
         // Must run before any code that may trigger assembly resolution.
         T3.Core.Diagnostics.AssemblyLoadDiagnostics.Install();
 

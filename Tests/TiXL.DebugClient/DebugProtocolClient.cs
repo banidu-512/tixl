@@ -111,6 +111,16 @@ public sealed class DebugProtocolClient : IDisposable
         return result["value"]?.Type == JTokenType.Null ? null : result["value"]?.Value<string>();
     }
 
+    /// <summary>
+    /// Reads a named output. With <paramref name="update"/> the slot is pulled even when no view
+    /// consumes it, which is what async operators with string/status outputs need.
+    /// </summary>
+    public string? GetOutputValue(Guid childId, string outputName, bool update = false)
+    {
+        var result = Call("getOutput", new { childId, outputName, update }).Require("getOutput");
+        return result["value"]?.Type == JTokenType.Null ? null : result["value"]?.Value<string>();
+    }
+
     public JObject GetGraphState(bool includeDefaults = false)
         => Call("getGraphState", new { includeDefaults }).Require("getGraphState");
 

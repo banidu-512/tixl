@@ -13,7 +13,8 @@ namespace Lib.io.file;
 /// </summary>
 /// <remarks>
 /// The GPU readback happens on the render thread when an export is triggered (like [WriteObj]);
-/// building the Assimp scene and writing the file run on a worker thread. Files are numbered
+/// building the Assimp scene and writing the file run on a worker thread, in a separate process when
+/// possible so a native crash can't take the editor down. Files are numbered
 /// MeshName_001.ext, MeshName_002.ext, ... and existing files are never overwritten.
 /// </remarks>
 [Guid("F66C3CD9-B648-4E19-A564-D87AA48D6D88")]
@@ -130,11 +131,11 @@ internal sealed class AssimpExport : Instance<AssimpExport>, IStatusProvider
             return;
         }
 
-        StartExport(source, absolutePath, formatId, baseName);
+        StartExport(source, absolutePath, formatId, baseName, IsolateExport.GetValue(context));
     }
 
     #region export job
-    private void StartExport(AssimpModelExporter.ExportSource source, string absolutePath, string formatId, string meshName)
+    private void StartExport(AssimpModelData source, string absolutePath, string formatId, string meshName, bool isolate)
     {
         var request = new ExportRequest(absolutePath);
         _pendingExport = request;
@@ -144,7 +145,12 @@ internal sealed class AssimpExport : Instance<AssimpExport>, IStatusProvider
                  {
                      try
                      {
-                         AssimpModelExporter.Export(source, absolutePath, formatId, meshName);
+                         // Probed on the worker: the first probe can start a process and take a moment
+                         request.WasIsolated = isolate && AssimpIsolatedImport.IsAvailable;
+                         if (request.WasIsolated)
+                             AssimpIsolatedImport.Export(source, absolutePath, formatId, meshName, CancellationToken.None);
+                         else
+                             AssimpModelExporter.Export(source, absolutePath, formatId, meshName);
                      }
                      catch (Exception e)
                      {
@@ -173,7 +179,8 @@ internal sealed class AssimpExport : Instance<AssimpExport>, IStatusProvider
 
         _exportCounter++;
         _lastFilePath = request.AbsolutePath;
-        SetResult(true, $"Exported {Path.GetFileName(request.AbsolutePath)}");
+        var suffix = request.WasIsolated ? " (separate process)" : " (in-process)";
+        SetResult(true, $"Exported {Path.GetFileName(request.AbsolutePath)}{suffix}");
         Log.Info($"Exported {request.AbsolutePath}", this);
     }
 
@@ -182,7 +189,7 @@ internal sealed class AssimpExport : Instance<AssimpExport>, IStatusProvider
                                         MeshBuffers? mesh,
                                         MeshGeometry? geometry,
                                         BufferWithViews? points,
-                                        [NotNullWhen(true)] out AssimpModelExporter.ExportSource? source,
+                                        [NotNullWhen(true)] out AssimpModelData? source,
                                         [NotNullWhen(false)] out string? errorMessage)
     {
         source = null;
@@ -190,7 +197,7 @@ internal sealed class AssimpExport : Instance<AssimpExport>, IStatusProvider
         {
             if (geometry is { FaceCount: > 0 })
             {
-                source = new AssimpModelExporter.ExportSource { Geometry = new AssimpModelExporter.GeometrySnapshot(geometry) };
+                source = new AssimpModelData { Geometry = SnapshotGeometry(geometry) };
                 errorMessage = null;
                 return true;
             }
@@ -208,7 +215,7 @@ internal sealed class AssimpExport : Instance<AssimpExport>, IStatusProvider
                 return false;
             }
 
-            source = new AssimpModelExporter.ExportSource { Vertices = vertices, Triangles = triangles };
+            source = new AssimpModelData { Vertices = vertices, Triangles = triangles };
             errorMessage = null;
             return true;
         }
@@ -225,9 +232,41 @@ internal sealed class AssimpExport : Instance<AssimpExport>, IStatusProvider
             return false;
         }
 
-        source = new AssimpModelExporter.ExportSource { Points = pointData };
+        source = new AssimpModelData { Points = pointData };
         errorMessage = null;
         return true;
+    }
+
+    /// <summary>
+    /// Copies the arrays of a live <see cref="MeshGeometry"/>. Geometry operators rebuild their output
+    /// instance in place on later frames, so a worker thread must never read the live instance.
+    /// </summary>
+    private static MeshGeometry SnapshotGeometry(MeshGeometry geometry)
+    {
+        var snapshot = new MeshGeometry
+                           {
+                               Positions = (Vector3[])geometry.Positions.Clone(),
+                               FaceCornerOffsets = (int[])geometry.FaceCornerOffsets.Clone(),
+                               CornerPointIndices = (int[])geometry.CornerPointIndices.Clone(),
+                               Parts = (GeometryPart[])geometry.Parts.Clone(),
+                           };
+
+        CopyAttribute<Vector3>(geometry, snapshot, GeometryAttributeNames.Normal);
+        CopyAttribute<Vector2>(geometry, snapshot, GeometryAttributeNames.TexCoord);
+        CopyAttribute<Vector4>(geometry, snapshot, GeometryAttributeNames.Color);
+        snapshot.InvalidateTopologyCaches();
+        return snapshot;
+    }
+
+    private static void CopyAttribute<T>(MeshGeometry source, MeshGeometry target, string name) where T : unmanaged
+    {
+        if (!source.Attributes.TryGet<T>(name, AttributeDomain.Corner, out var attribute))
+            return;
+
+        target.Attributes.Add(new GeometryAttribute<T>(name, AttributeDomain.Corner, attribute.Values.Length)
+                                  {
+                                      Values = (T[])attribute.Values.Clone(),
+                                  });
     }
 
     /// <summary>Synchronous staging readback; only called for a user-triggered export.</summary>
@@ -475,6 +514,10 @@ internal sealed class AssimpExport : Instance<AssimpExport>, IStatusProvider
     private sealed class ExportRequest(string absolutePath)
     {
         public readonly string AbsolutePath = absolutePath;
+
+        /** Set by the worker before it marks the request completed. */
+        public bool WasIsolated;
+
         public string? ErrorMessage;
         public bool IsCompleted;
     }
@@ -520,4 +563,7 @@ internal sealed class AssimpExport : Instance<AssimpExport>, IStatusProvider
 
     [Input(Guid = "3C4D5E6F-7A8B-9C1D-2E3F-4A5B6C7D8E9F")]
     public readonly InputSlot<bool> ResetCounter = new();
+
+    [Input(Guid = "FFEB7639-9911-4099-A69F-73BBD1DA9757")]
+    public readonly InputSlot<bool> IsolateExport = new(true);
 }

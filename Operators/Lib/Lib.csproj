@@ -203,6 +203,22 @@
     </PropertyGroup>
     <WriteLinesToFile File="$(OutputPath)/OperatorPackage.json" Lines="$(OperatorPackageInfoJson)" Overwrite="True" Encoding="UTF-8" />
   </Target>
+  <!-- Standalone launcher for isolated Assimp imports and exports outside the editor (the editor hosts
+       the same worker itself). Placed next to the package so it ships with it. Incremental: skipped
+       while its output is newer than its sources, so hot-reload compiles don't pay for it. Restore runs
+       as its own call because the launcher isn't part of the solution restore. It is listed in t3.sln
+       for IDE visibility only (ActiveCfg, no Build.0), which keeps a solution build from compiling it a
+       second time next to this target. -->
+  <PropertyGroup>
+    <AssimpImportHostFolder>$(MSBuildThisFileDirectory)../AssimpImportHost/</AssimpImportHostFolder>
+  </PropertyGroup>
+  <Target Name="BuildAssimpImportHost" AfterTargets="AfterBuild"
+          Inputs="$(AssimpImportHostFolder)AssimpImportHost.csproj;$(AssimpImportHostFolder)Program.cs"
+          Outputs="$(TargetDir)AssimpImportHost/AssimpImportHost.dll">
+    <MSBuild Projects="$(AssimpImportHostFolder)AssimpImportHost.csproj" Targets="Restore" Properties="AssimpImportHostRestore=true" />
+    <MSBuild Projects="$(AssimpImportHostFolder)AssimpImportHost.csproj" Targets="Build"
+             Properties="Configuration=$(Configuration);OutDir=$(TargetDir)AssimpImportHost/" />
+  </Target>
   <!-- OpenCV's FFmpeg video plugin is unused now that VideoStreamInput decodes via FFmpeg directly, so drop
        it to avoid shipping a second FFmpeg alongside the LGPL FFmpeg build. -->
   <Target Name="DropUnusedOpenCvFfmpegPlugin" AfterTargets="AfterBuild">

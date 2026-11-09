@@ -1,5 +1,6 @@
 #nullable enable
 using System.Runtime.InteropServices;
+using System.Threading;
 using Assimp.Unmanaged;
 
 namespace Lib.Utils.AssimpIo;
@@ -71,7 +72,7 @@ internal static class AssimpNative
                     return false;
                 }
 
-                Version = library.GetVersion();
+                Volatile.Write(ref _version, library.GetVersion());
                 _isLoaded = true;
                 errorMessage = null;
                 return true;
@@ -85,8 +86,11 @@ internal static class AssimpNative
         }
     }
 
-    /// <summary>Version string of the loaded native library, empty before the first successful load.</summary>
-    public static string Version { get; private set; } = string.Empty;
+    /// <summary>
+    /// Version string of the loaded native library, empty before the first successful load. Read from
+    /// the render thread while a worker loads the library, hence the volatile access.
+    /// </summary>
+    public static string Version => Volatile.Read(ref _version);
 
     private static IEnumerable<string> GetBundledLibraryCandidates()
     {
@@ -133,4 +137,5 @@ internal static class AssimpNative
 
     private static bool _isLoaded;
     private static string? _loadError;
+    private static string _version = string.Empty;
 }
