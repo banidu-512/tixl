@@ -571,6 +571,19 @@ internal sealed class CollabManager
     private readonly Dictionary<int, string> _roster = new();
     public IReadOnlyDictionary<int, string> Roster => _roster;
 
+    public string DescribePeerLink(CollabPeerConnection peer) => _transport?.DescribePeerLink(peer) ?? "";
+
+    public string DescribePeerLink(int peerId)
+    {
+        foreach (var peer in Peers)
+        {
+            if (peer.AssignedId == peerId)
+                return DescribePeerLink(peer);
+        }
+
+        return "";
+    }
+
     /// <summary>
     /// Round trip to one participant in ms, or -1 while none of our heartbeats has come back yet.
     /// Relay-backed peers include the relay hop; peers on a data channel measure the direct path.
@@ -654,6 +667,13 @@ internal sealed class CollabManager
                        IsHoveringCanvas = presence?.IsHoveringCanvas ?? false,
                        CursorOnCanvas = presence?.CursorOnCanvas ?? Vector2.Zero,
                        AccentColor = CollabColors.FromPacked(presence?.ColorRgb ?? 0, userId),
+                       LeftButtonDown = presence?.IsLeftButtonDown ?? false,
+                       RightButtonDown = presence?.IsRightButtonDown ?? false,
+                       MiddleButtonDown = presence?.IsMiddleButtonDown ?? false,
+                       IsDoubleClick = presence?.IsDoubleClick ?? false,
+                       IsAddingOperator = presence?.IsAddingOperator ?? false,
+                       WheelSpin = presence?.WheelSpin ?? 0,
+                       PressedKeys = presence?.PressedKeys ?? [],
                        SelectedChildIds = presence?.SelectedChildIds ?? [],
                    };
     }
@@ -682,6 +702,13 @@ internal sealed class CollabManager
         public Guid UserId;
         public Guid CompositionId;
         public bool IsHoveringCanvas;
+        public bool IsAddingOperator;
+        public bool LeftButtonDown;
+        public bool RightButtonDown;
+        public bool MiddleButtonDown;
+        public bool IsDoubleClick;
+        public sbyte WheelSpin;
+        public byte[] PressedKeys = [];
         public Vector2 CursorOnCanvas;
         public Vector4 AccentColor;
         public Guid[] SelectedChildIds = [];
@@ -1751,13 +1778,31 @@ internal sealed class CollabManager
     // ---------------------------------------------------------------------------------------
 
     /// <summary>Called by the graph overlay each frame; only the latest snapshot is kept.</summary>
-    public void SetLocalPresence(Guid compositionId, Vector2 cursorOnCanvas, bool hoveringCanvas, Guid[] selectedChildIds)
+    public void SetLocalPresence(Guid compositionId, Vector2 cursorOnCanvas, bool hoveringCanvas, Guid[] selectedChildIds,
+                                 bool leftButtonDown, bool rightButtonDown, bool middleButtonDown, float wheelSpin,
+                                 bool doubleClick, byte[] pressedKeys, bool addingOperator)
     {
         _localPresence.CompositionId = compositionId;
         _localPresence.CursorOnCanvas = cursorOnCanvas;
-        _localPresence.Flags = hoveringCanvas ? PresencePacket.FlagHoveringCanvas : (byte)0;
         _localPresence.SelectedChildIds = selectedChildIds;
+
+        byte flags = 0;
+        if (hoveringCanvas)
+            flags |= PresencePacket.FlagHoveringCanvas;
+        if (leftButtonDown)
+            flags |= PresencePacket.FlagLeftButton;
+        if (rightButtonDown)
+            flags |= PresencePacket.FlagRightButton;
+        if (middleButtonDown)
+            flags |= PresencePacket.FlagMiddleButton;
+        if (doubleClick)
+            flags |= PresencePacket.FlagDoubleClick;
+        if (addingOperator)
+            flags |= PresencePacket.FlagAddingOperator;
+        _localPresence.Flags = flags;
+        _localPresence.WheelSpin = (sbyte)Math.Clamp(wheelSpin, sbyte.MinValue, sbyte.MaxValue);
         _localPresence.ColorRgb = UserSettings.Config.CollabCursorColor;
+        _localPresence.PressedKeys = pressedKeys;
     }
 
     private void SendLocalPresence()

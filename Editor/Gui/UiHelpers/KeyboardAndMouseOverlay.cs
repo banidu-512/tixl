@@ -231,6 +231,22 @@ public static class KeyboardAndMouseOverlay
     }
 
     private const float FadeoutDuration = 2;
+    /// <summary>The label the overlay shows for a key code; false for keys it doesn't display.</summary>
+    internal static bool TryGetKeyLabel(int keyCode, out string label)
+    {
+        if (keyCode >= 0 && keyCode < KeyLookupCount && _keyStates[keyCode] is { } status)
+        {
+            label = status.Label;
+            return true;
+        }
+
+        label = "";
+        return false;
+    }
+
+    /// <summary>Number of key codes the overlay and collab presence track.</summary>
+    internal const int TrackedKeyCodeCount = KeyLookupCount;
+
     private const int KeyLookupCount = 512;
     private static float _wheelSpin;
     private static float _dampedWheelSpin;
