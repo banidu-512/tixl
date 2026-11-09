@@ -7,7 +7,7 @@ cbuffer Params : register(b0)
     float4 GridParams; // xy = metres spanned by the surface, z = line thickness (px), w = grid mode (>0.5)
     float4 GridColor;
     float4 GridOrigin; // xy = raster origin in source UV, z = minor lines per metre, w = minor line opacity
-    float4 Mask;       // xy = centre (output px), z = radius (px), w = enabled (>0.5): only a disc of the layer shows
+    float4 Mask;       // xy = centre (output px), z = radius (px), w = enabled (>0.5): only a disc of the layer shows; >1.5 also inverts it
 }
 
 Texture2D<float4> InputTexture : register(t0);
@@ -77,10 +77,16 @@ float4 psMain(vsOutput input) : SV_TARGET
 
         // Alpha, not an opaque black backdrop: the raster is composited over the content so it stays readable
         // on top of it. Between the lines it's fully transparent, leaving content (or the cleared black) alone.
-        return float4(GridColor.rgb, max(major, minor) * GridColor.a);
+        // Premultiplied, like everything this shader writes: the compositor's blend states expect it.
+        float gridAlpha = max(major, minor) * GridColor.a;
+        return float4(GridColor.rgb * gridAlpha, gridAlpha);
     }
 
     float4 color = InputTexture.Sample(texSampler, input.texCoord) * Color;
+
+    // A calibration fragment, inverted on request: dark print on a dark wall reads better as light on dark.
+    if (Mask.w > 1.5)
+        color.rgb = 1 - color.rgb;
 
     // A calibration fragment: the layer fades out beyond a disc around one point, so only the photo right
     // around the feature reaches the wall.
@@ -90,5 +96,6 @@ float4 psMain(vsOutput input) : SV_TARGET
         color.a *= 1 - smoothstep(Mask.z - 2, Mask.z, d);
     }
 
-    return color;
+    // Premultiplied: lets one blend state per layer mode (Normal, Add, Multiply, Screen) honour the layer's opacity.
+    return float4(color.rgb * color.a, color.a);
 }

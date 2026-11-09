@@ -1,16 +1,21 @@
 #nullable enable
 using ImGuiNET;
-using SharpDX.XInput;
 using T3.Core.Output;
+using T3.Editor.UiModel.Commands;
+using T3.Editor.UiModel.Commands.Setup;
+using T3.Editor.UiModel.ProjectHandling;
 using T3.IoServices;
 using Vector2 = System.Numerics.Vector2;
 
 namespace T3.Editor.Gui.Windows.OutputSetup;
 
 /// <summary>
-/// "Align Points" from a game controller, so the person aligning can stand at the wall: the right stick moves the
+/// "Calibrate" from a game controller, so the person aligning can stand at the wall: the right stick moves the
 /// active point, the d-pad goes to the nearest point in its direction, the shoulder buttons cycle through all of
-/// them, the right stick's button releases the active one. The left stick defines which way is
+/// them (the four outermost first, see <see cref="WritePointCycleOrder"/>), X or the right stick's button releases the
+/// active one and Y flashes a ring around it to find it. Holding the right trigger projects the photo inverted; the
+/// left trigger turns the pin a quarter clockwise, for a projector mounted on its side or upside down. A ends
+/// aligning; B ends it and undoes the session. The left stick defines which way is
 /// up on the wall, which a projector mounted at an angle makes different from up on its canvas; its button sets
 /// that direction, or resets the alignment while the stick is centred.
 /// </summary>
@@ -25,14 +30,42 @@ internal sealed partial class SetupOutputView
             return;
         }
 
+        // Confirm or cancel the whole session; either way aligning ends, so nothing else on the pad applies this frame.
+        if (WasPressed(pad.Buttons.A, _lastPad.Buttons.A) || WasPressed(pad.Buttons.B, _lastPad.Buttons.B))
+        {
+            var isCancel = pad.Buttons.B && !_lastPad.Buttons.B;
+            _lastPad = pad;
+            FinishGamepadMove(setup);
+            if (isCancel)
+                UndoAlignSession(setup);
+
+            SetAligningPoints(setup, false);
+            return;
+        }
+
+        if (WasPressed(pad.Buttons.Y, _lastPad.Buttons.Y))
+            CalibrationOverlay.FlashActivePoint();
+
+        // Held, not toggled: a quick look at the inverted photo, gone as soon as the trigger is let go.
+        if (pad.RightTrigger > TriggerHeldThreshold)
+            CalibrationOverlay.InvertPhotoThisFrame();
+
+        // A trigger is analog, so a press is the moment it crosses the threshold.
+        if (WasPressed(pad.LeftTrigger > TriggerHeldThreshold, _lastPad.LeftTrigger > TriggerHeldThreshold))
+        {
+            FinishGamepadMove(setup);
+            TurnPinClockwise(setup, mapping, canvasSize);
+        }
+
         var wallRightOnCanvas = new Vector2(-_wallUpOnCanvas.Y, _wallUpOnCanvas.X);
+        var previousActivePointId = _activePointId;
         if (WasPressed(pad.LeftShoulder, _lastPad.LeftShoulder))
         {
-            CycleActivePoint(traced, -1);
+            CycleActivePoint(subject, -1);
         }
         else if (WasPressed(pad.RightShoulder, _lastPad.RightShoulder) || !TryFindPoint(traced, _activePointId, out _))
         {
-            CycleActivePoint(traced, 1);
+            CycleActivePoint(subject, 1);
         }
         else if (WasPressed(pad.DirectionalPad.Left, _lastPad.DirectionalPad.Left))
         {
@@ -50,6 +83,10 @@ internal sealed partial class SetupOutputView
         {
             SelectPointInDirection(subject, mapping, canvasSize, -_wallUpOnCanvas);
         }
+
+        // The newly active point is easy to miss on a busy wall, so it gets the same ring as Y.
+        if (_activePointId != previousActivePointId)
+            CalibrationOverlay.FlashActivePoint();
 
         var hasDirection = pad.LeftThumb.Length() > MinThumbForDirection;
 
@@ -71,7 +108,7 @@ internal sealed partial class SetupOutputView
             }
         }
 
-        if (WasPressed(pad.RightStickButton, _lastPad.RightStickButton)
+        if ((WasPressed(pad.RightStickButton, _lastPad.RightStickButton) || WasPressed(pad.Buttons.X, _lastPad.Buttons.X))
             && mapping.PointAims.TryGetValue(_activePointId, out var activeAim) && activeAim.IsAimed)
         {
             FinishGamepadMove(setup);
@@ -109,11 +146,32 @@ internal sealed partial class SetupOutputView
         var wallRightOnCanvas = new Vector2(-_wallUpOnCanvas.Y, _wallUpOnCanvas.X);
         var direction = _wallUpOnCanvas * thumb.Y + wallRightOnCanvas * thumb.X;
 
-        // Speed grows with the cube of the deflection: full travel crosses the wall, a light touch sets single pixels.
-        var pixels = direction * deflection * deflection * MaxPointSpeedOfCanvasHeightPerSec * canvasSize.Y * ImGui.GetIO().DeltaTime;
+        var speed = PointSpeedPxPerSec(deflection);
+        var pixels = direction / deflection * speed * ImGui.GetIO().DeltaTime;
         var aim = AimOf(mapping, point!.Id, point.P1 + subject.TracedToPinned, surfaceToOutput, canvasSize);
         mapping.PointAims[point.Id] = new Surface.OutputMapping.PointAim(aim.Position + pixels / canvasSize, true);
         SolvePinFromTargets(subject, mapping, canvasSize);
+    }
+
+    /// <summary>
+    /// Turns "Calibrate" on or off. Turning it on remembers the setup, so a cancel can go back to how it was before
+    /// any point was moved in this session.
+    /// </summary>
+    private void SetAligningPoints(Setup setup, bool isOn)
+    {
+        _projectsPhoto = isOn;
+        _alignSessionStartJson = isOn ? setup.ToJsonString() : null;
+    }
+
+    /** Puts the setup back to how it was when aligning started, as one undo step, so the cancel itself can be undone. */
+    private void UndoAlignSession(Setup setup)
+    {
+        var current = setup.ToJsonString();
+        if (_alignSessionStartJson == null || _alignSessionStartJson == current)
+            return;
+
+        UndoRedoStack.AddAndExecute(new SetupSnapshotCommand("Cancel calibration", setup.Id, current, _alignSessionStartJson));
+        OutputSetupHandling.SaveActive();
     }
 
     /** Ends the undo step of a stick move, once the stick is back at rest or the tool went away. */
@@ -126,20 +184,19 @@ internal sealed partial class SetupOutputView
         EndGesture(setup);
     }
 
-    /** Walks the annotations from the active point to the next point in that direction, wrapping around. */
-    private void CycleActivePoint(Surface surface, int step)
+    /** Steps the active point along the shoulder-button order, wrapping around; with none active, starts at an end. */
+    private void CycleActivePoint(AlignSubject subject, int step)
     {
-        var count = surface.Annotations.Count;
-        var activeIndex = surface.Annotations.FindIndex(annotation => annotation.Id == _activePointId);
-        for (var offset = 1; offset <= count; offset++)
-        {
-            var candidate = surface.Annotations[((activeIndex + step * offset) % count + count) % count];
-            if (candidate.IsPoint)
-            {
-                _activePointId = candidate.Id;
-                return;
-            }
-        }
+        WritePointCycleOrder(subject.Traced, subject.TracedToPinned);
+        var count = _cycleOrder.Count;
+        if (count == 0)
+            return;
+
+        var activeIndex = _cycleOrder.IndexOf(_activePointId);
+        var nextIndex = activeIndex < 0
+                            ? step > 0 ? 0 : count - 1
+                            : ((activeIndex + step) % count + count) % count;
+        _activePointId = _cycleOrder[nextIndex];
     }
 
     /// <summary>
@@ -189,51 +246,94 @@ internal sealed partial class SetupOutputView
         return false;
     }
 
-    /** XInput stalls for milliseconds when asked about an empty slot, so a missing controller is only looked for now and then. */
-    private bool TryPollGamepad(out GamePadState pad)
+    /// <summary>
+    /// Turns the pin a quarter clockwise on the wall, about its centre, with every aimed point: a projector on its
+    /// side shows the photo turned, and re-aiming each point by hand to fix it is tedious. The stick's up turns
+    /// along, since the surface's up is the wall's up once the photo stands upright. One undo step.
+    /// </summary>
+    private void TurnPinClockwise(Setup setup, Surface.OutputMapping mapping, Vector2 canvasSize)
     {
-        pad = default;
-        if (_gamepad == null)
-        {
-            var now = ImGui.GetTime();
-            if (now < _nextGamepadSearchTime)
-                return false;
+        if (mapping.Quad.Length < 4 || !(canvasSize.X > 0) || !(canvasSize.Y > 0))
+            return;
 
-            _nextGamepadSearchTime = now + GamepadSearchIntervalSec;
-            foreach (var userIndex in _gamepadSlots)
-            {
-                var controller = new Controller(userIndex);
-                if (controller.IsConnected)
-                {
-                    _gamepad = controller;
-                    break;
-                }
-            }
+        SetupUndo.RunUndoable("Turn calibration", setup, () =>
+                                                         {
+                                                             if (mapping.QuadBeforeAligning == null)
+                                                             {
+                                                                 mapping.QuadBeforeAligning = (Vector2[])mapping.Quad.Clone();
+                                                                 mapping.ModeBeforeAligning = mapping.Mode;
+                                                             }
 
-            if (_gamepad == null)
-                return false;
-        }
+                                                             mapping.PromoteToCornerPin();
+                                                             var centre = (mapping.Quad[0] + mapping.Quad[1] + mapping.Quad[2] + mapping.Quad[3]) * 0.25f;
+                                                             for (var c = 0; c < 4; c++)
+                                                                 mapping.Quad[c] = TurnClockwise(mapping.Quad[c], centre, canvasSize);
 
-        if (!_gamepad.GetState(out var state))
-        {
-            _gamepad = null;
-            return false;
-        }
+                                                             _turnedAims.Clear();
+                                                             foreach (var (pointId, aim) in mapping.PointAims)
+                                                                 _turnedAims.Add((pointId, aim with { Position = TurnClockwise(aim.Position, centre, canvasSize) }));
 
-        pad = XInputGamepad.Create(state.Gamepad);
-        return true;
+                                                             foreach (var (pointId, aim) in _turnedAims)
+                                                                 mapping.PointAims[pointId] = aim;
+                                                         });
+
+        _wallUpOnCanvas = new Vector2(-_wallUpOnCanvas.Y, _wallUpOnCanvas.X);
+        CalibrationOverlay.FlashActivePoint();
+    }
+
+    /** A quarter turn clockwise on screen (Y down) about a centre, in pixels so the shape keeps its proportions. */
+    private static Vector2 TurnClockwise(Vector2 position01, Vector2 centre01, Vector2 canvasSize)
+    {
+        var offset = (position01 - centre01) * canvasSize;
+        return centre01 + new Vector2(-offset.Y, offset.X) / canvasSize;
+    }
+
+    /** Reads the first controller through SDL, which works on every platform (XInput only exists on Windows). */
+    private static bool TryPollGamepad(out GamePadState pad)
+    {
+        return SdlGamepads.TryGetState(0, out pad);
     }
 
     private static bool WasPressed(bool isDown, bool wasDown) => isDown && !wasDown;
 
     private const float MinThumbForDirection = 0.3f;
-    private const float MaxPointSpeedOfCanvasHeightPerSec = 0.25f;
-    private const double GamepadSearchIntervalSec = 1;
-    private static readonly UserIndex[] _gamepadSlots = [UserIndex.One, UserIndex.Two, UserIndex.Three, UserIndex.Four];
 
-    private Controller? _gamepad;
-    private double _nextGamepadSearchTime;
+    /** How far a trigger is pressed before it counts as held. */
+    private const float TriggerHeldThreshold = 0.5f;
+
+    /// <summary>
+    /// Point speed in projector pixels per second for a stick deflection past the dead zone, from a table: a crawl
+    /// across the lower third for placing a point precisely, then fast enough to cross the wall. Between two speeds
+    /// the curve runs on a log scale, so it accelerates evenly instead of jumping.
+    /// </summary>
+    private static float PointSpeedPxPerSec(float deflection)
+    {
+        deflection = Math.Clamp(deflection, 0, 1);
+        for (var i = 1; i < _speedDeflections.Length; i++)
+        {
+            if (deflection > _speedDeflections[i])
+                continue;
+
+            var t = (deflection - _speedDeflections[i - 1]) / (_speedDeflections[i] - _speedDeflections[i - 1]);
+            var from = _speedsPxPerSec[i - 1];
+            var to = _speedsPxPerSec[i];
+            return from > 0 ? from * MathF.Pow(to / from, t) : to * t;
+        }
+
+        return _speedsPxPerSec[^1];
+    }
+
+    /** Stick deflections and the point speeds they give. */
+    private static readonly float[] _speedDeflections = [0f, 0.1f, 0.3f, 0.6f, 0.8f, 1f];
+
+    private static readonly float[] _speedsPxPerSec = [0f, 1f, 2f, 50f, 100f, 400f];
+
     private GamePadState _lastPad;
+
+    private readonly List<(Guid PointId, Surface.OutputMapping.PointAim Aim)> _turnedAims = [];
+
+    /** The setup as it was when "Calibrate" was turned on: what B goes back to. */
+    private string? _alignSessionStartJson;
     private bool _isGamepadMovingPoint;
 
     /** Which way pushing the right stick up moves a point, as a unit vector on the canvas. Starts as the canvas' own up. */
