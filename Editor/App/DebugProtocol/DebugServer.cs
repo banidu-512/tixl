@@ -790,6 +790,20 @@ internal static class DebugServer
                                ["loginState"] = CollabDiscordAuth.State.ToString(),
                                ["loginStatus"] = CollabDiscordAuth.StatusText,
                                ["links"] = new JArray(collab.PeerLinks.Select(l => $"{l.PeerId}:{l.Link}:{collab.GetPeerRttMs(l.PeerId)}ms")),
+                               ["preview"] = collab.VideoStreamer is { } streamer
+                                                 ? new JObject
+                                                     {
+                                                         ["streaming"] = streamer.IsEncoding,
+                                                         ["encoder"] = streamer.EncoderName,
+                                                     }
+                                                 : collab.VideoReceiver is { } receiver
+                                                     ? new JObject
+                                                         {
+                                                             ["decodedFrames"] = receiver.DecodedFrames,
+                                                             ["size"] = $"{receiver.Width}x{receiver.Height}",
+                                                             ["checksum"] = receiver.FrameChecksum,
+                                                         }
+                                                     : null,
                            });
     }
 
