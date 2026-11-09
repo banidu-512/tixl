@@ -49,8 +49,17 @@ public sealed class NanoVdbRenderSmokeTests(EditorFixture editor, ITestOutputHel
         // Frame the volume: the raymarcher draws into a camera, which renders into a target. Pinning
         // RaymarchField alone renders with the editor's own camera, which sits inside the bunny.
         var camera = client.AddOp("Camera", 0, 300);
-        client.SetInput(camera, "Position", JToken.FromObject(new { X = 2.0f, Y = 1.0f, Z = 3.0f }));
-        client.SetInput(camera, "Target", JToken.FromObject(new { X = 0f, Y = 0f, Z = 0f }));
+
+        // Frame from the grid's own bounds: a level set at 0.47 units per voxel spans tens of units,
+        // so any fixed camera either sits inside the volume or misses it entirely.
+        var bounds = ReadBounds(client, toNano);
+        output.WriteLine($"grid bounds: {bounds.Min} .. {bounds.Max}");
+        var center = (bounds.Min + bounds.Max) * 0.5f;
+        var size = bounds.Max - bounds.Min;
+        var distance = Math.Max(size.X, Math.Max(size.Y, size.Z)) * 1.6f;
+
+        client.SetInput(camera, "Position", JToken.FromObject(new { X = center.X + distance, Y = center.Y + distance * 0.5f, Z = center.Z + distance }));
+        client.SetInput(camera, "Target", JToken.FromObject(new { X = center.X, Y = center.Y, Z = center.Z }));
         client.ConnectOps(march, "DrawCommand", camera, "Command");
 
         var target = client.AddOp("RenderTarget", 400, 300);
@@ -112,5 +121,23 @@ public sealed class NanoVdbRenderSmokeTests(EditorFixture editor, ITestOutputHel
         var opened = client.OpenProject("artonurban.vdbRender");
         opened.Require("scratch project");
         client.PumpFrames(15);
+    }
+
+    /// <summary>Reads the world bounds VolumeToNanoVdb derives from the grid header.</summary>
+    private static (System.Numerics.Vector3 Min, System.Numerics.Vector3 Max) ReadBounds(DebugProtocolClient client, Guid childId)
+    {
+        static System.Numerics.Vector3 Read(DebugProtocolClient c, Guid id, string name)
+        {
+            var response = c.Call("getOutput", new { childId = id, outputName = name });
+            var value = response.Ok ? response.Result?["value"] : null;
+            if (value == null)
+                return System.Numerics.Vector3.Zero;
+
+            return new System.Numerics.Vector3(value["X"]?.Value<float>() ?? 0,
+                                               value["Y"]?.Value<float>() ?? 0,
+                                               value["Z"]?.Value<float>() ?? 0);
+        }
+
+        return (Read(client, childId, "WorldMin"), Read(client, childId, "WorldMax"));
     }
 }
