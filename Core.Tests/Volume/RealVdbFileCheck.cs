@@ -1,6 +1,7 @@
 #nullable enable
 using System;
 using System.IO;
+using System.Linq;
 using T3.Core.DataTypes.Volume;
 using T3.Core.DataTypes.Volume.IO;
 using T3.Core.DataTypes.Volume.Tools;
@@ -18,6 +19,49 @@ public class RealVdbFileCheck
     private readonly ITestOutputHelper _out;
 
     public RealVdbFileCheck(ITestOutputHelper output) => _out = output;
+
+    /// <summary>
+    /// Every file in the sample folder, whatever it holds. Two things are asserted: a supported file
+    /// must produce at least one grid and flatten into a valid NanoVDB buffer, and a file that ends
+    /// up empty must say which grids it skipped - an empty volume has to mean "nothing usable here",
+    /// never "the reader gave up quietly".
+    /// </summary>
+    [Fact]
+    public void EverySampleFileEitherLoadsOrExplainsItself()
+    {
+        var folder = Environment.GetEnvironmentVariable("TIXL_VDB_SAMPLES");
+        if (string.IsNullOrEmpty(folder) || !Directory.Exists(folder))
+            return;
+
+        var checkedFiles = 0;
+        foreach (var path in Directory.EnumerateFiles(folder, "*.vdb").OrderBy(x => x))
+        {
+            var name = Path.GetFileName(path);
+            var volume = VdbFile.Load(path);
+
+            if (volume.Grids.Count > 0)
+            {
+                var floatGrid = volume.GetFloatGrid();
+                if (floatGrid != null)
+                {
+                    var buffer = NanoVdbBuffer.FromGrid(floatGrid);
+                    Assert.True(buffer.TryValidate(out var error), $"{name}: {error}");
+                    Assert.True(floatGrid.ActiveVoxelCount > 0, $"{name}: float grid has no active voxels");
+                }
+
+                _out.WriteLine($"loaded   {name}: {string.Join(", ", volume.Grids.Select(g => g.Name))}");
+            }
+            else
+            {
+                Assert.True(volume.SkippedGrids.Count > 0, $"{name}: no grids and nothing reported as skipped");
+                _out.WriteLine($"skipped  {name}: {string.Join(", ", volume.SkippedGrids)}");
+            }
+
+            checkedFiles++;
+        }
+
+        Assert.True(checkedFiles > 0, "the sample folder held no .vdb files");
+    }
 
     [Theory]
     [InlineData("bunny.vdb")]
