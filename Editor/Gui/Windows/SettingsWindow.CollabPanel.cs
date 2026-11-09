@@ -5,8 +5,10 @@ using T3.Core.DataTypes.Vector;
 using T3.Editor.Collab;
 using T3.Editor.Show;
 using T3.Editor.Gui.Input;
+using T3.Editor.Gui.Interaction;
 using T3.Editor.Gui.Styling;
 using T3.Editor.Gui.UiHelpers;
+using T3.Editor.UiModel.InputsAndTypes;
 
 namespace T3.Editor.Gui.Windows;
 
@@ -255,6 +257,8 @@ internal sealed partial class SettingsWindow
         FormInputs.AddSectionSubHeader("Participants");
         FormInputs.AddVerticalSpace(4);
 
+        DrawCursorColor(manager);
+
         var roster = manager.Roster;
         if (roster.Count == 0)
         {
@@ -288,7 +292,29 @@ internal sealed partial class SettingsWindow
                     ImGui.SameLine();
                     ImGui.TextDisabled(activity);
                 }
+
+                // Round trip of our own heartbeats; relay hops included, so it reads on the internet
+                // path too. -1 until the first echo returns.
+                var rtt = manager.GetPeerRttMs(peerId);
+                if (rtt >= 0)
+                {
+                    ImGui.SameLine();
+                    ImGui.TextDisabled($"{rtt} ms");
+                }
+
+                if (manager.State == CollabManager.SessionState.Hosting && peerId != 0)
+                {
+                    ImGui.SameLine();
+                    ImGui.PushID("kick" + peerId);
+                    if (ImGui.SmallButton("Remove"))
+                        _pendingKickPeerId = peerId;
+
+                    ImGui.PopID();
+                    CustomComponents.TooltipForLastItem("Removes this participant from the session. They can join again unless the session has a password.");
+                }
             }
+
+            DrawKickConfirmation(manager);
         }
 
         FormInputs.AddVerticalSpace();
@@ -429,6 +455,62 @@ internal sealed partial class SettingsWindow
 
         FormInputs.AddVerticalSpace();
         DrawDiscoveredSessions(manager);
+    }
+
+    private static int _pendingKickPeerId = -1;
+
+    /// <summary>Two-step removal: the button asks, this confirms.</summary>
+    private static void DrawKickConfirmation(CollabManager manager)
+    {
+        if (_pendingKickPeerId < 0)
+            return;
+
+        var name = manager.Roster.TryGetValue(_pendingKickPeerId, out var found) ? found : $"#{_pendingKickPeerId}";
+        FormInputs.AddVerticalSpace(4);
+        ImGui.TextUnformatted($"Remove {name} from the session?");
+
+        if (ImGui.Button("Remove"))
+        {
+            manager.KickParticipant(_pendingKickPeerId);
+            _pendingKickPeerId = -1;
+        }
+
+        ImGui.SameLine();
+        if (ImGui.Button("Cancel"))
+            _pendingKickPeerId = -1;
+    }
+
+    /// <summary>
+    /// Everyone picks their own cursor color; other participants see it within a moment because it
+    /// rides the presence packets. Reset returns to the color derived from the user id.
+    /// </summary>
+    private static void DrawCursorColor(CollabManager manager)
+    {
+        FormInputs.DrawInputLabel("Cursor color");
+
+        var color = manager.LocalIdentity.AccentColor;
+        var edited = ColorEditButton.Draw(ref color,
+                                          new Vector2(ImGui.GetFrameHeight() * 1.6f, ImGui.GetFrameHeight()));
+        if ((edited & InputEditStateFlags.Modified) != 0)
+            UserSettings.Config.CollabCursorColor = CollabColors.ToPacked(color);
+
+        // Saved when the edit ends, not on every frame of a drag.
+        if ((edited & InputEditStateFlags.Finished) != 0)
+            UserSettings.Save();
+
+        CustomComponents.TooltipForLastItem("The color other participants see for your cursor, selections and edit badges.");
+
+        if (UserSettings.Config.CollabCursorColor != 0)
+        {
+            ImGui.SameLine();
+            if (ImGui.Button("Reset"))
+            {
+                UserSettings.Config.CollabCursorColor = 0;
+                UserSettings.Save();
+            }
+        }
+
+        FormInputs.AddVerticalSpace();
     }
 
     // ---------------------------------------------------------------------------------------

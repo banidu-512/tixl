@@ -89,6 +89,9 @@ internal sealed class CollabPeerConnection
     private long _lastHeardFromTicks = Environment.TickCount64;
     private readonly object _writeLock = new();
 
+    /// <summary>Round trip of the last answered heartbeat in ms, or -1 when none has returned yet.</summary>
+    public int LastRttMs = -1;
+
     /// <summary>How long this peer may stay silent before it is considered gone. Show LAN peers
     /// use <see cref="CollabProtocol.PeerTimeoutMs"/>; relay-backed peers a looser internet budget.</summary>
     public int TimeoutMs { get; init; } = CollabProtocol.PeerTimeoutMs;
@@ -348,6 +351,14 @@ internal abstract class CollabTransport : IDisposable
                     payload.CopyTo(answer);
                     answer[CollabProtocol.HeartbeatPingSize] = 0; // explicit: stackalloc is not guaranteed zeroed
                     EchoHeartbeat(peer, answer);
+                }
+                else if (payload.Length == CollabProtocol.HeartbeatPingSize + 1)
+                {
+                    // An echo of our own ping: its payload is still our TickCount64, so its age is
+                    // the round trip. Shown per participant in the Collaboration panel.
+                    var rtt = CollabProtocol.MeasureHeartbeatRtt(payload);
+                    if (rtt >= 0)
+                        peer.LastRttMs = rtt;
                 }
 
                 break;
