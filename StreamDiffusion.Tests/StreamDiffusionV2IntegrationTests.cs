@@ -82,20 +82,53 @@ public class StreamDiffusionV2IntegrationTests
         AssertProvider(pipeline);
         Assert.True(pipeline.TryGetFixedOutputSize(out var width, out var height));
         pipeline.ConfigureStream(int.TryParse(Environment.GetEnvironmentVariable("TIXL_SDV2_STEPS"), out var steps) ? steps : 2);
+
+        // FastDecode decodes one latent instead of a three-latent window; the operator's FastDecode input sets
+        // the same flag. Env-gated so the check can measure both decode windows on one machine.
+        pipeline.FastDecodeEnabled = Environment.GetEnvironmentVariable("TIXL_SDV2_FASTDECODE") == "1";
         var frameCount = int.TryParse(Environment.GetEnvironmentVariable("TIXL_SDV2_FRAMES"), out var frames) ? frames : 8;
-        Console.WriteLine($"V2 models {ModelDir}, {width}x{height}, {steps} steps, {frameCount} frames");
+        Console.WriteLine($"V2 models {ModelDir}, {width}x{height}, {steps} steps, {frameCount} frames, fastDecode={pipeline.FastDecodeEnabled}");
 
         byte[]? last = null;
+        var sawFallback = false;
+        var successfulFrames = 0;
+        var successfulAfterFallback = 0;
         for (var frame = 0; frame < frameCount; frame++)
         {
             var input = MakeFrame(width, height, frame);
             var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-            last = pipeline.StreamStep("a watercolor painting of a fox in a forest", input, width, height, width, height,
-                                       0.8f, 0, 1234, false, out var error);
+            var result = pipeline.StreamStep("a watercolor painting of a fox in a forest", input, width, height, width, height,
+                                             0.8f, 0, 1234, false, out var error);
+            if (result != null)
+                last = result;
             Console.WriteLine($"V2 frame {frame}: {stopwatch.ElapsedMilliseconds} ms (encode {pipeline.LastEncodeMs:F0}, denoise {pipeline.LastDenoiseMs:F0}, decode {pipeline.LastDecodeMs:F0})");
+
+            // A TensorRT engine build can fail on a full card; the pipeline then reports it once and continues
+            // on CUDA. That frame has no output by design, so only later frames are held to the strict check.
+            if (error != null && error.Contains("switched to CUDA", StringComparison.Ordinal))
+            {
+                sawFallback = true;
+                Console.WriteLine($"V2 provider fallback: {error}");
+                continue;
+            }
+
             Assert.True(error == null, error ?? string.Empty);
-            Assert.NotNull(last);
-            Assert.Equal(width * height * 4, last!.Length);
+            Assert.NotNull(result);
+            Assert.Equal(width * height * 4, result!.Length);
+            successfulFrames++;
+            if (sawFallback)
+                successfulAfterFallback++;
+        }
+
+        // A provider fallback must still leave a working stream behind it.
+        Assert.True(successfulFrames > 0, "no frame completed");
+        Assert.NotNull(last);
+        Assert.True(pipeline.IsInitialized, "the pipeline was left uninitialized");
+        Assert.True(last!.Length == width * height * 4, "the last frame has the wrong size");
+        if (sawFallback)
+        {
+            Assert.Equal("CUDA", pipeline.ProviderLabel);
+            Assert.True(successfulAfterFallback > 0, "no frame completed after the TensorRT fallback");
         }
 
         var outputPath = Environment.GetEnvironmentVariable("TIXL_SDV2_OUT");
