@@ -80,13 +80,18 @@ outputs that were not implemented. The port implements them through the existing
 
 ### Open points
 
-1. Native crashes can't be caught in-process. Validation, the guarded native API use and the global
-   lock remove the crashes found so far, but a malicious or exotic file can still take the process
-   down. Fully crash-proof importing needs an out-of-process helper (a small console app speaking a
-   binary protocol over stdin/stdout). Not blocking; worth doing if users load untrusted files.
-2. A native hang can't be aborted. The render thread is never blocked, but the global Assimp lock
-   stays held, so other Assimp imports and exports of the session wait. Status shows the elapsed
-   time, so the hang is visible.
+1. ~~Native crashes can't be caught in-process.~~ Imports **and exports** run in a child process
+   (`AssimpIsolatedImport` + the `AssimpImportHost` launcher built into Lib's output). A native crash
+   becomes an error status, a hang is killed on cancel or after 10 minutes, and the child exits as
+   soon as the editor goes away (it watches its stdin pipe). Results come back as validated binary
+   files (`AssimpModelDataSerializer`, fuzzed with truncation and bit flips); exports are serialized
+   to the child the same way and a failed export removes its partial file. Remaining gap: the
+   launcher needs a `dotnet` executable with .NET 10+; self-contained release builds without one fall
+   back to in-process operation, and the status/metadata says so.
+2. In-process fallback (no `dotnet` available, or isolation switched off) still can't abort a native
+   hang; the render thread is never blocked, but the global Assimp lock stays held for that session.
+   Imports in this mode are also not protected from a native crash. The setting and Metadata make the
+   difference visible.
 3. ~~Materials and textures are not imported.~~ Implemented: PBR materials with base color,
    emissive, normal and a CPU-baked roughness/metallic/occlusion map; textures decoded on the worker,
    reused across transform-only reloads and released from CPU memory after upload. Not handled:
@@ -99,6 +104,54 @@ outputs that were not implemented. The port implements them through the existing
    the GPU on the render thread; the hard limit is 50 M vertices / triangles.
 8. Assimp's own Collada exporter writes key times ×1000 (Assimp bug); files from other tools are
    unaffected.
+9. GlTF and OBJ exports write sidecars (`.bin`, `.mtl`) named after the main file. The number
+   reservation covers the main file, so a sidecar with that name can be replaced; the operator
+   documents this in its help text.
+
+### Hardening pass (2026-11-09)
+
+Brought `origin/multi/feat/assimp` onto this branch and closed the remaining robustness gaps:
+
+- **Exports are isolated too.** `AssimpIsolatedImport.Export` serializes the worker snapshot to a
+  temp file, runs `--export` in the same child-process host, and deletes a partial output file on
+  errors, crashes and timeouts. `[AssimpExport]` has an `IsolateExport` input (default on) and falls
+  back to in-process with the status saying so. This matters because the native FBX/3DS/Collada/3MF
+  exporters are the same code that can segfault on unusual scenes.
+- **`TriggerReload` re-reads materials.** In isolated mode the material identity is the model's
+  `FileVersion`, which does not change when only a texture next to the model is edited. Reloads now
+  never reuse materials, so the documented "reload after changing referenced files" behaviour also
+  applies to textures.
+- **Input size limit.** `AssimpModelLoader` rejects files over 2 GB before handing them to Assimp,
+  which expands its input in memory several times. The 50 M vertex/triangle limit is unchanged but
+  now sits behind a cheap, local check instead of an OOM.
+- **Texture memory budget.** One import may retain at most 1 GiB of decoded pixels across all
+  materials; further textures (and an oversized baked RMO map) are skipped with a warning instead of
+  exhausting memory. Image dimensions are read from the header before decoding, so a small file that
+  declares huge dimensions can't allocate the image first. Colors, UVs and opacity read from
+  materials are sanitized against NaN/infinite values.
+- **CPU buffers are released after upload.** `AssimpModelData.DropUploadedBuffers` clears the vertex,
+  triangle, point and skin arrays once the GPU buffers and the `Setup` exist. Without it the CPU copy
+  stayed alive for the lifetime of the model, roughly doubling its memory footprint. Element counts
+  are carried separately and restored by the serializer, so outputs and Metadata stay correct.
+- **NaN/infinity sanitizing in conversion.** Vertex positions, tangents, UVs, vertex colors,
+  joint rotations, animation key times and values are checked. Invalid values are replaced (zero,
+  white, identity) and counted in the warnings instead of propagating into bounds, skinned matrices
+  or GPU buffers.
+- **Serialization limits.** `AssimpModelDataSerializer` now bounds arrays by **byte** count rather
+  than `int.MaxValue / elementSize`, which previously rejected valid >26 M-vertex isolated imports.
+  A corrupt result is rejected before allocating (8 GiB total, 4 GiB per array).
+- **Thread-safety.** `AssimpNative.Version` is read on the render thread while a worker loads the
+  library, so it is volatile. `_pendingLoad` is volatile because the status provider may read it
+  off the render thread. The import outcome carries the isolation setting of its request instead of
+  re-reading the input when the result arrives.
+- **Failure cleanup.** `AssimpModelExporter` deletes its output when anything throws; the export host
+  and the isolated export path delete the reserved file on crash/timeout/cancel. The host launcher
+  reports assembly-load failures as text with exit code 65 instead of an unhandled exception.
+
+Verification: Release build of Lib with analyzers is clean for the new files; headless host runs
+cover probe, isolated import (OBJ → binary result, plain and textured, with sane vertex/triangle
+counts), isolated export (OBJ and GLB, quads preserved), re-import of the exported GLB, corrupt-result
+rejection and the 2 GB input limit. See `.tests-manual/assimp-import-export.md` for the editor pass.
 
 ### Verification
 
@@ -112,4 +165,7 @@ outputs that were not implemented. The port implements them through the existing
 - Round-trips through obj, fbx, glb, gltf, stl, ply, collada, 3mf, x3d for mesh, geometry and points.
 - 64 concurrent imports/exports with random settings and cancellation: no crash, corrupt files
   fail cleanly.
+- Isolated imports produce results bit-identical to in-process ones; ~100-150 ms process overhead.
+  A child that dereferences a bad pointer, one killed with SIGKILL, a cancelled import and a killed
+  parent were all checked: the parent keeps running and no child is left behind.
 - Not yet run in the editor: see `.tests-manual/assimp-import-export.md`.

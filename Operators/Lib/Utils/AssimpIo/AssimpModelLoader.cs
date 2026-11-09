@@ -38,6 +38,14 @@ internal static class AssimpModelLoader
         if (!File.Exists(absolutePath))
             throw new FileNotFoundException($"File not found: {absolutePath}");
 
+        // Assimp reads the file into memory and expands it several times while converting; a file that
+        // already fills a large part of the address space would take the process down before any
+        // conversion limit could apply. The cap is generous for real-world models.
+        var fileLength = new FileInfo(absolutePath).Length;
+        if (fileLength > MaxInputFileBytes)
+            throw new InvalidDataException($"File is too large ({fileLength / (1024.0 * 1024 * 1024):0.0} GB; limit is "
+                                           + $"{MaxInputFileBytes / (1024.0 * 1024 * 1024):0.0} GB)");
+
         if (!AssimpNative.TryEnsureLoaded(out var nativeError))
             throw new InvalidOperationException(nativeError);
 
@@ -141,7 +149,7 @@ internal static class AssimpModelLoader
                            MeshNames = BuildMeshNames(triangleScene),
                        };
 
-        var nodes = FlattenNodes(triangleScene.RootNode, data.Warnings);
+        var nodes = FlattenNodes(triangleScene.RootNode, data.Warnings, token);
         var nodeInstances = CollectNodeInstances(triangleScene, nodes, settings.SelectedMeshIndex);
         if (nodeInstances.Count == 0)
         {
@@ -175,7 +183,7 @@ internal static class AssimpModelLoader
 
         token.ThrowIfCancellationRequested();
         var geometryScene = polygonScene.MeshCount == triangleScene.MeshCount ? polygonScene : triangleScene;
-        data.Geometry = BuildGeometry(geometryScene, instances, settings.FlipNormals, token);
+        data.Geometry = BuildGeometry(geometryScene, instances, settings.FlipNormals, data.Warnings, token);
 
         token.ThrowIfCancellationRequested();
         BuildSkeleton(triangleScene, nodes, instances, importTransform, importMatrix, data, token);
@@ -186,7 +194,7 @@ internal static class AssimpModelLoader
     }
 
     /// <summary>Pre-order traversal (parents before children) with the scene-root-relative transform of every node.</summary>
-    private static List<SceneNodeEntry> FlattenNodes(AssimpNode root, List<string> warnings)
+    private static List<SceneNodeEntry> FlattenNodes(AssimpNode root, List<string> warnings, CancellationToken token)
     {
         const int maxNodeCount = 1_000_000;
 
@@ -196,6 +204,9 @@ internal static class AssimpModelLoader
 
         while (stack.Count > 0)
         {
+            if ((nodes.Count & 0xFFF) == 0)
+                token.ThrowIfCancellationRequested();
+
             var entry = stack.Pop();
             nodes.Add(entry);
             if (nodes.Count > maxNodeCount)
@@ -333,6 +344,7 @@ internal static class AssimpModelLoader
         var vertexOffset = 0;
         var triangleOffset = 0;
         var skippedFaceCount = 0;
+        var invalidValueCount = 0;
 
         for (var instanceIndex = 0; instanceIndex < instances.Count; instanceIndex++)
         {
@@ -355,6 +367,13 @@ internal static class AssimpModelLoader
             {
                 var vertexIndex = vertexOffset + localIndex;
                 var position = Vector3.Transform(positions[localIndex], instance.FinalTransform);
+                if (!IsFinite(position))
+                {
+                    // A single NaN would spread through bounds, normalization and the GPU buffers
+                    position = Vector3.Zero;
+                    invalidValueCount++;
+                }
+
                 var normal = normals != null ? TransformDirection(normals[localIndex], instance.NormalTransform) : Vector3.Zero;
                 var tangent = Vector3.UnitX;
                 var bitangent = Vector3.UnitY;
@@ -377,6 +396,11 @@ internal static class AssimpModelLoader
                 var uv = uvs != null ? uvs[localIndex] : Vector3.Zero;
                 var uv2 = uvs2 != null ? uvs2[localIndex] : uv;
                 var color = colors != null ? colors[localIndex] : Vector4.One;
+                var texcoord = SanitizeUv(uv);
+                var texcoord2 = SanitizeUv(uv2);
+                var sanitizedColor = SanitizeColor(color);
+                if (texcoord != new Vector2(uv.X, uv.Y) || texcoord2 != new Vector2(uv2.X, uv2.Y) || sanitizedColor != color)
+                    invalidValueCount++;
 
                 vertices[vertexIndex] = new PbrVertex
                                             {
@@ -384,10 +408,10 @@ internal static class AssimpModelLoader
                                                 Normal = normal,
                                                 Tangent = tangent,
                                                 Bitangent = bitangent,
-                                                Texcoord = new Vector2(uv.X, uv.Y),
-                                                Texcoord2 = new Vector2(uv2.X, uv2.Y),
+                                                Texcoord = texcoord,
+                                                Texcoord2 = texcoord2,
                                                 Selection = 1,
-                                                ColorRgb = new Vector3(color.X, color.Y, color.Z),
+                                                ColorRgb = new Vector3(sanitizedColor.X, sanitizedColor.Y, sanitizedColor.Z),
                                             };
 
                 points[vertexIndex] = new Point
@@ -395,7 +419,7 @@ internal static class AssimpModelLoader
                                               Position = position,
                                               F1 = 1,
                                               Orientation = Quaternion.Identity,
-                                              Color = color,
+                                              Color = sanitizedColor,
                                               Scale = Vector3.One,
                                               F2 = 1,
                                           };
@@ -444,12 +468,17 @@ internal static class AssimpModelLoader
         if (skippedFaceCount > 0)
             data.Warnings.Add($"Skipped {skippedFaceCount} faces with invalid indices");
 
+        if (invalidValueCount > 0)
+            data.Warnings.Add($"Replaced {invalidValueCount} invalid vertex values (NaN/infinite)");
+
         CalculateMissingTangents(vertices, triangles, needsTangents);
 
         data.Vertices = vertices;
         data.Triangles = triangles;
         data.Points = points;
         data.Chunks = chunks;
+        data.VertexCount = vertices.Length;
+        data.FaceCount = triangles.Length;
         data.BoundsMin = vertexCount > 0 ? min : Vector3.Zero;
         data.BoundsMax = vertexCount > 0 ? max : Vector3.Zero;
     }
@@ -491,7 +520,8 @@ internal static class AssimpModelLoader
     /// Builds the polygonal geometry. Positions are welded per mesh instance so faces split at
     /// UV or normal seams still share their edges, which beveling and edge topology rely on.
     /// </summary>
-    private static MeshGeometry BuildGeometry(AssimpScene scene, List<MeshInstance> instances, bool flipNormals, CancellationToken token)
+    private static MeshGeometry BuildGeometry(AssimpScene scene, List<MeshInstance> instances, bool flipNormals, List<string> warnings,
+                                              CancellationToken token)
     {
         var positions = new List<Vector3>();
         var faceOffsets = new List<int> { 0 };
@@ -505,6 +535,7 @@ internal static class AssimpModelLoader
         var hasUvs = false;
         var hasUvs2 = false;
         var hasColors = false;
+        var invalidValueCount = 0;
         var weldedPointIndices = new Dictionary<Vector3, int>();
         var pointIndexForVertex = new List<int>();
 
@@ -529,6 +560,12 @@ internal static class AssimpModelLoader
             foreach (var vertex in mesh.Vertices)
             {
                 var position = Vector3.Transform(vertex, instance.FinalTransform);
+                if (!IsFinite(position))
+                {
+                    position = Vector3.Zero;
+                    invalidValueCount++;
+                }
+
                 if (!weldedPointIndices.TryGetValue(position, out var pointIndex))
                 {
                     pointIndex = positions.Count;
@@ -567,10 +604,17 @@ internal static class AssimpModelLoader
                     cornerNormals.Add(normal);
 
                     var uv = uvs != null ? uvs[vertexIndex] : Vector3.Zero;
-                    cornerUvs.Add(new Vector2(uv.X, uv.Y));
                     var uv2 = uvs2 != null ? uvs2[vertexIndex] : uv;
-                    cornerUvs2.Add(new Vector2(uv2.X, uv2.Y));
-                    cornerColors.Add(colors != null ? colors[vertexIndex] : Vector4.One);
+                    var sourceColor = colors != null ? colors[vertexIndex] : Vector4.One;
+                    var texcoord = SanitizeUv(uv);
+                    var texcoord2 = SanitizeUv(uv2);
+                    var color = SanitizeColor(sourceColor);
+                    if (texcoord != new Vector2(uv.X, uv.Y) || texcoord2 != new Vector2(uv2.X, uv2.Y) || color != sourceColor)
+                        invalidValueCount++;
+
+                    cornerUvs.Add(texcoord);
+                    cornerUvs2.Add(texcoord2);
+                    cornerColors.Add(color);
                 }
 
                 if (normals == null)
@@ -612,6 +656,9 @@ internal static class AssimpModelLoader
 
         if (hasColors)
             CopyToAttribute(geometry, GeometryAttributeNames.Color, cornerColors);
+
+        if (invalidValueCount > 0)
+            warnings.Add($"Replaced {invalidValueCount} invalid geometry values (NaN/infinite)");
 
         geometry.InvalidateTopologyCaches();
         return geometry;
@@ -846,15 +893,22 @@ internal static class AssimpModelLoader
     private static void ExtractAnimationClips(AssimpScene scene, Dictionary<string, int> jointIndexByName, AssimpModelData data)
     {
         var ignoredChannelCount = 0;
+        var invalidKeyCount = 0;
         for (var animationIndex = 0; animationIndex < scene.AnimationCount; animationIndex++)
         {
             var animation = scene.Animations[animationIndex];
-            var ticksPerSecond = animation.TicksPerSecond > 0 ? animation.TicksPerSecond : DefaultTicksPerSecond;
+            var ticksPerSecond = double.IsFinite(animation.TicksPerSecond) && animation.TicksPerSecond > 0
+                                     ? animation.TicksPerSecond
+                                     : DefaultTicksPerSecond;
+
+            var duration = (float)(animation.DurationInTicks / ticksPerSecond);
+            if (!float.IsFinite(duration) || duration < 0)
+                duration = 0;
 
             var clip = new SceneSetup.SceneAnimClip
                            {
                                Name = string.IsNullOrEmpty(animation.Name) ? $"Clip {animationIndex}" : animation.Name,
-                               Duration = (float)(animation.DurationInTicks / ticksPerSecond),
+                               Duration = duration,
                            };
 
             var lastKeyTime = 0f;
@@ -874,17 +928,17 @@ internal static class AssimpModelLoader
 
                 if (channel.HasPositionKeys)
                 {
-                    jointChannel.TranslationSampler = CreateVectorSampler(channel.PositionKeys, ticksPerSecond, ref lastKeyTime);
+                    jointChannel.TranslationSampler = CreateVectorSampler(channel.PositionKeys, ticksPerSecond, ref lastKeyTime, ref invalidKeyCount);
                 }
 
                 if (channel.HasRotationKeys)
                 {
-                    jointChannel.RotationSampler = CreateRotationSampler(channel.RotationKeys, ticksPerSecond, ref lastKeyTime);
+                    jointChannel.RotationSampler = CreateRotationSampler(channel.RotationKeys, ticksPerSecond, ref lastKeyTime, ref invalidKeyCount);
                 }
 
                 if (channel.HasScalingKeys)
                 {
-                    jointChannel.ScaleSampler = CreateVectorSampler(channel.ScalingKeys, ticksPerSecond, ref lastKeyTime);
+                    jointChannel.ScaleSampler = CreateVectorSampler(channel.ScalingKeys, ticksPerSecond, ref lastKeyTime, ref invalidKeyCount);
                 }
 
                 clip.Channels.Add(jointChannel);
@@ -901,9 +955,13 @@ internal static class AssimpModelLoader
 
         if (ignoredChannelCount > 0)
             data.Warnings.Add($"Ignored {ignoredChannelCount} animation channels of nodes outside the skeleton");
+
+        if (invalidKeyCount > 0)
+            data.Warnings.Add($"Skipped {invalidKeyCount} animation keys with invalid times or values");
     }
 
-    private static AssimpVector3Sampler? CreateVectorSampler(List<Assimp.VectorKey> keys, double ticksPerSecond, ref float lastKeyTime)
+    private static AssimpVector3Sampler? CreateVectorSampler(List<Assimp.VectorKey> keys, double ticksPerSecond, ref float lastKeyTime,
+                                                             ref int invalidKeyCount)
     {
         if (keys.Count == 0)
             return null;
@@ -911,12 +969,30 @@ internal static class AssimpModelLoader
         var times = new float[keys.Count];
         var values = new Vector3[keys.Count];
         var isStep = new bool[keys.Count];
-        for (var keyIndex = 0; keyIndex < keys.Count; keyIndex++)
+        var count = 0;
+        foreach (var key in keys)
         {
-            var key = keys[keyIndex];
-            times[keyIndex] = (float)(key.Time / ticksPerSecond);
-            values[keyIndex] = key.Value;
-            isStep[keyIndex] = key.Interpolation == AnimationInterpolation.Step;
+            var time = (float)(key.Time / ticksPerSecond);
+            if (!float.IsFinite(time) || !IsFinite(key.Value))
+            {
+                invalidKeyCount++;
+                continue;
+            }
+
+            times[count] = time;
+            values[count] = key.Value;
+            isStep[count] = key.Interpolation == AnimationInterpolation.Step;
+            count++;
+        }
+
+        if (count == 0)
+            return null;
+
+        if (count < times.Length)
+        {
+            Array.Resize(ref times, count);
+            Array.Resize(ref values, count);
+            Array.Resize(ref isStep, count);
         }
 
         SortKeys(times, values, isStep);
@@ -924,7 +1000,8 @@ internal static class AssimpModelLoader
         return new AssimpVector3Sampler(times, values, isStep);
     }
 
-    private static AssimpQuaternionSampler? CreateRotationSampler(List<Assimp.QuaternionKey> keys, double ticksPerSecond, ref float lastKeyTime)
+    private static AssimpQuaternionSampler? CreateRotationSampler(List<Assimp.QuaternionKey> keys, double ticksPerSecond, ref float lastKeyTime,
+                                                                  ref int invalidKeyCount)
     {
         if (keys.Count == 0)
             return null;
@@ -932,12 +1009,31 @@ internal static class AssimpModelLoader
         var times = new float[keys.Count];
         var values = new Quaternion[keys.Count];
         var isStep = new bool[keys.Count];
-        for (var keyIndex = 0; keyIndex < keys.Count; keyIndex++)
+        var count = 0;
+        foreach (var key in keys)
         {
-            var key = keys[keyIndex];
-            times[keyIndex] = (float)(key.Time / ticksPerSecond);
-            values[keyIndex] = Quaternion.Normalize(key.Value);
-            isStep[keyIndex] = key.Interpolation == AnimationInterpolation.Step;
+            var time = (float)(key.Time / ticksPerSecond);
+            var lengthSquared = key.Value.LengthSquared();
+            if (!float.IsFinite(time) || !float.IsFinite(lengthSquared) || lengthSquared < 1e-20f)
+            {
+                invalidKeyCount++;
+                continue;
+            }
+
+            times[count] = time;
+            values[count] = Quaternion.Normalize(key.Value);
+            isStep[count] = key.Interpolation == AnimationInterpolation.Step;
+            count++;
+        }
+
+        if (count == 0)
+            return null;
+
+        if (count < times.Length)
+        {
+            Array.Resize(ref times, count);
+            Array.Resize(ref values, count);
+            Array.Resize(ref isStep, count);
         }
 
         SortKeys(times, values, isStep);
@@ -1006,6 +1102,26 @@ internal static class AssimpModelLoader
         var lengthSquared = transformed.LengthSquared();
         return lengthSquared > 1e-20f && float.IsFinite(lengthSquared) ? transformed / MathF.Sqrt(lengthSquared) : Vector3.Zero;
     }
+
+    private static Vector2 SanitizeUv(Vector3 uv) => SanitizeUv(new Vector2(uv.X, uv.Y));
+
+    private static Vector2 SanitizeUv(Vector2 uv) => float.IsFinite(uv.X) && float.IsFinite(uv.Y) ? uv : Vector2.Zero;
+
+    private static Vector4 SanitizeColor(Vector4 color)
+    {
+        return IsFinite(color) ? color : Vector4.One;
+    }
+
+    private static Quaternion NormalizeOrIdentity(Quaternion rotation)
+    {
+        var lengthSquared = rotation.LengthSquared();
+        return float.IsFinite(lengthSquared) && lengthSquared > 1e-20f ? Quaternion.Normalize(rotation) : Quaternion.Identity;
+    }
+
+    private static bool IsFinite(Vector3 value) => float.IsFinite(value.X) && float.IsFinite(value.Y) && float.IsFinite(value.Z);
+
+    private static bool IsFinite(Vector4 value) =>
+        float.IsFinite(value.X) && float.IsFinite(value.Y) && float.IsFinite(value.Z) && float.IsFinite(value.W);
 
     private static bool AreIndicesValid(List<int> indices, int vertexCount)
     {
@@ -1124,6 +1240,13 @@ internal static class AssimpModelLoader
 
             ref var vertex = ref vertices[vertexIndex];
             var normal = vertex.Normal;
+            if (normal.LengthSquared() < 1e-12f)
+            {
+                // Degenerate geometry can leave no usable normal; an orthonormal frame still needs one
+                normal = Vector3.UnitY;
+                vertex.Normal = normal;
+            }
+
             var tangent = tangents[vertexIndex] - normal * Vector3.Dot(normal, tangents[vertexIndex]);
 
             if (tangent.LengthSquared() < 1e-12f || !float.IsFinite(tangent.X))
@@ -1157,7 +1280,7 @@ internal static class AssimpModelLoader
     {
         if (Matrix4x4.Decompose(matrix, out var scale, out var rotation, out var translation))
         {
-            return new SceneSetup.Transform { Translation = translation, Rotation = Quaternion.Normalize(rotation), Scale = scale };
+            return new SceneSetup.Transform { Translation = translation, Rotation = NormalizeOrIdentity(rotation), Scale = scale };
         }
 
         hasFailure = true;
@@ -1172,7 +1295,7 @@ internal static class AssimpModelLoader
                                                axisY.X / approximatedScale.Y, axisY.Y / approximatedScale.Y, axisY.Z / approximatedScale.Y, 0,
                                                axisZ.X / approximatedScale.Z, axisZ.Y / approximatedScale.Z, axisZ.Z / approximatedScale.Z, 0,
                                                0, 0, 0, 1);
-            approximatedRotation = Quaternion.Normalize(Quaternion.CreateFromRotationMatrix(rotationMatrix));
+            approximatedRotation = NormalizeOrIdentity(Quaternion.CreateFromRotationMatrix(rotationMatrix));
         }
 
         return new SceneSetup.Transform { Translation = matrix.Translation, Rotation = approximatedRotation, Scale = approximatedScale };
@@ -1181,7 +1304,7 @@ internal static class AssimpModelLoader
     /// <summary>Rest pose point for visualization; parent index rides in F2 like the glTF skeleton points.</summary>
     private static Point CreateJointPoint(Matrix4x4 objectTransform, int parentIndex)
     {
-        var orientation = Matrix4x4.Decompose(objectTransform, out _, out var rotation, out _) ? Quaternion.Normalize(rotation) : Quaternion.Identity;
+        var orientation = Matrix4x4.Decompose(objectTransform, out _, out var rotation, out _) ? NormalizeOrIdentity(rotation) : Quaternion.Identity;
         return new Point
                    {
                        Position = objectTransform.Translation,
@@ -1230,6 +1353,9 @@ internal static class AssimpModelLoader
     private const double DefaultTicksPerSecond = 25.0;
 
     private const float MinimumScale = 1e-6f;
+
+    /** Assimp reads and expands the whole file, so a huge input would exhaust memory before any conversion limit applies. */
+    private const long MaxInputFileBytes = 2L * 1024 * 1024 * 1024;
 }
 
 /// <summary>Assimp's scene before and after triangulation, as parsed from one state of a file.</summary>

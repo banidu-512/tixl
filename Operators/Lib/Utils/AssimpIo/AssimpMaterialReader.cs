@@ -60,13 +60,16 @@ internal sealed class AssimpMaterialReader(AssimpScene scene, string modelPath, 
 
         data.BaseColor = TryGetColor(material, "$clr.base", out var baseColor)
                              ? baseColor
-                             : material.HasColorDiffuse ? material.ColorDiffuse : Vector4.One;
+                             : material.HasColorDiffuse ? SanitizeColor(material.ColorDiffuse) : Vector4.One;
 
         if (material.HasOpacity)
-            data.BaseColor.W *= material.Opacity;
+        {
+            var opacity = float.IsFinite(material.Opacity) ? material.Opacity : 1;
+            data.BaseColor = new Vector4(data.BaseColor.X, data.BaseColor.Y, data.BaseColor.Z, data.BaseColor.W * opacity);
+        }
 
         if (material.HasColorEmissive)
-            data.EmissiveColor = material.ColorEmissive with { W = 1 };
+            data.EmissiveColor = SanitizeColor(material.ColorEmissive) with { W = 1 };
 
         float? roughnessFactor = TryGetFloat(material, "$mat.roughnessFactor", out var roughness) ? roughness : null;
         float? metallicFactor = TryGetFloat(material, "$mat.metallicFactor", out var metallic) ? metallic : null;
@@ -122,6 +125,12 @@ internal sealed class AssimpMaterialReader(AssimpScene scene, string modelPath, 
 
             width = Math.Max(width, image.Width);
             height = Math.Max(height, image.Height);
+        }
+
+        if (!TryReserveTextureBytes((long)width * height * 4))
+        {
+            warnings.Add("Combined roughness/metallic/occlusion map exceeds the texture memory budget, skipped");
+            return null;
         }
 
         var rgba = new byte[width * height * 4];
@@ -195,7 +204,15 @@ internal sealed class AssimpMaterialReader(AssimpScene scene, string modelPath, 
                     return Decode(embedded.CompressedData, texturePath);
 
                 if (embedded.HasNonCompressedData && embedded.Width > 0 && embedded.Height > 0)
+                {
+                    if (embedded.Width > MaxTextureSize || embedded.Height > MaxTextureSize)
+                    {
+                        warnings.Add($"Texture {texturePath} exceeds {MaxTextureSize}px, skipped");
+                        return null;
+                    }
+
                     return FromTexels(embedded);
+                }
             }
 
             if (texturePath.StartsWith('*'))
@@ -255,22 +272,53 @@ internal sealed class AssimpMaterialReader(AssimpScene scene, string modelPath, 
 
     private AssimpTextureImage? Decode(byte[] encoded, string texturePath)
     {
+        // Read the header first: a tiny file can declare huge dimensions, and decoding would allocate
+        // the full image before any size or budget check could run.
+        using (var infoStream = new MemoryStream(encoded, writable: false))
+        {
+            var info = ImageInfo.FromStream(infoStream);
+            if (info is not { Width: > 0, Height: > 0 })
+            {
+                warnings.Add($"Texture {texturePath} has an unsupported format, skipped");
+                return null;
+            }
+
+            if (info.Value.Width > MaxTextureSize || info.Value.Height > MaxTextureSize)
+            {
+                warnings.Add($"Texture {texturePath} exceeds {MaxTextureSize}px, skipped");
+                return null;
+            }
+
+            if (!TryReserveTextureBytes((long)info.Value.Width * info.Value.Height * 4))
+            {
+                warnings.Add($"Texture memory budget exceeded, skipped: {texturePath}");
+                return null;
+            }
+        }
+
         var image = ImageResult.FromMemory(encoded, ColorComponents.RedGreenBlueAlpha);
         if (image.Width <= 0 || image.Height <= 0)
             return null;
 
-        if (image.Width > MaxTextureSize || image.Height > MaxTextureSize)
+        if (image.Data.Length != (long)image.Width * image.Height * 4)
         {
-            warnings.Add($"Texture {texturePath} exceeds {MaxTextureSize}px, skipped");
+            warnings.Add($"Texture {texturePath} decoded to an unexpected size, skipped");
             return null;
         }
 
         return new AssimpTextureImage(image.Width, image.Height, image.Data);
     }
 
-    private static AssimpTextureImage FromTexels(Assimp.EmbeddedTexture embedded)
+    private AssimpTextureImage? FromTexels(Assimp.EmbeddedTexture embedded)
     {
         var texels = embedded.NonCompressedData;
+        var byteCount = (long)embedded.Width * embedded.Height * 4;
+        if (!TryReserveTextureBytes(byteCount))
+        {
+            warnings.Add("Embedded texture exceeds the texture memory budget, skipped");
+            return null;
+        }
+
         var rgba = new byte[embedded.Width * embedded.Height * 4];
         var count = Math.Min(texels.Length, embedded.Width * embedded.Height);
         for (var index = 0; index < count; index++)
@@ -295,9 +343,19 @@ internal sealed class AssimpMaterialReader(AssimpScene scene, string modelPath, 
         if (values == null || values.Length < 3)
             return false;
 
-        color = new Vector4(values[0], values[1], values[2], values.Length > 3 ? values[3] : 1);
+        color = new Vector4(Sanitize(values[0]),
+                            Sanitize(values[1]),
+                            Sanitize(values[2]),
+                            values.Length > 3 ? Sanitize(values[3], 1) : 1);
         return true;
     }
+
+    private static Vector4 SanitizeColor(Vector4 color)
+    {
+        return new Vector4(Sanitize(color.X), Sanitize(color.Y), Sanitize(color.Z), Sanitize(color.W, 1));
+    }
+
+    private static float Sanitize(float value, float fallback = 0) => float.IsFinite(value) ? value : fallback;
 
     private static bool TryGetFloat(AssimpMaterial material, string key, out float value)
     {
@@ -312,5 +370,19 @@ internal sealed class AssimpMaterialReader(AssimpScene scene, string modelPath, 
     private const int MaxTextureSize = 16384;
     private const long MaxTextureFileBytes = 512L * 1024 * 1024;
 
+    /** Decoded pixels retained for one import. Maps stay on the CPU until the render thread uploads them. */
+    private const long MaxDecodedTextureBytes = 1L * 1024 * 1024 * 1024;
+
     private readonly Dictionary<string, AssimpTextureImage?> _imagesByKey = new(StringComparer.Ordinal);
+    private long _decodedBytes;
+
+    /// <summary>Reserves budget before allocating, so a file with many large textures can't exhaust memory.</summary>
+    private bool TryReserveTextureBytes(long byteCount)
+    {
+        if (byteCount > MaxDecodedTextureBytes - _decodedBytes)
+            return false;
+
+        _decodedBytes += byteCount;
+        return true;
+    }
 }

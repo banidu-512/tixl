@@ -40,6 +40,12 @@ internal abstract class AssimpKeyframeSampler<T> : ICurveSampler<T>
         return Interpolate(_values[lower], _values[upper], fraction);
     }
 
+    /// <summary>Key times in seconds, ascending. Exposed for serialization only.</summary>
+    public ReadOnlySpan<float> Times => _times;
+
+    public ReadOnlySpan<T> Values => _values;
+    public ReadOnlySpan<bool> IsStep => _isStep;
+
     protected abstract T Interpolate(T a, T b, float fraction);
 
     private readonly float[] _times;

@@ -17,47 +17,6 @@ namespace Lib.Utils.AssimpIo;
 /// </summary>
 internal static class AssimpModelExporter
 {
-    /// <summary>Data copied from the graph on the render thread. Exactly one of the sources is set.</summary>
-    internal sealed class ExportSource
-    {
-        public PbrVertex[]? Vertices;
-        public Int3[]? Triangles;
-        public GeometrySnapshot? Geometry;
-        public Point[]? Points;
-    }
-
-    /// <summary>
-    /// Copy of the arrays of a <see cref="MeshGeometry"/>. Geometry operators rebuild their output
-    /// instance in place on later frames, so a worker thread must never read the live instance.
-    /// </summary>
-    internal sealed class GeometrySnapshot
-    {
-        public GeometrySnapshot(MeshGeometry geometry)
-        {
-            Positions = (Vector3[])geometry.Positions.Clone();
-            FaceCornerOffsets = (int[])geometry.FaceCornerOffsets.Clone();
-            CornerPointIndices = (int[])geometry.CornerPointIndices.Clone();
-            Parts = (GeometryPart[])geometry.Parts.Clone();
-
-            if (geometry.Attributes.TryGet<Vector3>(GeometryAttributeNames.Normal, AttributeDomain.Corner, out var normals))
-                CornerNormals = (Vector3[])normals.Values.Clone();
-
-            if (geometry.Attributes.TryGet<Vector2>(GeometryAttributeNames.TexCoord, AttributeDomain.Corner, out var uvs))
-                CornerUvs = (Vector2[])uvs.Values.Clone();
-
-            if (geometry.Attributes.TryGet<Vector4>(GeometryAttributeNames.Color, AttributeDomain.Corner, out var colors))
-                CornerColors = (Vector4[])colors.Values.Clone();
-        }
-
-        public readonly Vector3[] Positions;
-        public readonly int[] FaceCornerOffsets;
-        public readonly int[] CornerPointIndices;
-        public readonly GeometryPart[] Parts;
-        public readonly Vector3[]? CornerNormals;
-        public readonly Vector2[]? CornerUvs;
-        public readonly Vector4[]? CornerColors;
-    }
-
     /// <summary>Format id, file extension (with dot) and description of every exporter of the native library.</summary>
     public static IReadOnlyList<(string FormatId, string Extension, string Description)> GetExportFormats()
     {
@@ -77,8 +36,26 @@ internal static class AssimpModelExporter
         }
     }
 
-    /// <summary>Builds the scene and writes it. Throws with a user-readable message on failure.</summary>
-    public static void Export(ExportSource source, string absolutePath, string formatId, string meshName)
+    /// <summary>
+    /// Builds the scene and writes it. Throws with a user-readable message on failure and removes a
+    /// partially written file, so a failed export never looks like a successful one.
+    /// </summary>
+    /// <param name="data">A snapshot owned by the worker: exactly one of geometry, mesh or points is set.</param>
+    public static void Export(AssimpModelData data, string absolutePath, string formatId, string meshName)
+    {
+        try
+        {
+            ExportCore(data, absolutePath, formatId, meshName);
+        }
+        catch
+        {
+            // The caller reserves a name that doesn't exist yet, so anything at this path is ours
+            TryDelete(absolutePath);
+            throw;
+        }
+    }
+
+    private static void ExportCore(AssimpModelData data, string absolutePath, string formatId, string meshName)
     {
         if (!AssimpNative.TryEnsureLoaded(out var nativeError))
             throw new InvalidOperationException(nativeError);
@@ -88,20 +65,20 @@ internal static class AssimpModelExporter
         // Several native exporters (FBX, Collada, 3DS, X3D) crash on scenes without a material
         scene.Materials.Add(new AssimpMaterial { Name = "Default" });
 
-        if (source.Geometry != null)
+        if (data.Geometry != null)
         {
-            AddGeometry(scene, source.Geometry, meshName);
+            AddGeometry(scene, data.Geometry, meshName);
         }
-        else if (source.Vertices != null && source.Triangles != null)
+        else if (data.Vertices.Length > 0 && data.Triangles.Length > 0)
         {
-            AddMesh(scene, scene.RootNode, source.Vertices, source.Triangles, meshName);
+            AddMesh(scene, scene.RootNode, data.Vertices, data.Triangles, meshName);
         }
-        else if (source.Points != null)
+        else if (data.Points.Length > 0)
         {
             if (!CanStorePoints(formatId))
                 throw new NotSupportedException($"Format '{formatId}' can't store point clouds. Use obj, ply, gltf2, glb2, fbx or x3d.");
 
-            AddPoints(scene, source.Points, meshName);
+            AddPoints(scene, data.Points, meshName);
         }
 
         if (scene.MeshCount == 0)
@@ -170,7 +147,7 @@ internal static class AssimpModelExporter
     /// One Assimp mesh per geometry part, so DCC tools see the parts as separate objects. Corners
     /// with identical point and attributes share a vertex.
     /// </summary>
-    private static void AddGeometry(AssimpScene scene, GeometrySnapshot geometry, string meshName)
+    private static void AddGeometry(AssimpScene scene, MeshGeometry geometry, string meshName)
     {
         var faceCount = geometry.FaceCornerOffsets.Length - 1;
         var parts = geometry.Parts.Length > 0
@@ -178,9 +155,12 @@ internal static class AssimpModelExporter
                         : [new GeometryPart(0, faceCount, Vector3.Zero, 0, 0)];
 
         var cornerCount = geometry.CornerPointIndices.Length;
-        if (geometry.CornerNormals != null && geometry.CornerNormals.Length != cornerCount
-            || geometry.CornerUvs != null && geometry.CornerUvs.Length != cornerCount
-            || geometry.CornerColors != null && geometry.CornerColors.Length != cornerCount)
+        var normals = GetCornerValues<Vector3>(geometry, GeometryAttributeNames.Normal);
+        var uvs = GetCornerValues<Vector2>(geometry, GeometryAttributeNames.TexCoord);
+        var colors = GetCornerValues<Vector4>(geometry, GeometryAttributeNames.Color);
+        if (normals != null && normals.Length != cornerCount
+            || uvs != null && uvs.Length != cornerCount
+            || colors != null && colors.Length != cornerCount)
         {
             throw new InvalidDataException("Geometry attributes don't match its corner count");
         }
@@ -214,22 +194,22 @@ internal static class AssimpModelExporter
                         throw new InvalidDataException($"Corner {corner} references point {pointIndex} of {geometry.Positions.Length}");
 
                     var key = (pointIndex,
-                               geometry.CornerNormals?[corner] ?? Vector3.Zero,
-                               geometry.CornerUvs?[corner] ?? Vector2.Zero,
-                               geometry.CornerColors?[corner] ?? Vector4.One);
+                               normals?[corner] ?? Vector3.Zero,
+                               uvs?[corner] ?? Vector2.Zero,
+                               colors?[corner] ?? Vector4.One);
 
                     if (!vertexForCorner.TryGetValue(key, out var vertexIndex))
                     {
                         vertexIndex = mesh.VertexCount;
                         vertexForCorner.Add(key, vertexIndex);
                         mesh.Vertices.Add(RequireFinite(geometry.Positions[pointIndex], pointIndex));
-                        if (geometry.CornerNormals != null)
+                        if (normals != null)
                             mesh.Normals.Add(SanitizeDirection(key.Item2, Vector3.UnitY));
 
-                        if (geometry.CornerUvs != null)
+                        if (uvs != null)
                             mesh.TextureCoordinateChannels[0].Add(new Vector3(SanitizeUv(key.Item3), 0));
 
-                        if (geometry.CornerColors != null)
+                        if (colors != null)
                             mesh.VertexColorChannels[0].Add(key.Item4);
                     }
 
@@ -243,7 +223,7 @@ internal static class AssimpModelExporter
             if (mesh.FaceCount == 0)
                 continue;
 
-            if (geometry.CornerUvs != null)
+            if (uvs != null)
                 mesh.UVComponentCount[0] = 2;
 
             mesh.PrimitiveType = primitiveType;
@@ -252,6 +232,11 @@ internal static class AssimpModelExporter
 
         if (scene.MeshCount == 0)
             throw new InvalidDataException("Geometry has no faces");
+    }
+
+    private static T[]? GetCornerValues<T>(MeshGeometry geometry, string name) where T : unmanaged
+    {
+        return geometry.Attributes.TryGet<T>(name, AttributeDomain.Corner, out var attribute) ? attribute.Values : null;
     }
 
     private static void AddPoints(AssimpScene scene, Point[] points, string meshName)
@@ -357,4 +342,16 @@ internal static class AssimpModelExporter
     private static bool IsFinite(Vector3 value) => float.IsFinite(value.X) && float.IsFinite(value.Y) && float.IsFinite(value.Z);
 
     private static bool IsFinite(Vector4 value) => float.IsFinite(value.X) && float.IsFinite(value.Y) && float.IsFinite(value.Z) && float.IsFinite(value.W);
+
+    private static void TryDelete(string path)
+    {
+        try
+        {
+            File.Delete(path);
+        }
+        catch (Exception)
+        {
+            // A locked or already gone file can't be cleaned up; the export failure is what matters
+        }
+    }
 }

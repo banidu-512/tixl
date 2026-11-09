@@ -37,6 +37,10 @@
     {
       "Id": "b569d0cc-9f84-419c-a3db-91406df6a3f8"/*FilePath*/,
       "DefaultValue": ""
+    },
+    {
+      "Id": "e46a0d8b-35f1-4c27-9b93-c1d85a7e2f60"/*IsolateImport*/,
+      "DefaultValue": true
     }
   ],
   "Children": [],

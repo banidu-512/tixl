@@ -48,12 +48,16 @@ internal struct AssimpSkinWeight
 /// <summary>
 /// CPU-side result of an Assimp import. Built on a worker thread; only the owning operator
 /// turns it into GPU resources, on the render thread. Never mutated after publication, except
-/// that the owner drops the decoded texture pixels once they are on the GPU.
+/// that the owner drops the CPU copies once they are on the GPU.
 /// </summary>
 internal sealed class AssimpModelData
 {
     public PbrVertex[] Vertices = [];
     public Int3[] Triangles = [];
+
+    /// <summary>Element counts survive <see cref="DropUploadedBuffers"/>, for outputs and metadata.</summary>
+    public int VertexCount;
+    public int FaceCount;
 
     /// <summary>One chunk per imported mesh instance, so chunk draws can address single objects of the file.</summary>
     public MeshChunkDef[] Chunks = [];
@@ -92,4 +96,17 @@ internal sealed class AssimpModelData
     public string AnimationNames = string.Empty;
 
     public readonly List<string> Warnings = [];
+
+    /// <summary>
+    /// Drops the CPU copies that the GPU buffers now own. A 50M-vertex model keeps several hundred MB
+    /// per array alive otherwise, on top of the GPU buffers and the polygon geometry.
+    /// </summary>
+    public void DropUploadedBuffers()
+    {
+        Vertices = [];
+        Triangles = [];
+        Points = [];
+        SkinWeights = null;
+        SkeletonRestPoints = [];
+    }
 }
