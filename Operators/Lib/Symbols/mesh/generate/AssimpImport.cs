@@ -137,6 +137,7 @@ internal sealed class AssimpImport : Instance<AssimpImport>, IDescriptiveFilenam
                                                 SelectedMeshIndex.GetValue(context),
                                                 ImportMaterials.GetValue(context));
 
+        _isIsolated = IsolateImport.GetValue(context);
         var reloadRequested = MathUtils.WasTriggered(TriggerReload.GetValue(context), ref _reloadTriggered);
         if (reloadRequested)
         {
@@ -184,7 +185,7 @@ internal sealed class AssimpImport : Instance<AssimpImport>, IDescriptiveFilenam
     private void StartLoad(FileVersion fileVersion, AssimpImportSettings settings, bool reparse)
     {
         _isReloadRequested = false;
-        var request = new LoadRequest(++_requestGeneration, fileVersion, settings, reparse, _materialSource);
+        var request = new LoadRequest(++_requestGeneration, fileVersion, settings, reparse, _isIsolated, _materialSource);
         _pendingLoad = request;
 
         var cancellationToken = request.Cancellation.Token;
@@ -199,21 +200,27 @@ internal sealed class AssimpImport : Instance<AssimpImport>, IDescriptiveFilenam
     private void RunLoad(LoadRequest request, CancellationToken cancellationToken)
     {
         LoadOutcome outcome;
-        var absolutePath = request.File.AbsolutePath;
         try
         {
-            var scenes = GetOrImportScenes(request, cancellationToken);
-            cancellationToken.ThrowIfCancellationRequested();
+            AssimpModelData data;
+            object materialIdentity;
+            var isIsolated = request.IsIsolated && AssimpIsolatedImport.IsAvailable;
+            if (isIsolated)
+            {
+                // A crash or hang of the native importer only takes down the child process
+                materialIdentity = request.File;
+                data = AssimpIsolatedImport.Load(request.File.AbsolutePath, request.Settings, CanReuseMaterials(request, materialIdentity),
+                                                 cancellationToken);
+            }
+            else
+            {
+                var scenes = GetOrImportScenes(request, cancellationToken);
+                cancellationToken.ThrowIfCancellationRequested();
+                materialIdentity = scenes;
+                data = AssimpModelLoader.Convert(scenes, request.Settings, CanReuseMaterials(request, scenes), cancellationToken);
+            }
 
-            // Decoding textures dominates conversion time; transform-only changes keep the uploaded materials
-            var previous = request.PreviousMaterials;
-            var reuseMaterials = previous != null
-                                 && ReferenceEquals(previous.Scenes, scenes)
-                                 && previous.SelectedMeshIndex == request.Settings.SelectedMeshIndex
-                                 && request.Settings.ImportMaterials;
-
-            var data = AssimpModelLoader.Convert(scenes, request.Settings, reuseMaterials, cancellationToken);
-            outcome = new LoadOutcome(request.Generation, data, scenes, null);
+            outcome = new LoadOutcome(request.Generation, data, materialIdentity, isIsolated, null);
         }
         catch (OperationCanceledException)
         {
@@ -221,7 +228,7 @@ internal sealed class AssimpImport : Instance<AssimpImport>, IDescriptiveFilenam
         }
         catch (Exception e)
         {
-            outcome = new LoadOutcome(request.Generation, null, null, e.Message);
+            outcome = new LoadOutcome(request.Generation, null, null, false, e.Message);
         }
 
         lock (_completionLock)
@@ -229,6 +236,17 @@ internal sealed class AssimpImport : Instance<AssimpImport>, IDescriptiveFilenam
             if (_completedLoad == null || _completedLoad.Generation < outcome.Generation)
                 _completedLoad = outcome;
         }
+    }
+
+    /// <summary>Decoding textures dominates conversion time; transform-only changes keep the uploaded materials.</summary>
+    private static bool CanReuseMaterials(LoadRequest request, object materialIdentity)
+    {
+        var previous = request.PreviousMaterials;
+        return previous != null
+               && request.Settings.ImportMaterials
+               && ReferenceEquals(previous.Identity, materialIdentity)
+               && previous.SelectedMeshIndex == request.Settings.SelectedMeshIndex
+               && previous.Preset == request.Settings.Preset;
     }
 
     /// <summary>Reuses the parsed file while only conversion settings change, so tweaking Scale doesn't re-read the file.</summary>
@@ -287,14 +305,14 @@ internal sealed class AssimpImport : Instance<AssimpImport>, IDescriptiveFilenam
 
         try
         {
-            UploadModel(outcome.Data);
+            UploadModel(outcome.Data, outcome.WasIsolated);
             if (!request.Settings.ImportMaterials)
             {
                 _materialSource = null;
             }
             else if (!outcome.Data.ReusesPreviousMaterials)
             {
-                _materialSource = new MaterialSource(outcome.Scenes!, request.Settings.SelectedMeshIndex);
+                _materialSource = new MaterialSource(outcome.MaterialIdentity!, request.Settings.SelectedMeshIndex, request.Settings.Preset);
             }
         }
         catch (Exception e)
@@ -337,7 +355,7 @@ internal sealed class AssimpImport : Instance<AssimpImport>, IDescriptiveFilenam
 
     #region gpu resources
     /// <summary>Render thread only. Buffers are reused across loads; views survive data-only updates.</summary>
-    private void UploadModel(AssimpModelData data)
+    private void UploadModel(AssimpModelData data, bool wasIsolated)
     {
         try
         {
@@ -372,7 +390,7 @@ internal sealed class AssimpImport : Instance<AssimpImport>, IDescriptiveFilenam
 
         _model = data;
         _setup = CreateSceneSetup(data);
-        _metadata = BuildMetadata(data);
+        _metadata = BuildMetadata(data, wasIsolated, _isIsolated);
     }
 
     private void UploadBuffers(AssimpModelData data)
@@ -507,7 +525,7 @@ internal sealed class AssimpImport : Instance<AssimpImport>, IDescriptiveFilenam
         AnimationNames.Value = model?.AnimationNames ?? string.Empty;
     }
 
-    private static string BuildMetadata(AssimpModelData data)
+    private static string BuildMetadata(AssimpModelData data, bool wasIsolated, bool isolationRequested)
     {
         var builder = new StringBuilder();
         builder.AppendLine($"Vertices: {data.Vertices.Length:N0}");
@@ -522,7 +540,17 @@ internal sealed class AssimpImport : Instance<AssimpImport>, IDescriptiveFilenam
         if (data.AnimationClips.Count > 0)
             builder.AppendLine($"Animations: {data.AnimationNames}");
 
-        builder.Append($"Assimp {AssimpNative.Version}");
+        if (wasIsolated)
+        {
+            builder.Append("Imported in a separate process");
+        }
+        else
+        {
+            if (isolationRequested)
+                builder.AppendLine($"Imported in-process: {AssimpIsolatedImport.UnavailableReason}");
+
+            builder.Append($"Assimp {AssimpNative.Version}");
+        }
         return builder.ToString();
     }
 
@@ -663,9 +691,11 @@ internal sealed class AssimpImport : Instance<AssimpImport>, IDescriptiveFilenam
     }
     #endregion
 
-    private sealed class LoadRequest(int generation, FileVersion file, AssimpImportSettings settings, bool reparse, MaterialSource? previousMaterials)
+    private sealed class LoadRequest(int generation, FileVersion file, AssimpImportSettings settings, bool reparse, bool isIsolated,
+                                     MaterialSource? previousMaterials)
     {
         public readonly MaterialSource? PreviousMaterials = previousMaterials;
+        public readonly bool IsIsolated = isIsolated;
         public readonly int Generation = generation;
         public readonly FileVersion File = file;
         public readonly AssimpImportSettings Settings = settings;
@@ -676,16 +706,18 @@ internal sealed class AssimpImport : Instance<AssimpImport>, IDescriptiveFilenam
         public readonly Stopwatch Stopwatch = Stopwatch.StartNew();
     }
 
-    private sealed record LoadOutcome(int Generation, AssimpModelData? Data, AssimpImportedScenes? Scenes, string? ErrorMessage);
+    /// <param name="MaterialIdentity">What the materials were read from: the parsed scenes in-process, the file version when isolated.</param>
+    private sealed record LoadOutcome(int Generation, AssimpModelData? Data, object? MaterialIdentity, bool WasIsolated, string? ErrorMessage);
 
     /** What the uploaded materials were built from, to decide whether the next load can keep them. */
-    private sealed record MaterialSource(AssimpImportedScenes Scenes, int SelectedMeshIndex);
+    private sealed record MaterialSource(object Identity, int SelectedMeshIndex, AssimpPostProcessPresets Preset);
 
     private readonly Resource<FileVersion> _fileResource;
     private readonly ISlot[] _allOutputs;
 
     private FileVersion? _requestedFile;
     private bool _isReloadRequested;
+    private bool _isIsolated = true;
     private int _requestGeneration;
     private LoadRequest? _pendingLoad;
     private bool _reloadTriggered;
@@ -740,6 +772,9 @@ internal sealed class AssimpImport : Instance<AssimpImport>, IDescriptiveFilenam
 
     [Input(Guid = "9D2B6F48-E1C7-4A35-B806-7F3E52C0A9D1")]
     public readonly InputSlot<bool> ImportMaterials = new(true);
+
+    [Input(Guid = "E46A0D8B-35F1-4C27-9B93-C1D85A7E2F60")]
+    public readonly InputSlot<bool> IsolateImport = new(true);
 
     [Input(Guid = "4E9A1C73-D6B2-4F58-8A07-B3C5E91D26F4")]
     public readonly InputSlot<bool> TriggerReload = new();

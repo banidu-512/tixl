@@ -81,6 +81,17 @@ Set `FilePath` to broken.fbx, then to a file name that doesn't exist, then back 
 - Switching back loads the model again.
 - Overwriting the file reloads it automatically.
 
+## Step: Isolated import
+
+**Action:**
+Load the .glb and read the last lines of `Metadata`. Then toggle `IsolateImport` off and on, and change `FilePath` to a large file and back while it is still loading.
+
+**Expected:**
+- With a .NET 10 runtime installed, `Metadata` says "Imported in a separate process"; otherwise it names why the import ran in-process.
+- Results look identical with `IsolateImport` on and off.
+- Switching the file while loading stops the previous import; no `dotnet` process stays behind (check the task manager / `ps`).
+- Closing TiXL during a long import ends the import process too.
+
 ## Step: Exporting
 
 **Action:**

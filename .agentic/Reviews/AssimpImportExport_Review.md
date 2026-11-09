@@ -80,13 +80,15 @@ outputs that were not implemented. The port implements them through the existing
 
 ### Open points
 
-1. Native crashes can't be caught in-process. Validation, the guarded native API use and the global
-   lock remove the crashes found so far, but a malicious or exotic file can still take the process
-   down. Fully crash-proof importing needs an out-of-process helper (a small console app speaking a
-   binary protocol over stdin/stdout). Not blocking; worth doing if users load untrusted files.
-2. A native hang can't be aborted. The render thread is never blocked, but the global Assimp lock
-   stays held, so other Assimp imports and exports of the session wait. Status shows the elapsed
-   time, so the hang is visible.
+1. ~~Native crashes can't be caught in-process.~~ Imports run in a child process
+   (`AssimpIsolatedImport` + the `AssimpImportHost` launcher built into Lib's output). A native crash
+   becomes an error status, a hang is killed on cancel or after 10 minutes, and the child exits as
+   soon as the editor goes away (it watches its stdin pipe). The result comes back as a validated
+   binary file (`AssimpModelDataSerializer`, fuzzed with truncation and bit flips). Remaining gap:
+   the launcher needs a `dotnet` executable with .NET 10+; self-contained release builds without
+   one fall back to in-process import, and Metadata says so. Export still runs in-process.
+2. A native hang during an in-process fallback import or an export can't be aborted; the render
+   thread is never blocked, but the global Assimp lock stays held for that session.
 3. ~~Materials and textures are not imported.~~ Implemented: PBR materials with base color,
    emissive, normal and a CPU-baked roughness/metallic/occlusion map; textures decoded on the worker,
    reused across transform-only reloads and released from CPU memory after upload. Not handled:
@@ -112,4 +114,7 @@ outputs that were not implemented. The port implements them through the existing
 - Round-trips through obj, fbx, glb, gltf, stl, ply, collada, 3mf, x3d for mesh, geometry and points.
 - 64 concurrent imports/exports with random settings and cancellation: no crash, corrupt files
   fail cleanly.
+- Isolated imports produce results bit-identical to in-process ones; ~100-150 ms process overhead.
+  A child that dereferences a bad pointer, one killed with SIGKILL, a cancelled import and a killed
+  parent were all checked: the parent keeps running and no child is left behind.
 - Not yet run in the editor: see `.tests-manual/assimp-import-export.md`.
