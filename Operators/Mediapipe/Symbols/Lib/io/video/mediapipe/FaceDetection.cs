@@ -36,7 +36,12 @@ namespace Lib.io.video.mediapipe
         private const int MaxInferenceWidth = 640;
         private const int MaxCachedStagingTextures = 4;
         private const int MaxPooledBuffers = 4;
+
         private static readonly int MaxDownscaleThreads = Math.Clamp(Environment.ProcessorCount, 1, 8);
+
+        /// <summary>Xnnpack worker threads used when the InferenceThreads input keeps its default.
+        /// See <see cref="MediaPipeInferenceTuning"/> for why the binding's 0 is a bad default.</summary>
+        private const int DefaultInferenceThreads = MediaPipeInferenceTuning.DefaultThreads;
 
         [Output(Guid = "B2C3D4E5-F6A7-489A-9B0C-DEF123456790", DirtyFlagTrigger = DirtyFlagTrigger.Animated)]
         public readonly Slot<Texture2D> OutputTexture = new();
@@ -1152,9 +1157,11 @@ private Mat Texture2DToMat(Texture2D texture)
         [Input(Guid = "a1b2c3d4-0002-4a9b-8c2d-101010101010")]
         public readonly InputSlot<MediaPipeAcceleration> Acceleration = new(MediaPipeAcceleration.Xnnpack);
 
-        /// <summary>Worker threads for the Xnnpack acceleration (0 = library default). Ignored by Cpu and Gpu.</summary>
+        /// <summary>Worker threads for the Xnnpack acceleration (0 = library default, which is effectively
+        /// single-threaded). 4 is ~2x faster than the default on a 20-core machine; use 2 when
+        /// several MediaPipe operators run at once. Ignored by Cpu and Gpu.</summary>
         [Input(Guid = "a1b2c3d4-1002-4a9b-8c2d-101010101010")]
-        public readonly InputSlot<int> InferenceThreads = new(0);
+        public readonly InputSlot<int> InferenceThreads = new(DefaultInferenceThreads);
 
 
         [Input(Guid = "A4B5C6D7-E8F9-60A1-12B3-456789012DE5")]

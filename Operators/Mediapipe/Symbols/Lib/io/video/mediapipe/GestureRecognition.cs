@@ -232,7 +232,12 @@ public class GestureRecognition : Instance<GestureRecognition>
     private const int MaxInferenceWidth = 640;
     private const int MaxCachedStagingTextures = 4;
     private const int MaxPooledBuffers = 4;
+
     private static readonly int MaxDownscaleThreads = Math.Clamp(Environment.ProcessorCount, 1, 8);
+
+    /// <summary>Xnnpack worker threads used when the InferenceThreads input keeps its default.
+    /// See <see cref="MediaPipeInferenceTuning"/> for why the binding's 0 is a bad default.</summary>
+    private const int DefaultInferenceThreads = MediaPipeInferenceTuning.DefaultThreads;
 
     private HandLandmarker? _handLandmarker;
     private long _frameTimestamp;
@@ -1381,9 +1386,11 @@ public class GestureRecognition : Instance<GestureRecognition>
     [Input(Guid = "a1b2c3d4-0004-4a9b-8c2d-101010101010")]
     public readonly InputSlot<MediaPipeAcceleration> Acceleration = new(MediaPipeAcceleration.Xnnpack);
 
-    /// <summary>Worker threads for the Xnnpack acceleration (0 = library default). Ignored by Cpu and Gpu.</summary>
+    /// <summary>Worker threads for the Xnnpack acceleration (0 = library default, which is effectively
+        /// single-threaded). 4 is ~2x faster than the default on a 20-core machine; use 2 when
+        /// several MediaPipe operators run at once. Ignored by Cpu and Gpu.</summary>
     [Input(Guid = "a1b2c3d4-1004-4a9b-8c2d-101010101010")]
-    public readonly InputSlot<int> InferenceThreads = new(0);
+    public readonly InputSlot<int> InferenceThreads = new(DefaultInferenceThreads);
 
     [Input(Guid = "B6D7E8F9-0AB1-92C3-45E6-789012345678")]
     public readonly InputSlot<float> ZScale = new(1.0f);

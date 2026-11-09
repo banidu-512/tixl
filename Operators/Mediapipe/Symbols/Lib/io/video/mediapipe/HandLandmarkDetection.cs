@@ -52,7 +52,12 @@ public class HandLandmarkDetection : Instance<HandLandmarkDetection>
     private const int MaxInferenceWidth = 640;
     private const int MaxCachedStagingTextures = 4;
     private const int MaxPooledBuffers = 4;
+
     private static readonly int MaxDownscaleThreads = Math.Clamp(Environment.ProcessorCount, 1, 8);
+
+    /// <summary>Xnnpack worker threads used when the InferenceThreads input keeps its default.
+    /// See <see cref="MediaPipeInferenceTuning"/> for why the binding's 0 is a bad default.</summary>
+    private const int DefaultInferenceThreads = MediaPipeInferenceTuning.DefaultThreads;
 
     [Output(Guid = "def01234-5678-90ab-cdef-1234567890ab", DirtyFlagTrigger = DirtyFlagTrigger.Animated)]
     public readonly Slot<Texture2D> OutputTexture = new();
@@ -1039,9 +1044,11 @@ public class HandLandmarkDetection : Instance<HandLandmarkDetection>
     [Input(Guid = "a1b2c3d4-0001-4a9b-8c2d-101010101010")]
     public readonly InputSlot<MediaPipeAcceleration> Acceleration = new(MediaPipeAcceleration.Xnnpack);
 
-    /// <summary>Worker threads for the Xnnpack acceleration (0 = library default). Ignored by Cpu and Gpu.</summary>
+    /// <summary>Worker threads for the Xnnpack acceleration (0 = library default, which is effectively
+        /// single-threaded). 4 is ~2x faster than the default on a 20-core machine; use 2 when
+        /// several MediaPipe operators run at once. Ignored by Cpu and Gpu.</summary>
     [Input(Guid = "a1b2c3d4-1001-4a9b-8c2d-101010101010")]
-    public readonly InputSlot<int> InferenceThreads = new(0);
+    public readonly InputSlot<int> InferenceThreads = new(DefaultInferenceThreads);
 
     /// <summary>Rescales each hand's landmark cloud around its wrist so its size no longer depends
     /// on the distance to the camera.</summary>
