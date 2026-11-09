@@ -37,9 +37,19 @@ internal static class ProjectsPanel
         ImGui.BeginChild("content", new Vector2(0, 0), ImGuiChildFlags.Borders, ImGuiWindowFlags.NoBackground);
         {
             ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(5, 5));
-            
+
+            // 0. Live collaboration sessions — join straight from the hub.
+            DrawCollabSessions();
+
+            FormInputs.AddSectionHeader("Local projects");
+            var drawnFolders = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var package in EditableSymbolProject.AllProjects)
             {
+                // The card's ImGui ID comes from the folder, so a same-folder duplicate would
+                // draw twice with conflicting IDs - the assert the hub must never trigger.
+                if (!drawnFolders.Add(package.Folder))
+                    continue;
+
                 DrawProjectItem(window, package);
             }
             

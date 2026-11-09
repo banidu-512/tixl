@@ -287,10 +287,18 @@ internal static partial class ProjectSetup
                       .ToArray();
 
         failedProjects = [];
+        failedProjects = [];
+        var registeredFolders = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var projectInfo in projectResults)
         {
             if (projectInfo is { csProjFile: not null, success: true }&& !projectInfo.csProjFile.IsArchived)
             {
+                if (!registeredFolders.Add(projectInfo.csProjFile.Directory))
+                {
+                    Log.Debug($"Project folder '{projectInfo.csProjFile.Directory}' is registered already - skipping the duplicate");
+                    continue;
+                }
+
                 var project = new EditableSymbolProject(projectInfo.csProjFile);
                 AddToLoadedPackages(project);
             }
@@ -309,6 +317,11 @@ internal static partial class ProjectSetup
               .SelectMany(dir => Directory.EnumerateFiles(dir, "*.csproj", SearchOption.AllDirectories))
               .Where(path => !path.Contains(exportSegment, StringComparison.OrdinalIgnoreCase))
               .Select(x => new FileInfo(x))
+              // Overlapping roots (a registered directory inside another, or the same one listed
+              // twice) make AllDirectories enumerate the same project twice; two instances of one
+              // folder then collide on the hub's card IDs. One project per folder - first wins.
+              .GroupBy(x => x.DirectoryName ?? x.Name, StringComparer.OrdinalIgnoreCase)
+              .Select(g => g.First())
               .ToArray();
         
 
