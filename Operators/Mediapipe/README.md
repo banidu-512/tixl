@@ -18,7 +18,6 @@ user-facing reference lives in `.help/docs/operators/lib/io/video/mediapipe/`.
 Installed as a package, `Symbols/` and the operators' sources are mirrored into `SourceCode/`; the
 `Utils/` helpers are not part of that mirror (the editor only uses it to map a symbol to the file it came
 from, and warns about every file there that declares no operator).
-
 ## Threading model
 
 An operator never runs inference on the evaluation thread. `Update` only does three things:
@@ -38,12 +37,10 @@ to 640 px, and every operator reading the same texture then copies from that arr
 buffer. Measured with seven operators on one camera: 11.3 ms/frame of readback became 3.6 ms at 1080p
 (3.2x), 6.4 -> 2.3 ms at 720p. The cache holds the arrays across frames and rebuilds only when the size or
 the frame changes, so the steady state allocates nothing.
-
 XNNPACK is the acceleration that matters on every platform. `InferenceThreads` defaults to 4 - the
 binding's 0 ("library default") is effectively single-threaded and measured 20.6 ms/frame against 10.9 ms
 at 4 on a 20-core machine; 8 adds about 10% for double the threads. Graphs driving several operators from
 one camera should lower it to 2 each, which is what the example does.
-
 Every dequeued result replaces the previous one — including an empty result, which clears the outputs.
 Holding the last non-empty result would latch `FaceCount`/`PointBuffer` (etc.) onto the last face ever
 seen instead of reporting that it left the frame.

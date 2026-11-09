@@ -158,6 +158,9 @@
     <!-- Managed-only DirectShow interop for [WebcamInput]'s camera controls (brightness, pan, zoom...) on
          Windows; the assembly loads elsewhere but is never called. -->
     <PackageReference Include="DirectShowLib.Standard" Version="2.1.0" />
+    <!-- Assimp model import/export ([AssimpImport], [AssimpExport]). Ships native builds for win/linux/osx
+         x64 and arm64 under runtimes/; AssimpNet loads them with its own resolver (see AssimpNative). -->
+    <PackageReference Include="AssimpNetter" Version="6.0.5" />
   </ItemGroup>
   <!-- Copy package content into this project's own output only (not transitively to other projects).
        Uses a custom Target instead of <Content CopyToOutputDirectory> to prevent MSBuild from
@@ -215,6 +218,11 @@
     </PropertyGroup>
     <WriteLinesToFile File="$(OutputPath)/OperatorPackage.json" Lines="$(OperatorPackageInfoJson)" Overwrite="True" Encoding="UTF-8" />
   </Target>
+  <!-- Launcher for isolated Assimp imports and exports (AssimpIsolatedImport), placed next to the package so
+       it ships with it. Incremental: skipped while its output is newer than its sources, so hot-reload
+       compiles don't pay for it. Restore runs as its own call because the launcher isn't part of the
+       solution restore. It is listed in t3.sln for IDE visibility only (ActiveCfg, no Build.0), which keeps
+       a solution build from compiling it a second time next to this target. -->
   <!-- Standalone launcher for isolated Assimp imports and exports outside the editor (the editor hosts
        the same worker itself). Placed next to the package so it ships with it. Incremental: skipped
        while its output is newer than its sources, so hot-reload compiles don't pay for it. Restore runs

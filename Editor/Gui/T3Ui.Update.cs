@@ -193,7 +193,8 @@ public static partial class T3Ui
             else if (!_missingOperatorsChecked && !IsAnyPopupOpen)
             {
                 _missingOperatorsChecked = true;
-                _missingOperatorsDialog.ShowIfOperatorsAreMissing();
+                if (UserSettings.Config.ShowMissingSymbolsWarningOnStartup)
+                    _missingOperatorsDialog.ShowIfOperatorsAreMissing();
             }
             else if (!_crashReportsChecked && !IsAnyPopupOpen)
             {
