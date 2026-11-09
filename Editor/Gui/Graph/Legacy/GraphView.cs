@@ -79,6 +79,14 @@ internal sealed class GraphView : ScalableCanvas, IGraphView
         ParameterExtraction.ExtractAsConnectedOperator(inputSlot, symbolChildUi, input, freePosition);
     }
 
+    void IGraphView.PublishAsInput(SymbolUi.Child symbolChildUi, Symbol.Child.Input input, IInputUi inputUi)
+    {
+        if (_projectView?.InstView == null)
+            return;
+
+        InputArea.PublishAsInput(_projectView.InstView.Symbol, symbolChildUi, input, inputUi);
+    }
+
     public void StartDraggingFromInputSlot(SymbolUi.Child symbolChildUi, Symbol.InputDefinition inputInputDefinition)
     {
         if (_projectView.InstView == null)
@@ -264,17 +272,17 @@ internal sealed class GraphView : ScalableCanvas, IGraphView
                     _projectView.TrySetCompositionOp(navigationPath);
             }
 
-            if (UserActions.SelectToAbove.Triggered())
+            if (ImGui.IsWindowFocused(ImGuiFocusedFlags.ChildWindows) && UserActions.SelectToAbove.Triggered())
             {
                 _nodeNavigation.SelectAbove();
             }
 
-            if (UserActions.SelectToRight.Triggered())
+            if (ImGui.IsWindowFocused(ImGuiFocusedFlags.ChildWindows) && UserActions.SelectToRight.Triggered())
             {
                 _nodeNavigation.SelectRight();
             }
 
-            if (UserActions.SelectToBelow.Triggered())
+            if (ImGui.IsWindowFocused(ImGuiFocusedFlags.ChildWindows) && UserActions.SelectToBelow.Triggered())
             {
                 _nodeNavigation.SelectBelow();
             }
@@ -284,7 +292,7 @@ internal sealed class GraphView : ScalableCanvas, IGraphView
                 EditCommentDialog.ShowNextFrame();
             }
 
-            if (UserActions.SelectToLeft.Triggered())
+            if (ImGui.IsWindowFocused(ImGuiFocusedFlags.ChildWindows) && UserActions.SelectToLeft.Triggered())
             {
                 _nodeNavigation.SelectLeft();
             }

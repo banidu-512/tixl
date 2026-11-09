@@ -43,6 +43,7 @@ internal sealed class LoopRange : IValueSnapAttractor
 
             if (ImGui.IsItemActive() && ImGui.IsMouseDragging(ImGuiMouseButton.Left))
             {
+                canvas.RequestEdgeScrolling();
                 var newTime = canvas.InverseTransformX(ImGui.GetIO().MousePos.X);
                 if(snapHandler.TryCheckForSnapping( newTime, out var snappedValue, canvas.Scale.X, [this]))
                 {
@@ -82,6 +83,7 @@ internal sealed class LoopRange : IValueSnapAttractor
 
             if (ImGui.IsItemActive() && ImGui.IsMouseDragging(ImGuiMouseButton.Left))
             {
+                canvas.RequestEdgeScrolling();
                 var newTime = canvas.InverseTransformX(ImGui.GetIO().MousePos.X);
                 if (snapHandler.TryCheckForSnapping(newTime, out var snappedValue, canvas.Scale.X, [this]))
                 {
@@ -100,7 +102,7 @@ internal sealed class LoopRange : IValueSnapAttractor
         ImGui.SetCursorScreenPos(new Vector2(xInScreen, maxY - paddingFromBottom));
     }
 
-    private static readonly Vector2 _timeRangeHandleSize = new(10, 20);
+    private static Vector2 _timeRangeHandleSize => new Vector2(10, 20) * T3Ui.UiScaleFactor;
     private static readonly Vector2 _timeRangeShadowSize = new(5, 9999);
     private static readonly Color _timeRangeShadowColor = new(0, 0, 0, 0.5f);
     private static readonly Color _timeRangeOutsideColor = new(0.0f, 0.0f, 0.0f, 0.3f);

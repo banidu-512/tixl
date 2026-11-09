@@ -1,7 +1,6 @@
 #nullable enable
 using System.Runtime.InteropServices;
 using T3.Core.Animation;
-using T3.Graphics;
 using T3.Graphics.Compat;
 using T3.Core.Rendering;
 using T3.Core.Utils;
@@ -315,6 +314,7 @@ internal sealed class RenderToCubeMap : Instance<RenderToCubeMap>
                           UnorderedAccessView? resultColor, UnorderedAccessView? resultData)
     {
         var csStage = deviceContext.ComputeShader;
+        deviceContext.PushState(StateGroups.ComputeShader);
 
         csStage.Set(shader);
         csStage.SetConstantBuffer(0, _paramsBuffer);
@@ -327,21 +327,13 @@ internal sealed class RenderToCubeMap : Instance<RenderToCubeMap>
             csStage.SetUnorderedAccessView(1, resultData, 0);
 
         deviceContext.Dispatch(groupCount, groupCount, FaceCount);
-
-        // The same textures swap between input and output, and D3D11 rejects a resource bound as both.
-        csStage.SetConstantBuffer(0, null);
-        for (var slot = 0; slot < 4; slot++)
-        {
-            csStage.SetShaderResource(slot, null);
-        }
-
-        csStage.SetUnorderedAccessView(0, null, 0);
-        csStage.SetUnorderedAccessView(1, null, 0);
+        deviceContext.PopState();
     }
 
     private void CopyFacesIntoCubeMap(DeviceContext deviceContext, ComputeShader copyShader, int size)
     {
         var csStage = deviceContext.ComputeShader;
+        deviceContext.PushState(StateGroups.ComputeShader);
 
         csStage.Set(copyShader);
         csStage.SetShaderResource(0, _facesSrv);
@@ -350,9 +342,7 @@ internal sealed class RenderToCubeMap : Instance<RenderToCubeMap>
         var groupCount = (size + CopyThreadGroupSize - 1) / CopyThreadGroupSize;
         deviceContext.Dispatch(groupCount, groupCount, FaceCount);
 
-        // Consumers read the cube map and the next frame renders into the faces, so neither may stay bound here.
-        csStage.SetShaderResource(0, null);
-        csStage.SetUnorderedAccessView(0, null, 0);
+        deviceContext.PopState();
     }
 
     private bool TryGetCamera(EvaluationContext context, [NotNullWhen(true)] out ICameraPropertiesProvider? camera)
@@ -613,46 +603,46 @@ internal sealed class RenderToCubeMap : Instance<RenderToCubeMap>
     {
         for (var faceIndex = 0; faceIndex < FaceCount; faceIndex++)
         {
-            GraphicsUtilities.Dispose(ref _sampleRtvs[faceIndex]);
-            GraphicsUtilities.Dispose(ref _sampleDepthDsvs[faceIndex]);
+            T3.Graphics.Compat.GraphicsUtilities.Dispose(ref _sampleRtvs[faceIndex]);
+            T3.Graphics.Compat.GraphicsUtilities.Dispose(ref _sampleDepthDsvs[faceIndex]);
         }
 
-        GraphicsUtilities.Dispose(ref _samplesSrv);
-        GraphicsUtilities.Dispose(ref _samples);
-        GraphicsUtilities.Dispose(ref _sampleDepthSrv);
-        GraphicsUtilities.Dispose(ref _sampleDepth);
+        T3.Graphics.Compat.GraphicsUtilities.Dispose(ref _samplesSrv);
+        T3.Graphics.Compat.GraphicsUtilities.Dispose(ref _samples);
+        T3.Graphics.Compat.GraphicsUtilities.Dispose(ref _sampleDepthSrv);
+        T3.Graphics.Compat.GraphicsUtilities.Dispose(ref _sampleDepth);
 
         for (var historyIndex = 0; historyIndex < 2; historyIndex++)
         {
-            GraphicsUtilities.Dispose(ref _historyColorUavs[historyIndex]);
-            GraphicsUtilities.Dispose(ref _historyColorSrvs[historyIndex]);
-            GraphicsUtilities.Dispose(ref _historyColors[historyIndex]);
-            GraphicsUtilities.Dispose(ref _historyDataUavs[historyIndex]);
-            GraphicsUtilities.Dispose(ref _historyDataSrvs[historyIndex]);
-            GraphicsUtilities.Dispose(ref _historyDatas[historyIndex]);
+            T3.Graphics.Compat.GraphicsUtilities.Dispose(ref _historyColorUavs[historyIndex]);
+            T3.Graphics.Compat.GraphicsUtilities.Dispose(ref _historyColorSrvs[historyIndex]);
+            T3.Graphics.Compat.GraphicsUtilities.Dispose(ref _historyColors[historyIndex]);
+            T3.Graphics.Compat.GraphicsUtilities.Dispose(ref _historyDataUavs[historyIndex]);
+            T3.Graphics.Compat.GraphicsUtilities.Dispose(ref _historyDataSrvs[historyIndex]);
+            T3.Graphics.Compat.GraphicsUtilities.Dispose(ref _historyDatas[historyIndex]);
         }
     }
 
     private void DisposeTextures()
     {
-        GraphicsUtilities.Dispose(ref _cubeMapUav);
-        GraphicsUtilities.Dispose(ref _cubeMapSrv);
-        GraphicsUtilities.Dispose(ref _cubeMap);
+        T3.Graphics.Compat.GraphicsUtilities.Dispose(ref _cubeMapUav);
+        T3.Graphics.Compat.GraphicsUtilities.Dispose(ref _cubeMapSrv);
+        T3.Graphics.Compat.GraphicsUtilities.Dispose(ref _cubeMap);
 
         for (var faceIndex = 0; faceIndex < FaceCount; faceIndex++)
         {
-            GraphicsUtilities.Dispose(ref _faceRtvs[faceIndex]);
+            T3.Graphics.Compat.GraphicsUtilities.Dispose(ref _faceRtvs[faceIndex]);
         }
 
-        GraphicsUtilities.Dispose(ref _facesUav);
-        GraphicsUtilities.Dispose(ref _facesSrv);
-        GraphicsUtilities.Dispose(ref _faces);
+        T3.Graphics.Compat.GraphicsUtilities.Dispose(ref _facesUav);
+        T3.Graphics.Compat.GraphicsUtilities.Dispose(ref _facesSrv);
+        T3.Graphics.Compat.GraphicsUtilities.Dispose(ref _faces);
 
-        GraphicsUtilities.Dispose(ref _multiSampledRtv);
-        GraphicsUtilities.Dispose(ref _multiSampled);
+        T3.Graphics.Compat.GraphicsUtilities.Dispose(ref _multiSampledRtv);
+        T3.Graphics.Compat.GraphicsUtilities.Dispose(ref _multiSampled);
 
-        GraphicsUtilities.Dispose(ref _depthDsv);
-        GraphicsUtilities.Dispose(ref _depth);
+        T3.Graphics.Compat.GraphicsUtilities.Dispose(ref _depthDsv);
+        T3.Graphics.Compat.GraphicsUtilities.Dispose(ref _depth);
     }
 
     protected override void Dispose(bool isDisposing)
@@ -662,7 +652,7 @@ internal sealed class RenderToCubeMap : Instance<RenderToCubeMap>
 
         DisposeTextures();
         DisposeProgressiveTextures();
-        GraphicsUtilities.Dispose(ref _paramsBuffer);
+        T3.Graphics.Compat.GraphicsUtilities.Dispose(ref _paramsBuffer);
     }
 
     private static Int2 GetBayerOffset(int tileSize, int sampleIndex)

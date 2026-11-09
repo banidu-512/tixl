@@ -40,12 +40,14 @@ internal sealed partial class SettingsWindow : Window
         Failover,
         Audio,
         Midi,
-        SpaceMouse,
+        InputDevices,
         Keyboard,
         Diagnostics,
     }
 
     private Categories _activeCategory;
+    /** All categories share one content panel, so its scroll offset would otherwise carry over. */
+    private bool _scrollContentToTop;
 
     /// <summary>Selects a category by its enum name; used by the debug bridge.</summary>
     internal bool TrySelectCategory(string name)
@@ -53,8 +55,25 @@ internal sealed partial class SettingsWindow : Window
         if (!Enum.TryParse<Categories>(name, true, out var category))
             return false;
 
-        _activeCategory = category;
+        SelectCategory(category);
         return true;
+    }
+
+    /// <summary>Shows the window on the Projects category, e.g. to edit the project folders.</summary>
+    internal void ShowProjectsCategory()
+    {
+        Config.Visible = true;
+        SelectCategory(Categories.Projects);
+        RequestWindowFocus();
+    }
+
+    private void SelectCategory(Categories category)
+    {
+        if (category == _activeCategory)
+            return;
+
+        _activeCategory = category;
+        _scrollContentToTop = true;
     }
 
     /// <summary>Pinned to the bottom of the sidebar: opens the per-version settings folder in the OS file browser.</summary>
@@ -83,7 +102,7 @@ internal sealed partial class SettingsWindow : Window
                                ? "Midi & OSC"
                                : CustomComponents.HumanReadablePascalCase(Enum.GetName(category));
                 if (NavigationSidebar.Item(name, _activeCategory == category))
-                    _activeCategory = category;
+                    SelectCategory(category);
             }
 
             DrawOpenSettingsFolderButton();
@@ -92,6 +111,12 @@ internal sealed partial class SettingsWindow : Window
 
         NavigationSidebar.BeginContentPanel(CategoryTitle(_activeCategory), this, alwaysShowScrollbar: true);
         {
+            if (_scrollContentToTop)
+            {
+                ImGui.SetScrollY(0);
+                _scrollContentToTop = false;
+            }
+
             FormInputs.SetIndentToParameters();
             FormInputs.PushMaxContentWidth(560);
             switch (_activeCategory)
@@ -296,11 +321,6 @@ internal sealed partial class SettingsWindow : Window
                                                       "If enabled, scrolling the mouse wheel while holding left of right mouse button will control navigation speed with WASD keys. This is similar to Unity and Unreal",
                                                       UserSettings.Defaults.AdjustCameraSpeedWithMouseWheel);
 
-                    changed |= FormInputs.AddCheckBox("Mirror UI on second view",
-                                                      ref UserSettings.Config.MirrorUiOnSecondView,
-                                                      "On Windows mirroring displays can be extremely slow. This settings is will copy the UI to the second view instead of mirroring it.",
-                                                      UserSettings.Defaults.MirrorUiOnSecondView);
-
                     changed |= FormInputs.AddCheckBox("Balance soundtrack visualizer",
                                                       ref UserSettings.Config.ExpandSpectrumVisualizerVertically,
                                                       "If true, changes the visualized pitch's logarithmic scale from base 'e' to base 10.\nLower frequencies will become more visible, making the frequency spectrum\n appear more \"balanced\"",
@@ -324,7 +344,8 @@ internal sealed partial class SettingsWindow : Window
 
                     changed |= FormInputs.AddCheckBox("Suspend rendering when hidden",
                                                       ref UserSettings.Config.SuspendRenderingWhenHidden,
-                                                      "Suspend rendering and update when Tooll's editor window is minimized. This will reduce energy consumption significantly.",
+                                                      "Suspend rendering and update when Tooll's editor window is minimized. This will reduce energy consumption significantly.\n" +
+                                                      "Not applied during playback or while outputs are shown on other displays.",
                                                       UserSettings.Defaults.SuspendRenderingWhenHidden);
 
                     FormInputs.AddVerticalSpace();
@@ -471,6 +492,34 @@ internal sealed partial class SettingsWindow : Window
                                                                      CoreSettings.Defaults.EnableDirectXDebug);
                     FormInputs.SetIndentToParameters();
 
+                    FormInputs.AddVerticalSpace();
+                    changed |= FormInputs.AddInt("Keep Projects Loaded",
+                                                 ref UserSettings.Config.KeepLoadedProjectCount,
+                                                 1, 10, 0.1f,
+                                                 """
+                                                 How many recently shown projects stay loaded, including the current one.
+                                                 Switching back to a loaded project is instant. Older ones are unloaded to free GPU memory and are rebuilt when opened again.
+                                                 """,
+                                                 UserSettings.Defaults.KeepLoadedProjectCount);
+
+                    changed |= FormInputs.AddInt("GPU Memory Limit %",
+                                                 ref UserSettings.Config.GpuMemoryLimitPercent,
+                                                 10, 100, 0.2f,
+                                                 """
+                                                 How much of the GPU memory the driver grants TiXL it may use. Above this, render targets that nothing currently shows give up their memory, largest first, and re-render when shown again — which can cost a frame.
+                                                 Below it nothing is released, so a show that fits in memory runs without such hitches.
+                                                 """,
+                                                 UserSettings.Defaults.GpuMemoryLimitPercent);
+
+                    changed |= FormInputs.AddInt("Release Unused Render Targets",
+                                                 ref UserSettings.Config.ReleaseUnusedRenderTargetsAfterSeconds,
+                                                 0, 600, 0.5f,
+                                                 """
+                                                 Seconds after which render targets that nothing shows give up their GPU memory, even below the limit. They re-render when shown again, which can cost a frame — for example when the timeline reaches a clip.
+                                                 Targets that accumulate content or are frozen are kept. 0 (the default) never releases them for being unused.
+                                                 """,
+                                                 UserSettings.Defaults.ReleaseUnusedRenderTargetsAfterSeconds);
+
                     break;
                 }
                 case Categories.Audio:
@@ -492,21 +541,8 @@ internal sealed partial class SettingsWindow : Window
                                                                 CoreSettings.Defaults.DefaultOscPort);
                     break;
                 }
-                case Categories.SpaceMouse:
-                    CustomComponents.HelpText("These settings only apply with a connected space mouse controller");
-                    FormInputs.AddVerticalSpace();
-
-                    changed |= FormInputs.AddFloat("Smoothing",
-                                                   ref UserSettings.Config.SpaceMouseDamping,
-                                                   0.0f, 10f, 0.01f, true, true);
-
-                    changed |= FormInputs.AddFloat("Move Speed",
-                                                   ref UserSettings.Config.SpaceMouseMoveSpeedFactor,
-                                                   0.0f, 10f, 0.01f, true, true);
-
-                    changed |= FormInputs.AddFloat("Rotation Speed",
-                                                   ref UserSettings.Config.SpaceMouseRotationSpeedFactor,
-                                                   0.0f, 10f, 0.01f, true, true);
+                case Categories.InputDevices:
+                    DrawInputDevicesPanel(ref changed);
                     break;
 
                 case Categories.Keyboard:
@@ -683,6 +719,174 @@ internal sealed partial class SettingsWindow : Window
         NavigationSidebar.EndContentPanel();
     }
 
+    /// <summary>
+    /// Devices beside mouse and keyboard: game controllers (for operators or the camera) and the SpaceMouse. Each
+    /// group starts with its connection status, the place for reconnecting.
+    /// </summary>
+    private static void DrawInputDevicesPanel(ref bool changed)
+    {
+        FormInputs.SetIndentToLeft();
+        FormInputs.AddSectionSubHeader("Game Controller");
+        FormInputs.AddVerticalSpace();
+        FormInputs.SetIndentToParameters();
+
+        // Both groups have a "Move Speed", and form inputs take their ID from the label
+        ImGui.PushID("GameController");
+
+        DrawGamepadStatus();
+        FormInputs.ApplyIndent();
+        if (ImGui.Button("Rescan"))
+            SdlGamepads.Rescan();
+
+        CustomComponents.TooltipForLastItem("Looks for newly connected controllers. Controllers are also found within a second on their own.",
+                                            "On Linux a Bluetooth Xbox controller may connect without sending input; a USB cable or the xpadneo driver helps.");
+        FormInputs.AddVerticalSpace();
+
+        changed |= FormInputs.AddEnumDropdown(ref UserSettings.Config.GamepadUsage,
+                                              "Use for",
+                                              "Operators: [Gamepad] reads the controller. Camera: the controller flies the camera of the output and [Gamepad] sees a released controller. Same as clicking the controller icon in the menu bar.",
+                                              UserSettings.Defaults.GamepadUsage,
+                                              usage => usage switch
+                                                           {
+                                                               UserSettings.InputDeviceUsages.Operators => "Operators",
+                                                               UserSettings.InputDeviceUsages.Editor    => "Camera",
+                                                               _                                    => "Off",
+                                                           });
+
+        changed |= FormInputs.AddFloat("Camera Smoothing",
+                                       ref UserSettings.Config.GamepadCameraSmoothing,
+                                       0f, 3f, 0.01f, true, true,
+                                       "Seconds the camera takes to follow the sticks. Longer gives calmer moves, e.g. for live demos.",
+                                       UserSettings.Defaults.GamepadCameraSmoothing);
+
+        changed |= FormInputs.AddFloat("Move Speed",
+                                       ref UserSettings.Config.GamepadCameraMoveSpeed,
+                                       0f, 10f, 0.01f, true, true,
+                                       "Scales flying with the left stick and the triggers.",
+                                       UserSettings.Defaults.GamepadCameraMoveSpeed);
+
+        changed |= FormInputs.AddFloat("Look Speed",
+                                       ref UserSettings.Config.GamepadCameraLookSpeed,
+                                       0f, 10f, 0.01f, true, true,
+                                       "Scales looking around with the right stick.",
+                                       UserSettings.Defaults.GamepadCameraLookSpeed);
+
+        changed |= FormInputs.AddCheckBox("Invert Look",
+                                          ref UserSettings.Config.GamepadCameraInvertLook,
+                                          "Pushing the right stick up looks down, as in flight games.",
+                                          UserSettings.Defaults.GamepadCameraInvertLook);
+        ImGui.PopID();
+
+        FormInputs.AddVerticalSpace();
+        FormInputs.SetIndentToLeft();
+        FormInputs.AddSectionSubHeader("SpaceMouse");
+        FormInputs.AddVerticalSpace();
+        FormInputs.SetIndentToParameters();
+
+        DrawSpaceMouseStatus();
+        FormInputs.AddVerticalSpace();
+
+        ImGui.PushID("SpaceMouse");
+        changed |= FormInputs.AddEnumDropdown(ref UserSettings.Config.SpaceMouseUsage,
+                                              "Use for",
+                                              "Camera: the SpaceMouse flies the camera of the output. Operators: [SpaceMouse] reads it and the camera ignores it.",
+                                              UserSettings.Defaults.SpaceMouseUsage,
+                                              usage => usage switch
+                                                           {
+                                                               UserSettings.InputDeviceUsages.Operators => "Operators",
+                                                               UserSettings.InputDeviceUsages.Editor    => "Camera",
+                                                               _                                        => "Off",
+                                                           });
+
+
+        changed |= FormInputs.AddFloat("Smoothing",
+                                       ref UserSettings.Config.SpaceMouseDamping,
+                                       0.0f, MaxSpaceMouseDamping, 0.01f, true, true,
+                                       "How much of the previous motion carries over each frame: 0 follows the cap directly, values close to 1 glide long.",
+                                       UserSettings.Defaults.SpaceMouseDamping);
+
+        changed |= FormInputs.AddFloat("Move Speed",
+                                       ref UserSettings.Config.SpaceMouseMoveSpeedFactor,
+                                       0.0f, 10f, 0.01f, true, true,
+                                       null,
+                                       UserSettings.Defaults.SpaceMouseMoveSpeedFactor);
+
+        changed |= FormInputs.AddFloat("Rotation Speed",
+                                       ref UserSettings.Config.SpaceMouseRotationSpeedFactor,
+                                       0.0f, 10f, 0.01f, true, true,
+                                       null,
+                                       UserSettings.Defaults.SpaceMouseRotationSpeedFactor);
+        ImGui.PopID();
+    }
+
+    /** At 1 the blend never takes new input, so the camera would keep drifting. */
+    internal const float MaxSpaceMouseDamping = 0.99f;
+
+    private static void DrawGamepadStatus()
+    {
+        if (!SdlGamepads.IsAvailable)
+        {
+            DrawStatusLine(UiColors.StatusAttention, "Game controllers are not available (see the log)");
+            return;
+        }
+
+        if (SdlGamepads.Count == 0)
+        {
+            DrawStatusLine(UiColors.TextMuted, "No controller connected");
+            return;
+        }
+
+        for (var index = 0; index < SdlGamepads.Count; index++)
+        {
+            DrawStatusLine(UiColors.StatusControlled, SdlGamepads.GetName(index));
+        }
+    }
+
+    private static void DrawSpaceMouseStatus()
+    {
+        var isReceiving = Environment.TickCount64 - SpaceMouseInput.LastReportTicksMs < 500;
+        switch (SpaceMouseInput.State)
+        {
+            case SpaceMouseInput.States.Connected:
+                var name = SpaceMouseInput.Description.Length > 0 ? SpaceMouseInput.Description : "SpaceMouse";
+                DrawStatusLine(UiColors.StatusControlled, isReceiving ? name + " (receiving input)" : name);
+                break;
+
+            case SpaceMouseInput.States.NoAccess:
+                DrawStatusLine(UiColors.StatusAttention, "No access to " + SpaceMouseInput.Description);
+                break;
+
+            default:
+                // Raw input on Windows reports no connection state, only motion
+                DrawStatusLine(UiColors.TextMuted, OperatingSystem.IsWindows()
+                                                       ? "No input yet. Move the SpaceMouse to check its connection."
+                                                       : "No SpaceMouse found");
+                break;
+        }
+
+        if (!OperatingSystem.IsLinux())
+            return;
+
+        FormInputs.ApplyIndent();
+        if (ImGui.Button("Rescan##spaceMouse"))
+            SpaceMouseInput.Rescan();
+
+        CustomComponents.TooltipForLastItem("Looks for a SpaceMouse right away. It is also found within a few seconds after plugging it in.",
+                                            "The device is read from /dev/input directly, so no spacenavd is needed. Without access, add a udev rule granting it to your user, e.g. /etc/udev/rules.d/70-spacemouse.rules with:\nKERNEL==\"event*\", ATTRS{idVendor}==\"256f\", TAG+=\"uaccess\"\nKERNEL==\"event*\", ATTRS{idVendor}==\"046d\", ATTRS{idProduct}==\"c6*\", TAG+=\"uaccess\"\nThen replug the device.");
+    }
+
+    /** A colored dot and a text, aligned with the parameters. */
+    private static void DrawStatusLine(Color color, string text)
+    {
+        FormInputs.ApplyIndent();
+        var height = ImGui.GetTextLineHeight();
+        var pos = ImGui.GetCursorScreenPos();
+        var radius = MathF.Round(3 * T3Ui.UiScaleFactor);
+        ImGui.GetWindowDrawList().AddCircleFilled(new Vector2(pos.X + radius, MathF.Round(pos.Y + height * 0.5f)), radius, color);
+        ImGui.SetCursorScreenPos(pos + new Vector2(radius * 2 + 6 * T3Ui.UiScaleFactor, 0));
+        ImGui.TextUnformatted(text);
+    }
+
     private static string CategoryTitle(Categories category) => category switch
                                                                     {
                                                                         Categories.Interface  => "User Interface",
@@ -694,7 +898,7 @@ internal sealed partial class SettingsWindow : Window
                                                                         Categories.Failover   => "Show Failover",
                                                                         Categories.Audio      => "Audio System",
                                                                         Categories.Midi       => "Midi & OSC",
-                                                                        Categories.SpaceMouse => "Space Mouse",
+                                                                        Categories.InputDevices => "Input Devices",
                                                                         Categories.Keyboard   => "Keyboard Shortcuts",
                                                                         Categories.Diagnostics => "Diagnostics and debugging",
                                                                         _                     => string.Empty,

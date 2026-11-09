@@ -10,7 +10,6 @@ using System.Numerics;
 using System.Runtime;
 using System.Runtime.CompilerServices;
 using System.Text;
-using ManagedBass;
 using Newtonsoft.Json;
 using T3.Graphics.Compat;
 using T3.Graphics;
@@ -35,6 +34,7 @@ using SilkWindows;
 using T3.Core.Resource.ShaderCompiling;
 using T3.Core.Utils;
 using T3.SdlPlatform;
+using T3.SystemUi;
 using T3.Serialization;
 using DeviceContext = T3.Graphics.Compat.DeviceContext;
 using Factory = SharpDX.DXGI.Factory;
@@ -68,6 +68,7 @@ internal static partial class Program
                               WindowIconPath = Path.Combine(SharedResources.EditorResourcesDirectory, "images", "t3.ico"),
                           };
         BlockingWindow.Instance = dialogs;
+        Cameras.Provider = new SdlCameraProvider();
         TrySetDialogFonts(dialogs);
 
         // Before anything that can fail: the message boxes reporting it are SDL windows too.
@@ -79,6 +80,8 @@ internal static partial class Program
             Console.Error.WriteLine(sdlError);
             return;
         }
+
+        T3.IoServices.SdlGamepads.Initialize();
 
         var settingsPath = Path.Combine(FileLocations.StartFolder, ExportSettings.FileName);
         if (!JsonUtils.TryLoadingJson(settingsPath, out ExportSettings exportSettings) || exportSettings.Export == null)

@@ -33,6 +33,22 @@ namespace T3.Editor.Gui.Windows.OutputSetup;
 /// </summary>
 internal static partial class SetupParameterView
 {
+    /** How the projector's zoom is entered: as a spec sheet's throw ratio, or as a vertical field of view. */
+    private enum ZoomUnits
+    {
+        Ratio,
+        Zoom,
+    }
+
+    /** How a surface lies in the stage, as the Facing preset offers it. */
+    private enum SurfaceFacings
+    {
+        Wall,
+        Floor,
+        Ceiling,
+        Tilted,
+    }
+
     /// <summary>
     /// Draws the primary entity's card and returns true while the entity selection owns the inspection.
     /// Returns false — and lets the inspection go — when nothing resolves anymore (entity deleted, setup gone).
@@ -133,7 +149,7 @@ internal static partial class SetupParameterView
         }
 
         DrawIntsRow("Rendered (px)", resolution,
-                    "What this content actually rendered at: the canvas of the output it is routed to, unless the op's Resolution is set.",
+                    "What this content actually rendered at: the canvas of the output it is routed to, unless the op's Resolution Override or Resolution From says otherwise.",
                     readOnly: true);
 
         // Two outputs of different sizes fed by one send: it renders once, so the second shows the first's size.
@@ -266,7 +282,7 @@ internal static partial class SetupParameterView
         {
             FormInputs.AddHint(planSegment < 0
                                    ? $"Floor of {plan.Name} — its size and place follow the plan's floor rectangle."
-                                   : $"Wall on edge {planSegment + 1} of {plan.Name} — its width and place follow the plan.");
+                                   : $"Wall on edge {planSegment + 1} of {plan.Name} — its place follows the plan, and its width and the edge's length follow each other.");
         }
 
         var position = surface.Placement?.Pose.Position ?? Vector3.Zero;
@@ -363,7 +379,7 @@ internal static partial class SetupParameterView
 
         var showGrid = surface.ShowGrid;
         if (FormInputs.AddCheckBox("Show size raster", ref showGrid,
-                                   "Projects a real-world grid (no content needed) so you can hand-align the corner-pin to physical wall features."))
+                                   "Projects a real-world grid (no content needed) so you can hand-align the corner-pin to physical wall features. Only while the editor runs: an exported show never projects it."))
         {
             SetupUndo.RunUndoable("Toggle raster", setup, () => surface.ShowGrid = showGrid);
         }
@@ -378,6 +394,13 @@ internal static partial class SetupParameterView
                 surface.GridSubdivisions = Math.Clamp(subdivisions[0], 1, 100);
 
             CommitFieldUndo(setup, "Change raster", gridCellState);
+        }
+
+        var showMeasuringLines = surface.ShowMeasuringLines;
+        if (FormInputs.AddCheckBox("Show measuring lines", ref showMeasuringLines,
+                                   "Projects the surface's measuring lines onto the wall, so a line can be nudged until it lies along the real feature it was drawn on. Calibrate shows them too while it is on."))
+        {
+            SetupUndo.RunUndoable("Toggle measuring lines", setup, () => surface.ShowMeasuringLines = showMeasuringLines);
         }
 
         DrawMappingModeRows(setup, surface);
@@ -430,6 +453,31 @@ internal static partial class SetupParameterView
     {
         var orientation = surface.Placement?.Pose.Orientation ?? System.Numerics.Quaternion.Identity;
         var degrees = StagePlacing.ToYawPitchRollDegrees(orientation);
+
+        // The common cases as one click: only the pitch changes, so a wall keeps the way it was turned.
+        if (!readOnly)
+        {
+            var facing = FacingOf(degrees.Y);
+            if (FormInputs.AddSegmentedButtonWithLabel(ref facing, "Facing",
+                                                       "Whether the surface stands upright, lies on the ground or hangs from the ceiling. "
+                                                       + "Picking one sets the pitch and keeps the turn and position; Tilted is any other pitch.")
+                && facing != SurfaceFacings.Tilted)
+            {
+                var pitch = facing switch
+                                {
+                                    SurfaceFacings.Floor => -90f,
+                                    SurfaceFacings.Ceiling => 90f,
+                                    _ => 0f,
+                                };
+                SetupUndo.RunUndoable($"Face {facing}", setup, () =>
+                                                              {
+                                                                  var placement = surface.Placement ??= new Surface.StagePlacement();
+                                                                  placement.Pose = new Pose(placement.Pose.Position,
+                                                                                            StagePlacing.FromYawPitchRollDegrees(new System.Numerics.Vector3(degrees.X, pitch, degrees.Z)));
+                                                              });
+                degrees = StagePlacing.ToYawPitchRollDegrees(surface.Placement!.Pose.Orientation);
+            }
+        }
         Span<float> rotation = [degrees.X, degrees.Y, degrees.Z];
         var rotationState = DrawFloatsRow("Rotation (°)", rotation,
                                           "Yaw, pitch and roll in the stage. An unturned surface stands upright facing the viewer; a floor is pitched -90.",
@@ -579,6 +627,9 @@ internal static partial class SetupParameterView
         if (output == null)
             return;
 
+        // A wider label column than other cards: the zoom row's unit switch sits in it.
+        FormInputs.Indent(OutputCardExtraIndent);
+
         // Laser outputs stream vector content instead of compositing a canvas, but Send means the
         // same thing to them: pause this output without dropping its device binding.
         var send = output.IsSending;
@@ -627,9 +678,87 @@ internal static partial class SetupParameterView
                            : $"Shown on {boundTo}");
 
         DrawCardDivider();
+        if (DrawLayerList(setup, output))
+            DrawCardDivider();
+
         DrawPatchTable(setup, output, Guid.Empty);
         DrawCardDivider();
         DrawReferenceLayoutRows(setup, output);
+
+        if (output.Kind is OutputDefinition.Kinds.Projector or OutputDefinition.Kinds.Display)
+        {
+            DrawCardDivider();
+            var isProjector = output.Kind == OutputDefinition.Kinds.Projector;
+            if (FormInputs.AddCheckBox("Is Projector", ref isProjector,
+                                       "A projector throws its picture into the room, so its position and zoom can be solved for [UseProjectorCam]. "
+                                       + "A display shows the canvas as it is.",
+                                       isFlushLeft: true))
+            {
+                SetupUndo.RunUndoable(isProjector ? "Make projector" : "Make display", setup,
+                                      () => output.Kind = isProjector ? OutputDefinition.Kinds.Projector : OutputDefinition.Kinds.Display);
+            }
+
+            if (output.Kind == OutputDefinition.Kinds.Projector)
+                DrawProjectorCameraRows(setup, output);
+        }
+
+        FormInputs.Unindent(OutputCardExtraIndent);
+    }
+
+    /// <summary>
+    /// Where the projector stands and how it zooms, for [UseProjectorCam]: solved from the output's aligned surface
+    /// with the lens axis given, since one surface can't tell where the axis passes through the picture.
+    /// </summary>
+    private static void DrawProjectorCameraRows(Setup setup, OutputDefinition output)
+    {
+        FormInputs.DrawInputLabel("Model");
+        ProjectorPresets.DrawSelector(setup, output);
+        var camera = output.Camera;
+
+        // Shown as spec sheets give it, the picture's shift off the lens axis in percent of its size; stored as where the
+        // axis lands in the picture (NDC), which is the opposite direction with half the picture as 1.
+        var lensAxis = camera?.LensAxis ?? Vector2.Zero;
+        Span<float> shift = [-lensAxis.X * 50, -lensAxis.Y * 50];
+        var shiftState = DrawFloatsRow("Lens shift (%)", shift,
+                                       "How far the picture is moved off the lens axis, in percent of its width and height, right and up. "
+                                       + "0 centres the picture on the lens. A projector on a table throwing up at a wall is usually about +50 up: "
+                                       + "the picture's bottom edge sits on the lens axis, which some spec sheets call 100% offset. A ceiling mount is about -50.",
+                                       speed: 0.5f, format: "{0:0.#}");
+        BeginFieldUndo(setup, shiftState);
+        if ((shiftState & InputEditStateFlags.Modified) != 0)
+            (output.Camera ??= new OutputDefinition.ProjectorCamera()).LensAxis = new Vector2(shift[0], shift[1]) / -50;
+
+        CommitFieldUndo(setup, "Change lens shift", shiftState);
+
+        FormInputs.AddVerticalSpace(6);
+        DrawZoomRows(setup, output);
+
+        FormInputs.AddVerticalSpace(4);
+        ProjectorSideView.Draw(setup, output);
+        FormInputs.AddVerticalSpace(16);
+
+        FormInputs.DrawInputLabel(string.Empty);
+        if (CustomComponents.StateButton("Solve from Calibrated Surface", CustomComponents.ButtonStates.Default))
+        {
+            _projectorSolveFailure = ProjectorCalibration.TrySolveFromAlignedSurface(setup, output, out var message)
+                                         ? default
+                                         : (output.Id, message);
+        }
+
+        CustomComponents.TooltipForLastItem("Solves where the projector stands and how it zooms from the largest surface calibrated on this output.",
+                                            "Calibrate the surface first and set the lens shift. While calibrating it again, the camera follows the points with the zoom kept; solve again to re-measure the zoom. Turn the projector's own digital keystone correction off.");
+
+        var isSolved = camera?.Pose != null;
+        ImGui.SameLine();
+        ImGui.BeginDisabled(!isSolved);
+        if (CustomComponents.StateButton("Use Manual Camera", CustomComponents.ButtonStates.Default) && isSolved)
+            ProjectorCalibration.UseManualCamera(setup, output);
+
+        ImGui.EndDisabled();
+
+        FormInputs.AddHint(_projectorSolveFailure.OutputId == output.Id ? _projectorSolveFailure.Message
+                           : camera != null ? ProjectorCalibration.DescribeSolve(setup, camera)
+                           : "Manual camera: not solved yet.");
     }
 
     /** Matches how FormInputs fades a field that holds its default value. */
@@ -1620,22 +1749,26 @@ internal static partial class SetupParameterView
         ImGui.PushID("patchTable");
         var listWidth = ImGui.GetContentRegionAvail().X - InputArea.ValueEditRightMargin;
         var listScreenX = ImGui.GetCursorScreenPos().X;
-        DrawPatchListHeader(setup, output, selection, listScreenX, listWidth);
-        if (output.Patches.Count > 0)
+        // The output's implicit full-canvas patch is the output itself, so it gets no row; with only that one, the
+        // section is its title and Add.
+        var hasListedPatches = SetupRelations.CountListedPatches(output) > 0;
+        DrawPatchListHeader(setup, output, selection, listScreenX, listWidth, hasListedPatches);
+        if (hasListedPatches)
             DrawPatchListRows(setup, output, selection, highlightedPatchId, listScreenX, listWidth);
 
         ImGui.PopID();
     }
 
     /** The section title, the unit switch in the parameter column, and the add button at the list's right end. */
-    private static void DrawPatchListHeader(Setup setup, OutputDefinition output, SetupEntitySelection selection, float listScreenX, float listWidth)
+    private static void DrawPatchListHeader(Setup setup, OutputDefinition output, SetupEntitySelection selection, float listScreenX, float listWidth,
+                                            bool hasListedPatches)
     {
         var padding = PatchHeaderPadding * T3Ui.UiScaleFactor;
         ImGui.SetCursorPosX(ImGui.GetCursorPosX() + padding);
         ImGui.AlignTextToFramePadding();
         CustomComponents.StylizedText("Patches", Fonts.FontBold, UiColors.TextMuted);
         ImGui.SameLine();
-        if (output.Patches.Count > 0)
+        if (hasListedPatches)
         {
             FormInputs.DrawInputLabel("in");
             var units = UserSettings.Config.OutputSetupEditUnits;
@@ -1753,8 +1886,8 @@ internal static partial class SetupParameterView
         ImGui.Dummy(Vector2.Zero);
         ImGui.PopStyleVar();
 
-        // Dragging a grip past a neighbour swaps the two: the list is the composite order (later patches draw over
-        // earlier ones). One undo step for the whole drag.
+        // Dragging a grip past a neighbour swaps the two, here and in the output's layer order, so the later patch
+        // still draws over the earlier one. One undo step for the whole drag.
         if (moveFromIndex >= 0)
         {
             _patchReorderOldJson ??= setup.ToJsonString();
@@ -1766,6 +1899,7 @@ internal static partial class SetupParameterView
                     patch.Name = SetupLabels.PatchLabel(output, patch);
             }
 
+            SwapInLayerOrder(output, output.Patches[moveFromIndex].Id, output.Patches[moveToIndex].Id);
             (output.Patches[moveFromIndex], output.Patches[moveToIndex]) = (output.Patches[moveToIndex], output.Patches[moveFromIndex]);
         }
 
@@ -2056,6 +2190,17 @@ internal static partial class SetupParameterView
 
     private static void DrawContentCard(Setup setup, Guid childId)
     {
+        if (EditorUiContent.IsEditorUi(childId))
+        {
+            OutputContentResolver.TryGetPreviewContent(childId, out var frame);
+            FormInputs.ApplyIndent();
+            CustomComponents.StylizedText(frame is { IsDisposed: false }
+                                              ? $"mirrors the editor window, {frame.Description.Width}×{frame.Description.Height}"
+                                              : "mirrors the editor window",
+                                          Fonts.FontSmall, UiColors.TextMuted);
+            return;
+        }
+
         var instance = ContentSourceSync.FindSendInstance(childId);
         if (instance == null)
         {
@@ -2070,8 +2215,11 @@ internal static partial class SetupParameterView
         var context = OutputContentResolver.Context;
 
         var update = supplier.GetUpdateEnabled(context);
-        if (FormInputs.AddCheckBox("Update", ref update, "When off, freezes this content at its last frame."))
+        if (FormInputs.AddCheckBox("Update", ref update, "When off, freezes this content at its last frame.")
+            && supplier.UpdateInput != null)
+        {
             SetInputUndoable(instance, supplier.UpdateInput, update);
+        }
 
         // 0×0 means "whatever the output asks for", so the content follows the projector or display it is routed
         // to; a set value pins it. The line underneath says what that resolves to right now.
@@ -2079,7 +2227,7 @@ internal static partial class SetupParameterView
         Span<int> resolution = [requested.Width, requested.Height];
         var state = DrawIntsRow("Render at (px)", resolution,
                                 "0 follows the output this content is routed to. Set a size to render at it regardless.");
-        if ((state & InputEditStateFlags.Modified) != 0)
+        if ((state & InputEditStateFlags.Modified) != 0 && supplier.ResolutionInput != null)
         {
             SetInputUndoable(instance, supplier.ResolutionInput,
                              new T3.Core.DataTypes.Vector.Int2(Math.Clamp(resolution[0], 0, 16384),
@@ -2213,6 +2361,7 @@ internal static partial class SetupParameterView
                                : $"Shows {SetupLabels.SliceLabel(setup, slice)} on {SetupLabels.OutputLabel(output)}");
 
         DrawPatchScaleRows(setup, output, patch);
+
         if (patch.IsFitted || patch.Quad.Length < 4)
             return;
 
@@ -2344,6 +2493,39 @@ internal static partial class SetupParameterView
 
         CommitFieldUndo(setup, "Change image opacity", opacityState);
 
+        // The real size of what the card shows. Typing it states the image's scale; the aspect stays, nothing stretches.
+        if (image.Width > 0 && image.Kind != ReferenceImage.Kinds.PixelMap)
+        {
+            image.GetVisiblePixelRect(out var visibleMin, out var visibleMax);
+            var visiblePixels = visibleMax - visibleMin;
+            var oldSize = visiblePixels * image.MetersPerPixel;
+            Span<float> size = [oldSize.X, oldSize.Y];
+            var sizeState = DrawFloatsRow("Size (m)", size,
+                                          "The real size of what the card shows (its crop). Typing either side sets the image's scale; the aspect is kept.");
+            BeginFieldUndo(setup, sizeState);
+            if ((sizeState & InputEditStateFlags.Modified) != 0)
+            {
+                var metersPerPixel = MathF.Abs(size[0] - oldSize.X) >= MathF.Abs(size[1] - oldSize.Y)
+                                         ? size[0] / MathF.Max(visiblePixels.X, 1)
+                                         : size[1] / MathF.Max(visiblePixels.Y, 1);
+                if (metersPerPixel > 0)
+                    SetupOutputView.ApplyMetersPerPixel(image, metersPerPixel);
+            }
+
+            CommitFieldUndo(setup, "Change image size", sizeState);
+
+            if (image.HasCrop)
+            {
+                FormInputs.ApplyIndent();
+                CustomComponents.StylizedText($"Cropped to {visiblePixels.X:0}×{visiblePixels.Y:0} of {image.Width}×{image.Height} px",
+                                              Fonts.FontSmall, UiColors.TextMuted);
+                ImGui.SameLine();
+                if (ImGui.SmallButton("Reset Crop"))
+                    SetupUndo.RunUndoable("Reset image crop", setup,
+                                          () => SetupOutputView.SetImageCrop(image, Vector2.Zero, new Vector2(image.Width, image.Height)));
+            }
+        }
+
         // The scale line's length re-derives the image's scale; the line itself is drawn with Set Scale on the Board.
         if (image.HasScaleLine)
         {
@@ -2361,7 +2543,7 @@ internal static partial class SetupParameterView
         }
         else
         {
-            FormInputs.AddHint("No scale yet — Set Scale in the card's menu draws a line over a known length.");
+            FormInputs.AddHint("No scale yet — type the size above, or Set Scale in the card's menu draws a line over a known length.");
         }
     }
 
@@ -2377,16 +2559,30 @@ internal static partial class SetupParameterView
         if ((heightState & InputEditStateFlags.Modified) != 0)
             prop.HeightInMeters = MathF.Max(height[0], 0.1f);
 
-        CommitFieldUndo(setup, "Resize prop", heightState);
+        CommitFieldUndo(setup, "Resize person", heightState);
+
+        var opacity = prop.Opacity;
+        var opacityState = FormInputs.AddFloatWithEditState("Opacity", ref opacity, 0, 1, 0.005f, clampMin: true, clampMax: true,
+                                                            "How strongly the figure shows on the Board.", defaultValue: Prop.DefaultOpacity);
+        BeginFieldUndo(setup, opacityState);
+        if ((opacityState & InputEditStateFlags.Modified) != 0)
+            prop.Opacity = opacity;
+
+        CommitFieldUndo(setup, "Change person opacity", opacityState);
     }
 
     /// <summary>
     /// Row of drag-edit float fields sharing one label — hairline gaps and a rounded frame so the
     /// components read as a single control. Width and label column follow <see cref="FormInputs"/>.
     /// </summary>
+    /// <param name="fadedValueIndex">A value drawn faded, like a field at its default: one that merely repeats another.</param>
+    /// <param name="min">Where the drag's slider range starts; a hard limit only with <paramref name="clampMin"/>.</param>
+    /// <param name="max">Where the drag's slider range ends; a hard limit only with <paramref name="clampMax"/>.</param>
     private static InputEditStateFlags DrawFloatsRow(string label, Span<float> values, string? tooltip = null,
                                                      float speed = 0.01f, bool readOnly = false,
-                                                     string format = "{0:0.###}", float reserveRight = 0)
+                                                     string format = "{0:0.###}", float reserveRight = 0, int fadedValueIndex = -1,
+                                                     float min = float.NegativeInfinity, float max = float.PositiveInfinity,
+                                                     bool clampMin = false, bool clampMax = false)
     {
         var size = BeginValuesRow(label, tooltip, values.Length, readOnly, reserveRight, out var gap);
         var result = InputEditStateFlags.Nothing;
@@ -2395,11 +2591,17 @@ internal static partial class SetupParameterView
             if (i > 0)
                 ImGui.SameLine(0, gap);
 
+            var isFaded = i == fadedValueIndex;
+            if (isFaded)
+                ImGui.PushStyleVar(ImGuiStyleVar.Alpha, DefaultValueAlpha * ImGui.GetStyle().Alpha);
+
             ImGui.PushID(i);
             var v = values[i];
-            result |= SingleValueEdit.Draw(ref v, size, scale: speed, format: format);
+            result |= SingleValueEdit.Draw(ref v, size, min, max, clampMin, clampMax, scale: speed, format: format);
             values[i] = v;
             ImGui.PopID();
+            if (isFaded)
+                ImGui.PopStyleVar();
         }
 
         EndValuesRow(tooltip, readOnly);
@@ -2515,7 +2717,7 @@ internal static partial class SetupParameterView
     /// captured on the gesture's first event and committed as one undo step + a single save when the edit
     /// finishes — a whole drag (or typed entry) is one step, with no file writes while dragging.
     /// </summary>
-    private static void BeginFieldUndo(Setup setup, InputEditStateFlags state)
+    internal static void BeginFieldUndo(Setup setup, InputEditStateFlags state)
     {
         if ((state & InputEditStateFlags.Started) != 0)
         {
@@ -2531,7 +2733,7 @@ internal static partial class SetupParameterView
             OutputSetupHandling.NotifyLiveEdit();
     }
 
-    private static void CommitFieldUndo(Setup setup, string name, InputEditStateFlags state)
+    internal static void CommitFieldUndo(Setup setup, string name, InputEditStateFlags state)
     {
         if ((state & InputEditStateFlags.Finished) == 0 || _fieldEditOldJson == null)
             return;
@@ -2711,4 +2913,100 @@ internal static partial class SetupParameterView
     // Laser-plug text rows (interface, PONK sender, CITP feed): one buffer keyed by plug + purpose.
     private static string? _laserTextKey;
     private static string _laserTextBuffer = string.Empty;
+
+    private static SurfaceFacings FacingOf(float pitchDegrees)
+    {
+        const float tolerance = 0.5f;
+        return MathF.Abs(pitchDegrees) < tolerance ? SurfaceFacings.Wall
+               : MathF.Abs(pitchDegrees + 90) < tolerance ? SurfaceFacings.Floor
+               : MathF.Abs(pitchDegrees - 90) < tolerance ? SurfaceFacings.Ceiling
+               : SurfaceFacings.Tilted;
+    }
+
+    /// <summary>
+    /// The projector's zoom: its range from the wide to the tele end, read as throw ratios (the way spec sheets give
+    /// them) or as vertical fields of view, picked by a switch where the label would be; and a slider for where the
+    /// zoom currently sits in that range.
+    /// </summary>
+    private static void DrawZoomRows(Setup setup, OutputDefinition output)
+    {
+        var scale = T3Ui.UiScaleFactor;
+        var switchWidth = 0f;
+        foreach (var unit in Enum.GetValues<ZoomUnits>())
+            switchWidth += ImGui.CalcTextSize(CustomComponents.HumanReadablePascalCase(unit.ToString())).X + ZoomSwitchSegmentPadding * 2 * scale;
+
+        FormInputs.SetCursorToLabelColumn(switchWidth);
+        CustomComponents.SegmentedButton(ref _zoomUnit);
+        ImGui.SameLine();
+
+        // The values start in the parameter column, or after the switch where it reaches into it.
+        var afterSwitchX = ImGui.GetCursorPosX();
+        FormInputs.SetCursorToParameterEdit();
+        if (ImGui.GetCursorPosX() < afterSwitchX)
+            ImGui.SetCursorPosX(afterSwitchX);
+
+        var camera = output.Camera ?? _defaultCamera;
+        var aspect = ProjectorPresets.AspectOf(output);
+        var isThrowRatio = _zoomUnit == ZoomUnits.Ratio;
+        var range = camera.ZoomRangeDegrees;
+        Span<float> ends = isThrowRatio
+                               ? [ProjectorPresets.ThrowRatio(range.X, aspect), ProjectorPresets.ThrowRatio(range.Y, aspect)]
+                               : [range.X, range.Y];
+        var isFixedLens = MathF.Abs(range.X - range.Y) < 0.01f;
+        var rangeState = DrawFloatsRow("##zoomRange", ends,
+                                       isThrowRatio
+                                           ? "The zoom's range as throw ratios, wide and tele: throw distance over picture width, as spec sheets give it. 1.5 throws a 2 m wide picture from 3 m. Equal values for a fixed lens."
+                                           : "The zoom's range as vertical fields of view in degrees, wide and tele. Equal values for a fixed lens.",
+                                       speed: isThrowRatio ? 0.005f : 0.1f, format: isThrowRatio ? "{0:0.00}" : "{0:0.#}°",
+                                       fadedValueIndex: isFixedLens ? 1 : -1,
+                                       min: isThrowRatio ? 0.1f : 1f, max: isThrowRatio ? 3f : 60f, clampMin: true);
+        BeginFieldUndo(setup, rangeState);
+        if ((rangeState & InputEditStateFlags.Modified) != 0)
+        {
+            var edited = output.Camera ??= new OutputDefinition.ProjectorCamera();
+            var position = ProjectorPresets.ZoomPosition(edited, aspect);
+            edited.ZoomRangeDegrees = isThrowRatio
+                                          ? new Vector2(ToFieldOfView(ends[0], aspect), ToFieldOfView(ends[1], aspect))
+                                          : new Vector2(Math.Clamp(ends[0], 1, 170), Math.Clamp(ends[1], 1, 170));
+            ProjectorPresets.SetZoomPosition(edited, position, aspect);
+        }
+
+        // Sorted once the edit is done, never while typing: swapping the fields under the cursor would lose the entry.
+        if ((rangeState & InputEditStateFlags.Finished) != 0 && output.Camera is { } finished)
+            ProjectorPresets.SortZoomRange(finished);
+
+        CommitFieldUndo(setup, isThrowRatio ? "Change throw ratio range" : "Change zoom range", rangeState);
+
+        // Where the zoom ring sits; with both ends equal it has nowhere to move, and the faded second value says so.
+        Span<float> zoom = [ProjectorPresets.ZoomPosition(camera, aspect) * 100];
+        var zoomState = DrawFloatsRow("Zoom", zoom,
+                                      "Where the zoom currently sits, from the wide (0) to the tele (100) end. A solve sets it to the zoom it measured.",
+                                      speed: 0.5f, format: "{0:0}%", min: 0, max: 100, clampMin: true, clampMax: true);
+        BeginFieldUndo(setup, zoomState);
+        if ((zoomState & InputEditStateFlags.Modified) != 0)
+            ProjectorPresets.SetZoomPosition(output.Camera ??= new OutputDefinition.ProjectorCamera(), zoom[0] / 100, aspect);
+
+        CommitFieldUndo(setup, "Change zoom", zoomState);
+    }
+
+    private static float ToFieldOfView(float throwRatio, float aspect)
+    {
+        return Math.Clamp(ProjectorPresets.VerticalFieldOfViewDegrees(MathF.Max(throwRatio, 0.05f), aspect), 1, 170);
+    }
+
+    /** Why the last solve on an output failed, shown until the next try. */
+    private static (Guid OutputId, string Message) _projectorSolveFailure;
+
+    /** Which way the zoom field reads; the editor's choice for this session, not part of the setup. */
+    private static ZoomUnits _zoomUnit = ZoomUnits.Ratio;
+
+    /** Unscaled extra width of the output card's label column. */
+    private const float OutputCardExtraIndent = 20;
+
+    /** Matches the horizontal padding CustomComponents.SegmentedButton gives each segment. */
+    private const float ZoomSwitchSegmentPadding = 14;
+
+    /** What a projector with no camera data yet shows: the defaults, edited into a real camera on the first change. */
+    private static readonly OutputDefinition.ProjectorCamera _defaultCamera = new();
+
 }

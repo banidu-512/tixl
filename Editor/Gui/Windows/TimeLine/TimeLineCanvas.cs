@@ -8,6 +8,7 @@ using T3.Core.DataTypes;
 using T3.Core.Operator;
 using T3.Core.Operator.Slots;
 using T3.Core.Utils;
+using T3.Editor.App.Gestures;
 using T3.Editor.Gui.Interaction;
 using T3.Editor.Gui.Interaction.Keyboard;
 using T3.Editor.Gui.Interaction.Snapping;
@@ -34,6 +35,11 @@ internal sealed class TimeLineCanvas : AnimationCanvas
 {
     /** Alt + drag is the timeline's own gesture. */
     internal protected override bool PansWithAltDrag => false;
+
+    protected override bool FenceScrollsAtEdges => true;
+
+    // The dope sheet's rows scroll as an ImGui child, not with the canvas: only time scrolls there.
+    protected override bool FenceScrollsVertically => Mode == Modes.CurveEditor;
 
     public TimeLineCanvas(NodeSelection nodeSelection, Func<Instance> getCompositionOp, Func<Guid, bool> requestChildCompositionFunc)
     {
@@ -221,6 +227,9 @@ internal sealed class TimeLineCanvas : AnimationCanvas
                 var detailsHeight = detailsActive ? DetailsAreaHeight : 0f;
                 var topHeight = MathF.Max(60f, rawAvailHeight - detailsHeight - splitterGap - spacingReserve);
 
+                var compositionTimeClip = Structure.GetCompositionTimeClip(compositionOp);
+                var showClipWindow = compositionTimeClip != null && !Playback.IsLooping;
+
                 switch (Mode)
                 {
                     case Modes.DopeView:
@@ -232,8 +241,10 @@ internal sealed class TimeLineCanvas : AnimationCanvas
                                              | ImGuiWindowFlags.NoScrollWithMouse);
                             var dopeContentStartY = ImGui.GetCursorScreenPos().Y;
                             ClipArea.Draw(compositionOp, Playback, SnapHandlerForU);
-                            _currentTimeMarker.DrawLineInCurrentWindow(Playback.TimeInBars, this);
+                            _currentTimeMarker.DrawLineInCurrentWindow(TrimEdgePreview.GetPlayheadTime(Playback), this);
                             DopeSheetArea.Draw(compositionOp, _selectedAnimationParameters);
+                            if (showClipWindow)
+                                _clipRange.DrawEdgeHandles(this, compositionOp, compositionTimeClip!);
 
                             // Dope-local fence — outer fence is suppressed while the
                             // details pane is up so its clicks don't bubble out and
@@ -243,7 +254,7 @@ internal sealed class TimeLineCanvas : AnimationCanvas
                             // outer-fence behaviour the user expects.
                             if (!T3Ui.IsAnyPopupOpen)
                             {
-                                switch (_dopeFence.UpdateAndDraw(out var selectMode))
+                                switch (_dopeFence.UpdateAndDraw(out var selectMode, canvas: this, scrollVertically: false))
                                 {
                                     case SelectionFence.States.Updated:
                                     case SelectionFence.States.CompletedAsClick:
@@ -253,6 +264,7 @@ internal sealed class TimeLineCanvas : AnimationCanvas
                             }
 
                             CustomComponents.HandleDragScrolling(this);
+                            ScrollRowsWithTrackpad();
                             _lastDopeContentHeight = MathF.Max(0f, ImGui.GetCursorScreenPos().Y - dopeContentStartY);
                             ImGui.EndChild();
 
@@ -266,8 +278,10 @@ internal sealed class TimeLineCanvas : AnimationCanvas
                         else
                         {
                             ClipArea.Draw(compositionOp, Playback, SnapHandlerForU);
-                            _currentTimeMarker.DrawLineInCurrentWindow(Playback.TimeInBars, this);
+                            _currentTimeMarker.DrawLineInCurrentWindow(TrimEdgePreview.GetPlayheadTime(Playback), this);
                             DopeSheetArea.Draw(compositionOp, _selectedAnimationParameters);
+                            if (showClipWindow)
+                                _clipRange.DrawEdgeHandles(this, compositionOp, compositionTimeClip!);
                         }
                         break;
                     case Modes.CurveEditor:
@@ -286,27 +300,31 @@ internal sealed class TimeLineCanvas : AnimationCanvas
                     }
                 }
 
-                var compositionTimeClip = Structure.GetCompositionTimeClip(compositionOp);
-
                 if (Playback.IsLooping)
                 {
                     _loopRange.Draw(this, Playback, Drawlist, SnapHandlerForU);
                 }
                 else if (compositionTimeClip != null)
                 {
-                    _clipRange.Draw(this, compositionTimeClip, Drawlist);
+                    _clipRange.Draw(this, compositionOp, compositionTimeClip, Drawlist);
                 }
 
                 // When the details pane is up, the top-pane child already handles its
                 // own drag-scroll; outer call would hit ImGuiTitle (no overflow).
                 if (!detailsActive)
+                {
                     CustomComponents.HandleDragScrolling(this);
+                    if (Mode == Modes.DopeView)
+                        ScrollRowsWithTrackpad();
+                }
             }
 
             ImGui.EndChild();
 
-            _currentTimeMarker.Draw(Playback.TimeInBars, this);
+            TrimEdgePreview.EndIfMouseReleased(Playback);
+            _currentTimeMarker.Draw(TrimEdgePreview.GetPlayheadTime(Playback), this);
             _timeSelectionRange.Draw(compositionOp, Drawlist);
+            UpdateEdgeScrolling();
 
             if (_selectionFence.State == SelectionFence.States.CompletedAsClick)
             {
@@ -586,6 +604,9 @@ internal sealed class TimeLineCanvas : AnimationCanvas
 
         if (ImGui.IsItemActive() && ImGui.IsMouseDragging(ImGuiMouseButton.Left) || ImGui.IsItemClicked())
         {
+            if (ImGui.IsItemActive())
+                RequestEdgeScrolling();
+
             var draggedTime = InverseTransformX(mouseX);
             if (ImGui.GetIO().KeyShift)
             {
@@ -599,6 +620,29 @@ internal sealed class TimeLineCanvas : AnimationCanvas
         }
 
         ImGui.SetCursorPos(Vector2.Zero);
+    }
+
+    /// <summary>
+    /// Called every frame by an active timeline drag (clips, keyframes, range handles, playhead) so the
+    /// view scrolls while the pointer is near or past its left or right edge.
+    /// </summary>
+    internal void RequestEdgeScrolling()
+    {
+        _isEdgeScrollingRequested = true;
+    }
+
+    private void UpdateEdgeScrolling()
+    {
+        if (_isEdgeScrollingRequested)
+        {
+            if (!_wasEdgeScrollingRequested)
+                EdgeScrolling.Reset();
+
+            EdgeScrolling.Update(this, scrollVertically: false);
+        }
+
+        _wasEdgeScrollingRequested = _isEdgeScrollingRequested;
+        _isEdgeScrollingRequested = false;
     }
 
     /// <summary>
@@ -799,11 +843,69 @@ internal sealed class TimeLineCanvas : AnimationCanvas
         _lastSyncedSymbolId = symbolId;
         _lastSyncedSymbolUi = compositionOp.Symbol.GetSymbolUi();
 
-        // Load from new composition
+        // Load from new composition. A composition that plays as a time clip shares the parent's
+        // playback-time axis, and its symbol may be used by many instances at different times — a
+        // per-symbol scroll position is meaningless there, so keep the current view and only make
+        // sure the entered instance's window is visible.
+        var clipWindow = TryGetCompositionClipWindow(compositionOp, out var window) ? window : (TimeRange?)null;
         if (_lastSyncedSymbolUi?.TimelineState is { } state)
         {
-            LoadStateFrom(state);
+            LoadStateFrom(state, includeView: clipWindow == null);
         }
+
+        if (clipWindow is { } w)
+        {
+            MakeTimeRangeVisible(w);
+        }
+    }
+
+    /// <summary>
+    /// The window, in playback time, in which the composition plays as a time clip — its SourceRange
+    /// mapped through the composition's time-clip chain. False if the composition isn't a clip or its
+    /// mapping is degenerate.
+    /// </summary>
+    private static bool TryGetCompositionClipWindow(Instance compositionOp, out TimeRange window)
+    {
+        window = default;
+        var timeClip = Structure.GetCompositionTimeClip(compositionOp);
+        if (timeClip == null)
+            return false;
+
+        var mapping = ParamTimeMapping.For(compositionOp);
+        if (Math.Abs(mapping.Rate) < 1e-9)
+            return false;
+
+        var a = (float)mapping.ToGlobal(timeClip.SourceRange.Start);
+        var b = (float)mapping.ToGlobal(timeClip.SourceRange.End);
+        window = new TimeRange(MathF.Min(a, b), MathF.Max(a, b));
+        return window.Duration > 0;
+    }
+
+    /// <summary>
+    /// Keeps the view if <paramref name="range"/> is fully visible. Otherwise centers it at the current
+    /// zoom, or zooms out to fit it with some padding if it's wider than the view. Only touches X.
+    /// </summary>
+    private void MakeTimeRangeVisible(TimeRange range)
+    {
+        if (WindowSize.X <= 0 || ScaleTarget.X <= 0)
+            return;
+
+        var visibleWidth = WindowSize.X / ScaleTarget.X;
+        var visibleStart = ScrollTarget.X;
+        if (range.Start >= visibleStart && range.End <= visibleStart + visibleWidth)
+            return;
+
+        const float paddingFraction = 0.1f;
+        if (range.Duration > visibleWidth * (1 - 2 * paddingFraction))
+        {
+            var scaleX = ClampScaleToValidRange(new Vector2(WindowSize.X * (1 - 2 * paddingFraction) / range.Duration,
+                                                            ScaleTarget.Y)).X;
+            ScaleTarget = new Vector2(scaleX, ScaleTarget.Y);
+            visibleWidth = WindowSize.X / scaleX;
+        }
+
+        var center = (range.Start + range.End) * 0.5f;
+        ScrollTarget = new Vector2(center - visibleWidth * 0.5f, ScrollTarget.Y);
     }
 
     private Guid _lastSyncedSymbolId;
@@ -818,12 +920,16 @@ internal sealed class TimeLineCanvas : AnimationCanvas
         state.DetailsAreaHeight = DetailsAreaHeight;
     }
 
-    internal void LoadStateFrom(TimelineState state)
+    internal void LoadStateFrom(TimelineState state, bool includeView = true)
     {
-        ScaleTarget = new Vector2(state.ScaleX, ScaleTarget.Y);
-        Scale = new Vector2(state.ScaleX, Scale.Y);
-        ScrollTarget = new Vector2(state.ScrollX, ScrollTarget.Y);
-        Scroll = new Vector2(state.ScrollX, Scroll.Y);
+        if (includeView)
+        {
+            ScaleTarget = new Vector2(state.ScaleX, ScaleTarget.Y);
+            Scale = new Vector2(state.ScaleX, Scale.Y);
+            ScrollTarget = new Vector2(state.ScrollX, ScrollTarget.Y);
+            Scroll = new Vector2(state.ScrollX, Scroll.Y);
+        }
+
         Mode = state.Mode;
         InlineDataClipEditEnabled = state.InlineDataClipEditEnabled;
         DetailsAreaHeight = state.DetailsAreaHeight;
@@ -865,6 +971,22 @@ internal sealed class TimeLineCanvas : AnimationCanvas
         var canvasDelta = screenDeltaX / Scale.X;
         Scroll = new Vector2(startScrollX - canvasDelta, Scroll.Y);
         ScrollTarget = new Vector2(startScrollX - canvasDelta, ScrollTarget.Y);
+    }
+
+    /// <summary>
+    /// The dope sheet's rows are laid out by ImGui, so the canvas's own Y pan never shows there. A trackpad's
+    /// vertical movement scrolls the rows instead, leaving the pinch to zoom time.
+    /// </summary>
+    private static void ScrollRowsWithTrackpad()
+    {
+        if (!PointerGestures.PansWithScroll || !ImGui.IsWindowHovered(ImGuiHoveredFlags.ChildWindows))
+            return;
+
+        var panY = PointerGestures.PanDelta.Y;
+        if (MathF.Abs(panY) < 0.01f)
+            return;
+
+        ImGui.SetScrollY(ImGui.GetScrollY() - panY);
     }
 
     #endregion
@@ -1019,6 +1141,8 @@ internal sealed class TimeLineCanvas : AnimationCanvas
     private readonly TimelineDetailsArea _detailsArea;
 
     private readonly CurrentTimeMarker _currentTimeMarker = new();
+    private bool _isEdgeScrollingRequested;
+    private bool _wasEdgeScrollingRequested;
     private readonly TimeSelectionRange _timeSelectionRange;
     private readonly SelectionRangeIndicator _selectionRangeIndicator;
     private readonly SourceExtentEditor _sourceExtentEditor;

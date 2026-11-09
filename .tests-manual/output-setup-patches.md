@@ -12,14 +12,14 @@ prerequisites:
 ---
 
 Covers Patches: an output's direct pipe is a list of **patches**, each a rectangle of
-output pixels fed by one slice. Patches composite underneath any surfaces mapped to the
-same output. The second half covers editing patches on the output canvas, the Split
+output pixels fed by one slice. By default patches composite underneath any surfaces mapped to the
+same output; the output's **Layers** list reorders them. The second half covers editing patches on the output canvas, the Split
 helpers, and promoting a patch to a surface.
 
 ## Step: Build the test setup
 
 **Action:**
-1. Connect the LoadImage op to a new **SendToOutput** op (`+` on **CONTENT** creates one
+1. Connect the LoadImage op to a new **SendToOutput** op (`+` on **CONTENT** → **SendToOutput Op** creates one
    to the right of a selected texture op).
 2. Click `+` on **OUTPUTS**.
 
@@ -54,6 +54,19 @@ Drag the "SendToOutput" CONTENT item onto the "P1" item.
 - After 2: the image keystones, and P1 gains a chevron with one listed patch — the drag
   promoted it, because it no longer covers the whole canvas. Its label appears with it.
 - After 3: the corner goes back and the patch folds away again.
+
+## Step: Fill resets a dragged patch to the whole canvas
+
+**Action:**
+1. In **Output** mode with "P1" selected, drag one corner handle of the canvas a little way inward.
+2. Right-click the label that appeared on the patch and choose **Fill P1**.
+3. Press Ctrl+Z.
+4. Press Ctrl+Y, then right-click the "P1" item in the OUTPUTS column.
+
+**Expected:**
+- After 2: the image fills the canvas again, the label and the chevron on "P1" disappear, and "P1" is selected.
+- After 3: the dragged corner and the label come back in one undo step.
+- After 4: the image fills the canvas again, and the menu of "P1" lists no **Fill** entry.
 
 ## Step: The output frame's own context menu
 
@@ -238,16 +251,34 @@ Drag the surface item created by "Use on Surface" onto the "Patch 2" item in the
 ## Step: Clear Inputs on a patch
 
 **Action:**
-1. Right-click the unfed patch added in "A surface dropped on an empty patch keeps it" and look at
-   **Clear Inputs**.
-2. Drag "Slice 1" onto that patch's item, then right-click it → **Clear Inputs**.
-3. Press Ctrl+Z.
+1. Right-click the patch that the surface was pinned to in "A surface dropped on an empty patch
+   keeps it" and choose **Clear Inputs**.
+2. Right-click that patch again and look at **Clear Inputs**.
+3. Press Escape, drag "Slice 1" onto the patch's item, then right-click it → **Clear Inputs**.
+4. Press Ctrl+Z.
 
 **Expected:**
-- After 1: **Clear Inputs** is greyed out — nothing feeds the patch yet.
-- After 2: the connection from "Slice 1" disappears and the patch item turns dimmed, but it stays
+- After 1: the connection from the surface disappears. The surface item stays in SURFACES and the
+  patch stays under P1 at the same place on the canvas.
+- After 2: **Clear Inputs** is greyed out — nothing feeds the patch any more.
+- After 3: the connection from "Slice 1" disappears and the patch item turns dimmed, but it stays
   under P1 at the same place on the canvas.
-- After 3: the connection is back, in one undo step.
+- After 4: the connection from "Slice 1" is back, in one undo step.
+
+## Step: Clear Inputs on several selected items
+
+**Action:**
+1. Click the "Patch 1" item, then Ctrl+click the "Patch 2" item, so both are selected.
+2. Right-click "Patch 2" and look at the menu, then choose **Clear Inputs**.
+3. Right-click "Patch 2" again and look at **Clear Inputs**.
+4. Press Escape to close the menu, then press Ctrl+Z.
+
+**Expected:**
+- After 2: **Clear Inputs** is the one enabled row among the patch actions, next to **Delete 2**;
+  **Rotate 90°**, **Use on Surface**, **Duplicate** and **Rename** stay greyed out. Choosing it
+  removes the connections into both patches, both items turn dimmed and stay under P1.
+- After 3: **Clear Inputs** is greyed out — nothing feeds either patch any more.
+- After 4: both connections are back, in one undo step.
 
 ## Step: Deleting the slice unfeeds, deleting the patch removes
 
@@ -265,6 +296,31 @@ Drag the surface item created by "Use on Surface" onto the "Patch 2" item in the
 Right-click the "P1" item in the OUTPUTS column and choose **Clear Inputs**; then press Ctrl+Z.
 
 **Expected:**
-- Every connection into "P1" disappears: the surface mappings onto it and all of its patches
-  (the patch items under it are gone), while the surfaces and their slices remain. The entry
-  is greyed out on an output that has no inputs. Ctrl+Z restores everything in one step.
+- Every connection into the "P1" item itself disappears: the surface mappings onto it and content
+  dropped directly on it. The patch items stay under "P1" with their connections, including those
+  from surfaces pinned onto a patch, and the surfaces and their slices remain. The entry is greyed
+  out when only patches are fed. Ctrl+Z restores everything in one step.
+
+## Step: Layers
+
+**Action:**
+1. With "Surface 1" mapped onto "P1" and "Patch 1" fed, select "P1" in the OUTPUTS column and look at the Parameter window.
+2. Drag the grip of the "Patch 1" layer above "Surface 1" and release. Press Ctrl+Z, then Ctrl+Shift+Z.
+3. Set the patch layer's blend mode to **Multiply**, then **Add**, then **Screen**, then back to **Normal**.
+4. Drag its opacity from 100% to 30%. Click its tint swatch and pick red.
+5. Save, close and reopen the project, then select "P1" again.
+6. Click the × on the "Surface 1" layer, then press Ctrl+Z.
+
+**Expected:**
+- After 1: a **Layers** section sits above **Patches**, front first: "Surface 1" on top, then the patch, labelled
+  with its content's name and a patch icon. Clicking a name shows that item's settings. Content dropped straight
+  onto an output (its whole-canvas patch, not listed under Patches) shows the content icon instead, and its click
+  selects the content item. In the Flow Outliner the lines into "P1" end spread along its input pill, front layer
+  at the top, and swap ends when the layers are reordered.
+  Hovering a layer row lights that item's frame on the canvas and its Flow Outliner item.
+- After 2: the patch draws over the surface on the output canvas and the projector. Undo and redo each take the
+  whole drag as one step.
+- After 3: Multiply darkens the surface below by the patch's picture, Add and Screen brighten it, Normal covers it.
+- After 4: the patch fades to 30% over what is below, then turns red; each drag or pick is one undo step.
+- After 5: order, blend mode, opacity and tint are as they were.
+- After 6: the surface disappears from the canvas and the list. Ctrl+Z brings it back with its corner pin unchanged.

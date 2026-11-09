@@ -12,6 +12,7 @@ using T3.Core.IO;
 using T3.Core.Resource;
 using T3.Core.Resource.ShaderCompiling;
 using T3.Core.SystemUi;
+using T3.SystemUi;
 using T3.Core.Settings;
 using T3.IoServices.Midi;
 using T3.Editor.App;
@@ -29,9 +30,9 @@ using T3.Editor.Skills.Training;
 using T3.Editor.SystemUi;
 using T3.Editor.UiContentDrawing;
 using T3.Editor.UiModel.Helpers;
+using T3.Editor.UiModel.ProjectHandling;
 using SDL;
 using T3.SdlPlatform;
-using T3.Editor.UiModel.ProjectHandling;
 using T3.SystemUi;
 using ShaderCompiler = T3.Core.Resource.ShaderCompiling.ShaderCompiler;
 
@@ -42,6 +43,9 @@ namespace T3.Editor;
 /// </summary>
 internal static class Program
 {
+    /** The last line of every cleanly closed log. Its absence marks a session that died. */
+    internal const string ShutdownCompleteMessage = "Shutdown complete";
+
     public static IUiContentDrawer? UiContentContentDrawer;
     public static Device? Device { get; private set; }
 
@@ -132,17 +136,6 @@ internal static class Program
         // Before anything starts dotnet: operator compilation and the SDK check call it by name.
         AddDotnetToPathOnMac();
 
-        // Crash-restart supervision: a --watchdog launch is the supervisor itself — it runs the
-        // restart loop (spawning the real editor as a child) and never gets here.
-        if (App.Startup.CrashWatchdog.TryRunWatchdogMode(args))
-            return;
-
-        // Minimal early settings read (no save-on-quit registration): when crash restart is
-        // enabled, hand over to the supervisor before any splash screen or window appears.
-        _ = new UserSettings(saveOnQuit: false);
-        if (App.Startup.CrashWatchdog.TryHandOffToWatchdog(args))
-            return;
-
         // Before anything awaits: continuations started on this thread come back to it, as under WinForms.
         MainThreadSynchronizationContext.Install();
 
@@ -167,12 +160,15 @@ internal static class Program
         // drops the first interaction after working in another application. A tool wants that click.
         SDL3.SDL_SetHint(SDL3.SDL_HINT_MOUSE_FOCUS_CLICKTHROUGH, "1");
 
+        Cameras.Provider = new SdlCameraProvider();
         SdlSurface.SetVulkanLibraryPath(T3.Graphics.Vulkan.VulkanLoader.FindLibraryPath());
         if (!SDL3.SDL_Init(SDL_InitFlags.SDL_INIT_VIDEO))
         {
             BlockingWindow.Instance.ShowMessageBox($"Failed to initialize SDL: {SDL3.SDL_GetError()}");
             return;
         }
+
+        T3.IoServices.SdlGamepads.Initialize();
 
         // Console.WriteLine("Validating startup location");
         // StartupValidation.ValidateNotRunningFromSystemFolder();
@@ -186,9 +182,9 @@ internal static class Program
         var startupStopWatch = new Stopwatch();
         startupStopWatch.Start();
 
-        #if !DEBUG
+        // In every build: with a debugger attached, crashes are only logged (see CrashReporting.CrashHandler), but a
+        // session can still be shared deliberately from Help > Logs.
         CrashReporting.InitializeCrashReporting();
-        #endif
 
         ApplyWindowArgs(args);
 
@@ -257,11 +253,6 @@ internal static class Program
             UserSettings.Config.ProjectDirectories.Add(FileLocations.DefaultProjectFolder);
         }
 
-        // Keep the login autostart entry pointing at this build while it is enabled — the path
-        // moves with every checkout/update otherwise.
-        if (UserSettings.Config.AutostartWithSystem && !App.Startup.OsAutostart.TrySetEnabled(true, out var autostartError))
-            Log.Warning($"Could not update the autostart entry: {autostartError}");
-
         // Run after UserSettings is initialized — the crash-recovery dialog needs
         // ProjectDirectories to locate per-project backups under .temp/Backup/.
         StartUp.FlagBeginStartupSequence();
@@ -285,7 +276,7 @@ internal static class Program
         UiContentContentDrawer = contentDrawer;
         contentDrawer.Initialize(device, ProgramWindows.Main.Width, ProgramWindows.Main.Height, imguiContextLock, out var context);
 
-        // The SpaceMouse is read through Win32 raw input, so it only exists on Windows.
+        // The SpaceMouse is read through Win32 raw input on Windows and from its input device on Linux
         if (OperatingSystem.IsWindows())
         {
             Log.Debug("Initialize Camera Interaction...");
@@ -293,6 +284,12 @@ internal static class Program
             CameraInteraction.ManipulationDevices = [spaceMouse];
             ProgramWindows.SetInteractionDevices(spaceMouse);
         }
+        else
+        {
+            CameraInteraction.ManipulationDevices = [new SpaceMouse()];
+        }
+
+        CameraInteraction.ManipulationDevices = [..CameraInteraction.ManipulationDevices, new GamepadCamera()];
 
         Log.Debug("Initialize Resource Manager...");
         ResourceManager.Init(device);
@@ -333,6 +330,7 @@ internal static class Program
         // Setup file watching the operator source
         // The compositor draws the calibration overlay through this; a player installs none and gets a bare composite.
         CalibrationOverlay.Install();
+        EditorUiContent.Register();
         T3Ui.InitializeEnvironment();
         SkillTraining.Initialize();
             
@@ -347,9 +345,6 @@ internal static class Program
             splashScreen.Close();
             splashScreen.Dispose();
         }
-
-        // Initialize optional Viewer Windows
-        ProgramWindows.InitializeSecondaryViewerWindow("TiXL Viewer", 640, 360);
 
         StartUp.FlagStartupSequenceComplete();
 
@@ -393,8 +388,10 @@ internal static class Program
             Log.Warning("Exception freeing resources: " + e.Message);
         }
 
+        (Cameras.Provider as SdlCameraProvider)?.Shutdown();
+        T3.IoServices.SdlGamepads.Shutdown();
         SDL3.SDL_Quit();
-        Log.Debug("Shutdown complete");
+        Log.Debug(ShutdownCompleteMessage);
     }
 
     /// <summary>Client-area size requested via <c>--window &lt;w&gt;x&lt;h&gt;</c>; null starts maximized as usual.</summary>
@@ -415,7 +412,7 @@ internal static class Program
 
     /// <summary>
     /// Honors <c>--window=&lt;w&gt;x&lt;h&gt;</c> (or <c>--window &lt;w&gt;x&lt;h&gt;</c>) for a predictable
-    /// non-maximized window, <c>--no-splash</c>, <c>--autostart</c>, <c>--project &lt;folder&gt;</c> and <c>--no-reopen</c>.
+    /// non-maximized window, <c>--no-splash</c> and <c>--no-reopen</c>.
     /// </summary>
     private static void ApplyWindowArgs(string[] args)
     {

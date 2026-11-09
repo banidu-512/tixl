@@ -92,6 +92,18 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public bool EnableUsbProjectDetection = true;
         public bool ReopenLastProjectOnStartup = true;
 
+        /// <summary>Projects switched away from stay loaded for a quick return; older ones are unloaded.</summary>
+        public int KeepLoadedProjectCount = 3;
+
+        /// <summary>
+        /// Share of the GPU memory budget the driver grants TiXL. Above it, render targets nothing shows are
+        /// released; below it, nothing is, so a show that fits never pays for a rebuild.
+        /// </summary>
+        public int GpuMemoryLimitPercent = 90;
+
+        /// <summary>0 keeps them for as long as their project is loaded, which avoids rebuild hitches.</summary>
+        public int ReleaseUnusedRenderTargetsAfterSeconds = 0;
+
         /// <summary>
         /// Set when the user confirms the laser safety warning shown the first time the LASER
         /// master button is armed. While false, arming opens the warning dialog first.
@@ -145,13 +157,11 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         /** Frames the loop may run ahead of the display: 1 for the lowest input latency, 2 to absorb late frames. */
         public int FrameLatency = 1;
 
-        /** Windows' implementation of mirroring a display is extremely slow and can
-        * take up to 50% of the GPU time. Enabling this work around will copy the Main window
-        * SwapChain buffer into a texture that is used for the 2nd viewer window.
-        */
-        public bool MirrorUiOnSecondView = false;
-
         public bool EnableKeyboardShortCuts = true;
+
+        /** Whether a connected game controller drives operators like [Gamepad] or the editor (its camera). */
+        [JsonConverter(typeof(StringEnumConverter))]
+        public InputDeviceUsages GamepadUsage = InputDeviceUsages.Operators;
 
         public GraphStyles GraphStyle = GraphStyles.Magnetic;
 
@@ -343,9 +353,21 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public float TimeRasterDensity = 1f;
 
         // Space mouse
-        public float SpaceMouseRotationSpeedFactor = 1f;
-        public float SpaceMouseMoveSpeedFactor = 1f;
-        public float SpaceMouseDamping = 0.5f;
+        public float SpaceMouseRotationSpeedFactor = 0.3f;
+        public float SpaceMouseMoveSpeedFactor = 0.2f;
+        public float SpaceMouseDamping = 0.95f;
+
+        /** Whether the SpaceMouse flies the camera (Editor) or drives operators like [SpaceMouse]. */
+        [JsonConverter(typeof(StringEnumConverter))]
+        public InputDeviceUsages SpaceMouseUsage = InputDeviceUsages.Editor;
+
+        // Game controller camera
+        /** Seconds the camera takes to follow the sticks; longer is calmer, e.g. for live demos. */
+        public float GamepadCameraSmoothing = 0.4f;
+
+        public float GamepadCameraMoveSpeed = 1f;
+        public float GamepadCameraLookSpeed = 1f;
+        public bool GamepadCameraInvertLook;
 
         // Migration-only: these load from existing userSettings.json to preserve
         // the user's last render path counters. Not written back.
@@ -420,6 +442,14 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
     {
         Legacy,
         Magnetic,
+    }
+
+    /** Who an input device drives; Editor means the camera of the output. Stored by name. */
+    public enum InputDeviceUsages
+    {
+        Operators,
+        Editor,
+        Off,
     }
 
     internal static bool IsUserNameDefined()

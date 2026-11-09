@@ -58,6 +58,7 @@ internal enum UserActions
     Duplicate,
     DuplicateWithConnections,
     LayoutSelection,
+    SelectConnectedInputs,
     ToggleDisabled,
     ToggleBypassed,
     Disconnect,
@@ -99,6 +100,7 @@ internal enum UserActions
 
     // Layout and window management
     ToggleAllUiElements,
+    FocusGraphWindow,
     ToggleVariationsWindow,
     ToggleFullscreen,
     ToggleFocusMode,

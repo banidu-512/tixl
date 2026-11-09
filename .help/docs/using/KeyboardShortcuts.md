@@ -8,12 +8,14 @@ The following is a list of the **default keyboard** short-cuts. With v4.0.4 you 
 | Action                   | Key                                       |
 | ------------------------ | ----------------------------------------- |
 | Add New Operator         | Tab (then type the operator name)         |
+| Insert Before Selection  | Ctrl + Tab                                |
 | Undo                     | Ctrl + Z                                  |
 | Redo                     | Ctrl + Shift + Z                          |
 | Save                     | Ctrl + S                                  |
 | Toggle Fullscreen        | F11                                       |
 | Toggle Focus Mode        | F12                                       |
 | Toggle All UI Elements   | Shift + Esc                               |
+| Focus Graph Window       | Esc, see below                            |
 | Toggle Variations Window | Alt + V                                   |
 | Toggle Console Window    | Ctrl + Shift + Alt + L                    |
 | Toggle Manual Test Window| Ctrl + Shift + Alt + T                    |
@@ -29,7 +31,7 @@ The following is a list of the **default keyboard** short-cuts. With v4.0.4 you 
 | Open Operator             | I                                                    |
 | Close Operator            | U                                                    |
 | Rename Child              | Enter                                                |
-| Edit Parameters           | S (focus), see below                                 |
+| Edit Parameters           | S, see below                                         |
 | Navigate Backwards        | Alt + Left                                           |
 | Navigate Forward          | Alt + Right                                          |
 | Select to Above / Below   | Up / Down (focus)                                    |
@@ -101,9 +103,17 @@ View bookmarks (Ctrl) remember a graph view. Operator bookmarks remember an oper
 | Load Layout 0–9 | F1 … F10             |
 | Save Layout 0–9 | Ctrl + F1 … F10      |
 
+## Returning to the Graph
+
+Shortcuts like `Delete` or `Ctrl + C` only reach the graph while the Graph Window has the keyboard focus. After working in another window, press `Esc` to give the focus back to the graph without clicking into it.
+
+`Esc` keeps its usual meaning first: it cancels a text field, closes a popup or the parameter popover, and stops a tool in the output setup. Only the next press returns the focus. While an operator like [Sketch] owns the keyboard in the Output Window, `Esc` stays with that operator. The shortcut can be changed in *Settings → Keyboard*.
+
 ## Editing Parameters with the Keyboard
 
-Press `S` with an operator selected and the graph focused to open the **parameter popover** at the bottom of the graph. It lists the operator's parameters with their values. Animated values are orange, connected ones blue, and changed values are brighter than defaults. The popover works in Focus Mode too, where the Parameter Window is hidden.
+Press `S` with an operator selected to open the **parameter popover** at the bottom of the graph. This works from any window, as long as no dialog is open and no text field is active. Over the Output Window, while it has the focus and shows a camera you can move, `S` moves the camera back instead. The arrow keys also reach the graph from any window, except windows that use them themselves, such as snapshot controls.
+
+The popover lists the operator's parameters with their values. Animated values are orange, connected ones blue, and changed values are brighter than defaults. The popover works in Focus Mode too, where the Parameter Window is hidden.
 
 ### Finding a parameter
 
@@ -122,8 +132,14 @@ Press Tab to edit the focused value, then type it. The value is previewed while 
 | `x 1`             | sets one component                                                |
 | `orange`, `#f80`  | sets a color by name or hex code; `a 0.5` sets its alpha          |
 | `sim`             | picks the matching dropdown option, Up and Down show the others   |
+| `marble`          | on a file or folder path, searches the assets in a list above the popover |
+| `Hello world`     | on any other text, replaces it                                    |
 
-Down applies the value and moves to the next parameter, Up to the previous one. Enter applies and closes the popover. Esc steps back: first the typed value, then the filter, then the popover.
+On a path, typing only searches. Up and Down preview the matches, and you can also click one. Paths that don't exist yet can only be entered in the Parameter Window, except output paths, which take typed text.
+
+On text, Shift+R and Shift+I type capital letters, so reset or insert before pressing Tab.
+
+Down applies the value and moves to the next parameter, Up to the previous one. On dropdowns and paths, where Up and Down pick a match, Tab applies and moves on instead. Enter applies and closes the popover. Esc steps back: first the typed value, then the filter, then the popover.
 
 ### Adjusting a value
 

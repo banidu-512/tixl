@@ -14,9 +14,53 @@ internal static class KeyActionHandling
 
     private static bool _initialized;
     private static bool _anyKeysPressed;
+    private static bool _arrowKeysClaimedThisFrame;
+    private static bool _cameraKeysClaimedThisFrame;
+
+    /** Holds the previous frame's claims, so the result doesn't depend on the order windows are drawn in. */
+    internal static bool AreArrowKeysClaimed { get; private set; }
+
+    /** Previous frame's claim, like <see cref="AreArrowKeysClaimed"/>. */
+    internal static bool AreCameraKeysClaimed { get; private set; }
+
+    /** Set during the current frame, because the focus shortcut it guards runs after all windows are drawn. */
+    internal static bool IsEscapeKeyClaimed { get; private set; }
+
+    /// <summary>
+    /// Keeps the arrow keys from reaching graph navigation. Windows that read the arrow keys themselves call this
+    /// every frame while they are focused.
+    /// </summary>
+    internal static void ClaimArrowKeys()
+    {
+        _arrowKeysClaimedThisFrame = true;
+    }
+
+    /// <summary>
+    /// Keeps letter keys shared with the WASD camera, such as S for the parameter popover, from reaching the graph.
+    /// The camera calls this every frame while it can be steered by keyboard.
+    /// </summary>
+    internal static void ClaimCameraKeys()
+    {
+        _cameraKeysClaimedThisFrame = true;
+    }
+
+    /// <summary>
+    /// Keeps an Esc press that cancelled something in a window from also returning the focus to the graph.
+    /// </summary>
+    internal static void ClaimEscapeKey()
+    {
+        IsEscapeKeyClaimed = true;
+    }
 
     internal static void InitializeFrame()
     {
+        IsEscapeKeyClaimed = false;
+        AreArrowKeysClaimed = _arrowKeysClaimedThisFrame;
+        _arrowKeysClaimedThisFrame = false;
+        AreCameraKeysClaimed = _cameraKeysClaimedThisFrame;
+        _cameraKeysClaimedThisFrame = false;
+        OperatorKeyboardCapture.BeginFrame(ImGui.GetIO().WantTextInput);
+
         if (!_initialized)
         {
             InitializeActionOptions();
@@ -43,6 +87,7 @@ internal static class KeyActionHandling
             return false;
         
         var io = ImGui.GetIO();
+        var isKeyboardCapturedByOperator = OperatorKeyboardCapture.CapturedBy != Guid.Empty;
 
         // Todo: Refactor this with lookup list
         foreach (var binding in KeyMapSwitching.CurrentKeymap.Bindings)
@@ -51,6 +96,10 @@ internal static class KeyActionHandling
                 continue;
 
             if (!binding.IsContextValid())
+                continue;
+
+            // Ctrl combinations are document commands (undo, save) that must keep working while an operator owns the keyboard.
+            if (isKeyboardCapturedByOperator && !binding.KeyCombination.Ctrl)
                 continue;
 
             if (binding.IsTriggered(io))
@@ -140,10 +189,12 @@ internal static class KeyActionHandling
         RegisterActionsFlags(UserActions.ToggleDisabled, Flags.NeedsWindowFocus);
         RegisterActionsFlags(UserActions.ToggleBypassed, Flags.NeedsWindowFocus);
         RegisterActionsFlags(UserActions.Disconnect, Flags.NeedsWindowFocus);
+        RegisterActionsFlags(UserActions.SelectConnectedInputs, Flags.NeedsWindowFocus | Flags.KeyPressOnly);
         RegisterActionsFlags(UserActions.PinToOutputWindow, Flags.KeyPressOnly);
         RegisterActionsFlags(UserActions.ShowInGraph, Flags.KeyPressOnly);
         RegisterActionsFlags(UserActions.ToggleOutputSetup, Flags.KeyPressOnly);
         RegisterActionsFlags(UserActions.ToggleFocusMode, Flags.KeyPressOnly);
+        RegisterActionsFlags(UserActions.FocusGraphWindow, Flags.KeyPressOnly);
         RegisterActionsFlags(UserActions.DisplayImageAsBackground, Flags.KeyPressOnly);
         RegisterActionsFlags(UserActions.ClearBackgroundImage, Flags.NeedsWindowFocus);
 
@@ -152,13 +203,7 @@ internal static class KeyActionHandling
         RegisterActionsFlags(UserActions.OpenOperator, Flags.NeedsWindowFocus);
         RegisterActionsFlags(UserActions.CloseOperator, Flags.NeedsWindowFocus);
         //RegisterActionsFlags(UserActions.RenameChild, Flags.NeedsWindowFocus);
-        RegisterActionsFlags(UserActions.EditParameter, Flags.NeedsWindowFocus | Flags.KeyPressOnly);
-
-        // Navigation
-        RegisterActionsFlags(UserActions.SelectToAbove, Flags.NeedsWindowFocus);
-        RegisterActionsFlags(UserActions.SelectToRight, Flags.NeedsWindowFocus);
-        RegisterActionsFlags(UserActions.SelectToBelow, Flags.NeedsWindowFocus);
-        RegisterActionsFlags(UserActions.SelectToLeft, Flags.NeedsWindowFocus);
+        RegisterActionsFlags(UserActions.EditParameter, Flags.KeyPressOnly);
 
         for (var index = 0; index < 10; index++)
         {
@@ -178,7 +223,7 @@ internal static class KeyActionHandling
         RegisterActionsFlags(UserActions.CameraReset, Flags.NeedsWindowHover);
         RegisterActionsFlags(UserActions.CameraFocusSelection, Flags.NeedsWindowHover);
         RegisterActionsFlags(UserActions.RenderAnimation, Flags.KeyPressOnly);
-        
+
         return;
 
         void RegisterActionsFlags(UserActions action, Flags flags)
@@ -193,6 +238,7 @@ internal static class KeyActionHandling
             _flagsForActions[index] = flags;
         }
     }
+
 
     private const int UserActionsCount = (int)UserActions.__Count;
     private static readonly Flags[] _flagsForActions = new Flags[UserActionsCount];

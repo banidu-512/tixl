@@ -4,6 +4,7 @@ using System.Runtime.InteropServices;
 using ImGuiNET;
 using T3.Core.Resource;
 using T3.Core.Utils;
+using T3.Editor.App.Gestures;
 using T3.Editor.Gui.Styling;
 using T3.Editor.Gui.UiHelpers;
 using T3.Editor.Gui.Windows;
@@ -46,7 +47,6 @@ internal sealed class CubeMapPreview
         public int Mip;
         public int MipSize;
 
-        /** Stays 0: the shader also handles EAC layouts, which no texture in this build uses. */
         public int EquiAngular;
         private Vector3 _padding;
     }
@@ -91,6 +91,7 @@ internal sealed class CubeMapPreview
                                  Face = _face,
                                  Mip = _mip,
                                  MipSize = mipSize,
+                                 EquiAngular = cubeMap.CubeMapLayout == Texture2D.CubeMapLayouts.EquiAngular ? 1 : 0,
                              };
 
         if (TryRender(cubeMap, (int)previewSize.X, (int)previewSize.Y, parameters))
@@ -101,8 +102,9 @@ internal sealed class CubeMapPreview
 
         if (UserSettings.Config.ShowToolbar)
         {
+            var layout = parameters.EquiAngular != 0 ? "  EAC" : "";
             var zoom = is3d ? "" : $" ×{canvas.Scale.X:G2}";
-            canvas.DrawCaption($"{description.Width}x{description.Height}×6  {ImageOutputCanvas.GetFormatLabel(description.Format)}  mip {_mip}{zoom}");
+            canvas.DrawCaption($"{description.Width}x{description.Height}×6  {ImageOutputCanvas.GetFormatLabel(description.Format)}{layout}  mip {_mip}{zoom}");
         }
 
         ImGui.SetCursorScreenPos(controlsPos);
@@ -161,7 +163,7 @@ internal sealed class CubeMapPreview
 
     private static string GetMipLabel(int mip, int faceSize) => $"Mip {mip}  ({Math.Max(1, faceSize >> mip)})";
 
-    /** Left drag orbits; the wheel zooms. */
+    /** Left drag or a trackpad scroll orbits; the wheel or a pinch zooms. */
     private void HandleOrbitAndZoom(bool isOverControls)
     {
         // The preview image is an item itself, so only the controls row is excluded.
@@ -177,6 +179,10 @@ internal sealed class CubeMapPreview
         {
             orbitDelta = ImGui.GetIO().MouseDelta;
         }
+        else if (isHovered && PointerGestures.PansWithScroll)
+        {
+            orbitDelta = new Vector2(-PointerGestures.PanDelta.X, PointerGestures.PanDelta.Y);
+        }
 
         _yawDegrees -= orbitDelta.X * OrbitDegreesPerPixel;
         _pitchDegrees = (_pitchDegrees - orbitDelta.Y * OrbitDegreesPerPixel).Clamp(-89, 89);
@@ -184,7 +190,9 @@ internal sealed class CubeMapPreview
         if (!isHovered)
             return;
 
-        var zoomFactor = MathF.Pow(ZoomPerWheelNotch, -ImGui.GetIO().MouseWheel);
+        var zoomFactor = 1 / PointerGestures.ZoomFactor;
+        if (!PointerGestures.PansWithScroll)
+            zoomFactor *= MathF.Pow(ZoomPerWheelNotch, -ImGui.GetIO().MouseWheel);
 
         if (_mode == Modes.Sphere)
         {
@@ -215,6 +223,7 @@ internal sealed class CubeMapPreview
 
         var deviceContext = ResourceManager.Device.ImmediateContext;
         var csStage = deviceContext.ComputeShader;
+        deviceContext.PushState(StateGroups.ComputeShader);
 
         csStage.Set(shader);
         csStage.SetConstantBuffer(0, _paramBuffer);
@@ -224,11 +233,7 @@ internal sealed class CubeMapPreview
         csStage.SetUnorderedAccessView(0, _previewUav, 0);
         deviceContext.Dispatch((width + ThreadGroupSize - 1) / ThreadGroupSize, (height + ThreadGroupSize - 1) / ThreadGroupSize, 1);
 
-        // ImGui samples the preview next, and D3D11 rejects a resource still bound as a UAV.
-        csStage.SetConstantBuffer(0, null);
-        csStage.SetShaderResource(0, null);
-        csStage.SetShaderResource(1, null);
-        csStage.SetUnorderedAccessView(0, null, 0);
+        deviceContext.PopState();
         return true;
     }
 
@@ -238,7 +243,7 @@ internal sealed class CubeMapPreview
         {
             if (cubeMap != _facesSource || _facesSrv == null)
             {
-                GraphicsUtilities.Dispose(ref _facesSrv);
+                T3.Graphics.Compat.GraphicsUtilities.Dispose(ref _facesSrv);
                 var description = cubeMap.Description;
                 _facesSrv = new ShaderResourceView(ResourceManager.Device, cubeMap,
                                                    new ShaderResourceViewDescription
@@ -259,8 +264,8 @@ internal sealed class CubeMapPreview
             if (_preview is { IsDisposed: false } && _preview.Description.Width == width && _preview.Description.Height == height)
                 return true;
 
-            GraphicsUtilities.Dispose(ref _previewUav);
-            GraphicsUtilities.Dispose(ref _preview);
+            T3.Graphics.Compat.GraphicsUtilities.Dispose(ref _previewUav);
+            T3.Graphics.Compat.GraphicsUtilities.Dispose(ref _preview);
             _preview = Texture2D.CreateTexture2D(new Texture2DDescription
                                                      {
                                                          ArraySize = 1,
@@ -280,9 +285,9 @@ internal sealed class CubeMapPreview
         catch (Exception e)
         {
             Log.Warning("Failed to create cube map preview: " + e.Message);
-            GraphicsUtilities.Dispose(ref _facesSrv);
-            GraphicsUtilities.Dispose(ref _previewUav);
-            GraphicsUtilities.Dispose(ref _preview);
+            T3.Graphics.Compat.GraphicsUtilities.Dispose(ref _facesSrv);
+            T3.Graphics.Compat.GraphicsUtilities.Dispose(ref _previewUav);
+            T3.Graphics.Compat.GraphicsUtilities.Dispose(ref _preview);
             return false;
         }
     }

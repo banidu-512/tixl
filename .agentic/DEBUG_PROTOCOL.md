@@ -16,9 +16,9 @@ Editor/bin/Debug/net10.0/TiXL.exe --debug-server 9042 --window 1600x900 --no-spl
 On Linux the executable is `Editor/bin/Debug/net10.0/TiXL`; add `TIXL_VULKAN_VALIDATION=1` to see validation
 errors in the log.
 
-- **Launch with the build folder as the working directory.** Several paths are resolved relative to it,
-  among them `.tixl/Tests/` - the visual suite's reference images. Started from the repo root the suite
-  still runs, finds no references, and reports `SUCCESS:   0 / 0`, which reads like a pass.
+- **Launch with the build folder as the working directory.** Several paths are resolved relative to it.
+  The visual suite's reference images are not among them: they resolve from the executable's folder, and a
+  missing reference reports `FAILED (reference missing)`.
 - `--debug-server <port>` starts the bridge (localhost only). Without the flag it is off, but a
   running editor can start or stop it under Settings → Diagnostics → Debug Bridge (port saved, default 9042).
 - `--window WxH` forces a predictable windowed size; `--no-splash` skips the splash screen.
@@ -56,7 +56,8 @@ buffer's alpha is render residue and would make the PNG see-through.
 Control surface: `openProject` (`name`), `newProject`, `select` (`childId`), `setInput`
 (`childId`, `inputName`, `value`), `addOp`, `connect`, `deleteOp`, `pin`, `pumpFrames`
 (`count`), `layoutSelection` (runs the G layout action on the current selection; returns `changed` and
-the grown `selectedIds`), `resetView`, `reload`, `undo`, `redo`, `setTime`, `setPlayback`, `shutdown`,
+the grown `selectedIds`), `deleteSelection` (runs the Del action on the current selection, `disconnect: true`
+for Ctrl+Del; returns `deleted` and the `selectedIds` picked afterwards), `resetView`, `reload`, `undo`, `redo`, `setTime`, `setPlayback`, `shutdown`,
 `outputSetup` (`entity`: a setup entity's display name to select, e.g. `"Surface 1"`; `mode`: the
 strip's toolbar tab — `Board`, `Straight`, `Output`; either optional), `openWindow` (`name`: a window's
 type name such as `SettingsWindow`, `ParameterWindow`; optional `section` picks a settings category, e.g.
@@ -65,6 +66,18 @@ It does what the outliner click and the tab click do, so Board ↔ space folds c
 mouse. Every fold logs one `[fold] metrics …` line at Debug level (read it with `getLogTail`): the
 rectified surface's on-screen centre path as mean distance from the window centre, path length over
 the chord (1.00 = a straight line) and the largest deviation from the chord.
+
+Rendering: `startRender` (`path` absolute, `durationSecs`, optional `startSecs`, `fps`, `exportAudio`, `codec`) exports the
+pinned `Texture2D` output to a video file through the same path as the render window, without touching the
+composition's saved render settings or version number. It returns at once with the `frameCount`; the export advances
+one frame per editor frame, so poll `getRenderStatus` (`isExporting`, `progress`, `frameIndex`, `message`) until
+`isExporting` is false. `cancelRender` stops it. Check the result with `ffprobe` / `ffmpeg`. Audio ops only stay in
+the export if they were evaluated just before it, so wire an `[AudioBus]` into the rendered chain.
+
+Audio input: `getAudioInputs` lists the capture devices with the `active` one and its `level`; `setAudioInput` (`device`)
+makes the composition analyse that device, and an empty name goes back to its own audio. The change is in memory but
+gets saved with the project, so reset it when done. `startAudioRecording` / `stopAudioRecording` write the input to a WAV
+and return its path. To test without a microphone, play a known file into a PipeWire null sink and capture its monitor.
 
 Parameter shapes are defined in `DebugServer.cs` — read the handler when unsure. Notes:
 
@@ -82,6 +95,9 @@ Parameter shapes are defined in `DebugServer.cs` — read the handler when unsur
 
 - `reload` works on **editable projects only** (synchronous recompile; MSBuild errors come
   back in a `COMPILE_FAILED` detail). Built-in packages like `Lib` need an editor restart.
+- `releaseGpuResources` does what the main menu's Free GPU Memory does: every render target that can rebuild its
+  content releases its textures and re-renders when next pulled. It runs at the start of the next frame, so
+  `pumpFrames` before reading `getMetrics`.
 - `setVSync` (`value`: bool, optional) switches the user's Use VSync setting and returns `useVSync`; without
   `value` it only reports. Restore the previous value after a measurement — the setting is saved.
   `setTargetFrameRate` (`value`: fps, 0 = every refresh) works the same way for the Frame Rate setting.
@@ -235,12 +251,11 @@ Operator packages hot-reload via `reload`, but Editor/Core changes need a restar
    editor (Debug incremental is safe once it exited).
 3. Relaunch with the flags above and wait for the port.
 
-**A Debug editor loads the operator packages built in *Debug*.** Operator packages compile to
-`<Package>/.temp/bin/<BuildMode>/<tfm>/`, and `CsProjectFile.EditorBuildMode` is `Debug`, so
-rebuilding only `-c Release` leaves the editor running the previous code — the obvious
-conclusion, "my change had no effect", is wrong. Build operator packages with `-c Debug`
-(and `-c Release` for the Player and exports). A stack trace from the running editor is the
-quickest check: its line numbers will match the old source.
+**Rebuild operator packages in both configurations.** Which one a Debug editor loads has differed
+between setups, and a package left behind runs the previous code — or, after a change to a public Core API,
+fails with `MissingFieldException` / `MissingMethodException` and takes the editor down. Build `Operators/Lib`,
+`Operators/Video`, … with and without `-c Release`. A stack trace from the running editor is the quickest
+check: its line numbers will match the old source.
 
 ## Running the visual reference test suite
 

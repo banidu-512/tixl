@@ -18,6 +18,20 @@
         </PackageReference>
     </ItemGroup>
 
+    <ItemGroup Condition="$([MSBuild]::IsOSPlatform('Linux'))">
+        <Content Include="../Dependencies/linux-x64/libtixlaudio.so" Visible="false" Link="libtixlaudio.so" CopyToOutputDirectory="PreserveNewest" />
+    </ItemGroup>
+    <ItemGroup Condition="$([MSBuild]::IsOSPlatform('Windows'))">
+        <Content Include="../Dependencies/tixlaudio.dll" Visible="false" Link="tixlaudio.dll" CopyToOutputDirectory="PreserveNewest" />
+    </ItemGroup>
+
+    <!-- The layout rewriter has no ImGui dependency, so it is tested as linked source instead of referencing the Editor. -->
+    <ItemGroup>
+        <Compile Include="../Editor/Gui/Windows/Layouts/ImGuiLayoutScaling.cs" Link="Layouts/ImGuiLayoutScaling.cs" />
+        <None Include="../.Defaults/Layouts/layout0.json" Link="Layouts/layout0.json" CopyToOutputDirectory="PreserveNewest" />
+        <None Include="../.Defaults/Layouts/layout12.json" Link="Layouts/layout12.json" CopyToOutputDirectory="PreserveNewest" />
+    </ItemGroup>
+
     <ItemGroup>
         <!-- Self-contained operator helper: compiled in so its projection math is tested without loading the operator package. -->
         <Compile Include="..\Operators\Lib\Utils\LaserProjection.cs" Link="LaserProjection.cs" />

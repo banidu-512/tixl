@@ -42,6 +42,28 @@ internal static class SetupRouting
                    };
     }
 
+    /// <summary>How many connections an entity takes from upstream, which its input slot shows.</summary>
+    internal enum InputSlots
+    {
+        None,
+        One,
+        Several,
+    }
+
+    /// <summary>
+    /// Several surfaces can map onto one output, and several can follow one patch; a surface shows one slice and a
+    /// plug presents one output. A drop onto a kind with several inputs can add to them or replace them.
+    /// </summary>
+    public static InputSlots InputSlotsOf(SetupEntityKinds kind)
+    {
+        return kind switch
+                   {
+                       SetupEntityKinds.Output or SetupEntityKinds.Patch => InputSlots.Several,
+                       SetupEntityKinds.Surface or SetupEntityKinds.Plug => InputSlots.One,
+                       _ => InputSlots.None,
+                   };
+    }
+
     /// <summary>The drag payload for an entity — the inverse of <see cref="TryParseDrag"/>.</summary>
     public static string DragPayload(SetupEntityKinds kind, Guid id) => $"{(int)kind}:{id}";
 
@@ -59,8 +81,10 @@ internal static class SetupRouting
         return true;
     }
 
+    /// <param name="replacesInputs">Disconnects what the target takes first, in the same undo step: the drop then
+    /// replaces its inputs instead of adding one. Only for a target with <see cref="InputSlots.Several"/>.</param>
     public static void ApplyDrop(Setup setup, SetupEntityKinds dragKind, Guid dragId,
-                                 SetupEntityKinds targetKind, Guid targetId)
+                                 SetupEntityKinds targetKind, Guid targetId, bool replacesInputs = false)
     {
         // Laser content routes by op input, not setup data: a laser camera dropped on a laser output
         // (either direction) writes the camera's OutputRef. It never enters the slice pipeline, so
@@ -148,7 +172,17 @@ internal static class SetupRouting
             return;
         }
 
-        SetupUndo.RunUndoable("Connect", setup, () => ApplyDropInternal(setup, dragKind, dragId, targetKind, targetId));
+        if (!replacesInputs)
+        {
+            SetupUndo.RunUndoable("Connect", setup, () => ApplyDropInternal(setup, dragKind, dragId, targetKind, targetId));
+            return;
+        }
+
+        SetupUndo.RunUndoable("Replace inputs", setup, () =>
+                                                       {
+                                                           SetupActions.ClearInputsInternal(setup, targetKind, targetId);
+                                                           ApplyDropInternal(setup, dragKind, dragId, targetKind, targetId);
+                                                       });
     }
 
     /// <summary>
@@ -208,8 +242,13 @@ internal static class SetupRouting
             }
             else
             {
-                surface.OutputMappings.Add(new Surface.OutputMapping { OutputId = patchOutput.Id, Quad = quad });
+                mapping = new Surface.OutputMapping { OutputId = patchOutput.Id, Quad = quad };
+                surface.OutputMappings.Add(mapping);
             }
+
+            // A patch that fed content goes below, handing over its place rather than staying to be linked to.
+            if (patch.SliceId == Guid.Empty)
+                mapping.PatchId = patch.Id;
 
             // Nothing shown here yet: adopt what the patch fed, so the drop doesn't silently drop its content.
             if (surface.SliceId == Guid.Empty)
@@ -251,7 +290,7 @@ internal static class SetupRouting
             {
                 var output = setup.FindOutput(targetId);
                 if (output != null)
-                    FeedOutputDirectly(output, sliceId);
+                    FeedOutputDirectly(setup, output, sliceId);
             }
 
             return;
@@ -322,7 +361,7 @@ internal static class SetupRouting
     /// drop re-feeds it instead of stacking a second one exactly over it. An output already split into tiles
     /// keeps them: the drop adds the full-canvas layer it asked for, which the tiles then sit under.
     /// </summary>
-    private static void FeedOutputDirectly(OutputDefinition output, Guid sliceId)
+    private static void FeedOutputDirectly(Setup setup, OutputDefinition output, Guid sliceId)
     {
         foreach (var existing in output.Patches)
         {
@@ -333,24 +372,31 @@ internal static class SetupRouting
 
         // The full-canvas layer the output already has is the one the drop asks for, however many tiles sit
         // over it. Without one it is inserted underneath them, not appended, or it would cover them.
-        if (SetupRelations.TryGetImplicitPatch(output, out var implicitPatch))
+        if (!SetupRelations.TryGetImplicitPatch(output, out var patch))
         {
-            implicitPatch!.SliceId = sliceId;
-            return;
+            patch = SetupActions.CreateFullCanvasPatch(sliceId);
+            output.Patches.Insert(0, patch);
         }
 
-        output.Patches.Insert(0, SetupActions.CreateFullCanvasPatch(sliceId));
+        patch!.SliceId = sliceId;
+
+        // The editor UI keeps its window's aspect: letterboxed onto the canvas rather than stretched across it.
+        if (EditorUiContent.TryGetSliceAspect(setup, sliceId, out var aspectRatio))
+        {
+            patch.ScaleMode = PatchScaleModes.Fit;
+            patch.AspectRatio = aspectRatio;
+            patch.TryFitQuad(output.CanvasSize);
+        }
     }
 
     /// <summary>
-    /// A source's first slice, creating a full-frame one if it has none — assigning content needs a slice to
-    /// name, and "the whole image" is simply the identity rect.
+    /// A source's implicit full-frame slice, creating it if needed — assigning content needs a slice to name,
+    /// and "the whole image" is simply the identity rect. Never a cut slice: the drop asked for the whole source.
     /// </summary>
     private static Slice EnsureSlice(Setup setup, ContentSource source)
     {
-        var existing = setup.Slices.Find(s => s.SourceId == source.Id);
-        if (existing != null)
-            return existing;
+        if (SetupRelations.TryGetImplicitSlice(setup, source.Id, out var existing))
+            return existing!;
 
         // Unnamed: its label is derived from the source (see SetupLabels.SliceLabel), so renaming the op renames it too.
         var slice = new Slice { SourceId = source.Id };

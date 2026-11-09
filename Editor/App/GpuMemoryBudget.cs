@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 using SharpDX.DXGI;
 using T3.Core.Animation;
 using T3.Core.Logging;
+using T3.Editor.Gui.UiHelpers;
 
 namespace T3.Editor.App;
 
@@ -20,11 +21,20 @@ internal static class GpuMemoryBudget
     public static long UsageBytes { get; private set; }
     public static long BudgetBytes { get; private set; }
 
+    /// <summary>The part of the budget TiXL may fill, from <see cref="UserSettings.ConfigData.GpuMemoryLimitPercent"/>.</summary>
+    public static long LimitBytes => BudgetBytes * Math.Clamp(UserSettings.Config.GpuMemoryLimitPercent, 10, 100) / 100;
+
+    /// <summary>Using more than the user allowed: unused resources are released before anything pages.</summary>
+    public static bool IsOverLimit => BudgetBytes > 0 && UsageBytes > LimitBytes;
+
     public static void Initialize(T3.Graphics.Compat.Device device)
     {
-        // DXGI only knows the D3D11 device; the Vulkan backend would report its budget via VK_EXT_memory_budget.
+        // DXGI only knows the D3D11 device; the Vulkan backend reports its budget via VK_EXT_memory_budget.
         if (ProgramWindows.UseVulkanBackend)
+        {
+            _backend = device.Backend;
             return;
+        }
 
         try
         {
@@ -44,7 +54,7 @@ internal static class GpuMemoryBudget
     /// <summary>Samples the budget at most once every <see cref="PollIntervalSec"/>; call from the frame loop.</summary>
     public static void UpdateFrame()
     {
-        if (_adapter == null)
+        if (_adapter == null && _backend == null)
             return;
 
         var now = Playback.RunTimeInSecs;
@@ -52,6 +62,18 @@ internal static class GpuMemoryBudget
             return;
 
         _lastPollTime = now;
+        if (_backend != null)
+        {
+            var report = _backend.QueryMemory();
+            UsageBytes = report.UsedBytes;
+            BudgetBytes = report.BudgetBytes;
+            IsOversubscribed = report.BudgetBytes > 0 && report.UsedBytes > report.BudgetBytes + report.BudgetBytes / 50;
+            return;
+        }
+
+        if (_adapter == null)
+            return;
+
         try
         {
             var info = _adapter.QueryVideoMemoryInfo(0, MemorySegmentGroup.Local);
@@ -79,5 +101,6 @@ internal static class GpuMemoryBudget
     private const double PollIntervalSec = 2;
 
     private static Adapter3? _adapter;
+    private static T3.Graphics.IGraphicsBackend? _backend;
     private static double _lastPollTime;
 }

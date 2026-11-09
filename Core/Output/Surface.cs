@@ -48,6 +48,16 @@ public sealed class Surface
         /// </summary>
         public Vector2[] Quad = new Vector2[4];
 
+        /// <summary>The patch this pin is linked to, whose quad it takes; empty for a pin aimed by itself. A surface
+        /// dropped on a patch links to it, and aiming the pin by hand ends the link.</summary>
+        public Guid PatchId;
+
+        /// <summary>Multiplies this surface's picture on this output, alpha included: the layer's tint and opacity.</summary>
+        public Vector4 LayerColor = Vector4.One;
+
+        /// <summary>How this surface combines with the layers under it on this output.</summary>
+        public LayerBlendModes BlendMode;
+
 /// <summary>
         /// Where one of the surface's reference points sits on this output, in the same 0..1 canvas space.
         /// <para><see cref="IsAimed"/> means the user put it there and the pin is solved to project the point
@@ -62,6 +72,12 @@ public sealed class Surface
         /// <summary>Where each of the surface's reference points sits on this output, by point id.</summary>
         public Dictionary<Guid, PointAim> PointAims = new();
 
+        /// <summary>The quad as it was when the first reference point was aimed, which resetting the alignment restores. Null if none was aimed since.</summary>
+        public Vector2[]? QuadBeforeAligning;
+
+        /// <summary>The mode that went with <see cref="QuadBeforeAligning"/>: solving a pin turns a fill into a corner pin.</summary>
+        public MappingModes ModeBeforeAligning;
+
         /// <summary>Whether the quad covers the whole canvas by definition rather than by where it was dragged.</summary>
         public bool IsFilling => Mode == MappingModes.Fill;
 
@@ -69,12 +85,14 @@ public sealed class Surface
         public void PromoteToCornerPin()
         {
             Mode = MappingModes.CornerPin;
+            PatchId = Guid.Empty;
         }
 
         /// <summary>Takes the whole canvas, dropping the corners it was placed at.</summary>
         public void FillCanvas()
         {
             Mode = MappingModes.Fill;
+            PatchId = Guid.Empty;
             Quad = OutputDefinition.FullCanvasQuad();
         }
 
@@ -92,6 +110,9 @@ public sealed class Surface
             writer.WriteObject("OutputId", OutputId);
             writer.WriteString("Mode", Mode.ToString());
             writer.WriteQuad("Quad", Quad);
+            if (PatchId != Guid.Empty)
+                writer.WriteObject("PatchId", PatchId);
+
             if (PointAims.Count > 0)
             {
                 writer.WritePropertyName("PointAims");
@@ -108,6 +129,18 @@ public sealed class Surface
                 writer.WriteEndArray();
             }
 
+            if (LayerColor != Vector4.One)
+                writer.WriteVector4("LayerColor", LayerColor);
+
+            if (BlendMode != LayerBlendModes.Normal)
+                writer.WriteString("Blend", BlendMode.ToString());
+
+            if (QuadBeforeAligning != null)
+            {
+                writer.WriteQuad("QuadBeforeAligning", QuadBeforeAligning);
+                writer.WriteString("ModeBeforeAligning", ModeBeforeAligning.ToString());
+            }
+
             writer.WriteEndObject();
         }
 
@@ -120,7 +153,20 @@ public sealed class Surface
                                              ? mode
                                              : MappingModes.CornerPin,
                                   Quad = OutputJson.ReadQuad(token["Quad"]),
+                                  PatchId = OutputJson.ReadGuid(token["PatchId"]),
+                                  LayerColor = OutputJson.ReadVector4(token["LayerColor"], Vector4.One),
+                                  BlendMode = Enum.TryParse<LayerBlendModes>(token.ReadValueSafe("Blend", string.Empty), out var blend)
+                                                  ? blend
+                                                  : LayerBlendModes.Normal,
                               };
+
+            if (token["QuadBeforeAligning"] != null)
+            {
+                mapping.QuadBeforeAligning = OutputJson.ReadQuad(token["QuadBeforeAligning"]);
+                mapping.ModeBeforeAligning = Enum.TryParse<MappingModes>(token.ReadValueSafe("ModeBeforeAligning", string.Empty), out var modeBeforeAligning)
+                                                 ? modeBeforeAligning
+                                                 : MappingModes.CornerPin;
+            }
 
             // "PointAims", not the old "PointTargets": those held canvas pixels, which read as fractions would
             // put every mark a thousand canvases away. Dropping them re-seeds the marks from the pin.
@@ -148,6 +194,10 @@ public sealed class Surface
 
         /// <summary>Corners in reference-image pixels, same winding as <see cref="OutputMapping.Quad"/>.</summary>
         public Vector2[] Quad = new Vector2[4];
+
+        /// <summary>The patch this pin is linked to, whose quad it takes; empty for a pin aimed by itself. A surface
+        /// dropped on a patch links to it, and aiming the pin by hand ends the link.</summary>
+        public Guid PatchId;
 
         public List<Annotation> Annotations = [];
 
@@ -253,6 +303,10 @@ public sealed class Surface
     /// <summary>Minor raster lines per meter; 1 draws meter lines only. They fade out once too dense to resolve.</summary>
     public int GridSubdivisions = 10;
 
+    /// <summary>Projects the surface's measuring lines onto the wall, to align a line until it lies along the real
+    /// feature it was drawn on. Calibrate projects them too while it is on.</summary>
+    public bool ShowMeasuringLines;
+
     /// <summary>
     /// ContentCanvas resolution policy: pixel size is derived (px/m × physical size, clamped),
     /// never stored — surfaces get resized during calibration and content must survive it.
@@ -268,6 +322,13 @@ public sealed class Surface
     public List<Annotation> Annotations = [];
 
     public List<OutputMapping> OutputMappings = [];
+
+    /// <summary>
+    /// Mappings whose connection was taken away, kept with their alignment: disconnecting a surface doesn't move the
+    /// projector, so connecting it to the same output again restores where it lands. At most one per output, and
+    /// never rendered.
+    /// </summary>
+    public List<OutputMapping> ParkedMappings = [];
 
     /// <summary>This surface's corner pin onto an output, if any — a plain loop, so per-frame callers don't pay a closure.</summary>
     public OutputMapping? FindMapping(Guid outputId)
@@ -305,6 +366,7 @@ public sealed class Surface
         writer.WriteValue("PixelsPerMeter", PixelsPerMeter);
         writer.WriteValue("ShowGrid", ShowGrid);
         writer.WriteValue("GridSubdivisions", GridSubdivisions);
+        writer.WriteValue("ShowMeasuringLines", ShowMeasuringLines);
 
         if (Annotations.Count > 0)
         {
@@ -322,6 +384,16 @@ public sealed class Surface
             mapping.WriteToJson(writer);
 
         writer.WriteEndArray();
+
+        if (ParkedMappings.Count > 0)
+        {
+            writer.WritePropertyName("ParkedMappings");
+            writer.WriteStartArray();
+            foreach (var mapping in ParkedMappings)
+                mapping.WriteToJson(writer);
+
+            writer.WriteEndArray();
+        }
 
         if (Trace != null)
         {
@@ -362,8 +434,12 @@ public sealed class Surface
                               PixelsPerMeter = token.ReadValueSafe("PixelsPerMeter", 400f),
                               ShowGrid = token.ReadValueSafe("ShowGrid", false),
                               GridSubdivisions = token.ReadValueSafe("GridSubdivisions", 10),
+
+                              // Setups saved before the lines had a switch of their own showed them with the raster.
+                              ShowMeasuringLines = token.ReadValueSafe("ShowMeasuringLines", token.ReadValueSafe("ShowGrid", false)),
                               Annotations = token.ReadListSafe("Annotations", Annotation.ReadFromJson),
                               OutputMappings = token.ReadListSafe("OutputMappings", OutputMapping.ReadFromJson),
+                              ParkedMappings = token.ReadListSafe("ParkedMappings", OutputMapping.ReadFromJson),
                           };
 
         if (token["Reference"] is JObject referenceToken)

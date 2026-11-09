@@ -2,6 +2,7 @@
 using ImGuiNET;
 using T3.Core.Output;
 using T3.Editor.Gui.Interaction.CanvasEditing;
+using T3.Editor.Gui.Interaction.Keyboard;
 using T3.Editor.Gui.Styling;
 using T3.Editor.Gui.UiHelpers;
 using T3.Editor.UiModel.Selection;
@@ -21,6 +22,9 @@ internal sealed partial class SetupOutputView
 {
     /// <summary>Asks the next Board frame to start drawing at the end of this plan — set by actions that create one.</summary>
     public static Guid PendingPlanDrawId;
+
+    /// <summary>Where the right-click that opened a floor plan's menu went down, in plan metres.</summary>
+    public static Vector2 PlanMenuPointInPlan;
 
     /// <summary>Whether the tool owns the Board's mouse right now.</summary>
     private bool IsDrawingPlan => _planDrawId != Guid.Empty;
@@ -109,6 +113,7 @@ internal sealed partial class SetupOutputView
         var focused = ImGui.IsWindowFocused(ImGuiFocusedFlags.RootAndChildWindows) && !ImGui.GetIO().WantTextInput;
         if (focused && (ImGui.IsKeyPressed(ImGuiKey.Escape, false) || ImGui.IsMouseClicked(ImGuiMouseButton.Right)))
         {
+            KeyActionHandling.ClaimEscapeKey();
             EndPlanDraw();
             return;
         }

@@ -2,7 +2,6 @@
 using T3.Core.Logging;
 using T3.Graphics;
 using T3.Graphics.Compat;
-using T3.Core.Stats;
 using T3.Editor.Gui.UiHelpers;
 
 namespace T3.Editor.Gui.Windows.Analyze;

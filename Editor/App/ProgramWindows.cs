@@ -27,7 +27,6 @@ namespace T3.Editor.App;
 internal static unsafe class ProgramWindows
 {
     public static AppWindow Main { get; private set; }
-    public static AppWindow Viewer { get; private set; } // Required it distinguish 2nd render view in mouse handling   
     private static Device _device;
     private static DeviceContext _deviceContext;
     private static IGraphicsBackend? _backend;
@@ -106,8 +105,7 @@ internal static unsafe class ProgramWindows
     internal static void InitializeMainWindow(string version, out Device device)
     {
         Main = new AppWindow("TiXL " + version, disableClose: false);
-        // Enable explicit frame-latency pacing on Main's swap chain. Replaces the accidental
-        // pacing previously provided by Viewer's secondary `Present(1)` call. Must be set before
+        // Main's swap chain paces the loop through its frame-latency waitable. Must be set before
         // the swap chain is created.
         Main.UseFrameLatencyWaitable = true;
         device = null;
@@ -300,17 +298,11 @@ internal static unsafe class ProgramWindows
         factory.MakeWindowAssociation(windowHandle, SharpDX.DXGI.WindowAssociationFlags.IgnoreAll);
     }
 
-    internal static void InitializeSecondaryViewerWindow(string name, int width, int height)
-    {
-        Viewer = CreateViewerWindow(name, width, height);
-        Viewer.Show();
-    }
-
     /// <summary>
     /// A window for showing a rendered texture: its own swap chain, no ImGui content and no key tracking, so it
     /// can sit on a projector while the editor keeps the keyboard.
     /// </summary>
-    internal static AppWindow CreateViewerWindow(string name, int width, int height)
+    internal static AppWindow CreateOutputWindow(string name, int width, int height)
     {
         var window = new AppWindow(name, disableClose: true);
         window.SetDevice(_device, _deviceContext);
@@ -345,7 +337,6 @@ internal static unsafe class ProgramWindows
         _device.ImmediateContext.ClearState();
         _deviceContext.Flush();
         Main.Release();
-        Viewer?.Release();
         _backend?.Dispose();
     }
 
@@ -359,7 +350,7 @@ internal static unsafe class ProgramWindows
         _deviceContext.PixelShader.SetShaderResource(0, viewWindowBackgroundSrv);
     }
 
-    public static void DrawTextureToSecondaryRenderOutput()
+    public static void DrawFullScreenTexture()
     {
         _deviceContext.Draw(3, 0);
         _deviceContext.PixelShader.SetShaderResource(0, null);
@@ -379,7 +370,7 @@ internal static unsafe class ProgramWindows
     /// </summary>
     public static void HoldForTargetFrameRate()
     {
-        var vblanksPerFrame = T3Ui.UseVSync ? GetVblanksPerFrame(UserSettings.Config.TargetFrameRate, FrameTiming.RefreshRate) : 1;
+        var vblanksPerFrame = T3Ui.IsPacedByDisplay ? GetVblanksPerFrame(UserSettings.Config.TargetFrameRate, FrameTiming.RefreshRate) : 1;
         FrameTiming.VblanksPerFrame = vblanksPerFrame;
 
         if (vblanksPerFrame > 1)
@@ -423,15 +414,9 @@ internal static unsafe class ProgramWindows
             Main.SwapChain.Present(useVSync ? 1 : 0);
             PresentationDiagnostics.Update(Main.SwapChain);
 
-            // Only while its window is actually shown. Presenting a hidden flip-model swap chain is not the
-            // cheap no-op it looks like: DWM throttles presents to a window it isn't displaying, and with an
-            // output window up that wait measured 34ms per frame against 0.3ms for Main. Main's pacing comes
-            // from its frame-latency waitable swap chain, not from a second Present.
-            if (T3Ui.ShowSecondaryRenderWindow)
-                Viewer?.SwapChain?.Present(useVSync ? 1 : 0);
-
             // Each display an output is bound to has its own swap chain, presented with the same sync as Main so
-            // a projector never tears.
+            // a projector never tears. Only claimed windows are presented: DWM throttles presents to a hidden
+            // flip-model swap chain, which measured 34ms per frame against 0.3ms for Main.
             var outputWindows = OutputWindowHandling.Presenting;
             for (var i = 0; i < outputWindows.Count; i++)
             {
@@ -485,8 +470,8 @@ internal static unsafe class ProgramWindows
 
     /// <summary>
     /// Keeps a copy of the frame that is about to be presented. The flip-model swap chain discards
-    /// its back buffer, so this copy is what <see cref="StallWatchdog"/> shows during a stall and
-    /// what gets mirrored to the second view.
+    /// its back buffer, so this copy is what <see cref="StallWatchdog"/> shows during a stall and what the
+    /// output setup maps as the editor UI.
     /// </summary>
     public static void CaptureUiFrame()
     {
@@ -522,10 +507,11 @@ internal static unsafe class ProgramWindows
             OptionFlags = ResourceOptionFlags.None
         };
 
-        if (_uiCopyTexture is { IsDisposed: false })
-            _uiCopyTexture.Dispose();
+        // The wrapper owns the native texture, so disposing it frees both.
+        UiFrame?.Dispose();
 
         _uiCopyTexture = new Texture2D(_device, textureDesc);
+        UiFrame = new T3.Core.DataTypes.Texture2D(_uiCopyTexture);
         UiCopyTextureDescription = textureDesc;
 
         if (UiCopyTextureSrv is { IsDisposed: false })
@@ -535,27 +521,9 @@ internal static unsafe class ProgramWindows
     }
 
     /// <summary>
-    /// For things like presentations, demos or certain live performance situations it
-    /// can be desired to share also T3's UI content on a second display.
-    ///  
-    /// On Windows duplicating a display is extremely expensive. This work around
-    /// copies the last frame into a texture which is then presented on the second display.
-    /// </summary>
-    public static void CopyUiContentToShareTexture()
-    {
-        if (_uiCopyTexture == null || _uiCopyTexture.IsDisposed)
-        {
-            Log.Warning("Can't use undefined uiCopyTexture");
-            return;
-        }
-
-        _deviceContext.CopyResource(Main.BackBufferTexture, _uiCopyTexture);
-    }
-
-    /// <summary>
-    /// Captures the main window's next rendered UI frame — the same back-buffer copy the second-display
-    /// mirror makes — for the debug bridge. Served once by <see cref="ServePendingUiCapture"/>, after the
-    /// UI has rendered and before Present. The receiver owns the texture it gets and disposes it when done.
+    /// Captures the main window's next rendered UI frame for the debug bridge. Served once by
+    /// <see cref="ServePendingUiCapture"/>, after the UI has rendered and before Present. The receiver owns the
+    /// texture it gets and disposes it when done.
     /// </summary>
     public static void RequestUiCapture(Action<T3.Core.DataTypes.Texture2D> onCaptured)
     {
@@ -571,7 +539,7 @@ internal static unsafe class ProgramWindows
         _pendingUiCapture = null;
 
         // A fresh copy per capture: the wrapper handed out disposes its native texture, so it must not be
-        // the mirror's shared one.
+        // the stall watchdog's kept frame.
         var swapChain = Main.SwapChain;
         var copy = new Texture2D(_device, new Texture2DDescription
                                               {
@@ -593,6 +561,9 @@ internal static unsafe class ProgramWindows
     private static Texture2D _uiCopyTexture;
     private static Action<T3.Core.DataTypes.Texture2D> _pendingUiCapture;
     public static ShaderResourceView UiCopyTextureSrv { get; private set; }
+
+    /// <summary>The last presented UI frame, kept by <see cref="CaptureUiFrame"/>; null until the first one.</summary>
+    public static T3.Core.DataTypes.Texture2D UiFrame { get; private set; }
 
     internal static Texture2DDescription UiCopyTextureDescription { get; private set; }
 

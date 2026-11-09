@@ -42,6 +42,7 @@ internal static class OutputSetupHandling
         ActiveSetup.Current = entry.Setup;
         ActiveSetup.Machine = entry.MachineConfig;
         ResolveCanvasResolutions(entry.Setup, entry.MachineConfig);
+        SetupRelations.SyncPinsToLinkedPatches(entry.Setup);
         if (switched)
             ActiveSetup.NotifyChanged();
     }
@@ -51,6 +52,32 @@ internal static class OutputSetupHandling
     /// Operators reading the setup follow along each frame instead of jumping at the release.
     /// </summary>
     public static void NotifyLiveEdit() => ActiveSetup.NotifyChanged();
+
+    /// <summary>
+    /// Moves routing along when send ops are re-created under new child ids. Covers every setup of the focused
+    /// project, not only the active one, because each file routes those ops by itself.
+    /// </summary>
+    public static void RemapContentSources(IReadOnlyDictionary<Guid, Guid> oldToNewChildIds)
+    {
+        if (!TryGetFocusedEntry(out var entry, out var setupsFolder))
+            return;
+
+        if (RemapContentSources(entry.Setup, oldToNewChildIds))
+            SaveActive();
+
+        if (!Directory.Exists(setupsFolder))
+            return;
+
+        var activeFilePath = SetupFilePath(setupsFolder, entry.Setup.Name);
+        foreach (var filePath in Directory.GetFiles(setupsFolder, "*" + Setup.FileSuffix))
+        {
+            if (string.Equals(filePath, activeFilePath, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            if (Setup.TryLoadFromFile(filePath, out var setup, out _) && RemapContentSources(setup, oldToNewChildIds))
+                setup.TrySaveToFile(filePath);
+        }
+    }
 
     /// <summary>Drops a closed project's cached setup, so reopening reloads from disk.</summary>
     public static void OnProjectClosed(string projectFolder)
@@ -92,6 +119,7 @@ internal static class OutputSetupHandling
         if (!TryGetFocusedEntry(out var entry, out var setupsFolder))
             return;
 
+        SetupRelations.SyncPinsToLinkedPatches(entry.Setup);
         Directory.CreateDirectory(setupsFolder);
         if (entry.Setup.TrySaveToFile(SetupFilePath(setupsFolder, entry.Setup.Name)))
             entry.IsSaved = true;
@@ -218,6 +246,10 @@ internal static class OutputSetupHandling
         if (!Setup.TryLoadFromFile(SetupFilePath(setupsFolder, setupName), out var setup, out _))
             return false;
 
+        // A file copied by hand shares its id with the original, and undo would then cross between the two.
+        if (setup.Id == entry.Setup.Id)
+            setup.Id = Guid.NewGuid();
+
         entry.Setup = setup;
         OutputPresentation.ReleaseAll();
         SaveActive(); // records the new active setup name (and any load-time repair) so the switch survives a restart
@@ -314,19 +346,34 @@ internal static class OutputSetupHandling
 
         var names = new List<string>();
         GetAvailableSetupNames(names);
-        if (names.Count > 0)
+
+        // An unreadable file is skipped: staying on the deleted setup would write its file back at the next save.
+        foreach (var name in names)
         {
-            TrySwitchTo(names[0]);
-        }
-        else
-        {
-            entry.Setup = Setup.CreateDefault();
-            entry.IsSaved = false;
-            OutputPresentation.ReleaseAll();
-            StructureVersion++;
+            if (TrySwitchTo(name))
+                return true;
         }
 
+        entry.Setup = Setup.CreateDefault(FreeDefaultSetupName(setupsFolder));
+        entry.IsSaved = false;
+        OutputPresentation.ReleaseAll();
+        StructureVersion++;
         return true;
+    }
+
+    private static bool RemapContentSources(Setup setup, IReadOnlyDictionary<Guid, Guid> oldToNewChildIds)
+    {
+        var changed = false;
+        foreach (var source in setup.ContentSources)
+        {
+            if (!oldToNewChildIds.TryGetValue(source.SymbolChildId, out var newChildId))
+                continue;
+
+            source.SymbolChildId = newChildId;
+            changed = true;
+        }
+
+        return changed;
     }
 
     private sealed class ProjectEntry
@@ -397,7 +444,7 @@ internal static class OutputSetupHandling
         var isSaved = setup != null;
         if (setup == null)
         {
-            setup = Setup.CreateDefault();
+            setup = Setup.CreateDefault(FreeDefaultSetupName(setupsFolder));
         }
         else if (wasRepaired)
         {
@@ -420,6 +467,17 @@ internal static class OutputSetupHandling
         entry = new ProjectEntry { Setup = setup, MachineConfig = machineConfig, IsSaved = isSaved };
         _entriesByProjectFolder[projectFolder] = entry;
         return entry;
+    }
+
+    /** A name with no file behind it, so a default standing in for an unreadable "Setup 1" can't save over that file. */
+    private static string FreeDefaultSetupName(string setupsFolder)
+    {
+        for (var ordinal = 1;; ordinal++)
+        {
+            var name = $"Setup {ordinal}";
+            if (!File.Exists(SetupFilePath(setupsFolder, name)))
+                return name;
+        }
     }
 
     private static string SetupFilePath(string setupsFolder, string setupName)

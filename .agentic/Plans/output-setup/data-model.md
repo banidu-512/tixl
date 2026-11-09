@@ -30,7 +30,7 @@ Design decisions this doc is measured against (from the design sessions / protot
 | — camera | `OutputDefinition.ProjectorCamera` | `Pose? Lens? CalibrationPoints[] ResidualPx Manual{Position,Target,FovY}` | Output |
 | Reference image | `ReferenceImage` | `Id Name Kind(Photo/Plan) FilePath W H MetersPerPixel` | Setup |
 | Prop | `Prop` | `Id Kind(Person) Position HeightInMeters` | Setup |
-| Device binding | `DeviceBinding` in `MachineConfig` | `OutputId DisplayName DisplayIndex Fullscreen` | `.meta/outputs.machine.json` (per-machine) |
+| Device binding | `PlugBinding` in `MachineConfig` | `OutputId DisplayName DisplayIndex Fullscreen` | `.meta/outputs.machine.json` (per-machine) |
 | Active setup | `ActiveSetup` (static) | `Current:Setup? Machine:MachineConfig?` + `TryFindSurface/Output` | runtime |
 | Content sink | `IOutputSink` / `OutputSinkRegistry` | `GetOutputId/GetSurfaceId/GetColor/GetContent + InvalidateContent` | live (graph) |
 | — op | `SendToOutput` | inputs `Texture, OutputRef:Guid, SurfaceRef:Guid, Color`; **no output slot** | graph |
@@ -52,6 +52,11 @@ slice; sources keyed by the op's `SymbolChildId`), and after review this is **bl
   re-instantiation and hot reloads without an op eval, duplicates with the venue, and reads sensibly from the
   file while nothing is instantiated. Slices as named entities (with `Unused` = unreferenced) fell out
   naturally; op-side would have re-scattered them across ops.
+- **A source is the setup's own slot (2026-11-02):** slices point at `ContentSource.Id`, and `SymbolChildId` is only which
+  op currently fills it. A source whose op isn't part of the focused project keeps its routing and reads as "op missing";
+  it can be connected to an existing op by a drop, given a new one by **Create SendToOutput**, or removed. So a setup file can
+  move to another project: surfaces, outputs and calibration carry over, and the slots are connected again there.
+  Reference images still have to be copied along by hand.
 - **Accepted costs (documented, not bugs):** duplicating a `SendToOutput` op does *not* carry routing (the
   source keys on the original `SymbolChildId` — the duplicate appears as a new unbound source); the
   `ContentSourceSync` adopt/rename/cascade subsystem is permanent (now frame-driven, save-debounced); a
@@ -232,7 +237,7 @@ top-left corner; `2nd Display` = first non-editor display, per-machine overridab
 "Default Audio Input" pattern applied verbatim: no new binding kind, a binding still points at a
 display; virtual names resolve in machine-wide settings before OS enumeration. Examples ship
 runnable. Details + resolution-timing rules in [`binding-examples.md`](binding-examples.md).
-`DeviceBinding`/`MachineConfig` fully model "which connector on which computer" (name-first, index-fallback,
+`PlugBinding`/`MachineConfig` fully model "which connector on which computer" (name-first, index-fallback,
 per-machine, gitignored). The spec's callout 24 side-note ("an output needs to be bound to a display and this
 should be indicated") is a **UI gap only** — surface the binding state on the Output row, and offer bind in
 the `+` menu (the existing `ResolutionHandling.DrawOutputBindingMenu` is the hook).
@@ -365,7 +370,7 @@ about a wall upside-down; matches the 3D stage pose and camera conventions), **p
   default composes as anchor `(0,−1)` + position `(x, 0)`. One convention for **all** frame kinds
   (surfaces, content cards, outputs) — no per-kind variants. Term: **Anchor** (decision №7); a
   separate rotation center can become its own property later if a flow ever needs one.
-- **Landed 2026-09-05** (inventory and site list in [`anchor-yup-pass.md`](anchor-yup-pass.md)):
+- **Landed 2026-09-05** (inventory and site list in [`anchor-yup-pass.md`](../archive/output-setup/anchor-yup-pass.md)):
   `Surface.Anchor` (signed, default bottom-centre `(0,−1)`) replaced `StagePlacement.Pivot`; surface-local
   space is Y-up with its **origin at the anchor**, so a crop never moves annotations or child regions.
   No legacy conversion — the format was internal-preview only.

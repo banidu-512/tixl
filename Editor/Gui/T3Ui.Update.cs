@@ -24,6 +24,7 @@ using T3.Editor.UiModel;
 using T3.Editor.UiModel.ProjectHandling;
 using T3.Editor.UiModel.Selection;
 using T3.SystemUi;
+using T3.Editor.Gui.Windows.TimeLine;
 
 namespace T3.Editor.Gui;
 
@@ -97,10 +98,14 @@ public static partial class T3Ui
 
         FitViewToSelectionHandling.ProcessNewFrame();
         SrvManager.RemoveForDisposedTextures();
+        GpuResourceReleasing.Update();
         KeyActionHandling.InitializeFrame();
 
         CompatibleMidiDeviceHandling.RescanIfDevicesChanged();
         CompatibleMidiDeviceHandling.UpdateConnectedDevices();
+        Interaction.Gamepad.GamepadIndicator.Update();
+        T3.IoServices.SpaceMouseInput.Update();
+        T3.IoServices.SpaceMouseInput.IsAvailableToOperators = UserSettings.Config.SpaceMouseUsage == UserSettings.InputDeviceUsages.Operators;
 
         var nodeSelection = ProjectView.Focused?.NodeSelection;
         if (nodeSelection != null)
@@ -110,6 +115,12 @@ public static partial class T3Ui
             MouseInput.SelectedChildId = selectedInstance?.SymbolChildId ?? Guid.Empty;
             NodeSelection.InvalidateSelectedOpsForTransformGizmo(nodeSelection);
         }
+
+        // Playback shortcuts are global and must fire once per frame, no matter how many timelines are shown.
+        TimeControls.HandleTimeControlActions();
+        RecordingSession.OnFrame();
+
+        CheckIfEscapeCouldCancelSomething();
 
         // Draw everything!
         LayoutHandling.DrawMainDockSpace();
@@ -142,7 +153,7 @@ public static partial class T3Ui
         _couldNotLoadProjectDialog.Draw();
         _missingOperatorsDialog.Draw();
         _sendCrashReportsDialog.Draw();
-        CreateFromTemplateDialog.Draw();
+        ShareSessionDialog.Draw();
         _userNameDialog.Draw();
         _collabPasswordDialog.Draw();
         Windows.AssetLib.FolderImportDialog.Instance.Draw();

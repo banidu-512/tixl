@@ -83,9 +83,13 @@ public static partial class ResourceManager
         {
             if ((buffer.Description.OptionFlags & ResourceOptionFlags.BufferStructured) == 0)
             {
-                // Log.Warning($"{nameof(SrvFromStructuredBuffer)} - input buffer is not structured, skipping SRV creation.");
                 return;
             }
+            
+            if ((buffer.Description.BindFlags & BindFlags.UnorderedAccess) == 0 )
+            {
+                return;
+            }            
 
             var elementCount = buffer.Description.SizeInBytes / buffer.Description.StructureByteStride;
             if (uav != null && !uav.IsDisposed && IsViewOf(uav, buffer)
@@ -117,10 +121,13 @@ public static partial class ResourceManager
     /// objects until their inputs change, so recreating a view on every data upload would
     /// hand them a disposed view whenever the producer re-ran unnoticed.
     /// </summary>
+    /// <remarks>
+    /// Compares the wrapper, not <see cref="Resource.NativePointer"/>: that is zero on non-COM backends, and the
+    /// view's <see cref="ResourceView.Resource"/> is the shared object itself, so it must not be disposed here.
+    /// </remarks>
     private static bool IsViewOf(ResourceView view, Buffer buffer)
     {
-        using var resource = view.Resource;
-        return resource.NativePointer == buffer.NativePointer;
+        return ReferenceEquals(view.Resource, buffer);
     }
 
     public static void CreateStructuredBufferSrv(Buffer? buffer, ref ShaderResourceView? srv)

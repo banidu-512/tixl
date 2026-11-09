@@ -72,6 +72,30 @@ Focus a dropdown parameter, press `Tab` and type the first letters of an option,
 - The best matching option is previewed and completed faintly.
 - `Down` and `Up` switch between the matching options without leaving the parameter.
 
+## Step: Searching an asset path
+
+**Action:**
+Select a [LoadObj] operator (or another one with a file path parameter) and press `S`. Focus Path and press `Tab`. Type part of a file name, press `Down` twice, then press `Enter`. Open the popover again, press `Tab`, and click an entry in the list.
+
+**Expected:**
+- After `Tab`, a list of assets with the operator's file types appears above the popover, with the current path highlighted.
+- Typing narrows the list and underlines the match, but the operator doesn't load anything yet.
+- `Down` moves the highlight and the operator previews that file.
+- `Enter` applies the highlighted file and closes the popover; one `Ctrl+Z` restores the previous path.
+- Clicking an entry applies it and closes the popover. Dragging the list's scrollbar keeps the popover open, and typing continues after releasing it.
+- Typing text without any match shows `no matching asset`, and `Enter` leaves the path unchanged.
+
+## Step: Typing text
+
+**Action:**
+Select a [Text] operator (or another one with a text parameter) and press `S`. Focus Text, press `Tab` and type `Rock and Roll  ` (with two trailing spaces), then press `Enter`.
+
+**Expected:**
+- The output shows the typed text while typing, including the capital `R`, without resetting the parameter.
+- `Enter` applies it and closes the popover; the Parameter Window shows the text with its trailing spaces.
+- One `Ctrl+Z` restores the previous text.
+- Pressing `Tab` and then `Esc` without typing leaves the text unchanged.
+
 ## Step: Adjusting with the slider
 
 **Action:**
@@ -116,3 +140,37 @@ Apply a value to the third parameter, close the popover, and press `S` again.
 
 **Expected:**
 - The popover opens with the focus on the parameter you edited last.
+
+## Step: Opening from another window
+
+**Action:**
+Click the Timeline Window, press `S`, then press `Esc`.
+
+**Expected:**
+- The Graph Window takes the focus and the popover opens.
+- After `Esc` the popover closes and the Timeline Window has the focus again.
+
+## Step: Dialogs and text fields block the popover
+
+**Action:**
+Open a dialog such as the graph search (`Ctrl+F`) and press `S`. Close it, click into a text field in the Parameter Window and type `s`.
+
+**Expected:**
+- The popover does not open behind the dialog or while the text field is active.
+
+## Step: S over the Output Window moves the camera
+
+**Action:**
+Select an operator, click the Output Window with a camera in view, and hold `S` while hovering it. Then move the mouse off the Output Window, without clicking, and press `S` again.
+
+**Expected:**
+- While hovering, `S` moves the camera back and doesn't open the popover.
+- Off the Output Window, `S` opens the popover.
+
+## Step: Cloned key maps keep their focus rules
+
+**Action:**
+Press **Clone** in the key map settings. Move the mouse away from the Output Window and hold `W`.
+
+**Expected:**
+- The camera doesn't move without hovering the Output Window.

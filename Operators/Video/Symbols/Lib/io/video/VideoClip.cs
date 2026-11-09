@@ -48,7 +48,7 @@ internal sealed class VideoClip : Instance<VideoClip>, IStatusProvider, IVideoCl
 
         // The decode side owns the stream's lifetime and feed position; the graph only decides which mixer it
         // joins and at what gain.
-        _node = new AudioGraphNode(this) { ExternallyManagedChannel = true };
+        _node = new AudioGraphNode(this);
         AudioReference.Value = _node;
         AudioReference.UpdateAction += UpdateAudioReference;
     }
@@ -99,7 +99,8 @@ internal sealed class VideoClip : Instance<VideoClip>, IStatusProvider, IVideoCl
         if (!isDisposing)
             return;
 
-        VideoPlaybackEngine.Instance.ReleaseStream(_streamId);
+        // Not Instance: an op that never played must not create the engine, possibly after its assembly context unloaded.
+        VideoPlayback.Engine?.ReleaseStream(_streamId);
     }
 
     public IStatusProvider.StatusLevel GetStatusLevel()
@@ -154,7 +155,7 @@ internal sealed class VideoClip : Instance<VideoClip>, IStatusProvider, IVideoCl
         _node.SourceChannel = isActive && volume > 0
                                   ? VideoPlaybackEngine.Instance.RequestAudio(_streamId, absolutePath, sourceTime,
                                                                               loop: false, context.Playback.IsRenderingToFile)
-                                  : 0;
+                                  : default;
     }
 
     // Off the render path: a bus evaluating this output supplies no meaningful source time, so the node only
@@ -164,7 +165,7 @@ internal sealed class VideoClip : Instance<VideoClip>, IStatusProvider, IVideoCl
         // A clip no player draws stops running the texture path, and the engine eventually evicts its stream and
         // frees the channel. Keep advertising it and a routing bus retries a dead handle every frame, forever.
         if (Playback.FrameCount - _lastAudioRequestFrame > AudioRequestFrameSlack)
-            _node.SourceChannel = 0;
+            _node.SourceChannel = default;
 
         _node.Update(context);
         AudioReference.DirtyFlag.Clear();

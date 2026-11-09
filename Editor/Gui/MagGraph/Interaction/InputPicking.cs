@@ -80,9 +80,9 @@ internal static class InputPicking
         Debug.Assert(context.MacroCommand != null);
         Debug.Assert(context.ItemForInputSelection.Variant == MagGraphItem.Variants.Operator); // This will bite us later...
         
-        if (context.ActiveSourceItem.OutputLines.Length == 0)
+        if (!context.TryGetActiveOutputLine(out _))
         {
-            Log.Warning("no visible output to connect?");
+            Log.Warning("no output to connect?");
             return;
         }
 
@@ -146,10 +146,13 @@ internal static class InputPicking
         var insertionLineIndex = GetInsertionLineIndex(allInputSlots, visibleInputLines, selectedInputId, out var shouldPushDown);
 
         if (shouldPushDown)
+        {
+            var yThreshold = context.ItemForInputSelection.PosOnCanvas.Y + MagGraphItem.GridSize.Y * (insertionLineIndex - 0.5f);
             MagItemMovement.MoveSnappedItemsVertically(context,
-                                                       MagItemMovement.CollectSnappedItems(context.ItemForInputSelection),
-                                                       context.ItemForInputSelection.PosOnCanvas.Y + MagGraphItem.GridSize.Y * (insertionLineIndex - 0.5f),
+                                                       MagItemMovement.CollectSnappedItemsBelow(context.ItemForInputSelection, yThreshold),
+                                                       yThreshold,
                                                        MagGraphItem.GridSize.Y * addedCount);
+        }
         
         context.ItemMovement.Reset();
         context.Layout.FlagStructureAsChanged();

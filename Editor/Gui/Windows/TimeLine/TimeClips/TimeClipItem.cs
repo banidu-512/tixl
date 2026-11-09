@@ -36,12 +36,13 @@ internal static class TimeClipItem
         var xEndTime = attr.LayerContext.TimeCanvas.TransformX(timeClip.TimeRange.End) + 1;
 
         // Horizontal off-screen cull. A clip entirely left or right of the visible layer
-        // area draws nothing and can't be interacted with — the item being dragged stays
-        // under the mouse, hence on-screen, so the active drag is never the culled one.
-        // This is the main win for compositions with many clips but only a few in view:
-        // it skips the body, the per-event DataClip/audio overlays, the label, and the
-        // interaction buttons entirely.
-        if (xEndTime < attr.LayerRect.Min.X || xStartTime > attr.LayerRect.Max.X)
+        // area draws nothing and can't be interacted with. This is the main win for
+        // compositions with many clips but only a few in view: it skips the body, the
+        // per-event DataClip/audio overlays, the label, and the interaction buttons entirely.
+        // Dragged clips are exempt: the pointer can leave the view mid-drag, and a clip that
+        // stops submitting its button loses ImGui's active item, which silently ends the drag.
+        if ((xEndTime < attr.LayerRect.Min.X || xStartTime > attr.LayerRect.Max.X)
+            && !(attr.MoveClipsCommand != null && attr.LayerContext.ClipSelection.SelectedClipsIds.Contains(timeClip.Id)))
             return;
 
         var position = new Vector2(xStartTime,
@@ -95,7 +96,7 @@ internal static class TimeClipItem
         // Body and outline
         var isConnected = attr.CompositionSymbolUi.Symbol.Connections.Any(c => c.SourceParentOrChildId == timeClip.Id);
 
-        var isWithinPlaybackTime = timeClip.TimeRange.Contains(attr.LayerContext.TimeCanvas.Playback.TimeInBars);
+        var isWithinPlaybackTime = timeClip.TimeRange.Contains(TrimEdgePreview.GetPlayheadTime(attr.LayerContext.TimeCanvas.Playback));
         var fadeIfInActive = (isConnected && isWithinPlaybackTime) ? 1 : 0.8f;
         
         var fadeIfNotConnected = isConnected ? 1f : 0.4f;
@@ -251,7 +252,7 @@ internal static class TimeClipItem
         }
 
         // Interaction and dragging
-        ImGui.SetCursorScreenPos(showSizeHandles ? (position + _handleOffset) : position);
+        ImGui.SetCursorScreenPos(showSizeHandles ? (position + new Vector2(HandleWidth, 0)) : position);
 
         var wasClickedDown = ImGui.InvisibleButton("body", bodySize);
         var bodyHovered = ImGui.IsItemHovered();
@@ -343,10 +344,10 @@ internal static class TimeClipItem
         var startHandleActive = ImGui.IsItemHovered() || ImGui.IsItemActive();
         if (startHandleActive)
         {
-            attr.DrawList.AddRectFilled(ImGui.GetItemRectMin() + new Vector2(2, 3),
-                                        ImGui.GetItemRectMax() - new Vector2(1, 4),
+            attr.DrawList.AddRectFilled(ImGui.GetItemRectMin() + new Vector2(2, 3) * T3Ui.UiScaleFactor,
+                                        ImGui.GetItemRectMax() - new Vector2(1, 4) * T3Ui.UiScaleFactor,
                                         UiColors.ForegroundFull.Fade(0.3f),
-                                        5);
+                                        5 * T3Ui.UiScaleFactor);
         }
 
         HandleDragging(attr, timeClip, isSelected, false, HandleDragMode.Start);
@@ -356,10 +357,10 @@ internal static class TimeClipItem
         var endHandleActive = ImGui.IsItemHovered() || ImGui.IsItemActive();
         if (endHandleActive)
         {
-            attr.DrawList.AddRectFilled(ImGui.GetItemRectMin() + new Vector2(0, 3),
-                                        ImGui.GetItemRectMax() - new Vector2(3, 4),
+            attr.DrawList.AddRectFilled(ImGui.GetItemRectMin() + new Vector2(0, 3) * T3Ui.UiScaleFactor,
+                                        ImGui.GetItemRectMax() - new Vector2(3, 4) * T3Ui.UiScaleFactor,
                                         UiColors.ForegroundFull.Fade(0.3f),
-                                        5);
+                                        5 * T3Ui.UiScaleFactor);
         }
 
         HandleDragging(attr, timeClip, isSelected, false, HandleDragMode.End);
@@ -382,6 +383,7 @@ internal static class TimeClipItem
 
         if (aHandleClicked)
         {
+            TrimEdgePreview.End(attr.LayerContext.TimeCanvas.Playback);
             attr.LayerContext.TimeCanvas.CompleteDragCommand();
 
             if (attr.MoveClipsCommand != null)
@@ -423,9 +425,12 @@ internal static class TimeClipItem
         // narrow handle rect, and hover-only cursor setting made it flicker between resize and arrow.
         if (ImGui.IsItemHovered() || isActive)
         {
-            ImGui.SetMouseCursor(mode == HandleDragMode.Body
-                                     ? ImGuiMouseCursor.Hand
-                                     : ImGuiMouseCursor.ResizeEW);
+            // The move command only exists mid-drag, so a lock left over from the previous drag can't show.
+            var isLayerOnlyDrag = mode == HandleDragMode.Body && isActive
+                                  && attr.MoveClipsCommand != null && _isTimeLockedByVerticalDrag;
+            ImGui.SetMouseCursor(isLayerOnlyDrag ? ImGuiMouseCursor.ResizeNS
+                                 : mode == HandleDragMode.Body ? ImGuiMouseCursor.Hand
+                                 : ImGuiMouseCursor.ResizeEW);
         }
         if (!isActive && !isDeactivated )
             return;
@@ -479,6 +484,9 @@ internal static class TimeClipItem
             
             _timeWithinDraggedClip = currentDragTime - timeClip.TimeRange.Start;
             _posPosYOnDragStart = mousePos.Y;
+            _posXOnDragStart = mousePos.X;
+            _isDragAxisDecided = false;
+            _isTimeLockedByVerticalDrag = false;
             _dragStartMouseTime = currentDragTime;
             _originalDraggedClipStart = timeClip.TimeRange.Start;
             _lastAppliedDeltaTime = 0;
@@ -487,7 +495,11 @@ internal static class TimeClipItem
         
         if (!ImGui.IsMouseDragging(0, UserSettings.Config.ClickThreshold))
             return;
-        
+
+        // A drag locked to moving between layers keeps its time, so scrolling would carry the clip out of view.
+        if (mode != HandleDragMode.Body || !_isTimeLockedByVerticalDrag)
+            attr.LayerContext.TimeCanvas.RequestEdgeScrolling();
+
         var allowSnapping = !ImGui.GetIO().KeyShift && !(ImGui.GetIO().KeyAlt && ImGui.GetIO().KeyCtrl);
 
         // SelectionRangeIndicator's anchors are the selected clips' aggregate Start/End —
@@ -501,23 +513,39 @@ internal static class TimeClipItem
             case HandleDragMode.Body:
                 var dy = _posPosYOnDragStart - mousePos.Y;
 
+                // A drag that turns out mostly vertical only moves clips between layers, so a slight
+                // sideways wobble can't retime them. The axis is decided only after a clear distance;
+                // until then time follows the mouse, so small horizontal tweaks stay immediate.
+                if (!_isDragAxisDecided)
+                {
+                    var absDx = Math.Abs(mousePos.X - _posXOnDragStart);
+                    var absDy = Math.Abs(dy);
+                    var decisionDistance = Math.Max(UserSettings.Config.ClickThreshold * 3, 15);
+                    if (Math.Max(absDx, absDy) >= decisionDistance)
+                    {
+                        _isDragAxisDecided = true;
+                        _isTimeLockedByVerticalDrag = absDy > absDx;
+                    }
+                }
+
                 // Derive the unsnapped target from the ORIGINAL drag-start positions, not
                 // from incrementally accumulated state. This avoids the slow-drag artefact
                 // where snap was sticky for several frames and the cumulative "applied
                 // delta" diverged from the absolute mouse motion — leaving the clip stuck
                 // or jumping unexpectedly when the mouse finally left the snap range.
-                var rawDelta = currentDragTime - _dragStartMouseTime;
+                var rawDelta = _isTimeLockedByVerticalDrag ? 0 : currentDragTime - _dragStartMouseTime;
                 var unsnappedTargetStart = _originalDraggedClipStart + rawDelta;
                 var targetStart = unsnappedTargetStart;
 
-                if (allowSnapping && attr.LayerContext.SnapHandler.TryCheckForSnapping(unsnappedTargetStart,
+                var snapTime = allowSnapping && !_isTimeLockedByVerticalDrag;
+                if (snapTime && attr.LayerContext.SnapHandler.TryCheckForSnapping(unsnappedTargetStart,
                                                                                        out var snappedClipStartTime,
                                                                                        attr.LayerContext.TimeCanvas.Scale.X,
                                                                                        snapExclusions))
                 {
                     targetStart = (float)snappedClipStartTime;
                 }
-                else if (allowSnapping && attr.LayerContext.SnapHandler.TryCheckForSnapping(unsnappedTargetStart + timeClip.TimeRange.Duration,
+                else if (snapTime && attr.LayerContext.SnapHandler.TryCheckForSnapping(unsnappedTargetStart + timeClip.TimeRange.Duration,
                                                                                             out var snappedClipEndTime,
                                                                                             attr.LayerContext.TimeCanvas.Scale.X,
                                                                                             snapExclusions))
@@ -547,6 +575,7 @@ internal static class TimeClipItem
                 }
 
                 attr.LayerContext.TimeCanvas.UpdateDragAtStartPointCommand(newDragStartTime - timeClip.TimeRange.Start, 0);
+                TrimEdgePreview.ShowStartEdge(attr.LayerContext.TimeCanvas.Playback, timeClip);
                 break;
 
             case HandleDragMode.End:
@@ -561,6 +590,7 @@ internal static class TimeClipItem
                 }
 
                 attr.LayerContext.TimeCanvas.UpdateDragAtEndPointCommand(newDragTime - timeClip.TimeRange.End, 0);
+                TrimEdgePreview.ShowEndEdge(attr.LayerContext.TimeCanvas.Playback, timeClip);
                 break;
 
             default:
@@ -781,7 +811,9 @@ internal static class TimeClipItem
     // [VideoClip] — media clips get their type color instead of the per-clip random hue.
     private static readonly Guid _videoClipSymbolId = new("04c1a6dc-3042-48a8-81d2-0a5a162016dc");
 
-    private const float HandleWidth = 7;
+    /** Width of the trim zone at each clip edge, in whole pixels so the clip body stays pixel-aligned. */
+    private static float HandleWidth => MathF.Round(7 * T3Ui.UiScaleFactor);
+
     private static float _timeWithinDraggedClip;
 
     // Drag-start snapshots. Body drag computes the target position from these +
@@ -790,9 +822,11 @@ internal static class TimeClipItem
     private static double _dragStartMouseTime;
     private static double _originalDraggedClipStart;
     private static double _lastAppliedDeltaTime;
-    private static readonly Vector2 _handleOffset = new(HandleWidth, 0);
     private static readonly Color _timeRemappingColor = UiColors.StatusAnimated.Fade(0.25f);
     private static float _posPosYOnDragStart;
+    private static float _posXOnDragStart;
+    private static bool _isDragAxisDecided;
+    private static bool _isTimeLockedByVerticalDrag;
 
     private static readonly FootageSnapAttractor _footageSnapAttractor = new();
     private static readonly IValueSnapAttractor[] _footageSnapAttractorList = [_footageSnapAttractor];

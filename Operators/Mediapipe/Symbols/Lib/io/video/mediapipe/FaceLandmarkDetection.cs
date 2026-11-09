@@ -921,7 +921,7 @@ namespace Lib.io.video.mediapipe
 
                 try
                 {
-                    if (_landmarkBuffer == null || _landmarkBuffer.Buffer.Description.SizeInBytes != sizeInBytes)
+                    if (_landmarkBuffer == null || _landmarkBuffer.Buffer?.Description.SizeInBytes != sizeInBytes)
                     {
                         _landmarkBuffer?.Dispose();
                         _landmarkBuffer = new BufferWithViews();

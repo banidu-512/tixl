@@ -16,9 +16,9 @@ namespace T3.Editor.Gui.Windows.OutputSetup;
 /// <summary>
 /// The output-editing side of an output window. It has two modes: <b>Operator</b> shows the operator output
 /// as always, <b>Setup</b> shows the Flow Outliner strip (which then hosts the toolbar) and makes the Board the
-/// home view. The mode follows focus — a focused <see cref="IContentSupplier"/> (SendToOutput) op enters Setup,
-/// any other op leaves it — and can be toggled by hand. Within either mode a picked entity shows its own
-/// canvas. The entity selection is the one instance shared by all output windows
+/// home view. A focused <see cref="IContentSupplier"/> (SendToOutput) op enters Setup; other than that the mode
+/// is toggled by hand, so working in the graph doesn't take the setup away. Within either mode a picked entity
+/// shows its own canvas. The entity selection is the one instance shared by all output windows
 /// (<see cref="GlobalSelectionHandling.SetupEntities"/>) — what stays per window is the <b>pin</b>: a pinned
 /// window keeps showing its target while the selection roams elsewhere. One per OutputWindow.
 /// </summary>
@@ -44,12 +44,19 @@ internal sealed class OutputSetupModeView
     /// <summary>Whether the strip is shown — and with it hosts the canvas' toolbar, so the window's own goes.</summary>
     public bool IsHeaderHostedByStrip => IsSetupMode;
 
+    public bool IsSetupMode => _viewMode == ViewModes.Setup;
+
     /// <summary>Draws the Flow Outliner strip: a full-width up/down splitter on its top edge, then the header
     /// and columns. Call after the canvas child, which leaves <see cref="OutlinerReservedHeight"/> free.</summary>
-    public void DrawOutliner()
+    /// <returns>True once a resize has finished, so the host can have the new height saved.</returns>
+    public bool DrawOutliner()
     {
         if (!IsSetupMode)
-            return;
+            return false;
+
+        // A rename happens in the outliner's row, so a strip collapsed to its header has to open for it.
+        if (OutlinerItem.RevealPendingId != Guid.Empty)
+            _outlinerCollapsed = false;
 
         var scale = T3Ui.UiScaleFactor;
         DrawOutlinerSplitter(scale);
@@ -61,9 +68,16 @@ internal sealed class OutputSetupModeView
         _drawGrip ??= DrawOutlinerGrip;
         _drawHostedHeader ??= _outputView.DrawHostedHeader;
         _leaveSetup ??= () => _viewMode = ViewModes.Operator;
-        _outliner.Draw(_entitySelection, _toggleOutlinerCollapse, !_outlinerCollapsed, _drawGrip, _drawHostedHeader, _leaveSetup);
+        _outliner.Draw(_entitySelection, _toggleOutlinerCollapse, !_outlinerCollapsed, _drawGrip, _drawHostedHeader, _leaveSetup, _outputView.VisibleBoardCentre);
         ImGui.EndChild();
         ImGui.PopStyleColor();
+
+        // Read when the button comes up rather than per frame of the drag: each save request dirties the project symbol.
+        if (_outlinerHeight == _savedOutlinerHeight || ImGui.IsMouseDown(ImGuiMouseButton.Left))
+            return false;
+
+        _savedOutlinerHeight = _outlinerHeight;
+        return true;
     }
 
     /// <summary>
@@ -78,9 +92,25 @@ internal sealed class OutputSetupModeView
         _keepsPinnedOp = keepsPinnedOp;
         FollowGraphFocus();
         _outputView.IsHeaderHostedByStrip = IsSetupMode;
+        HandleRenameKey();
 
         var shown = ResolveShownView(focusedInstance);
         return Draw(shown);
+    }
+
+    /** Return renames the one selected entity, in its Flow Outliner row. A live text field has the key to itself. */
+    private void HandleRenameKey()
+    {
+        if (!IsSetupMode || _entitySelection.Count != 1
+            || !ImGui.IsWindowFocused(ImGuiFocusedFlags.RootAndChildWindows)
+            || ImGui.IsAnyItemActive() || ImGui.GetIO().WantTextInput
+            || !(ImGui.IsKeyPressed(ImGuiKey.Enter, false) || ImGui.IsKeyPressed(ImGuiKey.KeypadEnter, false)))
+            return;
+
+        var target = _entitySelection.Targets[0];
+        var canRename = target.Kind == SetupEntityKinds.Plug ? SetupActions.CanRenamePlug(target.EntityId) : SetupActions.CanRename(target.Kind);
+        if (canRename)
+            OutlinerItem.BeginRename(_entitySelection, target.Kind, target.EntityId, SetupLabels.NameForEntity(target.Kind, target.EntityId));
     }
 
     /// <summary>
@@ -126,13 +156,6 @@ internal sealed class OutputSetupModeView
 
         _viewMode = ViewModes.Operator;
         return true;
-    }
-
-    /// <summary>The "Show Flow Outliner" toggle — hung inside the output window's breadcrumb menu.</summary>
-    public void DrawOutlinerMenuItem()
-    {
-        if (CustomComponents.DrawMenuItem(1, "Show Flow Outliner", UserActions.ToggleOutputSetup.ListShortcuts(), isChecked: IsSetupMode))
-            _viewMode = IsSetupMode ? ViewModes.Operator : ViewModes.Setup;
     }
 
     /// <summary>The "Output Setup" button for the output toolbar. Only drawn while the strip is hidden — the
@@ -213,6 +236,7 @@ internal sealed class OutputSetupModeView
     {
         state.PinnedEntityKind = _pinnedKind;
         state.PinnedEntityId = _pinnedId;
+        state.OutlinerHeight = _outlinerHeight;
     }
 
     public void LoadStateFrom(OutputWindowState state)
@@ -220,6 +244,8 @@ internal sealed class OutputSetupModeView
         // Restored blindly; the per-frame Exists check reverts a pin whose entity is gone.
         _pinnedKind = state.PinnedEntityKind;
         _pinnedId = state.PinnedEntityId;
+        _outlinerHeight = Math.Clamp(state.OutlinerHeight, MinOutlinerHeight, MaxOutlinerHeight);
+        _savedOutlinerHeight = _outlinerHeight;
     }
 
     public OutputSetupModeView()
@@ -249,14 +275,12 @@ internal sealed class OutputSetupModeView
     /// <param name="ImageId">The reference image whose space is open (<see cref="ShownViews.ReferenceCanvas"/>).</param>
     private readonly record struct ShownView(ShownViews Kind, Guid OutputId = default, Guid EntityId = default, Guid ImageId = default);
 
-    private bool IsSetupMode => _viewMode == ViewModes.Setup;
-
     /** Whether the host window keeps showing its pinned op this frame, so focus and selection leave its view alone. */
     private bool _keepsPinnedOp;
     private Action? _leaveSetup;
 
     /// <summary>
-    /// Mirrors a graph pick into the entity selection and lets the mode follow focus. What's <i>drawn</i> may be
+    /// Mirrors a graph pick into the entity selection and enters Setup for a send op. What's <i>drawn</i> may be
     /// pinned, so it doesn't follow the graph; which CONTENT item is selected should follow the graph selection
     /// regardless — picking a send in the graph is how you get to it. Only a graph pick counts (it owns the
     /// inspection); an entity pick clears the graph too, and that change must not bounce back.
@@ -278,12 +302,11 @@ internal sealed class OutputSetupModeView
             _entitySelection.Mirror(SetupEntityKinds.ContentSource, focusedId);
         }
 
-        if (graphOwnsInspection && focusTransition && !_keepsPinnedOp)
+        if (graphOwnsInspection && focusTransition && !_keepsPinnedOp && selectedInGraph is IContentSupplier)
         {
-            // A focused SendToOutput enters Setup (its surfaces/outputs are at hand); selecting any other op —
-            // or clicking the graph background — leaves it. Only on the transition, so the mode can still be
-            // toggled by hand while the focus stays put.
-            _viewMode = selectedInGraph is IContentSupplier ? ViewModes.Setup : ViewModes.Operator;
+            // A focused SendToOutput enters Setup (its surfaces/outputs are at hand). Only on the transition, so
+            // the mode can still be toggled by hand while the focus stays put.
+            _viewMode = ViewModes.Setup;
         }
 
         _lastFocusedId = focusedId;
@@ -361,7 +384,7 @@ internal sealed class OutputSetupModeView
         }
     }
 
-    /// <summary>The drag handle on the strip's top edge. Height is per-window session state (not persisted).</summary>
+    /// <summary>The drag handle on the strip's top edge. Height is per window and saved with the project's output window state.</summary>
     private void DrawOutlinerSplitter(float scale)
     {
         var thickness = SplitterThickness * scale;
@@ -477,7 +500,8 @@ internal sealed class OutputSetupModeView
 
     private ViewModes _viewMode;
     private bool _outlinerCollapsed;
-    private float _outlinerHeight = DefaultOutlinerHeight; // unscaled px; scaled at draw time
+    private float _outlinerHeight = OutputWindowState.DefaultOutlinerHeight; // unscaled px; scaled at draw time
+    private float _savedOutlinerHeight = OutputWindowState.DefaultOutlinerHeight;
     private Action? _toggleOutlinerCollapse; // cached so the strip draw doesn't allocate a closure each frame
     private Guid _lastFocusedId;
     private bool _graphOwnedInspection;
@@ -487,7 +511,6 @@ internal sealed class OutputSetupModeView
     private Guid _pinnedId;
     private static readonly int _pinViewMenuId = nameof(_pinViewMenuId).GetHashCode();
 
-    private const float DefaultOutlinerHeight = 220;
     private const float MinOutlinerHeight = 90;
     private const float MaxOutlinerHeight = 600;
     private const float SplitterThickness = 4;

@@ -16,8 +16,6 @@ using T3.Editor.UiModel.InputsAndTypes;
 using T3.Editor.UiModel.ProjectHandling;
 using T3.Editor.UiModel.Selection;
 using Color = T3.Core.DataTypes.Vector.Color;
-using Icon = T3.Editor.Gui.Styling.Icon;
-using Point = System.Drawing.Point;
 
 namespace T3.Editor.Gui.Interaction;
 
@@ -41,9 +39,10 @@ internal static class ColorEditPopup
 
         if (ImGui.BeginPopup(PopupId, dontCloseIfColorPicking))
         {
-            if (_openedId != id)
+            if (_openedId != id || _needsUsedColorRefresh)
             {
                 _openedId = id;
+                _needsUsedColorRefresh = false;
                 ColorUsage.CollectUsedColors(composition);
             }
 
@@ -60,7 +59,11 @@ internal static class ColorEditPopup
             edited |= DrawUsedColors(ref cColor);
 
             if (edited == InputEditStateFlags.ModifiedAndFinished)
-                ColorUsage.CollectUsedColors(composition);
+                _needsUsedColorRefresh = true;
+
+            // Escape in a text field only cancels that edit.
+            if (ImGui.IsKeyPressed(ImGuiKey.Escape, false) && !ImGui.GetIO().WantTextInput)
+                ImGui.CloseCurrentPopup();
 
             ImGui.EndPopup();
         }
@@ -876,6 +879,9 @@ internal static class ColorEditPopup
     private static bool _isHoveringColor;
     public  const string PopupId =  "##colorEdit";
     private static uint _openedId;
+
+    /** The caller writes the edited color to its parameter only after the popup returns, so collecting right away would list the old color as used. */
+    private static bool _needsUsedColorRefresh;
 }
 
 internal static class ColorUsage
@@ -993,6 +999,7 @@ internal static class ColorUsage
     /// </summary>
     private static readonly List<Vector4> _defaultColors = new() 
                                                                {
+                                                                   UiColors.StatusAttention, // TiXL's CI color
                                                                    new Vector4(0f, 0f, 0f, 1f),
                                                                    new Vector4(0.5f, 0.5f, 0.5f, 1f),
                                                                    new Vector4(1f, 1f, 1f, 1f),

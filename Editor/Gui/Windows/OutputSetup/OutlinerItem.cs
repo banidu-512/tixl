@@ -3,6 +3,7 @@ using ImGuiNET;
 using T3.Core.DataTypes.Vector;
 using T3.Core.Output;
 using T3.Core.Utils;
+using T3.Editor.Gui.MagGraph.Ui;
 using T3.Editor.Gui.Styling;
 using T3.Editor.Gui.UiHelpers;
 using T3.Editor.UiModel.Selection;
@@ -77,7 +78,7 @@ internal sealed class OutlinerItem
         var scale = T3Ui.UiScaleFactor;
         var rounding = 4 * scale;
         // Odd height so a 15px icon centers exactly ((23-15)/2 = 4).
-        var height = (float)Math.Round(23 * scale);
+        var lineHeight = (float)Math.Round(23 * scale);
         var indent = args.Depth * 12 * scale;
 
         var fade = args.IsMuted ? 0.45f : 1f;
@@ -90,12 +91,19 @@ internal sealed class OutlinerItem
         var windowPos = ImGui.GetWindowPos();
         var spanLeft = args.ColumnWidth > 0 ? args.ColumnMinX : windowPos.X;
         var spanRight = args.ColumnWidth > 0 ? args.ColumnMinX + args.ColumnWidth : windowPos.X + ImGui.GetWindowWidth();
-        var rowMin = new Vector2((float)Math.Round(spanLeft + 4 * scale), (float)Math.Round(entryPos.Y));
-        var rowMax = new Vector2((float)Math.Round(spanRight - 4 * scale), rowMin.Y + height);
+        var kindInfo = SetupEntityKindInfo.Of(args.Kind);
+        var rowLeft = (float)Math.Round(spanLeft + 4 * scale);
+        var rowRight = (float)Math.Round(spanRight - 4 * scale);
+
+        // A status that doesn't fit beside the name gets a line of its own rather than being drawn over it.
+        var hasStatusLine = StatusNeedsOwnLine(in args, kindInfo, rowLeft, rowRight, indent, scale, out var smallLineHeight);
+        var height = hasStatusLine ? lineHeight + (float)Math.Round(smallLineHeight) : lineHeight;
+
+        var rowMin = new Vector2(rowLeft, (float)Math.Round(entryPos.Y));
+        var rowMax = new Vector2(rowRight, rowMin.Y + height);
         LastItemRect = (rowMin, rowMax);
         var dl = ImGui.GetWindowDrawList();
         var isSelected = selection.IsSelected(args.Kind, args.Id);
-        var kindInfo = SetupEntityKindInfo.Of(args.Kind);
         var kindColor = kindInfo.Color;
 
         // Full-item hit test — a selectable spanning the padded item; its own header background is suppressed
@@ -232,7 +240,7 @@ internal sealed class OutlinerItem
         }
 
         // The routing drag only starts once the press has been decided as one, so a reorder never carries a payload.
-        HandleDragDrop(setup, kindInfo, args.Id, allowSource: _dragDecidedId == args.Id && !_dragIsReorder);
+        HandleDragDrop(setup, kindInfo, args.Id, rowMin, rowMax, allowSource: _dragDecidedId == args.Id && !_dragIsReorder);
 
         if (args.Kind != SetupEntityKinds.None)
             SetupEntityContextMenu.DrawForLastItem(selection, setup, args.Kind, args.Id, args.Name);
@@ -261,7 +269,7 @@ internal sealed class OutlinerItem
 
         // Content over the background (the selectable is transparent), vertically centered in the fixed item
         // (the -1px nudges the label up so it isn't sitting low).
-        var contentY = (float)Math.Round(rowMin.Y + (height - ImGui.GetTextLineHeight()) * 0.5f - 1 * scale);
+        var contentY = (float)Math.Round(rowMin.Y + (lineHeight - ImGui.GetTextLineHeight()) * 0.5f - 1 * scale);
         var iconY = contentY + 3 * scale; // glyphs render high vs the text baseline — drop them to match.
 
         var contentX = rowMin.X + 6 * scale + indent;
@@ -303,7 +311,7 @@ internal sealed class OutlinerItem
         {
             // Inline editor in place of the name. Full item height, seeded and focused on the first frame;
             // commits on Enter/blur, cancels on Escape.
-            var fieldY = (float)Math.Round(rowMin.Y + (height - ImGui.GetFrameHeight()) * 0.5f);
+            var fieldY = (float)Math.Round(rowMin.Y + (lineHeight - ImGui.GetFrameHeight()) * 0.5f);
             ImGui.SetCursorScreenPos(new Vector2(contentX, fieldY));
             ImGui.SetNextItemWidth(rowMax.X - contentX - 6 * scale);
             ImGui.PushStyleColor(ImGuiCol.FrameBg, UiColors.BackgroundInputField.Rgba);
@@ -345,10 +353,17 @@ internal sealed class OutlinerItem
             var statusWidth = ImGui.CalcTextSize(args.Status).X;
             ImGui.PopFont();
 
-            var statusY = (float)Math.Round(rowMin.Y + (height - smallHeight) * 0.5f - 1 * scale);
+            var statusY = hasStatusLine
+                              ? (float)Math.Round(rowMin.Y + lineHeight - 3 * scale)
+                              : (float)Math.Round(rowMin.Y + (lineHeight - smallHeight) * 0.5f - 1 * scale);
             ImGui.SetCursorScreenPos(new Vector2(rowMax.X - 6 * scale - statusWidth, statusY));
             CustomComponents.StylizedText(args.Status, Fonts.FontSmall, UiColors.TextMuted.Fade(fade));
         }
+
+        var inputSlots = SetupRouting.InputSlotsOf(args.Kind);
+        if (inputSlots != SetupRouting.InputSlots.None)
+            DrawInputSlot(dl, new Vector2(rowMin.X, (rowMin.Y + rowMax.Y) * 0.5f), inputSlots,
+                          (isSelected ? UiColors.ForegroundFull : kindColor).Fade(fade));
 
         if (kindInfo.IsRoutable && args.Kind != SetupEntityKinds.Plug)
             DrawConnectionDot(dl, args.Id, new Vector2(rowMax.X, (rowMin.Y + rowMax.Y) * 0.5f), isHovered || isActive,
@@ -389,6 +404,45 @@ internal sealed class OutlinerItem
     /// parent expands, the strip scrolls to it. Cleared once the row has drawn its field.</summary>
     public static Guid RevealPendingId => _renameFocusPending ? _renamingId : Guid.Empty;
 
+    /// <summary>
+    /// Whether the name and the status are too wide to share the row. Measured with the bold name, so selecting a
+    /// row can't change its height. Reports the small font's line height, which the status line adds.
+    /// </summary>
+    private static bool StatusNeedsOwnLine(in Args args, SetupEntityKindInfo kindInfo, float rowLeft, float rowRight, float indent, float scale,
+                                           out float smallLineHeight)
+    {
+        smallLineHeight = 0;
+        if (string.IsNullOrEmpty(args.Status))
+            return false;
+
+        var contentX = rowLeft + 6 * scale + indent;
+        if (args.IsExpanded.HasValue || args.Depth > 0 || args.KeepsExpanderColumn)
+        {
+            Icons.GetGlyphDefinition(Icon.ChevronRight, out _, out var chevronSize);
+            contentX += chevronSize.X + 3 * scale;
+        }
+
+        if (args.Kind != SetupEntityKinds.None)
+        {
+            Icons.GetGlyphDefinition(args.LeadingIcon ?? kindInfo.Icon, out _, out var iconSize);
+            contentX += iconSize.X + 5 * scale;
+        }
+
+        ImGui.PushFont(Fonts.FontBold);
+        var nameWidth = ImGui.CalcTextSize(string.IsNullOrEmpty(args.Name) ? "untitled" : args.Name).X;
+        ImGui.PopFont();
+
+        ImGui.PushFont(Fonts.FontSmall);
+        var statusWidth = ImGui.CalcTextSize(args.Status).X;
+        smallLineHeight = ImGui.GetTextLineHeight();
+        ImGui.PopFont();
+
+        return contentX + nameWidth + StatusGap * scale + statusWidth > rowRight - 6 * scale;
+    }
+
+    /** Space kept between the name and a status beside it. */
+    private const float StatusGap = 8;
+
     /** Sits where the item's connections start, hinting that a drag from the item routes it to the next column. */
     private void DrawConnectionDot(ImDrawListPtr dl, Guid id, Vector2 center, bool isEnlarged, Color color)
     {
@@ -400,7 +454,33 @@ internal sealed class OutlinerItem
         dl.AddCircleFilled(center, radius, color);
     }
 
-    private static void HandleDragDrop(Setup setup, SetupEntityKindInfo kindInfo, Guid id, bool allowSource)
+    /// <summary>
+    /// Where the item takes its connections: a dot for one input, a vertical pill for several. It sits on the row's
+    /// left edge, where the connections from the column before end.
+    /// </summary>
+    /** Half the height of the pill of an item taking several inputs, unscaled; its connections end spread along it. */
+    internal const float InputPillHalfHeight = 6f;
+
+    /** Half the width of that pill, unscaled: the round cap at each end, which the connection ends keep clear of. */
+    internal const float InputPillHalfWidth = 2f;
+
+    private static void DrawInputSlot(ImDrawListPtr dl, Vector2 center, SetupRouting.InputSlots slots, Color color)
+    {
+        var scale = T3Ui.UiScaleFactor;
+        if (slots == SetupRouting.InputSlots.One)
+        {
+            dl.AddCircleFilled(center, 2.5f * scale, color);
+            return;
+        }
+
+        var halfWidth = MathF.Max(1, MathF.Round(InputPillHalfWidth * scale));
+        var halfHeight = MathF.Round(InputPillHalfHeight * scale);
+        var x = MathF.Round(center.X);
+        var y = MathF.Round(center.Y);
+        dl.AddRectFilled(new Vector2(x - halfWidth, y - halfHeight), new Vector2(x + halfWidth, y + halfHeight), color, halfWidth);
+    }
+
+    private static void HandleDragDrop(Setup setup, SetupEntityKindInfo kindInfo, Guid id, Vector2 rowMin, Vector2 rowMax, bool allowSource)
     {
         // Every routable kind is both a drag source and a drop target — connections are direction-agnostic
         // (SetupRouting normalizes), so dragging an output onto a source works the same as the reverse.
@@ -421,12 +501,91 @@ internal sealed class OutlinerItem
             || !SetupRouting.TryParseDrag(dragData, out var dragKind, out var dragId))
             return;
 
-        if (!SetupRouting.CanConnect(dragKind, kind) || dragId == id)
+        // Content onto content only connects a missing item to an op; it isn't a routing pair.
+        var connectsMissingContent = kind == SetupEntityKinds.ContentSource
+                                     && dragKind == SetupEntityKinds.ContentSource
+                                     && ContentSourceSync.IsSendOpMissing(dragId) != ContentSourceSync.IsSendOpMissing(id);
+        if ((!SetupRouting.CanConnect(dragKind, kind) && !connectsMissingContent) || dragId == id)
             return;
 
-        if (DragAndDropHandling.TryHandleDropOnItem(DragAndDropHandling.DragTypes.SetupEntity, out _) == DragAndDropHandling.DragInteractionResult.Dropped)
+        // Dragged in from upstream, an item with several inputs splits: the narrow left zone adds a connection, the
+        // rest replaces every connection it has, which spares clearing its inputs first.
+        if (!connectsMissingContent
+            && SetupRouting.InputSlotsOf(kind) == SetupRouting.InputSlots.Several
+            && SetupEntityKindInfo.Of(dragKind).RoutingRank < kindInfo.RoutingRank)
+        {
+            HandleSplitDrop(setup, dragKind, dragId, kind, id, rowMin, rowMax);
+            return;
+        }
+
+        if (DragAndDropHandling.TryHandleDropOnItem(DragAndDropHandling.DragTypes.SetupEntity, out _) != DragAndDropHandling.DragInteractionResult.Dropped)
+            return;
+
+        if (connectsMissingContent)
+        {
+            ContentSourceSync.TryConnectMissingSource(setup, dragId, id);
+        }
+        else
+        {
             SetupRouting.ApplyDrop(setup, dragKind, dragId, kind, id);
+        }
     }
+
+    /** The add and replace zones of a row with several inputs, as drop targets and as their indication. */
+    private static void HandleSplitDrop(Setup setup, SetupEntityKinds dragKind, Guid dragId, SetupEntityKinds kind, Guid id,
+                                        Vector2 rowMin, Vector2 rowMax)
+    {
+        var addMaxX = MathF.Round(rowMin.X + (rowMax.X - rowMin.X) * AddZoneShareOfRow);
+        var addZone = new ImRect(rowMin, new Vector2(addMaxX, rowMax.Y));
+        var replaceZone = new ImRect(new Vector2(addMaxX, rowMin.Y), rowMax);
+
+        var addResult = DragAndDropHandling.TryHandleDropOnRect(DragAndDropHandling.DragTypes.SetupEntity, addZone, out _, drawsOutline: false);
+        var replaceResult = DragAndDropHandling.TryHandleDropOnRect(DragAndDropHandling.DragTypes.SetupEntity, replaceZone, out _, drawsOutline: false);
+        var isAddHovered = addResult != DragAndDropHandling.DragInteractionResult.None;
+        var isReplaceHovered = replaceResult != DragAndDropHandling.DragInteractionResult.None;
+
+        // The hovered zone and its "+" pulse together, from the editor's shared blink.
+        var pulse = 0.6f + 0.4f * MagGraphView.Blink;
+        var dl = ImGui.GetWindowDrawList();
+        var scale = T3Ui.UiScaleFactor;
+        var rounding = 3 * scale;
+        DrawZoneOutline(dl, addZone, isAddHovered, pulse, rounding);
+        DrawZoneOutline(dl, replaceZone, isReplaceHovered, pulse, rounding);
+
+        Icons.GetGlyphDefinition(Icon.Plus, out _, out var plusSize);
+        // In a square at the zone's left end, clear of the row's icon and name.
+        var zoneHeight = addZone.Max.Y - addZone.Min.Y;
+        var plusCentre = new Vector2(addZone.Min.X + zoneHeight * 0.5f, (addZone.Min.Y + addZone.Max.Y) * 0.5f);
+        var plusPos = (plusCentre - plusSize * 0.5f).Floor();
+        Icons.DrawIconAtScreenPosition(Icon.Plus, plusPos, dl, Color.Orange.Fade(isAddHovered ? pulse : 0.5f));
+
+        if (isAddHovered)
+        {
+            ImGui.SetTooltip("Add as another input");
+        }
+        else if (isReplaceHovered)
+        {
+            ImGui.SetTooltip("Replace all inputs");
+        }
+
+        if (addResult == DragAndDropHandling.DragInteractionResult.Dropped)
+        {
+            SetupRouting.ApplyDrop(setup, dragKind, dragId, kind, id);
+        }
+        else if (replaceResult == DragAndDropHandling.DragInteractionResult.Dropped)
+        {
+            SetupRouting.ApplyDrop(setup, dragKind, dragId, kind, id, replacesInputs: true);
+        }
+    }
+
+    private static void DrawZoneOutline(ImDrawListPtr dl, ImRect zone, bool isHovered, float pulse, float rounding)
+    {
+        var thickness = MathF.Max(1, MathF.Round((isHovered ? 2 : 1) * T3Ui.UiScaleFactor));
+        dl.AddRect(zone.Min, zone.Max, Color.Orange.Fade(isHovered ? pulse : 0.5f), rounding, ImDrawFlags.None, thickness);
+    }
+
+    /** The share of a row's width the add zone takes when it splits for a drop; the replace zone gets the rest. */
+    private const float AddZoneShareOfRow = 0.3f;
 
     private readonly Dictionary<Guid, float> _connectionDotGrowth = [];
 

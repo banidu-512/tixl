@@ -59,6 +59,7 @@ internal static class FactoryKeyMap
                 new(UserActions.DisplayImageAsBackground, new KeyCombination(Key.P, ctrl: true)),
                 new(UserActions.ClearBackgroundImage, new KeyCombination(Key.P, ctrl: true, shift: true)),
                 new(UserActions.LayoutSelection, new KeyCombination(Key.G)),
+                new(UserActions.SelectConnectedInputs, new KeyCombination(Key.G, shift: true)),
                 new(UserActions.AddSection, new KeyCombination(Key.S, shift: true)),
                 // Alias from the annotation days - muscle memory
                 new(UserActions.AddSection, new KeyCombination(Key.A, shift: true)),
@@ -67,6 +68,8 @@ internal static class FactoryKeyMap
                 new(UserActions.SearchGraph, new KeyCombination(Key.F, ctrl: true)),
                 new(UserActions.OpenOperator, new KeyCombination(Key.I)),
                 new(UserActions.CloseOperator, new KeyCombination(Key.U)),
+                new(UserActions.OpenOperator, new KeyCombination(Key.CursorDown, alt: true)),
+                new(UserActions.CloseOperator, new KeyCombination(Key.CursorUp, alt: true)),
                 new(UserActions.RenameChild, new KeyCombination(Key.Return)),
                 new(UserActions.EditParameter, new KeyCombination(Key.S)),
                 new(UserActions.AlignSelectionLeft, new KeyCombination(Key.A, alt:true)),
@@ -92,6 +95,7 @@ internal static class FactoryKeyMap
 
                 // Layout and window management
                 new(UserActions.ToggleAllUiElements, new KeyCombination(Key.Esc, shift: true)),
+                new(UserActions.FocusGraphWindow, new KeyCombination(Key.Esc)),
                 new(UserActions.ToggleFullscreen, new KeyCombination(Key.F11)),
                 new(UserActions.ToggleFocusMode, new KeyCombination(Key.F12)),
                 new(UserActions.ToggleManualTestWindow, new KeyCombination(Key.T, ctrl: true, shift: true, alt: true)),

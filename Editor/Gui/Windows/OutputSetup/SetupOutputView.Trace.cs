@@ -97,8 +97,8 @@ internal sealed partial class SetupOutputView
     {
         var fade = _boardLayerFade;
         var pixelSize = BoardPixelSize(setup, SetupEntityKinds.ReferenceImage, image.Id);
-        _projection.Origin = new Vector2(min.X, max.Y);
         _projection.PixelsPerMeter = pixelSize.X / MathF.Max(max.X - min.X, 0.0001f);
+        _projection.Origin = ImageOriginOnBoard(image, min, max, _projection.PixelsPerMeter);
         DrawTracedQuads(setup, image, selection, dl, fade >= 0.999f, fade);
     }
 
@@ -211,6 +211,10 @@ internal sealed partial class SetupOutputView
         {
             case CanvasPointHandle.DragPhases.Started:
                 _edgeDragStretches = false;
+                _straightCropEdge = edge;
+                _straightCropPressMin = _referenceStickyMin;
+                _straightCropPressMax = _referenceStickyMax;
+                _straightCropPressSize = subject.SizeInMeters;
                 BeginGesture(setup, GestureKinds.SurfaceResize, "Crop surface", subject.Id, subject);
                 BeginContentEdit(setup, subject);
                 break;
@@ -226,6 +230,7 @@ internal sealed partial class SetupOutputView
                 SurfaceGeometry.DragEdge(subject, edge, frameToSurface.TransformPoint(edgePos), keepDimensions: false);
                 SurfaceGeometry.LocalBounds(subject, out var newMin, out var newMax);
                 KeepContentInPlace(setup, oldMin, oldMax, newMin, newMax);
+                FloorPlanSync.FollowWallWidth(setup, subject, edge);
                 break;
             }
 
@@ -270,6 +275,7 @@ internal sealed partial class SetupOutputView
                                  : new Vector2(size.X, size.Y * wanted / was);
 
                 SurfaceMetrics.RemeterSurface(setup, subject, metres);
+                FloorPlanSync.FollowWallWidth(setup, subject, edge);
                 break;
             }
 
@@ -283,11 +289,10 @@ internal sealed partial class SetupOutputView
 
     /// <summary>The rectified frame as it stood at the press, back into the surface's metres — what turns a
     /// cursor on the photo into one absolute edge position, however long the drag runs.</summary>
-    private static bool TryGetPressedFrameToSurface(Surface subject, out Homography frameToSurface)
+    private bool TryGetPressedFrameToSurface(Surface subject, out Homography frameToSurface)
     {
-        StraightTargetBounds(subject, out var pressMin, out var pressMax);
         Span<Vector2> frame = stackalloc Vector2[4];
-        SurfaceGeometry.WriteRectCorners(pressMin, pressMax, frame, yUp: false);
+        SurfaceGeometry.WriteRectCorners(_straightCropPressMin, _straightCropPressMax, frame, yUp: false);
         Span<Vector2> local = stackalloc Vector2[4];
         SurfaceGeometry.WriteLocalRect(subject, local);
         return Homography.TryComputeQuadToQuad(frame, local, out frameToSurface);

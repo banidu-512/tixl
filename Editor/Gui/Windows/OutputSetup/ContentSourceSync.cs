@@ -23,9 +23,10 @@ namespace T3.Editor.Gui.Windows.OutputSetup;
 /// pixels, and is the setup side's way into the graph — placing, finding, naming and revealing a send op.
 /// <para>Bound to the op's <b>SymbolChild</b> — the durable graph entity — not to a live instance. Instances
 /// come and go with hot-reloads and with whichever part of the graph happens to be instantiated, so "no live
-/// send op" only means "no pixels this frame". A source is removed only once its child is confirmed *gone* from
-/// a symbol we can actually see, which is what makes deleting the op cascade to its slices and to every
-/// surface showing them.</para>
+/// send op" only means "no pixels this frame". A source whose op isn't part of the focused project keeps its slices
+/// and routes and reads as missing until it is connected to another op or removed by hand: the op may come back through
+/// an undo or a package that failed to load, the setup may have been copied from another project, and only
+/// <see cref="DeleteSendOp"/> deletes routing, inside an undo step.</para>
 /// <para>Scoped to the active composition — the nearest op up the breadcrumbs with composition settings, else the
 /// project root — because its sends are what an export of it ships. Sources of other compositions stay in the
 /// setup with their routing, they are only neither adopted nor shown while another composition is active.</para>
@@ -79,6 +80,10 @@ internal static class ContentSourceSync
     /// <summary>Whether a content source's send op lies under the active composition, instantiated or not.</summary>
     public static bool IsSourceInScope(Guid childId)
     {
+        // The editor UI belongs to no composition.
+        if (EditorUiContent.IsEditorUi(childId))
+            return true;
+
         var instance = FindSendInstance(childId);
         return instance != null ? IsInScope(instance) : _scopeSendChildIds.Contains(childId);
     }
@@ -155,6 +160,19 @@ internal static class ContentSourceSync
         return true;
     }
 
+    /// <summary>The render size a live send op is pinned to; false while it follows what it is routed to, or isn't instantiated.</summary>
+    public static bool TryGetSendResolution(Guid childId, out Int2 resolution)
+    {
+        resolution = default;
+        if (FindSendInstance(childId)?.SymbolChild?.Inputs.TryGetValue(SendToOutputResolutionInputId, out var input) != true
+            || input!.Value is not InputValue<Int2> value
+            || value.Value.Width <= 0 || value.Value.Height <= 0)
+            return false;
+
+        resolution = value.Value;
+        return true;
+    }
+
     /// <summary>
     /// Deletes a content source's send op from the graph. Its slices and the routes showing them go in the same
     /// undo step, so an undo brings the routing back with the op instead of a bare, re-adopted source.
@@ -178,8 +196,113 @@ internal static class ContentSourceSync
         ProjectView.Focused?.FlagChanges(ProjectView.ChangeTypes.Children | ProjectView.ChangeTypes.Connections);
     }
 
+    /// <summary>
+    /// Deletes a selection that holds content: the send ops from the graph, everything else from the setup, as one
+    /// undo step. An undo brings the routing back with the ops, like <see cref="DeleteSendOp"/>.
+    /// </summary>
+    public static void DeleteSelectionWithSendOps(SetupEntitySelection selection, Setup setup)
+    {
+        var targets = new List<SelectionTarget>(selection.Targets);
+        var oldJson = setup.ToJsonString();
+        foreach (var target in targets)
+        {
+            if (target.Kind != SetupEntityKinds.ContentSource)
+            {
+                SetupActions.DeleteEntityInternal(setup, target.Kind, target.EntityId);
+            }
+            else if (setup.FindSourceByChildId(target.EntityId) is { } source)
+            {
+                SetupActions.RemoveContentSource(setup, source);
+            }
+        }
+
+        selection.Clear();
+
+        var macro = new MacroCommand("Delete selection");
+        macro.AddExecutedCommandForUndo(new SetupSnapshotCommand("Delete selection", setup.Id, oldJson, setup.ToJsonString()));
+        foreach (var target in targets)
+        {
+            if (target.Kind == SetupEntityKinds.ContentSource
+                && TryFindSendParent(target.EntityId, out var parent)
+                && parent.TryGetSymbolUi(out var parentUi)
+                && parentUi.ChildUis.TryGetValue(target.EntityId, out var childUi))
+            {
+                macro.AddAndExecCommand(new DeleteSymbolChildrenCommand(parentUi, [childUi]));
+            }
+        }
+
+        UndoRedoStack.Add(macro);
+        OutputSetupHandling.SaveActive();
+        ProjectView.Focused?.FlagChanges(ProjectView.ChangeTypes.Children | ProjectView.ChangeTypes.Connections);
+    }
+
+    /// <summary>Removes a source whose op is gone, with its slices and the routes showing them, as one undo step.</summary>
+    public static void RemoveMissingSource(Setup setup, Guid childId)
+    {
+        if (setup.FindSourceByChildId(childId) is { } source)
+            SetupUndo.RunUndoable("Remove content", setup, () => SetupActions.RemoveContentSource(setup, source));
+    }
+
+    /// <summary>Gives a missing source a new send op in the visible graph, named after it, which keeps its slices and routes. The op stays selected for wiring up.</summary>
+    public static void CreateSendOpForMissingSource(Setup setup, Guid missingChildId)
+    {
+        var source = setup.FindSourceByChildId(missingChildId);
+        if (source == null)
+            return;
+
+        var oldJson = setup.ToJsonString();
+        var macro = new MacroCommand("Create SendToOutput");
+        if (!TryAddSendOp(macro, source.Name, out var childId))
+        {
+            Log.Warning("Can't create a SendToOutput op: no composition is open to add it to.");
+            return;
+        }
+
+        // A fresh child id, not the old one: the slices follow the source, and the old id may still belong to an op of another open project.
+        source.SymbolChildId = childId;
+        macro.AddExecutedCommandForUndo(new SetupSnapshotCommand("Create SendToOutput", setup.Id, oldJson, setup.ToJsonString()));
+        UndoRedoStack.Add(macro);
+        OutputSetupHandling.SaveActive();
+    }
+
+    /// <summary>
+    /// Connects a missing source to an existing op, given as the two content items in either order. The op's own source
+    /// is merged in, so routes already made from it keep working. False unless exactly one of the two is missing.
+    /// </summary>
+    public static bool TryConnectMissingSource(Setup setup, Guid firstChildId, Guid secondChildId)
+    {
+        if (IsSendOpMissing(firstChildId) == IsSendOpMissing(secondChildId))
+            return false;
+
+        var missingChildId = IsSendOpMissing(firstChildId) ? firstChildId : secondChildId;
+        var liveChildId = IsSendOpMissing(firstChildId) ? secondChildId : firstChildId;
+        var missing = setup.FindSourceByChildId(missingChildId);
+        if (missing == null)
+            return false;
+
+        SetupUndo.RunUndoable("Connect content", setup, () =>
+                                                        {
+                                                            if (setup.FindSourceByChildId(liveChildId) is { } live)
+                                                            {
+                                                                foreach (var slice in setup.Slices)
+                                                                {
+                                                                    if (slice.SourceId == live.Id)
+                                                                        slice.SourceId = missing.Id;
+                                                                }
+
+                                                                setup.ContentSources.Remove(live);
+                                                            }
+
+                                                            missing.SymbolChildId = liveChildId;
+                                                        });
+        return true;
+    }
+
     /// <summary>Whether a send op with this id exists in some symbol, instantiated or not.</summary>
     public static bool HasSendOp(Guid childId) => TryFindSendParent(childId, out _);
+
+    /// <summary>Whether this source still holds routing while its op isn't part of the focused project.</summary>
+    public static bool IsSendOpMissing(Guid childId) => _missingSendChildIds.Contains(childId);
 
     /// <summary>Blinks the send op behind a hovered content source, or behind the source of a hovered slice, in the graph.</summary>
     public static void HighlightSendOpInGraph(Setup setup, SetupEntityKinds kind, Guid id)
@@ -197,6 +320,13 @@ internal static class ContentSourceSync
     /** The op is found through its parent symbol, so one that isn't instantiated can still be edited. */
     private static bool TryFindSendParent(Guid childId, [NotNullWhen(true)] out Symbol? parent)
     {
+        // A missing source's id can still name an op of another open project, which edits here must not reach.
+        if (IsSendOpMissing(childId))
+        {
+            parent = null;
+            return false;
+        }
+
         foreach (var package in EditorSymbolPackage.AllPackages)
         {
             foreach (var symbol in package.Symbols.Values)
@@ -216,6 +346,9 @@ internal static class ContentSourceSync
     /// <summary>The live send op with this SymbolChildId, or null while it isn't instantiated.</summary>
     public static Instance? FindSendInstance(Guid childId)
     {
+        if (IsSendOpMissing(childId))
+            return null;
+
         var suppliers = ContentSupplierRegistry.Suppliers;
         for (var i = 0; i < suppliers.Count; i++)
         {
@@ -307,14 +440,19 @@ internal static class ContentSourceSync
             changed = true;
         }
 
-        // The deletion sweep scans the whole symbol library, so it only runs when a send could actually have
-        // gone away — i.e. when registry membership changed. Everything above is O(sends × sources) on two
-        // small lists, so it stays per-frame and keeps names live.
-        if (_sweptRegistryVersion != ContentSupplierRegistry.Version || _sweptSetupId != setup.Id)
+        // This scans the whole symbol library, so it only runs when a send could actually have gone away or the
+        // source list changed. Everything above is O(sends × sources) on two small lists, so it stays per-frame
+        // and keeps names live.
+        if (_sweptRegistryVersion != ContentSupplierRegistry.Version
+            || _sweptSetupId != setup.Id
+            || _sweptStructureVersion != OutputSetupHandling.StructureVersion
+            || _sweptScopePath != _scopePath)
         {
             _sweptRegistryVersion = ContentSupplierRegistry.Version;
             _sweptSetupId = setup.Id;
-            changed |= DropDeletedSources(setup);
+            _sweptStructureVersion = OutputSetupHandling.StructureVersion;
+            _sweptScopePath = _scopePath;
+            changed |= UpdateMissingSources(setup);
         }
 
         // Debounced: rename propagation changes the mirrored name once per keystroke, so saving
@@ -364,35 +502,32 @@ internal static class ContentSourceSync
     private static double? _pendingSaveSince;
     private static int _sweptRegistryVersion = -1;
     private static Guid _sweptSetupId;
+    private static int _sweptStructureVersion = -1;
+    private static IReadOnlyList<Guid>? _sweptScopePath;
+    private static readonly HashSet<Guid> _missingSendChildIds = [];
 
     /// <summary>
-    /// Removes sources whose op is provably gone, cascading to their slices and to any surface showing one.
-    /// "Provably" matters: a missing *instance* is normal, so the child is only treated as deleted once its
-    /// owning symbol is loaded and no longer lists it.
+    /// Finds the sources whose op isn't part of the focused project. One with slices stays and reads as missing. One without
+    /// has nothing to lose and goes: adding a send and undoing it shouldn't leave an item behind, and the op re-adopts if it returns.
     /// </summary>
-    private static bool DropDeletedSources(Setup setup)
+    private static bool UpdateMissingSources(Setup setup)
     {
+        _missingSendChildIds.Clear();
+        var package = ProjectView.Focused?.OpenedProject.Package;
+        if (package == null)
+            return false;
+
         var changed = false;
         for (var i = setup.ContentSources.Count - 1; i >= 0; i--)
         {
             var source = setup.ContentSources[i];
-            if (!IsChildConfirmedDeleted(source.SymbolChildId))
+            if (EditorUiContent.IsEditorUi(source.SymbolChildId) || IsOpOfProject(package, source.SymbolChildId))
                 continue;
 
-            var sourceId = source.Id;
-            for (var s = setup.Slices.Count - 1; s >= 0; s--)
+            if (SetupRelations.CountSlicesOfSource(setup, source.Id) > 0)
             {
-                if (setup.Slices[s].SourceId != sourceId)
-                    continue;
-
-                var sliceId = setup.Slices[s].Id;
-                foreach (var surface in setup.Surfaces)
-                {
-                    if (surface.SliceId == sliceId)
-                        surface.SliceId = Guid.Empty;
-                }
-
-                setup.Slices.RemoveAt(s);
+                _missingSendChildIds.Add(source.SymbolChildId);
+                continue;
             }
 
             setup.ContentSources.RemoveAt(i);
@@ -402,25 +537,19 @@ internal static class ContentSourceSync
         return changed;
     }
 
-    private static bool IsChildConfirmedDeleted(Guid childId)
+    /** Its own symbols, plus the scope's sends, which can sit inside a symbol of a library it uses. */
+    private static bool IsOpOfProject(EditorSymbolPackage package, Guid childId)
     {
-        if (TryFindInstance(childId, out _))
-            return false;
+        if (_scopeSendChildIds.Contains(childId))
+            return true;
 
-        // No instance is not evidence on its own — only a loaded symbol that no longer lists the child is.
-        foreach (var package in EditorSymbolPackage.AllPackages)
+        foreach (var symbol in package.Symbols.Values)
         {
-            foreach (var symbol in package.Symbols.Values)
-            {
-                foreach (var child in symbol.Children.Values)
-                {
-                    if (child.Id == childId)
-                        return false;
-                }
-            }
+            if (symbol.Children.ContainsKey(childId))
+                return true;
         }
 
-        return true;
+        return false;
     }
 
     private static bool TryFindInstance(Guid childId, out Instance? instance)
@@ -457,7 +586,7 @@ internal static class ContentSourceSync
 
     // Lib SendToOutput op and its inputs — the CONTENT "+" instantiates this and wires a selected feed in.
     private const float RevealPaddingOnScreen = 40f;
-    private static readonly Guid SendToOutputSymbolId = new("0b8f2d4e-6a1c-47d3-9f5e-8c2a1b7d4e60");
-    private static readonly Guid SendToOutputTextureInputId = new("8a4dd1b3-2e6f-4c25-9d0a-7f3b61c8e942");
+    internal static readonly Guid SendToOutputSymbolId = new("0b8f2d4e-6a1c-47d3-9f5e-8c2a1b7d4e60");
+    internal static readonly Guid SendToOutputTextureInputId = new("8a4dd1b3-2e6f-4c25-9d0a-7f3b61c8e942");
     private static readonly Guid SendToOutputResolutionInputId = new("3c7f1e58-0a94-4d62-b8f3-2e5d9a0c4b17");
 }

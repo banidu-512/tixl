@@ -9,7 +9,7 @@ using T3.Core.Resource.Assets;
 namespace T3.Editor.Gui.Windows.TimeLine.TimeClips;
 
 /// <summary>
-/// Caches the full source-file duration (seconds) per audio asset, probed once via BASS on a
+/// Caches the full source-file duration (seconds) per audio asset, probed once on a
 /// background thread. Lets the timeline waveform map its source window immediately — without
 /// waiting for the clip to play once (which is the only other place
 /// <c>TimelineAudioClip.LengthInSeconds</c> gets populated).
@@ -27,7 +27,7 @@ internal static class AudioClipDurationCache
             return durationSecs > 0;
 
         // First request for this asset: resolve the absolute path (cheap, on this thread) and probe
-        // the duration on a worker so the draw thread never blocks on a BASS file open.
+        // the duration on a worker so the draw thread never blocks on a file open.
         if (_probing.TryAdd(assetPath, true))
         {
             if (AssetRegistry.TryResolveAddress(assetPath, owner, out var absolutePath, out _))
@@ -50,6 +50,9 @@ internal static class AudioClipDurationCache
         durationSecs = 0;
         return false;
     }
+
+    /// <summary>Drops all cached durations, e.g. after a linked folder was pointed at another target.</summary>
+    public static void Clear() => _durationByAssetPath.Clear();
 
     private static readonly ConcurrentDictionary<string, double> _durationByAssetPath = new();
     private static readonly ConcurrentDictionary<string, bool> _probing = new();

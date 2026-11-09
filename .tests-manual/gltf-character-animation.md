@@ -28,6 +28,19 @@ connected as well) inside your usual camera/render setup.
 - The mesh is shaded with visible lighting variation, not a flat silhouette.
 - The [LoadGltfScene] operator shows no warning status.
 
+## Step: Non-square material channels keep vertical detail
+
+**Action:**
+Load `Operators/Examples/Assets/test-footage/gltf/nonsquare-pbr-channels.gltf` with a new [LoadGltfScene].
+Connect its **Mesh** and **Material** outputs to a [DrawMesh] in a lit render setup.
+View the plane from its +Z side under a bright light.
+Zoom in until the plane fills most of the output window.
+
+**Expected:**
+- The combined texture is 16 by 32 texels, preserving the maximum source width and height.
+- The roughness pattern remains visibly striped instead of blending into a uniform shade.
+- The top and bottom halves have different occlusion.
+
 ## Step: Inspecting the skeleton
 
 **Action:**
@@ -125,9 +138,9 @@ output together with the animated [PoseToSkinMatrices] matrices into a second
 
 **Action:**
 Create a spline or line of points (e.g. [SplinePoints]) and read it back with a
-[PointsToCPU] (leave **UpdateContinuously** off, trigger **TriggerUpdate** once);
+[ReadPointsFromGpu] (leave **UpdateContinuously** off, trigger **TriggerUpdate** once);
 connect its output to a [SkeletonFromPoints]. Read the same points back with a second
-[PointsToCPU] with **UpdateContinuously** enabled and connect it to a [PoseFromPoints]
+[ReadPointsFromGpu] with **UpdateContinuously** enabled and connect it to a [PoseFromPoints]
 together with the [SkeletonFromPoints] **Setup**. Route the pose through
 [PoseToSkinMatrices] (same **Setup**) into a [SkinMesh] whose mesh and weights come
 from a [BindToSkeleton] bound to a tube-like mesh along the chain. Then animate the

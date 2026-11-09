@@ -59,6 +59,8 @@ internal sealed class OutputWindowState
     [JsonConverter(typeof(StringEnumConverter))]
     public CameraControlModes CameraControlMode = CameraControlModes.AutoUseFirstCam;
 
+    public Guid PickedCameraId = Guid.Empty;
+
     public float[] CameraPosition = [0, 0, 2.4142134f]; // DefaultCameraDistance
     public float[] CameraTarget = [0, 0, 0];
     public float CameraRoll;
@@ -80,6 +82,11 @@ internal sealed class OutputWindowState
     public SetupEntityKinds PinnedEntityKind = SetupEntityKinds.None;
 
     public Guid PinnedEntityId = Guid.Empty;
+
+    /// <summary>The Flow Outliner strip's height in unscaled pixels.</summary>
+    public float OutlinerHeight = DefaultOutlinerHeight;
+
+    internal const float DefaultOutlinerHeight = 220;
 
     /// <summary>
     /// Camera control modes — mirrors CameraSelectionHandling.ControlModes

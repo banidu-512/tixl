@@ -71,6 +71,7 @@ internal static class AppMenuBar
             DrawErrorsIndicator();
             DrawGpuMemoryIndicator();
             Windows.OutputSetup.OutputsIndicator.Draw();
+            Interaction.Gamepad.GamepadIndicator.Draw();
             T3Metrics.DrawRenderPerformanceGraph();
 
             ImGui.SameLine();
@@ -362,13 +363,30 @@ internal static class AppMenuBar
             }
 
             var exportChildUis = projectView?.NodeSelection.GetSelectedChildUis().ToList();
-            var canExport = projectView?.CompositionInstance != null && exportChildUis is { Count: 1 }
-                            && projectView.CompositionInstance.Children.TryGetChildInstance(exportChildUis[0].SymbolChild.Id, out var exportTarget)
-                            && PlayerExporter.CanExport(exportTarget);
-            if (MenuItem("Export as Executable", isEnabled: canExport))
+            string? exportBlockedReason = null;
+            if (projectView?.CompositionInstance == null || exportChildUis is not { Count: 1 }
+                || !projectView.CompositionInstance.Children.TryGetChildInstance(exportChildUis[0].Id, out var exportTarget))
+            {
+                exportBlockedReason = "Select the one operator to export in the graph.";
+            }
+            else if (!PlayerExporter.CanExport(exportTarget))
+            {
+                exportBlockedReason = PlayerExporter.NoContentSupplierReason;
+            }
+
+            if (MenuItem("Export as Executable", isEnabled: exportBlockedReason == null))
             {
                 PlayerExporter.ExportAndReport(projectView!.CompositionInstance!, exportChildUis![0]);
             }
+
+            if (exportBlockedReason != null && ImGui.IsItemHovered())
+                ImGui.SetTooltip(exportBlockedReason);
+
+            if (MenuItem("Free GPU Memory"))
+                App.GpuResourceReleasing.RequestReleaseAll();
+
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("Releases every render target that can be rebuilt. Each one re-renders when it is next shown.");
 
             CustomComponents.SeparatorLine();
 
@@ -440,7 +458,18 @@ internal static class AppMenuBar
             MenuItemToggle("Graph Title", ref UserSettings.Config.ShowTitleAndDescription);
             MenuItemToggle("Graph Minimap", ref UserSettings.Config.ShowMiniMap);
             MenuItemToggle("Graph Toolbar", ref UserSettings.Config.ShowToolbar);
-            MenuItemToggle("Timeline", ref UserSettings.Config.ShowTimeline);
+            // A detached timeline is shown or hidden with its window.
+            var timelineWindow = WindowManager.TimelineWindow;
+            if (MenuItem("Timeline", isChecked: UserSettings.Config.ShowTimeline, isEnabled: !timelineWindow.IsDetached))
+                UserSettings.Config.ShowTimeline = !UserSettings.Config.ShowTimeline;
+
+            if (MenuItem("Detach Timeline", isChecked: timelineWindow.IsDetached))
+            {
+                timelineWindow.Config.Visible = !timelineWindow.Config.Visible;
+                if (timelineWindow.Config.Visible)
+                    UserSettings.Config.ShowTimeline = true;
+            }
+
             if (MenuItem("Toggle All", UserActions.ToggleAllUiElements.ListShortcuts(), isEnabled: !T3Ui.IsCurrentlySaving))
             {
                 UiConfig.ToggleAllUiElements();
@@ -527,7 +556,19 @@ internal static class AppMenuBar
 
             CustomComponents.SeparatorLine();
 
+            if (BeginSubMenu("Logs"))
+            {
+                ShowFolderMenu.DrawLogsContent();
+                ImGui.EndMenu();
+            }
+
             DrawDevelopmentToolsMenu();
+
+            if (BeginSubMenu("Show Folder"))
+            {
+                ShowFolderMenu.DrawFoldersContent();
+                ImGui.EndMenu();
+            }
 
             CustomComponents.SeparatorLine();
 

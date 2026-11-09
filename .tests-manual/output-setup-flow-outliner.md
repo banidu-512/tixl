@@ -42,7 +42,7 @@ Click the SendToOutput op in the graph window.
 **Expected:**
 - After 1 and 2: the strip opens again, although the selection didn't change. After 2 the pin
   icon is still there.
-- After 3: the strip closes and the window shows its pinned SendToOutput.
+- After 3: the strip stays open and the window keeps showing the Board or canvas it was on.
 
 ## Step: Reveal the setup file
 
@@ -71,6 +71,16 @@ Click the setup name in the strip's header and choose **Reveal in Explorer**.
 - After 3: the strip disappears entirely, the window's own toolbar returns with the list
   icon; clicking it brings the strip back at its previous height and the toolbar goes again.
 
+## Step: The project remembers the strip's height
+
+**Action:**
+1. Drag the strip's top edge upward by about 100 px and release.
+2. Save the project with Ctrl+S, close the editor and start it again with the same project.
+3. Open the output setup.
+
+**Expected:**
+- The strip opens at the height from step 1, not at its default. A project saved before this existed opens at the default.
+
 ## Step: Right-drag scrolls the list
 
 **Action:**
@@ -85,7 +95,7 @@ then right-click a row without dragging.
 
 **Action:**
 Click the **+** left of the **?** at the right end of the header, and pick **Add Reference
-Image**; then use it again for **Add Prop**.
+Image**; then use it again for **Add Person** → **Man Pointing**.
 
 **Expected:**
 - The menu offers exactly those two, each with a tooltip saying what it is for.
@@ -185,9 +195,73 @@ the "SendToOutput" item.
 3. Press Ctrl+Z.
 
 **Expected:**
-- After 1: that patch is gone from under "P1". Backspace does the same as Del.
+- After 1: that patch is gone from under "P1". Backspace does the same as Del. On a CONTENT item either key
+  deletes its SendToOutput op from the graph along with its slices, and one Ctrl+Z brings op, slices and routes
+  back, also when other items were selected with it.
 - After 2: Del only edits the text; "Patch 1" survives.
 - After 3: it is back.
+
+## Step: Routing survives a delete in the graph
+
+**Action:**
+1. In the graph window, select the SendToOutput op whose slice "Surface 1" shows and press Del.
+2. Press Ctrl+Z.
+3. Press Del on the op again. In the strip, right-click its CONTENT item and choose **Remove**.
+4. Press Ctrl+Z.
+
+**Expected:**
+- After 1: the op is gone from the graph. Its CONTENT item stays, dimmed, with the status "op missing", and the curve to
+  "Surface 1" stays. "Surface 1" shows no content.
+- After 2: the op is back, the status is gone, and "Surface 1" shows its content again.
+- After 3: the CONTENT item and its slices are gone, and "Surface 1" no longer has a curve from CONTENT.
+- After 4: the "op missing" item and the curve to "Surface 1" are back.
+
+## Step: Routing survives Combine
+
+**Action:**
+1. Make sure a second setup exists that also routes this op: open the setup switcher, duplicate the setup, and switch back
+   to the original.
+2. In the graph window, select only the SendToOutput op, right-click it, and combine it into a new symbol.
+3. In the setup switcher, switch to the duplicate.
+
+**Expected:**
+- After 2: the CONTENT item keeps its name and its curves, no "op missing" status appears, and "Surface 1" keeps showing the content.
+- After 3: the duplicate shows the same: the same item and curves, with content on "Surface 1".
+
+## Step: A missing content item connects to an op
+
+**Action:**
+1. In the graph window, select the SendToOutput op whose slice "Surface 1" shows and press Del. Its CONTENT item now reads
+   "op missing".
+2. Right-click that item and choose **Create SendToOutput**.
+3. Press Ctrl+Z. The item reads "op missing" again.
+4. In the graph, add a new SendToOutput op and connect a texture to it. A second CONTENT item appears.
+5. Drag the second CONTENT item onto the "op missing" item.
+6. Press Ctrl+Z.
+
+**Expected:**
+- After 2: a new SendToOutput op with the item's name is selected in the graph. The "op missing" status is gone, the curve to "Surface 1"
+  stays, and "Surface 1" stays empty until the op's texture input is connected.
+- After 3: that new op is gone from the graph.
+- After 5: one CONTENT item remains, without the status, with the curve to "Surface 1". "Surface 1" shows the new op's texture.
+- After 6: both CONTENT items and the "op missing" status are back.
+
+## Step: A setup moves to another project
+
+**Action:**
+1. Close the editor. Copy this project's `.meta/Setups/Setup 1.setup.json` into the `.meta/Setups` folder of a second project that has a
+   SendToOutput op, naming the copy `Moved.setup.json`.
+2. Open both projects, focus the second one, and choose "Moved" in the setup switcher.
+3. Right-click the "op missing" item and choose **Remove**, then press Ctrl+Z.
+4. Drag the second project's own CONTENT item onto the "op missing" item.
+5. Focus the first project.
+
+**Expected:**
+- After 2: "Surface 1", the output and its corners match the first project. CONTENT lists the second project's op, plus the first project's
+  op as an "op missing" item with its curve to "Surface 1".
+- After 3: the item's menu offered **Remove** and **Create SendToOutput**, not **Delete**, and the first project's op still exists.
+- After 4: "Surface 1" shows the second project's content.
+- After 5: the first project's setup and op are unchanged.
 
 ## Step: Bindings column reflects the machine
 

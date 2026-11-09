@@ -1,4 +1,5 @@
 #nullable enable
+using ImGuiNET;
 using T3.Editor.Gui.Interaction;
 using T3.Editor.Gui.Interaction.Keyboard;
 using T3.Editor.Gui.MagGraph.Interaction.KeyboardEditing;
@@ -143,6 +144,13 @@ internal static class KeyboardActions
             TreeLayouting.LayoutInputsOfSelection(context);
         }
 
+        if (UserActions.SelectConnectedInputs.Triggered()
+            && nodeSelection.Selection.Count > 0
+            && context.StateMachine.CurrentState == GraphStates.Default)
+        {
+            Modifications.SelectConnectedInputs(context);
+        }
+
         if (!T3Ui.IsCurrentlySaving && UserActions.AddSection.Triggered())
         {
             var newSection = NodeActions.AddSection(nodeSelection, context.View, compositionOp);
@@ -167,23 +175,33 @@ internal static class KeyboardActions
         //if (navigationPath != null)
         //    _window.TrySetCompositionOp(navigationPath);
 
+        if (SelectionNavigation.CanUseKeyboardFromAnyWindow(context))
+        {
+            if (!KeyActionHandling.AreArrowKeysClaimed)
+            {
+                if (UserActions.SelectToAbove.Triggered())
+                    MoveSelectionAndTakeFocus(context, SelectionNavigation.Directions.Up);
+
+                if (UserActions.SelectToRight.Triggered())
+                    MoveSelectionAndTakeFocus(context, SelectionNavigation.Directions.Right);
+
+                if (UserActions.SelectToBelow.Triggered())
+                    MoveSelectionAndTakeFocus(context, SelectionNavigation.Directions.Down);
+
+                if (UserActions.SelectToLeft.Triggered())
+                    MoveSelectionAndTakeFocus(context, SelectionNavigation.Directions.Left);
+            }
+
+            if (!KeyActionHandling.AreCameraKeysClaimed && UserActions.EditParameter.Triggered())
+            {
+                ParameterPopover.Open(context);
+                if (ParameterPopover.IsOpen)
+                    TakeKeyboardFocus();
+            }
+        }
+
         if (context.StateMachine.CurrentState == GraphStates.Default)
         {
-            if (UserActions.SelectToAbove.Triggered())
-                SelectionNavigation.MoveSelection(context, SelectionNavigation.Directions.Up);
-
-            if (UserActions.SelectToRight.Triggered())
-                SelectionNavigation.MoveSelection(context, SelectionNavigation.Directions.Right);
-
-            if (UserActions.SelectToBelow.Triggered())
-                SelectionNavigation.MoveSelection(context, SelectionNavigation.Directions.Down);
-
-            if (UserActions.SelectToLeft.Triggered())
-                SelectionNavigation.MoveSelection(context, SelectionNavigation.Directions.Left);
-
-            if (UserActions.EditParameter.Triggered())
-                ParameterPopover.Open(context);
-
             OperatorBookmarks.HandleKeyboard(context);
         }
 
@@ -207,5 +225,18 @@ internal static class KeyboardActions
         }
 
         return result;
+    }
+
+    private static void MoveSelectionAndTakeFocus(GraphUiContext context, SelectionNavigation.Directions direction)
+    {
+        SelectionNavigation.MoveSelection(context, direction);
+        TakeKeyboardFocus();
+    }
+
+    /** Follow-up keys like Delete must act on the operator just navigated to, not on the window used before. */
+    private static void TakeKeyboardFocus()
+    {
+        if (!ImGui.IsWindowFocused(ImGuiFocusedFlags.ChildWindows))
+            ImGui.SetWindowFocus();
     }
 }

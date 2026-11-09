@@ -4,7 +4,7 @@ The visual states for setup entities, across all types (Content / Slice / Surfac
 
 > **Partially superseded (2026-07-29).** The **state-token table below is live** and transfers
 > verbatim to Flow-Outliner **Items** and Board **Cards** (glossary in
-> [`ui-restructuring-plan.md`](ui-restructuring-plan.md)). The **row anatomy / gutter grammar**
+> [`README.md`](README.md#glossary-canonical-terms--2026-07-29)). The **row anatomy / gutter grammar**
 > section is **dead** — in/out gutter glyphs were replaced by real connection lines, and the Output
 > row's "device label" is now an **endpoint** binding shown on its own Item. Read "row" as "Item",
 > and ignore gutter references except as history.
@@ -62,4 +62,4 @@ its chip is aloft).
   `SetupPanel`). It takes the row's `SelectionTarget` state (from the two planes in [`selection.md`](selection.md))
   + reference/hover/bind status and picks a row above.
 - *Referenced* consumes the hover/selection cross-highlight rule; *Drop-Target* consumes the drag-drop hit-test;
-  *Unbound* consumes target/`DeviceBinding` resolution.
+  *Unbound* consumes target/`PlugBinding` resolution.

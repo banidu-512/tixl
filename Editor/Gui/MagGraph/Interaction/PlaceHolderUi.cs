@@ -33,7 +33,9 @@ internal static class PlaceHolderUi
         bool onlyMultiInputs = false)
     {
         _selectedSymbolUi = null;
+        _wasPickedWithKeys = false;
         _focusInputNextTime = true;
+        _scrollToSelected = true;
         ResetPresets();
 
         Filter.FilterInputType = inputFilter;
@@ -59,9 +61,26 @@ internal static class PlaceHolderUi
         Filter.Reset();
         _placeholderItem = null;
         _selectedSymbolUi = null;
+        _wasPickedWithKeys = false;
         ResetPresets();
         _rowHeight = 0;
         _focusInputNextTime = false;
+    }
+
+    /// <summary>
+    /// Makes the symbol focused in the browser the one Return inserts and the help window previews; null while the
+    /// focus is on a namespace.
+    /// </summary>
+    internal static void SelectSymbolFromBrowsing(SymbolUi? symbolUi)
+    {
+        _selectedSymbolUi = symbolUi;
+        _wasPickedWithKeys = symbolUi != null;
+    }
+
+    /** The search input comes back when browsing returns to the top level and needs the keyboard again. */
+    internal static void FocusSearchInputNextFrame()
+    {
+        _focusInputNextTime = true;
     }
 
     internal static UiResults Draw(GraphUiContext context, out SymbolUi? selectedUi)
@@ -182,6 +201,12 @@ internal static class PlaceHolderUi
                             ImGuiInputTextFlags.AutoSelectAll);
             ImGui.PopID();
 
+            // A leading space only opens presets for an operator picked on purpose, not one left over from deleted text
+            if (Filter.SearchString.Length > 0 && Filter.SearchString[0] == ' ' && !_wasPickedWithKeys)
+            {
+                Filter.SearchString = Filter.SearchString.TrimStart();
+            }
+
             DrawSuggestion(drawList, padding);
 
             ImGui.PopStyleColor();
@@ -224,6 +249,8 @@ internal static class PlaceHolderUi
             _selectedSymbolUi = Filter.MatchingSymbolUis.Count > 0
                                     ? Filter.MatchingSymbolUis[0]
                                     : null;
+            _wasPickedWithKeys = false;
+            _scrollToSelected = true;
             _rowHeight = 0;
             uiResult |= UiResults.SelectionChanged;
         }
@@ -378,14 +405,18 @@ internal static class PlaceHolderUi
     {
         var result = UiResults.None;
 
-        if (ImGui.IsKeyReleased(Key.CursorDown.ToImGuiKey()))
+        if (ImGui.IsKeyPressed(Key.CursorDown.ToImGuiKey()))
         {
             UiListHelpers.AdvanceSelectedItem(filter.MatchingSymbolUis!, ref _selectedSymbolUi, 1);
+            _wasPickedWithKeys = true;
+            _scrollToSelected = true;
             result = UiResults.SelectionChanged;
         }
-        else if (ImGui.IsKeyReleased(Key.CursorUp.ToImGuiKey()))
+        else if (ImGui.IsKeyPressed(Key.CursorUp.ToImGuiKey()))
         {
             UiListHelpers.AdvanceSelectedItem(filter.MatchingSymbolUis!, ref _selectedSymbolUi, -1);
+            _wasPickedWithKeys = true;
+            _scrollToSelected = true;
             result = UiResults.SelectionChanged;
         }
 
@@ -417,21 +448,57 @@ internal static class PlaceHolderUi
 
                 clipper.Begin(count, _rowHeight);
 
+                // The clipper skips rows outside the view, so the one to reveal is drawn on request and scrolls itself in
+                var rowToReveal = -1;
+                if (_scrollToSelected && _selectedSymbolUi != null)
+                {
+                    rowToReveal = filter.MatchingSymbolUis.IndexOf(_selectedSymbolUi);
+                    if (rowToReveal >= 0)
+                        clipper.IncludeItemByIndex(rowToReveal);
+
+                    _scrollToSelected = false;
+                }
+
+                var drawnRowCount = 0;
                 while (clipper.Step())
                 {
                     for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; i++)
                     {
                         var symbolUi = filter.MatchingSymbolUis[i];
                         result |= DrawSymbolUiEntry(context, symbolUi);
+                        if (i == rowToReveal)
+                            ScrollLastItemIntoView();
                     }
+
+                    drawnRowCount += clipper.DisplayEnd - clipper.DisplayStart;
                 }
 
                 clipper.End();
+
+                // The list is sized from last frame's extent, so skipped rows must count or it never grows past its first size
+                if (drawnRowCount < count)
+                    ImGui.Dummy(Vector2.Zero);
             }
         }
 
         WindowContentExtend.ExtendToLastItem((int)(200 * T3Ui.UiScaleFactor));
         return result;
+    }
+
+    /** Scrolls only if the row is cut off, keeping some rows of context in the direction of travel. */
+    private static void ScrollLastItemIntoView()
+    {
+        var padding = ImGui.GetStyle().WindowPadding.Y;
+        var windowTop = ImGui.GetWindowPos().Y + padding;
+        var windowBottom = ImGui.GetWindowPos().Y + ImGui.GetWindowHeight() - padding;
+        if (ImGui.GetItemRectMin().Y < windowTop)
+        {
+            ImGui.SetScrollHereY(RevealMarginFraction);
+        }
+        else if (ImGui.GetItemRectMax().Y > windowBottom)
+        {
+            ImGui.SetScrollHereY(1 - RevealMarginFraction);
+        }
     }
 
     internal static UiResults DrawSymbolUiEntry(GraphUiContext context, SymbolUi symbolUi, bool showType=true)
@@ -633,10 +700,12 @@ internal static class PlaceHolderUi
 
     /// <summary>
     /// Grey text after the typed search that completes the selected item and tells what a space does next.
+    /// When the field is too narrow, the key hint moves outside to its right so it never covers the search.
     /// </summary>
     private static void DrawSuggestion(ImDrawListPtr drawList, Vector2 padding)
     {
-        if (_selectedSymbolUi == null)
+        // Without typed text it would cover the "search..." placeholder, and a leading space is ignored anyway
+        if (_selectedSymbolUi == null || Filter.SearchString.Length == 0)
             return;
 
         // Rebuilt only when what it describes changes
@@ -647,30 +716,49 @@ internal static class PlaceHolderUi
             _suggestionSymbolUi = _selectedSymbolUi;
             _suggestionSearch = Filter.SearchString;
             _suggestionPresetIndex = _presetIndex;
-            KeyHintText.Parse(BuildSuggestion(_selectedSymbolUi), _suggestionSegments);
+            BuildSuggestion(_selectedSymbolUi, out var completion, out var keyHint);
+            KeyHintText.Parse("{" + completion + "}", _completionSegments);
+            KeyHintText.Parse(keyHint, _keyHintSegments);
         }
 
         var textPos = ImGui.GetItemRectMin() + padding + new Vector2(ImGui.CalcTextSize(Filter.SearchString).X, 0);
-        KeyHintText.Draw(drawList, textPos, _suggestionSegments);
+        var fieldRight = ImGui.GetItemRectMax().X - padding.X;
+        var completionWidth = KeyHintText.GetWidth(_completionSegments);
+        var completionFits = textPos.X + completionWidth <= fieldRight;
+        if (completionFits)
+            KeyHintText.Draw(drawList, textPos, _completionSegments);
+
+        var keyHintPos = new Vector2(textPos.X + completionWidth, textPos.Y);
+        if (!completionFits || keyHintPos.X + KeyHintText.GetWidth(_keyHintSegments) > fieldRight)
+        {
+            // The placeholder box and the input field differ in width when the canvas is zoomed
+            keyHintPos.X = MathF.Max(ImGui.GetItemRectMax().X, _placeholderAreaOnScreen.Max.X);
+        }
+
+        KeyHintText.Draw(drawList, keyHintPos, _keyHintSegments);
     }
 
-    private static string BuildSuggestion(SymbolUi selectedSymbolUi)
+    /// <param name="completion">The rest of the selected name after the typed text</param>
+    /// <param name="keyHint">What to type or press next, in <see cref="KeyHintText"/> markup</param>
+    private static void BuildSuggestion(SymbolUi selectedSymbolUi, out string completion, out string keyHint)
     {
+        completion = string.Empty;
+        keyHint = string.Empty;
         if (Filter.SearchString.Length == 0)
-            return "[Space] " + selectedSymbolUi.Symbol.Name + " presets";
+            return;
 
         if (IsChoosingPreset)
         {
             var presetSearch = GetPresetSearch(out _);
             var title = SelectedPreset?.Title ?? (_presetMatches.Count > 0 ? DefaultPresetLabel : string.Empty);
-            var completion = title.StartsWith(presetSearch, StringComparison.OrdinalIgnoreCase) ? title[presetSearch.Length..] : string.Empty;
-            var next = presetSearch.Length == 0 ? "   type a preset,  [Space] insert and edit" : "   [Space] insert and edit";
-            return completion.Length > 0 ? "{" + completion + "}" + next : next;
+            completion = title.StartsWith(presetSearch, StringComparison.OrdinalIgnoreCase) ? title[presetSearch.Length..] : string.Empty;
+            keyHint = presetSearch.Length == 0 ? "   type a preset,  [Space] insert and edit" : "   [Space] insert and edit";
+            return;
         }
 
         var name = selectedSymbolUi.Symbol.Name;
-        var nameCompletion = name.StartsWith(Filter.SearchString, StringComparison.OrdinalIgnoreCase) ? name[Filter.SearchString.Length..] : string.Empty;
-        return nameCompletion.Length > 0 ? "{" + nameCompletion + "}   [Space] presets" : "   [Space] presets";
+        completion = name.StartsWith(Filter.SearchString, StringComparison.OrdinalIgnoreCase) ? name[Filter.SearchString.Length..] : string.Empty;
+        keyHint = "   [Space] presets";
     }
 
     private static bool IsRelevantNamespace(GraphUiContext context, string symbolNamespace)
@@ -697,13 +785,21 @@ internal static class PlaceHolderUi
     private static string _presetHeader = string.Empty;
     private static string _lastPresetFilter = string.Empty;
     private static int _presetIndex;
-    private static readonly List<KeyHintText.Segment> _suggestionSegments = new(4);
+    private static readonly List<KeyHintText.Segment> _completionSegments = new(1);
+    private static readonly List<KeyHintText.Segment> _keyHintSegments = new(4);
     private static SymbolUi? _suggestionSymbolUi;
     private static string? _suggestionSearch;
     private static int _suggestionPresetIndex = -1;
 
     private static bool _focusInputNextTime = true;
     private static SymbolUi? _selectedSymbolUi;
+
+    /** Up/Down chose the selection since the search last changed */
+    private static bool _wasPickedWithKeys;
+    private static bool _scrollToSelected;
+
+    /** Where a revealed row lands, as a fraction of the list's height from the edge it came in at. */
+    private const float RevealMarginFraction = 0.2f;
     private static ImRect _placeholderAreaOnScreen;
     internal static readonly SymbolFilter Filter = new();
     private static MagGraphItem? _placeholderItem;

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Numerics;
 using Newtonsoft.Json.Linq;
 using T3.Core.DataTypes.Vector;
@@ -24,6 +25,8 @@ public class SetupSerializationTests
         Assert.Equal(ReferenceImage.Kinds.Photo, image.Kind);
         Assert.Equal("images/refs/corner.jpg", image.FilePath);
         Assert.Equal(4032, image.Width);
+        Assert.Equal(new Vector2(100, 50), image.CropMin);
+        Assert.Equal(new Vector2(3900, 2900), image.CropMax);
 
         var surface = Assert.Single(restored.Surfaces);
         Assert.Equal(setup.Surfaces[0].Id, surface.Id);
@@ -166,6 +169,109 @@ public class SetupSerializationTests
         Assert.Equal("Default", output.Name);
     }
 
+    [Fact]
+    public void TryLoadFromFile_TakesNameFromFileName()
+    {
+        using var folder = new TemporaryFolder();
+        var copyPath = Path.Combine(folder.Path, "Hall_old" + Setup.FileSuffix);
+        Assert.True(Setup.CreateDefault("Hall").TrySaveToFile(copyPath));
+
+        Assert.True(Setup.TryLoadFromFile(copyPath, out var loaded, out _));
+
+        Assert.Equal("Hall_old", loaded.Name);
+    }
+
+    [Fact]
+    public void TrySaveToFile_ReplacesFileAndLeavesNoTemporaryFile()
+    {
+        using var folder = new TemporaryFolder();
+        var path = Path.Combine(folder.Path, "Hall" + Setup.FileSuffix);
+        Assert.True(Setup.CreateDefault("Hall").TrySaveToFile(path));
+
+        var edited = Setup.CreateDefault("Hall");
+        edited.Surfaces.Add(new Surface { Name = "Wall" });
+        Assert.True(edited.TrySaveToFile(path));
+
+        Assert.True(Setup.TryLoadFromFile(path, out var loaded, out _));
+        Assert.Single(loaded.Surfaces);
+        Assert.Single(Directory.GetFiles(folder.Path));
+    }
+
+    [Fact]
+    public void TryLoad_WithUnreadableActiveSetup_FallsBackAndLeavesItsFileAlone()
+    {
+        using var folder = new TemporaryFolder();
+        const string brokenContent = "{ not json";
+        var brokenPath = Path.Combine(folder.Path, "Hall" + Setup.FileSuffix);
+        File.WriteAllText(brokenPath, brokenContent);
+        Assert.True(Setup.CreateDefault("Club").TrySaveToFile(Path.Combine(folder.Path, "Club" + Setup.FileSuffix)));
+        Assert.True(new MachineConfig { ActiveSetupName = "Hall" }.TrySaveToFile(Path.Combine(folder.Path, MachineConfig.FileName)));
+
+        Assert.True(SetupFiles.TryLoad(folder.Path, out var setup, out _, out _));
+
+        Assert.Equal("Club", setup!.Name);
+        Assert.Equal(brokenContent, File.ReadAllText(brokenPath));
+    }
+
+    [Fact]
+    public void MachineConfigLoad_WhenUnreadable_KeepsACopyOfTheFile()
+    {
+        using var folder = new TemporaryFolder();
+        const string brokenContent = "{ not json";
+        var path = Path.Combine(folder.Path, MachineConfig.FileName);
+        File.WriteAllText(path, brokenContent);
+
+        Assert.False(MachineConfig.TryLoadFromFile(path, out var config));
+
+        Assert.Empty(config.Bindings);
+        Assert.Equal(brokenContent, File.ReadAllText(path + ".unreadable"));
+    }
+
+    private sealed class TemporaryFolder : IDisposable
+    {
+        public string Path { get; } = System.IO.Path.Combine(System.IO.Path.GetTempPath(), System.IO.Path.GetRandomFileName());
+
+        public TemporaryFolder() => Directory.CreateDirectory(Path);
+
+        public void Dispose() => Directory.Delete(Path, recursive: true);
+    }
+
+    [Fact]
+    public void ParkedMappings_RoundTripWithTheirAlignment()
+    {
+        var setup = Setup.CreateDefault();
+        var output = setup.Outputs[0];
+        var pointId = Guid.NewGuid();
+        var parked = new Surface.OutputMapping
+                         {
+                             OutputId = output.Id,
+                             Quad = [new Vector2(0.1f, 0.2f), new Vector2(0.9f, 0.1f), new Vector2(0.8f, 0.9f), new Vector2(0.2f, 0.8f)],
+                         };
+        parked.PointAims[pointId] = new Surface.OutputMapping.PointAim(new Vector2(0.4f, 0.5f), true);
+        var wall = new Surface { Name = "wall" };
+        wall.ParkedMappings.Add(parked);
+        setup.Surfaces.Add(wall);
+
+        var restored = Assert.Single(RoundTrip(setup).Surfaces);
+        Assert.Empty(restored.OutputMappings);
+        var restoredParked = Assert.Single(restored.ParkedMappings);
+        Assert.Equal(output.Id, restoredParked.OutputId);
+        Assert.Equal(new Vector2(0.9f, 0.1f), restoredParked.Quad[1]);
+        Assert.True(restoredParked.PointAims[pointId].IsAimed);
+    }
+
+    [Fact]
+    public void MeasuringLines_FollowTheRaster_InSetupsSavedBeforeTheyHadTheirOwnSwitch()
+    {
+        var saved = JObject.Parse("""{ "Id": "6a0d1fcb-6824-49dd-a48b-852b49044d0c", "Name": "wall", "ShowGrid": true }""");
+        Assert.True(Surface.ReadFromJson(saved).ShowMeasuringLines);
+
+        var split = JObject.Parse("""{ "Id": "6a0d1fcb-6824-49dd-a48b-852b49044d0c", "Name": "wall", "ShowGrid": true, "ShowMeasuringLines": false }""");
+        var surface = Surface.ReadFromJson(split);
+        Assert.True(surface.ShowGrid);
+        Assert.False(surface.ShowMeasuringLines);
+    }
+
     private static Setup RoundTrip(Setup setup)
     {
         return Setup.ReadFromJson(JObject.Parse(setup.ToJsonString()));
@@ -180,6 +286,8 @@ public class SetupSerializationTests
                             FilePath = "images/refs/corner.jpg",
                             Width = 4032,
                             Height = 3024,
+                            CropMin = new Vector2(100, 50),
+                            CropMax = new Vector2(3900, 2900),
                         };
 
         var projector = new OutputDefinition

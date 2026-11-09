@@ -147,7 +147,7 @@ internal static class OutputWindowHandling
         if (displayIndex < 0 || displayIndex >= AppWindow.DisplayCount)
             return null;
 
-        var window = ProgramWindows.CreateViewerWindow($"TiXL Output {displayIndex + 1}", 640, 360);
+        var window = ProgramWindows.CreateOutputWindow($"TiXL Output {displayIndex + 1}", 640, 360);
         window.SetFullScreen(displayIndex);
         var displayWindow = new DisplayWindow(window);
         _windows[displayIndex] = displayWindow;

@@ -13,6 +13,7 @@ using ImGuiNET;
 using NAudio.Midi;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using T3.Editor.Gui.Interaction.Timing;
 using T3.Core.Animation;
 using T3.Core.IO;
 using T3.Core.Settings;
@@ -482,6 +483,64 @@ internal static class DebugServer
                 HandleAddOp(request, context);
                 break;
 
+            case "getAudioInputs":
+            {
+                var devices = new JArray();
+                foreach (var device in T3.Core.Audio.Input.AudioInput.InputDevices)
+                    devices.Add(new JObject { ["name"] = device.Name, ["isLoopback"] = device.IsLoopback });
+
+                context.SendOk(new JObject
+                                   {
+                                       ["devices"] = devices,
+                                       ["active"] = T3.Core.Audio.Input.AudioInput.ActiveInputDeviceName,
+                                       ["level"] = T3.Core.Audio.Input.AudioInput.DecayingAudioLevel,
+                                   });
+                break;
+            }
+
+            case "setAudioInput":
+            {
+                // An empty device name goes back to analysing the project's own audio.
+                var deviceName = request["device"]?.Value<string>() ?? string.Empty;
+                var settings = PlaybackUtils.FindCompositionSettings(out _);
+                settings.Playback.AudioInputDeviceName = deviceName;
+                settings.Playback.AudioSource = deviceName.Length > 0
+                                                    ? CompositionSettings.AudioSources.ExternalDevice
+                                                    : CompositionSettings.AudioSources.ProjectSoundTrack;
+                context.SendOk(new JObject { ["audioSource"] = settings.Playback.AudioSource.ToString() });
+                break;
+            }
+
+            case "startAudioRecording":
+                context.SendOk(new JObject { ["path"] = T3.Core.Audio.Input.AudioInput.BeginRecording() });
+                break;
+
+            case "stopAudioRecording":
+                context.SendOk(new JObject { ["path"] = T3.Core.Audio.Input.AudioInput.EndRecording() });
+                break;
+
+            case "startRender":
+                HandleStartRender(request, context);
+                break;
+
+            case "getRenderStatus":
+                context.SendOk(new JObject
+                                   {
+                                       ["state"] = RenderProcess.State.ToString(),
+                                       ["isExporting"] = RenderProcess.IsExporting,
+                                       ["progress"] = RenderProcess.Progress,
+                                       ["frameIndex"] = RenderProcess.CapturedFrameCount,
+                                       ["message"] = RenderProcess.LastHelpString,
+                                   });
+                break;
+
+            case "cancelRender":
+                if (RenderProcess.IsExporting)
+                    RenderProcess.Cancel();
+
+                context.SendOk(new JObject { ["message"] = RenderProcess.LastHelpString });
+                break;
+
             case "connect":
                 HandleConnect(request, context);
                 break;
@@ -671,6 +730,14 @@ internal static class DebugServer
                     UserSettings.Config.UseVSync = value.Value;
 
                 context.SendOk(new JObject { ["useVSync"] = UserSettings.Config.UseVSync });
+                break;
+            }
+
+            case "releaseGpuResources":
+            {
+                // What "Free GPU Memory" does; it runs at the start of the next frame, so pump one before measuring.
+                App.GpuResourceReleasing.RequestReleaseAll();
+                context.SendOk(new JObject());
                 break;
             }
 
@@ -1877,6 +1944,18 @@ internal static class DebugServer
 
     private static JToken TryGetGpuMemoryInfo()
     {
+        // Vulkan reports its heap budget itself; D3D11 answers zeros and is asked through DXGI below.
+        var report = Program.Device?.Backend.QueryMemory() ?? default;
+        if (report.BudgetBytes > 0 || report.ResourceBytes > 0)
+        {
+            return new JObject
+                       {
+                           ["currentUsageMb"] = Math.Round(report.UsedBytes / (1024.0 * 1024.0), 1),
+                           ["budgetMb"] = Math.Round(report.BudgetBytes / (1024.0 * 1024.0), 1),
+                           ["resourceMb"] = Math.Round(report.ResourceBytes / (1024.0 * 1024.0), 1),
+                       };
+        }
+
         try
         {
             if (_gpuAdapter == null)
@@ -2670,6 +2749,48 @@ internal static class DebugServer
 
         symbol = focused;
         return true;
+    }
+
+    private static void HandleStartRender(JObject request, RequestContext context)
+    {
+        var path = request["path"]?.Value<string>();
+        if (string.IsNullOrEmpty(path) || !Path.IsPathRooted(path))
+        {
+            context.SendError("BAD_PATH", "startRender needs an absolute 'path'");
+            return;
+        }
+
+        var startSecs = request["startSecs"]?.Value<float>() ?? 0f;
+        var durationSecs = request["durationSecs"]?.Value<float>() ?? 0f;
+        if (durationSecs <= 0)
+        {
+            context.SendError("BAD_DURATION", "startRender needs a positive 'durationSecs'");
+            return;
+        }
+
+        var settings = RenderSettings.Current.Clone();
+        settings.RenderMode = RenderSettings.RenderModes.Video;
+        settings.TimeRange = RenderSettings.TimeRanges.Custom;
+        settings.TimeReference = RenderSettings.TimeReferences.Seconds;
+        settings.StartInBars = startSecs;
+        settings.EndInBars = startSecs + durationSecs;
+        settings.FrameRate = request["fps"]?.Value<float>() ?? 60f;
+        settings.ExportAudio = request["exportAudio"]?.Value<bool>() ?? true;
+        settings.AutoIncrementVersionNumber = false;
+        if (Enum.TryParse<T3.Core.Video.VideoExportCodec>(request["codec"]?.Value<string>(), true, out var codec))
+            settings.VideoCodec = codec;
+
+        if (!RenderProcess.TryStartVideoExport(settings, path))
+        {
+            context.SendError("RENDER_NOT_READY", $"Render state is {RenderProcess.State}: pin an operator with a Texture2D output and keep the output window open");
+            return;
+        }
+
+        context.SendOk(new JObject
+                           {
+                               ["path"] = path,
+                               ["frameCount"] = RenderTiming.ComputeFrameCount(settings),
+                           });
     }
 
     private static void HandleAddOp(JObject request, RequestContext context)

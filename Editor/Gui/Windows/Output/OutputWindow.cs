@@ -28,14 +28,13 @@ internal sealed partial class OutputWindow : Window
     #region Window implementation
     public OutputWindow()
     {
-        Config.Title = LayoutHandling.OutputPrefix + _instanceCounter;
+        Config.Title = GetUnusedInstanceTitle(LayoutHandling.OutputPrefix, OutputWindowInstances);
         Config.Visible = true;
 
         AllowMultipleInstances = true;
         Config.Visible = true;
         WindowFlags = ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse;
 
-        _instanceCounter++;
         _camSelectionHandling = new CameraSelectionHandling();
         _drawOutputMenuExtras = DrawOutputMenuExtras;
         OutputWindowInstances.Add(this);
@@ -92,6 +91,10 @@ internal sealed partial class OutputWindow : Window
         return _imageCanvas.LastTexture;
     }
 
+    /// <summary>The type of what the window drew last frame — the shown op's output, or the texture of the send an
+    /// op without outputs falls back to. Null while nothing is drawn.</summary>
+    public Type? ShownOutputType { get; private set; }
+
     protected override void Close()
     {
         SaveStateToProject();
@@ -115,6 +118,9 @@ internal sealed partial class OutputWindow : Window
         SyncStateWithProject();
         ConsumeRequestedShowInGraph();
 
+        if (ImGui.IsWindowHovered(ImGuiHoveredFlags.ChildWindows) || ImGui.IsWindowFocused(ImGuiFocusedFlags.ChildWindows))
+            T3.SystemUi.OperatorKeyboardCapture.MarkOutputWindowActive();
+
         // In skill training the toolbar is hidden, so force the window-fitting resolution
         // instead of whatever the level project saved (typically 1920x1080).
         if (SkillTraining.IsInPlayMode && _selectedResolution != ResolutionHandling.DefaultResolution)
@@ -124,6 +130,7 @@ internal sealed partial class OutputWindow : Window
         SyncCopyFieldsToState();
 
         Pinning.TryGetPinnedOrSelectedInstance(out var drawnInstance, out var graphCanvas);
+        ShownOutputType = drawnInstance is { Outputs.Count: > 0 } ? drawnInstance.Outputs[0].ValueType : null;
 
         // The Flow Outliner strip sits under the canvas; the canvas child takes what it leaves.
         var contentHeight = Math.Max(60 * T3Ui.UiScaleFactor, ImGui.GetContentRegionAvail().Y - _setupMode.OutlinerReservedHeight);
@@ -168,8 +175,11 @@ internal sealed partial class OutputWindow : Window
             else if (graphCanvas != null)
             {
                 var drawnType = UpdateAndDrawOutput(drawnInstance);
+                ShownOutputType = drawnType;
                 ImageOutputCanvas.Deactivate();
-                _camSelectionHandling.Update(drawnInstance, drawnType);
+                // An operator drawing in the output, like Sketch, uses the same drags that would steer the view camera.
+                var isInputCapturedByOperator = T3.SystemUi.OperatorKeyboardCapture.CapturedBy != Guid.Empty;
+                _camSelectionHandling.Update(drawnInstance, drawnType, isInputCapturedByOperator);
                 var editingFlags = _camSelectionHandling.PreventImageCanvasInteraction
                                    | SkillTraining.IsInPlayMode
                                    | drawnType != typeof(Texture2D)
@@ -215,7 +225,8 @@ internal sealed partial class OutputWindow : Window
         }
         ImGui.EndChild();
 
-        _setupMode.DrawOutliner();
+        if (_setupMode.DrawOutliner())
+            FlagSymbolUiAsModified();
     }
 
 
@@ -224,6 +235,10 @@ internal sealed partial class OutputWindow : Window
 
     /// <inheritdoc cref="OutputSetupModeView.TryLeaveSetupMode"/>
     internal bool TryLeaveSetupMode() => _setupMode.TryLeaveSetupMode();
+
+    internal bool IsInSetupMode => _setupMode.IsSetupMode;
+
+    internal void EnterSetupMode() => _setupMode.EnterSetupMode();
 
     internal void ToggleSetupMode()
     {
@@ -292,7 +307,6 @@ internal sealed partial class OutputWindow : Window
     private readonly ImageOutputCanvas _imageCanvas = new();
     private readonly CameraSelectionHandling _camSelectionHandling;
     private readonly System.Action _drawOutputMenuExtras;
-    private static int _instanceCounter;
     private ResolutionHandling.Resolution _selectedResolution = ResolutionHandling.DefaultResolution;
     internal Int2 RequestedResolution { get; private set; }
     private readonly EditResolutionDialog _resolutionDialog = new();

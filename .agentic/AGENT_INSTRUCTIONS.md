@@ -43,6 +43,18 @@ Apply these rules where they matter — code that actually runs every frame and 
 - Prefer storing and resolving by `Guid`.
 - Be careful with stale references across reloads and graph changes.
 
+### Relationships are stored, not inferred
+
+A link between two entities is data: one stores the other's `Guid`. **Warning sign:** code that decides whether two
+things are connected by comparing their values — equal geometry within a tolerance, matching names, identical paths,
+"the one that happens to sit there". That reads as a link and behaves like one until an unrelated edit changes a value
+and the link silently vanishes, and it can't tell two identical candidates apart.
+
+When you meet this, stop and tell the user before building on it, even if the current task is only a symptom of it. Say
+what is inferred and what would break it, and propose storing the id. Don't patch the symptom by keeping the compared
+values equal. A name match is fine when finding things by name is the documented feature, and a comparison is fine
+as a one-time back-compat step that fills in the stored id.
+
 ### Undo / redo commands
 
 `ICommand` implementations live longer than any single graph state — they sit on the undo stack until the user closes the project (or further) and need to survive operator-package hot reloads, which recreate `Instance` objects under the same `Symbol`.
@@ -63,6 +75,14 @@ Also:
 - Keep operator evaluation paths allocation-free
 - Match existing naming and slot conventions
 - Avoid hidden side effects unless explicitly intended
+
+### Operator parameter layout
+
+Set these in the `.t3ui` (or the editor's parameter settings) when designing an operator:
+
+- **Group related parameters.** Set `GroupTitle` ("Display as: Start with group") on the first parameter of each group once an operator has more than a handful, for example `Occlusion`, `Ray Tracing`, `Temporal Accumulation`. Keep required inputs ungrouped at the top.
+- **Give numeric parameters a reasonable `Min` and `Max`.** The range drives the virtual slider and the drag speed, so it should span the values people actually use, not everything that is technically valid.
+- **Clamp only real limits.** `ClampMin` / `ClampMax` are for values that break or lose their meaning outside the range, such as a negative radius or a blend factor above 1. Leave the other end open where larger values remain useful.
 
 ### Operators vs. helper classes in an operator package
 
@@ -214,7 +234,8 @@ patch — sits inside its own rect (1px, 2px when selected), so the two never ov
 - Prefer a single draw list. Z-order is controlled by call sequence, not ImGui channels.
 - Only split the draw list (channels) when overlapping elements need independent z-order *and* the top one must receive clicks. Merge immediately after — extra channels cost draw calls.
 - For overlapping clickable elements, emit the topmost `InvisibleButton` last so it wins the hit test. If that is not feasible, split channels.
-- Avoid excessive `PushClipRect` — each clip region adds draw calls. Clip only when drawn content would genuinely overflow.
+- Avoid excessive `PushClipRect` — ImGui starts a new draw command whenever the clip rect changes, so a clip in a list row adds about two draw calls per row. Clip only when drawn content would genuinely overflow: for text, compare `CalcTextSize` against the available width and push the clip only for that case (see `VariationPicker.DrawRow`).
+- A clip rect can hide a layout bug. ImGui font sizes are line heights, and Inter's is about 1.21× its em size, so stacked text needs more room than the nominal sizes suggest. Size stacks from `Fonts.*.FontSize`.
 
 ### Prefer existing helpers over hand-rolled ImGui
 
@@ -374,8 +395,9 @@ later.
 
 ## Documentation and Manual Tests
 
-- **User-facing docs live in `.help/`** and publish to `tixl.app/help/`. Developer / contributor topics stay on the GitHub wiki. Don't mix the two. See `.help/STYLE.md` for writing conventions and `.agentic/Plans/Plan_UpdateHelp.md` for the overall docs plan.
-- When shipping a user-visible UI or behavior change, update the matching page under `.help/` in the same PR. If no suitable page exists, add one under the best-fitting section (`getting-started/`, `install/`, `using/`, `advanced/`, `contributing/`), or flag it in `Plan_UpdateHelp.md`.
+- **User-facing docs live in `.help/`** and publish to `tixl.app/help/`. Developer / contributor topics stay on the GitHub wiki. Don't mix the two. See `.help/STYLE.md` for writing conventions and `.agentic/Plans/archive/Plan_UpdateHelp.md` for the overall docs plan.
+- When shipping a user-visible UI or behavior change, update the matching page under `.help/` in the same PR. If no suitable page exists, add one under the best-fitting section (`getting-started/`, `install/`, `using/`, `advanced/`, `contributing/`), or call out the gap in the PR description.
+- **Keep the release notes current.** Every user-visible change adds an entry to the release notes of the upcoming version (`.help/release-notes/v<major.minor>.md`) in the same PR. Default to one short, concise bullet in the fitting section (`Other UI Improvements`, `Fixes`, ...) — what changed for the user, not how it was built. Only a major feature or a new concept users must learn (e.g. a new parameter type) justifies its own chapter.
 - **Manual test sets live in `.tests-manual/`.** User-visible UI or behavior changes must also extend or add a test set in the same PR. New sets must include `added:` (ISO date) and `added-in-version:` (TiXL `major.minor`) in their frontmatter — the in-editor runner sorts by recency on these. Feature plans under `.agentic/Plans/` link to their test set instead of duplicating the steps. Stale tests are removed with the feature they covered. See `.tests-manual/README.md` for the file format. The in-editor runner is the **Guided Feature Tests** window.
 - **Capture informal knowledge.** When the user explains something, shares a Discord thread, describes how they answered someone's question, or shows a meet-up clip — ask whether it belongs in `.help/`. If it's broadly useful, offer to draft a paragraph or a page from it. Hand-authored source material (video scripts, drafts) lives in `.help/.src/`; regenerable machine output (e.g. meet-up video transcripts, extracted audio) lives in `.help/.tmp/` (git-ignored). Neither is published.
 
@@ -538,6 +560,18 @@ When a major feature wraps — the last planned phase ships, or the user signals
 
 The point isn't to slip more work into the current PR — it's to make decisions visible. Often the user will defer all of them and that's fine. But not surfacing them at the natural breakpoint means each one resurfaces later as friction.
 
+## Cross-Platform Changes
+
+TiXL runs on Windows (D3D11 or Vulkan), Linux and macOS (Vulkan). A change that works on the machine it was written on can fail on the others. Before reporting done, check whether the change touches anything platform-specific:
+
+- native libraries: names, extensions, folder layout, exported symbols (C++ manglings differ between MSVC and Itanium)
+- processes, shells, environment variables and executable names (`.exe`)
+- file paths: separators, case sensitivity, path length, user and cache folders
+- graphics backend: D3D11 versus Vulkan, shader compiler (FXC versus Slang)
+- OS-only APIs: WinForms, Win32, `System.Drawing`, and the installers and packaging
+
+If it does, verify each platform with what is at hand without running it there. For example, inspect the official release artifacts (`objdump -p` for a PE DLL's exports, the export trie for a Mach-O dylib), read the installer scripts, or check the code that picks the backend. Then **warn explicitly**: list which platforms are verified, how, and what still needs a run on real hardware. Never imply that something works on a platform no one has checked.
+
 ## Change Workflow
 ### Before editing
 1. Check whether the target code runs every frame
@@ -555,6 +589,10 @@ The point isn't to slip more work into the current PR — it's to make decisions
 2. Verify no obvious regressions in hot paths
 3. Call out assumptions and risks
 
+### Commit messages
+- Start with an area prefix as in `git log` (`ui:`, `ops:`, `render:`, `vulkan:`), then a short imperative summary.
+- No `Co-Authored-By` or other agent attribution trailers, in commit messages or in code.
+
 ## Review Checklist
 - [ ] No new allocations or LINQ in per-frame paths
 - [ ] No new long-lived direct references where `Guid` should be used
@@ -562,6 +600,7 @@ The point isn't to slip more work into the current PR — it's to make decisions
 - [ ] Style rules above are followed
 - [ ] Diff remains focused and minimal
 - [ ] Any frame-time/UI-responsiveness risk is explicitly mentioned
+- [ ] Platform-specific code (native libs, paths, processes, backend) is checked for Windows, Linux and macOS, with anything unverified stated
 
 ## Communication Expectations
 When reporting changes:
