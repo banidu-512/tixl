@@ -93,7 +93,7 @@
         "X": 0.0,
         "Y": 450.0
       },
-      "Description": "Exports in a separate process, so a crash or hang inside an Assimp exporter only ends that process and shows an error. Needs a .NET 10 runtime (dotnet); without one, or when turned off, the export runs inside TiXL and the status says so."
+      "Description": "Exports in a second TiXL process (started with --assimp-host), so a crash or hang inside an Assimp exporter only ends that process and shows an error. When turned off, the export runs inside TiXL; the status says which one was used."
     }
   ],
   "SymbolChildUis": [],

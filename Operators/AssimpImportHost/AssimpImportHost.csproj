@@ -1,8 +1,10 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <!-- Tiny launcher for isolated Assimp imports and exports ([AssimpImport], [AssimpExport]). It has no
-       dependencies of its own: it loads the Lib operator package from the path it gets and runs the operation
-       there, in a separate process, so a native crash or hang in Assimp can't affect the editor. Built and
-       copied into Lib's output by Lib.csproj. -->
+  <!-- Standalone launcher for isolated Assimp imports and exports outside the editor ([AssimpImport],
+       [AssimpExport]). Inside TiXL the editor executable hosts the same worker in host mode and needs
+       no dotnet installation; this launcher covers tests and other hosts. It has no dependencies of its
+       own: it loads the Lib operator package from the path it gets and runs the operation there, in a
+       separate process, so a native crash or hang in Assimp can't affect the caller. Built and copied
+       into Lib's output by Lib.csproj. -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net10.0</TargetFramework>

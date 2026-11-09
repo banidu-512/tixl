@@ -89,7 +89,7 @@ Set `FilePath` to broken.fbx, then to a file name that doesn't exist, then back 
 Load the .glb and read the last lines of `Metadata`. Then toggle `IsolateImport` off and on, and change `FilePath` to a large file and back while it is still loading.
 
 **Expected:**
-- With a .NET 10 runtime installed, `Metadata` says "Imported in a separate process"; otherwise it names why the import ran in-process.
+- `Metadata` says "Imported in a separate process" (a second TiXL process, no .NET installation required).
 - Toggling `IsolateImport` reloads immediately; with it off, `Metadata` says "Imported in-process".
 - Results look identical with `IsolateImport` on and off.
 - Switching the file while loading stops the previous import; no `dotnet` process stays behind (check the task manager / `ps`).
@@ -101,7 +101,7 @@ Load the .glb and read the last lines of `Metadata`. Then toggle `IsolateImport`
 Add `[AssimpExport]`. Connect the `Geometry` of the .glb import, set `ExportFormat` to Glb and click `ExportMesh` twice. Then connect `MeshData` instead (disconnect Geometry), choose Stl and export. Finally connect `Points`, choose Ply and click `ExportPoints`.
 
 **Expected:**
-- `mesh_001.glb` and `mesh_002.glb` appear in the project's `exports` asset folder; the status shows each file name and, with a .NET 10 runtime installed, "(separate process)".
+- `mesh_001.glb` and `mesh_002.glb` appear in the project's `exports` asset folder; the status shows each file name and "(separate process)".
 - Loading `mesh_001.glb` with a second `[AssimpImport]` shows the same three objects.
 - The STL and PLY files are written; exporting points with Stl shows an error that the format can't store point clouds.
 - `ResetCounter` restarts numbering, but existing files are skipped instead of overwritten.
