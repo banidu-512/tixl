@@ -288,6 +288,9 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public bool CollabLanDiscovery = true;
         public string CollabPassword = "";
 
+        /// <summary>The participant's own cursor color as 0xRRGGBB. 0 = derive it from the user id.</summary>
+        public int CollabCursorColor = 0;
+
         /// <summary>host:port of the relay used for room-code sessions. Empty = default relay.</summary>
         public string CollabRelayAddress = "";
 

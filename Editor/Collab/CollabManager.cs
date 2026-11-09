@@ -522,6 +522,7 @@ internal sealed class CollabManager
         UserSettings.Config.CollabLastRelayHost = "";
         UserSettings.Config.CollabLastRelayRoom = "";
         UserSettings.Save();
+        _pendingKicks.Clear();
         while (_pendingDisconnects.TryDequeue(out _))
         {
             // Drop disconnect events from the dead session; replaying them into a future
@@ -560,9 +561,61 @@ internal sealed class CollabManager
 
     private readonly ConcurrentQueue<CollabPeerConnection> _pendingDisconnects = new();
 
+    /// <summary>A kicked peer is told first and closed a moment later so the message flushes.</summary>
+    private readonly List<(CollabPeerConnection Peer, long CloseAtTicks)> _pendingKicks = [];
+    private const int KickCloseDelayMs = 600;
+
     /// <summary>Session participant names by session id, for display on hosts and clients alike.</summary>
     private readonly Dictionary<int, string> _roster = new();
     public IReadOnlyDictionary<int, string> Roster => _roster;
+
+    /// <summary>
+    /// Round trip to one participant in ms, or -1 while none of our heartbeats has come back yet.
+    /// Relay-backed peers include the relay hop; peers on a data channel measure the direct path.
+    /// </summary>
+    public int GetPeerRttMs(int peerId)
+    {
+        foreach (var peer in Peers)
+        {
+            if (peer.AssignedId == peerId)
+                return peer.LastRttMs;
+        }
+
+        return -1;
+    }
+
+    /// <summary>
+    /// Host-side removal of one participant. The peer is told first so a current client can leave
+    /// cleanly; closing the connection then enforces it for clients that ignore the message.
+    /// There is no ban: the participant can rejoin unless the session password keeps them out.
+    /// </summary>
+    public bool KickParticipant(int peerId)
+    {
+        if (State != SessionState.Hosting || peerId == 0)
+            return false;
+
+        CollabPeerConnection? target = null;
+        foreach (var peer in Peers)
+        {
+            if (peer.AssignedId != peerId)
+                continue;
+
+            target = peer;
+            break;
+        }
+
+        if (target is not { IsAuthenticated: true })
+            return false;
+
+        // Ride the relay/socket rather than a preferred data channel: that write is flushed before
+        // the close below, and the client accepts this one relay message even while P2P is active.
+        _transport?.SendJsonOverRelay(target, new { t = "kicked", reason = "Removed by the host" });
+        Log.Info($"Collab: removed {target.Name}#{peerId} from the session");
+        _pendingKicks.Add((target, Environment.TickCount64 + KickCloseDelayMs));
+        return true;
+    }
+
+
 
     /// <summary>User ids by session id; seeds participant colors on the client side too.</summary>
     private readonly Dictionary<int, Guid> _rosterUserIds = new();
@@ -598,7 +651,7 @@ internal sealed class CollabManager
                        CompositionId = presence?.CompositionId ?? Guid.Empty,
                        IsHoveringCanvas = presence?.IsHoveringCanvas ?? false,
                        CursorOnCanvas = presence?.CursorOnCanvas ?? Vector2.Zero,
-                       AccentColor = CollabColors.FromId(userId),
+                       AccentColor = CollabColors.FromPacked(presence?.ColorRgb ?? 0, userId),
                        SelectedChildIds = presence?.SelectedChildIds ?? [],
                    };
     }
@@ -683,6 +736,7 @@ internal sealed class CollabManager
         if (State == SessionState.Off)
             return;
 
+        ProcessPendingKicks();
         ProcessPendingDisconnects();
 
         // A disconnect handled above can end the session (host loss, relay link death), and
@@ -739,6 +793,36 @@ internal sealed class CollabManager
                 Log.Info($"Collab: auto-rejoining relay room {roomCode} at {relayHost}");
                 JoinViaRelay(relayHost[..relaySeparator], relayPort, roomCode, UserSettings.Config.CollabPassword ?? "");
             }
+        }
+    }
+
+    /// <summary>Closes the focused project when it is the one the session shared.</summary>
+    private static void CloseSharedProject(string projectName)
+    {
+        if (string.IsNullOrEmpty(projectName) || ProjectView.Focused is not { } view)
+            return;
+
+        var displayName = view.OpenedProject.Package?.DisplayName ?? "";
+        if (string.Equals(displayName, projectName, StringComparison.OrdinalIgnoreCase)
+            || displayName.StartsWith(projectName + " (", StringComparison.OrdinalIgnoreCase))
+            view.Close();
+    }
+
+    private void ProcessPendingKicks()
+    {
+        if (_pendingKicks.Count == 0)
+            return;
+
+        var now = Environment.TickCount64;
+        for (var i = _pendingKicks.Count - 1; i >= 0; i--)
+        {
+            if (now < _pendingKicks[i].CloseAtTicks)
+                continue;
+
+            var peer = _pendingKicks[i].Peer;
+            _pendingKicks.RemoveAt(i);
+            peer.SessionClosed = true;
+            peer.Close();
         }
     }
 
@@ -964,6 +1048,19 @@ internal sealed class CollabManager
 
                 Log.Info($"Collab: {name} left");
                 AppendChat(null, $"{name} left");
+                break;
+            }
+
+            case "kicked" when State == SessionState.Connected:
+            {
+                var kickReason = CollabProtocol.GetString(json, "reason", "Removed by the host");
+                ErrorText = kickReason;
+                Log.Info($"Collab: removed by the host: {kickReason}");
+
+                // A kicked participant lands in the project hub rather than inside the host's show.
+                var sharedProject = _hostProjectName;
+                Leave(manual: true);
+                CloseSharedProject(sharedProject);
                 break;
             }
 
@@ -1643,6 +1740,7 @@ internal sealed class CollabManager
         _localPresence.CursorOnCanvas = cursorOnCanvas;
         _localPresence.Flags = hoveringCanvas ? PresencePacket.FlagHoveringCanvas : (byte)0;
         _localPresence.SelectedChildIds = selectedChildIds;
+        _localPresence.ColorRgb = UserSettings.Config.CollabCursorColor;
     }
 
     private void SendLocalPresence()

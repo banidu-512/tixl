@@ -48,7 +48,7 @@ internal static class CollabProtocol
     public const int MaxJsonPayload = 1024 * 1024;
 
     /// <summary>Expected size of one presence datagram with a full selection list (connId, flags, guid, 2 floats, count, 15 guids).</summary>
-    public const int MaxPresencePayload = 2 + 16 + 8 + 1 + 15 * 16;
+    public const int MaxPresencePayload = 2 + 16 + 8 + 1 + 15 * 16 + 3;
 
     public const int MaxPeers = 16;
     public const int MaxSelectionIdsPerPresence = 15;
@@ -270,6 +270,21 @@ internal static class CollabProtocol
         }
     }
 
+    /// <summary>
+    /// Round trip of a heartbeat this side sent: the echo carries our own TickCount64, so the age of
+    /// that stamp is the trip there and back. Out-of-range values (an echo from a previous session,
+    /// or a clock jump) are ignored instead of reported as a latency.
+    /// </summary>
+    public static int MeasureHeartbeatRtt(ReadOnlySpan<byte> echo)
+    {
+        if (echo.Length != HeartbeatPingSize + 1)
+            return -1;
+
+        var sent = BitConverter.ToInt64(echo);
+        var rtt = Environment.TickCount64 - sent;
+        return rtt is >= 0 and <= 10_000 ? (int)rtt : -1;
+    }
+
     public static bool TryGetInt(JObject json, string property, out int value)
     {
         value = 0;
@@ -333,6 +348,9 @@ internal sealed class PresencePacket
     public Vector2 CursorOnCanvas;
     public Guid[] SelectedChildIds = [];
 
+    /// <summary>The participant's chosen cursor color as 0xRRGGBB; 0 lets receivers derive one from the user id.</summary>
+    public int ColorRgb;
+
     public const byte FlagHoveringCanvas = 0x01;
 
     public bool IsHoveringCanvas => (Flags & FlagHoveringCanvas) != 0;
@@ -340,7 +358,7 @@ internal sealed class PresencePacket
     public int Encode(Span<byte> target)
     {
         var selectionCount = Math.Min(SelectedChildIds.Length, CollabProtocol.MaxSelectionIdsPerPresence);
-        var size = 2 + 16 + 8 + 1 + selectionCount * 16;
+        var size = 2 + 16 + 8 + 1 + selectionCount * 16 + 3;
         if (target.Length < size)
             return 0;
 
@@ -354,6 +372,13 @@ internal sealed class PresencePacket
         {
             SelectedChildIds[i].TryWriteBytes(target.Slice(27 + i * 16, 16));
         }
+
+        // The color rides after the selection list: an older peer reads exactly the bytes it knows
+        // and ignores the rest, so mixed builds keep exchanging cursors.
+        var tail = 27 + selectionCount * 16;
+        target[tail] = (byte)(ColorRgb >> 16);
+        target[tail + 1] = (byte)(ColorRgb >> 8);
+        target[tail + 2] = (byte)ColorRgb;
 
         return size;
     }
@@ -380,6 +405,10 @@ internal sealed class PresencePacket
                                                       BinaryPrimitives.ReadSingleLittleEndian(payload.Slice(22, 4))),
                          SelectedChildIds = new Guid[selectionCount],
                      };
+
+        var colorOffset = 27 + selectionCount * 16;
+        if (payload.Length >= colorOffset + 3)
+            packet.ColorRgb = (payload[colorOffset] << 16) | (payload[colorOffset + 1] << 8) | payload[colorOffset + 2];
 
         for (var i = 0; i < selectionCount; i++)
         {
