@@ -154,9 +154,23 @@ reset gated on `!_watchdogBlanked && !_keepaliveOverrideReported`, so its watchd
 clear on resume but the keepalive bypass stays visible for the whole session. 107 laser tests pass.
 
 Noted, not fixed: at dispose the stack logs `Dac._socket is unavailable` — the reflection-based socket-kill
-escape hatch (pass 1) does not bind against LaserCore.EtherDream.Net 2.0.0 on this firmware; a wedged send
+escape hatch does not bind against LaserCore.EtherDream.Net 2.0.0 on this firmware; a wedged send
 still recovers via the bounded-wait + connection-recycle ladder, but the immediate socket kill is a no-op.
 Recorded as a residual risk.
+
+### Analog output verified on a scope (2026-11-09)
+
+The rig is the DAC's ILDA output into an oscilloscope (X-Y mode), and the DAC has a physical arm/enable
+that gates the analog stage — until it is armed, the box speaks the whole network protocol (connect,
+prepare, begin, data, status playing) while the ILDA outputs stay dead. That is easy to misread as a
+software fault; it is device hardware state.
+
+After arming: a breathing/moving square streamed by the harness is clearly visible on the scope with the
+correct geometry (both axes, square aspect, centred), confirmed by frame captures from a camera pointed
+at the screen (`rtsp://10.0.0.189:8554/rpi_webcam`). Amplitude note: ILDA units map ~1:1 to the DAC's
+output, ±32767 = full scale; test patterns at ±1000 units are ~3 % of the field and look tiny on a scope —
+full-field patterns (±15000..±30000) are the right bench default. Brightness/colour channels do not
+affect the X-Y trace.
 
 ## Verification
 
