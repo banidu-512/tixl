@@ -961,6 +961,24 @@ internal static class DebugServer
                 collab.RefreshLocalIdentity();
                 break;
 
+            case "kick":
+            {
+                var peerId = request["peer"]?.Value<int>() ?? -1;
+                if (peerId < 0)
+                {
+                    context.SendError("INVALID_PARAM", "kick requires peer = <id>");
+                    return;
+                }
+
+                if (!collab.KickParticipant(peerId))
+                {
+                    context.SendError("INVALID_PARAM", $"no removable participant {peerId}");
+                    return;
+                }
+
+                break;
+            }
+
             case "leave":
                 collab.Leave(manual: true);
                 break;
@@ -988,7 +1006,21 @@ internal static class DebugServer
                                ["identity"] = collab.LocalIdentity.DisplayName,
                                ["loginState"] = CollabDiscordAuth.State.ToString(),
                                ["loginStatus"] = CollabDiscordAuth.StatusText,
-                               ["links"] = new JArray(collab.PeerLinks.Select(l => $"{l.PeerId}:{l.Link}")),
+                               ["links"] = new JArray(collab.PeerLinks.Select(l => $"{l.PeerId}:{l.Link}:{collab.GetPeerRttMs(l.PeerId)}ms")),
+                               ["preview"] = collab.VideoStreamer is { } streamer
+                                                 ? new JObject
+                                                     {
+                                                         ["streaming"] = streamer.IsEncoding,
+                                                         ["encoder"] = streamer.EncoderName,
+                                                     }
+                                                 : collab.VideoReceiver is { } receiver
+                                                     ? new JObject
+                                                         {
+                                                             ["decodedFrames"] = receiver.DecodedFrames,
+                                                             ["size"] = $"{receiver.Width}x{receiver.Height}",
+                                                             ["checksum"] = receiver.FrameChecksum,
+                                                         }
+                                                     : null,
                            });
     }
 

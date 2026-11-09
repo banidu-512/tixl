@@ -121,6 +121,8 @@ internal sealed class CollabManager
     private const int MaxSessionLogEntries = 10_000;
 
     private long _nextHeartbeatTicks;
+    private long _nextRttProbeTicks;
+    private const int RttProbeIntervalMs = 2000;
     private long _nextPresenceSendTicks;
     private long _nextRateResetTicks;
 
@@ -522,6 +524,7 @@ internal sealed class CollabManager
         UserSettings.Config.CollabLastRelayHost = "";
         UserSettings.Config.CollabLastRelayRoom = "";
         UserSettings.Save();
+        _pendingKicks.Clear();
         while (_pendingDisconnects.TryDequeue(out _))
         {
             // Drop disconnect events from the dead session; replaying them into a future
@@ -560,9 +563,74 @@ internal sealed class CollabManager
 
     private readonly ConcurrentQueue<CollabPeerConnection> _pendingDisconnects = new();
 
+    /// <summary>A kicked peer is told first and closed a moment later so the message flushes.</summary>
+    private readonly List<(CollabPeerConnection Peer, long CloseAtTicks)> _pendingKicks = [];
+    private const int KickCloseDelayMs = 600;
+
     /// <summary>Session participant names by session id, for display on hosts and clients alike.</summary>
     private readonly Dictionary<int, string> _roster = new();
     public IReadOnlyDictionary<int, string> Roster => _roster;
+
+    public string DescribePeerLink(CollabPeerConnection peer) => _transport?.DescribePeerLink(peer) ?? "";
+
+    public string DescribePeerLink(int peerId)
+    {
+        foreach (var peer in Peers)
+        {
+            if (peer.AssignedId == peerId)
+                return DescribePeerLink(peer);
+        }
+
+        return "";
+    }
+
+    /// <summary>
+    /// Round trip to one participant in ms, or -1 while none of our heartbeats has come back yet.
+    /// Relay-backed peers include the relay hop; peers on a data channel measure the direct path.
+    /// </summary>
+    public int GetPeerRttMs(int peerId)
+    {
+        foreach (var peer in Peers)
+        {
+            if (peer.AssignedId == peerId)
+                return peer.LastRttMs;
+        }
+
+        return -1;
+    }
+
+    /// <summary>
+    /// Host-side removal of one participant. The peer is told first so a current client can leave
+    /// cleanly; closing the connection then enforces it for clients that ignore the message.
+    /// There is no ban: the participant can rejoin unless the session password keeps them out.
+    /// </summary>
+    public bool KickParticipant(int peerId)
+    {
+        if (State != SessionState.Hosting || peerId == 0)
+            return false;
+
+        CollabPeerConnection? target = null;
+        foreach (var peer in Peers)
+        {
+            if (peer.AssignedId != peerId)
+                continue;
+
+            target = peer;
+            break;
+        }
+
+        if (target is not { IsAuthenticated: true })
+            return false;
+
+        // Ride the relay/socket rather than a preferred data channel: that write is flushed before
+        // the close below, and the client accepts this one relay message even while P2P is active.
+        _transport?.SendJsonOverRelay(target, new { t = "kicked", reason = "Removed by the host" });
+        Log.Info($"Collab: removed {target.Name}#{peerId} from the session");
+        _pendingKicks.Add((target, Environment.TickCount64 + KickCloseDelayMs));
+        return true;
+    }
+
+
 
     /// <summary>User ids by session id; seeds participant colors on the client side too.</summary>
     private readonly Dictionary<int, Guid> _rosterUserIds = new();
@@ -598,7 +666,14 @@ internal sealed class CollabManager
                        CompositionId = presence?.CompositionId ?? Guid.Empty,
                        IsHoveringCanvas = presence?.IsHoveringCanvas ?? false,
                        CursorOnCanvas = presence?.CursorOnCanvas ?? Vector2.Zero,
-                       AccentColor = CollabColors.FromId(userId),
+                       AccentColor = CollabColors.FromPacked(presence?.ColorRgb ?? 0, userId),
+                       LeftButtonDown = presence?.IsLeftButtonDown ?? false,
+                       RightButtonDown = presence?.IsRightButtonDown ?? false,
+                       MiddleButtonDown = presence?.IsMiddleButtonDown ?? false,
+                       IsDoubleClick = presence?.IsDoubleClick ?? false,
+                       IsAddingOperator = presence?.IsAddingOperator ?? false,
+                       WheelSpin = presence?.WheelSpin ?? 0,
+                       PressedKeys = presence?.PressedKeys ?? [],
                        SelectedChildIds = presence?.SelectedChildIds ?? [],
                    };
     }
@@ -627,6 +702,13 @@ internal sealed class CollabManager
         public Guid UserId;
         public Guid CompositionId;
         public bool IsHoveringCanvas;
+        public bool IsAddingOperator;
+        public bool LeftButtonDown;
+        public bool RightButtonDown;
+        public bool MiddleButtonDown;
+        public bool IsDoubleClick;
+        public sbyte WheelSpin;
+        public byte[] PressedKeys = [];
         public Vector2 CursorOnCanvas;
         public Vector4 AccentColor;
         public Guid[] SelectedChildIds = [];
@@ -683,6 +765,7 @@ internal sealed class CollabManager
         if (State == SessionState.Off)
             return;
 
+        ProcessPendingKicks();
         ProcessPendingDisconnects();
 
         // A disconnect handled above can end the session (host loss, relay link death), and
@@ -739,6 +822,36 @@ internal sealed class CollabManager
                 Log.Info($"Collab: auto-rejoining relay room {roomCode} at {relayHost}");
                 JoinViaRelay(relayHost[..relaySeparator], relayPort, roomCode, UserSettings.Config.CollabPassword ?? "");
             }
+        }
+    }
+
+    /// <summary>Closes the focused project when it is the one the session shared.</summary>
+    private static void CloseSharedProject(string projectName)
+    {
+        if (string.IsNullOrEmpty(projectName) || ProjectView.Focused is not { } view)
+            return;
+
+        var displayName = view.OpenedProject.Package?.DisplayName ?? "";
+        if (string.Equals(displayName, projectName, StringComparison.OrdinalIgnoreCase)
+            || displayName.StartsWith(projectName + " (", StringComparison.OrdinalIgnoreCase))
+            view.Close();
+    }
+
+    private void ProcessPendingKicks()
+    {
+        if (_pendingKicks.Count == 0)
+            return;
+
+        var now = Environment.TickCount64;
+        for (var i = _pendingKicks.Count - 1; i >= 0; i--)
+        {
+            if (now < _pendingKicks[i].CloseAtTicks)
+                continue;
+
+            var peer = _pendingKicks[i].Peer;
+            _pendingKicks.RemoveAt(i);
+            peer.SessionClosed = true;
+            peer.Close();
         }
     }
 
@@ -938,6 +1051,21 @@ internal sealed class CollabManager
                 Log.Info($"Collab: replay complete ({_syncBatch} ops)");
                 break;
 
+            case "rttPing":
+                if (CollabProtocol.TryGetLong(json, "stamp", out var probeStamp))
+                    SendJson(peer, new { t = "rttPong", stamp = probeStamp });
+                break;
+
+            case "rttPong":
+                if (CollabProtocol.TryGetLong(json, "stamp", out var answered) && peer.AssignedId != int.MaxValue)
+                {
+                    var rtt = Environment.TickCount64 - answered;
+                    if (rtt is >= 0 and <= 10_000)
+                        peer.LastRttMs = (int)rtt;
+                }
+
+                break;
+
             case "peerJoined" when State == SessionState.Connected:
             {
                 var name = CollabProtocol.GetString(json, "name", "?");
@@ -964,6 +1092,19 @@ internal sealed class CollabManager
 
                 Log.Info($"Collab: {name} left");
                 AppendChat(null, $"{name} left");
+                break;
+            }
+
+            case "kicked" when State == SessionState.Connected:
+            {
+                var kickReason = CollabProtocol.GetString(json, "reason", "Removed by the host");
+                ErrorText = kickReason;
+                Log.Info($"Collab: removed by the host: {kickReason}");
+
+                // A kicked participant lands in the project hub rather than inside the host's show.
+                var sharedProject = _hostProjectName;
+                Leave(manual: true);
+                CloseSharedProject(sharedProject);
                 break;
             }
 
@@ -1637,12 +1778,31 @@ internal sealed class CollabManager
     // ---------------------------------------------------------------------------------------
 
     /// <summary>Called by the graph overlay each frame; only the latest snapshot is kept.</summary>
-    public void SetLocalPresence(Guid compositionId, Vector2 cursorOnCanvas, bool hoveringCanvas, Guid[] selectedChildIds)
+    public void SetLocalPresence(Guid compositionId, Vector2 cursorOnCanvas, bool hoveringCanvas, Guid[] selectedChildIds,
+                                 bool leftButtonDown, bool rightButtonDown, bool middleButtonDown, float wheelSpin,
+                                 bool doubleClick, byte[] pressedKeys, bool addingOperator)
     {
         _localPresence.CompositionId = compositionId;
         _localPresence.CursorOnCanvas = cursorOnCanvas;
-        _localPresence.Flags = hoveringCanvas ? PresencePacket.FlagHoveringCanvas : (byte)0;
         _localPresence.SelectedChildIds = selectedChildIds;
+
+        byte flags = 0;
+        if (hoveringCanvas)
+            flags |= PresencePacket.FlagHoveringCanvas;
+        if (leftButtonDown)
+            flags |= PresencePacket.FlagLeftButton;
+        if (rightButtonDown)
+            flags |= PresencePacket.FlagRightButton;
+        if (middleButtonDown)
+            flags |= PresencePacket.FlagMiddleButton;
+        if (doubleClick)
+            flags |= PresencePacket.FlagDoubleClick;
+        if (addingOperator)
+            flags |= PresencePacket.FlagAddingOperator;
+        _localPresence.Flags = flags;
+        _localPresence.WheelSpin = (sbyte)Math.Clamp(wheelSpin, sbyte.MinValue, sbyte.MaxValue);
+        _localPresence.ColorRgb = UserSettings.Config.CollabCursorColor;
+        _localPresence.PressedKeys = pressedKeys;
     }
 
     private void SendLocalPresence()
@@ -1716,6 +1876,13 @@ internal sealed class CollabManager
         _nextHeartbeatTicks = now + CollabProtocol.HeartbeatIntervalMs;
         var timestamp = BitConverter.GetBytes(Environment.TickCount64);
 
+        // Round-trip probe: the binary heartbeat echo only comes back on some transports (a data
+        // channel answers on the relay, or not at all), so latency rides a JSON message instead —
+        // the same path chat uses, which works on every transport.
+        var sendRttProbe = now >= _nextRttProbeTicks;
+        if (sendRttProbe)
+            _nextRttProbeTicks = now + RttProbeIntervalMs;
+
         foreach (var peer in Peers)
         {
             if (peer.IsTimedOut)
@@ -1738,7 +1905,11 @@ internal sealed class CollabManager
             }
 
             if (peer.IsAuthenticated)
+            {
                 _transport?.SendToPeer(peer, CollabProtocol.FrameType.Heartbeat, timestamp);
+                if (sendRttProbe)
+                    SendJson(peer, new { t = "rttPing", stamp = Environment.TickCount64 });
+            }
         }
     }
 
