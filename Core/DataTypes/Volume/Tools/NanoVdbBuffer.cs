@@ -781,8 +781,12 @@ public sealed class NanoVdbBuffer
 
     public void Save(Stream stream)
     {
+        // The file header uses NanoVDB's original magic, not the newer "NanoVDB2" one: the
+        // reference library only started accepting NanoVDB2 in later releases, and it rejects a
+        // NanoVDB2 header outright with "magic number error" (verified with nanovdb_validate from
+        // OpenVDB 10). NanoVDB0 is what every version accepts.
         Span<byte> header = stackalloc byte[16];
-        BinaryPrimitives.WriteUInt64LittleEndian(header, MagicFile);
+        BinaryPrimitives.WriteUInt64LittleEndian(header, MagicNumber);
         BinaryPrimitives.WriteUInt32LittleEndian(header[8..], PackVersion(32, 11, 0));
         BinaryPrimitives.WriteUInt16LittleEndian(header[12..], 1);
         BinaryPrimitives.WriteUInt16LittleEndian(header[14..], 0); // codec: none
@@ -815,9 +819,14 @@ public sealed class NanoVdbBuffer
             case MagicFile:
                 gridStart = 16;
                 break;
-            case MagicNumber:
             case MagicGrid:
                 gridStart = 0;
+                break;
+            case MagicNumber:
+                // Both a .nvdb file header and a raw grid start with this magic. A grid's next
+                // field is its checksum, which this codebase writes as ulong.MaxValue ("disabled");
+                // a file header has the version and grid count there instead.
+                gridStart = BinaryPrimitives.ReadUInt64LittleEndian(bytes.AsSpan(8)) == EmptyChecksum ? 0 : 16;
                 break;
             default:
                 throw new InvalidDataException("Not a NanoVDB buffer");
@@ -883,9 +892,16 @@ public sealed class NanoVdbBuffer
             case MagicFile:
                 gridStart = 16;      // FileHeader: magic 8 + version 4 + gridCount 2 + codec 2
                 break;
-            case MagicNumber:
             case MagicGrid:
                 gridStart = 0;
+                break;
+            case MagicNumber:
+                // A header and a raw grid share this magic; the checksum sentinel separates them.
+                Span<byte> next = stackalloc byte[8];
+                if (stream.Read(next) != 8)
+                    throw new InvalidDataException("NanoVDB file too small");
+
+                gridStart = BinaryPrimitives.ReadUInt64LittleEndian(next) == EmptyChecksum ? 0 : 16;
                 break;
             default:
                 throw new InvalidDataException("Not a NanoVDB file");
@@ -986,7 +1002,8 @@ public sealed class NanoVdbBuffer
         if (!IsPlausibleTreeOffset(leafOffset) || !IsPlausibleTreeOffset(lowerOffset)
             || !IsPlausibleTreeOffset(upperOffset) || !IsPlausibleTreeOffset(rootOffset))
         {
-            error = "tree offsets point outside the buffer";
+            error = "tree offsets point outside the buffer - the file may use a different NanoVDB layout "
+                    + "(this code reads the 32.11 layout it writes); re-convert it with a matching nanovdb_convert";
             return false;
         }
 

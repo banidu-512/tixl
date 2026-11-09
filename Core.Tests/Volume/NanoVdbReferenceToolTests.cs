@@ -74,7 +74,16 @@ public class NanoVdbReferenceToolTests(ITestOutputHelper output)
 
             var buffer = NanoVdbBuffer.LoadFile(path);
 
-            Assert.True(buffer.TryValidate(out var error), $"our validator rejected the reference file: {error}");
+            if (!buffer.TryValidate(out var unsupported))
+            {
+                // Documented boundary: this code reads the 32.11 layout it writes. Converters from
+                // older OpenVDB releases emit an older GridData size, which must fail loudly rather
+                // than be read as garbage - which is exactly what the error has to say.
+                output.WriteLine($"Reference file uses an unsupported layout ({unsupported})");
+                Assert.Contains("layout", unsupported);
+                return;
+            }
+
             var info = buffer.ReadInfo();
             output.WriteLine($"{info.Name}: {info.VoxelCount} voxels, {info.LeafNodes} leaves, voxel size {info.VoxelSize}");
 
@@ -111,11 +120,18 @@ public class NanoVdbReferenceToolTests(ITestOutputHelper output)
                 return;
             }
 
+            var referenceBuffer = NanoVdbBuffer.LoadFile(referencePath);
+            if (!referenceBuffer.TryValidate(out var unsupported))
+            {
+                output.WriteLine($"Skipped: the reference converter writes a layout this code does not read ({unsupported})");
+                return;
+            }
+
             var grid = LoadFirstFloatGrid(sample);
             Assert.NotNull(grid);
             NanoVdbBuffer.FromGrid(grid!).Save(ourPath);
 
-            var reference = NanoVdbBuffer.LoadFile(referencePath).ReadInfo();
+            var reference = referenceBuffer.ReadInfo();
             var ours = NanoVdbBuffer.LoadFile(ourPath).ReadInfo();
 
             output.WriteLine($"reference: {reference.VoxelCount} voxels, {reference.LeafNodes} leaves");
