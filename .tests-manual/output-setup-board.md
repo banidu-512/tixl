@@ -564,7 +564,7 @@ its width. Then open the Output tab and check the send's Resolution in the Param
 
 **Action:**
 Add a reference point on the surface about 5 cm inside its right edge, on a traced photo that continues past
-that edge. Then select the surface, click the **Output** tab and click **Align Points**.
+that edge. Then select the surface, click the **Output** tab and click **Calibrate**.
 
 **Expected:**
 - On the canvas and on the wall, the disc is a full circle: the part past the surface's edge shows the photo
@@ -574,7 +574,7 @@ that edge. Then select the surface, click the **Output** tab and click **Align P
 ## Step: Discs survive a collapsed pin
 
 **Action:**
-With **Align Points** on, drag three corners of the surface's quad almost onto the fourth so the
+With **Calibrate** on, drag three corners of the surface's quad almost onto the fourth so the
 quad is nearly a point; then undo.
 
 **Expected:**
@@ -588,15 +588,15 @@ quad is nearly a point; then undo.
 **Action:**
 1. With "Surface 1" carrying three reference points (previous step) and mapped onto "Projector 1",
    select "Surface 1" and click the **Output** tab. Note there are no discs, handles or chips on the canvas.
-   Click **Align Points** in the header.
+   Click **Calibrate** in the header.
 2. Drag the P1 handle on the projector canvas 60 px to the right, release.
 3. Drag the P2 handle 40 px down, release; press Ctrl+Z; press Ctrl+Y.
 4. Drag the P3 handle 30 px left, release; then click **Release Point**.
 5. Press Ctrl+Z, then double-click P3.
 6. Add two more points on the straightened photo (see the previous step), return to **Output**, click
-   **Align Points**, drag both new points, then drag the fifth one 30 px further.
-7. Drag the percent field right of **Align Points** from 5% to 15%.
-8. Click **Align Points** again, turn on "Show size raster" in the Parameter window, then click the **Board** tab.
+   **Calibrate**, drag both new points, then drag the fifth one 30 px further.
+7. Drag the percent field right of **Calibrate** from 5% to 15%.
+8. Click **Calibrate** again, turn on "Show size raster" in the Parameter window, then click the **Board** tab.
 
 **Expected:**
 - After 1: the same picture shows on the canvas and the wall. The surface's content stays; around each point
@@ -617,7 +617,7 @@ quad is nearly a point; then undo.
   is disabled again.
 - After 5: Ctrl+Z sets P3 again; the double-click releases it the same way as the button.
 - After 6: with four set points the quad keystones and every mark is hit exactly, so no arrows remain. With
-  five, the header shows "points miss by up to N px" with N above zero, and the points that miss keep an arrow
+  five, the header shows "Error: N px" with N above zero, and the points that miss keep an arrow
   each, pointing where the pin sends them.
 - After 7: the discs grow to three times their radius on the canvas and on the wall alike. Where "Region 1"
   overlaps a disc, the disc draws over the region's content.
@@ -628,10 +628,10 @@ quad is nearly a point; then undo.
 ## Step: Resetting the alignment
 
 **Action:**
-1. Drag the quad's corners to an obvious keystone, and note where they are. Turn on **Align Points**, drag
-   several points so the quad changes, then click **Reset Alignment**.
+1. Drag the quad's corners to an obvious keystone, and note where they are. Turn on **Calibrate**, drag
+   several points so the quad changes, then click **Reset**.
 2. Press Ctrl+Z, then Ctrl+Y.
-3. Save and reopen the project with some points moved, turn on **Align Points** and click **Reset Alignment**.
+3. Save and reopen the project with some points moved, turn on **Calibrate** and click **Reset**.
 
 **Expected:**
 - After 1: the quad is back at the noted corners and the content looks as it did. All outlines are thin, every
@@ -642,41 +642,53 @@ quad is nearly a point; then undo.
 ## Step: Aligning with a game controller
 
 **Action:**
-With an Xbox-compatible controller connected, "Surface 1" carrying at least three points and **Align Points** on:
+With an Xbox-compatible controller connected, "Surface 1" carrying at least three points and **Calibrate** on:
 1. Press the right shoulder button three times, then the left one once. Then press d-pad up, down, left and right.
 2. Push the right stick about a third of the way up, then fully right, and let go. Press Ctrl+Z.
 3. Hold the left stick to the right. Release it without pressing.
 4. Hold the left stick to the right, press it down, and let go. Push the right stick up.
-5. With the active point set, press the right stick's button.
+5. With the active point set, press the right stick's button. Set it again and press X.
 6. With the left stick centred, press its button.
 7. Unplug the controller, then plug it in again.
+8. Press Y. Then hold the right trigger and let go. Press the left trigger once, then three more times, then Ctrl+Z.
+9. Move a point, then press B. Press Ctrl+Z.
+10. Turn **Calibrate** on again, move a point, and press A.
 
 **Expected:**
-- After 1: within a second of connecting, one point's ring blinks. The right shoulder moves it one point forward in
-  list order, wrapping at the end, and the left moves it back. Each d-pad press moves it to the nearest point in that
+- After 1: within a second of connecting, one point's ring blinks. The right shoulder moves it forward through the four
+  outermost points going round, then the inner ones from the outside in, wrapping at the end; the left moves it back.
+  Each switch to another point flashes the same closing ring as Y on the wall. Each d-pad press moves it to the nearest point in that
   direction on the wall, and it stays put if there is none.
-- After 2: the active point moves only a few pixels per second at a third of the way, and crosses about a quarter of
-  the canvas height per second at full deflection. It becomes set, and the pin follows. Ctrl+Z undoes the whole move in one step.
+- After 2: the active point moves about 2 px per second at a third of the way, and about 400 px per second at full
+  deflection. It becomes set, and the pin follows. Ctrl+Z undoes the whole move in one step.
 - After 3: while held, an amber arrow reaches right from the active point, on the canvas and on the wall.
 - After 4: the point now moves to the right on the canvas, because the stick's up was set to that direction.
 - After 5: the point is released: thin outline, its disc back where the pin lands it, and the quad does not change.
-- After 6: the alignment resets as with **Reset Alignment**, in one undo step.
+  X does the same.
+- After 6: the alignment resets as with **Reset**, in one undo step.
 - After 7: the editor keeps running without a hitch, and the controller works again within about a second.
+- After 8: a white ring closes in from about half the canvas height onto the active point's outline on the wall, within
+  about half a second. While the right trigger is held, the photo discs on the wall show inverted colours; letting go restores them. Each left-trigger
+  press turns the pin with its points a quarter clockwise about its centre, keeping its proportions, and the right stick's
+  up turns with it; after four presses the pin is back where it was. Ctrl+Z undoes the last turn only.
+- After 9: **Calibrate** turns off and the pin is back where it was when calibrating started. Ctrl+Z brings the moved
+  point back.
+- After 10: **Calibrate** turns off and the moved point stays.
 
-## Step: Finding Align Points from the output
+## Step: Finding Calibrate from the output
 
 **Action:**
 1. With "Surface 1" as the only surface with a photo mapped onto "Projector 1", click the "Projector 1" item in
    the Flow Outliner and the **Output** tab.
-2. Click **Align Points**, drag a point, then click "Surface 1" and "Projector 1" in turn.
+2. Click **Calibrate**, drag a point, then click "Surface 1" and "Projector 1" in turn.
 3. Trace a second surface on a photo, map it onto "Projector 1", then click the "Projector 1" item again.
 4. Click "Surface 1".
 
 **Expected:**
-- After 1: **Align Points** is offered although the output is selected.
+- After 1: **Calibrate** is offered although the output is selected.
 - After 2: the toggle stays on and the points of "Surface 1" stay draggable through both clicks.
-- After 3: **Align Points** turns off and is gone. The header says "Select a surface to align its points".
-- After 4: the message is gone and **Align Points** is offered, off.
+- After 3: **Calibrate** turns off and is gone. The header says "Select a surface to calibrate it".
+- After 4: the message is gone and **Calibrate** is offered, off.
 
 ## Step: The toolbar no longer maps surfaces
 
@@ -687,21 +699,6 @@ onto the "Projector 1" item in the Flow Outliner.
 **Expected:**
 - The header has no "+ <surface name>" buttons.
 - The drag adds the surface's quad to the canvas, one undo step.
-
-## Step: The projection on a surface's Board card
-
-**Action:**
-1. Use a surface without content, mapped onto "Projector 1" with a strongly keystoned corner pin, and with "Show
-   size raster" on. Click the **Board** tab.
-2. Note the **Projection Preview** field reads 0% on a fresh user profile. Drag it up to 100%, then down to 0%.
-3. Drag the **Overlay** field to 0%.
-
-**Expected:**
-- After 2: only the output's picture on that card changes, fully opaque at 100% and gone at 0%. At 100% it is
-  straightened through the pin, and the raster's lines run straight across the whole card, with no bend along a
-  diagonal. Cards of surfaces with content of their own don't change.
-- After 3: with **Projection Preview** back above 0%, the projection stays. Content on cards of surfaces with their own content is gone. The Projection
-  Preview field is offered only on the **Board** tab.
 
 ## Step: Reference images come from the asset system
 
@@ -785,3 +782,15 @@ project).
 - After 2: the lock brightens on hover and shows an "Unlock" tooltip; the click unlocks the
   image and selects it (its crop handles appear) — the selection is not cleared. Ctrl+Z
   locks it again.
+
+## Step: Cards keep their size when the resolution changes
+
+**Action:**
+1. On the Board, note the width of an output card and of a content card. Select the output and set its
+   **Resolution (px)** from 1920 × 1080 to 3840 × 2160, then to 1920 × 1200.
+2. Select the content's [SendToOutput] and set **Resolution Override** to 960 × 540, then to 1000 × 1000.
+
+**Expected:**
+- After 1: the output card keeps its width and position; 3840 × 2160 looks the same as 1920 × 1080, and
+  1920 × 1200 makes it a little taller. Its label shows the new resolution.
+- After 2: the content card keeps its width too: 960 × 540 changes nothing, 1000 × 1000 makes it square.
