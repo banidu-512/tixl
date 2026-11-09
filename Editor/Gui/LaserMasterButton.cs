@@ -9,6 +9,8 @@ using T3.Core.Operator;
 using T3.Core.Output;
 using T3.Core.Resource;
 using T3.Core.Operator.Slots;
+using T3.Editor.Gui.Dialog;
+using T3.Editor.Gui.UiHelpers;
 using T3.Editor.UiModel.ProjectHandling;
 
 namespace T3.Editor.Gui;
@@ -78,6 +80,7 @@ internal static class LaserMasterButton
         if (!ImGui.IsItemClicked(ImGuiMouseButton.Left))
         {
             DrawTooltip(enabled);
+            DrawArmWarningDialog();
             return;
         }
 
@@ -85,11 +88,39 @@ internal static class LaserMasterButton
         {
             _faceMode = !_faceMode;
         }
+        else if (enabled)
+        {
+            LaserMasterEnable.Enabled = false;
+            Log.Debug("Laser master enable -> DISABLED (red) - laser outputs blanked");
+        }
+        else if (UserSettings.Config.LaserSafetyWarningAcknowledged)
+        {
+            Arm();
+        }
         else
         {
-            LaserMasterEnable.Enabled = !enabled;
-            Log.Debug($"Laser master enable -> {(LaserMasterEnable.Enabled ? "ENABLED (green)" : "DISABLED (red) - laser outputs blanked")}");
+            // First arm (or the acknowledgement was declined): the safety warning gates the
+            // master. The dialog arms through DrawArmWarningDialog() when confirmed with OK.
+            T3Ui.LaserArmWarningDialog.ShowNextFrame();
         }
+
+        DrawArmWarningDialog();
+    }
+
+    private static void DrawArmWarningDialog()
+    {
+        _armWarningDialog.Draw();
+        if (!_armWarningDialog.Confirmed)
+            return;
+
+        _armWarningDialog.Confirmed = false;
+        Arm();
+    }
+
+    private static void Arm()
+    {
+        LaserMasterEnable.Enabled = true;
+        Log.Debug("Laser master enable -> ENABLED (green) - master armed, laser outputs stream");
     }
 
     private static void DrawTooltip(bool enabled)
@@ -227,6 +258,7 @@ internal static class LaserMasterButton
     }
 
     private static readonly HashSet<Guid> _visited = new();
+    private static readonly LaserArmWarningDialog _armWarningDialog = new();
     private static bool _laserOpsDetected;
     private static bool _safetyPending;
     private static bool _faceMode;

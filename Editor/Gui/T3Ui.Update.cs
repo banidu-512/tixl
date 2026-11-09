@@ -148,6 +148,7 @@ public static partial class T3Ui
         Windows.AssetLib.FolderImportDialog.Instance.Draw();
         AboutDialog.Draw();
         ExitDialog.Draw();
+        LaserArmWarningDialog.Draw();
         OperatorHelp.EditDescriptionDialog.Draw();
         SkillMapPopup.Draw();
 

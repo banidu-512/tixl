@@ -184,6 +184,7 @@ public static partial class T3Ui
     private static readonly MissingOperatorsDialog _missingOperatorsDialog = new();
     private static readonly SendCrashReportsDialog _sendCrashReportsDialog = new();
     internal static readonly ExitDialog ExitDialog = new();
+    internal static readonly LaserArmWarningDialog LaserArmWarningDialog = new();
     private static readonly List<EditableSymbolProject> _modifiedProjects = new();
 
     [Flags]

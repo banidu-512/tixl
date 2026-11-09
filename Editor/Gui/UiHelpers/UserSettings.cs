@@ -92,6 +92,12 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public bool EnableUsbProjectDetection = true;
         public bool ReopenLastProjectOnStartup = true;
 
+        /// <summary>
+        /// Set when the user confirms the laser safety warning shown the first time the LASER
+        /// master button is armed. While false, arming opens the warning dialog first.
+        /// </summary>
+        public bool LaserSafetyWarningAcknowledged = false;
+
         /// <summary>Folder of the project that was open when the editor closed; empty if it closed in the project hub.</summary>
         public string LastOpenProjectFolder = string.Empty;
 
