@@ -237,7 +237,7 @@ internal sealed class SetupFlowOutliner
 
         BeginColumn(origin.X + 3 * columnWidth + gap * 0.5f, origin.Y, columnWidth - gap);
         DrawColumnHeader("LOCAL BINDINGS", "##addPlug", selection, _requestAddPlugMenu,
-                         "Add a stream sender", "Lets this machine send an output to other applications, e.g. over Spout or NDI. Its displays are listed already.",
+                         "Add a stream sender", "Lets this machine send an output to other applications, e.g. over Spout, NDI or OMT. Its displays are listed already.",
                          SetupEntityKinds.Plug);
         DrawLocalBindings(selection, setup, machineConfig);
         maxY = MathF.Max(maxY, ImGui.GetCursorScreenPos().Y);
@@ -690,7 +690,7 @@ internal sealed class SetupFlowOutliner
             CustomComponents.MenuGroupHeader("Add stream sender");
             var providers = OutputStreamRegistry.Providers;
             if (providers.Count == 0)
-                CustomComponents.DrawMenuItem(0, "No stream packages loaded (Spout, NDI)", isEnabled: false);
+                CustomComponents.DrawMenuItem(0, "No stream packages loaded (Spout, NDI, OMT)", isEnabled: false);
 
             for (var i = 0; i < providers.Count; i++)
             {
