@@ -138,18 +138,40 @@ internal sealed partial class SetupOutputView
         if (!canIsolate)
             _isolatesFocusedSurface = false;
 
-        DrawOpacityField("Overlay", ref UserSettings.Config.OutputSetupContentPreviewOpacity, 65f,
-                         "Opacity of each surface's content over its photo — on the traced quads and the surface cards. Drag, or double-click to type.");
-
-        if (_editMode == EditModes.Board)
+        // Calibrating needs the room on the toolbar and doesn't use the overlay, so it steps aside meanwhile.
+        if (!_projectsPhoto)
         {
-            DrawOpacityField("Projection Preview", ref UserSettings.Config.OutputSetupProjectionPreviewOpacity, 0f,
-                             "Opacity of what a surface without content of its own receives from its output: the output's picture carried back through the corner pin, which shows where it lands with the current alignment. Drag, or double-click to type.");
+            DrawOpacityField("Overlay", ref UserSettings.Config.OutputSetupContentPreviewOpacity, 65f,
+                             "Opacity of each surface's content over its photo — on the traced quads and the surface cards. Drag, or double-click to type.");
+        }
+
+        // A surface that shows nothing yet gets one step to content, instead of creating, sizing and routing a
+        // send by hand.
+        if (primaryKind == SetupEntityKinds.Surface && setup.FindSurface(primaryId) is { } surfaceWithoutContent
+                                                      && SurfaceContent.NeedsContent(surfaceWithoutContent))
+        {
+            ImGui.SameLine(0, 12 * T3Ui.UiScaleFactor);
+            if (CustomComponents.StateButton("Connect...", CustomComponents.ButtonStates.Emphasized))
+                ImGui.OpenPopup(ConnectMenuId);
+
+            if (ImGui.IsItemHovered())
+                CustomComponents.TooltipForLastItem("Connect...",
+                                                    "This surface shows nothing yet. Add content built around its reference photo, use existing content, or cut slices across its regions.");
+
+            if (SetupPopup.Begin(ConnectMenuId))
+            {
+                SurfaceContent.DrawMenuItems(selection, setup, surfaceWithoutContent);
+                SetupPopup.End();
+            }
         }
 
         // Isolate is an Output-canvas affair: it locks the corner-pin editing to one frame. Elsewhere it has
         // nothing to lock, so it isn't offered (and clears).
-        if (_editMode == EditModes.Output)
+        if (_editMode != EditModes.Output)
+        {
+            _isolatesFocusedSurface = false;
+        }
+        else if (!_projectsPhoto) // calibrating needs the room; isolating keeps its state until the button is back
         {
             ImGui.SameLine(0, 12 * T3Ui.UiScaleFactor);
             ImGui.BeginDisabled(!canIsolate);
@@ -159,10 +181,6 @@ internal sealed partial class SetupOutputView
             ImGui.EndDisabled();
             if (canIsolate && ImGui.IsItemHovered())
                 ImGui.SetTooltip("Lock the canvas to the selected frame.\nOthers stay visible and snap, but change selection in the Flow Outliner.");
-        }
-        else
-        {
-            _isolatesFocusedSurface = false;
         }
 
         // Aligning against the photo: a disc of the straightened photo is projected around each reference point
@@ -182,23 +200,23 @@ internal sealed partial class SetupOutputView
         {
             ImGui.SameLine();
             ImGui.AlignTextToFramePadding();
-            CustomComponents.StylizedText("Select a surface to align its points", Fonts.FontSmall, UiColors.TextMuted);
+            CustomComponents.StylizedText("Select a surface to calibrate it", Fonts.FontSmall, UiColors.TextMuted);
         }
 
         if (hasAlignSubject)
         {
-            ImGui.SameLine();
-            if (CustomComponents.StateButton("Align Points", _projectsPhoto ? CustomComponents.ButtonStates.Activated : CustomComponents.ButtonStates.Emphasized))
-                _projectsPhoto = !_projectsPhoto;
+            ImGui.SameLine(0, ToolbarGroupGap * T3Ui.UiScaleFactor);
+            if (CustomComponents.StateButton("Calibrate", _projectsPhoto ? CustomComponents.ButtonStates.Activated : CustomComponents.ButtonStates.Emphasized))
+                SetAligningPoints(setup, !_projectsPhoto);
 
             if (ImGui.IsItemHovered())
-                CustomComponents.TooltipForLastItem("Align points", "Projects a disc of the straightened photo around each reference point. Drag a point while watching the wall until its disc covers the real feature. That sets the point, and the pin is solved through every set point. Turn it off to check the result on the content.\n\nGame controller: right stick moves the active point, the d-pad goes to the nearest point in its direction, the shoulder buttons cycle through all points, right stick button releases the active one. Hold the left stick until the arrow points up on the wall and press it to make that direction up. Pressing it centred resets the alignment.");
+                CustomComponents.TooltipForLastItem("Calibrate", "Projects a disc of the straightened photo around each reference point. Drag a point while watching the wall until its disc covers the real feature. That sets the point, and the pin is solved through every set point. A projector camera solved from this surface follows the points as they are aimed, so 3D content through [UseProjectorCam] shows the result live. Turn it off to check the result on the content.\n\nGame controller: right stick moves the active point, the d-pad goes to the nearest point in its direction, the shoulder buttons cycle through all points, X or the right stick button releases the active one, Y flashes a ring to find it, holding the right trigger projects the photo inverted, and the left trigger turns the pin and its points a quarter clockwise, for a projector on its side. A ends calibrating, B ends it and undoes everything since it started. Hold the left stick until the arrow points up on the wall and press it to make that direction up. Pressing it centred resets the calibration.");
 
             if (_projectsPhoto)
             {
                 // The disc size, as a share of the canvas height — small enough to isolate one feature, large
                 // enough to recognise it.
-                ImGui.SameLine(0, 4 * T3Ui.UiScaleFactor);
+                ImGui.SameLine(0, ToolbarGroupGap * T3Ui.UiScaleFactor);
                 var radiusPercent = UserSettings.Config.OutputSetupPhotoDiscRadius * 100f;
                 ImGui.PushID("photoDiscRadius");
                 var radiusState = SingleValueEdit.Draw(ref radiusPercent, new Vector2(52 * T3Ui.UiScaleFactor, ImGui.GetFrameHeight()),
@@ -210,24 +228,30 @@ internal sealed partial class SetupOutputView
                 if (ImGui.IsItemHovered())
                     CustomComponents.TooltipForLastItem("Disc radius", "Radius of the photo disc around each reference point, in percent of the canvas height. Drag, or double-click to type.");
 
-                ImGui.SameLine();
+                ImGui.SameLine(0, ToolbarGroupGap * T3Ui.UiScaleFactor);
                 DrawReleasePointButton(setup, alignSubject.Pinned, outputId);
                 ImGui.SameLine();
                 DrawResetAlignmentButton(setup, alignSubject.Pinned, outputId);
 
                 if (_pinResidualPx > 0.5f)
                 {
-                    ImGui.SameLine();
-                    CustomComponents.StylizedText($"points miss by up to {_pinResidualPx:0.0} px", Fonts.FontSmall, UiColors.TextMuted);
+                    ImGui.SameLine(0, ToolbarGroupGap * T3Ui.UiScaleFactor);
+                    CustomComponents.StylizedText($"Error: {_pinResidualPx:0.0} px", Fonts.FontSmall, UiColors.TextMuted);
                     if (ImGui.IsItemHovered())
-                        ImGui.SetTooltip("More than four points over-determine a corner pin; the solve averages them.\nA large miss means a point is misplaced, or the wall isn't flat.\nEach point's arrow shows which way its own miss goes.");
+                        ImGui.SetTooltip("""
+                                         The largest distance, in output pixels, between where a set point was dropped and where the pin lands it.
+                                         The four points spread furthest apart define the corner pin; further points refine it.
+                                         A point the pin misses by too much is ignored and shown faded until it agrees again.
+                                         A large miss means a point is misplaced, or the wall isn't flat.
+                                         Each point's arrow shows which way its own miss goes.
+                                         """);
                 }
 
                 if (TryGetTracedFragmentWithSurround(setup, alignSubject.Traced, out var photoSrv, out var photoUvMin, out var photoUvMax))
                 {
                     NarrowPhotoUvToPinned(alignSubject, ref photoUvMin, ref photoUvMax);
                     CalibrationOverlay.SetCalibrationPhoto(alignSubject.Pinned.Id, photoSrv!, photoUvMin, photoUvMax, UserSettings.Config.OutputSetupPhotoDiscRadius,
-                                                           _activePointId, alignSubject.Traced, alignSubject.TracedToPinned);
+                                                           _activePointId, alignSubject.Traced, alignSubject.TracedToPinned, _ignoredPointIds);
                 }
             }
         }
@@ -334,4 +358,9 @@ internal sealed partial class SetupOutputView
     private string _pendingHeaderTitle = string.Empty;
     private Guid _pendingHeaderImageId;
     private Guid _pendingHeaderSubjectId;
+
+    private const string ConnectMenuId = "##connectSurfaceMenu";
+
+    /** Unscaled space between groups of toolbar controls. */
+    private const float ToolbarGroupGap = 12;
 }
