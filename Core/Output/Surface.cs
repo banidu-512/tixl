@@ -52,6 +52,12 @@ public sealed class Surface
         /// dropped on a patch links to it, and aiming the pin by hand ends the link.</summary>
         public Guid PatchId;
 
+        /// <summary>Multiplies this surface's picture on this output, alpha included: the layer's tint and opacity.</summary>
+        public Vector4 LayerColor = Vector4.One;
+
+        /// <summary>How this surface combines with the layers under it on this output.</summary>
+        public LayerBlendModes BlendMode;
+
 /// <summary>
         /// Where one of the surface's reference points sits on this output, in the same 0..1 canvas space.
         /// <para><see cref="IsAimed"/> means the user put it there and the pin is solved to project the point
@@ -123,6 +129,12 @@ public sealed class Surface
                 writer.WriteEndArray();
             }
 
+            if (LayerColor != Vector4.One)
+                writer.WriteVector4("LayerColor", LayerColor);
+
+            if (BlendMode != LayerBlendModes.Normal)
+                writer.WriteString("Blend", BlendMode.ToString());
+
             if (QuadBeforeAligning != null)
             {
                 writer.WriteQuad("QuadBeforeAligning", QuadBeforeAligning);
@@ -142,6 +154,10 @@ public sealed class Surface
                                              : MappingModes.CornerPin,
                                   Quad = OutputJson.ReadQuad(token["Quad"]),
                                   PatchId = OutputJson.ReadGuid(token["PatchId"]),
+                                  LayerColor = OutputJson.ReadVector4(token["LayerColor"], Vector4.One),
+                                  BlendMode = Enum.TryParse<LayerBlendModes>(token.ReadValueSafe("Blend", string.Empty), out var blend)
+                                                  ? blend
+                                                  : LayerBlendModes.Normal,
                               };
 
             if (token["QuadBeforeAligning"] != null)
@@ -287,6 +303,10 @@ public sealed class Surface
     /// <summary>Minor raster lines per meter; 1 draws meter lines only. They fade out once too dense to resolve.</summary>
     public int GridSubdivisions = 10;
 
+    /// <summary>Projects the surface's measuring lines onto the wall, to align a line until it lies along the real
+    /// feature it was drawn on. Calibrate projects them too while it is on.</summary>
+    public bool ShowMeasuringLines;
+
     /// <summary>
     /// ContentCanvas resolution policy: pixel size is derived (px/m × physical size, clamped),
     /// never stored — surfaces get resized during calibration and content must survive it.
@@ -302,6 +322,13 @@ public sealed class Surface
     public List<Annotation> Annotations = [];
 
     public List<OutputMapping> OutputMappings = [];
+
+    /// <summary>
+    /// Mappings whose connection was taken away, kept with their alignment: disconnecting a surface doesn't move the
+    /// projector, so connecting it to the same output again restores where it lands. At most one per output, and
+    /// never rendered.
+    /// </summary>
+    public List<OutputMapping> ParkedMappings = [];
 
     /// <summary>This surface's corner pin onto an output, if any — a plain loop, so per-frame callers don't pay a closure.</summary>
     public OutputMapping? FindMapping(Guid outputId)
@@ -339,6 +366,7 @@ public sealed class Surface
         writer.WriteValue("PixelsPerMeter", PixelsPerMeter);
         writer.WriteValue("ShowGrid", ShowGrid);
         writer.WriteValue("GridSubdivisions", GridSubdivisions);
+        writer.WriteValue("ShowMeasuringLines", ShowMeasuringLines);
 
         if (Annotations.Count > 0)
         {
@@ -356,6 +384,16 @@ public sealed class Surface
             mapping.WriteToJson(writer);
 
         writer.WriteEndArray();
+
+        if (ParkedMappings.Count > 0)
+        {
+            writer.WritePropertyName("ParkedMappings");
+            writer.WriteStartArray();
+            foreach (var mapping in ParkedMappings)
+                mapping.WriteToJson(writer);
+
+            writer.WriteEndArray();
+        }
 
         if (Trace != null)
         {
@@ -396,8 +434,12 @@ public sealed class Surface
                               PixelsPerMeter = token.ReadValueSafe("PixelsPerMeter", 400f),
                               ShowGrid = token.ReadValueSafe("ShowGrid", false),
                               GridSubdivisions = token.ReadValueSafe("GridSubdivisions", 10),
+
+                              // Setups saved before the lines had a switch of their own showed them with the raster.
+                              ShowMeasuringLines = token.ReadValueSafe("ShowMeasuringLines", token.ReadValueSafe("ShowGrid", false)),
                               Annotations = token.ReadListSafe("Annotations", Annotation.ReadFromJson),
                               OutputMappings = token.ReadListSafe("OutputMappings", OutputMapping.ReadFromJson),
+                              ParkedMappings = token.ReadListSafe("ParkedMappings", OutputMapping.ReadFromJson),
                           };
 
         if (token["Reference"] is JObject referenceToken)
