@@ -43,6 +43,14 @@ internal static partial class WindowManager
             ToggleWindowTypeVisibility<ConsoleLogWindow>();
         }
 
+        if (UserActions.OpenSettingsWindow.Triggered())
+        {
+            // Opens rather than toggles: a settings window that is already docked behind another tab
+            // comes to the front instead of disappearing.
+            SettingsWindow.Config.Visible = true;
+            SettingsWindow.RequestWindowFocus();
+        }
+
         LayoutHandling.KeepLayoutProportionsOnResize();
 
         foreach (var windowType in _windows)
