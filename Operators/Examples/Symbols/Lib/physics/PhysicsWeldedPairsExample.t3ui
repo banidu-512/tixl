@@ -1,0 +1,191 @@
+{
+  "FormatVersion": 3,
+  "Id": "d4d3c22e-754e-41f3-9eaf-c90c94309cc8",
+  "Description": "A [RigidJoint] of type Weld turns two bodies into one rigid assembly: the pairs here tumble and land as single dumbbells instead of separating.\n\nOnly the welded pairs keep their distance under impact; Local Offset B is the offset of the second body's origin in the first one's frame, which is what makes the two act as one piece.\n\nAKA: weld, rigid joint, constraint, compound body\n\nTips\n- Use a Weld joint to fake compound colliders out of simple shapes.\n- Change Joint Type on a [RigidJoint] to Hinge for a door, or Distance Servo to keep a gap.\n- Set Reset on [PhysicsWorld] to drop the assembly again.",
+  "InputUis": [],
+  "SymbolChildUis": [
+    {
+      "ChildId": "156ed505-3f17-551e-a348-d1f2e7adf328",
+      "SymbolName": "Lib.mesh.draw.DrawMeshAtPoints",
+      "Position": {
+        "X": 1500.0,
+        "Y": -150.0
+      }
+    },
+    {
+      "ChildId": "1cf3ddc8-fd5d-5638-86f2-ae45bdfb9ef4",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 0.0,
+        "Y": 1420.0
+      }
+    },
+    {
+      "ChildId": "3957926a-21a7-5da7-8964-79c6fe843e86",
+      "SymbolName": "Lib.render.camera.Camera",
+      "Position": {
+        "X": 2400.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "48e55eab-ddfd-599e-9f49-117e1ff7ecc0",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 0.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "4c1c3655-900d-52ed-8116-5aa6abfe9e3b",
+      "SymbolName": "Lib.render.transform.Group",
+      "Position": {
+        "X": 2100.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "5636ff19-f9aa-5bc1-835a-0629891a9a4d",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 0.0,
+        "Y": 860.0
+      }
+    },
+    {
+      "ChildId": "63f04f46-eceb-5dab-8046-83f4444ad775",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 0.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "66e020dd-9af0-5d81-a431-6278add53553",
+      "SymbolName": "Lib.mesh.generate.SphereMesh",
+      "Position": {
+        "X": 1200.0,
+        "Y": -300.0
+      }
+    },
+    {
+      "ChildId": "67539e14-c673-57b8-8ef2-f38853a28a6e",
+      "SymbolName": "Lib.mesh.modify.TransformMesh",
+      "Position": {
+        "X": 1500.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "7c2a8af5-56e7-5257-9ec8-ae5e7d147fb4",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 0.0,
+        "Y": 1140.0
+      }
+    },
+    {
+      "ChildId": "93cadc13-64fd-548e-98a0-c3bd41f0a289",
+      "SymbolName": "Lib.mesh.draw.DrawMeshUnlit",
+      "Position": {
+        "X": 1800.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "a8cf14fd-e2e1-5076-af84-2ee0daf99557",
+      "SymbolName": "Lib.image.generate.basic.RenderTarget",
+      "Position": {
+        "X": 2700.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "ec6d0d12-b87f-5c09-9cf3-3b8dea03efa8",
+      "SymbolName": "Lib.physics.PhysicsWorld",
+      "Position": {
+        "X": 1200.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "ef78d48e-eabc-57fa-ad3c-3ac73e2fd2bd",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 0.0,
+        "Y": 580.0
+      }
+    },
+    {
+      "ChildId": "f053de85-7fa9-56d8-8331-19f058f78ea6",
+      "SymbolName": "Lib.mesh.generate.CubeMesh",
+      "Position": {
+        "X": 1200.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "f220d0f0-facd-4633-91c0-6a1b3a346e12",
+      "SymbolName": "Lib.physics.RigidJoint",
+      "Position": {
+        "X": -260.0,
+        "Y": 250.0
+      }
+    },
+    {
+      "ChildId": "765a6692-4eae-41dd-8b20-d14a4a38d84d",
+      "SymbolName": "Lib.physics.RigidJoint",
+      "Position": {
+        "X": -260.0,
+        "Y": 470.0
+      }
+    }
+  ],
+  "OutputUis": [
+    {
+      "OutputId": "8f72b254-3ece-5952-8c77-7deaadf651c1",
+      "Position": {
+        "X": 3000.0,
+        "Y": 0.0
+      }
+    }
+  ],
+  "Settings": {
+    "OutputWindows": [
+      {
+        "ShowGizmos": "On",
+        "TransformGizmoMode": "Move",
+        "BackgroundColor": [
+          0.1,
+          0.1,
+          0.1,
+          1.0
+        ],
+        "CameraControlMode": "AutoUseFirstCam",
+        "CameraPosition": [
+          0.0,
+          0.0,
+          2.4142134
+        ],
+        "CameraTarget": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "CameraRoll": 0.0,
+        "CameraSpeed": 1.0,
+        "ResolutionTitle": "Fill",
+        "ResolutionWidth": 0,
+        "ResolutionHeight": 0,
+        "ResolutionUseAsAspectRatio": true,
+        "IsPinned": true,
+        "PinnedInstancePath": [
+          "9aedcffe-f075-6e89-999f-30bee7f30a2b"
+        ],
+        "PinnedOutputId": "00000000-0000-0000-0000-000000000000",
+        "PinnedEntityKind": "None",
+        "PinnedEntityId": "00000000-0000-0000-0000-000000000000"
+      }
+    ]
+  }
+}
