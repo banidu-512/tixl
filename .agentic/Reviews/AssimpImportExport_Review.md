@@ -187,23 +187,23 @@ skinned/animated glTF and quad-cube OBJ+MTL variants).
 - Hot reload: overwriting a project asset changed `VertexCount` from 24 to 3 automatically.
 - A missing file clears the model and the editor stays alive; a valid path recovers.
 
-**Open**
+**Fixed after the pass** (renderer-side, not in the converter)
 
-- **Multi-material `[DrawScene]`:** with two materials (two cubes, 3+3 faces, or six alternating
-  faces) only the second material's parts render; the first material's parts are black. The import
-  data is correct (two materials with the expected colors, six chunks with material indices 0/1) and
-  a single material renders, so this is in the shared `DrawScene`/material-binding path, not the
-  converter. Needs a separate fix.
-- **GPU skinning render:** the generated glTF imports with 2 bones / 4 joints / 1 clip, the skin
-  weights and animated matrices are correct, and the skinned vertex buffer at t=0 matches the source
-  vertices. But `[DrawMesh]` of `[SkinMesh].Result` renders black on D3D11, while the unskinned
-  pass-through renders. This points at the `SkinMesh` compute-to-vertex-buffer path rather than the
-  Assimp data.
-- A broken file at an absolute path did not replace the previously loaded model in one run; the
-  missing-path case did clear it. Needs a status-provider check.
+- **Multi-material `[DrawScene]`:** every material dispatch drew the first chunk because the draw
+  relied on `Draw`'s `startVertex` to offset the shader's `SV_VertexID`; D3D11 and Vulkan did not
+  honor it here. `_DispatchSceneDraws` now binds a cached per-dispatch triangle sub-view and draws
+  from 0, and the D3D11 backend creates structured-buffer SRVs with the `BUFFER` dimension for
+  non-zero element ranges. Verified: stacked red/blue cubes and a six-color cube render on both
+  D3D11 and Vulkan.
+- **GPU skinning render:** on D3D11 the compute UAV stayed bound after the dispatch, so the
+  following draw could not bind the same buffer as a shader resource. The D3D11 backend now unbinds
+  the compute UAV slots after every dispatch. Verified: the skinned arm bends at t=0.8 on D3D11;
+  Vulkan already rendered it.
+- Still open: a broken file at an absolute path did not replace the previously loaded model in one
+  run (the missing-path case did clear it); needs a status-provider check.
 
-**Environment:** compute shaders require `TIXL_BACKEND=d3d11` on this Windows machine; the default
-Vulkan path fails to load `spirv-opt`.
+**Environment:** compute shaders need `TIXL_BACKEND=d3d11` on this Windows machine; its default
+Vulkan path fails to load `spirv-opt`. The Vulkan checks ran on arton-linux.
 
 ### Verification
 
