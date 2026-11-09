@@ -64,12 +64,80 @@ public sealed class WebcamInputTests(EditorFixture editor)
             WaitForStatus(client, camera, IsRunning, out _);
             StopAndExpectQuietCounter(client, camera);
 
+            // Rapid toggling is what used to wedge the camera: after a handful of cycles it dropped out of
+            // SDL's list and never came back, because the operator reopened it every second. The reopen
+            // backoff is what has to keep this recoverable.
+            for (var cycle = 0; cycle < 6; cycle++)
+            {
+                client.SetInput(camera, "Active", JToken.FromObject(true));
+                var cycleStatus = WaitForStatus(client, camera, IsRunning, out _);
+                Assert.True(IsRunning(cycleStatus), $"cycle {cycle} did not start capture; Status='{cycleStatus}'");
+                StopAndExpectQuietCounter(client, camera);
+            }
+
             var errors = client.GetLogTail(sinceSeq: baselineLogSeq, minLevel: "error");
             Assert.True(errors.Count == 0, "errors during run: " + string.Join(" | ", errors.Select(e => e["message"])));
         }
         finally
         {
             client.SetInput(camera, "Active", JToken.FromObject(false));
+            RestoreBaseline(client, baseline);
+        }
+    }
+
+    [Fact]
+    public void SecondOperatorOnTheSameCamera_WaitsAndTakesOver()
+    {
+        var client = editor.Client;
+        var baseline = editor.OpenPlayground();
+        var baselineLogSeq = client.GetLatestLogSeq();
+
+        // Both operators have to be evaluated for the sharing case to happen at all, so they are wired
+        // into one render tree through an operator that takes two textures.
+        var first = client.AddOp("WebcamInput", posX: -900);
+        var second = client.AddOp("WebcamInput", posX: -900, posY: 300);
+        var combine = client.AddOp("CompareImages", posX: -500);
+        try
+        {
+            client.ConnectOps(first, "Texture", combine, "Texture2d");
+            client.ConnectOps(second, "Texture", combine, "Texture2d2");
+            client.Pin(combine);
+
+            client.SetInput(first, "Active", JToken.FromObject(true));
+            var firstStatus = WaitForStatus(client, first, IsRunning, out _);
+            if (IsMissingCamera(firstStatus))
+                return;
+
+            Assert.True(IsRunning(firstStatus), $"first operator did not start; Status='{firstStatus}'");
+
+            // While the first holds the device the second must not report running frames of its own: it
+            // either cannot open the camera or is waiting for it.
+            client.SetInput(second, "Active", JToken.FromObject(true));
+            client.PumpFrames(60);
+            var blockedStatus = ReadText(client, second, "Status") ?? string.Empty;
+            Assert.False(IsRunning(blockedStatus),
+                         $"both operators reported running on one camera; second Status='{blockedStatus}'");
+            Assert.True(IsRunning(ReadText(client, first, "Status") ?? string.Empty),
+                        "starting the second operator must not disturb the first");
+
+            // ...and it must take over once the first lets go.
+            client.SetInput(first, "Active", JToken.FromObject(false));
+            var takeoverStatus = WaitForStatus(client, second, IsRunning, out _, attempts: 400);
+            Assert.True(IsRunning(takeoverStatus),
+                        $"second operator did not take over the camera; Status='{takeoverStatus}'");
+
+            // Scoped to the camera: the combiner compiles a shader, and a missing downstream compiler is
+            // not this test's business.
+            var cameraErrors = client.GetLogTail(sinceSeq: baselineLogSeq, minLevel: "error")
+                                     .Select(e => e["message"]?.ToString() ?? string.Empty)
+                                     .Where(m => m.Contains("camera", StringComparison.OrdinalIgnoreCase))
+                                     .ToArray();
+            Assert.True(cameraErrors.Length == 0, "camera errors during run: " + string.Join(" | ", cameraErrors));
+        }
+        finally
+        {
+            client.SetInput(first, "Active", JToken.FromObject(false));
+            client.SetInput(second, "Active", JToken.FromObject(false));
             RestoreBaseline(client, baseline);
         }
     }

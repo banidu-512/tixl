@@ -297,6 +297,8 @@ public class WebcamInput : Instance<WebcamInput>, ICustomDropdownHolder, IStatus
                 return;
             }
 
+            var reopenDelayMs = ReopenIntervalMs;
+
             while (!token.IsCancellationRequested)
             {
                 // Nothing evaluates this operator any more, so stop holding the camera (and the bus
@@ -309,6 +311,8 @@ public class WebcamInput : Instance<WebcamInput>, ICustomDropdownHolder, IStatus
                     continue;
                 }
 
+                var attemptStartedMs = Environment.TickCount64;
+                var deliveredFrames = false;
                 using (var stream = provider.TryOpen(settings.DeviceName, settings.Mode, out var error))
                 {
                     if (stream == null)
@@ -319,7 +323,7 @@ public class WebcamInput : Instance<WebcamInput>, ICustomDropdownHolder, IStatus
                     {
                         SetStatus("Waiting for first frame...");
                         Interlocked.Exchange(ref _streamReopenSignal, 1);
-                        ReadFramesUntilStreamEnds(stream, token);
+                        deliveredFrames = ReadFramesUntilStreamEnds(stream, token);
 
                         // A stop closed the stream on purpose, and its state reports that as a disconnect.
                         // Reporting it here would overwrite the "Stopped" status with an error the user
@@ -338,7 +342,17 @@ public class WebcamInput : Instance<WebcamInput>, ICustomDropdownHolder, IStatus
                     }
                 }
 
-                token.WaitHandle.WaitOne(ReopenIntervalMs);
+                // Back off while the camera keeps failing: a device that has just been closed often needs a
+                // moment before it can be opened again, and reopening it every second is what turns that
+                // into a camera that never comes back. A stream that ran for a while, or delivered frames
+                // before dying, is a real disconnect — retry those at the normal pace.
+                var lifetimeMs = Environment.TickCount64 - attemptStartedMs;
+                if (deliveredFrames || lifetimeMs >= HealthyStreamMs)
+                    reopenDelayMs = ReopenIntervalMs;
+                else
+                    reopenDelayMs = Math.Min(reopenDelayMs * 2, MaxReopenIntervalMs);
+
+                token.WaitHandle.WaitOne(reopenDelayMs);
             }
         }
         catch (Exception e)
@@ -348,23 +362,27 @@ public class WebcamInput : Instance<WebcamInput>, ICustomDropdownHolder, IStatus
         }
     }
 
-    private void ReadFramesUntilStreamEnds(ICameraStream stream, CancellationToken token)
+    /** Reads until the stream ends or the capture is cancelled; true if at least one frame arrived. */
+    private bool ReadFramesUntilStreamEnds(ICameraStream stream, CancellationToken token)
     {
         var capturedPixels = Array.Empty<byte>();
         var scratchPixels = Array.Empty<byte>();
         var lastReportedSize = new Int2(0, 0);
+        var deliveredFrames = false;
 
         while (!token.IsCancellationRequested && stream.State == CameraStreamState.Open)
         {
             // Leaving closes the stream; the caller's loop parks until the operator is evaluated again.
             if (IsPausedForIdleFrame())
-                return;
+                return deliveredFrames;
 
             if (!stream.TryReadFrame(ref capturedPixels, out var width, out var height))
             {
                 Thread.Sleep(FramePollIntervalMs);
                 continue;
             }
+
+            deliveredFrames = true;
 
             if (width != lastReportedSize.X || height != lastReportedSize.Y)
             {
@@ -389,6 +407,8 @@ public class WebcamInput : Instance<WebcamInput>, ICustomDropdownHolder, IStatus
                 _hasNewFrame = true;
             }
         }
+
+        return deliveredFrames;
     }
 
     private static void ApplyImageTransform(in ImageTransform transform, ref byte[] pixels, ref byte[] scratch, int width, int height)
@@ -769,6 +789,12 @@ public class WebcamInput : Instance<WebcamInput>, ICustomDropdownHolder, IStatus
     private const int BytesPerPixel = 4;
     private const int FramePollIntervalMs = 2;
     private const int ReopenIntervalMs = 1000;
+
+    /** A stream that lasted this long was working, so a failure after it is a real disconnect, not thrash. */
+    private const int HealthyStreamMs = 1500;
+
+    /** Ceiling of the reopen backoff: a camera that is gone should not be polled harder than this. */
+    private const int MaxReopenIntervalMs = 5000;
 
     /** How long capture may stay unused before DeactivateWhenNotShowing releases the camera. */
     private const int DeactivateTimeoutMs = 3000;
