@@ -137,7 +137,10 @@ internal sealed class AssimpImport : Instance<AssimpImport>, IDescriptiveFilenam
                                                 SelectedMeshIndex.GetValue(context),
                                                 ImportMaterials.GetValue(context));
 
-        _isIsolated = IsolateImport.GetValue(context);
+        var isolateImport = IsolateImport.GetValue(context);
+        var isolationChanged = isolateImport != _isIsolated;
+        _isIsolated = isolateImport;
+
         var reloadRequested = MathUtils.WasTriggered(TriggerReload.GetValue(context), ref _reloadTriggered);
         if (reloadRequested)
         {
@@ -165,6 +168,12 @@ internal sealed class AssimpImport : Instance<AssimpImport>, IDescriptiveFilenam
             CancelPendingLoad();
         }
 
+        if (isolationChanged)
+        {
+            // The running load uses the old mode; switch it over now so the toggle is visible
+            CancelPendingLoad();
+        }
+
         _isReloadRequested |= reloadRequested;
         _requestedFile = fileVersion;
 
@@ -172,7 +181,7 @@ internal sealed class AssimpImport : Instance<AssimpImport>, IDescriptiveFilenam
 
         // At most one load per operator runs. Settings that change while it runs (e.g. an animated Scale)
         // are picked up by the next one, so intermediate results keep showing up.
-        if (_pendingLoad == null && (_isReloadRequested || !IsLoaded(fileVersion, settings)))
+        if (_pendingLoad == null && (isolationChanged || _isReloadRequested || !IsLoaded(fileVersion, settings)))
             StartLoad(fileVersion, settings, reparse: _isReloadRequested);
     }
 
@@ -552,6 +561,8 @@ internal sealed class AssimpImport : Instance<AssimpImport>, IDescriptiveFilenam
         {
             if (isolationRequested)
                 builder.AppendLine($"Imported in-process: {AssimpIsolatedImport.UnavailableReason}");
+            else
+                builder.AppendLine("Imported in-process");
 
             builder.Append($"Assimp {AssimpNative.Version}");
         }

@@ -209,7 +209,8 @@
   <!-- Launcher for isolated Assimp imports and exports (AssimpIsolatedImport), placed next to the package so
        it ships with it. Incremental: skipped while its output is newer than its sources, so hot-reload
        compiles don't pay for it. Restore runs as its own call because the launcher isn't part of the
-       solution restore. -->
+       solution restore. It is listed in t3.sln for IDE visibility only (ActiveCfg, no Build.0), which keeps
+       a solution build from compiling it a second time next to this target. -->
   <PropertyGroup>
     <AssimpImportHostFolder>$(MSBuildThisFileDirectory)../AssimpImportHost/</AssimpImportHostFolder>
   </PropertyGroup>

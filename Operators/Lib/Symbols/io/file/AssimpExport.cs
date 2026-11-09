@@ -137,7 +137,7 @@ internal sealed class AssimpExport : Instance<AssimpExport>, IStatusProvider
     #region export job
     private void StartExport(AssimpModelData source, string absolutePath, string formatId, string meshName, bool isolate)
     {
-        var request = new ExportRequest(absolutePath, isolate);
+        var request = new ExportRequest(absolutePath);
         _pendingExport = request;
         SetResult(false, $"Exporting {Path.GetFileName(absolutePath)}...");
 
@@ -179,7 +179,7 @@ internal sealed class AssimpExport : Instance<AssimpExport>, IStatusProvider
 
         _exportCounter++;
         _lastFilePath = request.AbsolutePath;
-        var suffix = request.WasIsolated ? " (separate process)" : request.IsolationRequested ? " (in-process)" : string.Empty;
+        var suffix = request.WasIsolated ? " (separate process)" : " (in-process)";
         SetResult(true, $"Exported {Path.GetFileName(request.AbsolutePath)}{suffix}");
         Log.Info($"Exported {request.AbsolutePath}", this);
     }
@@ -511,10 +511,9 @@ internal sealed class AssimpExport : Instance<AssimpExport>, IStatusProvider
         PlyBinary,
     }
 
-    private sealed class ExportRequest(string absolutePath, bool isolationRequested)
+    private sealed class ExportRequest(string absolutePath)
     {
         public readonly string AbsolutePath = absolutePath;
-        public readonly bool IsolationRequested = isolationRequested;
 
         /** Set by the worker before it marks the request completed. */
         public bool WasIsolated;
