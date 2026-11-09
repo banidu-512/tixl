@@ -10,7 +10,16 @@ prerequisites:
   - A CSV file with a header row is available.
 ---
 
-`CsvToPoints` routes CSV columns into the attributes of a point buffer. This set checks the file load, the per-attribute dropdowns and that remapping a column updates the buffer.
+`CsvToPoints` routes CSV columns into the attributes of a point buffer. This set checks the file load, the per-attribute dropdowns, that remapping a column updates the buffer, and the shipped example.
+
+## Step: Opening the example
+
+**Action:**
+Open the symbol browser, find `CsvToPointsExample` in `Examples.Lib.point.io`, and add it to the graph.
+
+**Expected:**
+- The output shows a colorful 21×21 ripple of points.
+- The parameter panel offers a `CsvFile` input pointing at the bundled `point-data/csv-to-points-grid.csv`.
 
 ## Step: Adding the operator
 
