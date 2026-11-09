@@ -31,6 +31,10 @@ Two local modifications to the release binary, applied offline:
    case only the MediaPipe operators are missing from that build.
    `MediapipeNativeLibrary` loads it before the first `mediapipe_c` P/Invoke. The CPU paths never call any
    of them.
-2. The dylib's ad-hoc signature does not survive git round-trips untouched, so the file must be re-signed
-   before macOS will load it: `codesign --force --sign - libmediapipe_c.dylib`. The macOS CI workflow and
-   the DMG build do this automatically; on a dev machine run it once after checkout.
+2. The stored code signature does not match the file as it is committed. Patch 1 rewrote import bindings
+   in `__LINKEDIT`, and a signature hashes the pages it covers, so the two rewritten pages no longer match
+   the embedded CodeDirectory (checked: 5525 of 5527 pages verify). The arm64 slice carries that stale
+   signature; the x86_64 slice carries none at all. Apple Silicon only loads arm64 code with a valid
+   signature, so re-sign once after checkout: `codesign --force --sign - libmediapipe_c.dylib`.
+   `Installer/macOS/build-dmg.sh` codesigns every dylib in the payload, so packaged builds need nothing
+   extra - only a dev tree does.
