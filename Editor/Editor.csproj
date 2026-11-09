@@ -208,6 +208,7 @@
         <PackageNames Include="Mediapipe">
             <Name>t3.mediapipe</Name>
         </PackageNames>
+        <PackageNames Include="DepthAnything" />
         <!-- Add more as needed -->
     </ItemGroup>
     <PropertyGroup>
