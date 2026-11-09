@@ -169,7 +169,7 @@ public static class PlaybackUtils
             // A composition whose symbol is not registered (a project created or removed while the
             // editor was running, or one whose package failed to load) used to throw straight out of
             // the render loop and kill the editor. Treat it as "no settings here" and keep walking.
-            if (!TryGetCompositionSettings(instanceWithSettings, out settings))
+            if (!TryGetCompositionSettings(instanceWithSettings, out var candidate))
             {
                 if (!_reportedMissingSymbol)
                 {
@@ -181,6 +181,7 @@ public static class PlaybackUtils
                 continue;
             }
 
+            settings = candidate;
             if (settings.Enabled)
             {
                 return true;
@@ -190,7 +191,7 @@ public static class PlaybackUtils
         }
     }
 
-    private static bool TryGetCompositionSettings(Instance instance, out CompositionSettings? settings)
+    private static bool TryGetCompositionSettings(Instance instance, [NotNullWhen(true)] out CompositionSettings? settings)
     {
         try
         {
