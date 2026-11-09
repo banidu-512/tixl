@@ -90,6 +90,7 @@ Load the .glb and read the last lines of `Metadata`. Then toggle `IsolateImport`
 
 **Expected:**
 - With a .NET 10 runtime installed, `Metadata` says "Imported in a separate process"; otherwise it names why the import ran in-process.
+- Toggling `IsolateImport` reloads immediately; with it off, `Metadata` says "Imported in-process".
 - Results look identical with `IsolateImport` on and off.
 - Switching the file while loading stops the previous import; no `dotnet` process stays behind (check the task manager / `ps`).
 - Closing TiXL during a long import ends the import process too.

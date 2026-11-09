@@ -117,6 +117,10 @@ Brought `origin/multi/feat/assimp` onto this branch and closed the remaining rob
   errors, crashes and timeouts. `[AssimpExport]` has an `IsolateExport` input (default on) and falls
   back to in-process with the status saying so. This matters because the native FBX/3DS/Collada/3MF
   exporters are the same code that can segfault on unusual scenes.
+- **The isolation switches reload.** `IsolateImport` is not part of the conversion settings, so
+  toggling it used to affect only the next load. It now cancels a running load and reloads
+  immediately; both operators report the mode they actually used ("Imported in-process",
+  "Exported ... (in-process)") instead of staying silent when isolation was switched off.
 - **`TriggerReload` re-reads materials.** In isolated mode the material identity is the model's
   `FileVersion`, which does not change when only a texture next to the model is edited. Reloads now
   never reuse materials, so the documented "reload after changing referenced files" behaviour also
@@ -151,7 +155,11 @@ Brought `origin/multi/feat/assimp` onto this branch and closed the remaining rob
 Verification: Release build of Lib with analyzers is clean for the new files; headless host runs
 cover probe, isolated import (OBJ → binary result, plain and textured, with sane vertex/triangle
 counts), isolated export (OBJ and GLB, quads preserved), re-import of the exported GLB, corrupt-result
-rejection and the 2 GB input limit. See `.tests-manual/assimp-import-export.md` for the editor pass.
+rejection and the 2 GB input limit. The editor integration test
+`Tests/Editor.IntegrationTests/AssimpImportExportTests` passes on Windows against the Release editor:
+isolated and in-process imports agree (280 vertices / 98 triangles / 3 meshes for the Examples glTF),
+both exports write numbered files, and no errors are logged; GraphAcceptance/ProtocolBasics stay green
+(8/8). See `.tests-manual/assimp-import-export.md` for the remaining visual pass.
 
 ### Verification
 
