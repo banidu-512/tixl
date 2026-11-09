@@ -171,7 +171,7 @@ native library and the export readback all work there. The Linux run also caught
 inside an XML comment in `AssimpImportHost.csproj`; fixed. The test passes with the standalone
 `AssimpImportHost` folder removed on Windows, proving the editor executable hosts the worker;
 `TiXL.exe --assimp-host ... --probe` and `dotnet TiXL.dll --assimp-host ... --probe` both answer.
-See `.tests-manual/assimp-import-export.md` for the remaining visual pass.
+See `.tests-manual/assimp-import-export.md` for the manual editor recipe.
 
 ### Visual pass (2026-11-09, Windows, Direct3D 11)
 
