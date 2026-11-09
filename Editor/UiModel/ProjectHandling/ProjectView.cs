@@ -31,6 +31,24 @@ internal sealed partial class ProjectView
     public InstanceView? InstView => _instView;
     public Instance? CompositionInstance => InstView?.Instance;
 
+    /// <summary>
+    /// The composition instance, or null while its symbol cannot be resolved. <see cref="CompositionInstance"/>
+    /// throws in that window — it happens for a frame or two whenever a project is created, reopened or
+    /// removed, or a package is reloaded — and the per-frame callers that only want to skip this frame must
+    /// not turn that into an exception out of the render loop.
+    /// </summary>
+    public Instance? TryGetCompositionInstance()
+    {
+        try
+        {
+            return InstView?.Instance;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
     public Instance RootInstance => GetRoot();
     private bool _subscribedToRootDisposing;
 

@@ -70,6 +70,14 @@ internal static partial class SetupParameterView
         FormInputs.AddVerticalSpace(5);
         DrawHeader(setup, kind, id);
 
+        // Entity cards can be far taller than the panel (a laser output: frame preview + scanner
+        // camera + optimization + safety) and the parameter window deliberately has no scrollbar,
+        // so the card body scrolls here. The header stays fixed. The EndChild pair below belongs to
+        // this child and to setupEntity: it had been left without its BeginChild, which made every
+        // frame end one window too many (Missing PopStyleVar / End() too many times / ImGui-ID).
+        ImGui.BeginChild("##setupEntityCard", Vector2.Zero, ImGuiChildFlags.None,
+                         ImGuiWindowFlags.AlwaysVerticalScrollbar);
+
         switch (kind)
         {
             case SetupEntityKinds.Surface:
@@ -108,7 +116,8 @@ internal static partial class SetupParameterView
             CustomComponents.StylizedText($"+{selection.Count - 1} more selected", Fonts.FontSmall, UiColors.TextMuted);
         }
 
-        ImGui.EndChild();
+        ImGui.EndChild(); // ##setupEntityCard
+        ImGui.EndChild(); // setupEntity
         return true;
     }
 
@@ -624,6 +633,23 @@ internal static partial class SetupParameterView
         if (FormInputs.AddCheckBox("Send", ref send, "Pause presenting without dropping the display binding."))
             SetupUndo.RunUndoable("Toggle send", setup, () => output.IsSending = send);
 
+        // Show distribution: which boygroup node presents this output. Empty = every machine (the
+        // classic behavior), so single-machine setups need none of this.
+        var labels = new List<string> { "(all machines)", Environment.MachineName };
+        foreach (var client in Show.BoygroupManager.Instance.Clients)
+        {
+            if (!string.IsNullOrEmpty(client.Name) && !labels.Contains(client.Name))
+                labels.Add(client.Name);
+        }
+
+        var selectedLabel = string.IsNullOrEmpty(output.MachineName) ? labels[0] : output.MachineName;
+        if (FormInputs.AddDropdown(ref selectedLabel, labels, "Render on machine",
+                                   "In a boygrouped show only the chosen node presents this output. '(all machines)' keeps the default behavior."))
+        {
+            var value = labels.IndexOf(selectedLabel) > 0 ? selectedLabel : string.Empty;
+            SetupUndo.RunUndoable("Assign output machine", setup, () => output.MachineName = value);
+        }
+
         // The canvas every route onto this output is measured in, and what its content is asked to render at:
         // an unset resolution upstream (a RenderTarget at 0×0) resolves to this, so it is the one place the
         // pixel size of a projector or a stream is decided.
@@ -1111,8 +1137,59 @@ internal static partial class SetupParameterView
     /// stream carries the settings its kind honours — the host asks the provider which those are, so a kind
     /// that has no notion of frame rate or alpha simply doesn't offer them.
     /// </summary>
+    /// <summary>
+    /// Properties of a render node's display: its reported mode, what the node presents there, and who
+    /// the node is. Read-only - the display and its bindings belong to that machine; the binding is
+    /// changed by dropping an output on the row and released from its context menu.
+    /// </summary>
+    private static void DrawRemoteDisplayCard(Setup setup, Show.BoygroupManager.ClientInfo client, int displayIndex)
+    {
+        Show.BoygroupManager.RemoteScreen? screen = null;
+        foreach (var candidate in client.Screens)
+        {
+            if (candidate.Index != displayIndex)
+                continue;
+
+            screen = candidate;
+            break;
+        }
+
+        Span<int> mode = [screen?.Width ?? 0, screen?.Height ?? 0];
+        DrawIntsRow("Resolution (px)", mode, "The render node display's current mode (read-only).", readOnly: true);
+
+        var boundOutput = client.MachineConfig == null
+                              ? null
+                              : Plugs.TryGetBoundOutput(setup, client.MachineConfig, Plugs.DisplayPlugId(displayIndex));
+        FormInputs.AddHint(boundOutput == null ? "nothing bound" : $"presenting {SetupLabels.OutputLabel(boundOutput)}");
+        FormInputs.AddHint($"Display {displayIndex + 1}{(screen == null ? "" : $" · {screen.Name}")}");
+
+        FormInputs.AddVerticalSpace(6);
+        FormInputs.AddSectionSubHeader("Render node");
+        DrawInfoRow("Name", client.Name);
+        DrawInfoRow("Address", client.Address);
+        DrawInfoRow("Status", client.IsDeployed ? $"{client.StatusText} · project deployed" : client.StatusText);
+        if (!string.IsNullOrEmpty(client.Group))
+            DrawInfoRow("Group", client.Group);
+    }
+
+    /// <summary>A read-only label and value, aligned with the editable rows above and below it.</summary>
+    private static void DrawInfoRow(string label, string value)
+    {
+        FormInputs.DrawInputLabel(label);
+        ImGui.AlignTextToFramePadding();
+        ImGui.TextUnformatted(value);
+    }
+
     private static void DrawPlugCard(Setup setup, MachineConfig machineConfig, Guid id)
     {
+        // A render node's display is not this machine's plug: it gets its own card, and without this
+        // branch the local plug lookups below find nothing and the card stays empty.
+        if (Show.BoygroupManager.Instance.TryGetRemoteDisplayPlug(id, out var remoteClient, out var remoteDisplayIndex))
+        {
+            DrawRemoteDisplayCard(setup, remoteClient, remoteDisplayIndex);
+            return;
+        }
+
         var boundOutput = Plugs.TryGetBoundOutput(setup, machineConfig, id);
         var boundLabel = boundOutput == null ? "nothing bound" : $"presenting {SetupLabels.OutputLabel(boundOutput)}";
 
