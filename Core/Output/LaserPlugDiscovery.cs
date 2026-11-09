@@ -160,8 +160,8 @@ public static class LaserPlugDiscovery
     /// <summary>
     /// This machine's IPv4 addresses with their interface names ("ethernet: 10.0.0.69"). The enumeration
     /// queries the network stack and can block for tens to hundreds of milliseconds, so it never runs
-    /// on the caller's thread: the list is refreshed in the background every ten seconds and the caller
-    /// gets the last result (bind-all and localhost until the first one lands).
+    /// on the caller's thread: the first list is built right here (a few milliseconds) so a picker
+    /// opens populated, later refreshes run in the background every ten seconds.
     /// </summary>
     public static IReadOnlyList<(string Name, string Ip)> InterfaceAddresses
     {
@@ -171,7 +171,10 @@ public static class LaserPlugDiscovery
             if (now - _interfacesTimestamp >= 10000 && Interlocked.Exchange(ref _interfaceRefreshRunning, 1) == 0)
             {
                 _interfacesTimestamp = now;
-                _ = Task.Run(RefreshInterfaceAddresses);
+                if (Volatile.Read(ref _everRefreshed) == 0)
+                    RefreshInterfaceAddresses();
+                else
+                    _ = Task.Run(RefreshInterfaceAddresses);
             }
 
             return _cachedInterfaces;
@@ -228,6 +231,7 @@ public static class LaserPlugDiscovery
         }
         finally
         {
+            Volatile.Write(ref _everRefreshed, 1);
             Volatile.Write(ref _interfaceRefreshRunning, 0);
         }
     }
@@ -236,6 +240,9 @@ public static class LaserPlugDiscovery
     private static readonly (string Name, string Ip)[] BasicInterfaces = [("any interface", "0.0.0.0"), ("localhost", "127.0.0.1")];
 
     private static int _interfaceRefreshRunning;
+    private static int _everRefreshed;
     private static volatile IReadOnlyList<(string Name, string Ip)> _cachedInterfaces = BasicInterfaces;
-    private static long _interfacesTimestamp = long.MinValue;
+    // Half of long.MinValue: the delta `now - this` must not overflow (TickCount64 - long.MinValue
+    // wraps negative), or the refresh never fires and the picker keeps the two basic entries forever.
+    private static long _interfacesTimestamp = long.MinValue / 2;
 }
