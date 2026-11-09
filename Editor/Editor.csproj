@@ -210,6 +210,7 @@
         <PackageNames Include="Mediapipe">
             <Name>t3.mediapipe</Name>
         </PackageNames>
+        <PackageNames Include="DepthAnything" />
         <!-- Add more as needed -->
     </ItemGroup>
     <PropertyGroup>
@@ -272,11 +273,8 @@
 
     <!-- Release-only: read-only packages and exports are loaded from bin, so Release output must be exactly
          what the build produces. Debug reads symbols from source and profits from incremental builds;
-         cleaning it also gutted the output folder of a running editor. Escape hatch for when a stray
-         process pins the output directory (its CWD or an Explorer window): build with
-         -p:ClearBuildOutput=false, which increments into the existing tree instead of wiping it. -->
-    <Target Name="ClearBuildOutput" BeforeTargets="BeforeBuild"
-            Condition="'$(Configuration)' == 'Release' And '$(ClearBuildOutput)' != 'false'">
+         cleaning it also gutted the output folder of a running editor. -->
+    <Target Name="ClearBuildOutput" BeforeTargets="BeforeBuild" Condition="'$(Configuration)' == 'Release' And '$(ClearBuildOutput)' != 'false'">
         <RemoveDir Directories="bin/$(Configuration)" />
     </Target>
 
