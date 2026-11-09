@@ -209,6 +209,24 @@ internal sealed partial class SettingsWindow
                                           """,
                                           true);
 
+        // Where the slave takes its playback clock from. "Internal" needs nothing beyond TiXL
+        // (NTP exchange, ~2 ms phase on a wired LAN); "PTP (OS clock)" trusts that a discipline
+        // daemon keeps this machine's clock on the show reference, and applies anchors directly.
+        var syncMode = config.BoygroupClockSync;
+        var syncChoices = new List<string> { UserSettings.SyncInternal, UserSettings.SyncPtp };
+        if (FormInputs.AddDropdown(ref syncMode, syncChoices, "Clock sync",
+                                   """
+                                   Internal: TiXL measures the clock offset to the master itself (no extra
+                                   software, about two milliseconds of phase on a wired LAN). PTP: trust this
+                                   machine's OS clock, which a PTP discipline daemon (linuxptp, w32time with
+                                   a PTP source, ...) keeps on the show reference - use when the venue runs PTP.
+                                   """))
+        {
+            config.BoygroupClockSync = syncMode;
+            UserSettings.Save();
+            changed = true;
+        }
+
         DrawNetworkInterface(ref changed);
     }
 

@@ -759,8 +759,8 @@ internal sealed class BoygroupManager
                                        t = "clockPong",
                                        id = json["id"]?.Value<long>() ?? 0,
                                        c1 = json["c1"]?.Value<long>() ?? 0,
-                                       m2 = DateTime.UtcNow.Ticks,
-                                       m3 = DateTime.UtcNow.Ticks,
+                                       m2 = PreciseUtcNowTicks(),
+                                       m3 = PreciseUtcNowTicks(),
                                    });
                 break;
 
@@ -2023,7 +2023,7 @@ internal sealed class BoygroupManager
                                  bars = anchorBars,
                                  speed = playback.PlaybackSpeed,
                                  bpm = playback.Bpm,
-                                 at = (DateTime.UtcNow + lead).Ticks,
+                                 at = PreciseUtcNowTicks() + lead.Ticks,
                              });
     }
 
@@ -2040,6 +2040,30 @@ internal sealed class BoygroupManager
     private long _clockPingId;
     private int _clockSamples;
 
+    /// <summary>Whether playback anchors apply with the OS clock trusted (a PTP discipline daemon
+    /// keeps it within microseconds of the show reference) or with TiXL's own NTP exchange.</summary>
+    private static bool UsesOsClock => string.Equals(UserSettings.Config.BoygroupClockSync,
+                                                     UserSettings.SyncPtp, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// UTC now, from the best clock this machine has. GetSystemTimePreciseAsFileTime is 100 ns
+    /// resolution without the ~15 ms smoothing of DateTime.UtcNow; used for both the NTP stamps and
+    /// (in PTP mode) the anchor instants.
+    /// </summary>
+    private static long PreciseUtcNowTicks()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            GetSystemTimePreciseAsFileTime(out var fileTime);
+            return new DateTime(1601, 1, 1, 0, 0, 0, DateTimeKind.Utc).Ticks + fileTime;
+        }
+
+        return DateTime.UtcNow.Ticks; // Linux/macOS: DateTime.UtcNow already reads clock_gettime(CLOCK_REALTIME).
+    }
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = false)]
+    private static extern void GetSystemTimePreciseAsFileTime(out long fileTime);
+
     private void SendClockPings()
     {
         if (State != BoygroupState.Client)
@@ -2054,12 +2078,16 @@ internal sealed class BoygroupManager
         if (_transport is not BoygroupClientTransport clientTransport)
             return;
 
+        // PTP mode trusts the OS clock: nothing to measure against the master.
+        if (UsesOsClock)
+            return;
+
         SendJson(clientTransport.ServerPeer,
                  new
                  {
                      t = "clockPing",
                      id = ++_clockPingId,
-                     c1 = DateTime.UtcNow.Ticks,
+                     c1 = PreciseUtcNowTicks(),
                  });
     }
 
@@ -2071,7 +2099,7 @@ internal sealed class BoygroupManager
         var c1 = json["c1"]?.Value<long>() ?? 0;
         var m2 = json["m2"]?.Value<long>() ?? 0;
         var m3 = json["m3"]?.Value<long>() ?? 0;
-        var c4 = DateTime.UtcNow.Ticks;
+        var c4 = PreciseUtcNowTicks();
         if (c1 == 0 || m2 == 0 || m3 == 0)
             return;
 
@@ -2119,7 +2147,9 @@ internal sealed class BoygroupManager
         if (playback == null || masterUtc == 0)
             return;
 
-        var localUtc = masterUtc - _clockOffsetTicks;
+        // PTP mode: the OS clock is the shared reference, no offset to subtract. Internal mode:
+        // subtract the measured offset so the instant lands in this machine's clock domain.
+        var localUtc = UsesOsClock ? masterUtc : masterUtc - _clockOffsetTicks;
         var deltaSecs = (localUtc - DateTime.UtcNow.Ticks) / (double)TimeSpan.TicksPerSecond;
         _anchorLocalStopwatch = Stopwatch.GetTimestamp() + deltaSecs * Stopwatch.Frequency;
 
