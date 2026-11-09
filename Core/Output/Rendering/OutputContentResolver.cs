@@ -316,6 +316,129 @@ public static class OutputContentResolver
     private static readonly Dictionary<Guid, Texture2D?> _lastContentByChildId = new();
     private static int _pulledContentFrame = -1;
 
+    /// <summary>
+    /// The size a send's content needs so the surface showing it gets a pixel per projector pixel: the surface's size
+    /// in metres at the density it is projected with (see <see cref="ProjectedPixelsPerMeter"/>), divided by the share
+    /// of the source its slice cuts, so a slice of a larger render lands 1:1 too. The render keeps the surface's
+    /// aspect. With several surfaces showing the send, the first decides and <paramref name="hasConflict"/> reports
+    /// whether another one needs a different aspect.
+    /// </summary>
+    public static bool TryGetSurfaceRequest(Setup setup, Guid symbolChildId, out Int2 resolution, out bool hasConflict)
+    {
+        resolution = default;
+        if (!TryGetSurfaceExtent(setup, symbolChildId, projected: true, out var size, out hasConflict))
+            return false;
+
+        resolution = new Int2(Math.Clamp((int)MathF.Round(size.X), 1, OutputDefinition.MaxResolution),
+                              Math.Clamp((int)MathF.Round(size.Y), 1, OutputDefinition.MaxResolution));
+        return true;
+    }
+
+    /// <summary>
+    /// Width over height of the content a send needs for the surface showing it: the surface's aspect in metres,
+    /// corrected for the share of the source its slice cuts. Unlike <see cref="TryGetSurfaceRequest"/> it doesn't
+    /// change while the surface is being aligned, which keeps feedback and other size-bound state intact.
+    /// </summary>
+    public static bool TryGetSurfaceAspect(Setup setup, Guid symbolChildId, out float aspect, out bool hasConflict)
+    {
+        aspect = 1;
+        if (!TryGetSurfaceExtent(setup, symbolChildId, projected: false, out var size, out hasConflict))
+            return false;
+
+        aspect = size.X / MathF.Max(size.Y, 0.0001f);
+        return true;
+    }
+
+    /**
+     * The full content's extent for the first surface showing the send: in output pixels when
+     * <paramref name="projected"/>, else in metres. Reports whether another surface needs a different aspect.
+     */
+    private static bool TryGetSurfaceExtent(Setup setup, Guid symbolChildId, bool projected, out Vector2 size, out bool hasConflict)
+    {
+        size = default;
+        hasConflict = false;
+        var source = setup.FindSourceByChildId(symbolChildId);
+        if (source == null)
+            return false;
+
+        var isFound = false;
+        foreach (var surface in setup.Surfaces)
+        {
+            var slice = setup.FindSlice(surface.SliceId);
+            if (slice == null || slice.SourceId != source.Id)
+                continue;
+
+            var uvWidth = MathF.Max(slice.UvRect.Z - slice.UvRect.X, 0.0001f);
+            var uvHeight = MathF.Max(slice.UvRect.W - slice.UvRect.Y, 0.0001f);
+            var scale = projected ? ProjectedPixelsPerMeter(setup, surface) : 1f;
+            var extent = new Vector2(surface.SizeInMeters.X * scale / uvWidth, surface.SizeInMeters.Y * scale / uvHeight);
+            if (!isFound)
+            {
+                size = extent;
+                isFound = true;
+                continue;
+            }
+
+            // A one-percent tolerance: rounding must not read as a disagreement.
+            var aspect = size.X / MathF.Max(size.Y, 0.0001f);
+            if (MathF.Abs(extent.X / MathF.Max(extent.Y, 0.0001f) - aspect) > aspect * 0.01f)
+                hasConflict = true;
+        }
+
+        return isFound;
+    }
+
+    /// <summary>
+    /// Output pixels per metre where a surface is projected densest: the longest projected edge in each direction
+    /// over the surface's size along it, and the larger of the two, so even the near side of a keystone gets a pixel
+    /// per output pixel. A region measures its part of its mapped ancestor's pin. A surface on no output yet falls
+    /// back to its <see cref="Surface.PixelsPerMeter"/>.
+    /// </summary>
+    private static float ProjectedPixelsPerMeter(Setup setup, Surface surface)
+    {
+        var fallback = MathF.Max(surface.PixelsPerMeter, 1f);
+        var carrier = setup.FindMappedAncestor(surface.Id);
+        if (carrier == null || carrier.OutputMappings.Count == 0)
+            return fallback;
+
+        var mapping = carrier.OutputMappings[0];
+        var output = setup.FindOutput(mapping.OutputId);
+        if (output == null || mapping.Quad.Length < 4)
+            return fallback;
+
+        var quad = mapping.Quad;
+        if (!ReferenceEquals(carrier, surface))
+        {
+            if (!SurfaceGeometry.TryGetRegionQuad(setup, carrier, surface, mapping, Vector2.One, _projectedQuadScratch))
+                return fallback;
+
+            quad = _projectedQuadScratch;
+        }
+
+        // TL, TR, BR, BL in the canvas' 0..1 space.
+        var canvas = output.CanvasSize;
+        var widthPx = MathF.Max(((quad[1] - quad[0]) * canvas).Length(), ((quad[2] - quad[3]) * canvas).Length());
+        var heightPx = MathF.Max(((quad[3] - quad[0]) * canvas).Length(), ((quad[2] - quad[1]) * canvas).Length());
+        var size = surface.SizeInMeters;
+        var density = MathF.Max(widthPx / MathF.Max(size.X, 0.0001f), heightPx / MathF.Max(size.Y, 0.0001f));
+        if (!float.IsFinite(density) || density < 1f)
+            return fallback;
+
+        // In steps of 2^(1/16), about 4.4%: an alignment drag then resizes the render only now and then, not every frame.
+        var steps = MathF.Round(MathF.Log2(density) * DensityStepsPerOctave);
+        density = MathF.Pow(2, steps / DensityStepsPerOctave);
+
+        // While points are aligned a pin passes through extreme shapes with corners far off the canvas. No surface
+        // needs more pixels along its longest side than the canvas has, and asking for more ran the GPU out of memory.
+        var longestSideInMeters = MathF.Max(MathF.Max(size.X, size.Y), 0.0001f);
+        return MathF.Max(1f, MathF.Min(density, MathF.Max(canvas.X, canvas.Y) / longestSideInMeters));
+    }
+
+    /** How finely the projected density is stepped: this many steps per doubling. */
+    private const float DensityStepsPerOctave = 16;
+
+    private static readonly Vector2[] _projectedQuadScratch = new Vector2[4];
+
     /// <summary>The first fitted patch on <paramref name="output"/> that shows this send's content, as a request.</summary>
     private static bool TryGetFittedPatchRequest(Setup setup, OutputDefinition output, Guid symbolChildId, out Int2 resolution)
     {
