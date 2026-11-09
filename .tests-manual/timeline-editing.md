@@ -162,3 +162,37 @@ Then right-click a clip of any other type.
 - For the audio clip, a **Set as Main Soundtrack** row appears below a separator,
   under **Delete**.
 - For the other clip, that row is absent and no leftover separator remains.
+
+## Step: Trimming previews the cut frame
+
+**Action:**
+With playback stopped, place the playhead somewhere outside a video clip. Drag the clip's start
+handle left and right, then its end handle. Release, and repeat once while holding `Shift`
+(snapping off) and once with playback running.
+
+**Expected:**
+- While a handle is dragged, the output shows the frame at that edge: the first frame for the start
+  handle, the last frame for the end handle.
+- The playhead stays where it was and is drawn faded during the drag; the trim edge still snaps to it.
+- On release the playhead is back at full opacity and the output shows its frame again.
+- A plain click on a handle (no drag) does not change the output.
+- Dragging the end handle past the end of the footage holds the last frame; dragging the start handle
+  before the footage holds the first frame. The console shows no FFmpeg decode errors.
+- During playback, trimming does not jump the output; playback continues from the playhead.
+
+## Step: Dragging toward the edge scrolls the timeline
+
+**Action:**
+Zoom in so only a few bars are visible. Drag a clip body slowly toward the right edge of the timeline
+and past it, hold it there for a moment, then drag it back and release. Repeat with a clip's trim
+handle, a keyframe in the dope sheet, a keyframe in Curve mode, a selection range handle, a loop range
+handle and the playhead in the ruler, toward both the left and the right edge.
+
+**Expected:**
+- About 30 px before the edge the view starts scrolling; the further the pointer goes, the faster it scrolls.
+- The dragged element stays under the pointer while the view scrolls, also when the pointer is outside
+  the window.
+- A dragged clip stays selected and keeps following the pointer; on release it lands where it was
+  dropped and the move can be undone in one step.
+- A drag that starts near an edge does not scroll until the pointer moves toward that edge.
+- A clip drag that has locked to moving between layers does not scroll the timeline.
