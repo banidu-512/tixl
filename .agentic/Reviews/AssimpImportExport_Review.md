@@ -87,7 +87,10 @@ outputs that were not implemented. The port implements them through the existing
 2. A native hang can't be aborted. The render thread is never blocked, but the global Assimp lock
    stays held, so other Assimp imports and exports of the session wait. Status shows the elapsed
    time, so the hang is visible.
-3. Materials and textures are not imported; [DrawScene] uses the context material.
+3. ~~Materials and textures are not imported.~~ Implemented: PBR materials with base color,
+   emissive, normal and a CPU-baked roughness/metallic/occlusion map; textures decoded on the worker,
+   reused across transform-only reloads and released from CPU memory after upload. Not handled:
+   UV channel per texture (always UV0), texture transforms, alpha blending modes.
 4. Concave N-gons in `Geometry` are fan-triangulated by [GeometryToMesh] (existing limitation of
    `GeometryMeshCompiler`); `MeshData` uses Assimp's proper triangulation.
 5. Four influences per vertex (Assimp `LimitBoneWeights`), matching the skinning shader.

@@ -27,6 +27,18 @@ Add `[AssimpImport]` → `[DrawMesh]`, pin the `[DrawMesh]` output and set `File
 - The faces point outward (not inside-out) and are lit correctly.
 - `MeshCount` is 3 and `Metadata` lists vertex, triangle and polygon counts.
 
+## Step: Materials
+
+**Action:**
+Load a textured model (e.g. Examples:meshes/DamagedHelmet.glb and an .obj with an .mtl and image files next to it). Connect `Setup` → `[DrawScene]`.
+
+**Expected:**
+- Base color, normal, emissive and roughness/metallic maps show up like with `[LoadGltfScene]`.
+- Multi-material files draw each part with its own material.
+- Changing `Scale` reloads quickly without decoding the textures again.
+- With `ImportMaterials` off, `[DrawScene]` uses the material of the context and loading is faster.
+- A missing texture file shows a warning naming it; the model still loads.
+
 ## Step: Normalize, scale and axis conversion
 
 **Action:**

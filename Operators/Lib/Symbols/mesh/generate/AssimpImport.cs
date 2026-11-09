@@ -2,7 +2,9 @@
 using System.Diagnostics;
 using System.Threading;
 using Lib.Utils.AssimpIo;
+using T3.Graphics.Compat;
 using T3.Core.Rendering;
+using T3.Core.Rendering.Material;
 using T3.Core.Utils;
 
 namespace Lib.mesh.generate;
@@ -30,6 +32,9 @@ internal sealed class AssimpImport : Instance<AssimpImport>, IDescriptiveFilenam
 
     [Output(Guid = "C81E5F27-4A9D-4E36-B2F0-7D53A1C69E08")]
     public readonly Slot<SceneSetup?> Setup = new();
+
+    [Output(Guid = "B7D3E1A9-4C62-4F85-9E07-2A6C8D5F31B4")]
+    public readonly Slot<PbrMaterial?> Material = new();
 
     [Output(Guid = "5B2E9C61-D847-4F1A-93B6-E0A4C72F158D")]
     public readonly Slot<BufferWithViews?> SkinWeights = new();
@@ -73,7 +78,7 @@ internal sealed class AssimpImport : Instance<AssimpImport>, IDescriptiveFilenam
 
         _allOutputs =
             [
-                MeshData, Geometry, Points, Setup, SkinWeights, SkeletonPoints, Metadata, VertexCount, FaceCount, MeshCount,
+                MeshData, Geometry, Points, Setup, Material, SkinWeights, SkeletonPoints, Metadata, VertexCount, FaceCount, MeshCount,
                 BoundsMin, BoundsMax, MeshNames, BoneCount, AnimationCount, AnimationNames,
             ];
 
@@ -83,6 +88,7 @@ internal sealed class AssimpImport : Instance<AssimpImport>, IDescriptiveFilenam
         Geometry.UpdateAction += Update;
         Points.UpdateAction += Update;
         Setup.UpdateAction += Update;
+        Material.UpdateAction += Update;
         SkinWeights.UpdateAction += Update;
         SkeletonPoints.UpdateAction += Update;
         Metadata.UpdateAction += Update;
@@ -128,7 +134,8 @@ internal sealed class AssimpImport : Instance<AssimpImport>, IDescriptiveFilenam
                                                 Normalize.GetValue(context),
                                                 AxisConversionMode.GetEnumValue<AssimpAxisConversions>(context),
                                                 FlipNormals.GetValue(context),
-                                                SelectedMeshIndex.GetValue(context));
+                                                SelectedMeshIndex.GetValue(context),
+                                                ImportMaterials.GetValue(context));
 
         var reloadRequested = MathUtils.WasTriggered(TriggerReload.GetValue(context), ref _reloadTriggered);
         if (reloadRequested)
@@ -177,7 +184,7 @@ internal sealed class AssimpImport : Instance<AssimpImport>, IDescriptiveFilenam
     private void StartLoad(FileVersion fileVersion, AssimpImportSettings settings, bool reparse)
     {
         _isReloadRequested = false;
-        var request = new LoadRequest(++_requestGeneration, fileVersion, settings, reparse);
+        var request = new LoadRequest(++_requestGeneration, fileVersion, settings, reparse, _materialSource);
         _pendingLoad = request;
 
         var cancellationToken = request.Cancellation.Token;
@@ -197,8 +204,16 @@ internal sealed class AssimpImport : Instance<AssimpImport>, IDescriptiveFilenam
         {
             var scenes = GetOrImportScenes(request, cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
-            var data = AssimpModelLoader.Convert(scenes, request.Settings, cancellationToken);
-            outcome = new LoadOutcome(request.Generation, data, null);
+
+            // Decoding textures dominates conversion time; transform-only changes keep the uploaded materials
+            var previous = request.PreviousMaterials;
+            var reuseMaterials = previous != null
+                                 && ReferenceEquals(previous.Scenes, scenes)
+                                 && previous.SelectedMeshIndex == request.Settings.SelectedMeshIndex
+                                 && request.Settings.ImportMaterials;
+
+            var data = AssimpModelLoader.Convert(scenes, request.Settings, reuseMaterials, cancellationToken);
+            outcome = new LoadOutcome(request.Generation, data, scenes, null);
         }
         catch (OperationCanceledException)
         {
@@ -206,7 +221,7 @@ internal sealed class AssimpImport : Instance<AssimpImport>, IDescriptiveFilenam
         }
         catch (Exception e)
         {
-            outcome = new LoadOutcome(request.Generation, null, e.Message);
+            outcome = new LoadOutcome(request.Generation, null, null, e.Message);
         }
 
         lock (_completionLock)
@@ -273,6 +288,14 @@ internal sealed class AssimpImport : Instance<AssimpImport>, IDescriptiveFilenam
         try
         {
             UploadModel(outcome.Data);
+            if (!request.Settings.ImportMaterials)
+            {
+                _materialSource = null;
+            }
+            else if (!outcome.Data.ReusesPreviousMaterials)
+            {
+                _materialSource = new MaterialSource(outcome.Scenes!, request.Settings.SelectedMeshIndex);
+            }
         }
         catch (Exception e)
         {
@@ -327,6 +350,26 @@ internal sealed class AssimpImport : Instance<AssimpImport>, IDescriptiveFilenam
             throw;
         }
 
+        if (!data.ReusesPreviousMaterials)
+        {
+            // The previous materials stay alive until the new ones exist, so a failure leaves nothing dangling
+            var previousMaterials = _materials;
+            _materials = new GpuMaterials();
+            try
+            {
+                _materials.Create(data.Materials);
+            }
+            finally
+            {
+                previousMaterials.Dispose();
+            }
+
+            foreach (var material in data.Materials)
+            {
+                material.DropMaps();
+            }
+        }
+
         _model = data;
         _setup = CreateSceneSetup(data);
         _metadata = BuildMetadata(data);
@@ -360,8 +403,9 @@ internal sealed class AssimpImport : Instance<AssimpImport>, IDescriptiveFilenam
 
     /// <summary>
     /// The setup feeds [SampleGltfAnimation] / [PoseToSkinMatrices] with the skeleton and clips, and
-    /// [DrawScene] with one dispatch for the whole model. It shares this operator's buffers and is
-    /// never disposed by it, because <see cref="SceneSetup.Dispose()"/> would release them.
+    /// [DrawScene] with one draw per run of chunks sharing a material. It shares this operator's
+    /// buffers and materials and is never disposed by it, because <see cref="SceneSetup.Dispose()"/>
+    /// would release them.
     /// </summary>
     private SceneSetup? CreateSceneSetup(AssimpModelData data)
     {
@@ -375,6 +419,8 @@ internal sealed class AssimpImport : Instance<AssimpImport>, IDescriptiveFilenam
             setup.AnimationClips.AddRange(data.AnimationClips);
         }
 
+        var skinWeights = _hasSkin ? _skinWeightsBuffer! : null!;
+        var skeletonIndex = _hasSkin ? 0 : -1;
         setup.RootNodes.Add(new SceneSetup.SceneNode
                                 {
                                     Name = "Model",
@@ -382,15 +428,49 @@ internal sealed class AssimpImport : Instance<AssimpImport>, IDescriptiveFilenam
                                     Transform = new SceneSetup.Transform { Rotation = Quaternion.Identity, Scale = Vector3.One },
                                     MeshBuffers = _meshBuffers,
                                     MeshChunkIndex = 0,
-                                    SkinWeights = _hasSkin ? _skinWeightsBuffer! : null!,
-                                    SkeletonIndex = _hasSkin ? 0 : -1,
+                                    SkinWeights = skinWeights,
+                                    SkeletonIndex = skeletonIndex,
                                 });
-        setup.GenerateSceneDrawDispatches();
+
+        var chunks = data.Chunks;
+        var chunkIndex = 0;
+        while (chunkIndex < chunks.Length)
+        {
+            var materialIndex = data.ChunkMaterialIndices[chunkIndex];
+            var startFace = chunks[chunkIndex].StartFaceIndex;
+            var faceCount = 0;
+            var firstChunkIndex = chunkIndex;
+            while (chunkIndex < chunks.Length && data.ChunkMaterialIndices[chunkIndex] == materialIndex)
+            {
+                faceCount += chunks[chunkIndex].FaceCount;
+                chunkIndex++;
+            }
+
+            if (faceCount == 0)
+                continue;
+
+            setup.Dispatches.Add(new SceneSetup.SceneDrawDispatch
+                                     {
+                                         MeshBuffers = _meshBuffers,
+                                         VertexStartIndex = startFace * 3,
+                                         VertexCount = faceCount * 3,
+                                         Material = _materials.Get(materialIndex)!,
+                                         CombinedTransform = Matrix4x4.Identity,
+                                         ChunkIndex = firstChunkIndex,
+                                         Scale = Vector3.One,
+                                         SkinWeights = skinWeights,
+                                         SkeletonIndex = skeletonIndex,
+                                     });
+        }
+
         return setup;
     }
 
     private void ClearModel()
     {
+        _materials.Dispose();
+        _materials = new GpuMaterials();
+        _materialSource = null;
         _model = null;
         _setup = null;
         _hasMesh = false;
@@ -412,6 +492,7 @@ internal sealed class AssimpImport : Instance<AssimpImport>, IDescriptiveFilenam
         Geometry.Value = model?.Geometry;
         Points.Value = _hasPoints ? _pointBuffer : null;
         Setup.Value = _setup;
+        Material.Value = model != null && model.ChunkMaterialIndices.Length > 0 ? _materials.Get(model.ChunkMaterialIndices[0]) : null;
         SkinWeights.Value = _hasSkin ? _skinWeightsBuffer : null;
         SkeletonPoints.Value = _hasSkin ? _skeletonPointBuffer : null;
         Metadata.Value = _metadata;
@@ -456,8 +537,90 @@ internal sealed class AssimpImport : Instance<AssimpImport>, IDescriptiveFilenam
         _pointBuffer?.Dispose();
         _skinWeightsBuffer?.Dispose();
         _skeletonPointBuffer?.Dispose();
+        _materials.Dispose();
     }
     #endregion
+
+    /// <summary>
+    /// Textures, views and parameter buffers created for one loaded model. Shared default views of
+    /// <see cref="PbrMaterial"/> are referenced but never owned.
+    /// </summary>
+    private sealed class GpuMaterials : IDisposable
+    {
+        /// <summary>Render thread only.</summary>
+        public void Create(List<AssimpMaterialData> materials)
+        {
+            foreach (var material in materials)
+            {
+                var pbrMaterial = new PbrMaterial
+                                      {
+                                          Name = material.Name,
+                                          AlbedoMapSrv = CreateView(material.BaseColorMap) ?? PbrMaterial.DefaultAlbedoColorSrv,
+                                          EmissiveMapSrv = CreateView(material.EmissiveMap) ?? PbrMaterial.DefaultEmissiveColorSrv,
+                                          NormalSrv = CreateView(material.NormalMap) ?? PbrMaterial.DefaultNormalSrv,
+                                          RoughnessMetallicOcclusionSrv = CreateView(material.RoughnessMetallicOcclusionMap)
+                                                                          ?? PbrMaterial.DefaultRoughnessMetallicOcclusionSrv,
+                                          Parameters = new PbrMaterial.PbrParameters
+                                                           {
+                                                               BaseColor = material.BaseColor,
+                                                               EmissiveColor = material.EmissiveColor,
+                                                               Roughness = material.Roughness,
+                                                               Specular = 1,
+                                                               Metal = material.Metallic,
+                                                           },
+                                      };
+                pbrMaterial.UpdateParameterBuffer();
+                _materials.Add(pbrMaterial);
+            }
+        }
+
+        public PbrMaterial? Get(int index) => (uint)index < (uint)_materials.Count ? _materials[index] : null;
+
+        public void Dispose()
+        {
+            foreach (var material in _materials)
+            {
+                material.ParameterBuffer?.Dispose();
+                material.ParameterBuffer = null!;
+            }
+
+            foreach (var view in _views)
+            {
+                view.Dispose();
+            }
+
+            foreach (var texture in _textures)
+            {
+                texture.Dispose();
+            }
+
+            _materials.Clear();
+            _views.Clear();
+            _textures.Clear();
+        }
+
+        /** One view per decoded image; images shared by several materials are decoded once and get one texture. */
+        private ShaderResourceView? CreateView(AssimpTextureImage? image)
+        {
+            if (image == null)
+                return null;
+
+            if (_viewsByImage.TryGetValue(image, out var existing))
+                return existing;
+
+            var texture = Texture2D.CreateFromRgba(ResourceManager.Device, image.Width, image.Height, image.Rgba);
+            _textures.Add(texture);
+            var view = new ShaderResourceView(ResourceManager.Device, texture);
+            _views.Add(view);
+            _viewsByImage[image] = view;
+            return view;
+        }
+
+        private readonly List<PbrMaterial> _materials = [];
+        private readonly List<Texture2D> _textures = [];
+        private readonly List<ShaderResourceView> _views = [];
+        private readonly Dictionary<AssimpTextureImage, ShaderResourceView> _viewsByImage = new(ReferenceEqualityComparer.Instance);
+    }
 
     #region file resource
     /// <summary>Identity token for one state of the file; replaced by the resource on every change.</summary>
@@ -500,8 +663,9 @@ internal sealed class AssimpImport : Instance<AssimpImport>, IDescriptiveFilenam
     }
     #endregion
 
-    private sealed class LoadRequest(int generation, FileVersion file, AssimpImportSettings settings, bool reparse)
+    private sealed class LoadRequest(int generation, FileVersion file, AssimpImportSettings settings, bool reparse, MaterialSource? previousMaterials)
     {
+        public readonly MaterialSource? PreviousMaterials = previousMaterials;
         public readonly int Generation = generation;
         public readonly FileVersion File = file;
         public readonly AssimpImportSettings Settings = settings;
@@ -512,7 +676,10 @@ internal sealed class AssimpImport : Instance<AssimpImport>, IDescriptiveFilenam
         public readonly Stopwatch Stopwatch = Stopwatch.StartNew();
     }
 
-    private sealed record LoadOutcome(int Generation, AssimpModelData? Data, string? ErrorMessage);
+    private sealed record LoadOutcome(int Generation, AssimpModelData? Data, AssimpImportedScenes? Scenes, string? ErrorMessage);
+
+    /** What the uploaded materials were built from, to decide whether the next load can keep them. */
+    private sealed record MaterialSource(AssimpImportedScenes Scenes, int SelectedMeshIndex);
 
     private readonly Resource<FileVersion> _fileResource;
     private readonly ISlot[] _allOutputs;
@@ -538,6 +705,8 @@ internal sealed class AssimpImport : Instance<AssimpImport>, IDescriptiveFilenam
     private string _metadata = string.Empty;
 
     private readonly MeshBuffers _meshBuffers = new();
+    private GpuMaterials _materials = new();
+    private MaterialSource? _materialSource;
     private BufferWithViews? _pointBuffer;
     private BufferWithViews? _skinWeightsBuffer;
     private BufferWithViews? _skeletonPointBuffer;
@@ -568,6 +737,9 @@ internal sealed class AssimpImport : Instance<AssimpImport>, IDescriptiveFilenam
 
     [Input(Guid = "2B3C4D5E-6F7A-8B9C-1D2E-3F4A5B6C7D8E")]
     public readonly InputSlot<int> SelectedMeshIndex = new(-1);
+
+    [Input(Guid = "9D2B6F48-E1C7-4A35-B806-7F3E52C0A9D1")]
+    public readonly InputSlot<bool> ImportMaterials = new(true);
 
     [Input(Guid = "4E9A1C73-D6B2-4F58-8A07-B3C5E91D26F4")]
     public readonly InputSlot<bool> TriggerReload = new();

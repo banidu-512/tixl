@@ -1,7 +1,7 @@
 {
   "FormatVersion": 3,
   "Id": "e0b5b99d-c44f-434d-920d-422e88c75870"/*AssimpImport*/,
-  "Description": "Loads a 3D model file with Assimp as mesh, points, polygon geometry and skeleton with animations.\n\nReads 40+ formats, among them FBX, glTF/GLB, OBJ, Collada (DAE), STL, PLY, 3DS, Blend, X3D and 3MF. All meshes of the file are combined with their node transforms applied; each mesh instance becomes one chunk of MeshData and one part of Geometry. Loading runs in the background, so large files don't stall playback; the previous model stays visible until the new one is ready, and the file hot-reloads when it changes on disk.\n\nOutputs:\n- MeshData: triangulated mesh for [DrawMesh] and the other mesh operators.\n- Geometry: polygonal geometry with N-gons preserved (quads stay quads) for [BevelGeometry], [ExplodeGeometry], [GeometryToMesh] and the other geometry operators.\n- Points: one point per vertex, with the vertex color.\n- Setup: skeleton and animation clips for [SampleGltfAnimation] and [PoseToSkinMatrices], and a single dispatch for [DrawScene].\n- SkinWeights / SkeletonPoints: for [SkinMesh], [SkinPoints] and visualizing the rig.\n\nMaterials and textures are not imported yet; assign a material downstream.\n\nAKA: fbx, gltf, glb, dae, collada, 3ds, stl, ply, blend, model, import, assimp\n\nSee also: [LoadObj], [LoadGltfScene], [LoadObjGeometry], [AssimpExport]\n\nTips:\n- Normalize fits any model into a unit cube around the origin, which helps with files in centimeters or kilometers.\n- Use YUpToZUp / ZUpToYUp for files authored with a different up axis. Both are rotations, so animations stay intact; the Flip modes mirror the model and reverse the triangle winding to keep faces pointing outward.",
+  "Description": "Loads a 3D model file with Assimp as mesh, points, polygon geometry and skeleton with animations.\n\nReads 40+ formats, among them FBX, glTF/GLB, OBJ, Collada (DAE), STL, PLY, 3DS, Blend, X3D and 3MF. All meshes of the file are combined with their node transforms applied; each mesh instance becomes one chunk of MeshData and one part of Geometry. Loading runs in the background, so large files don't stall playback; the previous model stays visible until the new one is ready, and the file hot-reloads when it changes on disk.\n\nOutputs:\n- MeshData: triangulated mesh for [DrawMesh] and the other mesh operators.\n- Geometry: polygonal geometry with N-gons preserved (quads stay quads) for [BevelGeometry], [ExplodeGeometry], [GeometryToMesh] and the other geometry operators.\n- Points: one point per vertex, with the vertex color.\n- Setup: materials, skeleton and animation clips for [DrawScene], [SampleGltfAnimation] and [PoseToSkinMatrices]. [DrawScene] draws each part with its own material.\n- Material: the material of the first mesh, e.g. for [UseMaterial] around a [DrawMesh].\n- SkinWeights / SkeletonPoints: for [SkinMesh], [SkinPoints] and visualizing the rig.\n\nMaterials are converted to PBR materials with base color, emissive, normal and roughness/metallic/occlusion maps. Textures are read from the file (embedded) or from image files next to the model, also when the file stores an absolute path of another machine.\n\nAKA: fbx, gltf, glb, dae, collada, 3ds, stl, ply, blend, model, import, assimp\n\nSee also: [LoadObj], [LoadGltfScene], [LoadObjGeometry], [AssimpExport]\n\nTips:\n- Normalize fits any model into a unit cube around the origin, which helps with files in centimeters or kilometers.\n- Use YUpToZUp / ZUpToYUp for files authored with a different up axis. Both are rotations, so animations stay intact; the Flip modes mirror the model and reverse the triangle winding to keep faces pointing outward.",
   "InputUis": [
     {
       "InputId": "b569d0cc-9f84-419c-a3db-91406df6a3f8"/*FilePath*/,
@@ -24,10 +24,18 @@
       "Description": "Reloads the file, e.g. after changing files it references."
     },
     {
-      "InputId": "6aff02c4-35c8-4875-bb25-d2b10adfc276"/*PostProcessFlags*/,
+      "InputId": "9d2b6f48-e1c7-4a35-b806-7f3e52c0a9d1"/*ImportMaterials*/,
       "Position": {
         "X": 0.0,
         "Y": 90.0
+      },
+      "Description": "Reads materials and decodes their textures. Turn off for faster loading when the model gets its own material."
+    },
+    {
+      "InputId": "6aff02c4-35c8-4875-bb25-d2b10adfc276"/*PostProcessFlags*/,
+      "Position": {
+        "X": 0.0,
+        "Y": 135.0
       },
       "GroupTitle": "Processing",
       "Description": "How much Assimp prepares the mesh.\n\nNone: only triangulation and validation; missing normals are computed from the faces.\nBasic: generates smooth normals where the file has none.\nFull: also generates UVs, tangents, joins identical vertices and optimizes the vertex cache order."
@@ -36,7 +44,7 @@
       "InputId": "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d"/*FlipNormals*/,
       "Position": {
         "X": 0.0,
-        "Y": 135.0
+        "Y": 180.0
       },
       "Description": "Inverts all normals and reverses the triangle winding, for models that render inside out."
     },
@@ -44,7 +52,7 @@
       "InputId": "2b3c4d5e-6f7a-8b9c-1d2e-3f4a5b6c7d8e"/*SelectedMeshIndex*/,
       "Position": {
         "X": 0.0,
-        "Y": 180.0
+        "Y": 225.0
       },
       "Description": "Imports only the mesh with this index (see MeshNames). -1 imports all meshes.",
       "Min": -1,
@@ -55,7 +63,7 @@
       "InputId": "9c5d0e4f-7a1b-5c9d-2e3f-3b4c5d6e7f8a"/*AxisConversionMode*/,
       "Position": {
         "X": 0.0,
-        "Y": 225.0
+        "Y": 270.0
       },
       "GroupTitle": "Transform",
       "Description": "Converts between coordinate conventions. YUpToZUp and ZUpToYUp rotate the model by 90 degrees around X; the Flip modes mirror it along one axis."
@@ -64,7 +72,7 @@
       "InputId": "8b4c9d3e-6f0a-4b8c-9d1e-1f2b3c4d5e6f"/*Normalize*/,
       "Position": {
         "X": 0.0,
-        "Y": 270.0
+        "Y": 315.0
       },
       "Description": "Centers the model at the origin and scales it to fit into a unit cube."
     },
@@ -72,7 +80,7 @@
       "InputId": "7a3b8c2d-5e9f-4a7b-8c9d-0e1f2a3b4c5d"/*Scale*/,
       "Position": {
         "X": 0.0,
-        "Y": 315.0
+        "Y": 360.0
       },
       "Description": "Uniform scale, applied after normalization.",
       "Min": 0.01,
@@ -105,6 +113,13 @@
     },
     {
       "OutputId": "c81e5f27-4a9d-4e36-b2f0-7d53a1c69e08"/*Setup*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "OutputId": "b7d3e1a9-4c62-4f85-9e07-2a6c8d5f31b4"/*Material*/,
       "Position": {
         "X": 300.0,
         "Y": 0.0

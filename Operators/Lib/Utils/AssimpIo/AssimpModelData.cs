@@ -26,7 +26,8 @@ internal readonly record struct AssimpImportSettings(AssimpPostProcessPresets Pr
                                                      bool Normalize,
                                                      AssimpAxisConversions AxisConversion,
                                                      bool FlipNormals,
-                                                     int SelectedMeshIndex);
+                                                     int SelectedMeshIndex,
+                                                     bool ImportMaterials);
 
 /// <summary>
 /// Per-vertex joint influences in the layout of the skinning compute shader used by [SkinMesh]
@@ -46,7 +47,8 @@ internal struct AssimpSkinWeight
 
 /// <summary>
 /// CPU-side result of an Assimp import. Built on a worker thread; only the owning operator
-/// turns it into GPU resources, on the render thread. Never mutated after publication.
+/// turns it into GPU resources, on the render thread. Never mutated after publication, except
+/// that the owner drops the decoded texture pixels once they are on the GPU.
 /// </summary>
 internal sealed class AssimpModelData
 {
@@ -55,6 +57,18 @@ internal sealed class AssimpModelData
 
     /// <summary>One chunk per imported mesh instance, so chunk draws can address single objects of the file.</summary>
     public MeshChunkDef[] Chunks = [];
+
+    /// <summary>Per chunk: index into <see cref="Materials"/>, or -1 for meshes without a usable material.</summary>
+    public int[] ChunkMaterialIndices = [];
+
+    /// <summary>
+    /// Only the materials used by the imported meshes; empty when material import is off or when
+    /// <see cref="ReusesPreviousMaterials"/> is set.
+    /// </summary>
+    public readonly List<AssimpMaterialData> Materials = [];
+
+    /// <summary>The materials are the ones of the previous load of the same parsed file and mesh selection.</summary>
+    public bool ReusesPreviousMaterials;
 
     public Point[] Points = [];
 
