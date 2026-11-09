@@ -332,6 +332,21 @@ public static class FailoverArbiter
         // IPAddress.Any follows the default interface — the common show setup (single LAN NIC).
         // A pinned adapter (Settings → Network) binds and joins on that adapter's address instead.
         var pinnedAddress = T3.Core.Utils.LanInterfaces.ResolveAddress(_config.NetworkInterfaceName);
+
+        // Unpinned multicast follows the OS's default adapter, which is not necessarily the show
+        // network on a machine with Wi-Fi, a VPN or Hyper-V adapters. Two such machines then cannot
+        // hear each other and BOTH become Active - both stream the show. Worth a loud warning.
+        if (pinnedAddress == null)
+        {
+            var usable = T3.Core.Utils.LanInterfaces.GetUsable();
+            if (usable.Count > 1)
+            {
+                Log.Warning("Failover: heartbeats are not pinned to an adapter and this machine has "
+                          + $"{usable.Count} usable network interfaces. If the pair ends up both ACTIVE, "
+                          + "pick the show network under Settings → Network (failover rebinds immediately).");
+            }
+        }
+
         _role = NodeRole.Probing;
         _lastStateChangeTicks = Environment.TickCount64;
         _peers.Clear();
