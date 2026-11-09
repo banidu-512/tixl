@@ -1,5 +1,8 @@
 # Depth Splat Example
 
+> **Requires the Vulkan backend.** The D3D11 backend does not draw compute-written point buffers, so this chain
+> renders black there even though `PointCount` shows the points exist. Launch with `TIXL_BACKEND=vulkan`.
+
 Turns a still image or video into an orbitable 2.5D splat: DepthAnything estimates depth, `DepthToPoints` unprojects every pixel into a camera-space point, and `DrawPoints` billboards the points as soft sprites.
 
 ![Front view](Images/depth-splat-front.png)

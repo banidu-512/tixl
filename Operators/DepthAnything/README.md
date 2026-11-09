@@ -60,6 +60,8 @@ DepthToPoints.Points            → DrawPoints.GPoints
 
 On `DrawPoints` enable `UsePointsScale`, set `PointSize` to about 5, and turn `EnableZWrite` off. Each point is billboarded in camera space; its `Scale` is the world-space size that covers `SplatSizePixels` screen pixels at its depth, so near and far points look evenly dense. The result is a live 2.5D splat of the input that can be orbited, transformed and composited like any other 3D object.
 
+> **Run splats on the Vulkan backend.** The D3D11 backend does not draw point buffers written by a compute shader, so on D3D11 the chain is silently black although `PointCount` reports tens of thousands of points. Start the editor with `TIXL_BACKEND=vulkan` (or pick Vulkan in the settings) for this chain; D3D11 is fine for every other depth operator. Vulkan needs a Slang SPIR-V build with `spirv-opt` reachable from `slangc`; where the installed release has no `spirv-opt`, put it in Slang's `bin` folder and set `TIXL_SLANG_IN_PROCESS=0` so the compiler can find it.
+
 - `PixelStride` and `MaxPoints` bound the cost. The default 2 and 262,144 points turn a 518x518 model output into ~67k points; the stride grows automatically when the cap would be exceeded.
 - Invalid depths and points below `ConfidenceThreshold` are written as zero-scale transparent points, so no compaction pass or CPU readback is needed.
 - `VerticalFov` is 0 when the model doesn't predict intrinsics; `DepthToPoints` falls back to 50° so the view stays usable.
