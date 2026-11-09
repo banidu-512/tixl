@@ -192,21 +192,26 @@ internal static class Program
                              CursorOnCanvas = new Vector2(-123.5f, 88.25f),
                              SelectedChildIds = [Guid.NewGuid(), Guid.NewGuid()],
                              ColorRgb = 0x12ab34,
+                             WheelSpin = -3,
+                             PressedKeys = [17, 88],
                          };
 
         var buffer = new byte[128];
         var size = packet.Encode(buffer);
-        Check(size == 2 + 16 + 8 + 1 + 2 * 16 + 3, $"encoded size {size} unexpected");
+        Check(size == 2 + 16 + 8 + 1 + 2 * 16 + 1 + 3 + 1 + 2, $"encoded size {size} unexpected");
         Check(PresencePacket.TryDecode(buffer.AsSpan(0, size), out var decoded), "decode failed");
         Check(decoded.PeerId == 7 && decoded.Flags == packet.Flags, "header fields mismatch");
         Check(decoded.CompositionId == packet.CompositionId, "composition id mismatch");
         Check(MathF.Abs(decoded.CursorOnCanvas.X - packet.CursorOnCanvas.X) < 0.001f, "cursor x drifted");
         Check(decoded.SelectedChildIds.SequenceEqual(packet.SelectedChildIds), "selection mismatch");
         Check(decoded.ColorRgb == packet.ColorRgb, $"cursor color lost ({decoded.ColorRgb:x6})");
+        Check(decoded.WheelSpin == -3, "wheel spin lost");
+        Check(decoded.PressedKeys.SequenceEqual(packet.PressedKeys), "pressed keys lost");
 
-        // An older peer's packet (no color bytes) must still decode, with the color left at 0.
-        Check(PresencePacket.TryDecode(buffer.AsSpan(0, size - 3), out var oldPeer), "trailing-byte-free packet rejected");
-        Check(oldPeer.ColorRgb == 0, "missing color decoded as something else");
+        // An older peer's packet (no appended bytes) must still decode: color 0, no keys, no wheel.
+        Check(PresencePacket.TryDecode(buffer.AsSpan(0, 27 + 2 * 16), out var oldPeer), "short packet rejected");
+        Check(oldPeer.ColorRgb == 0 && oldPeer.WheelSpin == 0 && oldPeer.PressedKeys.Length == 0,
+              "appended fields decoded from a packet that has none");
 
         Check(!PresencePacket.TryDecode(buffer.AsSpan(0, 26), out _), "truncated packet accepted");
     }
