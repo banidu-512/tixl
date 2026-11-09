@@ -56,6 +56,17 @@ internal sealed class VdbToSdfField : Instance<VdbToSdfField>, IGraphNodeOp
 
     bool IGraphNodeOp.TryBuildCustomCode(CodeAssembleContext c)
     {
+        // Before the grid arrives the resource list does not declare the buffer, so emitting the
+        // call here would reference an undeclared identifier and fail the whole shader compile.
+        // Report "outside everywhere" until there is something to sample; the resource appears in
+        // the same pass that brings the real call back.
+        if (_srv == null)
+        {
+            c.AppendCall($"f{c}.w = {ShaderNode}OutsideValue;");
+            c.AppendCall($"f{c}.xyz = 1;");
+            return true;
+        }
+
         c.AppendCall($"f{c}.w = vdbSdf{ShaderNode}({ShaderNode}Grid, p{c}.xyz, {ShaderNode}BoundsMin, {ShaderNode}BoundsMax, {ShaderNode}ValueScale, {ShaderNode}ValueOffset, {ShaderNode}OutsideValue);");
         c.AppendCall($"f{c}.xyz = p{c}.w < 0.5 ? p{c}.xyz : 1;"); // local space, as every field node provides
         return true;
