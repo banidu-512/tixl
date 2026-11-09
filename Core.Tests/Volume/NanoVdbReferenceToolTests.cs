@@ -34,18 +34,24 @@ public class NanoVdbReferenceToolTests(ITestOutputHelper output)
         var grid = LoadFirstFloatGrid(sample);
         Assert.NotNull(grid);
 
-        var path = Path.Combine(Path.GetTempPath(), $"tixl-ref-{Guid.NewGuid():N}.nvdb");
+        // TIXL_NANOVDB_OUTPUT_DIR keeps the file around for inspecting with the reference tools.
+        var keepFolder = Environment.GetEnvironmentVariable("TIXL_NANOVDB_OUTPUT_DIR");
+        var path = string.IsNullOrEmpty(keepFolder)
+                       ? Path.Combine(Path.GetTempPath(), $"tixl-ref-{Guid.NewGuid():N}.nvdb")
+                       : Path.Combine(keepFolder, "ours.nvdb");
+
         try
         {
             NanoVdbBuffer.FromGrid(grid!).Save(path);
 
             var validate = Run(tools, "nanovdb_validate", path);
             output.WriteLine(validate.Output);
-            Assert.True(validate.ExitCode == 0, $"nanovdb_validate rejected our buffer:\n{validate.Output}");
+            Assert.True(validate.ExitCode == 0, $"nanovdb_validate rejected our buffer ({path}):\n{validate.Output}");
         }
         finally
         {
-            File.Delete(path);
+            if (string.IsNullOrEmpty(keepFolder))
+                File.Delete(path);
         }
     }
 
