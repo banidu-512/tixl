@@ -53,7 +53,7 @@ internal static class AssimpModelLoader
     {
         var scenes = Import(absolutePath, settings.Preset, token);
         token.ThrowIfCancellationRequested();
-        return Convert(scenes, settings, token);
+        return Convert(scenes, settings, reusePreviousMaterials: false, token);
     }
 
     #region native import
@@ -122,8 +122,13 @@ internal static class AssimpModelLoader
 
     private readonly record struct SceneNodeEntry(AssimpNode Node, Matrix4x4 Global);
 
-    /// <summary>Builds all outputs from parsed scenes. Pure CPU work, meant for a worker thread.</summary>
-    public static AssimpModelData Convert(AssimpImportedScenes scenes, in AssimpImportSettings settings, CancellationToken token)
+    /// <summary>
+    /// Builds all outputs from parsed scenes. Pure CPU work, meant for a worker thread. With
+    /// <paramref name="reusePreviousMaterials"/> materials are only assigned to chunks, not read and
+    /// decoded again; the caller guarantees the same scenes and mesh selection as before.
+    /// </summary>
+    public static AssimpModelData Convert(AssimpImportedScenes scenes, in AssimpImportSettings settings, bool reusePreviousMaterials,
+                                          CancellationToken token)
     {
         var triangleScene = scenes.TriangleScene;
         var polygonScene = scenes.PolygonScene;
@@ -164,6 +169,9 @@ internal static class AssimpModelLoader
 
         token.ThrowIfCancellationRequested();
         BuildMesh(triangleScene, instances, settings.FlipNormals, data, token);
+
+        token.ThrowIfCancellationRequested();
+        BuildMaterials(triangleScene, scenes.AbsolutePath, instances, settings.ImportMaterials, reusePreviousMaterials, data, token);
 
         token.ThrowIfCancellationRequested();
         var geometryScene = polygonScene.MeshCount == triangleScene.MeshCount ? polygonScene : triangleScene;
@@ -444,6 +452,39 @@ internal static class AssimpModelLoader
         data.Chunks = chunks;
         data.BoundsMin = vertexCount > 0 ? min : Vector3.Zero;
         data.BoundsMax = vertexCount > 0 ? max : Vector3.Zero;
+    }
+
+    private static void BuildMaterials(AssimpScene scene, string modelPath, List<MeshInstance> instances, bool importMaterials,
+                                       bool reusePreviousMaterials, AssimpModelData data, CancellationToken token)
+    {
+        var chunkMaterials = new int[instances.Count];
+        Array.Fill(chunkMaterials, -1);
+        data.ChunkMaterialIndices = chunkMaterials;
+        if (!importMaterials)
+            return;
+
+        data.ReusesPreviousMaterials = reusePreviousMaterials;
+        var reader = new AssimpMaterialReader(scene, modelPath, data.Warnings, token);
+        var dataIndexByFileIndex = new Dictionary<int, int>();
+        var materialCount = 0;
+        for (var instanceIndex = 0; instanceIndex < instances.Count; instanceIndex++)
+        {
+            var fileMaterialIndex = scene.Meshes[instances[instanceIndex].MeshIndex].MaterialIndex;
+            if ((uint)fileMaterialIndex >= (uint)scene.MaterialCount)
+                continue;
+
+            // Indices are assigned in first-use order, so a reused material list lines up again
+            if (!dataIndexByFileIndex.TryGetValue(fileMaterialIndex, out var dataIndex))
+            {
+                dataIndex = materialCount++;
+                if (!reusePreviousMaterials)
+                    data.Materials.Add(reader.Read(scene.Materials[fileMaterialIndex]));
+
+                dataIndexByFileIndex.Add(fileMaterialIndex, dataIndex);
+            }
+
+            chunkMaterials[instanceIndex] = dataIndex;
+        }
     }
 
     /// <summary>

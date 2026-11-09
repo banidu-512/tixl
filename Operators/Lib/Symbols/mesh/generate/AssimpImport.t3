@@ -31,6 +31,10 @@
       "DefaultValue": 0
     },
     {
+      "Id": "9d2b6f48-e1c7-4a35-b806-7f3e52c0a9d1"/*ImportMaterials*/,
+      "DefaultValue": true
+    },
+    {
       "Id": "b569d0cc-9f84-419c-a3db-91406df6a3f8"/*FilePath*/,
       "DefaultValue": ""
     }
