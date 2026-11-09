@@ -1,15 +1,15 @@
+#nullable enable
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
-#nullable enable
 
 namespace T3.Core.Utils;
 
 /// <summary>Linux only: checks that the CUDA runtime the ONNX Runtime GPU build links against can be loaded,
 /// before the CUDA execution provider is appended. Without it the provider fails inside native code
-/// ("libcublasLt.so.13: cannot open shared object file") and ONNX Runtime prints the error to stderr;
+/// ("libcublasLt.so.12: cannot open shared object file") and ONNX Runtime prints the error to stderr;
 /// probing first lets the operator skip CUDA with one readable line and go on to the CPU provider.
 /// <para>Libraries are looked up through ld.so first, then in the usual toolkit folders, a
 /// <c>CudaRuntime</c> folder next to the operator, and <c>CUDA_PATH</c>/<c>CUDA_HOME</c>. Loaded by absolute path
@@ -17,10 +17,10 @@ namespace T3.Core.Utils;
 /// <c>LD_LIBRARY_PATH</c> having to be set.</para></summary>
 public static class LinuxCudaRuntime
 {
-    /** What libonnxruntime_providers_cuda.so of the 1.30 GPU package imports, plus cuDNN. CUDA 13 dropped Pascal. */
+    /** What libonnxruntime_providers_cuda.so of the 1.24 GPU package links against, plus cuDNN. */
     private static readonly string[] RequiredLibraries =
     {
-        "libcudart.so.13", "libcublasLt.so.13", "libcublas.so.13", "libcudnn.so.9"
+        "libcudart.so.12", "libcublasLt.so.12", "libcublas.so.12", "libcurand.so.10", "libcufft.so.11", "libcudnn.so.9"
     };
 
     /** The TensorRT 10 runtime the provider links against. Optional helpers are skipped when absent. */
@@ -89,8 +89,8 @@ public static class LinuxCudaRuntime
         if (missing.Count == 0)
             return null;
 
-        return $"{string.Join(", ", missing)} not found. This ONNX Runtime's GPU build needs the CUDA 13 runtime and cuDNN 9 " +
-               "(NVIDIA driver 580 or newer; CUDA 13 no longer supports Pascal GPUs). Install them, or point CUDA_PATH at the toolkit";
+        return $"{string.Join(", ", missing)} not found. The ONNX Runtime GPU build needs the CUDA 12 runtime and cuDNN 9 " +
+               "(NVIDIA driver 525 or newer, Pascal or newer GPU). Install them, or point CUDA_PATH at the toolkit";
     }
 
     private static string? ProbeTensorRt()
@@ -219,12 +219,10 @@ public static class LinuxCudaRuntime
             Add(Path.Combine(root, "targets", "x86_64-linux", "lib"));
         }
 
-        // Toolkit installs: NVIDIA's runfile/deb (/usr/local/cuda-13.x), Arch (/opt/cuda), distro packages.
-        // CUDA 13 comes first because that is what this ONNX Runtime's provider imports.
+        // Toolkit installs: NVIDIA's runfile/deb (/usr/local/cuda-12.x), Arch (/opt/cuda), distro packages
         var roots = new List<string> { "/usr/local/cuda", "/opt/cuda" };
         if (Directory.Exists("/usr/local"))
         {
-            roots.AddRange(Directory.GetDirectories("/usr/local", "cuda-13*").OrderByDescending(d => d, StringComparer.Ordinal));
             roots.AddRange(Directory.GetDirectories("/usr/local", "cuda-12*").OrderByDescending(d => d, StringComparer.Ordinal));
         }
 
