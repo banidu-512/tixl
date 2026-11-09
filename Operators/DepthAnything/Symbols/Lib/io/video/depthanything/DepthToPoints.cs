@@ -122,6 +122,11 @@ public sealed class DepthToPoints : Instance<DepthToPoints>, IStatusProvider
             return;
         }
 
+        // D3D11 doesn't draw this buffer: the compute shader writes it, and the backend only renders
+        // CPU-uploaded point buffers here. Without this the chain just renders black while PointCount
+        // reports the full count, which reads as a broken graph.
+        WarnOnceAboutBackend();
+
         // The previous frame is only a valid history when the buffer layout did not change.
         var hasHistory = _hasHistory && smoothing > 0f && historyBuffer.Srv != null;
         parameters.HasHistory = hasHistory ? 1u : 0u;
@@ -222,6 +227,27 @@ public sealed class DepthToPoints : Instance<DepthToPoints>, IStatusProvider
         Log.Warning($"[DepthToPoints] {message}", this);
     }
 
+    /// <summary>
+    /// The D3D11 backend does not draw point buffers that a compute shader wrote, so the splat chain is
+    /// black there however healthy the points are. Say so once rather than leaving a silently empty view.
+    /// </summary>
+    private void WarnOnceAboutBackend()
+    {
+        if (_loggedBackend)
+            return;
+
+        _loggedBackend = true;
+        if (ResourceManager.Device?.Backend is not { } backend)
+            return;
+
+        if (!backend.GetType().Name.Contains("D3D11", StringComparison.Ordinal))
+            return;
+
+        Log.Warning("[DepthToPoints] The D3D11 backend does not draw compute-written point buffers - " +
+                    "connect the points to DrawPoints after switching the editor to Vulkan (TIXL_BACKEND=vulkan). " +
+                    "PointCount still reports the full count here, the view is just empty.", this);
+    }
+
     public IStatusProvider.StatusLevel GetStatusLevel()
     {
         return _lastError == null ? IStatusProvider.StatusLevel.Success : IStatusProvider.StatusLevel.Warning;
@@ -275,6 +301,7 @@ public sealed class DepthToPoints : Instance<DepthToPoints>, IStatusProvider
     private bool _hasHistory;
     private int _lastPointCount;
     private string? _lastError;
+    private bool _loggedBackend;
 
     #region Inputs
 
