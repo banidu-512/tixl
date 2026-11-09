@@ -43,6 +43,32 @@ public sealed class OutputDefinition
         public System.Numerics.Vector3 ManualTarget = System.Numerics.Vector3.Zero;
         public float ManualFovYDegrees = 45;
 
+        /// <summary>Where the lens axis passes through the picture, in NDC (−1..1 from its centre to its edges); the editor
+        /// shows it as lens shift, the picture's offset from the axis. One surface can't tell it, so a solve from a single
+        /// plane takes it as given.</summary>
+        public System.Numerics.Vector2 LensAxis;
+
+        /// <summary>The surface the last single-plane solve was made from; empty when solved otherwise or not at all.</summary>
+        public Guid SolvedFromSurfaceId;
+
+        /// <summary>Whether the last solve took its zoom from <see cref="ManualFovYDegrees"/> because the surface was seen
+        /// too squarely to measure it.</summary>
+        public bool IsZoomEntered;
+
+        /// <summary>Metres from the lens to the wall the picture is measured on: what the editor's side view shows the
+        /// picture's edges at, entered from a tape measure or set by a solve. Changes neither zoom nor lens shift.</summary>
+        public float ThrowDistance = DefaultThrowDistance;
+
+        public const float DefaultThrowDistance = 2f;
+
+        /// <summary>Vertical field of view in degrees at the zoom's wide (X) and tele (Y) end; equal for a fixed lens.
+        /// <see cref="ManualFovYDegrees"/> is where the zoom currently sits.</summary>
+        public System.Numerics.Vector2 ZoomRangeDegrees = new(45, 45);
+
+        /// <summary>The projector model the lens values were taken from, as the editor's preset list names it; empty when
+        /// they were entered or measured. Only a label: the values themselves are stored above.</summary>
+        public string ModelName = string.Empty;
+
         public void WriteToJson(JsonTextWriter writer)
         {
             writer.WriteStartObject();
@@ -61,6 +87,17 @@ public sealed class OutputDefinition
             writer.WriteVector3("ManualPosition", ManualPosition);
             writer.WriteVector3("ManualTarget", ManualTarget);
             writer.WriteValue("ManualFovY", ManualFovYDegrees);
+            writer.WriteVector2("LensAxis", LensAxis);
+            if (SolvedFromSurfaceId != Guid.Empty)
+                writer.WriteObject("SolvedFromSurface", SolvedFromSurfaceId);
+
+            if (IsZoomEntered)
+                writer.WriteValue("IsZoomEntered", true);
+
+            writer.WriteValue("ThrowDistance", ThrowDistance);
+            writer.WriteVector2("ZoomRange", ZoomRangeDegrees);
+            if (!string.IsNullOrEmpty(ModelName))
+                writer.WriteString("Model", ModelName);
 
             writer.WritePropertyName("CalibrationPoints");
             writer.WriteStartArray();
@@ -84,6 +121,11 @@ public sealed class OutputDefinition
                                  ManualPosition = OutputJson.ReadVector3(token["ManualPosition"], new System.Numerics.Vector3(0, 1, 3)),
                                  ManualTarget = OutputJson.ReadVector3(token["ManualTarget"]),
                                  ManualFovYDegrees = token.ReadValueSafe("ManualFovY", 45f),
+                                 LensAxis = OutputJson.ReadVector2(token["LensAxis"]),
+                                 SolvedFromSurfaceId = OutputJson.ReadGuid(token["SolvedFromSurface"]),
+                                 IsZoomEntered = token.ReadValueSafe("IsZoomEntered", false),
+                                 ThrowDistance = token.ReadValueSafe("ThrowDistance", DefaultThrowDistance),
+                                 ModelName = token.ReadValueSafe("Model", string.Empty) ?? string.Empty,
                              };
 
             if (token["Position"] != null && token["Orientation"] != null)
@@ -91,6 +133,11 @@ public sealed class OutputDefinition
                 camera.Pose = new Pose(OutputJson.ReadVector3(token["Position"]),
                                        OutputJson.ReadQuaternion(token["Orientation"]));
             }
+
+            // Setups saved before projectors had a zoom range keep their single zoom as a fixed lens.
+            camera.ZoomRangeDegrees = token["ZoomRange"] != null
+                                          ? OutputJson.ReadVector2(token["ZoomRange"])
+                                          : new System.Numerics.Vector2(camera.ManualFovYDegrees, camera.ManualFovYDegrees);
 
             if (token["FieldOfViewY"] != null)
             {
@@ -158,6 +205,12 @@ public sealed class OutputDefinition
         /// <summary>A fitted patch's size as a share of the largest rectangle of its aspect that fits the canvas:
         /// 1 touches the canvas edges, 0.5 is half as wide and half as tall.</summary>
         public float Scale = 1f;
+
+        /// <summary>Multiplies this patch's picture, alpha included: the layer's tint and opacity.</summary>
+        public Vector4 LayerColor = Vector4.One;
+
+        /// <summary>How this patch combines with the layers under it.</summary>
+        public LayerBlendModes BlendMode;
 
         public bool IsFitted => ScaleMode == PatchScaleModes.Fit;
 
@@ -236,6 +289,12 @@ public sealed class OutputDefinition
                 writer.WriteValue("Scale", Scale);
             }
 
+            if (LayerColor != Vector4.One)
+                writer.WriteVector4("LayerColor", LayerColor);
+
+            if (BlendMode != LayerBlendModes.Normal)
+                writer.WriteString("Blend", BlendMode.ToString());
+
             writer.WriteEndObject();
         }
 
@@ -253,6 +312,10 @@ public sealed class OutputDefinition
                                            : PatchScaleModes.Stretch,
                            AspectRatio = OutputJson.ReadVector2(token["AspectRatio"], new Vector2(16, 9)),
                            Scale = token.ReadValueSafe("Scale", 1f),
+                           LayerColor = OutputJson.ReadVector4(token["LayerColor"], Vector4.One),
+                           BlendMode = Enum.TryParse<LayerBlendModes>(token.ReadValueSafe("Blend", string.Empty), out var blend)
+                                           ? blend
+                                           : LayerBlendModes.Normal,
                        };
         }
     }
@@ -311,8 +374,15 @@ public sealed class OutputDefinition
     /// </summary>
     public string MachineName = string.Empty;
 
-    /// <summary>Canvas regions on the direct pipe, composited in list order underneath the surfaces mapped here.</summary>
+    /// <summary>Canvas regions on the direct pipe. Where they draw among the surfaces is <see cref="LayerOrder"/>'s.</summary>
     public List<Patch> Patches = [];
+
+    /// <summary>
+    /// The composite order of what lands on this canvas, back to front: patch ids and the ids of the surfaces
+    /// mapped here. Empty until layers are reordered; ids missing from it (and every layer of an older setup) keep
+    /// the order from before layers could be ordered, patches under surfaces. See <see cref="OutputLayers"/>.
+    /// </summary>
+    public List<Guid> LayerOrder = [];
 
     /// <summary>Its card's place on the Board; null until the Board seeded one.</summary>
     public BoardPlacement? BoardPlacement;
@@ -378,6 +448,16 @@ public sealed class OutputDefinition
             writer.WriteEndArray();
         }
 
+        if (LayerOrder.Count > 0)
+        {
+            writer.WritePropertyName("LayerOrder");
+            writer.WriteStartArray();
+            foreach (var id in LayerOrder)
+                writer.WriteValue(id.ToString());
+
+            writer.WriteEndArray();
+        }
+
         if (Camera != null)
         {
             writer.WritePropertyName("Camera");
@@ -413,6 +493,16 @@ public sealed class OutputDefinition
                              ReferenceImageId = OutputJson.ReadGuid(token["ReferenceImage"]),
                              ReferenceOpacity = Math.Clamp(token.ReadValueSafe("ReferenceOpacity", 0.5f), 0f, 1f),
                          };
+
+        if (token["LayerOrder"] is JArray layerOrder)
+        {
+            foreach (var idToken in layerOrder)
+            {
+                var id = OutputJson.ReadGuid(idToken);
+                if (id != Guid.Empty)
+                    output.LayerOrder.Add(id);
+            }
+        }
 
         if (token["Camera"] is JObject cameraToken)
             output.Camera = ProjectorCamera.ReadFromJson(cameraToken);
