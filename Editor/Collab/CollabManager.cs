@@ -121,6 +121,8 @@ internal sealed class CollabManager
     private const int MaxSessionLogEntries = 10_000;
 
     private long _nextHeartbeatTicks;
+    private long _nextRttProbeTicks;
+    private const int RttProbeIntervalMs = 2000;
     private long _nextPresenceSendTicks;
     private long _nextRateResetTicks;
 
@@ -569,6 +571,19 @@ internal sealed class CollabManager
     private readonly Dictionary<int, string> _roster = new();
     public IReadOnlyDictionary<int, string> Roster => _roster;
 
+    public string DescribePeerLink(CollabPeerConnection peer) => _transport?.DescribePeerLink(peer) ?? "";
+
+    public string DescribePeerLink(int peerId)
+    {
+        foreach (var peer in Peers)
+        {
+            if (peer.AssignedId == peerId)
+                return DescribePeerLink(peer);
+        }
+
+        return "";
+    }
+
     /// <summary>
     /// Round trip to one participant in ms, or -1 while none of our heartbeats has come back yet.
     /// Relay-backed peers include the relay hop; peers on a data channel measure the direct path.
@@ -652,6 +667,13 @@ internal sealed class CollabManager
                        IsHoveringCanvas = presence?.IsHoveringCanvas ?? false,
                        CursorOnCanvas = presence?.CursorOnCanvas ?? Vector2.Zero,
                        AccentColor = CollabColors.FromPacked(presence?.ColorRgb ?? 0, userId),
+                       LeftButtonDown = presence?.IsLeftButtonDown ?? false,
+                       RightButtonDown = presence?.IsRightButtonDown ?? false,
+                       MiddleButtonDown = presence?.IsMiddleButtonDown ?? false,
+                       IsDoubleClick = presence?.IsDoubleClick ?? false,
+                       IsAddingOperator = presence?.IsAddingOperator ?? false,
+                       WheelSpin = presence?.WheelSpin ?? 0,
+                       PressedKeys = presence?.PressedKeys ?? [],
                        SelectedChildIds = presence?.SelectedChildIds ?? [],
                    };
     }
@@ -680,6 +702,13 @@ internal sealed class CollabManager
         public Guid UserId;
         public Guid CompositionId;
         public bool IsHoveringCanvas;
+        public bool IsAddingOperator;
+        public bool LeftButtonDown;
+        public bool RightButtonDown;
+        public bool MiddleButtonDown;
+        public bool IsDoubleClick;
+        public sbyte WheelSpin;
+        public byte[] PressedKeys = [];
         public Vector2 CursorOnCanvas;
         public Vector4 AccentColor;
         public Guid[] SelectedChildIds = [];
@@ -1020,6 +1049,21 @@ internal sealed class CollabManager
 
             case "syncEnd" when State == SessionState.Connected:
                 Log.Info($"Collab: replay complete ({_syncBatch} ops)");
+                break;
+
+            case "rttPing":
+                if (CollabProtocol.TryGetLong(json, "stamp", out var probeStamp))
+                    SendJson(peer, new { t = "rttPong", stamp = probeStamp });
+                break;
+
+            case "rttPong":
+                if (CollabProtocol.TryGetLong(json, "stamp", out var answered) && peer.AssignedId != int.MaxValue)
+                {
+                    var rtt = Environment.TickCount64 - answered;
+                    if (rtt is >= 0 and <= 10_000)
+                        peer.LastRttMs = (int)rtt;
+                }
+
                 break;
 
             case "peerJoined" when State == SessionState.Connected:
@@ -1734,13 +1778,31 @@ internal sealed class CollabManager
     // ---------------------------------------------------------------------------------------
 
     /// <summary>Called by the graph overlay each frame; only the latest snapshot is kept.</summary>
-    public void SetLocalPresence(Guid compositionId, Vector2 cursorOnCanvas, bool hoveringCanvas, Guid[] selectedChildIds)
+    public void SetLocalPresence(Guid compositionId, Vector2 cursorOnCanvas, bool hoveringCanvas, Guid[] selectedChildIds,
+                                 bool leftButtonDown, bool rightButtonDown, bool middleButtonDown, float wheelSpin,
+                                 bool doubleClick, byte[] pressedKeys, bool addingOperator)
     {
         _localPresence.CompositionId = compositionId;
         _localPresence.CursorOnCanvas = cursorOnCanvas;
-        _localPresence.Flags = hoveringCanvas ? PresencePacket.FlagHoveringCanvas : (byte)0;
         _localPresence.SelectedChildIds = selectedChildIds;
+
+        byte flags = 0;
+        if (hoveringCanvas)
+            flags |= PresencePacket.FlagHoveringCanvas;
+        if (leftButtonDown)
+            flags |= PresencePacket.FlagLeftButton;
+        if (rightButtonDown)
+            flags |= PresencePacket.FlagRightButton;
+        if (middleButtonDown)
+            flags |= PresencePacket.FlagMiddleButton;
+        if (doubleClick)
+            flags |= PresencePacket.FlagDoubleClick;
+        if (addingOperator)
+            flags |= PresencePacket.FlagAddingOperator;
+        _localPresence.Flags = flags;
+        _localPresence.WheelSpin = (sbyte)Math.Clamp(wheelSpin, sbyte.MinValue, sbyte.MaxValue);
         _localPresence.ColorRgb = UserSettings.Config.CollabCursorColor;
+        _localPresence.PressedKeys = pressedKeys;
     }
 
     private void SendLocalPresence()
@@ -1814,6 +1876,13 @@ internal sealed class CollabManager
         _nextHeartbeatTicks = now + CollabProtocol.HeartbeatIntervalMs;
         var timestamp = BitConverter.GetBytes(Environment.TickCount64);
 
+        // Round-trip probe: the binary heartbeat echo only comes back on some transports (a data
+        // channel answers on the relay, or not at all), so latency rides a JSON message instead —
+        // the same path chat uses, which works on every transport.
+        var sendRttProbe = now >= _nextRttProbeTicks;
+        if (sendRttProbe)
+            _nextRttProbeTicks = now + RttProbeIntervalMs;
+
         foreach (var peer in Peers)
         {
             if (peer.IsTimedOut)
@@ -1836,7 +1905,11 @@ internal sealed class CollabManager
             }
 
             if (peer.IsAuthenticated)
+            {
                 _transport?.SendToPeer(peer, CollabProtocol.FrameType.Heartbeat, timestamp);
+                if (sendRttProbe)
+                    SendJson(peer, new { t = "rttPing", stamp = Environment.TickCount64 });
+            }
         }
     }
 
