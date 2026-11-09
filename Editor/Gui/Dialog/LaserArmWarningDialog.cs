@@ -27,6 +27,12 @@ internal sealed class LaserArmWarningDialog : ModalDialog
 
         if (BeginDialog("###LaserArmWarning"))
         {
+            // Every open starts with a clean checkbox: a tick only counts when it is on
+            // screen while OK is pressed, so a stale tick from a cancelled open can't
+            // silence the warning on the next arm.
+            if (ImGui.IsWindowAppearing())
+                _dontShowAgain = false;
+
             FormInputs.AddSectionHeader("Laser safety warning");
 
             FormInputs.AddVerticalSpace(4);
