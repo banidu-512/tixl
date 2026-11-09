@@ -131,14 +131,7 @@ public static class PlaybackUtils
     /// </summary>
     private static Instance? TryGetFocusedComposition()
     {
-        try
-        {
-            return ProjectView.Focused?.CompositionInstance;
-        }
-        catch (Exception)
-        {
-            return null;
-        }
+        return ProjectView.Focused?.TryGetCompositionInstance();
     }
 
     /// <summary>
