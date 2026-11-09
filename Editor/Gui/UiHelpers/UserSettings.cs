@@ -23,11 +23,41 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
     internal UserSettings(bool saveOnQuit) : base("userSettings.json", saveOnQuit: saveOnQuit)
     {
         RemoveDuplicateProjectDirectories();
+        RemoveDuplicateBoygroupGroups();
     }
 
     protected override void OnBeforeSave()
     {
         RemoveDuplicateProjectDirectories();
+        RemoveDuplicateBoygroupGroups();
+    }
+
+    /// <summary>
+    /// Repeated server starts used to append the same group over and over, leaving the panel with a
+    /// column of identical "Main" rows. Strip duplicates and blanks on load and save.
+    /// </summary>
+    private static void RemoveDuplicateBoygroupGroups()
+    {
+        var groups = Config.BoygroupGroups;
+        if (groups == null || groups.Count < 2)
+            return;
+
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var keptCount = 0;
+        for (var index = 0; index < groups.Count; index++)
+        {
+            var name = groups[index].Trim();
+            if (name.Length == 0 || !seen.Add(name))
+                continue;
+
+            groups[keptCount++] = name;
+        }
+
+        if (keptCount < groups.Count)
+            groups.RemoveRange(keptCount, groups.Count - keptCount);
+
+        if (groups.Count == 0)
+            groups.Add("Main");
     }
 
     /// Duplicated entries make project loading fail on the next start, so they are stripped on load and save.
@@ -107,6 +137,16 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public string LastOpenProjectFolder = string.Empty;
 
         public readonly ToastSettings Toasts = new();
+
+        // Startup & recovery
+        /// <summary>Project folder that opens automatically on the next launch. Empty starts with the Hub.</summary>
+        public string StartupProjectFolder = "";
+
+        /// <summary>Installs a per-user OS login entry (Windows Run key, Linux XDG autostart, macOS LaunchAgent).</summary>
+        public bool AutostartWithSystem = false;
+
+        /// <summary>Relaunch the editor automatically after a crash via a supervisor process.</summary>
+        public bool CrashAutoRestart = false;
 
         // UI-Elements
         public bool ShowThumbnails = true;
@@ -221,6 +261,51 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public string UserName = UndefinedUserName;
         public bool EnableAutoBackup = true;
         public bool MinimalBackup = true;
+
+        /// <summary>Shared password for boygroup and failover handshakes. Edited in the Boygrouping settings tab.</summary>
+        public string CollabPassword = "";
+
+        /// <summary>The network adapter TiXL binds to for boygrouping, LAN discovery and failover
+        /// heartbeats (Settings → Boygrouping/Failover → Network). Empty = all interfaces.</summary>
+        public string NetworkInterface = "";
+
+        // Boygrouping (show distribution to render nodes)
+        /// <summary>Master switch: this machine participates in boygrouping. When set, the role
+        /// below starts automatically shortly after launch — a show machine comes up in its role
+        /// without anyone clicking.</summary>
+        public bool BoygroupEnabled = false;
+
+        /// <summary>true = this machine is a master (server); false = slave (render node).</summary>
+        public bool BoygroupIsMaster = false;
+
+        public string BoygroupClientName = "";
+        public int BoygroupPort = 44720;
+        public bool BoygroupAutoJoin = true;
+        public bool BoygroupDeployMirror = false;
+        /// <summary>The master deploys and syncs to a render node as soon as it joins the group,
+        /// so an added slave is current without anyone clicking Deploy &amp; Sync.</summary>
+        public bool BoygroupAutoDeployOnJoin = true;
+
+        /// <summary>Deploy-restart flood guard, persisted across the restarts it guards: if more
+        /// than four deploy restarts happen inside two minutes the client stops restarting for
+        /// five minutes and logs loudly, so a perpetually-diffing file can never loop a show
+        /// machine.</summary>
+        public int BoygroupDeployRestartCount = 0;
+        public long BoygroupDeployRestartWindowStartTicks = 0;
+        public long BoygroupDeployRestartBlockedUntilTicks = 0;
+
+        public List<string> BoygroupGroups = ["Main"];
+        public string BoygroupLastServer = "";
+        public string BoygroupLastGroup = "";
+
+        // Show failover (active/standby output arbitration)
+        public bool FailoverEnabled = false;
+        public string FailoverShowId = "tixl-show";
+        public int FailoverPriority = 100;
+        public int FailoverHeartbeatMs = 500;
+        public int FailoverTimeoutFactor = 3;
+        public bool FailoverPreempt = true;
+
 
         public float GizmoSize = 100;
 

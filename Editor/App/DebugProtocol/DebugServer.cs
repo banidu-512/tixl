@@ -16,6 +16,8 @@ using T3.Editor.Gui.Interaction.Timing;
 using T3.Core.Animation;
 using T3.Core.Settings;
 using T3.Core.Stats;
+using T3.Core.Show;
+using T3.Editor.Show;
 using T3.Editor.Gui.Windows;
 using T3.Editor.Gui.Windows.Analyze;
 using T3.Editor.Gui.Windows.Layouts;
@@ -627,6 +629,14 @@ internal static class DebugServer
                 break;
             }
 
+            case "boygroup":
+                HandleBoygroupControl(request, context);
+                break;
+
+            case "failover":
+                HandleFailoverControl(request, context);
+                break;
+
             case null:
                 context.SendError("MISSING_METHOD", "Request has no 'method' field");
                 break;
@@ -635,6 +645,99 @@ internal static class DebugServer
                 context.SendError("UNKNOWN_METHOD", $"Unknown method '{method}'");
                 break;
         }
+    }
+
+    /// <summary>Drives boygrouping for external agents: op = server | join | leave | status.</summary>
+    private static void HandleBoygroupControl(JObject request, RequestContext context)
+    {
+        var boygroup = Show.BoygroupManager.Instance;
+        switch (request["op"]?.Value<string>())
+        {
+            case "server":
+                boygroup.StartServer(request["port"]?.Value<int>() ?? 44720,
+                                     request["password"]?.Value<string>() ?? "",
+                                     request["group"]?.Value<string>() ?? "Main");
+                break;
+
+            case "join":
+                boygroup.JoinServer(request["host"]?.Value<string>() ?? "127.0.0.1",
+                                    request["port"]?.Value<int>() ?? 44720,
+                                    request["group"]?.Value<string>() ?? "Main",
+                                    request["password"]?.Value<string>() ?? "");
+                break;
+
+            case "leave":
+                boygroup.Leave();
+                break;
+
+            case "status":
+                break;
+
+            default:
+                context.SendError("INVALID_PARAM", "boygroup requires op = server | join | leave | status");
+                return;
+        }
+
+        context.SendOk(new JObject
+                           {
+                               ["state"] = boygroup.State.ToString(),
+                               ["status"] = boygroup.StatusText,
+                               ["error"] = boygroup.ErrorText,
+                               ["group"] = boygroup.GroupName,
+                           });
+    }
+
+    /// <summary>Drives the failover arbiter for external agents: op = enable | disable | status.</summary>
+    private static void HandleFailoverControl(JObject request, RequestContext context)
+    {
+        switch (request["op"]?.Value<string>())
+        {
+            case "enable":
+            {
+                // The update loop pushes UserSettings into the arbiter every frame, so enabling
+                // has to go through the persisted settings or it is overwritten immediately.
+                UserSettings.Config.FailoverEnabled = true;
+                UserSettings.Config.FailoverShowId = request["showId"]?.Value<string>() ?? UserSettings.Config.FailoverShowId;
+                UserSettings.Config.FailoverPriority = request["priority"]?.Value<int>() ?? UserSettings.Config.FailoverPriority;
+                UserSettings.Config.FailoverHeartbeatMs = request["heartbeatMs"]?.Value<int>() ?? UserSettings.Config.FailoverHeartbeatMs;
+                UserSettings.Config.FailoverTimeoutFactor = request["timeoutFactor"]?.Value<int>() ?? UserSettings.Config.FailoverTimeoutFactor;
+                UserSettings.Config.FailoverPreempt = request["preempt"]?.Value<bool>() ?? UserSettings.Config.FailoverPreempt;
+                UserSettings.Config.NetworkInterface = request["interface"]?.Value<string>() ?? UserSettings.Config.NetworkInterface;
+                UserSettings.Save();
+                Core.Show.FailoverArbiter.ApplyConfig(new Core.Show.FailoverConfig
+                                                          {
+                                                              Enabled = true,
+                                                              ShowId = UserSettings.Config.FailoverShowId,
+                                                              Priority = UserSettings.Config.FailoverPriority,
+                                                              HeartbeatMs = UserSettings.Config.FailoverHeartbeatMs,
+                                                              TimeoutFactor = UserSettings.Config.FailoverTimeoutFactor,
+                                                              Preempt = UserSettings.Config.FailoverPreempt,
+                                                          });
+                break;
+            }
+
+            case "disable":
+                UserSettings.Config.FailoverEnabled = false;
+                UserSettings.Save();
+                Core.Show.FailoverArbiter.ApplyConfig(new Core.Show.FailoverConfig { Enabled = false });
+                break;
+
+            case "status":
+                break;
+
+            default:
+                context.SendError("INVALID_PARAM", "failover requires op = enable | disable | status");
+                return;
+        }
+
+        context.SendOk(new JObject
+                           {
+                               ["role"] = Core.Show.FailoverArbiter.RoleText,
+                               ["suppressed"] = Core.Show.FailoverArbiter.IsOutputSuppressed,
+                               ["peer"] = Core.Show.FailoverArbiter.PeerSummary,
+                               ["takeovers"] = Core.Show.FailoverArbiter.TakeoverCount,
+                               ["interface"] = UserSettings.Config.NetworkInterface,
+                           });
     }
 
     private static void HandleGetLogTail(JObject request, RequestContext context)
@@ -2108,6 +2211,30 @@ internal static class DebugServer
             return;
         }
 
+        // A child whose type is the containing composition references itself; instantiating that
+        // graph recurses forever (Symbol.Child.TryGetOrCreateInstance -> TryGetParentInstance).
+        // Reject it here with an error instead of wedging the editor.
+        if (symbolIdToAdd == compositionSymbol.Id)
+        {
+            context.SendError("INVALID_PARAM", "addOp cannot add a composition into itself");
+            return;
+        }
+
+        if (!SymbolRegistry.TryGetSymbol(symbolIdToAdd, out var symbolToAdd))
+        {
+            context.SendError("NOT_FOUND", $"No symbol with id {symbolIdToAdd}");
+            return;
+        }
+
+        // The same cycle can be reached indirectly (A contains B, B contains A). Refuse when the
+        // candidate already (transitively) contains the composition it would be placed into.
+        if (SymbolContains(symbolToAdd, compositionSymbol.Id, depth: 0))
+        {
+            context.SendError("INVALID_PARAM",
+                              $"'{symbolToAdd.Name}' already contains '{compositionSymbol.Name}' - adding it would create a reference cycle");
+            return;
+        }
+
         // Scripts that pass no position used to pile every op onto the origin, on top of
         // whatever the previous probe left there. Without coordinates, start a fresh row
         // below the lowest existing op instead.
@@ -2126,6 +2253,25 @@ internal static class DebugServer
                                ["childId"] = command.AddedChildId.ToString(),
                                ["symbolId"] = symbolIdToAdd.ToString(),
                            });
+    }
+
+    /// <summary>True when <paramref name="candidate"/> contains <paramref name="targetId"/> at any
+    /// depth — the check that keeps addOp from creating a reference cycle.</summary>
+    private static bool SymbolContains(Symbol candidate, Guid targetId, int depth)
+    {
+        if (depth > 16)
+            return true; // Deeper than any sane graph: treat as a cycle.
+
+        foreach (var child in candidate.Children.Values)
+        {
+            if (child.Symbol.Id == targetId)
+                return true;
+
+            if (SymbolContains(child.Symbol, targetId, depth + 1))
+                return true;
+        }
+
+        return false;
     }
 
     /// <summary>Left edge of the graph, one row's height below its lowest op.</summary>
