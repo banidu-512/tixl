@@ -183,12 +183,30 @@ public static class LaserPlugDiscovery
         try
         {
             var result = new List<(string, string)>(BasicInterfaces);
+            NetworkInterface[] nics;
             try
             {
-                foreach (var nic in NetworkInterface.GetAllNetworkInterfaces())
+                nics = NetworkInterface.GetAllNetworkInterfaces();
+            }
+            catch (Exception e)
+            {
+                // The whole enumeration can fail (a NIC vanishing mid-call, WSL/Hyper-V quirks);
+                // keeping the basics is better than an empty picker, and the retry in 10 s may work.
+                Log.Debug($"Laser plug discovery: interface enumeration failed - {e.Message}");
+                return;
+            }
+
+            foreach (var nic in nics)
+            {
+                try
                 {
-                    if (nic.NetworkInterfaceType == NetworkInterfaceType.Loopback
-                        || nic.OperationalStatus != OperationalStatus.Up)
+                    if (nic.NetworkInterfaceType == NetworkInterfaceType.Loopback)
+                        continue;
+
+                    // Windows reports Unknown instead of Up for many working adapters (drivers
+                    // that don't provide media-connect state, virtual Hyper-V/WSL NICs) - only
+                    // Down/LowerLayerDown are really out.
+                    if (nic.OperationalStatus is OperationalStatus.Down or OperationalStatus.LowerLayerDown)
                         continue;
 
                     foreach (var address in nic.GetIPProperties().UnicastAddresses)
@@ -199,13 +217,14 @@ public static class LaserPlugDiscovery
                         result.Add((nic.Name, address.Address.ToString()));
                     }
                 }
-            }
-            catch
-            {
-                // A NIC vanishing mid-enumeration is not worth a dialog
+                catch
+                {
+                    // A single NIC failing mid-read must not hide all the others
+                }
             }
 
-            _cachedInterfaces = result;
+            if (result.Count > BasicInterfaces.Length)
+                _cachedInterfaces = result;
         }
         finally
         {
