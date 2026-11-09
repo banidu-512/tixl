@@ -34,6 +34,11 @@ public sealed class NanoVdbRenderSmokeTests(EditorFixture editor, ITestOutputHel
         client.ConnectOps(load, "Volume", toNano, "Volume");
 
         var sdf = client.AddOp("VdbToSdfField", 600, 0);
+
+        // The field reports "distance to the box + value" outside the grid, so a generous clamp turns
+        // the grid's bounding box into a visible shell that hides the surface inside it. Keep it just
+        // above the band so rays stop at the volume instead of at the box.
+        client.SetInput(sdf, "OutsideValue", JToken.FromObject(1.5f));
         client.ConnectOps(toNano, "Buffer", sdf, "Grid");
         client.ConnectOps(toNano, "WorldMin", sdf, "BoundsMin");
         client.ConnectOps(toNano, "WorldMax", sdf, "BoundsMax");
@@ -44,7 +49,7 @@ public sealed class NanoVdbRenderSmokeTests(EditorFixture editor, ITestOutputHel
         // Frame the volume: the raymarcher draws into a camera, which renders into a target. Pinning
         // RaymarchField alone renders with the editor's own camera, which sits inside the bunny.
         var camera = client.AddOp("Camera", 0, 300);
-        client.SetInput(camera, "Position", JToken.FromObject(new { X = 2.4f, Y = 1.2f, Z = 4.4f }));
+        client.SetInput(camera, "Position", JToken.FromObject(new { X = 2.0f, Y = 1.0f, Z = 3.0f }));
         client.SetInput(camera, "Target", JToken.FromObject(new { X = 0f, Y = 0f, Z = 0f }));
         client.ConnectOps(march, "DrawCommand", camera, "Command");
 
