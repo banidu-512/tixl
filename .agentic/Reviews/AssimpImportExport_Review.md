@@ -171,7 +171,57 @@ native library and the export readback all work there. The Linux run also caught
 inside an XML comment in `AssimpImportHost.csproj`; fixed. The test passes with the standalone
 `AssimpImportHost` folder removed on Windows, proving the editor executable hosts the worker;
 `TiXL.exe --assimp-host ... --probe` and `dotnet TiXL.dll --assimp-host ... --probe` both answer.
-See `.tests-manual/assimp-import-export.md` for the remaining visual pass.
+See `.tests-manual/assimp-import-export.md` for the manual editor recipe.
+
+### Visual pass (2026-11-09, Windows, Direct3D 11)
+
+Ran the editor checks with generated assets in `D:\TiXLDEV\assimp-test-assets` (a two-bone
+skinned/animated glTF and quad-cube OBJ+MTL variants).
+
+**Verified**
+
+- PBR materials: the DamagedHelmet example and a single-material OBJ+MTL render with their base colors.
+- N-gon geometry: the 6-quad cube imports as 8 points / 6 faces / 1 part; `[BevelGeometry]` produces
+  80 points / 114 faces / closed volume 0.976 and renders a rounded cube.
+- Multi-object: `gltf-scene-test-01.glb` reports `MeshCount 3` and draws all three objects.
+- Hot reload: overwriting a project asset changed `VertexCount` from 24 to 3 automatically.
+- A missing file clears the model and the editor stays alive; a valid path recovers.
+
+**Fixed after the pass** (renderer-side, not in the converter)
+
+- **Multi-material `[DrawScene]`:** every material dispatch drew the first chunk because the draw
+  relied on `Draw`'s `startVertex` to offset the shader's `SV_VertexID`; D3D11 and Vulkan did not
+  honor it here. `_DispatchSceneDraws` now binds a cached per-dispatch triangle sub-view and draws
+  from 0, and the D3D11 backend creates structured-buffer SRVs with the `BUFFER` dimension for
+  non-zero element ranges. Verified: stacked red/blue cubes and a six-color cube render on both
+  D3D11 and Vulkan.
+- **GPU skinning render:** on D3D11 the compute UAV stayed bound after the dispatch, so the
+  following draw could not bind the same buffer as a shader resource. The D3D11 backend now unbinds
+  the compute UAV slots after every dispatch. Verified: the skinned arm bends at t=0.8 on D3D11;
+  Vulkan already rendered it.
+- **Broken file at an absolute path:** the earlier run looked like the old model survived, but that
+  was the 0.2 s "Loading…" window: polling the status provider shows Notice while loading, then
+  Error (`Failed loading broken.obj: Assimp could not read the file: OBJ-file is too small.`),
+  `Metadata` is cleared and the output buffers stay empty. Recovering with a valid path restores
+  24 vertices. The editor stays responsive throughout; the check used a new `getStatus` request in
+  the debug protocol.
+
+**Environment:** compute shaders need `TIXL_BACKEND=d3d11` on this Windows machine; its default
+Vulkan path fails to load `spirv-opt`. The Vulkan checks ran on arton-linux.
+
+**Additional robustness checks (2026-11-09)**
+
+- **Export fuzzing.** The isolated export path was driven directly (serializer → 
+  `AssimpIsolatedImport.Export`) with 7 deliberately malformed snapshots × 15 formats — obj, fbx,
+  collada, 3ds, 3mf, x3d, glb2, gltf2, stl, stlb, ply, plyb, assbin, assxml, assjson — 105 runs.
+  75 exports succeeded (valid, 1e30-scaled, 1e-30-scaled, all-zero and fully degenerate index
+  buffers); 30 were rejected in the worker with a readable error before the native exporter ran
+  (NaN and +Infinity positions: `Vertex 0 has an invalid position …`). Result: no hang, no native
+  crash, no orphaned child, and no leftover output file on any error path.
+- **macOS cross-build.** `Lib` plus the host launcher build for `osx-arm64`
+  (`dotnet build Operators/Lib/Lib.csproj -c Release -r osx-arm64`) with 0 errors; the output
+  contains `Lib.dll`, `AssimpImportHost/AssimpImportHost.dll` and `libassimp.dylib`. Not run on
+  macOS hardware.
 
 ### Verification
 
@@ -188,4 +238,5 @@ See `.tests-manual/assimp-import-export.md` for the remaining visual pass.
 - Isolated imports produce results bit-identical to in-process ones; ~100-150 ms process overhead.
   A child that dereferences a bad pointer, one killed with SIGKILL, a cancelled import and a killed
   parent were all checked: the parent keeps running and no child is left behind.
-- Not yet run in the editor: see `.tests-manual/assimp-import-export.md`.
+- Editor pass on Windows (D3D11) and arton-linux (Vulkan): see the visual pass and the additional
+  robustness checks above; the manual recipe is in `.tests-manual/assimp-import-export.md`.

@@ -34,7 +34,7 @@
         "X": -200.0,
         "Y": 900.0
       },
-      "Description": "Worker threads for the Xnnpack acceleration (0 = library default). Ignored by Cpu and Gpu."
+      "Description": "Xnnpack worker threads (default 4; 0 = library default, which is effectively single-threaded). Lower it to 2 when several MediaPipe operators run at once. Ignored by Cpu and Gpu."
     },
     {
       "InputId": "a1b2c3d4-e5f6-4798-89ab-cdef12345693"/*Debug*/,

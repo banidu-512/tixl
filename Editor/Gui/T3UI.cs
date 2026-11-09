@@ -218,6 +218,7 @@ public static partial class T3Ui
     internal static readonly OscDataRecording OscDataRecording = new(DataRecording.ActiveRecordingSet);
 
     private static readonly UserNameDialog _userNameDialog = new();
+    private static readonly CollabPasswordDialog _collabPasswordDialog = new();
     internal static readonly AboutDialog AboutDialog = new();
     private static readonly SearchDialog _searchDialog = new();
     internal static readonly NewProjectDialog NewProjectDialog = new();
@@ -228,6 +229,7 @@ public static partial class T3Ui
     private static readonly SendCrashReportsDialog _sendCrashReportsDialog = new();
     internal static readonly ShareSessionDialog ShareSessionDialog = new();
     internal static readonly ExitDialog ExitDialog = new();
+    internal static readonly LaserArmWarningDialog LaserArmWarningDialog = new();
     private static readonly List<EditableSymbolProject> _modifiedProjects = new();
     private static bool _couldEscapeCancelSomething;
 

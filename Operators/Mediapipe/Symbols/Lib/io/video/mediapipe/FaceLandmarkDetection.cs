@@ -199,7 +199,12 @@ namespace Lib.io.video.mediapipe
         private const int MaxInferenceWidth = 640;
         private const int MaxCachedStagingTextures = 4;
         private const int MaxPooledBuffers = 4;
+
         private static readonly int MaxDownscaleThreads = Math.Clamp(Environment.ProcessorCount, 1, 8);
+
+        /// <summary>Xnnpack worker threads used when the InferenceThreads input keeps its default.
+        /// See <see cref="MediaPipeInferenceTuning"/> for why the binding's 0 is a bad default.</summary>
+        private const int DefaultInferenceThreads = MediaPipeInferenceTuning.DefaultThreads;
 
         private Task? _processingTask;
         private volatile bool _workerBusy;
@@ -223,8 +228,6 @@ namespace Lib.io.video.mediapipe
         private readonly object _landmarksLock = new object();
 
         private readonly ConcurrentDictionary<(int width, int height, T3.Graphics.Format format), T3.Graphics.Compat.Texture2D> _cachedStagingTextures = new();
-        // Last format reported as unreadable, so the warning fires once per change.
-        private T3.Graphics.Format? _warnedInputFormat;
 
         private readonly object _textureCacheLock = new object();
 
@@ -880,84 +883,27 @@ private Mat Texture2DToMat(Texture2D texture)
 
         private FaceLandmarkRequest? CreateRequestFromTexture(Texture2D texture)
         {
-            var device = ResourceManager.Device;
             var desc = texture.Description;
-            int width = desc.Width;
-            int height = desc.Height;
 
-            var stagingTexture = GetOrCreateStagingTexture(width, height, desc.Format);
-
-            // Only an 8-bit RGBA/BGRA texture can be walked four bytes at a time; anything else
-            // is either garbage for the model or narrower than the walk, which would read past the
-            // mapping. Checked before the staging copy, so a wrong format costs nothing.
-            if (!MediaPipeTextureReadback.CheckFormat(desc.Format, ref _warnedInputFormat,
-                                                        message => Log.Warning(message, this), "FaceLandmark"))
-                return null;
-
-            // A busy, mismatched or foreign texture must degrade to "no result this frame"
-            // instead of throwing out of the evaluation loop.
-            if (!MediaPipeTextureReadback.TryMap(device.ImmediateContext, texture, stagingTexture,
-                                                 out var dataBox, out var readbackError))
+            // One readback per evaluation frame serves every MediaPipe operator reading this texture: the
+            // mapped copy costs ~2 ms at 1080p and barely less at 640 px, so seven operators on one camera
+            // would otherwise pay it seven times for byte-identical pixels.
+            if (!MediaPipeFrameCache.TryGet(texture, MaxInferenceWidth, 4, out var frame,
+                                            out var inferenceWidth, out var inferenceHeight, out var readbackError))
             {
                 Log.Debug($"[FaceLandmark] Texture readback failed: {readbackError}", this);
                 return null;
             }
 
-            if (!MediaPipeTextureReadback.RowPitchFits(dataBox, width))
-            {
-                device.ImmediateContext.UnmapSubresource(stagingTexture, 0);
-                Log.Debug($"[FaceLandmark] Readback row pitch {dataBox.RowPitch} cannot hold a {width}px row.", this);
-                return null;
-            }
+            // The cached array is shared and read-only for this frame; the worker still gets its own pooled
+            // copy because the native Image keeps that pointer for the duration of the inference.
+            byte[] buffer = GetBuffer(frame.Length);
+            System.Buffer.BlockCopy(frame, 0, buffer, 0, frame.Length);
 
-            try
-            {
-                // MediaPipe resizes to its model input (~256px) internally; feeding the full camera
-                // image only burns downsample/memcpy time before hitting that resize.
-                var downscale = Math.Min(1.0f, (float)MaxInferenceWidth / width);
-                var inferenceWidth = Math.Max(1, (int)(width * downscale));
-                var inferenceHeight = Math.Max(1, (int)(height * downscale));
+            long ts;
+            lock(_timestampLock) { ts = _frameCounter; _frameCounter += 33; }
 
-                byte[] buffer = GetBuffer(inferenceWidth * inferenceHeight * 4);
-                unsafe
-                {
-                    IntPtr srcPtr = dataBox.DataPointer;
-                    int rowPitch = dataBox.RowPitch;
-
-                    fixed (byte* dst = buffer)
-                    {
-                        IntPtr dstPtr = (IntPtr)dst;
-                        float sourceXStep = (float)width / inferenceWidth;
-                        float sourceYStep = (float)height / inferenceHeight;
-
-                        // The camera texture is RGBA and the MediaPipe image below is Srgba -
-                        // the bytes are already in the right order, no channel swizzle.
-                        Parallel.For(0, inferenceHeight, iy =>
-                        {
-                            byte* rowSrc = (byte*)srcPtr + ((int)(iy * sourceYStep)) * rowPitch;
-                            byte* rowDst = (byte*)dstPtr + iy * inferenceWidth * 4;
-
-                            for (int ix = 0; ix < inferenceWidth; ix++)
-                            {
-                                int sx = (int)(ix * sourceXStep);
-                                rowDst[ix * 4] = rowSrc[sx * 4];
-                                rowDst[ix * 4 + 1] = rowSrc[sx * 4 + 1];
-                                rowDst[ix * 4 + 2] = rowSrc[sx * 4 + 2];
-                                rowDst[ix * 4 + 3] = rowSrc[sx * 4 + 3];
-                            }
-                        });
-                    }
-                }
-
-                long ts;
-                lock(_timestampLock) { ts = _frameCounter; _frameCounter += 33; }
-
-                return new FaceLandmarkRequest { PixelData = buffer, Width = inferenceWidth, Height = inferenceHeight, Timestamp = ts };
-            }
-            finally
-            {
-                device.ImmediateContext.UnmapSubresource(stagingTexture, 0);
-            }
+            return new FaceLandmarkRequest { PixelData = buffer, Width = inferenceWidth, Height = inferenceHeight, Timestamp = ts };
         }
         #endregion Memory Management
 
@@ -1323,9 +1269,11 @@ private Mat Texture2DToMat(Texture2D texture)
         [Input(Guid = "a1b2c3d4-0003-4a9b-8c2d-101010101010")]
         public readonly InputSlot<MediaPipeAcceleration> Acceleration = new(MediaPipeAcceleration.Xnnpack);
 
-        /// <summary>Worker threads for the Xnnpack acceleration (0 = library default). Ignored by Cpu and Gpu.</summary>
+        /// <summary>Worker threads for the Xnnpack acceleration (0 = library default, which is effectively
+        /// single-threaded). 4 is ~2x faster than the default on a 20-core machine; use 2 when
+        /// several MediaPipe operators run at once. Ignored by Cpu and Gpu.</summary>
         [Input(Guid = "a1b2c3d4-1003-4a9b-8c2d-101010101010")]
-        public readonly InputSlot<int> InferenceThreads = new(0);
+        public readonly InputSlot<int> InferenceThreads = new(DefaultInferenceThreads);
 
         [Input(Guid = "01234567-890a-bcde-f012-34567890abcd")]
         public readonly InputSlot<float> ZScale = new(1.0f);

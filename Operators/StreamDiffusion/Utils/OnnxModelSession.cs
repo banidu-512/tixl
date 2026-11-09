@@ -91,8 +91,19 @@ internal sealed class OnnxModelSession : IDisposable
         var build = OnnxNativeSelector.Select(typeof(InferenceSession).Assembly, wantedBuild);
         if (OperatingSystem.IsWindows() && provider is ExecutionProvider.DirectMl or ExecutionProvider.Cuda or ExecutionProvider.TensorRt && build != wantedBuild)
         {
-            Log.Warning($"[StreamDiffusion] {name}: {OnnxNativeSelector.Describe(wantedBuild)} needs its own ONNX Runtime build, but this session already loaded " +
-                        $"the {OnnxNativeSelector.Describe(build)} one - restart TiXL to switch.");
+            // A runtime that never ships a DirectML native (the last DirectML build is 1.24.4) cannot be switched to by restarting,
+            // so say that instead of suggesting a restart that would never help.
+            if (wantedBuild == OnnxNativeSelector.Build.DirectMl
+                && !OnnxNativeSelector.IsShipped(typeof(InferenceSession).Assembly, OnnxNativeSelector.Build.DirectMl))
+            {
+                Log.Warning($"[StreamDiffusion] {name}: this ONNX Runtime ships no DirectML provider (DirectML builds ended " +
+                            $"after 1.24); continuing on the {OnnxNativeSelector.Describe(build)} build with CUDA/CPU.");
+            }
+            else
+            {
+                Log.Warning($"[StreamDiffusion] {name}: {OnnxNativeSelector.Describe(wantedBuild)} needs its own ONNX Runtime build, but this session already loaded " +
+                            $"the {OnnxNativeSelector.Describe(build)} one - restart TiXL to switch.");
+            }
         }
 
         foreach (var candidate in chain)
@@ -201,10 +212,17 @@ internal sealed class OnnxModelSession : IDisposable
                 Directory.CreateDirectory(trtCache);
                 using (var trtOptions = new OrtTensorRTProviderOptions())
                 {
+                    // The builder needs transient workspace on top of the resident sessions. The old 2 GiB cap
+                    // made the VAE decoder's engine build fail on a 16 GB card even with 15 GB free (the builder
+                    // reports the cap as OutOfMemory), which then wedged the stream. 4 GiB builds it; override
+                    // with TIXL_SD_TRT_WORKSPACE_MB on smaller cards.
+                    var workspaceMb = int.TryParse(Environment.GetEnvironmentVariable("TIXL_SD_TRT_WORKSPACE_MB"), out var configured) && configured > 0
+                                          ? configured
+                                          : 4096;
                     var trtSettings = new Dictionary<string, string>
                     {
                         ["device_id"] = deviceId.ToString(),
-                        ["trt_max_workspace_size"] = "2147483648",
+                        ["trt_max_workspace_size"] = (workspaceMb * 1024L * 1024L).ToString(),
                         ["trt_engine_cache_enable"] = "1",
                         ["trt_engine_cache_path"] = trtCache,
                         ["trt_timing_cache_enable"] = "1",

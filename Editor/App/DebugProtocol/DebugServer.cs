@@ -10,23 +10,28 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using ImGuiNET;
+using NAudio.Midi;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using T3.Editor.Gui.Interaction.Timing;
 using T3.Core.Animation;
+using T3.Core.IO;
 using T3.Core.Settings;
 using T3.Core.Stats;
 using T3.Core.Show;
 using T3.Editor.Collab;
 using T3.Editor.Show;
 using T3.Editor.Gui.Windows;
+using T3.Editor.Gui;
 using T3.Editor.Gui.Windows.Analyze;
 using T3.Editor.Gui.Windows.Layouts;
 using T3.Core.Logging;
+using T3.IoServices;
 using T3.Core.Model;
 using T3.Core.Operator;
 using T3.Core.Resource.ShaderCompiling;
 using T3.Core.Operator.Slots;
+using T3.Core.Output;
 using System.Diagnostics.CodeAnalysis;
 using System.Numerics;
 using T3.Editor.Compilation;
@@ -218,6 +223,27 @@ internal static class DebugServer
                 context.SendOk(new JObject());
                 break;
 
+            case "setLaserMaster":
+                var laserMasterEnabled = request.Value<bool?>("enabled");
+                if (laserMasterEnabled.HasValue)
+                {
+                    T3.Core.DataTypes.LaserMasterEnable.Enabled = laserMasterEnabled.Value;
+                    Log.Debug($"DebugServer: laser master enable -> {(laserMasterEnabled.Value ? "ON" : "OFF")}");
+                }
+                context.SendOk(new JObject { ["enabled"] = T3.Core.DataTypes.LaserMasterEnable.Enabled });
+                break;
+
+            case "setLaserDriver":
+                // Profiling kill-switch: pumps the laser output streams per frame when on
+                var laserDriverEnabled = request.Value<bool?>("enabled");
+                if (laserDriverEnabled.HasValue)
+                {
+                    T3.Core.Output.LaserDriverEnabled.Enabled = laserDriverEnabled.Value;
+                    Log.Debug($"DebugServer: laser output driver -> {(laserDriverEnabled.Value ? "ON" : "OFF")}");
+                }
+                context.SendOk(new JObject { ["enabled"] = T3.Core.Output.LaserDriverEnabled.Enabled });
+                break;
+
             case "setAgentState":
             {
                 var state = request["state"]?.Value<string>() ?? "";
@@ -278,6 +304,100 @@ internal static class DebugServer
             case "getGraphState":
                 HandleGetGraphState(request, context);
                 break;
+
+            case "getLaserStatus":
+            {
+                if (!OutputSetupHandling.TryGetActiveSetup(out var laserSetup, out var laserMachine))
+                {
+                    context.SendError("NO_SETUP", "No active output setup");
+                    break;
+                }
+
+                var outputs = new JArray();
+                foreach (var diag in T3.Editor.Gui.Windows.OutputSetup.LaserDriver.GetDiagnostics(laserSetup, laserMachine))
+                    outputs.Add(JObject.FromObject(diag));
+
+                context.SendOk(new JObject
+                                   {
+                                       ["masterEnabled"] = T3.Core.DataTypes.LaserMasterEnable.Enabled,
+                                       ["driverEnabled"] = T3.Core.Output.LaserDriverEnabled.Enabled,
+                                       ["outputs"] = outputs,
+                                   });
+                break;
+            }
+
+            case "getLaserFrame":
+            {
+                // Dumps the pipeline frame of a laser output (name in "output", default first
+                // laser output): x/y/i samples for scope-level diagnosis. "maxPoints" caps the
+                // sample count, "litOnly" skips blanked samples.
+                if (!OutputSetupHandling.TryGetActiveSetup(out var frameSetup, out _))
+                {
+                    context.SendError("NO_SETUP", "No active output setup");
+                    break;
+                }
+
+                var wantedName = request["output"]?.ToString();
+                T3.Core.Output.OutputDefinition? wanted = null;
+                foreach (T3.Core.Output.OutputDefinition o in frameSetup.Outputs)
+                {
+                    if (o.Kind != T3.Core.Output.OutputDefinition.Kinds.Laser)
+                        continue;
+                    if (wanted == null || o.Name == wantedName)
+                        wanted = o;
+                }
+
+                if (wanted == null)
+                {
+                    context.SendError("NO_LASER_OUTPUT", "No laser output in the active setup");
+                    break;
+                }
+
+                var maxPointsToken = request["maxPoints"];
+                var maxPoints = maxPointsToken is { Type: Newtonsoft.Json.Linq.JTokenType.Integer } ? maxPointsToken.Value<int>() : 600;
+                var litOnlyToken = request["litOnly"];
+                var litOnly = litOnlyToken is { Type: Newtonsoft.Json.Linq.JTokenType.Boolean } && litOnlyToken.Value<bool>();
+                var rawToken = request["raw"];
+                var raw = rawToken is { Type: Newtonsoft.Json.Linq.JTokenType.Boolean } && rawToken.Value<bool>();
+                T3.Core.Output.LaserFrame points;
+                if (raw)
+                {
+                    var rawPoints = T3.Editor.Gui.Windows.OutputSetup.LaserDriver.GetRawFrame(wanted);
+                    points = new T3.Core.Output.LaserFrame(rawPoints, rawPoints.Length);
+                }
+                else
+                {
+                    points = T3.Editor.Gui.Windows.OutputSetup.LaserDriver.GetFrame(wanted);
+                }
+
+                var arr = new Newtonsoft.Json.Linq.JArray();
+                var sent = 0;
+                for (var i = 0; i < points.Count && sent < maxPoints; i++)
+                {
+                    var p = points.Points[i];
+                    if (litOnly && p.I == 0)
+                        continue;
+                    arr.Add(new Newtonsoft.Json.Linq.JArray { p.X, p.Y, p.I });
+                    sent++;
+                }
+
+                context.SendOk(new JObject
+                                   {
+                                       ["output"] = wanted.Name,
+                                       ["totalPoints"] = points.Count,
+                                       ["returned"] = sent,
+                                       ["points"] = arr,
+                                   });
+                break;
+            }
+
+            case "getLaserPump":
+            {
+                // What one laser pump interval costs and how many outputs fit in its budget -
+                // the numbers behind preview/stream update rate.
+                context.SendOk(JObject.FromObject(T3.Editor.Gui.Windows.OutputSetup.LaserDriver.GetPumpStats()));
+                break;
+            }
 
             case "getMetrics":
                 HandleGetMetrics(context);
@@ -340,6 +460,10 @@ internal static class DebugServer
                 HandleGetOutput(request, context);
                 break;
 
+            case "getStatus":
+                HandleGetStatus(request, context);
+                break;
+
             case "pumpFrames":
             {
                 var count = Math.Clamp(request["count"]?.Value<int>() ?? 1, 1, 100000);
@@ -350,6 +474,13 @@ internal static class DebugServer
             case "newProject":
                 HandleNewProject(request, context);
                 break;
+
+            case "save":            {
+                // Synchronous on purpose: the reply confirms the files are on disk.
+                T3Ui.Save(saveAll: true);
+                context.SendOk(new JObject { ["saved"] = true });
+                break;
+            }
 
             case "addOp":
                 HandleAddOp(request, context);
@@ -449,6 +580,15 @@ internal static class DebugServer
                 break;
             }
 
+            case "getStreamStatus":
+            {
+                var status = OutputSetupHandling.TryGetActiveSetup(out _, out var streamMachineConfig)
+                                 ? T3.Core.Output.Rendering.OutputStreaming.Describe(streamMachineConfig)
+                                 : "no active output setup";
+                context.SendOk(new JObject { ["streams"] = status });
+                break;
+            }
+
             case "outputSetup":
             {
                 // Drives the output-setup UI the way clicks would: select an entity by name, enter a mode.
@@ -465,6 +605,83 @@ internal static class DebugServer
                 }
 
                 context.SendOk(new JObject());
+                break;
+            }
+
+            case "setLaserCalibrated":
+            {
+                if (ActiveSetup.Current is not { } calibratedSetup)
+                {
+                    context.SendError("NO_SETUP", "No active setup");
+                    break;
+                }
+
+                var on = request["calibrated"]?.Value<bool>() ?? true;
+                var changed = 0;
+                foreach (var output in calibratedSetup.Outputs)
+                {
+                    if (output.Kind != OutputDefinition.Kinds.Laser)
+                        continue;
+
+                    output.LaserProcessing ??= new LaserProcessingSettings();
+                    output.LaserProcessing.Safety.Calibrated = on;
+                    changed++;
+                }
+
+                OutputSetupHandling.SaveActive();
+                context.SendOk(new JObject { ["outputs"] = changed, ["calibrated"] = on });
+                break;
+            }
+
+            case "addLaserOutputs":
+            {
+                // Adds laser outputs to the active setup, so an agent can stand up a multi-camera
+                // rig without clicking. LaserRoutingSync then attaches un-routed cameras to them.
+                if (ActiveSetup.Current is not { } setup)
+                {
+                    context.SendError("NO_SETUP", "No active setup");
+                    break;
+                }
+
+                var wanted = Math.Clamp(request["count"]?.Value<int>() ?? 1, 1, 32);
+                var created = new JArray();
+                for (var i = 0; i < wanted; i++)
+                {
+                    var number = 1;
+                    foreach (var existing in setup.Outputs)
+                    {
+                        if (existing.Kind == OutputDefinition.Kinds.Laser)
+                            number++;
+                    }
+
+                    var output = new OutputDefinition
+                                     {
+                                         Name = $"L{number}",
+                                         Kind = OutputDefinition.Kinds.Laser,
+                                     };
+
+                    setup.Outputs.Add(output);
+                    created.Add(new JObject { ["name"] = output.Name, ["id"] = output.Id.ToString() });
+                }
+
+                // A test rig wants content, not the uncalibrated alignment rectangle.
+                if (request["calibrated"]?.Value<bool>() == true)
+                {
+                    foreach (var output in setup.Outputs)
+                    {
+                        if (output.Kind != OutputDefinition.Kinds.Laser)
+                            continue;
+
+                        output.LaserProcessing ??= new LaserProcessingSettings();
+                        output.LaserProcessing.Safety.Calibrated = true;
+                    }
+                }
+
+                // The setup lives in .meta/Setups, outside the symbol files T3Ui.Save writes, so it
+                // is persisted through its own path - otherwise a freshly added output vanishes on
+                // the next project load.
+                OutputSetupHandling.SaveActive();
+                context.SendOk(new JObject { ["outputs"] = created });
                 break;
             }
 
@@ -744,6 +961,24 @@ internal static class DebugServer
                 collab.RefreshLocalIdentity();
                 break;
 
+            case "kick":
+            {
+                var peerId = request["peer"]?.Value<int>() ?? -1;
+                if (peerId < 0)
+                {
+                    context.SendError("INVALID_PARAM", "kick requires peer = <id>");
+                    return;
+                }
+
+                if (!collab.KickParticipant(peerId))
+                {
+                    context.SendError("INVALID_PARAM", $"no removable participant {peerId}");
+                    return;
+                }
+
+                break;
+            }
+
             case "leave":
                 collab.Leave(manual: true);
                 break;
@@ -771,7 +1006,21 @@ internal static class DebugServer
                                ["identity"] = collab.LocalIdentity.DisplayName,
                                ["loginState"] = CollabDiscordAuth.State.ToString(),
                                ["loginStatus"] = CollabDiscordAuth.StatusText,
-                               ["links"] = new JArray(collab.PeerLinks.Select(l => $"{l.PeerId}:{l.Link}")),
+                               ["links"] = new JArray(collab.PeerLinks.Select(l => $"{l.PeerId}:{l.Link}:{collab.GetPeerRttMs(l.PeerId)}ms")),
+                               ["preview"] = collab.VideoStreamer is { } streamer
+                                                 ? new JObject
+                                                     {
+                                                         ["streaming"] = streamer.IsEncoding,
+                                                         ["encoder"] = streamer.EncoderName,
+                                                     }
+                                                 : collab.VideoReceiver is { } receiver
+                                                     ? new JObject
+                                                         {
+                                                             ["decodedFrames"] = receiver.DecodedFrames,
+                                                             ["size"] = $"{receiver.Width}x{receiver.Height}",
+                                                             ["checksum"] = receiver.FrameChecksum,
+                                                         }
+                                                     : null,
                            });
     }
 
@@ -1221,6 +1470,7 @@ internal static class DebugServer
                              ["time"] = new JObject
                                             {
                                                 ["timeInBars"] = playback.TimeInBars,
+                                                ["fxTimeInBars"] = playback.FxTimeInBars,
                                                 ["timeInSecs"] = playback.TimeInSecs,
                                                 ["playbackSpeed"] = playback.PlaybackSpeed,
                                                 ["isPlaying"] = Math.Abs(playback.PlaybackSpeed) > 0.001,
@@ -1887,6 +2137,35 @@ internal static class DebugServer
         context.SendOk(new JObject { ["input"] = input.Name });
     }
 
+    private static void HandleGetStatus(JObject request, RequestContext context)
+    {
+        var view = ProjectView.Focused;
+        if (view?.CompositionInstance == null)
+        {
+            context.SendError("NO_COMPOSITION", "No composition focused");
+            return;
+        }
+
+        if (!Guid.TryParse(request["childId"]?.Value<string>(), out var childId)
+            || !view.CompositionInstance.Children.TryGetChildInstance(childId, out var instance))
+        {
+            context.SendError("NOT_FOUND", "Unknown or missing childId");
+            return;
+        }
+
+        if (instance is not T3.Core.Operator.Interfaces.IStatusProvider statusProvider)
+        {
+            context.SendError("NOT_FOUND", "Instance has no status provider");
+            return;
+        }
+
+        context.SendOk(new JObject
+                           {
+                               ["level"] = statusProvider.GetStatusLevel().ToString(),
+                               ["message"] = statusProvider.GetStatusMessage() ?? string.Empty,
+                           });
+    }
+
     private static void HandleGetOutput(JObject request, RequestContext context)
     {
         Instance? instance = null;
@@ -2263,6 +2542,24 @@ internal static class DebugServer
         {
             context.SendError("MISSING_PARAM", "newProject requires a 'name' (namespace, e.g. 'pixtur._agentTests')");
             return;
+        }
+
+        // Creating over an existing project re-scaffolds its folder out from under the loaded assembly,
+        // which crashes the frame loop when the open home symbol disappears. Refuse instead - agents
+        // driving this over the protocol should openProject the existing one.
+        var projectShortName = name.Split('.').Last();
+        if (Directory.Exists(Path.Combine(UserSettings.Config.ProjectDirectories[0], projectShortName)))
+        {
+            context.SendError("PROJECT_EXISTS", $"A project folder named '{projectShortName}' already exists - open it instead of creating it");
+            return;
+        }
+        foreach (var loaded in EditableSymbolProject.AllProjects)
+        {
+            if (string.Equals(loaded.CsProjectFile.Name, projectShortName, StringComparison.OrdinalIgnoreCase))
+            {
+                context.SendError("PROJECT_EXISTS", $"A project named '{projectShortName}' is already loaded - open it instead of creating it");
+                return;
+            }
         }
 
         // Scaffolds files and compiles - blocks the frame loop for the duration.
@@ -2646,6 +2943,30 @@ internal static class DebugServer
         }
 
         outputWindow.Pinning.PinInstance(instance, view);
+
+        // Optionally select which output of the pinned instance to display (e.g. "DebugTexture").
+        var outputName = request["outputName"]?.Value<string>();
+        if (!string.IsNullOrEmpty(outputName))
+        {
+            Guid outputId = Guid.Empty;
+            foreach (var definition in instance.Symbol.OutputDefinitions)
+            {
+                if (string.Equals(definition.Name, outputName, StringComparison.OrdinalIgnoreCase))
+                {
+                    outputId = definition.Id;
+                    break;
+                }
+            }
+
+            if (outputId == Guid.Empty)
+            {
+                context.SendError("UNKNOWN_OUTPUT", $"[{instance.Symbol.Name}] has no output named '{outputName}'");
+                return;
+            }
+
+            outputWindow.Pinning.SelectOutput(outputId);
+        }
+
         context.SendOk(new JObject());
     }
 

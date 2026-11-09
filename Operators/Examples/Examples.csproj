@@ -124,6 +124,7 @@
     <Operators Include="lib" Version="1.0.0" ResourcesOnly="False" />
     <Operators Include="Video" Version="1.0.0" ResourcesOnly="False" />
     <Operators Include="Io" Version="1.0.0" ResourcesOnly="False" />
+    <Operators Include="Mediapipe" Version="1.0.0" ResourcesOnly="False" />
     <Operators Include="StreamDiffusion" Version="1.0.0" ResourcesOnly="False" />
     <Operators Include="Mediapipe" Version="1.0.0" ResourcesOnly="False" />
   </ItemGroup>

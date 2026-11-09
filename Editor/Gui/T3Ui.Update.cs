@@ -76,7 +76,7 @@ public static partial class T3Ui
             // the mix only through the implicit default bus, so without this it would be decoded and fed but
             // never routed — silent in the rendered file while audible live. (The collector's own transport
             // gate already treats recording as running, so it expects to be called here.)
-            AudioGraphCollector.CollectLooseSources(ProjectView.Focused.CompositionInstance);
+            AudioGraphCollector.CollectLooseSources(ProjectView.Focused.TryGetCompositionInstance());
         }
 
         ScreenshotWriter.Update();
@@ -153,9 +153,11 @@ public static partial class T3Ui
         _sendCrashReportsDialog.Draw();
         ShareSessionDialog.Draw();
         _userNameDialog.Draw();
+        _collabPasswordDialog.Draw();
         Windows.AssetLib.FolderImportDialog.Instance.Draw();
         AboutDialog.Draw();
         ExitDialog.Draw();
+        LaserArmWarningDialog.Draw();
         OperatorHelp.EditDescriptionDialog.Draw();
         SkillMapPopup.Draw();
 

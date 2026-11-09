@@ -19,6 +19,9 @@
         <RuntimeIdentifiers>win-x64;linux-x64;osx-arm64</RuntimeIdentifiers>
         <EnableUnsafeBinaryFormatterSerialization>true</EnableUnsafeBinaryFormatterSerialization>
         <Deterministic>true</Deterministic>
+        <!-- Startup reads and parses thousands of small symbol files, which is allocation heavy; server GC
+             parallelizes collection across cores instead of stalling the load on single-threaded GC. -->
+        <ServerGarbageCollection>true</ServerGarbageCollection>
         <Configurations>Debug;Release</Configurations>
         <Platforms>AnyCPU</Platforms>
         <AssemblyName>TiXL</AssemblyName>
@@ -63,6 +66,7 @@
 
     <!-- ======================= Nuget References =========================== -->
     <ItemGroup>
+        <PackageReference Include="DataChannelDotnet" Version="1.3.1" />
         <PackageReference Include="ImGui.NET" Version="1.91.6.1" />
         <PackageReference Include="DataChannelDotnet" Version="1.3.1" />
         <PackageReference Include="Microsoft.Build" Version="18.8.2" />
@@ -92,6 +96,14 @@
         <ProjectReference Include="..\IoServices\IoServices.csproj" />
         <ProjectReference Include="..\Logging\Logging.csproj" />
         <ProjectReference Include="..\SilkWindows\SilkWindows.csproj" />
+        <!-- Not used by the editor itself: building it here produces the VideoServices ref assembly that the
+             Video operator package's runtime compile (with the "no dependencies" flag) resolves. Without
+             this, a machine that only ever built the editor has no Debug VideoServices and the Video
+             package fails (CS0006). ExcludeAssets="runtime" + Private="false" keep it compile-only: with
+             runtime assets flowing, Sdcb.FFmpeg.dll lands in the editor output, gets loaded by the default
+             context ahead of the Video package's copy, and its FFmpeg P/Invokes then resolve to a
+             system-wide GPL libavcodec instead of the bundled LGPL one (rejected by FfmpegLibrary). -->
+        <ProjectReference Include="..\VideoServices\VideoServices.csproj" Private="false" ExcludeAssets="runtime" />
     </ItemGroup>
     <!-- ===============================//======================================= -->
 
@@ -221,9 +233,12 @@
         <PackageNames Include="Omt" />
         <PackageNames Include="Video" />
         <PackageNames Include="Io" />
+        <PackageNames Include="DepthAnything" />
+        <PackageNames Include="StreamDiffusion" />
         <PackageNames Include="Mediapipe">
             <Name>t3.mediapipe</Name>
         </PackageNames>
+        <PackageNames Include="DepthAnything" />
         <!-- Add more as needed -->
     </ItemGroup>
     <PropertyGroup>
@@ -286,11 +301,8 @@
 
     <!-- Release-only: read-only packages and exports are loaded from bin, so Release output must be exactly
          what the build produces. Debug reads symbols from source and profits from incremental builds;
-         cleaning it also gutted the output folder of a running editor. Escape hatch for when a stray
-         process pins the output directory (its CWD or an Explorer window): build with
-         -p:ClearBuildOutput=false, which increments into the existing tree instead of wiping it. -->
-    <Target Name="ClearBuildOutput" BeforeTargets="BeforeBuild"
-            Condition="'$(Configuration)' == 'Release' And '$(ClearBuildOutput)' != 'false'">
+         cleaning it also gutted the output folder of a running editor. -->
+    <Target Name="ClearBuildOutput" BeforeTargets="BeforeBuild" Condition="'$(Configuration)' == 'Release' And '$(ClearBuildOutput)' != 'false'">
         <RemoveDir Directories="bin/$(Configuration)" />
     </Target>
 

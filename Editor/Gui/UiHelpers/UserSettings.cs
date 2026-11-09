@@ -21,6 +21,10 @@ namespace T3.Editor.Gui.UiHelpers;
 ///  todo - make internal, make extendable by external packages
 public sealed class UserSettings : Settings<UserSettings.ConfigData>
 {
+    /// <summary>Sync-source values for <see cref="ConfigData.BoygroupClockSync"/>.</summary>
+    public const string SyncInternal = "Internal";
+    public const string SyncPtp = "PTP";
+
     internal UserSettings(bool saveOnQuit) : base("userSettings.json", saveOnQuit: saveOnQuit)
     {
         RemoveDuplicateProjectDirectories();
@@ -134,6 +138,12 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         /// <summary>0 keeps them for as long as their project is loaded, which avoids rebuild hitches.</summary>
         public int ReleaseUnusedRenderTargetsAfterSeconds = 0;
 
+        /// <summary>
+        /// Set when the user confirms the laser safety warning shown the first time the LASER
+        /// master button is armed. While false, arming opens the warning dialog first.
+        /// </summary>
+        public bool LaserSafetyWarningAcknowledged = false;
+
         /// <summary>Folder of the project that was open when the editor closed; empty if it closed in the project hub.</summary>
         public string LastOpenProjectFolder = string.Empty;
 
@@ -182,6 +192,10 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public bool EnableIdleMotion = true;
         public bool SuspendRenderingWhenHidden = true;
         public bool UseVSync = true;
+
+        /// <summary>Caps the short side of outputs sized by their window ("Fill" and aspect presets), e.g. in focus mode on high-res displays.</summary>
+        [JsonConverter(typeof(StringEnumConverter))]
+        public WindowFillResolutionLimits MaxWindowFillResolution = WindowFillResolutionLimits.Unlimited;
 
         /** Frames per second to render at with vsync; 0 renders every refresh of the pacing display. */
         public int TargetFrameRate = 0;
@@ -291,7 +305,11 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public bool CollabLanDiscovery = true;
         public string CollabPassword = "";
 
+        /// <summary>The participant's own cursor color as 0xRRGGBB. 0 = derive it from the user id.</summary>
+        public int CollabCursorColor = 0;
+
         /// <summary>host:port of the relay used for room-code sessions. Empty = default relay.</summary>
+
         public string CollabRelayAddress = "";
 
         /// <summary>Relay room join anchor: rejoin after a restart (e.g. a project download)
@@ -340,6 +358,12 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         /// <summary>The master deploys and syncs to a render node as soon as it joins the group,
         /// so an added slave is current without anyone clicking Deploy &amp; Sync.</summary>
         public bool BoygroupAutoDeployOnJoin = true;
+
+        /// <summary>Where a render node takes its playback clock from. Internal = TiXL's own
+        /// NTP-style exchange over the session link (default, needs nothing). Ptp = the OS clock is
+        /// trusted because something else (a PTP daemon, e.g. linuxptp/phc2sys or w32time with a
+        /// PTP source) disciplines it — anchors then apply with near-zero offset error.</summary>
+        public string BoygroupClockSync = "Internal";
 
         /// <summary>Deploy-restart flood guard, persisted across the restarts it guards: if more
         /// than four deploy restarts happen inside two minutes the client stops restarting for
@@ -466,6 +490,16 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
     {
         Legacy,
         Magnetic,
+    }
+
+    /** Values are the largest short side in pixels; 0 means no limit. */
+    public enum WindowFillResolutionLimits
+    {
+        Unlimited = 0,
+        Max720p = 720,
+        Max1080p = 1080,
+        Max1440p = 1440,
+        Max2160p = 2160,
     }
 
     /** Who an input device drives; Editor means the camera of the output. Stored by name. */
