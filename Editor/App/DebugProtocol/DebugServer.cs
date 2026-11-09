@@ -337,6 +337,10 @@ internal static class DebugServer
                 HandleGetOutput(request, context);
                 break;
 
+            case "getStatus":
+                HandleGetStatus(request, context);
+                break;
+
             case "pumpFrames":
             {
                 var count = Math.Clamp(request["count"]?.Value<int>() ?? 1, 1, 100000);
@@ -1591,6 +1595,35 @@ internal static class DebugServer
 
         UndoRedoStack.AddAndExecute(new ChangeInputValueCommand(symbol, childId, input, newValue));
         context.SendOk(new JObject { ["input"] = input.Name });
+    }
+
+    private static void HandleGetStatus(JObject request, RequestContext context)
+    {
+        var view = ProjectView.Focused;
+        if (view?.CompositionInstance == null)
+        {
+            context.SendError("NO_COMPOSITION", "No composition focused");
+            return;
+        }
+
+        if (!Guid.TryParse(request["childId"]?.Value<string>(), out var childId)
+            || !view.CompositionInstance.Children.TryGetChildInstance(childId, out var instance))
+        {
+            context.SendError("NOT_FOUND", "Unknown or missing childId");
+            return;
+        }
+
+        if (instance is not T3.Core.Operator.Interfaces.IStatusProvider statusProvider)
+        {
+            context.SendError("NOT_FOUND", "Instance has no status provider");
+            return;
+        }
+
+        context.SendOk(new JObject
+                           {
+                               ["level"] = statusProvider.GetStatusLevel().ToString(),
+                               ["message"] = statusProvider.GetStatusMessage() ?? string.Empty,
+                           });
     }
 
     private static void HandleGetOutput(JObject request, RequestContext context)
