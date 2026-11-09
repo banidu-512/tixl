@@ -324,6 +324,8 @@ internal abstract class CollabTransport : IDisposable
 
     private void DispatchFrame(CollabPeerConnection peer, ReadOnlySpan<byte> frame)
     {
+        if (frame.Length > 0)
+            Log.Debug($"Collab diag: dispatch type={frame[0]} from {peer}");
         var type = (CollabProtocol.FrameType)frame[0];
         var payload = frame[1..];
         switch (type)

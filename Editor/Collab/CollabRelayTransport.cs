@@ -537,6 +537,12 @@ internal class CollabRelayClientTransport : CollabTransport
 
     public override void SendToPeer(CollabPeerConnection peer, CollabProtocol.FrameType type, ReadOnlySpan<byte> payload)
     {
+        // The host link may have a data channel; without this the client kept writing to the relay
+        // while the host - whose own channel was up - dropped every relayed frame as stale, so
+        // nothing the client sent (ops, chat, presence) reached the host.
+        if (peer.TrySendPreferred(type, payload))
+            return;
+
         peer.Write(type, payload);
     }
 
