@@ -226,3 +226,49 @@ Checked `D:\DEVDEVDEV` and `D:\TiXLDEV` by git head, per-file hashes and latest 
   UAV instead of dropping valid frames.
 
 No newer laser transport/operator code was found than this stack.
+
+## Sixth pass — bench session: PONK, the editor path and two picker bugs (2026-11-09)
+
+### PONK on the wire
+
+The PONK sender was verified on the wire end to end: the harness streamed over multicast
+239.255.10.24:5583 and TiXL's own PONKInput received both directions in the editor log
+(frames from 'TiXL' and from 'MadMapper-Laser-Output-1' simultaneously). MadMapperDemo listed the
+'TiXL' sender and received frames — for about a minute, then lost it.
+
+Cause identified, and it is the bench machine, not the stack: with `Local interface` empty the
+send socket binds `IPAddress.Any` and Windows routes multicast through the default route — which
+on this machine is the WSL/Hyper-V virtual adapter (172.28.80.1), not the LAN. Delivery to
+same-host receivers then depends on route flapping. The fix for real use: set the plug's
+`Local interface` to the LAN NIC (10.0.0.69). The full pinned-connection verification in MadMapper
+is still pending (blocked by the picker bug below while the session was live).
+
+### Two editor bugs found and fixed during the session
+
+1. **The laser interface picker never refreshed its adapter list** (`LaserPlugDiscovery`): the
+   refresh gate seeded the timestamp with `long.MinValue`, so `TickCount64 - long.MinValue`
+   overflowed to a huge negative delta and the 10 s background refresh never fired. The picker
+   showed only bind-all and localhost forever, hiding every real adapter — which made the
+   multicast pin impossible to set from the UI. Fixed (seed `long.MinValue / 2`, first list
+   built synchronously). Earlier in the pass the filter was also corrected to accept adapters
+   Windows reports as `OperationalStatus.Unknown` instead of `Up` (drivers without media-connect
+   state, Hyper-V/WSL NICs).
+2. **The hub asserted "2 visible items with conflicting ID"**: the same project folder was
+   registered twice (overlapping scan roots; nothing deduped by folder) and the two project cards
+   derived their ImGui IDs from the folder. Fixed at three layers: the csproj scan dedupes by
+   folder, the load loop and archived-project reactivation refuse an already-registered folder,
+   and the hub skips a folder it has drawn.
+
+Also in this session: the EtherDream analog output was verified on an X-Y oscilloscope through the
+real editor path (see the scope section above), and the first arm now goes through the laser
+safety warning dialog.
+
+### Still open
+
+- PONK: the MadMapper connection held over the pinned LAN interface needs one confirming pass
+  (the UI could not express the pin while the session was live).
+- CITP remains untested against a live peer.
+- `Dac._socket` reflection escape hatch unavailable on LaserCore.EtherDream.Net 2.0.0 (logged at
+  dispose; bounded-recovery ladder covers wedged sends).
+- Perf leftovers accepted: LaserCamera LOH allocation above ~3.5k points, MeshToLaserPoints
+  continuous-update synchronous readback, EtherDream per-chunk allocation.

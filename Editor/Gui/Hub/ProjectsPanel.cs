@@ -40,12 +40,12 @@ internal static class ProjectsPanel
             DrawCollabSessions();
 
             FormInputs.AddSectionHeader("Local projects");
-            var drawnFolders = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            _drawnProjectFolders.Clear();
             foreach (var package in EditableSymbolProject.AllProjects)
             {
                 // The card's ImGui ID comes from the folder, so a same-folder duplicate would
                 // draw twice with conflicting IDs - the assert the hub must never trigger.
-                if (!drawnFolders.Add(package.Folder))
+                if (!_drawnProjectFolders.Add(package.Folder))
                     continue;
 
                 DrawProjectItem(window, package);
@@ -864,4 +864,7 @@ internal static class ProjectsPanel
     private static readonly int _revealBrokenInExplorerId = nameof(_revealBrokenInExplorerId).GetHashCode();
     private static readonly int _noBackupsFoundId = nameof(_noBackupsFoundId).GetHashCode();
     private static readonly int _backupItemBaseId = nameof(_backupItemBaseId).GetHashCode();
+
+    /// <summary>Scratch for the per-frame duplicate-folder guard; cleared, never reallocated.</summary>
+    private static readonly HashSet<string> _drawnProjectFolders = new(StringComparer.OrdinalIgnoreCase);
 }
