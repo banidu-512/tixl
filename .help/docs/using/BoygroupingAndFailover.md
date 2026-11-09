@@ -37,6 +37,7 @@ A render node does not need the controllers the show was built with. The master 
 Show failover keeps a redundant pair of machines streaming. Both run the same composition; only the **Active** one sends Art-Net, sACN and streams. The **Standby** renders silently and takes over within `timeout factor × heartbeat` (about 1.5 s with the defaults) when the active machine stops sending heartbeats.
 
 - Heartbeats are multicast on every real network interface (or only on the adapter selected under **Network**), so a pair can be rehearsed on a single computer.
+- **Pin the show network when the machine has more than one interface.** Unpinned heartbeats follow the OS's default adapter, which may be Wi-Fi, a VPN or a Hyper-V adapter; the two machines then cannot hear each other and **both become Active — both stream the show**. The log warns about this when failover starts unpinned on a multi-adapter machine, and taking the wrong adapter is fixed immediately by selecting the show network under **Network**.
 - The higher configured priority wins. Preemption, where a returning higher-priority machine takes the role back, is optional.
 - A role change includes a short mutual mute so both machines never stream at the same time.
 - `[ArtnetOutput]` and `[SacnOutput]` report `Standby` in their status while they are muted.
