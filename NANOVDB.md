@@ -26,6 +26,7 @@ Sparse volume support for TiXL. Loads and writes `.vdb` files, edits volumes wit
 - **`NanoVdbBuffer`** — serializes a tree into the NanoVDB binary layout for float and Vector3 grids, and reads `.nvdb` files back. Bulk slot-table fills and word-wise mask scans replaced per-slot writes, cutting the slot-table portion of a rebuild by roughly 10× on a 100-leaf grid.
 - **Sequences** — `VdbSequence.Expand` resolves `####` and `%0Nd` tokens to frame paths, and `VdbFrameCache` holds preloaded frames under a byte budget with least-recently-used eviction. The cache is process-wide, so two nodes reading the same sequence share their read-ahead.
 - **Reading that layout back** — `LoadFile` reads a file straight into one grid-sized array (no second copy of the whole file), `ReadInfo` exposes name, class, value type, voxel size, world bounds and node counts, and `TryValidate` rejects tree offsets or leaf counts that would point a shader past the end of the buffer.
+- **`.nvdb` is written as a bare grid, with no file header** — the form `nanovdb_convert` produces. Verified against the reference library (NanoVDB 32.11 from OpenVDB 14): it reads such a file with `isValid() == true` and the same name, voxel count and voxel size, while a 16-byte header in front made it fail. Readers from older releases reject the 32.11 *version* either way, so support means a converter from OpenVDB 12 or newer; an older file fails with an explicit "different NanoVDB layout" message rather than reading as garbage.
 
 ## Operators
 
