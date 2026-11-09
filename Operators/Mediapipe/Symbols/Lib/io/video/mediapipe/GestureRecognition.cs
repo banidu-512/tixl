@@ -262,8 +262,6 @@ public class GestureRecognition : Instance<GestureRecognition>
     private readonly MediaPipeWorkerReaper _reaper = new();
 
     private readonly ConcurrentDictionary<(int width, int height, T3.Graphics.Format format), T3.Graphics.Compat.Texture2D> _cachedStagingTextures = new();
-    // Last format reported as unreadable, so the warning fires once per change.
-    private T3.Graphics.Format? _warnedInputFormat;
 
     private readonly object _textureCacheLock = new object();
 
@@ -604,92 +602,38 @@ public class GestureRecognition : Instance<GestureRecognition>
 
     private GestureRecognitionRequest? CreateRequestFromTexture(Texture2D texture, float minHandDetectionConfidence, float minHandPresenceConfidence, int maxHands, string categoryAllowlist, string categoryDenylist)
     {
-        var device = ResourceManager.Device;
         var desc = texture.Description;
-        int width = desc.Width;
-        int height = desc.Height;
 
-        var stagingTexture = GetOrCreateStagingTexture(width, height, desc.Format);
-
-        // Only an 8-bit RGBA/BGRA texture can be walked four bytes at a time; anything else
-        // is either garbage for the model or narrower than the walk, which would read past the
-        // mapping. Checked before the staging copy, so a wrong format costs nothing.
-        if (!MediaPipeTextureReadback.CheckFormat(desc.Format, ref _warnedInputFormat,
-                                                    message => Log.Warning(message, this), "GestureRecognition"))
-            return null;
-
-        // A busy, mismatched or foreign texture must degrade to "no result this frame"
-        // instead of throwing out of the evaluation loop.
-        if (!MediaPipeTextureReadback.TryMap(device.ImmediateContext, texture, stagingTexture,
-                                             out var dataBox, out var readbackError))
+        // One readback per evaluation frame serves every MediaPipe operator reading this texture: the
+        // mapped copy costs ~2 ms at 1080p and barely less at 640 px, so seven operators on one camera
+        // would otherwise pay it seven times for byte-identical pixels.
+        if (!MediaPipeFrameCache.TryGet(texture, MaxInferenceWidth, 3, out var frame,
+                                        out var inferenceWidth, out var inferenceHeight, out var readbackError))
         {
             Log.Debug($"[GestureRecognition] Texture readback failed: {readbackError}", this);
             return null;
         }
 
-        if (!MediaPipeTextureReadback.RowPitchFits(dataBox, width))
+        // The cached array is shared and read-only for this frame; the worker still gets its own pooled
+        // copy because the native Image keeps that pointer for the duration of the inference.
+        byte[] buffer = GetBuffer(frame.Length);
+        System.Buffer.BlockCopy(frame, 0, buffer, 0, frame.Length);
+
+        long ts;
+        lock(_timestampLock) { ts = _frameTimestamp; _frameTimestamp += 33; }
+
+        return new GestureRecognitionRequest
         {
-            device.ImmediateContext.UnmapSubresource(stagingTexture, 0);
-            Log.Debug($"[GestureRecognition] Readback row pitch {dataBox.RowPitch} cannot hold a {width}px row.", this);
-            return null;
-        }
-
-        try
-        {
-            // MediaPipe resizes to its model input (~224px) internally; feeding the full camera
-            // image only burns downsample/memcpy time before hitting that resize.
-            var downscale = Math.Min(1.0f, (float)MaxInferenceWidth / width);
-            var inferenceWidth = Math.Max(1, (int)(width * downscale));
-            var inferenceHeight = Math.Max(1, (int)(height * downscale));
-
-            byte[] buffer = GetBuffer(inferenceWidth * inferenceHeight * 3);
-            unsafe
-            {
-                IntPtr srcPtr = dataBox.DataPointer;
-                int rowPitch = dataBox.RowPitch;
-
-                fixed (byte* dst = buffer)
-                {
-                    IntPtr dstPtr = (IntPtr)dst;
-                    float sourceXStep = (float)width / inferenceWidth;
-                    float sourceYStep = (float)height / inferenceHeight;
-
-                    Parallel.For(0, inferenceHeight, iy =>
-                    {
-                        byte* rowSrc = (byte*)srcPtr + ((int)(iy * sourceYStep)) * rowPitch;
-                        byte* rowDst = (byte*)dstPtr + iy * inferenceWidth * 3;
-
-                        for (int ix = 0; ix < inferenceWidth; ix++)
-                        {
-                            int sx = (int)(ix * sourceXStep);
-                            rowDst[ix * 3] = rowSrc[sx * 4];         // R
-                            rowDst[ix * 3 + 1] = rowSrc[sx * 4 + 1]; // G
-                            rowDst[ix * 3 + 2] = rowSrc[sx * 4 + 2]; // B
-                        }
-                    });
-                }
-            }
-
-            long ts;
-            lock(_timestampLock) { ts = _frameTimestamp; _frameTimestamp += 33; }
-
-            return new GestureRecognitionRequest
-            {
-                PixelData = buffer,
-                Width = inferenceWidth,
-                Height = inferenceHeight,
-                Timestamp = ts,
-                MinHandDetectionConfidence = minHandDetectionConfidence,
-                MinHandPresenceConfidence = minHandPresenceConfidence,
-                MaxHands = maxHands,
-                CategoryAllowlist = string.IsNullOrEmpty(categoryAllowlist) ? null : categoryAllowlist.Split(','),
-                CategoryDenylist = string.IsNullOrEmpty(categoryDenylist) ? null : categoryDenylist.Split(',')
-            };
-        }
-        finally
-        {
-            device.ImmediateContext.UnmapSubresource(stagingTexture, 0);
-        }
+        PixelData = buffer,
+        Width = inferenceWidth,
+        Height = inferenceHeight,
+        Timestamp = ts,
+        MinHandDetectionConfidence = minHandDetectionConfidence,
+        MinHandPresenceConfidence = minHandPresenceConfidence,
+        MaxHands = maxHands,
+        CategoryAllowlist = string.IsNullOrEmpty(categoryAllowlist) ? null : categoryAllowlist.Split(','),
+        CategoryDenylist = string.IsNullOrEmpty(categoryDenylist) ? null : categoryDenylist.Split(',')
+        };
     }
     #endregion Memory Management
 

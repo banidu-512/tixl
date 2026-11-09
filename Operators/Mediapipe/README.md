@@ -28,6 +28,18 @@ One worker task per operator owns the native instance and drains its request que
 frame before each inference, so latency does not accumulate and the queue cannot grow without bound.
 `_workerBusy` gates the readback so no frame is captured while an inference is running.
 
+The readback itself is shared: `Utils/MediaPipeFrameCache` copies the source texture once per evaluation
+frame (`Playback.FrameCount` is the validity token, the same one the audio engine uses) and downsamples it
+to 640 px, and every operator reading the same texture then copies from that array into its own pooled
+buffer. Measured with seven operators on one camera: 11.3 ms/frame of readback became 3.6 ms at 1080p
+(3.2x), 6.4 -> 2.3 ms at 720p. The cache holds the arrays across frames and rebuilds only when the size or
+the frame changes, so the steady state allocates nothing.
+
+XNNPACK is the acceleration that matters on every platform. `InferenceThreads` defaults to 4 - the
+binding's 0 ("library default") is effectively single-threaded and measured 20.6 ms/frame against 10.9 ms
+at 4 on a 20-core machine; 8 adds about 10% for double the threads. Graphs driving several operators from
+one camera should lower it to 2 each, which is what the example does.
+
 Every dequeued result replaces the previous one — including an empty result, which clears the outputs.
 Holding the last non-empty result would latch `FaceCount`/`PointBuffer` (etc.) onto the last face ever
 seen instead of reporting that it left the frame.
