@@ -16,6 +16,9 @@ using T3.Editor.Gui.Interaction.Timing;
 using T3.Core.Animation;
 using T3.Core.Settings;
 using T3.Core.Stats;
+using T3.Core.Show;
+using T3.Editor.Collab;
+using T3.Editor.Show;
 using T3.Editor.Gui.Windows;
 using T3.Editor.Gui.Windows.Analyze;
 using T3.Editor.Gui.Windows.Layouts;
@@ -627,6 +630,22 @@ internal static class DebugServer
                 break;
             }
 
+            case "collab":
+                HandleCollabControl(request, context);
+                break;
+
+            case "boygroup":
+                HandleBoygroupControl(request, context);
+                break;
+
+            case "failover":
+                HandleFailoverControl(request, context);
+                break;
+
+            case "mode":
+                HandleModeControl(request, context);
+                break;
+
             case null:
                 context.SendError("MISSING_METHOD", "Request has no 'method' field");
                 break;
@@ -635,6 +654,281 @@ internal static class DebugServer
                 context.SendError("UNKNOWN_METHOD", $"Unknown method '{method}'");
                 break;
         }
+    }
+
+    /// <summary>Switches the show-control mode for external agents: op = set (value = off | boygroup | failover | collab) | status.</summary>
+    private static void HandleModeControl(JObject request, RequestContext context)
+    {
+        switch (request["op"]?.Value<string>())
+        {
+            case "set":
+            {
+                var value = request["value"]?.Value<string>() ?? "off";
+                if (value == Show.ShowControlMode.Boygroup && request["role"] is { } roleToken)
+                    Show.ShowControlMode.SetBoygroupRole(roleToken.Value<string>() == "master");
+
+                var error = Show.ShowControlMode.SwitchTo(value);
+                if (error != null)
+                {
+                    context.SendError("INVALID_PARAM", error);
+                    return;
+                }
+
+                break;
+            }
+
+            case "status":
+                break;
+
+            default:
+                context.SendError("INVALID_PARAM", "mode requires op = set | status");
+                return;
+        }
+
+        context.SendOk(new JObject
+                           {
+                               ["mode"] = Show.ShowControlMode.Current,
+                               ["role"] = Show.ShowControlMode.RoleLabel,
+                           });
+    }
+
+    /// <summary>Drives the collab session for external agents: op = host | host-relay | join | join-relay | leave | chat | status.</summary>
+    private static void HandleCollabControl(JObject request, RequestContext context)
+    {
+        var collab = CollabManager.Instance;
+        switch (request["op"]?.Value<string>())
+        {
+            case "host":
+                Show.ShowControlMode.Activate(Show.ShowControlMode.Collab);
+                collab.StartHost(request["port"]?.Value<int>() ?? 44700,
+                                 request["password"]?.Value<string>() ?? "",
+                                 request["lan"]?.Value<bool>() ?? true);
+                break;
+
+            case "join":
+                Show.ShowControlMode.Activate(Show.ShowControlMode.Collab);
+                collab.JoinDirect(request["host"]?.Value<string>() ?? "127.0.0.1",
+                                  request["port"]?.Value<int>() ?? 44700,
+                                  request["password"]?.Value<string>() ?? "");
+                break;
+
+            case "host-relay":
+            {
+                Show.ShowControlMode.Activate(Show.ShowControlMode.Collab);
+                ParseRelayParam(request, out var relayHost, out var relayPort);
+                collab.StartHostViaRelay(relayHost, relayPort);
+                break;
+            }
+
+            case "join-relay":
+            {
+                Show.ShowControlMode.Activate(Show.ShowControlMode.Collab);
+                ParseRelayParam(request, out var relayHost, out var relayPort);
+                var room = request["room"]?.Value<string>() ?? "";
+                collab.JoinViaRelay(relayHost, relayPort, room, request["password"]?.Value<string>() ?? "");
+                break;
+            }
+
+            case "login":
+                CollabDiscordAuth.StartLogin();
+                break;
+
+            case "loginStatus":
+                break;
+
+            case "logout":
+                UserSettings.Config.CollabDiscordUserId = "";
+                UserSettings.Config.CollabDiscordUserName = "";
+                UserSettings.Config.CollabDiscordUserAvatar = "";
+                UserSettings.Save();
+                collab.RefreshLocalIdentity();
+                break;
+
+            case "leave":
+                collab.Leave(manual: true);
+                break;
+
+            case "chat":
+                collab.SendChat(request["text"]?.Value<string>() ?? "");
+                break;
+
+            case "status":
+                break;
+
+            default:
+                context.SendError("INVALID_PARAM", "collab requires op = host | host-relay | join | join-relay | leave | chat | status");
+                return;
+        }
+
+        context.SendOk(new JObject
+                           {
+                               ["state"] = collab.State.ToString(),
+                               ["status"] = collab.StatusText,
+                               ["error"] = collab.ErrorText,
+                               ["room"] = collab.RoomCode,
+                               ["peers"] = collab.Peers.Count,
+                               ["chatLines"] = collab.ChatLog.Count,
+                               ["identity"] = collab.LocalIdentity.DisplayName,
+                               ["loginState"] = CollabDiscordAuth.State.ToString(),
+                               ["loginStatus"] = CollabDiscordAuth.StatusText,
+                               ["links"] = new JArray(collab.PeerLinks.Select(l => $"{l.PeerId}:{l.Link}")),
+                           });
+    }
+
+    /// <summary>Reads "relay" ("host:port") or falls back to the protocol defaults for relay ops.</summary>
+    private static void ParseRelayParam(JObject request, out string host, out int port)
+    {
+        host = CollabProtocol.DefaultRelayHost;
+        port = CollabProtocol.DefaultRelayPort;
+        var relay = request["relay"]?.Value<string>();
+        if (string.IsNullOrWhiteSpace(relay))
+            return;
+
+        var separator = relay.LastIndexOf(':');
+        if (separator > 0 && int.TryParse(relay[(separator + 1)..], out var parsed))
+        {
+            port = parsed;
+            host = relay[..separator];
+        }
+        else
+        {
+            host = relay.Trim();
+        }
+    }
+
+    /// <summary>Drives boygrouping for external agents: op = server | join | leave | status.</summary>
+    private static void HandleBoygroupControl(JObject request, RequestContext context)
+    {
+        var boygroup = Show.BoygroupManager.Instance;
+        switch (request["op"]?.Value<string>())
+        {
+            case "server":
+                Show.ShowControlMode.Activate(Show.ShowControlMode.Boygroup);
+                boygroup.StartServer(request["port"]?.Value<int>() ?? 44720,
+                                     request["password"]?.Value<string>() ?? "",
+                                     request["group"]?.Value<string>() ?? "Main");
+                break;
+
+            case "join":
+                Show.ShowControlMode.Activate(Show.ShowControlMode.Boygroup);
+                boygroup.JoinServer(request["host"]?.Value<string>() ?? "127.0.0.1",
+                                    request["port"]?.Value<int>() ?? 44720,
+                                    request["group"]?.Value<string>() ?? "Main",
+                                    request["password"]?.Value<string>() ?? "");
+                break;
+
+            case "leave":
+                boygroup.Leave(manual: true);
+                break;
+
+            case "bind":
+            {
+                var clientName = request["node"]?.Value<string>() ?? "";
+                var client = boygroup.Clients.FirstOrDefault(c => c.Name.Equals(clientName, StringComparison.OrdinalIgnoreCase));
+                if (client == null)
+                {
+                    context.SendError("INVALID_PARAM", $"no connected node named '{clientName}'");
+                    return;
+                }
+
+                if (!Guid.TryParse(request["output"]?.Value<string>(), out var outputId))
+                {
+                    context.SendError("INVALID_PARAM", "bind requires output = <guid>");
+                    return;
+                }
+
+                var display = request["display"]?.Value<int>() ?? 0;
+                if (request["unbind"] is { } unbind && unbind.Value<bool>())
+                    boygroup.UnbindRemoteOutput(client, outputId, display);
+                else
+                    boygroup.BindRemoteOutput(client, outputId, display);
+
+                break;
+            }
+
+            case "deploy":
+                boygroup.DeployAndSync();
+                break;
+
+            case "status":
+                break;
+
+            default:
+                context.SendError("INVALID_PARAM", "boygroup requires op = server | join | leave | deploy | status");
+                return;
+        }
+
+        context.SendOk(new JObject
+                           {
+                               ["state"] = boygroup.State.ToString(),
+                               ["status"] = boygroup.StatusText,
+                               ["error"] = boygroup.ErrorText,
+                               ["group"] = boygroup.GroupName,
+                               ["deploy"] = boygroup.DeploySummary,
+                               ["clients"] = boygroup.Clients.Count,
+                               ["clientDetails"] = new JArray(boygroup.Clients.Select(c => new JObject
+                                                                                           {
+                                                                                               ["name"] = c.Name,
+                                                                                               ["screens"] = c.Screens.Count,
+                                                                                               ["bindings"] = c.MachineConfig?.Bindings.Count ?? -1,
+                                                                                           })),
+                               ["projectOpen"] = Show.BoygroupManager.HasProjectFolder,
+                           });
+    }
+
+    /// <summary>Drives the failover arbiter for external agents: op = enable | disable | status.</summary>
+    private static void HandleFailoverControl(JObject request, RequestContext context)
+    {
+        switch (request["op"]?.Value<string>())
+        {
+            case "enable":
+            {
+                // The update loop pushes UserSettings into the arbiter every frame, so enabling
+                // has to go through the persisted settings or it is overwritten immediately.
+                UserSettings.Config.FailoverEnabled = true;
+                UserSettings.Config.FailoverShowId = request["showId"]?.Value<string>() ?? UserSettings.Config.FailoverShowId;
+                UserSettings.Config.FailoverPriority = request["priority"]?.Value<int>() ?? UserSettings.Config.FailoverPriority;
+                UserSettings.Config.FailoverHeartbeatMs = request["heartbeatMs"]?.Value<int>() ?? UserSettings.Config.FailoverHeartbeatMs;
+                UserSettings.Config.FailoverTimeoutFactor = request["timeoutFactor"]?.Value<int>() ?? UserSettings.Config.FailoverTimeoutFactor;
+                UserSettings.Config.FailoverPreempt = request["preempt"]?.Value<bool>() ?? UserSettings.Config.FailoverPreempt;
+                UserSettings.Config.NetworkInterface = request["interface"]?.Value<string>() ?? UserSettings.Config.NetworkInterface;
+                UserSettings.Save();
+                Core.Show.FailoverArbiter.ApplyConfig(new Core.Show.FailoverConfig
+                                                          {
+                                                              Enabled = true,
+                                                              ShowId = UserSettings.Config.FailoverShowId,
+                                                              Priority = UserSettings.Config.FailoverPriority,
+                                                              HeartbeatMs = UserSettings.Config.FailoverHeartbeatMs,
+                                                              TimeoutFactor = UserSettings.Config.FailoverTimeoutFactor,
+                                                              Preempt = UserSettings.Config.FailoverPreempt,
+                                                          });
+                break;
+            }
+
+            case "disable":
+                UserSettings.Config.FailoverEnabled = false;
+                UserSettings.Save();
+                Core.Show.FailoverArbiter.ApplyConfig(new Core.Show.FailoverConfig { Enabled = false });
+                break;
+
+            case "status":
+                break;
+
+            default:
+                context.SendError("INVALID_PARAM", "failover requires op = enable | disable | status");
+                return;
+        }
+
+        context.SendOk(new JObject
+                           {
+                               ["role"] = Core.Show.FailoverArbiter.RoleText,
+                               ["suppressed"] = Core.Show.FailoverArbiter.IsOutputSuppressed,
+                               ["peer"] = Core.Show.FailoverArbiter.PeerSummary,
+                               ["takeovers"] = Core.Show.FailoverArbiter.TakeoverCount,
+                               ["interface"] = UserSettings.Config.NetworkInterface,
+                               ["project"] = Show.ProjectFollower.OpenProjectName ?? "",
+                               ["peerProject"] = Core.Show.FailoverArbiter.ActivePeerProjectName ?? "",
+                           });
     }
 
     private static void HandleGetLogTail(JObject request, RequestContext context)
@@ -2108,6 +2402,30 @@ internal static class DebugServer
             return;
         }
 
+        // A child whose type is the containing composition references itself; instantiating that
+        // graph recurses forever (Symbol.Child.TryGetOrCreateInstance -> TryGetParentInstance).
+        // Reject it here with an error instead of wedging the editor.
+        if (symbolIdToAdd == compositionSymbol.Id)
+        {
+            context.SendError("INVALID_PARAM", "addOp cannot add a composition into itself");
+            return;
+        }
+
+        if (!SymbolRegistry.TryGetSymbol(symbolIdToAdd, out var symbolToAdd))
+        {
+            context.SendError("NOT_FOUND", $"No symbol with id {symbolIdToAdd}");
+            return;
+        }
+
+        // The same cycle can be reached indirectly (A contains B, B contains A). Refuse when the
+        // candidate already (transitively) contains the composition it would be placed into.
+        if (SymbolContains(symbolToAdd, compositionSymbol.Id, depth: 0))
+        {
+            context.SendError("INVALID_PARAM",
+                              $"'{symbolToAdd.Name}' already contains '{compositionSymbol.Name}' - adding it would create a reference cycle");
+            return;
+        }
+
         // Scripts that pass no position used to pile every op onto the origin, on top of
         // whatever the previous probe left there. Without coordinates, start a fresh row
         // below the lowest existing op instead.
@@ -2126,6 +2444,25 @@ internal static class DebugServer
                                ["childId"] = command.AddedChildId.ToString(),
                                ["symbolId"] = symbolIdToAdd.ToString(),
                            });
+    }
+
+    /// <summary>True when <paramref name="candidate"/> contains <paramref name="targetId"/> at any
+    /// depth — the check that keeps addOp from creating a reference cycle.</summary>
+    private static bool SymbolContains(Symbol candidate, Guid targetId, int depth)
+    {
+        if (depth > 16)
+            return true; // Deeper than any sane graph: treat as a cycle.
+
+        foreach (var child in candidate.Children.Values)
+        {
+            if (child.Symbol.Id == targetId)
+                return true;
+
+            if (SymbolContains(child.Symbol, targetId, depth + 1))
+                return true;
+        }
+
+        return false;
     }
 
     /// <summary>Left edge of the graph, one row's height below its lowest op.</summary>

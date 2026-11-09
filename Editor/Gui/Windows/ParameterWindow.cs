@@ -854,7 +854,23 @@ internal sealed class ParameterWindow : Window
             // in the generic InputValueUi<T>.DrawParameterEdit() method
 
             ImGui.PushID(inputSlot.Id.GetHashCode());
+            var lockedByPeer = Collab.CollabManager.Instance.IsInputLockedByOther(compositionSymbolUi.Symbol.Id,
+                                                                                  symbolChildUi.Id,
+                                                                                  inputSlot.Input.Id);
+            if (lockedByPeer)
+                ImGui.BeginDisabled();
+
             var editState = inputUi.DrawParameterEdit(inputSlot, compositionSymbolUi, symbolChildUi, hideNonEssentials: hideNonEssentials, skipIfDefault);
+
+            if (lockedByPeer)
+            {
+                ImGui.EndDisabled();
+                ImGui.SameLine();
+                ImGui.PushStyleColor(ImGuiCol.Text, UiColors.StatusWarning.Rgba);
+                ImGui.TextUnformatted("(locked)");
+                ImGui.PopStyleColor();
+            }
+
             ImGui.PopID();
 
             HandleInputEditState(instance, inputSlot, editState);
@@ -890,6 +906,8 @@ internal sealed class ParameterWindow : Window
             _inputSlotForActiveCommand = inputSlot;
             _inputValueCommandInFlight =
                 new ChangeInputValueCommand(instance.Parent.Symbol, instance.SymbolChildId, inputSlot.Input, inputSlot.Input.Value, instance);
+
+            Collab.CollabManager.Instance.AcquireInputLock(instance.Parent.Symbol.Id, instance.SymbolChildId, inputSlot.Input.Id);
         }
 
         if ((editState & InputEditStateFlags.Modified) != 0)
@@ -899,6 +917,8 @@ internal sealed class ParameterWindow : Window
                 _inputValueCommandInFlight =
                     new ChangeInputValueCommand(instance.Parent.Symbol, instance.SymbolChildId, inputSlot.Input, inputSlot.Input.Value, instance);
                 _inputSlotForActiveCommand = inputSlot;
+
+                Collab.CollabManager.Instance.AcquireInputLock(instance.Parent.Symbol.Id, instance.SymbolChildId, inputSlot.Input.Id);
             }
 
             _inputValueCommandInFlight.AssignNewValue(inputSlot.Input.Value);
@@ -912,6 +932,7 @@ internal sealed class ParameterWindow : Window
                 UndoRedoStack.Add(_inputValueCommandInFlight);
             }
 
+            Collab.CollabManager.Instance.ReleaseInputLock(instance.Parent.Symbol.Id, instance.SymbolChildId, inputSlot.Input.Id);
             _inputValueCommandInFlight = null;
         }
     }
