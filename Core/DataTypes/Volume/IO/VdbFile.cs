@@ -545,6 +545,7 @@ public static class VdbFile
 
                 if (!IsSupportedType(gridType))
                 {
+                    volume.SkippedGrids.Add($"{StripSuffix(name)} ({gridType})");
                     _r.BaseStream.Seek(endPos, SeekOrigin.Begin);
                     continue;
                 }
@@ -558,6 +559,7 @@ public static class VdbFile
                 catch (NotSupportedException)
                 {
                     // Unsupported transform or feature: skip just this grid, keep the rest.
+                    volume.SkippedGrids.Add($"{StripSuffix(name)} ({gridType})");
                     grid = null;
                 }
 

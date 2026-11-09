@@ -137,7 +137,12 @@ internal sealed class LoadVdb : Instance<LoadVdb>
 
         if (volume.Grids.Count == 0)
         {
-            Log.Warning($"No supported grids found in {result.Path}", this);
+            // Say what was in the file rather than just that nothing usable came out: a Houdini
+            // point cache is a perfectly valid file that this reader cannot represent.
+            var skipped = volume.SkippedGrids.Count > 0
+                              ? $" (skipped unsupported grids: {string.Join(", ", volume.SkippedGrids)})"
+                              : string.Empty;
+            Log.Warning($"No supported grids found in {result.Path}{skipped}", this);
             Volume.Value = null;
         }
         else
