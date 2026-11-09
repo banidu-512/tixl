@@ -23,9 +23,12 @@ Two local modifications to the release binary, applied offline:
    resolved from whatever the process has loaded. On Apple Silicon nothing provides OpenCL, so dyld
    refuses the image outright ("symbol not found in flat namespace '_clBuildProgram'"). Marking them weak
    is not enough in flat-namespace mode, so the process must carry the symbols: the checked-in
-   `mediapipe-opencl-stub.c` exports no-ops for exactly those 92 symbols and is built into
-   `libmediapipe_opencl_stub.dylib` by the `BuildMediapipeOpenClStub` target in `Editor.csproj` /
-   `Player.csproj`, the macOS CI and `Installer/macOS/build-dmg.sh`;
+   `mediapipe-opencl-stub.c` exports no-ops for exactly those 92 symbols, and the
+   `BuildMediapipeOpenClStub` target in `Editor.csproj` / `Player.csproj` compiles it into
+   `libmediapipe_opencl_stub.dylib` next to the app. Every `dotnet build` / `publish` of those two
+   projects produces it, which is also how `Installer/macOS/build-dmg.sh` (and therefore the macOS CI
+   job) ends up shipping it; the target warns instead of failing when clang is unavailable, in which
+   case only the MediaPipe operators are missing from that build.
    `MediapipeNativeLibrary` loads it before the first `mediapipe_c` P/Invoke. The CPU paths never call any
    of them.
 2. The dylib's ad-hoc signature does not survive git round-trips untouched, so the file must be re-signed
