@@ -80,18 +80,19 @@ outputs that were not implemented. The port implements them through the existing
 
 ### Open points
 
-1. ~~Native crashes can't be caught in-process.~~ Imports **and exports** run in a child process
-   (`AssimpIsolatedImport` + the `AssimpImportHost` launcher built into Lib's output). A native crash
-   becomes an error status, a hang is killed on cancel or after 10 minutes, and the child exits as
-   soon as the editor goes away (it watches its stdin pipe). Results come back as validated binary
-   files (`AssimpModelDataSerializer`, fuzzed with truncation and bit flips); exports are serialized
-   to the child the same way and a failed export removes its partial file. Remaining gap: the
-   launcher needs a `dotnet` executable with .NET 10+; self-contained release builds without one fall
-   back to in-process operation, and the status/metadata says so.
-2. In-process fallback (no `dotnet` available, or isolation switched off) still can't abort a native
-   hang; the render thread is never blocked, but the global Assimp lock stays held for that session.
-   Imports in this mode are also not protected from a native crash. The setting and Metadata make the
-   difference visible.
+1. ~~Native crashes can't be caught in-process.~~ Imports **and exports** run in a child process.
+   Inside TiXL the child is the editor executable itself (`TiXL --assimp-host ...`, via
+   `IsolatedAssimpHost` in Core), so self-contained builds need no `dotnet` installation. Outside an
+   editor the `AssimpImportHost` launcher built into Lib's output is used with a `dotnet` executable.
+   A native crash becomes an error status, a hang is killed on cancel or after 10 minutes, and the
+   child exits as soon as the editor goes away (it watches its stdin pipe). Results come back as
+   validated binary files (`AssimpModelDataSerializer`, fuzzed with truncation and bit flips);
+   exports are serialized to the child the same way and a failed export removes its partial file.
+   Only when no host is available at all do callers run in-process, and status/metadata says so.
+2. In-process fallback (isolation switched off, or a non-editor host without `dotnet`) still can't
+   abort a native hang; the render thread is never blocked, but the global Assimp lock stays held for
+   that session. Imports in this mode are also not protected from a native crash. The setting and
+   Metadata make the difference visible.
 3. ~~Materials and textures are not imported.~~ Implemented: PBR materials with base color,
    emissive, normal and a CPU-baked roughness/metallic/occlusion map; textures decoded on the worker,
    reused across transform-only reloads and released from CPU memory after upload. Not handled:
@@ -117,6 +118,11 @@ Brought `origin/multi/feat/assimp` onto this branch and closed the remaining rob
   errors, crashes and timeouts. `[AssimpExport]` has an `IsolateExport` input (default on) and falls
   back to in-process with the status saying so. This matters because the native FBX/3DS/Collada/3MF
   exporters are the same code that can segfault on unusual scenes.
+- **The editor hosts the worker itself.** `IsolatedAssimpHost` in Core recognises
+  `TiXL --assimp-host ...` at the very first line of the entry point and runs the operation instead of
+  booting the UI. `AssimpIsolatedImport` prefers that form whenever it runs inside TiXL and only uses
+  the standalone `AssimpImportHost` + `dotnet` elsewhere. Self-contained release builds therefore
+  keep process isolation without shipping a runtime; the packaging gap from the branch is closed.
 - **The isolation switches reload.** `IsolateImport` is not part of the conversion settings, so
   toggling it used to affect only the next load. It now cancels a running load and reloads
   immediately; both operators report the mode they actually used ("Imported in-process",
@@ -159,7 +165,13 @@ rejection and the 2 GB input limit. The editor integration test
 `Tests/Editor.IntegrationTests/AssimpImportExportTests` passes on Windows against the Release editor:
 isolated and in-process imports agree (280 vertices / 98 triangles / 3 meshes for the Examples glTF),
 both exports write numbered files, and no errors are logged; GraphAcceptance/ProtocolBasics stay green
-(8/8). See `.tests-manual/assimp-import-export.md` for the remaining visual pass.
+(8/8). The same test passes on **arton-linux** (LMDE 7, .NET 10.0.403): the full Release solution
+builds with 0 errors and the editor test finishes in 6 s, so the editor-hosted worker, the Linux
+native library and the export readback all work there. The Linux run also caught an invalid `--`
+inside an XML comment in `AssimpImportHost.csproj`; fixed. The test passes with the standalone
+`AssimpImportHost` folder removed on Windows, proving the editor executable hosts the worker;
+`TiXL.exe --assimp-host ... --probe` and `dotnet TiXL.dll --assimp-host ... --probe` both answer.
+See `.tests-manual/assimp-import-export.md` for the remaining visual pass.
 
 ### Verification
 

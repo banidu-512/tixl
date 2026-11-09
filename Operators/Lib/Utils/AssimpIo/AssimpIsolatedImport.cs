@@ -1,7 +1,9 @@
 #nullable enable
 using System.Diagnostics;
 using System.Globalization;
+using System.Reflection;
 using System.Threading;
+using T3.Core.Utils;
 
 namespace Lib.Utils.AssimpIo;
 
@@ -11,11 +13,10 @@ namespace Lib.Utils.AssimpIo;
 /// operation is cancelled or times out.
 /// </summary>
 /// <remarks>
-/// The child is the small AssimpImportHost launcher shipped in this package's output. It loads this
-/// assembly and calls <see cref="RunChild"/>, which reads or writes a temp file. The launcher is
-/// framework-dependent, so it needs a <c>dotnet</c> executable with .NET 10 or newer.
-/// Self-contained release builds may have none; then <see cref="IsAvailable"/> is false and callers
-/// run in-process.
+/// Inside TiXL the child is the editor executable itself, started with <c>--assimp-host</c>; it never
+/// boots the UI. That needs no dotnet installation, so self-contained release builds stay isolated.
+/// Outside an editor (tests, hosts) the small AssimpImportHost launcher shipped in this package's
+/// output is used with a <c>dotnet</c> executable; if neither is available, callers run in-process.
 /// </remarks>
 internal static class AssimpIsolatedImport
 {
@@ -195,46 +196,41 @@ internal static class AssimpIsolatedImport
     {
         try
         {
-            if (FindHostAssembly() == null)
+            if (!TryGetHostCommand(out var hostCommand, out var failureReason))
             {
-                UnavailableReason = "The isolated import host is missing from the package";
+                UnavailableReason = failureReason;
                 return false;
             }
 
-            if (FindDotnetExecutable() == null)
-            {
-                UnavailableReason = "No dotnet executable found";
-                return false;
-            }
-
-            var (exitCode, errorOutput, standardOutput) = RunHostCapturingOutput([ProbeArgument], ProbeTimeout, CancellationToken.None);
+            var (exitCode, errorOutput, standardOutput) = RunHostCapturingOutput(hostCommand, [ProbeArgument], ProbeTimeout, CancellationToken.None);
             if (exitCode == ExitSuccess && standardOutput == ProbeResponse)
                 return true;
 
-            UnavailableReason = $"The isolated import host doesn't start (exit code {exitCode}). {errorOutput}".Trim();
+            UnavailableReason = $"The isolated Assimp host doesn't start (exit code {exitCode}). {errorOutput}".Trim();
             return false;
         }
         catch (Exception e)
         {
-            UnavailableReason = $"The isolated import host doesn't start: {e.Message}";
+            UnavailableReason = $"The isolated Assimp host doesn't start: {e.Message}";
             return false;
         }
     }
 
     private static (int ExitCode, string ErrorOutput) RunHost(IReadOnlyList<string> childArguments, TimeSpan timeout, CancellationToken token)
     {
-        var (exitCode, errorOutput, _) = RunHostCapturingOutput(childArguments, timeout, token);
+        if (!TryGetHostCommand(out var hostCommand, out var failureReason))
+            throw new InvalidOperationException(failureReason);
+
+        var (exitCode, errorOutput, _) = RunHostCapturingOutput(hostCommand, childArguments, timeout, token);
         return (exitCode, errorOutput);
     }
 
-    private static (int ExitCode, string ErrorOutput, string StandardOutput) RunHostCapturingOutput(IReadOnlyList<string> childArguments,
+    private static (int ExitCode, string ErrorOutput, string StandardOutput) RunHostCapturingOutput(HostCommand hostCommand,
+                                                                                                   IReadOnlyList<string> childArguments,
                                                                                                    TimeSpan timeout,
                                                                                                    CancellationToken token)
     {
-        var dotnet = FindDotnetExecutable() ?? throw new InvalidOperationException("No dotnet executable found");
-        var hostAssembly = FindHostAssembly() ?? throw new InvalidOperationException("The isolated import host is missing");
-
-        var startInfo = new ProcessStartInfo(dotnet)
+        var startInfo = new ProcessStartInfo(hostCommand.Executable)
                             {
                                 UseShellExecute = false,
                                 CreateNoWindow = true,
@@ -247,8 +243,13 @@ internal static class AssimpIsolatedImport
                                 StandardOutputEncoding = Encoding.UTF8,
                             };
 
-        // Launcher arguments: this assembly, folders to resolve its dependencies from, then the child's own arguments
-        startInfo.ArgumentList.Add(hostAssembly);
+        // Host arguments: the launcher (or the editor's host mode), this assembly, folders to resolve
+        // its dependencies from, then the child's own arguments.
+        foreach (var argument in hostCommand.PrefixArguments)
+        {
+            startInfo.ArgumentList.Add(argument);
+        }
+
         startInfo.ArgumentList.Add(typeof(AssimpIsolatedImport).Assembly.Location);
         foreach (var folder in GetDependencyFolders())
         {
@@ -307,6 +308,71 @@ internal static class AssimpIsolatedImport
         {
             // Already gone
         }
+    }
+
+    private readonly record struct HostCommand(string Executable, IReadOnlyList<string> PrefixArguments);
+
+    /// <summary>
+    /// Picks how the worker is started: the editor executable itself when the operator runs inside
+    /// TiXL (no dotnet dependency, works in self-contained builds), otherwise the standalone launcher
+    /// next to this package plus a dotnet executable.
+    /// </summary>
+    private static bool TryGetHostCommand(out HostCommand command, out string failureReason)
+    {
+        command = default;
+        failureReason = string.Empty;
+
+        if (TryGetEditorHostCommand(out var editorExecutable, out var editorArguments))
+        {
+            command = new HostCommand(editorExecutable, editorArguments);
+            return true;
+        }
+
+        var hostAssembly = FindHostAssembly();
+        if (hostAssembly == null)
+        {
+            failureReason = "The isolated import host is missing from the package";
+            return false;
+        }
+
+        var dotnet = FindDotnetExecutable();
+        if (dotnet == null)
+        {
+            failureReason = "No dotnet executable found and the editor can't host the process itself";
+            return false;
+        }
+
+        command = new HostCommand(dotnet, [hostAssembly]);
+        return true;
+    }
+
+    /// <summary>The editor's entry point handles <see cref="IsolatedAssimpHost.Flag"/> before initializing anything.</summary>
+    private static bool TryGetEditorHostCommand(out string executable, out List<string> prefixArguments)
+    {
+        executable = string.Empty;
+        prefixArguments = [];
+
+        var entryAssembly = Assembly.GetEntryAssembly();
+        if (entryAssembly?.GetName().Name != "TiXL")
+            return false;
+
+        var processPath = Environment.ProcessPath;
+        if (string.IsNullOrEmpty(processPath) || !File.Exists(processPath))
+            return false;
+
+        // A framework-dependent editor was started as "dotnet TiXL.dll".
+        if (string.Equals(Path.GetFileNameWithoutExtension(processPath), "dotnet", StringComparison.OrdinalIgnoreCase))
+        {
+            var entryPath = entryAssembly.Location;
+            if (string.IsNullOrEmpty(entryPath) || !File.Exists(entryPath))
+                return false;
+
+            prefixArguments.Add(entryPath);
+        }
+
+        executable = processPath;
+        prefixArguments.Add(IsolatedAssimpHost.Flag);
+        return true;
     }
 
     private static string? FindHostAssembly()
