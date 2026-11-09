@@ -1222,7 +1222,11 @@ public sealed unsafe class VulkanBackend : IGraphicsBackend, IDisposable
     {
         // D3D11's Map(Read) waits for the GPU, and the operators that use it are written around that stall.
         FlushAndWait();
+        return MappedMemoryOf(resource);
+    }
 
+    private static MappedMemory MappedMemoryOf(GpuResource resource)
+    {
         switch (resource)
         {
             case VulkanBuffer buffer when buffer.Mapped != null:

@@ -358,6 +358,7 @@ public class Slot<T> : ISlot, ITimeClipRemapTarget
     }
 
     protected Slot<T>[] InputConnections = [];
+    private bool _reportedEmptyConnection;
 
     public int InvalidateGraph()
     {

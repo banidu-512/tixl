@@ -46,6 +46,12 @@ namespace Lib.io.video
         [Input(Guid = "A6AF67EA-2103-4AB5-8AC9-7C269CD25D14")]
         public readonly InputSlot<int> RtmpPort = new(1935);
 
+        // Frame handoff bookkeeping: the capture thread bumps the counter under the lock; the eval thread
+        // uploads only when it sees a counter it has not uploaded yet.
+        private int _sharedFrameCounter;
+        private int _uploadedFrameCounter;
+        private byte[]? _uploadBuffer;
+
         public VideoStreamInput()
         {
             // Every output drives the update, so a graph that only reads Status or Resolution still connects.
@@ -596,6 +602,8 @@ namespace Lib.io.video
                 Width = width;
                 Height = height;
             }
+
+            base.Dispose(isDisposing);
         }
 
         private const int NoRunId = 0;

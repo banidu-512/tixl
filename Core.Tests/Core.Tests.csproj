@@ -35,6 +35,11 @@
     </ItemGroup>
 
     <ItemGroup>
+        <!-- Self-contained operator helper: compiled in so its projection math is tested without loading the operator package. -->
+        <Compile Include="..\Operators\Lib\Utils\LaserProjection.cs" Link="LaserProjection.cs" />
+    </ItemGroup>
+
+    <ItemGroup>
         <ProjectReference Include="..\Core\Core.csproj" />
         <ProjectReference Include="..\Graphics\Graphics.csproj" />
         <ProjectReference Include="..\Graphics.Compat\Graphics.Compat.csproj" />

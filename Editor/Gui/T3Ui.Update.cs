@@ -153,9 +153,11 @@ public static partial class T3Ui
         _sendCrashReportsDialog.Draw();
         ShareSessionDialog.Draw();
         _userNameDialog.Draw();
+        _collabPasswordDialog.Draw();
         Windows.AssetLib.FolderImportDialog.Instance.Draw();
         AboutDialog.Draw();
         ExitDialog.Draw();
+        LaserArmWarningDialog.Draw();
         OperatorHelp.EditDescriptionDialog.Draw();
         SkillMapPopup.Draw();
 

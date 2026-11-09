@@ -465,7 +465,7 @@ internal sealed partial class ProjectView
         symbolUi.FlagAsModified();
     }
 
-    private static void CaptureWindowLayout(out string imGuiSettings, out Dictionary<string, bool> windowVisibility)
+    internal static void CaptureWindowLayout(out string imGuiSettings, out Dictionary<string, bool> windowVisibility)
     {
         windowVisibility = new Dictionary<string, bool>();
         var shownWindowTitles = new HashSet<string>();
@@ -517,7 +517,7 @@ internal sealed partial class ProjectView
         ApplyWindowLayout(symbolUi.WindowLayout, symbolUi.WindowLayoutImGuiVersion, symbolUi.WindowVisibility);
     }
 
-    private static void ApplyWindowLayout(string? imGuiSettings, string? imGuiVersion, Dictionary<string, bool>? windowVisibility)
+    internal static void ApplyWindowLayout(string? imGuiSettings, string? imGuiVersion, Dictionary<string, bool>? windowVisibility)
     {
         if (windowVisibility is { Count: > 0 })
         {

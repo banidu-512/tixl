@@ -23,6 +23,10 @@ internal sealed partial class SettingsWindow : Window
     internal SettingsWindow()
     {
         Config.Title = "Settings";
+
+        // The sidebar plus the 560px content column; tall enough that the Collaboration
+        // participant table (and its per-row actions) is visible without manual resizing.
+        WindowSizeOverride = new Vector2(700, 700);
     }
 
     private enum Categories
@@ -105,7 +109,7 @@ internal sealed partial class SettingsWindow : Window
         }
         NavigationSidebar.EndColumn();
 
-        NavigationSidebar.BeginContentPanel(CategoryTitle(_activeCategory), this);
+        NavigationSidebar.BeginContentPanel(CategoryTitle(_activeCategory), this, alwaysShowScrollbar: true);
         {
             if (_scrollContentToTop)
             {
@@ -114,6 +118,7 @@ internal sealed partial class SettingsWindow : Window
             }
 
             FormInputs.SetIndentToParameters();
+            FormInputs.PushMaxContentWidth(560);
             switch (_activeCategory)
             {
                 case Categories.Interface:
@@ -713,6 +718,8 @@ internal sealed partial class SettingsWindow : Window
                     break;
                 }
             }
+
+            FormInputs.PopMaxContentWidth();
 
             if (changed)
                 UserSettings.Save();

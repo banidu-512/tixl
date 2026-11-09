@@ -61,6 +61,8 @@ internal static class AppMenuBar
 
             DrawMainMenu();
 
+            LaserMasterButton.Draw();
+
             ImGui.PopStyleColor();
             ImGui.PopStyleVar(3);
 
@@ -408,7 +410,18 @@ internal static class AppMenuBar
 
             CustomComponents.SeparatorLine();
 
-            WindowManager.SettingsWindow.DrawMenuItemToggle();
+            WindowManager.SettingsWindow.DrawMenuItemToggle(UserActions.OpenSettings.ListShortcuts());
+            {
+                var hasSettings = ProjectView.Focused?.CompositionInstance?.Symbol.CompositionSettings is { Enabled: true };
+                var window = WindowManager.ProjectSettingsWindow;
+                if (MenuItem("Composition Settings", isChecked: hasSettings))
+                {
+                    window.Config.Visible = !window.Config.Visible;
+                }
+            }
+
+            if (MenuItem("Edit Output Setup", isEnabled: ProjectView.Focused != null))
+                Windows.Output.OutputWindow.EnterSetupOnPrimaryWindow();
 
             CustomComponents.SeparatorLine();
 

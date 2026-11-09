@@ -440,12 +440,31 @@ internal static class Program
     private static void ApplyWindowArgs(string[] args)
     {
         const string windowFlag = "--window";
+        const string projectFlag = "--project";
         for (var i = 0; i < args.Length; i++)
         {
             var arg = args[i];
             if (arg.Equals("--no-splash", StringComparison.OrdinalIgnoreCase))
             {
                 SkipSplash = true;
+                continue;
+            }
+
+            if (arg.Equals(App.Startup.OsAutostart.ArgMarker, StringComparison.OrdinalIgnoreCase))
+            {
+                StartedByOsAutostart = true;
+                continue;
+            }
+
+            if (arg.StartsWith(projectFlag + "=", StringComparison.OrdinalIgnoreCase))
+            {
+                ProjectFolderArgument = arg[(projectFlag.Length + 1)..];
+                continue;
+            }
+
+            if (arg.Equals(projectFlag, StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+            {
+                ProjectFolderArgument = args[i + 1];
                 continue;
             }
 

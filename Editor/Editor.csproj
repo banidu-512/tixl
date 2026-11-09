@@ -63,6 +63,7 @@
 
     <!-- ======================= Nuget References =========================== -->
     <ItemGroup>
+        <PackageReference Include="DataChannelDotnet" Version="1.3.1" />
         <PackageReference Include="ImGui.NET" Version="1.91.6.1" />
         <PackageReference Include="DataChannelDotnet" Version="1.3.1" />
         <PackageReference Include="Microsoft.Build" Version="18.8.2" />
@@ -92,6 +93,14 @@
         <ProjectReference Include="..\IoServices\IoServices.csproj" />
         <ProjectReference Include="..\Logging\Logging.csproj" />
         <ProjectReference Include="..\SilkWindows\SilkWindows.csproj" />
+        <!-- Not used by the editor itself: building it here produces the VideoServices ref assembly that the
+             Video operator package's runtime compile (with the "no dependencies" flag) resolves. Without
+             this, a machine that only ever built the editor has no Debug VideoServices and the Video
+             package fails (CS0006). ExcludeAssets="runtime" + Private="false" keep it compile-only: with
+             runtime assets flowing, Sdcb.FFmpeg.dll lands in the editor output, gets loaded by the default
+             context ahead of the Video package's copy, and its FFmpeg P/Invokes then resolve to a
+             system-wide GPL libavcodec instead of the bundled LGPL one (rejected by FfmpegLibrary). -->
+        <ProjectReference Include="..\VideoServices\VideoServices.csproj" Private="false" ExcludeAssets="runtime" />
     </ItemGroup>
     <!-- ===============================//======================================= -->
 
@@ -221,6 +230,8 @@
         <PackageNames Include="Omt" />
         <PackageNames Include="Video" />
         <PackageNames Include="Io" />
+        <PackageNames Include="DepthAnything" />
+        <PackageNames Include="StreamDiffusion" />
         <PackageNames Include="Mediapipe">
             <Name>t3.mediapipe</Name>
         </PackageNames>

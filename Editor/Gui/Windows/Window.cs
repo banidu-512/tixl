@@ -217,7 +217,7 @@ internal abstract class Window
     private static Window? _windowToFocusAfterLayoutChange;
     private static int _layoutChangeFocusFrame;
 
-    internal void DrawMenuItemToggle()
+    internal void DrawMenuItemToggle(string? keyboardShortcut = null)
     {
         if (AllowMultipleInstances)
         {
@@ -235,7 +235,8 @@ internal abstract class Window
                 ? Config.Title
                 : MenuTitle;
 
-            if (CustomComponents.DrawMenuItem(menuTitle.GetHashCode(), Icon.None, menuTitle, isChecked: Config.Visible, reserveIconColumn: false,
+            if (CustomComponents.DrawMenuItem(menuTitle.GetHashCode(), Icon.None, menuTitle, keyboardShortcut, isChecked: Config.Visible,
+                                              reserveIconColumn: false,
                                               state: Config.Visible ? CustomComponents.ButtonStates.Emphasized : CustomComponents.ButtonStates.Default))
             {
                 Config.Visible = !Config.Visible;

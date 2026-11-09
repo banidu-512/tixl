@@ -905,6 +905,9 @@ public class HandLandmarkDetection : Instance<HandLandmarkDetection>
         _debugTexture?.Dispose();
         _debugTexture = null;
 
+        _debugTexture?.Dispose();
+        _debugTexture = null;
+
         lock (_textureCacheLock)
         {
             foreach (var cachedTexture in _cachedStagingTextures.Values)
