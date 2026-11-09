@@ -408,7 +408,7 @@ internal static class AppMenuBar
 
             CustomComponents.SeparatorLine();
 
-            WindowManager.SettingsWindow.DrawMenuItemToggle();
+            WindowManager.SettingsWindow.DrawMenuItemToggle(UserActions.OpenSettingsWindow.ListShortcuts());
 
             CustomComponents.SeparatorLine();
 
