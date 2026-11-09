@@ -539,6 +539,7 @@ internal sealed class PlaceholderCreation
                                                                                              matchingInputSlot.Id
                                                                                             ),
                                                                        0));
+                    MagItemMovement.MakeRoomForRevealedOutputRow(context, _snappedSourceItem, sourceOutputId);
                     connectedInputId = matchingInputSlot.Id;
                 }
             }
@@ -665,6 +666,7 @@ internal sealed class PlaceholderCreation
                        .AddAndExecCommand(new AddConnectionCommand(context.CompositionInstance.Symbol,
                                                                    connectionToAdd,
                                                                    0));
+                MagItemMovement.MakeRoomForRevealedOutputRow(context, sourceItem, context.ActiveSourceOutputId);
             }
         }
         // Wire connect temp connections
@@ -744,7 +746,6 @@ internal sealed class PlaceholderCreation
             VariationHandling.GetOrLoadVariations(symbol.Id).SetActiveVariationWithoutApply(preset);
         }
 
-        ParameterPopUp.NodeIdRequestedForParameterWindowActivation = newSymbolChild.Id;
         context.Layout.FlagStructureAsChanged();
 
         Complete(context);

@@ -322,7 +322,11 @@ internal sealed partial class MagItemMovement
         _shakeDetector.ResetShaking();
     }
 
-    internal static void SelectActiveItem(GraphUiContext context)
+    /// <summary>
+    /// Applies a click to the selection. With <paramref name="openParametersIfSelected"/>, clicking an already
+    /// selected operator asks for its parameter popup.
+    /// </summary>
+    internal static void SelectActiveItem(GraphUiContext context, bool openParametersIfSelected = false)
     {
         var item = context.ActiveItem;
         if (item == null)
@@ -339,6 +343,10 @@ internal sealed partial class MagItemMovement
             else if (item.Instance is IContentSupplier)
             {
                 OutputWindow.EnterSetupModeForSendOpClick();
+            }
+            else if (openParametersIfSelected && item.Variant == MagGraphItem.Variants.Operator && item.Instance != null)
+            {
+                ParameterPopUp.RequestOpenUnlessDoubleClicked(item.Instance.SymbolChildId);
             }
         }
         else
@@ -1498,6 +1506,37 @@ internal sealed partial class MagItemMovement
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// An additional output gets a row appended to the bottom of its operator once it is connected.
+    /// Call this when connecting such an output, so the items snapped below make room for that row
+    /// instead of being overlapped by it.
+    /// </summary>
+    internal static void MakeRoomForRevealedOutputRow(GraphUiContext context, MagGraphItem sourceItem, Guid outputId)
+    {
+        var instance = sourceItem.Instance;
+        if (sourceItem.Variant != MagGraphItem.Variants.Operator || instance == null)
+            return;
+
+        var isHidden = false;
+        foreach (var outputIndex in sourceItem.HiddenOutputIndices)
+        {
+            if (outputIndex < instance.Outputs.Count && instance.Outputs[outputIndex].Id == outputId)
+            {
+                isHidden = true;
+                break;
+            }
+        }
+
+        if (!isHidden)
+            return;
+
+        var yThreshold = sourceItem.PosOnCanvas.Y + sourceItem.Size.Y - MagGraphItem.GridSize.Y / 2;
+        MoveSnappedItemsVertically(context,
+                                   CollectSnappedItemsBelow(sourceItem, yThreshold),
+                                   yThreshold,
+                                   MagGraphItem.GridSize.Y);
     }
 
     /// <summary>
