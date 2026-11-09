@@ -420,6 +420,34 @@ public class PhysicsSimulationTests
     }
 
     [Fact]
+    public void WeldJointHoldsAnOffsetPairTogetherUnderOpposingVelocities()
+    {
+        using var harness = new Harness();
+        harness.Settings.Gravity = Vector3.Zero;
+        var left = harness.AddBody(Sphere(new Vector3(0, 0, 0), velocity: new Vector3(3, 0, 0)));
+        var right = harness.AddBody(Sphere(new Vector3(2, 0, 0), velocity: new Vector3(-3, 0, 0)));
+        harness.AddJoint(new PhysicsJoint
+                             {
+                                 Id = Guid.NewGuid(),
+                                 BodyA = left,
+                                 BodyB = right,
+                                 Type = PhysicsJointType.Weld,
+                                 LocalOffsetB = new Vector3(2, 0, 0),
+                                 Frequency = 60f,
+                             });
+
+        harness.Step(0.5f);
+
+        harness.Sim.TryGetBodyPosition(left.Id, out var leftPosition);
+        harness.Sim.TryGetBodyPosition(right.Id, out var rightPosition);
+
+        // Free bodies closing at 6 m/s would have met in the middle; the weld is what keeps the
+        // offset, and LocalOffsetB is the second body's origin in the first one's frame.
+        Assert.InRange(rightPosition.X - leftPosition.X, 1.95f, 2.05f);
+        Assert.InRange(Math.Abs(rightPosition.Y - leftPosition.Y), 0f, 0.01f);
+    }
+
+    [Fact]
     public void RemovingAnUnrelatedBodyKeepsTheJointOnce()
     {
         using var harness = new Harness();
