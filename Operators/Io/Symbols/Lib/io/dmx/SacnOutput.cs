@@ -135,6 +135,13 @@ internal sealed class SacnOutput : Instance<SacnOutput>, IStatusProvider, ICusto
             return;
         }
 
+        // Show failover: suppress all DMX sends while this machine is the failover Standby.
+        if (T3.Core.Show.FailoverArbiter.IsOutputSuppressed)
+        {
+            SetStatus("Standby — the failover active node is streaming.", IStatusProvider.StatusLevel.Notice);
+            return;
+        }
+
         lock (_connectionLock)
         {
             if (!_connected)
