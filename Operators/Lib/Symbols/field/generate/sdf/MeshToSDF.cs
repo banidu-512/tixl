@@ -16,7 +16,12 @@ namespace Lib.field.generate.sdf;
 ///
 /// Robustness contract:
 /// - Thread safe: all shared state and GPU work is serialized through a single
-///   <see cref="_stateLock"/>.
+///   <see cref="_stateLock"/>; the frame guard sits inside it so two evaluation threads
+///   can never start duplicate bakes. The status-bar reads are lock-free by design (the
+///   fields they touch are volatile) so the UI never waits for a running bake step.
+/// - Memory safe: every allocation is bounds-checked before it is used, all resource
+///   creation is all-or-nothing (a failed allocation releases the partial set and stays
+///   retryable), and the only CPU readback is the fixed 24-byte mesh-bounds struct.
 /// - Non blocking: bakes are split into GPU work units that are spread over several frames
 ///   (see <see cref="BakeFrames"/>). The published texture always contains the last
 ///   <em>completed</em> bake - the work happens in a separate scratch volume and is handed
@@ -24,8 +29,15 @@ namespace Lib.field.generate.sdf;
 ///   <see cref="AutoFitVolume"/> starts a bake.
 /// - Unkillable: every GPU batch is wrapped in exception handling that aborts the bake,
 ///   fully unbinds the compute stage and reports the failure through the status bar.
-///   A failed bake never retries in a loop and never crashes the application. Mid-bake
-///   input changes simply restart the bake on the next frame.
+///   Every kernel loop is bounded (no data-dependent loop lengths), all numeric inputs are
+///   sanitized against NaN/Infinity, and the face count is validated against the D3D11
+///   dispatch cap - so a bad mesh or a bad parameter can fail a bake but cannot produce an
+///   unbounded GPU loop or crash the application. The exact closest-point mode additionally
+///   splits each slice into row bands, so no single dispatch can outrun the OS GPU watchdog
+///   and reset the device. Deliberately expensive exact-mode bakes are reported as a warning.
+///   A failed bake is retried only after an input changes.
+/// - Peak GPU memory scales with <see cref="Resolution"/>: seven volumes at 30 bytes per
+///   voxel total ~8 MB at 64, ~63 MB at 128 and ~500 MB at 256.
 /// </summary>
 [Guid("13f60f14-0553-422b-85de-d7eb8d92912c")]
 internal sealed class MeshToSDF : Instance<MeshToSDF>, IGraphNodeOp, IStatusProvider
@@ -94,16 +106,19 @@ internal sealed class MeshToSDF : Instance<MeshToSDF>, IGraphNodeOp, IStatusProv
 
     private void Update(EvaluationContext context)
     {
-        if (_lastUpdateFrame == Playback.FrameCount)
-            return;
-
-        _lastUpdateFrame = Playback.FrameCount;
-
         // Evaluation could in principle be re-entered from another playback context while
         // GPU work is being enqueued. The lock makes every state mutation and GPU dispatch
         // atomic. Monitor locks are reentrant, so same-thread recursion stays safe.
+        //
+        // The frame guard belongs *inside* the lock: two evaluation threads racing on the
+        // same frame could otherwise both pass it and enqueue duplicate bakes.
         lock (_stateLock)
         {
+            if (_lastUpdateFrame == Playback.FrameCount)
+                return;
+
+            _lastUpdateFrame = Playback.FrameCount;
+
             try
             {
                 UpdateInternal(context);
@@ -129,14 +144,17 @@ internal sealed class MeshToSDF : Instance<MeshToSDF>, IGraphNodeOp, IStatusProv
         var meshIsDirty = Mesh.DirtyFlag.IsDirty;
         var mesh = Mesh.GetValue(context);
 
-        var resolution = (int)Resolution.GetValue(context).Clamp(16f, 256f);
-        var center = Center.GetValue(context);
-        var size = Size.GetValue(context);
-        var sampleDensity = SampleDensity.GetValue(context).Clamp(0.5f, 64f);
-        var mode = (ConversionModes)Mode.GetValue(context).Clamp(0, 3);
-        var smoothing = Smoothing.GetValue(context).Clamp(0f, 1f);
-        var smoothingRadius = SmoothingRadius.GetValue(context).Clamp(0.25f, 8f);
-        var bakeFrames = (int)BakeFrames.GetValue(context).Clamp(1f, 300f);
+        // Every numeric input is sanitized: a NaN or Infinity coming from a connected
+        // field would otherwise propagate into the constant buffer, and a NaN in the
+        // shader's sample-count/loop math is the one thing that can stall the GPU.
+        var resolution = (int)Sanitize(Resolution.GetValue(context), 128f, 16f, 256f);
+        var center = Sanitize(Center.GetValue(context), Vector3.Zero);
+        var size = Sanitize(Size.GetValue(context), Vector3.One);
+        var sampleDensity = Sanitize(SampleDensity.GetValue(context), 8f, 0.5f, 64f);
+        var mode = (ConversionModes)Math.Clamp(Mode.GetValue(context), 0, 3);
+        var smoothing = Sanitize(Smoothing.GetValue(context), 0f, 0f, 1f);
+        var smoothingRadius = Sanitize(SmoothingRadius.GetValue(context), 2f, 0.25f, 8f);
+        var bakeFrames = (int)Sanitize(BakeFrames.GetValue(context), 8f, 1f, 300f);
         var invert = Invert.GetValue(context);
         var autoFit = AutoFitVolume.GetValue(context);
 
@@ -162,8 +180,17 @@ internal sealed class MeshToSDF : Instance<MeshToSDF>, IGraphNodeOp, IStatusProv
 
         // Any change to the baked inputs clears a previous bake failure so it is retried
         // once - but a persistent failure never falls into a per-frame retry loop.
+        // A mesh change during an in-flight bake is coalesced: restarting the step queue
+        // every frame meant the bake never reached its finalize step, and each restart paid
+        // the bounds readback. The change is latched instead of dropped, because reading
+        // Mesh.GetValue() above already consumed the slot's dirty flag - without the latch
+        // the new mesh would never be baked (AutoRebake would only fire on the *next* change).
+        var autoRebake = AutoRebake.GetValue(context);
+        if (meshIsDirty && _bakeSteps != null && autoRebake)
+            _meshChangedDuringBake = true;
+
         var rebakeRequested = _bakeRequested
-                              || (AutoRebake.GetValue(context) && meshIsDirty)
+                              || (autoRebake && (meshIsDirty || _meshChangedDuringBake) && _bakeSteps == null)
                               || volumeChanged;
         if (rebakeRequested)
             _bakeFailed = false;
@@ -178,6 +205,10 @@ internal sealed class MeshToSDF : Instance<MeshToSDF>, IGraphNodeOp, IStatusProv
             try
             {
                 StartBake(mesh!, resolution, center, size, sampleDensity, mode, smoothing, smoothingRadius, bakeFrames, invert, autoFit);
+                // Consume the latch only when a bake actually started; an aborted start
+                // leaves it in place so the change is still baked after the input is fixed.
+                if (_bakeSteps != null)
+                    _meshChangedDuringBake = false;
             }
             catch (Exception e)
             {
@@ -198,7 +229,11 @@ internal sealed class MeshToSDF : Instance<MeshToSDF>, IGraphNodeOp, IStatusProv
             _lastErrorMessage = "Connect a mesh (e.g. from LoadObj)";
         }
 
-        _bakeRequested = false;
+        // Consume a manual Bake pulse only once there is a mesh to bake. Keeping it while
+        // no mesh is connected means pulsing Bake first and wiring the mesh afterwards
+        // still triggers exactly one bake (and then stops, so it can't loop on a failure).
+        if (hasValidMesh)
+            _bakeRequested = false;
 
         // The field shader samples through the Center/Size graph params. When auto-fit
         // is on, the completion step writes the fitted box into those inputs, so the
@@ -222,10 +257,24 @@ internal sealed class MeshToSDF : Instance<MeshToSDF>, IGraphNodeOp, IStatusProv
         var device = ResourceManager.Device;
         if (device == null)
         {
-            _bakeFailed = true;
-            _lastErrorMessage = "No graphics device";
+            // Deliberately *not* snapshotted: a missing device is transient (startup,
+            // device reset) and should be retried as soon as it appears.
+            AbortBake("No graphics device");
             return;
         }
+
+        // Snapshot the attempted settings before any validation early-out: if this bake
+        // fails, the inputs no longer compare as "changed" and the failure can't fall
+        // into a per-frame retry loop. The user retries by changing an input or pulsing Bake.
+        _lastResolution = resolution;
+        _lastCenter = center;
+        _lastSize = size;
+        _lastSampleDensity = sampleDensity;
+        _lastMode = mode;
+        _lastInvert = invert;
+        _lastAutoFit = autoFit;
+        _lastSmoothing = smoothing;
+        _lastSmoothingRadius = smoothingRadius;
 
         var clearShader = _clearVoxelsShader.Value;
         var clearSdfShader = _clearSdfShader.Value;
@@ -252,47 +301,29 @@ internal sealed class MeshToSDF : Instance<MeshToSDF>, IGraphNodeOp, IStatusProv
             || _computeBoundsShader.Value == null
             || smoothFirstShader == null || smoothPassShader == null || smoothCopyBackShader == null)
         {
-            _bakeFailed = true;
-            _lastErrorMessage = "Can't compile bake compute shaders";
             Log.Warning($"{nameof(MeshToSDF)}: can't compile bake compute shaders", this);
+            AbortBake("Can't compile bake compute shaders");
             return;
         }
-
-        var maxAxisSize = MathF.Max(size.X, MathF.Max(size.Y, size.Z));
-        if (!(maxAxisSize > 0.0001f))
-        {
-            _bakeFailed = true;
-            _lastErrorMessage = "Volume size must be positive";
-            return;
-        }
-
-        // Snapshot the attempted settings now: if this bake fails, the changed inputs
-        // no longer compare as "changed" and the failure won't retry in a per-frame loop.
-        _lastResolution = resolution;
-        _lastCenter = center;
-        _lastSize = size;
-        _lastSampleDensity = sampleDensity;
-        _lastMode = mode;
-        _lastInvert = invert;
-        _lastAutoFit = autoFit;
-        _lastSmoothing = smoothing;
-        _lastSmoothingRadius = smoothingRadius;
 
         var faceCount = mesh.FaceCount;
-        if (mode == ConversionModes.ExactClosestPoint)
+        if (faceCount > MaxFaces)
         {
-            var iterations = (long)faceCount * resolution * resolution * resolution;
-            if (iterations > 2_000_000_000L)
+            // D3D11 rejects a dispatch above 65535 thread groups. The busiest kernel uses
+            // 64 threads per group, so this is the hard ceiling - fail with a readable
+            // message instead of letting Dispatch throw an opaque device error.
+            var warnKey = $"faces:{faceCount}";
+            if (_lastFailureWarnKey != warnKey)
             {
-                // Only warn once per mesh/resolution combination - scrubbing parameters
-                // would otherwise restart bakes (and repeat this warning) every frame.
-                var expensiveKey = $"{faceCount}:{resolution}";
-                if (_lastExpensiveWarnKey != expensiveKey)
-                {
-                    _lastExpensiveWarnKey = expensiveKey;
-                    Log.Warning($"{nameof(MeshToSDF)}: ExactClosestPoint is expensive for this bake ({faceCount} faces x {resolution}³ voxels) - consider JumpFlood mode, a lower Resolution, or more BakeFrames", this);
-                }
+                _lastFailureWarnKey = warnKey;
+                Log.Warning($"{nameof(MeshToSDF)}: mesh has {faceCount:N0} faces; the GPU bake supports at most {MaxFaces:N0}", this);
             }
+
+            // Abort rather than just flag: a queue left over from a bake that is still in
+            // flight would otherwise run to completion, clear the error and publish stale
+            // settings over this failure.
+            AbortBake($"Mesh has {faceCount:N0} faces; the GPU bake supports at most {MaxFaces:N0}");
+            return;
         }
 
         // Capture everything the work units need. If any input changes mid-bake the
@@ -320,10 +351,41 @@ internal sealed class MeshToSDF : Instance<MeshToSDF>, IGraphNodeOp, IStatusProv
             }
         }
 
+        // The effective box is only known after auto-fit. Deriving the voxel scale from the
+        // pre-fit manual Size (as the original port did) made dims = fittedSize * Resolution
+        // / manualSize: an oversized volume whose size depended on the unrelated manual box,
+        // and distances scaled by manualSize instead of the fitted one.
+        var maxAxisSize = MathF.Max(size.X, MathF.Max(size.Y, size.Z));
+        if (!(maxAxisSize > 0.0001f))
+        {
+            AbortBake("Volume size must be positive");
+            return;
+        }
+
         var voxelScale = resolution / maxAxisSize;
-        var dims = new Int3(Math.Max(1, (int)MathF.Ceiling(MathF.Abs(size.X) * voxelScale)),
-                            Math.Max(1, (int)MathF.Ceiling(MathF.Abs(size.Y) * voxelScale)),
-                            Math.Max(1, (int)MathF.Ceiling(MathF.Abs(size.Z) * voxelScale)));
+        // Clamp each axis to Resolution: the longest axis is resolution by construction, and
+        // the clamp keeps float rounding from ever allocating a volume one voxel over the
+        // documented memory budget.
+        var dims = new Int3(Math.Clamp((int)MathF.Ceiling(MathF.Abs(size.X) * voxelScale), 1, resolution),
+                            Math.Clamp((int)MathF.Ceiling(MathF.Abs(size.Y) * voxelScale), 1, resolution),
+                            Math.Clamp((int)MathF.Ceiling(MathF.Abs(size.Z) * voxelScale), 1, resolution));
+
+        if (mode == ConversionModes.ExactClosestPoint)
+        {
+            var voxels = (long)dims.X * dims.Y * dims.Z;
+            var iterations = voxels * faceCount;
+            if (iterations > 2_000_000_000L)
+            {
+                // Only warn once per mesh/resolution combination - scrubbing parameters
+                // would otherwise restart bakes (and repeat this warning) every frame.
+                var expensiveKey = $"{faceCount}:{dims.X}x{dims.Y}x{dims.Z}";
+                if (_lastExpensiveWarnKey != expensiveKey)
+                {
+                    _lastExpensiveWarnKey = expensiveKey;
+                    Log.Warning($"{nameof(MeshToSDF)}: ExactClosestPoint is expensive for this bake ({faceCount} faces x {dims.X}x{dims.Y}x{dims.Z} voxels) - consider JumpFlood mode, a lower Resolution, or more BakeFrames", this);
+                }
+            }
+        }
 
         var volumesRecreated = EnsureVolumes(dims);
         if (volumesRecreated)
@@ -336,8 +398,7 @@ internal sealed class MeshToSDF : Instance<MeshToSDF>, IGraphNodeOp, IStatusProv
         }
         if (_sdf == null || _bakeSdf == null || _rawSdf == null || _voxelsA == null || _voxelsB == null || _insideMask == null || _sdfScratch == null)
         {
-            _bakeFailed = true;
-            _lastErrorMessage = "Failed to create volume textures";
+            AbortBake("Failed to create volume textures");
             return;
         }
 
@@ -359,6 +420,7 @@ internal sealed class MeshToSDF : Instance<MeshToSDF>, IGraphNodeOp, IStatusProv
         _params.MaxSamples = MaxSamplesPerTriangle;
         _params.Signed = mode == ConversionModes.JumpFlood_Unsigned ? 0f : 1f;
         _params.SliceZ = 0;
+        _params.BandRowStart = 0;
         _params.Smoothing = 0;
         _params.SmoothingRadius = smoothingRadius;
         _params.Invert = invert ? 1f : 0f;
@@ -546,30 +608,40 @@ internal sealed class MeshToSDF : Instance<MeshToSDF>, IGraphNodeOp, IStatusProv
             {
                 // 4. Exact distance from every voxel center to the nearest triangle.
                 //    Each z slice is its own work unit so the bake can be spread over
-                //    frames and the GPU can be preempted in between.
+                //    frames and the GPU can be preempted in between. Inside a slice the
+                //    rows are split into bands, because the work per dispatch is
+                //    rows * dims.X * faceCount and a single dispatch that runs longer than
+                //    the OS GPU watchdog (~2s) resets the device and takes the app with it.
+                var rowsPerBand = ComputeRowsPerBand(dims, faceCount);
                 for (var z = 0; z < dims.Z; z++)
                 {
-                    var sliceZ = z;
-                    steps.Enqueue(() =>
-                                  {
-                                      _params.SliceZ = sliceZ;
-                                      UpdateParamsBuffer(device);
-                                      csStage.Set(closestPointShader);
-                                      csStage.SetShaderResource(0, vertexSrv);
-                                      csStage.SetShaderResource(1, indexSrv);
-                                      csStage.SetUnorderedAccessView(UavVoxelWrite, voxelsB.Uav);
-                                      try
+                    for (var rowStart = 0; rowStart < dims.Y; rowStart += rowsPerBand)
+                    {
+                        var sliceZ = z;
+                        var bandStart = rowStart;
+                        var bandRows = Math.Min(rowsPerBand, dims.Y - rowStart);
+                        steps.Enqueue(() =>
                                       {
-                                          context.Dispatch(CeilDiv(dims.X, 8), CeilDiv(dims.Y, 8), 1);
-                                      }
-                                      finally
-                                      {
-                                          csStage.SetShaderResource(0, null);
-                                          csStage.SetShaderResource(1, null);
-                                          csStage.SetUnorderedAccessView(UavVoxelWrite, null);
-                                          csStage.Set(null);
-                                      }
-                                  });
+                                          _params.SliceZ = sliceZ;
+                                          _params.BandRowStart = bandStart;
+                                          UpdateParamsBuffer(device);
+                                          csStage.Set(closestPointShader);
+                                          csStage.SetShaderResource(0, vertexSrv);
+                                          csStage.SetShaderResource(1, indexSrv);
+                                          csStage.SetUnorderedAccessView(UavVoxelWrite, voxelsB.Uav);
+                                          try
+                                          {
+                                              context.Dispatch(CeilDiv(dims.X, 8), CeilDiv(bandRows, 8), 1);
+                                          }
+                                          finally
+                                          {
+                                              csStage.SetShaderResource(0, null);
+                                              csStage.SetShaderResource(1, null);
+                                              csStage.SetUnorderedAccessView(UavVoxelWrite, null);
+                                              csStage.Set(null);
+                                          }
+                                      });
+                    }
                 }
 
                 // 5. Apply the inside mask sign ----------------------------------
@@ -691,6 +763,9 @@ internal sealed class MeshToSDF : Instance<MeshToSDF>, IGraphNodeOp, IStatusProv
         var finalSize = size;
         var centerInput = Center;
         var sizeInput = Size;
+        // The largest actual volume dimension. With auto-fit it must equal Resolution
+        // (the fitted box is scaled so its longest axis spans the full voxel budget).
+        var maxDim = Math.Max(dims.X, Math.Max(dims.Y, dims.Z));
         steps.Enqueue(() =>
                       {
                           context.CopyResource(bakeTarget.Texture, publishedSdf.Texture);
@@ -707,7 +782,7 @@ internal sealed class MeshToSDF : Instance<MeshToSDF>, IGraphNodeOp, IStatusProv
                           _bakeProgress = 1f;
                           BakeCount.Value = ++_bakeCount;
                           _lastErrorMessage = string.Empty;
-                          Log.Debug($"{nameof(MeshToSDF)}: baked SDF volume ({mode}, {resolution} voxels max axis, {faceCount} faces, {sampleDensity:0.#} samples/voxel², smoothing {smoothing:0.##}/{smoothingRadius:0.##}, volume center {finalCenter:F2} size {finalSize:F2}{(fitted ? ", auto-fitted" : "")})", this);
+                          Log.Debug($"{nameof(MeshToSDF)}: baked SDF volume ({mode}, {maxDim} voxels max axis, {faceCount} faces, {sampleDensity:0.#} samples/voxel², smoothing {smoothing:0.##}/{smoothingRadius:0.##}, volume center {finalCenter:F2} size {finalSize:F2}{(fitted ? ", auto-fitted" : "")})", this);
                       });
 
         _bakeSteps = steps;
@@ -987,11 +1062,33 @@ internal sealed class MeshToSDF : Instance<MeshToSDF>, IGraphNodeOp, IStatusProv
         context.Dispatch(CeilDiv(dims.X, 8), CeilDiv(dims.Y, 8), CeilDiv(dims.Z, 8));
     }
 
+    /**
+     * Rows of one z slice that a single ClosestPointBrute dispatch may cover.
+     * The work of a dispatch is rows * dims.X * faceCount distance tests; keeping that
+     * near 1e9 keeps each dispatch well inside the OS GPU watchdog window (~2s), so a
+     * heavy exact-mode bake is slow but can never reset the graphics device.
+     */
+    private static int ComputeRowsPerBand(Int3 dims, int faceCount)
+    {
+        const long testsPerDispatchBudget = 1_000_000_000L;
+        var testsPerRow = (long)dims.X * Math.Max(1, faceCount);
+        var rows = testsPerDispatchBudget / testsPerRow;
+        return (int)Math.Clamp(rows, 1, dims.Y);
+    }
+
     private static float DistanceSquared(Vector3 a, Vector3 b)
     {
         var d = a - b;
         return d.X * d.X + d.Y * d.Y + d.Z * d.Z;
     }
+
+    /** Returns a finite, clamped value - or the fallback when the input is NaN/Infinity. */
+    private static float Sanitize(float value, float fallback, float min, float max)
+        => float.IsFinite(value) ? Math.Clamp(value, min, max) : fallback;
+
+    /** Returns the vector only when all components are finite, otherwise the fallback. */
+    private static Vector3 Sanitize(Vector3 value, Vector3 fallback)
+        => float.IsFinite(value.X) && float.IsFinite(value.Y) && float.IsFinite(value.Z) ? value : fallback;
 
     /**
      * Reduces the mesh bounding box on the GPU (ComputeBounds kernel) and reads the
@@ -1045,12 +1142,20 @@ internal sealed class MeshToSDF : Instance<MeshToSDF>, IGraphNodeOp, IStatusProv
             csStage.SetShaderResource(0, vertexSrv);
             csStage.SetShaderResource(1, indexSrv);
             csStage.SetUnorderedAccessView(UavBounds, _boundsUav);
-            context.Dispatch(1, 1, 1);
-            csStage.SetUnorderedAccessView(UavBounds, null);
-            csStage.SetShaderResource(0, null);
-            csStage.SetShaderResource(1, null);
-            csStage.Set(null);
-            csStage.SetConstantBuffer(0, null);
+            try
+            {
+                context.Dispatch(1, 1, 1);
+            }
+            finally
+            {
+                // Unbind even when the dispatch throws: a half-bound compute stage would
+                // otherwise stay behind for every following operator in the frame.
+                csStage.SetUnorderedAccessView(UavBounds, null);
+                csStage.SetShaderResource(0, null);
+                csStage.SetShaderResource(1, null);
+                csStage.Set(null);
+                csStage.SetConstantBuffer(0, null);
+            }
 
             context.CopyResource(_boundsBuffer, _boundsStaging);
             var box = context.MapSubresource(_boundsStaging, 0, MapMode.Read, MapFlags.None);
@@ -1082,27 +1187,71 @@ internal sealed class MeshToSDF : Instance<MeshToSDF>, IGraphNodeOp, IStatusProv
 
     private bool EnsureVolumes(Int3 dims)
     {
-        if (_voxelsA != null && _dims == dims)
+        if (_dims == dims && _voxelsA != null && _voxelsB != null && _insideMask != null
+            && _sdf != null && _bakeSdf != null && _sdfScratch != null && _rawSdf != null)
             return false;
 
-        DisposeVolumes();
+        // Build the new set first and only replace the current one once all seven volumes
+        // exist. Disposing the published volume up front would throw away the last good
+        // bake when the new allocation fails (e.g. out of memory at 256), leaving downstream
+        // shaders sampling a disposed SRV until the next successful bake.
+        var created = new List<VolumeTexture>(7);
+        try
+        {
+            var voxelsA = CreateVolume(dims, Format.R16G16B16A16_Float);
+            created.Add(voxelsA);
+            var voxelsB = CreateVolume(dims, Format.R16G16B16A16_Float);
+            created.Add(voxelsB);
+            var insideMask = CreateVolume(dims, Format.R32_Float);
+            created.Add(insideMask);
+            var sdf = CreateVolume(dims, Format.R16_Float);
+            created.Add(sdf);
+            var bakeSdf = CreateVolume(dims, Format.R16_Float);
+            created.Add(bakeSdf);
+            var sdfScratch = CreateVolume(dims, Format.R32_UInt);
+            created.Add(sdfScratch);
+            var rawSdf = CreateVolume(dims, Format.R16_Float);
+            created.Add(rawSdf);
 
-        _dims = dims;
-        _voxelsA = CreateVolume(dims, Format.R16G16B16A16_Float);
-        _voxelsB = CreateVolume(dims, Format.R16G16B16A16_Float);
-        _insideMask = CreateVolume(dims, Format.R32_Float);
-        _sdf = CreateVolume(dims, Format.R16_Float);
-        _bakeSdf = CreateVolume(dims, Format.R16_Float);
-        _sdfScratch = CreateVolume(dims, Format.R32_UInt);
-        _rawSdf = CreateVolume(dims, Format.R16_Float);
+            // Success - now it is safe to release the previous set.
+            DisposeVolumes();
 
-        _sdfViews = new Texture3dWithViews
-                        {
-                            Texture = _sdf.Texture,
-                            Srv = _sdf.Srv,
-                            Uav = _sdf.Uav,
-                        };
-        return true;
+            _voxelsA = voxelsA;
+            _voxelsB = voxelsB;
+            _insideMask = insideMask;
+            _sdf = sdf;
+            _bakeSdf = bakeSdf;
+            _sdfScratch = sdfScratch;
+            _rawSdf = rawSdf;
+            _dims = dims;
+
+            _sdfViews = new Texture3dWithViews
+                            {
+                                Texture = sdf.Texture,
+                                Srv = sdf.Srv,
+                                Uav = sdf.Uav,
+                            };
+            return true;
+        }
+        catch
+        {
+            // Release only what this attempt created; the previously published volume and
+            // _dims are left untouched so the last completed bake stays valid and the bake
+            // can be retried once memory is available.
+            foreach (var volume in created)
+            {
+                try
+                {
+                    volume.Dispose();
+                }
+                catch
+                {
+                    // a failed disposal must not mask the allocation error
+                }
+            }
+
+            throw;
+        }
     }
 
     private static VolumeTexture CreateVolume(Int3 dims, Format format)
@@ -1218,16 +1367,22 @@ internal sealed class MeshToSDF : Instance<MeshToSDF>, IGraphNodeOp, IStatusProv
 
     void IGraphNodeOp.AppendShaderResources(ref List<ShaderGraphNode.SrvBufferReference> list)
     {
-        if (_sdf?.Srv == null || _sdf.Srv.IsDisposed)
-            return;
-
-        foreach (var x in list)
+        // Shader assembly runs on the render thread while a bake may be finishing on
+        // another one. The lock prevents handing out an SRV that is disposed a moment
+        // later by DisposeVolumes (a disposed view in a draw call is a hard crash).
+        lock (_stateLock)
         {
-            if (x.Srv == _sdf.Srv)
+            if (_sdf?.Srv == null || _sdf.Srv.IsDisposed)
                 return;
-        }
 
-        list.Add(new ShaderGraphNode.SrvBufferReference($"Texture3D<float> {ShaderNode}SdfVolume", _sdf.Srv));
+            foreach (var x in list)
+            {
+                if (x.Srv == _sdf.Srv)
+                    return;
+            }
+
+            list.Add(new ShaderGraphNode.SrvBufferReference($"Texture3D<float> {ShaderNode}SdfVolume", _sdf.Srv));
+        }
     }
 
     protected override void Dispose(bool isDisposing)
@@ -1254,12 +1409,21 @@ internal sealed class MeshToSDF : Instance<MeshToSDF>, IGraphNodeOp, IStatusProv
 
     string IStatusProvider.GetStatusMessage() =>
         _bakeSteps != null ? $"Baking volume... {_bakeProgress:P0}" : _lastErrorMessage;
-    private string _lastErrorMessage = string.Empty;
+
+    /** Polled from the UI thread without the lock - volatile so the latest value is visible. */
+    private volatile string _lastErrorMessage = string.Empty;
     #endregion
 
     private const string BakeShaderPath = "Lib:shaders/cs/mesh-to-sdf-bake.hlsl";
     private const int InsideVoteThreshold = 3;
     private const int MaxSamplesPerTriangle = 8192;
+
+    /**
+     * D3D11 caps each Dispatch dimension at 65535 thread groups. The most parallel
+     * kernels use 64 threads per group (scatter) and 128 (voxelize), so 64 * 65535 is
+     * the face count that can still be dispatched as a single one-dimensional grid.
+     */
+    private const int MaxFaces = 64 * 65535;
 
     // Far-field distance in stored (volume-normalized) units for cells the scatter never
     // reaches: the exact volume-space diagonal. A huge value here (e.g. 10) turns into
@@ -1297,8 +1461,11 @@ internal sealed class MeshToSDF : Instance<MeshToSDF>, IGraphNodeOp, IStatusProv
     private Buffer? _boundsStaging;
     private UnorderedAccessView? _boundsUav;
 
-    // Bake work units, spread over frames by ProcessBakeSteps (null while idle)
-    private Queue<Action>? _bakeSteps;
+    // Bake work units, spread over frames by ProcessBakeSteps (null while idle).
+    // Volatile because the status bar polls it from the UI thread without taking
+    // _stateLock - it must see the latest reference, but it must never block the UI
+    // behind a running GPU step.
+    private volatile Queue<Action>? _bakeSteps;
     private int _bakeStepsTotal;
     private int _stepsPerFrame;
     private ShaderResourceView? _bakeMeshVertexSrv;
@@ -1309,8 +1476,11 @@ internal sealed class MeshToSDF : Instance<MeshToSDF>, IGraphNodeOp, IStatusProv
     private bool _bakeRequested;
     private bool _needsFirstBake = true;
     private bool _bakeFailed;
+    /** Set when AutoRebake observes a mesh change while a bake is still in flight. */
+    private bool _meshChangedDuringBake;
     private float _bakeCount;
     private string? _lastExpensiveWarnKey;
+    private string? _lastFailureWarnKey;
 
     private int _lastResolution = -1;
     private Vector3 _lastCenter = new(float.NaN, float.NaN, float.NaN);
@@ -1351,7 +1521,8 @@ internal sealed class MeshToSDF : Instance<MeshToSDF>, IGraphNodeOp, IStatusProv
         public float Smoothing;
         public float SmoothingRadius;
         public float Invert;
-        public float Padding4;
+        /** First row of the z slice handled by this ClosestPointBrute dispatch. */
+        public float BandRowStart;
         public float Padding5;
     }
 

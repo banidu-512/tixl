@@ -10,6 +10,7 @@ using T3.Editor.Show;
 using T3.Editor.SystemUi;
 using T3.SystemUi;
 using Vector2 = System.Numerics.Vector2;
+using T3.Editor.Show;
 
 namespace T3.Editor.Gui.Windows.OutputSetup;
 
@@ -24,6 +25,83 @@ internal static class DisplayLayoutView
     /// The hover body for a display: the machine's screens in their arrangement with
     /// <paramref name="highlightedIndex"/> lit. Drawing only — a tooltip takes no clicks.
     /// </summary>
+    /// <summary>
+    /// The same hover body for a display of a connected render node, drawn from the arrangement that node
+    /// reported. Built on hover only, so the small lists it allocates are not a per-frame cost.
+    /// </summary>
+    public static void DrawRemoteTooltip(Show.BoygroupManager.ClientInfo client, int highlightedIndex)
+    {
+        if (client.Screens.Count == 0)
+            return;
+
+        ImGui.TextDisabled(client.Name);
+
+        // A node on an older build reports no positions: its displays are lined up side by side instead.
+        var hasPositions = false;
+        foreach (var screen in client.Screens)
+            hasPositions |= screen.X != 0 || screen.Y != 0;
+
+        var scale = 1f;
+        var overallW = 0;
+        var overallH = 0;
+        var minX = 0;
+        var minY = 0;
+        var first = true;
+        foreach (var screen in client.Screens)
+        {
+            if (first)
+            {
+                minX = screen.X;
+                minY = screen.Y;
+                first = false;
+            }
+
+            minX = Math.Min(minX, screen.X);
+            minY = Math.Min(minY, screen.Y);
+            overallW = Math.Max(overallW, screen.X + screen.Width);
+            overallH = Math.Max(overallH, screen.Y + screen.Height);
+        }
+
+        var overallWidth = hasPositions ? overallW - minX : overallW;
+        var overallHeight = hasPositions ? overallH - minY : overallH;
+        var padding = 20f;
+        var area = new Vector2(overallWidth, overallHeight);
+        ImGui.Dummy(area with { X = area.X + padding * 2, Y = area.Y + padding * 2 });
+        if (overallWidth > 0)
+            scale = area.X > 0 ? (area.X + 0f) / overallWidth : 1f;
+
+        var drawList = ImGui.GetWindowDrawList();
+        var canvasPos = ImGui.GetCursorScreenPos() - new Vector2(area.X + padding * 2, area.Y + padding * 2) + new Vector2(padding);
+
+        var fallbackX = 0;
+        foreach (var screen in client.Screens)
+        {
+            var bx = hasPositions ? screen.X - minX : fallbackX;
+            var by = hasPositions ? screen.Y - minY : 0;
+            fallbackX += screen.Width;
+
+            var min = canvasPos + new Vector2(bx * scale, by * scale);
+            var max = min + new Vector2(screen.Width * scale, screen.Height * scale);
+            var isHighlighted = screen.Index == highlightedIndex;
+
+            drawList.AddRectFilled(min, max, isHighlighted ? UiColors.StatusAnimated.Fade(0.3f) : UiColors.BackgroundButton);
+            drawList.AddRect(min, max, isHighlighted ? UiColors.StatusAnimated : UiColors.BackgroundFull.Fade(0.7f));
+
+            var label = $"Display {screen.Index + 1}";
+            var resolution = $"{screen.Width} x {screen.Height}";
+            var labelSize = ImGui.CalcTextSize(label);
+            var resolutionSize = ImGui.CalcTextSize(resolution);
+            var centre = (min + max) * 0.5f;
+            var lineY = centre.Y - (labelSize.Y + resolutionSize.Y) * 0.5f;
+
+            drawList.AddText(new Vector2(centre.X - labelSize.X * 0.5f, lineY),
+                             isHighlighted ? UiColors.Text : UiColors.TextMuted, label);
+            lineY += labelSize.Y;
+            drawList.AddText(new Vector2(centre.X - resolutionSize.X * 0.5f, lineY),
+                             UiColors.TextMuted, resolution);
+        }
+    }
+
     public static void DrawTooltip(int highlightedIndex)
     {
         RefreshCache();

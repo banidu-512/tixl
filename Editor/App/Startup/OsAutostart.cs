@@ -119,19 +119,10 @@ internal static class OsAutostart
                 return false;
             }
 
-            // Drain both pipes concurrently; a full undrained pipe would block reg.exe, and a hung
-            // reg.exe must not freeze the settings window.
-            var stdoutTask = process.StandardOutput.ReadToEndAsync();
-            var stderrTask = process.StandardError.ReadToEndAsync();
-            if (!process.WaitForExit(5000))
-            {
-                process.Kill();
-                error = "reg.exe did not finish within 5 seconds";
-                return false;
-            }
-
-            var stdout = stdoutTask.GetAwaiter().GetResult();
-            var stderr = stderrTask.GetAwaiter().GetResult();
+            // Drain both pipes; a full undrained pipe would block reg.exe.
+            var stdout = process.StandardOutput.ReadToEnd();
+            var stderr = process.StandardError.ReadToEnd();
+            process.WaitForExit(5000);
             error = (stderr.Trim().Length > 0 ? stderr : stdout).Trim();
             return process.ExitCode == 0;
         }

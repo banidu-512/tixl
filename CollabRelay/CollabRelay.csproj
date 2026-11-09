@@ -2,9 +2,7 @@
     <Import Project="$(SolutionDir)/Tixl.props" />
     <PropertyGroup>
         <OutputType>Exe</OutputType>
-        <!-- Plain net10.0 on purpose: the relay is pure sockets and must build/run on Linux
-             and macOS servers where no windows targeting pack is installed. -->
-        <TargetFramework>net10.0</TargetFramework>
+        <TargetFramework>$(TixlNetFrameworkVersion)</TargetFramework>
         <RootNamespace>T3.CollabRelay</RootNamespace>
         <AssemblyName>TiXLCollabRelay</AssemblyName>
         <Nullable>enable</Nullable>

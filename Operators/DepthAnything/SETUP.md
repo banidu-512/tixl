@@ -12,17 +12,9 @@ Add the project reference to `t3.sln`:
 
 ### 2. Download Models
 
-Place the ONNX model files in `Operators/DepthAnything/Assets/`:
-
-```bash
-# Create Assets directory
-mkdir -p Assets/
-
-# Download models from Hugging Face or convert from official repo
-# depth-anything-v2-small-fp16.onnx (required)
-# depth-anything-v2-base-fp16.onnx (optional)
-# depth-anything-v2-large-fp16.onnx (optional)
-```
+Run `python Scripts/download_models.py` (or `Scripts/download_models.ps1`) to fetch the Depth Anything 3 and V2 models into `Assets/`.
+Pass file names to fetch only some, for example `python Scripts/download_models.py da3-small.onnx`.
+See `README.md` for the file names each model selection looks for.
 
 ### 3. Build and Run
 
@@ -41,6 +33,9 @@ After building, operators will appear in the node browser under:
 Lib > io > video > depthanything >
 ├── DepthAnything          (Main depth estimation)
 ├── DepthToNormal          (Depth → Normal conversion)
+├── DepthToPosition        (Depth → camera-space positions)
+├── DepthToPoints          (Depth → point buffer for live splats)
+├── DepthParallax          (Shift an image by its depth)
 ├── DepthFilter            (Bilateral filtering)
 └── DepthThreshold         (Depth-based masking)
 ```
@@ -63,7 +58,7 @@ Texture2D Input
 
 ## Performance Tips
 
-1. **Use Small model** for real-time applications (256x256 input)
+1. **Use a Small model** with CUDA or DirectML for real-time applications
 2. **Enable EnhanceContrast** for better depth separation
 3. **Use bilateral filter** to reduce noise before normal generation
 4. **Cache results** if input doesn't change every frame
@@ -88,8 +83,11 @@ Texture2D Input
 ## Dependencies
 
 All dependencies are managed via NuGet:
-- Microsoft.ML.OnnxRuntime (1.20.1)
+- Microsoft.ML.OnnxRuntime.Gpu (1.24.4; the CPU-only package on macOS)
 - SharpDX (via TiXL Core)
+
+The model files in `Assets/` are not tracked in git — `Scripts/download_models.py` fetches them
+(also see `Assets/.gitignore`).
 
 ## License
 

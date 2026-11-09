@@ -111,6 +111,10 @@ internal sealed class CollabRtcLink : IDisposable
     private readonly Action<CollabPeerConnection, Stream> _readFrames;
     private readonly Action<CollabRtcLink> _onPathFailed;
     private readonly object _sendLock = new();
+
+    /** Video writes can block natively on a slow viewer; keeping them off _sendLock means presence and
+        heartbeats never queue behind them on the UI thread. */
+    private readonly object _videoSendLock = new();
     private readonly List<RtcCandidate> _pendingCandidates = [];
     private readonly uint _videoSsrc = (uint)Random.Shared.Next(1, int.MaxValue);
 
@@ -263,9 +267,18 @@ internal sealed class CollabRtcLink : IDisposable
 
         try
         {
-            lock (_sendLock)
+            // Never wait for a data-channel write on the caller's (UI) thread. A short attempt is enough
+            // for a healthy link; otherwise the caller falls back to the relay.
+            if (!Monitor.TryEnter(_sendLock, 50))
+                return false;
+
+            try
             {
                 CollabProtocol.WriteFrame(stream, type, payload);
+            }
+            finally
+            {
+                Monitor.Exit(_sendLock);
             }
 
             return true;
@@ -286,7 +299,7 @@ internal sealed class CollabRtcLink : IDisposable
 
         try
         {
-            lock (_sendLock)
+            lock (_videoSendLock)
             {
                 track.Timestamp = (uint)(_videoClock.Elapsed.TotalSeconds * 90_000);
                 track.Write(annexB);
@@ -457,6 +470,11 @@ internal sealed class CollabRtcLink : IDisposable
 
         Interlocked.Exchange(ref _active, 0);
         Peer.PreferredSender = null;
+
+        // Unblock the data-channel reader: without this a failed link left one thread parked in
+        // TryTake(Timeout.Infinite) until the peer was removed.
+        _stream?.Close();
+
         if (Volatile.Read(ref _disposing) != 0)
             return;
 
@@ -625,6 +643,9 @@ internal sealed class CollabDataChannelStream : Stream
 
     public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
     public override void SetLength(long value) => throw new NotSupportedException();
+
+    /// <summary>Wakes a reader parked in <see cref="Read(Span{byte})"/> without disposing the queue under it.</summary>
+    public void Close() => CloseStream();
 
     protected override void Dispose(bool disposing)
     {

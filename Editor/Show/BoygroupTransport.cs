@@ -4,7 +4,6 @@ using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json.Linq;
-using T3.Core.Utils;
 using T3.Editor.Collab;
 
 namespace T3.Editor.Show;
@@ -17,12 +16,6 @@ namespace T3.Editor.Show;
 /// </summary>
 internal abstract class BoygroupTransport : CollabTransport
 {
-    /// <summary>
-    /// Grace before a silent peer is declared gone. Both sides exchange heartbeats at 1 Hz, so a
-    /// four second silence is a real outage; waiting for the 10 s collaboration default would let
-    /// a slave keep dead-reckoning a show that no longer exists.
-    /// </summary>
-    public const int PeerTimeoutMs = 4000;
 }
 
 /// <summary>The show master: accepts clients and announces groups via LAN discovery.</summary>
@@ -46,22 +39,21 @@ internal sealed class BoygroupServerTransport : BoygroupTransport
 
     public BoygroupServerTransport(int tcpPort, string[] groups, string? interfaceName = null)
     {
-        // Pinned adapter (Settings → Boygrouping → Network); empty keeps the all-interface bind.
-        var bindAddress = LanInterfaces.ResolveAddress(interfaceName) ?? IPAddress.Any;
+        // Pinned adapter (Settings → Network); empty keeps the all-interface bind.
+        var bindAddress = T3.Core.Utils.LanInterfaces.ResolveAddress(interfaceName) ?? IPAddress.Any;
         _listener = new TcpListener(bindAddress, tcpPort);
         _listener.Start();
         try
         {
-            DiscoveryResponder = new LanDiscoveryResponder(tcpPort + LanDiscoveryResponder.DiscoveryPortOffset,
+            DiscoveryResponder = new LanDiscoveryResponder(tcpPort,
                                                            () => new JObject
                                                                      {
                                                                          ["boygroup"] = true,
-                                                                         ["role"] = "master",
-                                                                         ["name"] = BoygroupManager.LocalNodeName,
                                                                          ["server"] = Environment.MachineName,
                                                                          ["port"] = tcpPort,
                                                                          ["groups"] = new JArray(groups),
-                                                                     });
+                                                                     },
+                                                           bindAddress == IPAddress.Any ? null : bindAddress);
         }
         catch
         {
@@ -105,7 +97,7 @@ internal sealed class BoygroupServerTransport : BoygroupTransport
             {
                 client = await _listener.AcceptTcpClientAsync(cancellation);
             }
-            catch (Exception e) when (e is OperationCanceledException or ObjectDisposedException)
+            catch (OperationCanceledException)
             {
                 break;
             }
@@ -122,14 +114,11 @@ internal sealed class BoygroupServerTransport : BoygroupTransport
                 continue;
             }
 
-            client.NoDelay = true;
+            CollabProtocol.ConfigureShowSocket(client);
             CollabPeerConnection peer;
             try
             {
-                peer = new CollabPeerConnection(client, Interlocked.Increment(ref _nextPeerId))
-                           {
-                               TimeoutMs = PeerTimeoutMs,
-                           };
+                peer = new CollabPeerConnection(client, Interlocked.Increment(ref _nextPeerId));
             }
             catch (Exception e) when (e is SocketException or ObjectDisposedException or InvalidOperationException)
             {
@@ -184,9 +173,6 @@ internal sealed class BoygroupClientTransport : BoygroupTransport
     public CollabPeerConnection ServerPeer => _serverPeer;
 
     private readonly CollabPeerConnection _serverPeer;
-
-    /** Cached so the per-frame Peers access does not allocate a one-element array every time. */
-    private readonly IReadOnlyList<CollabPeerConnection> _peerList;
     private readonly TcpClient _client;
     private readonly CancellationTokenSource _cancellation = new();
 
@@ -194,17 +180,13 @@ internal sealed class BoygroupClientTransport : BoygroupTransport
     {
         _client = client;
         // TcpClient overload: bounds UI-thread writes with a send timeout, like the collab client.
-        _serverPeer = new CollabPeerConnection(client, 0)
-                          {
-                              TimeoutMs = PeerTimeoutMs,
-                          };
-        _peerList = [_serverPeer];
+        _serverPeer = new CollabPeerConnection(client, 0);
     }
 
     public static BoygroupClientTransport Connect(IPEndPoint endPoint)
     {
         var client = CollabProtocol.ConnectWithTimeout(endPoint);
-        client.NoDelay = true;
+        CollabProtocol.ConfigureShowSocket(client);
         return new BoygroupClientTransport(client);
     }
 
@@ -214,7 +196,7 @@ internal sealed class BoygroupClientTransport : BoygroupTransport
     /// </summary>
     public void StartReading() => _ = Task.Run(() => ReadLoop(_serverPeer), CancellationToken.None);
 
-    public override IReadOnlyList<CollabPeerConnection> Peers => _peerList;
+    public override IReadOnlyList<CollabPeerConnection> Peers => [_serverPeer];
 
     public override void SendToPeer(CollabPeerConnection peer, CollabProtocol.FrameType type, ReadOnlySpan<byte> payload)
     {

@@ -27,10 +27,21 @@ internal sealed class VolumeField : Instance<VolumeField>, IGraphNodeOp
 
     private void Update(EvaluationContext context)
     {
+        var srv = Texture.GetValue(context)?.Srv;
+        if (srv != null && srv.IsDisposed)
+            srv = null;
+
+        // The generated shader only declares the 3D texture in AppendShaderResources. A bake that
+        // finishes after the first compile was skipped there, so flag the code for regeneration
+        // when the texture appears (or is replaced) — otherwise RaymarchField keeps compiling a
+        // shader that samples an undeclared texture.
+        if (!ReferenceEquals(srv, _srv))
+        {
+            _srv = srv;
+            ShaderNode.FlagCodeChanged();
+        }
+
         ShaderNode.Update(context);
-        _srv = Texture.GetValue(context)?.Srv;
-        if (_srv != null && _srv.IsDisposed)
-            _srv = null;
     }
 
     public ShaderGraphNode ShaderNode { get; }
@@ -75,7 +86,7 @@ internal sealed class VolumeField : Instance<VolumeField>, IGraphNodeOp
         list.Add(new ShaderGraphNode.SrvBufferReference($"Texture3D<float> {ShaderNode}VolumeTex", _srv));
     }
 
-    private ShaderResourceView? _srv;
+    private ShaderResourceView _srv;
 
     [Input(Guid = "eefa5651-27d2-5347-99fb-850697ea913b")]
     public readonly InputSlot<Texture3dWithViews> Texture = new();

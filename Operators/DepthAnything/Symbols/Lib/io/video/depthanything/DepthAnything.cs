@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
+using Lib.io.video.depthanything.Utils;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
 using T3.Core.Logging;
@@ -12,6 +13,7 @@ using T3.Graphics.Compat;
 using T3.Core.Resource;
 using T3.Core.Resource.Assets;
 using T3.Core.Operator.Interfaces;
+using T3.Core.Rendering;
 
 #pragma warning disable CS8981 // Disable warning about type name 'depthanything' being lowercase only
 
@@ -19,29 +21,44 @@ namespace Lib.io.video.depthanything;
 
 internal sealed class DepthEstimationRequest
 {
-    public byte[]? PixelData;
+    public float[]? InputData;
+    public byte[]? InputBytes;
     public int Width;
     public int Height;
-    public bool IsBgra;
+    public int SourceWidth;
+    public int SourceHeight;
+    public long CaptureTicks;
+    public int Generation;
 }
 
 internal sealed class DepthEstimationResult
 {
     public float[]? DepthData;
+    public float[]? ConfidenceData;
+    public float[]? SkyData;
     public byte[]? ColorData;
     public int Width;
     public int Height;
     public float Min;
     public float Max;
+    public float VerticalFovDegrees;
+    public bool HasCameraPose;
+    public Vector3 CameraPosition;
+    public Vector3 CameraForward;
+    public Vector3 CameraUp;
+    public float InferenceMs;
+    public long CaptureTicks;
     public DepthAnything.DepthOutputFormat ColorFormat;
     public bool ColorEnhance;
     public bool ColorInvert;
+    public bool FarIsLarge;
+    public int Generation;
     public string? Error;
 }
 
 [Guid("c8f7d6e5-4b3a-2c1d-9f8e-7a6b5c4d3e2f")]
 [ExportDependencies("Microsoft.ML.OnnxRuntime.dll", "onnxruntime.dll", "DirectML.dll", "libonnxruntime*")]
-public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
+public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICamera, ICameraPropertiesProvider
 {
     #region Outputs
 
@@ -54,6 +71,12 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
     [Output(Guid = "f1a0f9c8-7e6d-5f4e-2b1a-0d9c8b7a6e5f", DirtyFlagTrigger = DirtyFlagTrigger.Animated)]
     public readonly Slot<Texture2D?> NormalizedDepthTexture = new();
 
+    [Output(Guid = "3b7e1c42-8a5d-4f60-9d21-6c0e5a7b8f13", DirtyFlagTrigger = DirtyFlagTrigger.Animated)]
+    public readonly Slot<Texture2D?> ConfidenceTexture = new();
+
+    [Output(Guid = "5d9a2e74-1b3c-4a86-b7f0-2e8c4d6a9b35", DirtyFlagTrigger = DirtyFlagTrigger.Animated)]
+    public readonly Slot<Texture2D?> SkyTexture = new();
+
     [Output(Guid = "a2b1c0d9-8f7e-6d5c-3c2b-1e0d9c8b7f6a", DirtyFlagTrigger = DirtyFlagTrigger.Animated)]
     public readonly Slot<int> UpdateCount = new();
 
@@ -63,21 +86,64 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
     [Output(Guid = "c4d3e2f1-1a0b-9f8e-5e4d-3f2e1d0b9a8c", DirtyFlagTrigger = DirtyFlagTrigger.Animated)]
     public readonly Slot<float> MaxDepth = new();
 
+    [Output(Guid = "7f1c4b96-3d5e-4c08-a9b2-4a0e6c8d1f57", DirtyFlagTrigger = DirtyFlagTrigger.Animated)]
+    public readonly Slot<float> VerticalFov = new();
+
+    [Output(Guid = "91e3d6b8-5f7a-4e2a-8c14-6c2a8e0f3b79", DirtyFlagTrigger = DirtyFlagTrigger.Animated)]
+    public readonly Slot<float> InferenceMs = new();
+
+    [Output(Guid = "b3a5f8da-7c9b-4a4c-9e36-8e4c0a2b5d9b", DirtyFlagTrigger = DirtyFlagTrigger.Animated)]
+    public readonly Slot<float> LatencyMs = new();
+
     [Output(Guid = "d5e6f7a2-1b2c-0d9e-8f7a-6b5c4d3e2f1a", DirtyFlagTrigger = DirtyFlagTrigger.Animated)]
     public readonly Slot<string> Status = new();
 
+    /// <summary>
+    /// The camera estimated by the model as an <see cref="ICamera"/>. The model outputs
+    /// world-to-camera extrinsics and a 3x3 intrinsics matrix; the pose is published here
+    /// in DA3's image coordinate frame (camera +Z forward, camera -Y up). Connect it to
+    /// camera-reference inputs such as ApplyCamTransform or SortPoints.
+    /// </summary>
+    [Output(Guid = "5a3334ec-78c3-4001-8018-3d8aae7f870f", DirtyFlagTrigger = DirtyFlagTrigger.Animated)]
+    public readonly Slot<Object> CamReference = new();
+
     #endregion
+
+    /** What the render thread needs to know about the loaded model to prepare input for it. */
+    private sealed class ModelInfo
+    {
+        public int DeclaredWidth;
+        public int DeclaredHeight;
+        public bool IsV3;
+        public bool IsMetric;
+
+        /** uint8 NHWC input that the graph normalizes itself; otherwise float32 NCHW. */
+        public bool InputIsBytes;
+    }
+
+    private readonly record struct ModelFile(string Name, bool IsV3, bool IsMetric);
 
     // Everything a worker generation touches exclusively; isolates an exiting
     // worker from its replacement during model/provider switches
     private sealed class WorkerContext
     {
         public InferenceSession? Session;
-        public string InputName = "pixel_values";
-        public string OutputName = "predicted_depth";
-        public int DeclaredSize;
-        public float[]? PreprocessBuffer;
+        public RunOptions? RunOptions;
+        public string[] InputNames = ["pixel_values"];
+        public string[] OutputNames = ["predicted_depth"];
+        public readonly OrtValue?[] InputValues = new OrtValue?[1];
+        public int DepthIndex;
+        public int ConfidenceIndex = -1;
+        public int SkyIndex = -1;
+        public int IntrinsicsIndex = -1;
+        public int ExtrinsicsIndex = -1;
         public bool LoggedFirstInference;
+        public float[]? PreviousDepth;
+        public int PreviousWidth;
+        public int PreviousHeight;
+        public bool HasRange;
+        public float SmoothedMin;
+        public float SmoothedMax;
     }
 
     public DepthAnything()
@@ -85,10 +151,17 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
         OutputTexture.UpdateAction = Update;
         DepthTexture.UpdateAction = Update;
         NormalizedDepthTexture.UpdateAction = Update;
+        ConfidenceTexture.UpdateAction = Update;
+        SkyTexture.UpdateAction = Update;
         UpdateCount.UpdateAction = Update;
         MinDepth.UpdateAction = Update;
         MaxDepth.UpdateAction = Update;
+        VerticalFov.UpdateAction = Update;
+        InferenceMs.UpdateAction = Update;
+        LatencyMs.UpdateAction = Update;
         Status.UpdateAction = Update;
+        CamReference.UpdateAction = Update;
+        CamReference.Value = this;
     }
 
     private void Update(EvaluationContext context)
@@ -111,6 +184,7 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
             Resolution.R196 => 196,
             Resolution.R280 => 280,
             Resolution.R392 => 392,
+            Resolution.R504 => 504,
             Resolution.R518 => 518,
             _ => 0
         };
@@ -122,6 +196,8 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
         _workerOutputFormat = outputFormat;
         _workerEnhanceContrast = enhanceContrast;
         _workerInvertDepth = invertDepth;
+        _workerSmoothing = Math.Clamp(Smoothing.GetValue(context), 0f, MaxSmoothing);
+        _workerFieldOfViewDegrees = Math.Clamp(FieldOfView.GetValue(context), 1f, 179f);
 
         // Store values for UI dropdowns
         _uiOutputFormat = (int)outputFormat;
@@ -140,16 +216,22 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
 
         OutputTexture.Value = inputTexture;
 
+        if (_initFailed && (modelSize != _activeModelSize || provider != _activeProvider))
+        {
+            _initFailed = false;
+        }
+
         if (!_initFailed && (_processingTask == null || _processingTask.IsCompleted || modelSize != _activeModelSize || provider != _activeProvider))
         {
             InitializeWorker(debug, modelSize, provider);
         }
 
-        if (_onnxSession == null)
+        var modelInfo = _modelInfo;
+        if (modelInfo == null)
         {
             if (!_isInitializing)
             {
-                Status.Value = "Failed to initialize ONNX Runtime";
+                Status.Value = _initFailureMessage ?? "Failed to initialize ONNX Runtime";
                 ClearOutputs();
             }
 
@@ -163,28 +245,28 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
             _hasPendingInput = true;
         }
 
-        if (_hasPendingInput && !_requestInFlight && _inputQueue.Count == 0 && !_readbackPending)
+        if (_hasPendingInput && !_requestInFlight && !_preprocessor.IsPending && _inputQueue.IsEmpty)
         {
-            BeginReadback(inputTexture);
+            BeginCapture(inputTexture, modelInfo, modelSize);
         }
 
-        if (_readbackPending)
+        if (_preprocessor.IsPending)
         {
-            var request = CompleteReadback();
-            if (request != null)
-            {
-                _requestInFlight = true;
-                _hasPendingInput = false;
-                _lastInputTexture = inputTexture;
-                _inputQueue.Enqueue(request);
-                _workerWake.Set();
-            }
+            CompleteCapture(inputTexture);
         }
 
+        var generation = Volatile.Read(ref _workerGeneration);
         while (_outputQueue.TryDequeue(out var result))
         {
             if (result == null)
                 continue;
+
+            // Results from a replaced worker may have a different size and belong to a disposed model
+            if (result.Generation != generation)
+            {
+                ReturnResultBuffers(result);
+                continue;
+            }
 
             if (result.Error != null)
             {
@@ -196,6 +278,9 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
                 ReturnResultBuffers(_currentResult);
                 _currentResult = result;
                 _updateCount++;
+                InferenceMs.Value = result.InferenceMs;
+                LatencyMs.Value = (float)((Stopwatch.GetTimestamp() - result.CaptureTicks) * 1000.0 / Stopwatch.Frequency);
+                VerticalFov.Value = result.VerticalFovDegrees;
                 Status.Value = $"Processing {_updateCount}";
             }
             else
@@ -224,6 +309,7 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
             }
 
             UpdateCount.Value = _updateCount;
+            UpdateCameraReference(context, _currentResult, debug);
         }
         else
         {
@@ -238,11 +324,131 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
         _appliedResult = null;
         DepthTexture.Value = null;
         NormalizedDepthTexture.Value = null;
+        ConfidenceTexture.Value = null;
+        SkyTexture.Value = null;
         MinDepth.Value = 0.0f;
         MaxDepth.Value = 0.0f;
+        VerticalFov.Value = 0.0f;
+        ResetCamera();
         if (string.IsNullOrEmpty(Status.Value))
             Status.Value = "No data";
     }
+
+    /// <summary>
+    /// Publishes the camera estimated by the model. The model outputs world-to-camera
+    /// extrinsics (3x4 or 4x4); the camera position is -R^T t, its forward axis is R's
+    /// third row and its image-up axis is -R's second row (DA3 uses an OpenCV-style
+    /// y-down camera). Without an extrinsics output we fall back to the reference pose
+    /// at the origin looking along +Z, which is what a single image predicts anyway.
+    /// </summary>
+    private void UpdateCameraReference(EvaluationContext context, DepthEstimationResult? result, bool debug)
+    {
+        var hasPose = result is { HasCameraPose: true };
+        var position = hasPose ? result!.CameraPosition : Vector3.Zero;
+        var forward = hasPose ? result!.CameraForward : Vector3.UnitZ;
+        var up = hasPose ? result!.CameraUp : Vector3.UnitY;
+
+        var fov = result?.VerticalFovDegrees ?? 0;
+        if (fov <= 0)
+            fov = _workerFieldOfViewDegrees;
+        if (fov <= 0)
+            fov = 50;
+
+        var aspect = result is { Height: > 0 } ? (float)result.Width / result.Height : 1f;
+
+        LastObjectToWorld = context.ObjectToWorld;
+        SetCameraPose(position, forward, up, fov, aspect);
+
+        if (debug && !_loggedCameraPose)
+        {
+            _loggedCameraPose = true;
+            Log.Debug(hasPose
+                          ? $"[DepthAnything] CamReference pose pos={position} target={position + forward} up={up} fov={fov:F1}"
+                          : "[DepthAnything] CamReference: model has no extrinsics output; using the reference pose", this);
+        }
+    }
+
+    private void ResetCamera()
+    {
+        SetCameraPose(Vector3.Zero, Vector3.UnitZ, Vector3.UnitY, _workerFieldOfViewDegrees > 0 ? _workerFieldOfViewDegrees : 50, 1f);
+    }
+
+    private void SetCameraPose(Vector3 position, Vector3 forward, Vector3 up, float fovDegrees, float aspect)
+    {
+        if (forward.LengthSquared() < 1e-8f)
+            forward = Vector3.UnitZ;
+        forward = Vector3.Normalize(forward);
+
+        up -= forward * Vector3.Dot(up, forward);
+        if (up.LengthSquared() < 1e-8f)
+            up = MathF.Abs(forward.Y) > 0.99f ? Vector3.UnitZ : Vector3.UnitY;
+        up = Vector3.Normalize(up);
+
+        _cameraDefinition = new CameraDefinition
+                                {
+                                    NearFarClip = new Vector2(0.01f, 1000f),
+                                    LensShift = Vector2.Zero,
+                                    PositionOffset = Vector3.Zero,
+                                    Position = position,
+                                    Target = position + forward,
+                                    Up = up,
+                                    AspectRatio = MathF.Max(aspect, 0.0001f),
+                                    FieldOfView = Math.Clamp(fovDegrees, 1f, 179f) * MathF.PI / 180f,
+                                    Roll = 0,
+                                    RotationOffset = Vector3.Zero,
+                                    OffsetAffectsTarget = false
+                                };
+        _cameraDefinition.BuildProjectionMatrices(out var camToClipSpace, out var worldToCamera);
+
+        CameraPosition = position;
+        CameraTarget = position + forward;
+        CameraRoll = 0;
+        CameraToClipSpace = camToClipSpace;
+        WorldToCamera = worldToCamera;
+        CamReference.Value = this;
+    }
+
+    private static CameraPose ReadCameraPose(WorkerContext workerContext, IReadOnlyList<OrtValue> outputs)
+    {
+        if (workerContext.ExtrinsicsIndex < 0 || workerContext.ExtrinsicsIndex >= outputs.Count)
+            return default;
+
+        var value = outputs[workerContext.ExtrinsicsIndex];
+        var info = value.GetTensorTypeAndShape();
+        if (info.ElementDataType != TensorElementType.Float || info.Shape.Length < 2)
+            return default;
+
+        var rows = (int)info.Shape[^2];
+        var columns = (int)info.Shape[^1];
+        if (rows < 3 || columns < 4)
+            return default;
+
+        var data = value.GetTensorDataAsSpan<float>();
+        if (data.Length < rows * columns)
+            return default;
+
+        // The first view's 3x4 block is the top of the tensor; a 4x4 export has the
+        // same top three rows, so both layouts read the same values.
+        float r11 = data[0], r12 = data[1], r13 = data[2], tx = data[3];
+        float r21 = data[columns], r22 = data[columns + 1], r23 = data[columns + 2], ty = data[columns + 3];
+        float r31 = data[2 * columns], r32 = data[2 * columns + 1], r33 = data[2 * columns + 2], tz = data[2 * columns + 3];
+
+        var position = new Vector3(
+            -(r11 * tx + r21 * ty + r31 * tz),
+            -(r12 * tx + r22 * ty + r32 * tz),
+            -(r13 * tx + r23 * ty + r33 * tz));
+        var forward = new Vector3(r31, r32, r33);
+        var up = new Vector3(-r21, -r22, -r23);
+
+        if (!float.IsFinite(position.X) || !float.IsFinite(position.Y) || !float.IsFinite(position.Z)
+            || !float.IsFinite(forward.X) || !float.IsFinite(forward.Y) || !float.IsFinite(forward.Z)
+            || !float.IsFinite(up.X) || !float.IsFinite(up.Y) || !float.IsFinite(up.Z))
+            return default;
+
+        return new CameraPose(true, position, forward, up);
+    }
+
+    private readonly record struct CameraPose(bool HasPose, Vector3 Position, Vector3 Forward, Vector3 Up);
 
     private void ReturnResultBuffers(DepthEstimationResult? result)
     {
@@ -250,20 +456,148 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
             return;
 
         ReturnDepthBuffer(result.DepthData);
+        ReturnDepthBuffer(result.ConfidenceData);
+        ReturnDepthBuffer(result.SkyData);
         ReturnBufferToPool(result.ColorData);
         result.DepthData = null;
+        result.ConfidenceData = null;
+        result.SkyData = null;
         result.ColorData = null;
     }
 
+    #region Capture
+
+    private void BeginCapture(Texture2D inputTexture, ModelInfo modelInfo, ModelSize modelSize)
+    {
+        var description = inputTexture.Description;
+        GetInputDimensions(modelInfo, description.Width, description.Height, modelSize, _requestedInputSize, out var width, out var height);
+
+        if (modelInfo.InputIsBytes)
+        {
+            if (_inputBytes == null || _inputBytes.Length != 3 * width * height)
+            {
+                _inputBytes = new byte[3 * width * height];
+            }
+        }
+        else if (_inputData == null || _inputData.Length != 3 * width * height)
+        {
+            _inputData = new float[3 * width * height];
+        }
+
+        var layout = modelInfo.InputIsBytes ? DepthInputPreprocessor.InputLayout.PackedBytes : DepthInputPreprocessor.InputLayout.PlanarFloat;
+        if (!_preprocessor.TryBegin(inputTexture, width, height, layout))
+        {
+            if (!_loggedCaptureFailure)
+            {
+                _loggedCaptureFailure = true;
+                Log.Warning($"[DepthAnything] Can't prepare the input texture ({description.Format}): {_preprocessor.Error}", this);
+            }
+
+            _hasPendingInput = false;
+            return;
+        }
+
+        _loggedCaptureFailure = false;
+        _captureWidth = width;
+        _captureHeight = height;
+        _captureSourceWidth = description.Width;
+        _captureSourceHeight = description.Height;
+        _captureTicks = Stopwatch.GetTimestamp();
+        _captureIsBytes = modelInfo.InputIsBytes;
+    }
+
+    private void CompleteCapture(Texture2D inputTexture)
+    {
+        var inputData = _captureIsBytes ? null : _inputData;
+        var inputBytes = _captureIsBytes ? _inputBytes : null;
+        if (inputData == null && inputBytes == null)
+        {
+            _preprocessor.Cancel();
+            return;
+        }
+
+        var state = inputBytes != null ? _preprocessor.TryComplete(inputBytes) : _preprocessor.TryComplete(inputData!);
+        switch (state)
+        {
+            case DepthInputPreprocessor.ReadbackState.Ready:
+                _requestInFlight = true;
+                _hasPendingInput = false;
+                _lastInputTexture = inputTexture;
+                _inputQueue.Enqueue(new DepthEstimationRequest
+                                        {
+                                            InputData = inputData,
+                                            InputBytes = inputBytes,
+                                            Width = _captureWidth,
+                                            Height = _captureHeight,
+                                            SourceWidth = _captureSourceWidth,
+                                            SourceHeight = _captureSourceHeight,
+                                            CaptureTicks = _captureTicks,
+                                            Generation = Volatile.Read(ref _workerGeneration)
+                                        });
+                _workerWake.Set();
+                break;
+
+            case DepthInputPreprocessor.ReadbackState.TimedOut:
+                Log.Warning("[DepthAnything] Readback never completed - restarting readback", this);
+                _hasPendingInput = true;
+                break;
+        }
+    }
+
+    /** Dynamic-size models take the image's aspect with its long side at the requested size; fixed-size exports dictate their own. */
+    private static void GetInputDimensions(ModelInfo modelInfo, int sourceWidth, int sourceHeight, ModelSize modelSize, int requestedSize,
+                                           out int width, out int height)
+    {
+        if (modelInfo.DeclaredWidth > 0 && modelInfo.DeclaredHeight > 0)
+        {
+            width = modelInfo.DeclaredWidth;
+            height = modelInfo.DeclaredHeight;
+            return;
+        }
+
+        var targetSize = GetEffectiveInputSize(requestedSize, modelSize);
+        var aspectRatio = (float)sourceWidth / sourceHeight;
+        if (aspectRatio > 1.0f)
+        {
+            width = targetSize;
+            height = Math.Max(PatchSize, (int)(targetSize / aspectRatio) / PatchSize * PatchSize);
+        }
+        else
+        {
+            height = targetSize;
+            width = Math.Max(PatchSize, (int)(targetSize * aspectRatio) / PatchSize * PatchSize);
+        }
+    }
+
+    private static int GetEffectiveInputSize(int requestedSize, ModelSize modelSize)
+    {
+        if (requestedSize > 0)
+        {
+            return requestedSize;
+        }
+
+        return modelSize switch
+        {
+            ModelSize.Small or ModelSize.SmallFp32 or ModelSize.SmallInt8 => 392,
+            ModelSize.Da3Small or ModelSize.Da3Base or ModelSize.Da3MonoLarge or ModelSize.Da3MetricLarge => 504,
+            _ => DefaultInputSize
+        };
+    }
+
+    #endregion
+
     #region ONNX Runtime Integration
 
-    // Dynamic-input ViT models require a size divisible by the patch size (14)
+    // The ViT backbones need a size divisible by the patch size
+    private const int PatchSize = 14;
     private const int DefaultInputSize = 518;
-    private const int ReadbackTimeoutFrames = 60;
 
-    // Liveness signal for the render thread; the owning worker creates and disposes it
-    private InferenceSession? _onnxSession;
-    private readonly object _onnxLock = new object();
+    /** Reference camera focal length, in pixels, the metric model predicts depth for. */
+    private const float MetricReferenceFocalPx = 300f;
+    private const float MaxSmoothing = 0.95f;
+
+    // Published by the worker once its session is warm; null while loading or after a failure
+    private volatile ModelInfo? _modelInfo;
 
     private Task? _processingTask;
     private CancellationTokenSource? _cancellationTokenSource;
@@ -276,6 +610,7 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
 
     private volatile bool _isInitializing;
     private volatile bool _initFailed;
+    private volatile string? _initFailureMessage;
     private volatile bool _requestInFlight;
     private volatile string _activeProviderLabel = "CPU";
 
@@ -290,6 +625,8 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
     private volatile DepthOutputFormat _workerOutputFormat;
     private volatile bool _workerEnhanceContrast;
     private volatile bool _workerInvertDepth;
+    private volatile float _workerSmoothing;
+    private volatile float _workerFieldOfViewDegrees;
 
     // Requested inference size from the Resolution input, 0 = auto
     private volatile int _requestedInputSize;
@@ -299,13 +636,18 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
     private int _workerGeneration;
     private volatile string? _pendingStatus;
 
-    // Deferred GPU readback - the map only runs after the copy query signaled,
-    // so the render thread never waits for the GPU
-    private Texture2D? _readbackTexture;
-    private bool _readbackPending;
-    private bool _readbackIsBgra;
-    private int _readbackWaitFrames;
-    private bool _loggedUnsupportedFormat;
+    // Render-thread side of the GPU input preparation. Only one capture is ever in flight, so the tensor
+    // array is free to be rewritten whenever no request is.
+    private readonly DepthInputPreprocessor _preprocessor = new();
+    private float[]? _inputData;
+    private byte[]? _inputBytes;
+    private int _captureWidth;
+    private int _captureHeight;
+    private int _captureSourceWidth;
+    private int _captureSourceHeight;
+    private long _captureTicks;
+    private bool _captureIsBytes;
+    private bool _loggedCaptureFailure;
 
     // Owned by the render thread - outputs only regenerate when these change
     private DepthEstimationResult? _appliedResult;
@@ -313,9 +655,6 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
     private bool _appliedEnhance;
     private bool _appliedInvert;
     private byte[]? _normalizedBuffer;
-
-    private readonly ConcurrentDictionary<(int width, int height, Format format), Texture2D> _cachedStagingTextures = new();
-    private readonly object _textureCacheLock = new object();
 
     private SizeClassBufferPool? _bufferPool;
 
@@ -325,88 +664,19 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
     private int _uiInputResolution;
     private int _uiExecutionProvider;
 
-    private sealed class SizeClassBufferPool
-{
-    private readonly int[] _sizeClasses = { 64, 128, 256, 512, 1024, 2048, 4096, 8192 };
-    private readonly ConcurrentDictionary<int, ConcurrentBag<float[]>> _floatPools = new();
-    private readonly ConcurrentDictionary<int, ConcurrentBag<byte[]>> _bytePools = new();
-    private readonly object _lock = new();
-    private const int MaxPoolPerClass = 8;
-
-    private int GetSizeClass(int size)
-    {
-        foreach (var cls in _sizeClasses)
-        {
-            if (size <= cls) return cls;
-        }
-        return size;
-    }
-
-    public float[] RentFloat(int size)
-    {
-        int cls = GetSizeClass(size);
-        if (_floatPools.TryGetValue(cls, out var bag) && bag.TryTake(out var arr))
-            return arr;
-        return new float[size];
-    }
-
-    public void ReturnFloat(float[] arr)
-    {
-        if (arr == null) return;
-        int cls = GetSizeClass(arr.Length);
-        if (!_floatPools.TryGetValue(cls, out var bag))
-        {
-            lock (_lock)
-            {
-                if (!_floatPools.TryGetValue(cls, out bag))
-                {
-                    bag = new ConcurrentBag<float[]>();
-                    _floatPools[cls] = bag;
-                }
-            }
-        }
-        if (bag.Count < MaxPoolPerClass)
-            bag.Add(arr);
-    }
-
-    public byte[] RentByte(int size)
-    {
-        int cls = GetSizeClass(size);
-        if (_bytePools.TryGetValue(cls, out var bag) && bag.TryTake(out var arr))
-            return arr;
-        return new byte[size];
-    }
-
-    public void ReturnByte(byte[] arr)
-    {
-        if (arr == null) return;
-        int cls = GetSizeClass(arr.Length);
-        if (!_bytePools.TryGetValue(cls, out var bag))
-        {
-            lock (_lock)
-            {
-                if (!_bytePools.TryGetValue(cls, out bag))
-                {
-                    bag = new ConcurrentBag<byte[]>();
-                    _bytePools[cls] = bag;
-                }
-            }
-        }
-        if (bag.Count < MaxPoolPerClass)
-            bag.Add(arr);
-    }
-}
-
     private void InitializeWorker(bool debug, ModelSize modelSize, ExecutionProvider provider)
     {
+        var previousTask = _processingTask;
         StopWorker(debug);
         _activeModelSize = modelSize;
         _activeProvider = provider;
         _initFailed = false;
+        _initFailureMessage = null;
         _requestInFlight = false;
         _hasPendingInput = true;
+        _loggedCameraPose = false;
 
-        string? modelPath = ResolveModelPath(modelSize, debug);
+        var modelFile = ResolveModelFile(modelSize, debug, out var modelPath);
         if (modelPath == null)
         {
             _initFailed = true;
@@ -420,8 +690,27 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
         _cancellationTokenSource = new CancellationTokenSource();
         var token = _cancellationTokenSource.Token;
         _bufferPool = new SizeClassBufferPool();
-        WarmUpStagingTextures();
-        _processingTask = Task.Run(() => WorkerLoop(modelPath, modelSize, provider, token, generation, debug), token);
+        _processingTask = Task.Run(async () =>
+        {
+            // The previous worker releases its session only when its loop exits. Waiting here keeps the render
+            // thread free while preventing two models from holding GPU memory at the same time.
+            if (previousTask != null)
+            {
+                try
+                {
+                    await previousTask.ConfigureAwait(false);
+                }
+                catch
+                {
+                    // A failing predecessor must not prevent this generation from starting
+                }
+            }
+
+            if (token.IsCancellationRequested)
+                return;
+
+            WorkerLoop(modelPath, modelFile, modelSize, provider, token, generation, debug);
+        }, CancellationToken.None);
     }
 
     private void PublishStatus(string status)
@@ -429,28 +718,58 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
         _pendingStatus = status;
     }
 
-    private void WarmUpStagingTextures()
+    /** Candidate file names per model, in order of preference. A DA3 selection falls back to the V2 model of similar size. */
+    private static string[] GetModelCandidates(ModelSize modelSize)
     {
-        // Pre-create staging textures for common input sizes
-        var commonSizes = new[] { (1920, 1080), (1280, 720), (512, 512), (256, 256) };
-        foreach (var (w, h) in commonSizes)
+        return modelSize switch
         {
-            GetOrCreateStagingTexture(w, h, Format.R8G8B8A8_UNorm);
-        }
+            ModelSize.Small => ["depth-anything-v2-small-fp16.onnx"],
+            ModelSize.SmallFp32 => ["depth-anything-v2-small-fp32.onnx"],
+            ModelSize.SmallInt8 => ["depth-anything-v2-small-int8.onnx"],
+            ModelSize.Base => ["depth-anything-v2-base-fp16.onnx"],
+            ModelSize.Large => ["depth-anything-v2-large-fp16.onnx"],
+            ModelSize.Da3Small => ["da3-small-fp16.onnx", "da3-small.onnx", "da3-small-int8.onnx", "depth-anything-v2-small-fp16.onnx"],
+            ModelSize.Da3Base => ["da3-base-fp16.onnx", "da3-base.onnx", "depth-anything-v2-base-fp16.onnx"],
+            ModelSize.Da3MonoLarge => ["da3-mono-large-fp16.onnx", "da3-mono-large-int8.onnx", "depth-anything-v2-large-fp16.onnx"],
+            ModelSize.Da3MetricLarge => ["da3-metric-large-fp16.onnx"],
+            _ => ["depth-anything-v2-small-fp16.onnx"]
+        };
     }
 
-    private string? ResolveModelPath(ModelSize modelSize, bool debug)
+    private ModelFile ResolveModelFile(ModelSize modelSize, bool debug, out string? modelPath)
     {
-        string modelName = modelSize switch
+        var candidates = GetModelCandidates(modelSize);
+        foreach (var candidate in candidates)
         {
-            ModelSize.Small => "depth-anything-v2-small-fp16.onnx",
-            ModelSize.SmallFp32 => "depth-anything-v2-small-fp32.onnx",
-            ModelSize.SmallInt8 => "depth-anything-v2-small-int8.onnx",
-            ModelSize.Base => "depth-anything-v2-base-fp16.onnx",
-            ModelSize.Large => "depth-anything-v2-large-fp16.onnx",
-            _ => "depth-anything-v2-small-fp16.onnx"
-        };
+            var path = FindModelPath(candidate, debug);
+            if (path == null)
+                continue;
 
+            var isV3 = candidate.StartsWith("da3-", StringComparison.Ordinal);
+            if (!isV3 && modelSize >= ModelSize.Da3Small)
+            {
+                // The enum is persisted in project files. A value from a newer build must not turn
+                // into an IndexOutOfRangeException on the evaluation thread.
+                var requestedName = Enum.IsDefined(typeof(ModelSize), modelSize) ? modelSize.ToString() : ((int)modelSize).ToString();
+                Log.Warning($"[DepthAnything] No Depth Anything 3 model installed for {requestedName} - using {candidate}. " +
+                            "Run Scripts/download_models.py in the DepthAnything package to install one.", this);
+            }
+
+            modelPath = path;
+            return new ModelFile(candidate, isV3, candidate.Contains("metric", StringComparison.Ordinal));
+        }
+
+        var status = $"Model not found: {candidates[0]}";
+        if (debug) Log.Error($"[DepthAnything] {status}. Place the model in Assets/ folder.", this);
+        Status.Value = status;
+        // Update would otherwise overwrite this with a generic init-failure message on the same frame
+        _initFailureMessage = status;
+        modelPath = null;
+        return default;
+    }
+
+    private string? FindModelPath(string modelName, bool debug)
+    {
         // Try AssetRegistry first
         try
         {
@@ -484,39 +803,10 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
             }
         }
 
-        var status = $"Model not found: {modelName}";
-        if (debug) Log.Error($"[DepthAnything] {status}. Place the model in Assets/ folder.", this);
-        Status.Value = status;
         return null;
     }
 
-    private static string? FirstMetadataKey(IReadOnlyDictionary<string, NodeMetadata> metadata)
-    {
-        foreach (var key in metadata.Keys)
-        {
-            return key;
-        }
-
-        return null;
-    }
-
-    private static int GetEffectiveInputSize(int declaredSize, int requestedSize, ModelSize modelSize)
-    {
-        // Fixed-size models only accept their declared resolution
-        if (declaredSize > 0)
-        {
-            return declaredSize;
-        }
-
-        if (requestedSize > 0)
-        {
-            return requestedSize;
-        }
-
-        return modelSize is ModelSize.Small or ModelSize.SmallFp32 or ModelSize.SmallInt8 ? 392 : DefaultInputSize;
-    }
-
-    private void WorkerLoop(string modelPath, ModelSize modelSize, ExecutionProvider provider, CancellationToken token, int generation, bool debug)
+    private void WorkerLoop(string modelPath, ModelFile modelFile, ModelSize modelSize, ExecutionProvider provider, CancellationToken token, int generation, bool debug)
     {
         if (debug) Log.Debug("[DepthAnything] Worker loop started", this);
 
@@ -524,33 +814,43 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
         var failedToInit = false;
         try
         {
-            var session = InitializeSession(workerContext, modelPath, provider, token, debug);
-            if (session == null)
+            var modelInfo = InitializeSession(workerContext, modelFile, modelPath, provider, token, debug);
+            if (modelInfo == null || workerContext.Session == null)
             {
                 failedToInit = true;
             }
             else
             {
-                WarmUpSession(workerContext, modelSize, token, debug);
-                lock (_onnxLock)
-                {
-                    // Published only after warm-up so request acceptance coincides with a usable session
-                    _onnxSession = session;
-                }
+                WarmUpSession(workerContext, modelInfo, modelSize, token, debug);
 
-                PublishStatus($"Ready ({_activeProviderLabel})");
-                Log.Info($"[DepthAnything] Ready ({_activeProviderLabel}) - " +
-                                $"input '{workerContext.InputName}' {session.InputMetadata[workerContext.InputName]}, " +
-                                $"output '{workerContext.OutputName}' {session.OutputMetadata[workerContext.OutputName]}", this);
+                // Published only after warm-up so request acceptance coincides with a usable session
+                _modelInfo = modelInfo;
+
+                var size = modelInfo.DeclaredWidth > 0 ? $"{modelInfo.DeclaredWidth}x{modelInfo.DeclaredHeight}" : "dynamic size";
+                PublishStatus($"Ready ({_activeProviderLabel}, {modelFile.Name}, {size})");
+                Log.Info($"[DepthAnything] Ready ({_activeProviderLabel}) - {modelFile.Name}, input '{workerContext.InputNames[0]}' " +
+                         $"[{string.Join(", ", workerContext.Session.InputMetadata[workerContext.InputNames[0]].Dimensions)}], outputs {string.Join(", ", workerContext.OutputNames)}", this);
             }
 
             while (workerContext.Session != null && !token.IsCancellationRequested)
             {
                 if (_inputQueue.TryDequeue(out var request))
                 {
-                    if (request != null && request.PixelData != null && workerContext.Session != null)
+                    // A request captured for a replaced model carries the old input layout; it must not reach
+                    // the new session (the render thread's in-flight flag belongs to the new generation).
+                    if (request.Generation != generation)
                     {
-                        var result = ProcessFrame(workerContext, request, modelSize, debug);
+                        if (debug)
+                            Log.Debug($"[DepthAnything] Dropping stale request (generation {request.Generation}, worker {generation})", this);
+                        continue;
+                    }
+
+                    if ((request.InputData != null || request.InputBytes != null) && workerContext.Session != null)
+                    {
+                        var result = ProcessFrame(workerContext, request, modelInfo ?? new ModelInfo(), debug);
+                        if (result != null)
+                            result.Generation = generation;
+
                         if (token.IsCancellationRequested)
                         {
                             // A cancelled generation must not feed results into its successor
@@ -562,7 +862,6 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
                         }
                     }
 
-                    ReturnBufferToPool(request?.PixelData);
                     _requestInFlight = false;
                 }
                 else
@@ -576,24 +875,21 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
             if (!token.IsCancellationRequested)
             {
                 if (debug) Log.Error($"[DepthAnything] Worker loop error: {ex.Message}", this);
-                _outputQueue.Enqueue(new DepthEstimationResult { Error = ex.Message });
+                _outputQueue.Enqueue(new DepthEstimationResult { Error = ex.Message, Generation = generation });
             }
 
             _requestInFlight = false;
         }
         finally
         {
-            // Owns its session - dispose unconditionally; a newer worker may have replaced the field
+            // Owns its session - dispose unconditionally; a newer worker may have replaced the model info
+            workerContext.RunOptions?.Dispose();
             workerContext.Session?.Dispose();
-            lock (_onnxLock)
-            {
-                if (ReferenceEquals(_onnxSession, workerContext.Session))
-                    _onnxSession = null;
-            }
 
             // Stale generations must not clobber their successor's init state
             if (generation == Volatile.Read(ref _workerGeneration))
             {
+                _modelInfo = null;
                 _isInitializing = false;
                 if (failedToInit)
                     _initFailed = true;
@@ -603,41 +899,98 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
         }
     }
 
-    private InferenceSession? InitializeSession(WorkerContext workerContext, string modelPath, ExecutionProvider provider, CancellationToken token, bool debug)
+    private ModelInfo? InitializeSession(WorkerContext workerContext, ModelFile modelFile, string modelPath, ExecutionProvider provider, CancellationToken token, bool debug)
     {
         InferenceSession session;
         try
         {
-            var modelBytes = System.IO.File.ReadAllBytes(modelPath);
             if (token.IsCancellationRequested)
             {
                 return null;
             }
 
-            session = CreateSession(modelBytes, provider);
+            session = CreateSession(modelPath, provider);
         }
         catch (Exception ex)
         {
-            PublishStatus($"Initialization error: {ex.Message}");
-            if (debug) Log.Error($"[DepthAnything] Initialization error: {ex.Message}", this);
+            _initFailureMessage = $"Initialization error: {ex.Message}";
+            Log.Warning($"[DepthAnything] {_initFailureMessage}", this);
             return null;
         }
 
         workerContext.Session = session;
-        workerContext.InputName = FirstMetadataKey(session.InputMetadata) ?? "pixel_values";
-        workerContext.OutputName = FirstMetadataKey(session.OutputMetadata) ?? "predicted_depth";
+        workerContext.RunOptions = new RunOptions();
 
-        workerContext.DeclaredSize = 0;
-        var dimensions = session.InputMetadata[workerContext.InputName].Dimensions;
-        if (dimensions is { Length: >= 3 } && dimensions[^1] > 0)
+        var inputName = FirstMetadataKey(session.InputMetadata) ?? "pixel_values";
+        workerContext.InputNames = [inputName];
+
+        var inputMetadata = session.InputMetadata[inputName];
+        var dimensions = inputMetadata.Dimensions;
+        var isFloatPlanar = inputMetadata.ElementType == typeof(float) && dimensions.Length == 4 && dimensions[1] == 3;
+        var isBytePacked = inputMetadata.ElementType == typeof(byte) && dimensions.Length == 4 && dimensions[3] == 3;
+        if (!isFloatPlanar && !isBytePacked)
         {
-            workerContext.DeclaredSize = dimensions[^1];
+            _initFailureMessage = "Unsupported model input: expected float32 NCHW or uint8 NHWC RGB";
+            Log.Warning($"[DepthAnything] Unsupported input for {modelFile.Name}: {inputMetadata.ElementType.Name} [{string.Join(", ", dimensions)}]", this);
+
+            // Leaving the session assigned would keep the worker loop alive forever while _modelInfo
+            // stays null: the operator would report "Loading model..." and never fail or retry.
+            session.Dispose();
+            workerContext.Session = null;
+            workerContext.RunOptions = null;
+            return null;
         }
 
-        return session;
+        var outputNames = new List<string>(4);
+        workerContext.DepthIndex = AddOutput(outputNames, session.OutputMetadata, ["depth", "predicted_depth"], true);
+        workerContext.ConfidenceIndex = AddOutput(outputNames, session.OutputMetadata, ["depth_conf", "conf", "confidence"], false);
+        workerContext.SkyIndex = AddOutput(outputNames, session.OutputMetadata, ["sky"], false);
+        workerContext.IntrinsicsIndex = AddOutput(outputNames, session.OutputMetadata, ["intrinsics"], false);
+        workerContext.ExtrinsicsIndex = AddOutput(outputNames, session.OutputMetadata, ["extrinsics"], false);
+        workerContext.OutputNames = outputNames.ToArray();
+
+        // NCHW is [batch, 3, height, width]; NHWC is [batch, height, width, 3]
+        var heightIndex = isBytePacked ? 1 : 2;
+        return new ModelInfo
+                   {
+                       DeclaredHeight = dimensions[heightIndex] > 0 ? dimensions[heightIndex] : 0,
+                       DeclaredWidth = dimensions[heightIndex + 1] > 0 ? dimensions[heightIndex + 1] : 0,
+                       IsV3 = modelFile.IsV3,
+                       IsMetric = modelFile.IsMetric,
+                       InputIsBytes = isBytePacked
+                   };
     }
 
-    private void WarmUpSession(WorkerContext workerContext, ModelSize modelSize, CancellationToken token, bool debug)
+    /** Appends the first output called one of <paramref name="aliases"/> and returns its index; without a match, a required output falls back to the first one. */
+    private static int AddOutput(List<string> outputNames, IReadOnlyDictionary<string, NodeMetadata> metadata, string[] aliases, bool required)
+    {
+        foreach (var alias in aliases)
+        {
+            if (metadata.ContainsKey(alias))
+            {
+                outputNames.Add(alias);
+                return outputNames.Count - 1;
+            }
+        }
+
+        if (!required)
+            return -1;
+
+        outputNames.Add(FirstMetadataKey(metadata) ?? aliases[0]);
+        return outputNames.Count - 1;
+    }
+
+    private static string? FirstMetadataKey(IReadOnlyDictionary<string, NodeMetadata> metadata)
+    {
+        foreach (var key in metadata.Keys)
+        {
+            return key;
+        }
+
+        return null;
+    }
+
+    private void WarmUpSession(WorkerContext workerContext, ModelInfo modelInfo, ModelSize modelSize, CancellationToken token, bool debug)
     {
         var session = workerContext.Session;
         if (session == null || token.IsCancellationRequested)
@@ -646,15 +999,23 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
         try
         {
             // First DML inference compiles kernels; paying that on a dummy frame keeps it off a real one
-            int size = GetEffectiveInputSize(workerContext.DeclaredSize, _requestedInputSize, modelSize);
-            var inputTensor = new DenseTensor<float>(new float[3 * size * size], new[] { 1, 3, size, size });
-            var inputs = new List<NamedOnnxValue> { NamedOnnxValue.CreateFromTensor(workerContext.InputName, inputTensor) };
+            int width = modelInfo.DeclaredWidth;
+            int height = modelInfo.DeclaredHeight;
+            if (width <= 0 || height <= 0)
+            {
+                width = height = GetEffectiveInputSize(_requestedInputSize, modelSize) / PatchSize * PatchSize;
+            }
+
+            using var inputValue = modelInfo.InputIsBytes
+                                       ? OrtValue.CreateTensorValueFromMemory(new byte[3 * width * height], [1, height, width, 3])
+                                       : OrtValue.CreateTensorValueFromMemory(new float[3 * width * height], [1, 3, height, width]);
+            workerContext.InputValues[0] = inputValue;
 
             var stopwatch = Stopwatch.StartNew();
-            using var outputs = session.Run(inputs, new[] { workerContext.OutputName });
+            using var outputs = session.Run(workerContext.RunOptions, workerContext.InputNames, workerContext.InputValues!, workerContext.OutputNames);
             stopwatch.Stop();
 
-            Log.Debug($"[DepthAnything] Warm-up inference ({size}x{size}) took {stopwatch.ElapsedMilliseconds}ms", this);
+            Log.Debug($"[DepthAnything] Warm-up inference ({width}x{height}) took {stopwatch.ElapsedMilliseconds}ms", this);
         }
         catch (Exception ex)
         {
@@ -689,7 +1050,7 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
         }
     }
 
-    private InferenceSession CreateSession(byte[] modelBytes, ExecutionProvider provider)
+    private InferenceSession CreateSession(string modelPath, ExecutionProvider provider)
     {
         if (provider == ExecutionProvider.DirectMl)
         {
@@ -699,7 +1060,7 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
         // Windows has a CUDA and a DirectML ONNX Runtime native; the first request of the process binds one
         var wantedBuild = provider == ExecutionProvider.DirectMl ? OnnxNativeSelector.Build.DirectMl : OnnxNativeSelector.Build.Gpu;
         var build = OnnxNativeSelector.Select(typeof(InferenceSession).Assembly, wantedBuild);
-        if (OperatingSystem.IsWindows() && provider is ExecutionProvider.DirectMl or ExecutionProvider.Cuda && build != wantedBuild)
+        if (OperatingSystem.IsWindows() && provider is ExecutionProvider.DirectMl or ExecutionProvider.Cuda or ExecutionProvider.TensorRt && build != wantedBuild)
         {
             Log.Warning($"[DepthAnything] {OnnxNativeSelector.Describe(wantedBuild)} needs its own ONNX Runtime build, but this session already loaded " +
                         $"the {OnnxNativeSelector.Describe(build)} one - restart TiXL to switch.", this);
@@ -717,10 +1078,28 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
                 continue;
             }
 
-            if (candidate == ExecutionProvider.Cuda && OperatingSystem.IsLinux() && !LinuxCudaRuntime.TryPrepare(out var cudaMissing))
+            string cudaMissing = string.Empty;
+            if (candidate is ExecutionProvider.Cuda or ExecutionProvider.TensorRt
+                && ((OperatingSystem.IsLinux() && !LinuxCudaRuntime.TryPrepare(out cudaMissing))
+                    || (OperatingSystem.IsWindows() && !WindowsCudaRuntime.TryPrepare(out cudaMissing))))
             {
-                Log.Info($"[DepthAnything] CUDA unavailable, trying next provider: {cudaMissing}", this);
+                Log.Info($"[DepthAnything] {ExecutionProviderNames[(int)candidate]} unavailable, trying next provider: {cudaMissing}", this);
                 continue;
+            }
+
+            // TensorRT's provider DLL imports nvinfer_10.dll by name; load the runtime before asking ORT for the provider
+            if (candidate == ExecutionProvider.TensorRt)
+            {
+                var tensorRtReady = OperatingSystem.IsLinux()
+                                        ? LinuxCudaRuntime.TryPrepareTensorRt(out var trtMissing, out var trtDirectory)
+                                        : WindowsCudaRuntime.TryPrepareTensorRt(out trtMissing, out trtDirectory);
+                if (!tensorRtReady)
+                {
+                    Log.Info($"[DepthAnything] TensorRT unavailable, trying next provider: {trtMissing}", this);
+                    continue;
+                }
+
+                Log.Info($"[DepthAnything] TensorRT runtime at {trtDirectory}", this);
             }
 
             SessionOptions? options = null;
@@ -736,9 +1115,48 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
                 switch (candidate)
                 {
                     case ExecutionProvider.DirectMl:
+                        // Required by the DirectML provider: it neither plans memory ahead nor runs nodes in parallel
+                        options.EnableMemoryPattern = false;
+                        options.ExecutionMode = ExecutionMode.ORT_SEQUENTIAL;
                         options.AppendExecutionProvider_DML(0);
                         break;
                     case ExecutionProvider.Cuda:
+                        // HEURISTIC avoids the exhaustive cuDNN autotune at session creation. The DA3 exports have
+                        // fixed input sizes, so the algorithm is chosen once and stays.
+                        using (var cudaOptions = new OrtCUDAProviderOptions())
+                        {
+                            cudaOptions.UpdateOptions(new Dictionary<string, string>
+                            {
+                                ["device_id"] = "0",
+                                ["cudnn_conv_algo_search"] = "HEURISTIC",
+                            });
+                            options.AppendExecutionProvider_CUDA(cudaOptions);
+                        }
+                        break;
+                    case ExecutionProvider.TensorRt:
+                        // Engines are expensive to build; persist them per model. The models live inside the package,
+                        // so the cache belongs in the user profile rather than next to the asset.
+                        var cacheRoot = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+                        if (string.IsNullOrEmpty(cacheRoot))
+                            cacheRoot = System.IO.Path.GetDirectoryName(modelPath) ?? ".";
+
+                        var trtCache = System.IO.Path.Combine(cacheRoot, "TiXL", "trt_cache", System.IO.Path.GetFileNameWithoutExtension(modelPath));
+                        System.IO.Directory.CreateDirectory(trtCache);
+                        using (var trtOptions = new OrtTensorRTProviderOptions())
+                        {
+                            trtOptions.UpdateOptions(new Dictionary<string, string>
+                            {
+                                ["device_id"] = "0",
+                                ["trt_max_workspace_size"] = "2147483648",
+                                ["trt_engine_cache_enable"] = "1",
+                                ["trt_engine_cache_path"] = trtCache,
+                                ["trt_timing_cache_enable"] = "1",
+                                ["trt_timing_cache_path"] = trtCache
+                            });
+                            options.AppendExecutionProvider_Tensorrt(trtOptions);
+                        }
+
+                        // TensorRT only claims the subgraphs it can accelerate; CUDA runs the rest instead of the CPU
                         options.AppendExecutionProvider_CUDA(0);
                         break;
                     case ExecutionProvider.CoreMl:
@@ -746,7 +1164,8 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
                         break;
                 }
 
-                var session = new InferenceSession(modelBytes, options);
+                // From the path rather than from bytes, so models with external weight files load too
+                var session = new InferenceSession(modelPath, options);
                 _activeProviderLabel = ExecutionProviderNames[(int)candidate];
                 return session;
             }
@@ -764,8 +1183,9 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
     {
         return requested switch
         {
-            ExecutionProvider.DirectMl => [ExecutionProvider.DirectMl, ExecutionProvider.Cuda, ExecutionProvider.CoreMl, ExecutionProvider.Cpu],
-            ExecutionProvider.Cuda => [ExecutionProvider.Cuda, ExecutionProvider.CoreMl, ExecutionProvider.Cpu],
+            ExecutionProvider.DirectMl => [ExecutionProvider.DirectMl, ExecutionProvider.Cuda, ExecutionProvider.TensorRt, ExecutionProvider.CoreMl, ExecutionProvider.Cpu],
+            ExecutionProvider.Cuda => [ExecutionProvider.Cuda, ExecutionProvider.TensorRt, ExecutionProvider.CoreMl, ExecutionProvider.Cpu],
+            ExecutionProvider.TensorRt => [ExecutionProvider.TensorRt, ExecutionProvider.Cuda, ExecutionProvider.CoreMl, ExecutionProvider.Cpu],
             ExecutionProvider.CoreMl => [ExecutionProvider.CoreMl, ExecutionProvider.Cpu],
             _ => [ExecutionProvider.Cpu]
         };
@@ -777,88 +1197,239 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
         return provider switch
         {
             ExecutionProvider.DirectMl => OperatingSystem.IsWindows() && build == OnnxNativeSelector.Build.DirectMl,
-            ExecutionProvider.Cuda => (OperatingSystem.IsWindows() && build == OnnxNativeSelector.Build.Gpu) || OperatingSystem.IsLinux(),
+            ExecutionProvider.Cuda or ExecutionProvider.TensorRt => (OperatingSystem.IsWindows() && build == OnnxNativeSelector.Build.Gpu) || OperatingSystem.IsLinux(),
             ExecutionProvider.CoreMl => OperatingSystem.IsMacOS(),
             _ => true
         };
     }
 
-    private DepthEstimationResult ProcessFrame(WorkerContext workerContext, DepthEstimationRequest request, ModelSize modelSize, bool debug)
+    private DepthEstimationResult ProcessFrame(WorkerContext workerContext, DepthEstimationRequest request, ModelInfo modelInfo, bool debug)
     {
         // Rented buffers handed to the returned result; the catch path returns anything not attached
         float[]? resultDepth = null;
+        float[]? resultConfidence = null;
+        float[]? resultSky = null;
         byte[]? colorData = null;
         try
         {
-            if (workerContext.Session == null || request.PixelData == null)
+            var session = workerContext.Session;
+            if (session == null || (request.InputData == null && request.InputBytes == null))
             {
                 return ErrorResult(request, "No session or pixel data");
             }
 
-            int inputSize = GetEffectiveInputSize(workerContext.DeclaredSize, _requestedInputSize, modelSize);
-
-            // Preprocess with ImageNet normalization
-            var (preprocessedData, success) = PreprocessImage(workerContext, request.PixelData, request.IsBgra, request.Width, request.Height, inputSize,
-                                                              out int tensorWidth, out int tensorHeight);
-            if (!success)
+            // A layout mismatch means the request came from a different model; fail clearly instead of an ORT type error
+            if ((request.InputBytes != null) != modelInfo.InputIsBytes)
             {
-                return ErrorResult(request, "Preprocessing failed");
+                return ErrorResult(request, modelInfo.InputIsBytes
+                                                ? "Input format mismatch: the model expects uint8 NHWC"
+                                                : "Input format mismatch: the model expects float NCHW");
             }
 
-            // Run inference
-            var depthData = RunInference(workerContext, preprocessedData, tensorWidth, tensorHeight, out int outputWidth, out int outputHeight, debug);
+            using var inputValue = request.InputBytes != null
+                                       ? OrtValue.CreateTensorValueFromMemory(request.InputBytes, [1, request.Height, request.Width, 3])
+                                       : OrtValue.CreateTensorValueFromMemory(request.InputData!, [1, 3, request.Height, request.Width]);
+            workerContext.InputValues[0] = inputValue;
+
+            var stopwatch = Stopwatch.StartNew();
+            using var outputs = session.Run(workerContext.RunOptions, workerContext.InputNames, workerContext.InputValues!, workerContext.OutputNames);
+            stopwatch.Stop();
+
+            var depthData = CopyPlane(outputs[workerContext.DepthIndex], out int outputWidth, out int outputHeight);
             if (depthData == null)
             {
-                return ErrorResult(request, "Inference returned null");
+                return ErrorResult(request, "Inference did not produce a float depth tensor");
             }
+
+            resultDepth = depthData;
+            int count = outputWidth * outputHeight;
+
+            if (workerContext.ConfidenceIndex >= 0)
+            {
+                resultConfidence = CopyPlane(outputs[workerContext.ConfidenceIndex], out _, out _);
+            }
+
+            if (workerContext.SkyIndex >= 0)
+            {
+                resultSky = CopyPlane(outputs[workerContext.SkyIndex], out _, out _);
+            }
+
+            var verticalFov = ReadVerticalFov(workerContext, outputs, outputHeight, modelInfo, outputWidth);
+            var cameraPose = ReadCameraPose(workerContext, outputs);
+
+            if (modelInfo.IsMetric)
+            {
+                // The metric model predicts depth as seen by a 300 px reference camera; the real focal length turns it into meters
+                var focalPx = 0.5f * outputWidth / MathF.Tan(_workerFieldOfViewDegrees * MathF.PI / 360f);
+                var scale = focalPx / MetricReferenceFocalPx;
+                for (int i = 0; i < count; i++)
+                {
+                    resultDepth[i] *= scale;
+                }
+            }
+
+            var smoothing = _workerSmoothing;
+            SmoothDepth(workerContext, resultDepth, outputWidth, outputHeight, smoothing);
+            ComputeMinMax(resultDepth, count, out float min, out float max);
+            if (smoothing > 0 && workerContext.HasRange)
+            {
+                // The model's depth scale drifts between frames; a settled range keeps the visualization from pulsing
+                min += (workerContext.SmoothedMin - min) * smoothing;
+                max += (workerContext.SmoothedMax - max) * smoothing;
+            }
+
+            workerContext.SmoothedMin = min;
+            workerContext.SmoothedMax = max;
+            workerContext.HasRange = true;
 
             // At model resolution the GPU sampler upscales when the texture is
             // used downstream, which skips all full-resolution CPU work per result
-            int resultWidth;
-            int resultHeight;
+            int resultWidth = outputWidth;
+            int resultHeight = outputHeight;
             if (_matchInputResolution)
             {
-                resultDepth = ResizeDepthData(depthData, outputWidth, outputHeight, request.Width, request.Height);
+                resultDepth = ResizePlane(depthData, outputWidth, outputHeight, request.SourceWidth, request.SourceHeight);
                 ReturnDepthBuffer(depthData);
-                resultWidth = request.Width;
-                resultHeight = request.Height;
-            }
-            else
-            {
-                resultDepth = depthData;
-                resultWidth = outputWidth;
-                resultHeight = outputHeight;
-            }
+                resultWidth = request.SourceWidth;
+                resultHeight = request.SourceHeight;
 
-            int count = resultWidth * resultHeight;
-            ComputeMinMax(resultDepth, count, out float min, out float max);
+                if (resultConfidence != null)
+                {
+                    var resizedConfidence = ResizePlane(resultConfidence, outputWidth, outputHeight, resultWidth, resultHeight);
+                    ReturnDepthBuffer(resultConfidence);
+                    resultConfidence = resizedConfidence;
+                }
+
+                if (resultSky != null)
+                {
+                    var resizedSky = ResizePlane(resultSky, outputWidth, outputHeight, resultWidth, resultHeight);
+                    ReturnDepthBuffer(resultSky);
+                    resultSky = resizedSky;
+                }
+            }
 
             var outputFormat = _workerOutputFormat;
             var enhanceContrast = _workerEnhanceContrast;
             var invertDepth = _workerInvertDepth;
-            colorData = GetBuffer(count * 4);
-            ColorizeDepth(resultDepth, count, colorData, min, max, outputFormat, enhanceContrast, invertDepth);
+            colorData = GetBuffer(resultWidth * resultHeight * 4);
+            ColorizeDepth(resultDepth, resultWidth * resultHeight, colorData, min, max, outputFormat, enhanceContrast, invertDepth, modelInfo.IsV3);
+
+            if (!workerContext.LoggedFirstInference)
+            {
+                workerContext.LoggedFirstInference = true;
+                Log.Debug($"[DepthAnything] First inference ok: {outputWidth}x{outputHeight}, {stopwatch.ElapsedMilliseconds}ms", this);
+            }
 
             return new DepthEstimationResult
             {
                 DepthData = resultDepth,
+                ConfidenceData = resultConfidence,
+                SkyData = resultSky,
                 ColorData = colorData,
                 Width = resultWidth,
                 Height = resultHeight,
                 Min = min,
                 Max = max,
+                VerticalFovDegrees = verticalFov,
+                HasCameraPose = cameraPose.HasPose,
+                CameraPosition = cameraPose.Position,
+                CameraForward = cameraPose.Forward,
+                CameraUp = cameraPose.Up,
+                InferenceMs = (float)stopwatch.Elapsed.TotalMilliseconds,
+                CaptureTicks = request.CaptureTicks,
                 ColorFormat = outputFormat,
                 ColorEnhance = enhanceContrast,
-                ColorInvert = invertDepth
+                ColorInvert = invertDepth,
+                FarIsLarge = modelInfo.IsV3
             };
         }
         catch (Exception ex)
         {
             if (debug) Log.Error($"[DepthAnything] ProcessFrame error: {ex.Message}", this);
             ReturnDepthBuffer(resultDepth);
+            ReturnDepthBuffer(resultConfidence);
+            ReturnDepthBuffer(resultSky);
             ReturnBufferToPool(colorData);
             return ErrorResult(request, ex.Message);
         }
+    }
+
+    /** Vertical field of view in degrees from the model's camera estimate, or from the FieldOfView input for the metric model; 0 when unknown. */
+    private float ReadVerticalFov(WorkerContext workerContext, IReadOnlyList<OrtValue> outputs, int outputHeight, ModelInfo modelInfo, int outputWidth)
+    {
+        if (workerContext.IntrinsicsIndex >= 0)
+        {
+            // Row-major 3x3 camera matrix on the output pixel grid: fx, 0, cx / 0, fy, cy / 0, 0, 1
+            var intrinsics = outputs[workerContext.IntrinsicsIndex].GetTensorDataAsSpan<float>();
+            if (intrinsics.Length >= 9)
+            {
+                var focalY = intrinsics[intrinsics.Length - 9 + 4];
+                if (focalY > 0)
+                {
+                    return 2f * MathF.Atan(outputHeight / (2f * focalY)) * 180f / MathF.PI;
+                }
+            }
+        }
+
+        if (modelInfo.IsMetric)
+        {
+            var tanHalfHorizontal = MathF.Tan(_workerFieldOfViewDegrees * MathF.PI / 360f);
+            return 2f * MathF.Atan(tanHalfHorizontal * outputHeight / outputWidth) * 180f / MathF.PI;
+        }
+
+        return 0f;
+    }
+
+    /** Copies a [.., H, W] float output into a pooled array; null when the tensor isn't float. */
+    private float[]? CopyPlane(OrtValue value, out int width, out int height)
+    {
+        width = 0;
+        height = 0;
+
+        var info = value.GetTensorTypeAndShape();
+        if (info.ElementDataType != TensorElementType.Float || info.Shape.Length < 2)
+            return null;
+
+        height = (int)info.Shape[^2];
+        width = (int)info.Shape[^1];
+
+        // Copy out before the result collection is disposed. Pooled arrays may exceed w*h
+        // (size-class rounding) - downstream code must use explicit pixel counts
+        var span = value.GetTensorDataAsSpan<float>();
+        if (span.Length < width * height)
+            return null;
+
+        var buffer = TakeDepthBuffer(width * height);
+        span.Slice(0, width * height).CopyTo(buffer);
+        return buffer;
+    }
+
+    private static void SmoothDepth(WorkerContext workerContext, float[] depth, int width, int height, float smoothing)
+    {
+        var count = width * height;
+        var previous = workerContext.PreviousDepth;
+        if (smoothing > 0 && previous != null && workerContext.PreviousWidth == width && workerContext.PreviousHeight == height)
+        {
+            for (int i = 0; i < count; i++)
+            {
+                var current = depth[i];
+                var last = previous[i];
+                if (float.IsFinite(current) && float.IsFinite(last))
+                {
+                    depth[i] = current + (last - current) * smoothing;
+                }
+            }
+        }
+
+        if (previous == null || previous.Length != count)
+        {
+            previous = new float[count];
+            workerContext.PreviousDepth = previous;
+        }
+
+        Array.Copy(depth, previous, count);
+        workerContext.PreviousWidth = width;
+        workerContext.PreviousHeight = height;
     }
 
     private static DepthEstimationResult ErrorResult(DepthEstimationRequest request, string message)
@@ -871,138 +1442,7 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
         };
     }
 
-    // ImageNet normalization values for pretrained models
-    private static readonly float[] ImageNetMean = { 0.485f, 0.456f, 0.406f };
-    private static readonly float[] ImageNetStd = { 0.229f, 0.224f, 0.225f };
-
-    private static (float[] data, bool success) PreprocessImage(WorkerContext workerContext, byte[] rgbaData, bool isBgra,
-                                                                int originalWidth, int originalHeight, int targetSize,
-                                                                out int newWidth, out int newHeight)
-    {
-        newWidth = 0;
-        newHeight = 0;
-        try
-        {
-            // Calculate aspect-ratio-preserving dimensions (multiples of 14 for ViT)
-            float aspectRatio = (float)originalWidth / originalHeight;
-
-            if (aspectRatio > 1.0f)
-            {
-                // Wider than tall
-                newWidth = targetSize;
-                newHeight = (int)(targetSize / aspectRatio);
-                newHeight = (newHeight / 14) * 14; // Round down to multiple of 14
-                if (newHeight < 14) newHeight = 14;
-            }
-            else
-            {
-                // Taller than wide
-                newHeight = targetSize;
-                newWidth = (int)(targetSize * aspectRatio);
-                newWidth = (newWidth / 14) * 14; // Round down to multiple of 14
-                if (newWidth < 14) newWidth = 14;
-            }
-
-            int dataLength = newWidth * newHeight * 3;
-            if (workerContext.PreprocessBuffer == null || workerContext.PreprocessBuffer.Length < dataLength)
-            {
-                workerContext.PreprocessBuffer = new float[dataLength];
-            }
-
-            var processedData = workerContext.PreprocessBuffer;
-            int rOffset = isBgra ? 2 : 0;
-            int bOffset = isBgra ? 0 : 2;
-            int scaledWidth = newWidth;
-            int scaledHeight = newHeight;
-            float scaleX = (float)originalWidth / scaledWidth;
-            float scaleY = (float)originalHeight / scaledHeight;
-            int planeSize = scaledWidth * scaledHeight;
-
-            Parallel.For(0, scaledHeight, y =>
-            {
-                for (int x = 0; x < scaledWidth; x++)
-                {
-                    int srcX = Math.Min((int)(x * scaleX), originalWidth - 1);
-                    int srcY = Math.Min((int)(y * scaleY), originalHeight - 1);
-
-                    int srcIdx = (srcY * originalWidth + srcX) * 4;
-                    int dstIdx = y * scaledWidth + x;
-
-                    processedData[dstIdx] = (rgbaData[srcIdx + rOffset] / 255.0f - ImageNetMean[0]) / ImageNetStd[0];
-                    processedData[planeSize + dstIdx] = (rgbaData[srcIdx + 1] / 255.0f - ImageNetMean[1]) / ImageNetStd[1];
-                    processedData[2 * planeSize + dstIdx] = (rgbaData[srcIdx + bOffset] / 255.0f - ImageNetMean[2]) / ImageNetStd[2];
-                }
-            });
-
-            return (processedData, true);
-        }
-        catch (Exception ex)
-        {
-            Log.Debug($"[DepthAnything] PreprocessImage error: {ex.Message}");
-            return (Array.Empty<float>(), false);
-        }
-    }
-
-    private float[]? RunInference(WorkerContext workerContext, float[] preprocessedData, int tensorWidth, int tensorHeight,
-                                  out int outputWidth, out int outputHeight, bool debug)
-    {
-        outputWidth = 0;
-        outputHeight = 0;
-
-        var session = workerContext.Session;
-        if (session == null)
-        {
-            return null;
-        }
-
-        try
-        {
-            // Use actual processed dimensions (aspect-ratio preserving)
-            var inputTensor = new DenseTensor<float>(preprocessedData, new[] { 1, 3, tensorHeight, tensorWidth });
-            var inputs = new List<NamedOnnxValue> { NamedOnnxValue.CreateFromTensor(workerContext.InputName, inputTensor) };
-
-            var stopwatch = Stopwatch.StartNew();
-            using var outputs = session.Run(inputs, new[] { workerContext.OutputName });
-            stopwatch.Stop();
-
-            DenseTensor<float>? denseOutput = null;
-            foreach (var output in outputs)
-            {
-                denseOutput = output.AsTensor<float>() as DenseTensor<float>;
-                break;
-            }
-
-            if (denseOutput == null || denseOutput.Length == 0)
-            {
-                if (debug) Log.Error("[DepthAnything] Inference did not produce a float tensor", this);
-                return null;
-            }
-
-            // Copy out before the result collection is disposed. Pooled arrays may exceed w*h
-            // (size-class rounding) - downstream code must use explicit pixel counts
-            var depthData = TakeDepthBuffer((int)denseOutput.Length);
-            denseOutput.Buffer.Span.CopyTo(depthData);
-
-            var dimensions = denseOutput.Dimensions;
-            outputHeight = dimensions[dimensions.Length - 2];
-            outputWidth = dimensions[dimensions.Length - 1];
-
-            if (!workerContext.LoggedFirstInference)
-            {
-                workerContext.LoggedFirstInference = true;
-                Log.Debug($"[DepthAnything] First inference ok: {outputWidth}x{outputHeight}, {stopwatch.ElapsedMilliseconds}ms", this);
-            }
-
-            return depthData;
-        }
-        catch (Exception ex)
-        {
-            if (debug) Log.Error($"[DepthAnything] RunInference error: {ex.Message}", this);
-            return null;
-        }
-    }
-
-    private float[] ResizeDepthData(float[] sourceDepth, int sourceWidth, int sourceHeight, int targetWidth, int targetHeight)
+    private float[] ResizePlane(float[] sourceDepth, int sourceWidth, int sourceHeight, int targetWidth, int targetHeight)
     {
         var resized = TakeDepthBuffer(targetWidth * targetHeight);
 
@@ -1067,11 +1507,10 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
             }
 
             _workerWake.Set();
-            _readbackPending = false;
+            _preprocessor.Cancel();
 
-            while (_inputQueue.TryDequeue(out var req))
+            while (_inputQueue.TryDequeue(out _))
             {
-                ReturnBufferToPool(req?.PixelData);
             }
 
             while (_outputQueue.TryDequeue(out var stale))
@@ -1079,12 +1518,8 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
                 ReturnResultBuffers(stale);
             }
 
-            lock (_onnxLock)
-            {
-                // Pauses request submission during re-init; the exiting worker disposes its own session
-                _onnxSession = null;
-            }
-
+            // Pauses request submission during re-init; the exiting worker disposes its own session
+            _modelInfo = null;
             _requestInFlight = false;
         }
     }
@@ -1096,11 +1531,13 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
             return;
 
         _hasPendingInput = false;
-        _readbackPending = false;
+        // Re-enabling only recaptures when the input turns dirty or its texture changes. A paused op that is
+        // resumed on the same static texture would otherwise never capture again and stay blank forever.
+        _lastInputTexture = null;
+        _preprocessor.Cancel();
 
-        while (_inputQueue.TryDequeue(out var request))
+        while (_inputQueue.TryDequeue(out _))
         {
-            ReturnBufferToPool(request?.PixelData);
         }
 
         // Also drops results an in-flight request produced after it was paused
@@ -1113,41 +1550,6 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
     #endregion
 
     #region Memory Management
-
-    private Texture2D GetOrCreateStagingTexture(int width, int height, Format format)
-    {
-        var key = (width, height, format);
-
-        if (_cachedStagingTextures.TryGetValue(key, out var cachedTexture))
-        {
-            return cachedTexture;
-        }
-
-        lock (_textureCacheLock)
-        {
-            if (_cachedStagingTextures.TryGetValue(key, out cachedTexture))
-            {
-                return cachedTexture;
-            }
-
-            var newTexture = new Texture2D(new T3.Graphics.Compat.Texture2D(ResourceManager.Device, new Texture2DDescription
-            {
-                Width = width,
-                Height = height,
-                MipLevels = 1,
-                ArraySize = 1,
-                Format = format,
-                SampleDescription = new SampleDescription(1, 0),
-                Usage = ResourceUsage.Staging,
-                BindFlags = BindFlags.None,
-                CpuAccessFlags = CpuAccessFlags.Read,
-                OptionFlags = ResourceOptionFlags.None
-            }));
-
-            _cachedStagingTextures[key] = newTexture;
-            return newTexture;
-        }
-    }
 
     private byte[] GetBuffer(int size)
     {
@@ -1169,114 +1571,6 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
     {
         if (buffer != null)
             _bufferPool?.ReturnFloat(buffer);
-    }
-
-    private void BeginReadback(Texture2D texture)
-    {
-        var desc = texture.Description;
-
-        switch (desc.Format)
-        {
-            case Format.R8G8B8A8_UNorm:
-            case Format.R8G8B8A8_UNorm_SRgb:
-                _readbackIsBgra = false;
-                break;
-
-            case Format.B8G8R8A8_UNorm:
-            case Format.B8G8R8A8_UNorm_SRgb:
-                _readbackIsBgra = true;
-                break;
-
-            default:
-                // CopyResource is a raw bit copy, so only 4-byte channel orders can be read here
-                if (!_loggedUnsupportedFormat)
-                {
-                    _loggedUnsupportedFormat = true;
-                    Log.Warning($"[DepthAnything] Unsupported input format {desc.Format} - skipping frames", this);
-                }
-                _hasPendingInput = false;
-                return;
-        }
-
-        var device = ResourceManager.Device;
-
-        _readbackTexture = GetOrCreateStagingTexture(desc.Width, desc.Height, desc.Format);
-        device.ImmediateContext.CopyResource(texture, _readbackTexture);
-
-        _readbackPending = true;
-        _readbackWaitFrames = 0;
-    }
-
-    private DepthEstimationRequest? CompleteReadback()
-    {
-        var context = ResourceManager.Device.ImmediateContext;
-
-        // TryMapForRead only succeeds once the copy is finished, so polling never stalls the render thread
-        var stagingTexture = _readbackTexture;
-        if (stagingTexture == null)
-        {
-            _readbackPending = false;
-            return null;
-        }
-
-        T3.Graphics.Compat.Texture2D nativeStaging = stagingTexture;
-        if (nativeStaging.Native == null
-            || !ResourceManager.Device.Backend.TryMapForRead(nativeStaging.Native, 0, out var mapped))
-        {
-            _readbackWaitFrames++;
-            if (_readbackWaitFrames > ReadbackTimeoutFrames)
-            {
-                // A device reset can leave the copy unfinished forever
-                Log.Warning("[DepthAnything] Readback never completed - restarting readback", this);
-                _readbackPending = false;
-                _hasPendingInput = true;
-            }
-
-            return null;
-        }
-
-        _readbackPending = false;
-
-        var desc = stagingTexture.Description;
-        int width = desc.Width;
-        int height = desc.Height;
-
-        try
-        {
-            if (mapped.SizeInBytes <= 0)
-            {
-                return null;
-            }
-
-            byte[] buffer = GetBuffer(width * height * 4);
-            unsafe
-            {
-                byte* srcPtr = (byte*)mapped.Data;
-                int rowPitch = mapped.RowPitch;
-                int rowBytes = width * 4;
-
-                // Raw copy - the channel layout is resolved during preprocessing on the worker
-                fixed (byte* dst = buffer)
-                {
-                    for (int y = 0; y < height; y++)
-                    {
-                        System.Buffer.MemoryCopy(srcPtr + (long)y * rowPitch, dst + (long)y * rowBytes, rowBytes, rowBytes);
-                    }
-                }
-            }
-
-            return new DepthEstimationRequest
-            {
-                PixelData = buffer,
-                Width = width,
-                Height = height,
-                IsBgra = _readbackIsBgra
-            };
-        }
-        finally
-        {
-            context.UnmapSubresource(stagingTexture, 0);
-        }
     }
 
     #endregion
@@ -1301,7 +1595,11 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
         MaxDepth.Value = result.Max;
 
         // Update depth texture (R32_Float)
-        UploadDepthTexture(depthData, width, height);
+        UploadFloatTexture(ref _depthTexture, depthData, width, height);
+        DepthTexture.Value = _depthTexture;
+
+        ConfidenceTexture.Value = UploadOptionalPlane(ref _confidenceTexture, result.ConfidenceData, width, height);
+        SkyTexture.Value = UploadOptionalPlane(ref _skyTexture, result.SkyData, width, height);
 
         // Update normalized depth texture (R8G8B8A8_UNorm)
         var colorData = result.ColorData;
@@ -1319,81 +1617,68 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
                 _normalizedBuffer = new byte[count * 4];
             }
 
-            ColorizeDepth(depthData, count, _normalizedBuffer, result.Min, result.Max, outputFormat, enhanceContrast, invertDepth);
+            ColorizeDepth(depthData, count, _normalizedBuffer, result.Min, result.Max, outputFormat, enhanceContrast, invertDepth, result.FarIsLarge);
             UploadRgbaTexture(_normalizedBuffer, width, height);
         }
     }
 
-    private void UploadDepthTexture(float[] depthData, int width, int height)
+    private Texture2D? UploadOptionalPlane(ref Texture2D? texture, float[]? data, int width, int height)
     {
-        if (_depthTexture == null || _depthTexture.Description.Width != width || _depthTexture.Description.Height != height)
-        {
-            _depthTexture?.Dispose();
-            var desc = new Texture2DDescription
-            {
-                Width = width,
-                Height = height,
-                MipLevels = 1,
-                ArraySize = 1,
-                Format = Format.R32_Float,
-                SampleDescription = new SampleDescription(1, 0),
-                Usage = ResourceUsage.Default,
-                BindFlags = BindFlags.ShaderResource | BindFlags.RenderTarget,
-                OptionFlags = ResourceOptionFlags.None
-            };
-            _depthTexture = new Texture2D(new T3.Graphics.Compat.Texture2D(ResourceManager.Device, desc));
-        }
+        if (data == null || data.Length < width * height)
+            return null;
 
-        var handle = System.Runtime.InteropServices.GCHandle.Alloc(depthData, System.Runtime.InteropServices.GCHandleType.Pinned);
-        try
-        {
-            var dataBox = new DataBox(handle.AddrOfPinnedObject(), width * 4, 0);
-            ResourceManager.Device.ImmediateContext.UpdateSubresource(dataBox, _depthTexture);
-        }
-        finally
-        {
-            handle.Free();
-        }
-
-        DepthTexture.Value = _depthTexture;
+        UploadFloatTexture(ref texture, data, width, height);
+        return texture;
     }
 
-    private void UploadRgbaTexture(byte[] rgbaData, int width, int height)
+    private static unsafe void UploadFloatTexture(ref Texture2D? texture, float[] data, int width, int height)
+    {
+        if (texture == null || texture.Description.Width != width || texture.Description.Height != height)
+        {
+            texture?.Dispose();
+            texture = CreateTexture(width, height, Format.R32_Float);
+        }
+
+        fixed (float* pointer = data)
+        {
+            ResourceManager.Device.ImmediateContext.UpdateSubresource(new DataBox((IntPtr)pointer, width * sizeof(float), 0), texture);
+        }
+    }
+
+    private unsafe void UploadRgbaTexture(byte[] rgbaData, int width, int height)
     {
         if (_normalizedDepthTexture == null || _normalizedDepthTexture.Description.Width != width || _normalizedDepthTexture.Description.Height != height)
         {
             _normalizedDepthTexture?.Dispose();
-            var desc = new Texture2DDescription
-            {
-                Width = width,
-                Height = height,
-                MipLevels = 1,
-                ArraySize = 1,
-                Format = Format.R8G8B8A8_UNorm,
-                SampleDescription = new SampleDescription(1, 0),
-                Usage = ResourceUsage.Default,
-                BindFlags = BindFlags.ShaderResource | BindFlags.RenderTarget,
-                OptionFlags = ResourceOptionFlags.None
-            };
-            _normalizedDepthTexture = new Texture2D(new T3.Graphics.Compat.Texture2D(ResourceManager.Device, desc));
+            _normalizedDepthTexture = CreateTexture(width, height, Format.R8G8B8A8_UNorm);
         }
 
-        var handle = System.Runtime.InteropServices.GCHandle.Alloc(rgbaData, System.Runtime.InteropServices.GCHandleType.Pinned);
-        try
+        fixed (byte* pointer = rgbaData)
         {
-            var dataBox = new DataBox(handle.AddrOfPinnedObject(), width * 4, 0);
-            ResourceManager.Device.ImmediateContext.UpdateSubresource(dataBox, _normalizedDepthTexture);
-        }
-        finally
-        {
-            handle.Free();
+            ResourceManager.Device.ImmediateContext.UpdateSubresource(new DataBox((IntPtr)pointer, width * 4, 0), _normalizedDepthTexture);
         }
 
         NormalizedDepthTexture.Value = _normalizedDepthTexture;
     }
 
+    private static Texture2D CreateTexture(int width, int height, Format format)
+    {
+        return new Texture2D(new T3.Graphics.Compat.Texture2D(ResourceManager.Device, new Texture2DDescription
+        {
+            Width = width,
+            Height = height,
+            MipLevels = 1,
+            ArraySize = 1,
+            Format = format,
+            SampleDescription = new SampleDescription(1, 0),
+            Usage = ResourceUsage.Default,
+            BindFlags = BindFlags.ShaderResource | BindFlags.RenderTarget,
+            OptionFlags = ResourceOptionFlags.None
+        }));
+    }
+
     private static void ColorizeDepth(float[] depthData, int pixelCount, byte[] rgbaData, float minDepth, float maxDepth,
-                                      DepthOutputFormat outputFormat, bool enhanceContrast, bool invertDepth)
+                                      DepthOutputFormat outputFormat, bool enhanceContrast, bool invertDepth, bool farIsLarge)
     {
         float range = maxDepth - minDepth;
         if (range < 0.0001f) range = 1.0f;
@@ -1406,6 +1691,10 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
 
             float normalizedDepth = (depth - minDepth) / range;
 
+            // V2 predicts disparity (near is large), V3 predicts depth (far is large); near stays bright for both
+            if (farIsLarge)
+                normalizedDepth = 1.0f - normalizedDepth;
+
             // Invert if requested
             if (invertDepth)
                 normalizedDepth = 1.0f - normalizedDepth;
@@ -1414,9 +1703,9 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
             if (enhanceContrast)
             {
                 normalizedDepth = (normalizedDepth - 0.5f) * 2.0f;
-                normalizedDepth = Math.Clamp(normalizedDepth, 0.0f, 1.0f);
             }
 
+            normalizedDepth = Math.Clamp(normalizedDepth, 0.0f, 1.0f);
             byte depthByte = (byte)(normalizedDepth * 255);
 
             int rgbaIdx = i * 4;
@@ -1424,13 +1713,6 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
             // Apply color format
             switch (outputFormat)
             {
-                case DepthOutputFormat.Grayscale:
-                    rgbaData[rgbaIdx + 0] = depthByte;
-                    rgbaData[rgbaIdx + 1] = depthByte;
-                    rgbaData[rgbaIdx + 2] = depthByte;
-                    rgbaData[rgbaIdx + 3] = 255;
-                    break;
-
                 case DepthOutputFormat.Color:
                     // Mid-range pixels glow green, extremes drift toward red/blue.
                     // The green term goes negative near 0, so clamp before the cast.
@@ -1442,8 +1724,7 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
                     break;
 
                 case DepthOutputFormat.Rainbow:
-                    float hue = normalizedDepth * 360;
-                    var rgb = HsvToRgb(hue / 360, 1.0f, 1.0f);
+                    var rgb = HsvToRgb(normalizedDepth, 1.0f, 1.0f);
                     rgbaData[rgbaIdx + 0] = (byte)(rgb.X * 255);
                     rgbaData[rgbaIdx + 1] = (byte)(rgb.Y * 255);
                     rgbaData[rgbaIdx + 2] = (byte)(rgb.Z * 255);
@@ -1483,6 +1764,8 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
     }
 
     private Texture2D? _depthTexture;
+    private Texture2D? _confidenceTexture;
+    private Texture2D? _skyTexture;
     private Texture2D? _normalizedDepthTexture;
 
     #endregion
@@ -1496,7 +1779,7 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
     public readonly InputSlot<bool> Enabled = new(true);
 
     [Input(Guid = "34567890-3456-3456-3456-345678901234", MappedType = typeof(ModelSize))]
-    public readonly InputSlot<int> ModelSizeParam = new();
+    public readonly InputSlot<int> ModelSizeParam = new((int)ModelSize.Da3Small);
 
     [Input(Guid = "90123456-9012-9012-9012-901234567890", MappedType = typeof(Resolution))]
     public readonly InputSlot<int> InputResolution = new((int)Resolution.Auto);
@@ -1506,6 +1789,12 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
 
     [Input(Guid = "234567cd-8912-9012-3456-6789012345ab")]
     public readonly InputSlot<bool> MatchInputResolution = new(false);
+
+    [Input(Guid = "d5c7a0fc-9eab-4c6e-b058-a06e2c4d7fbd")]
+    public readonly InputSlot<float> Smoothing = new(0.25f);
+
+    [Input(Guid = "f7e9c21e-bbcd-4e80-8a7a-c2800e6f91df")]
+    public readonly InputSlot<float> FieldOfView = new(60f);
 
     [Input(Guid = "45678901-4567-4567-4567-456789012345", MappedType = typeof(DepthOutputFormat))]
     public readonly InputSlot<int> OutputFormat = new();
@@ -1523,18 +1812,24 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
 
     #region Enums
 
+    /// <summary>The numeric values are saved in projects; new models are only ever appended.</summary>
     public enum ModelSize
     {
         Small,
         Base,
         Large,
         SmallFp32,
-        SmallInt8
+        SmallInt8,
+        Da3Small,
+        Da3Base,
+        Da3MonoLarge,
+        Da3MetricLarge
     }
 
     /// <summary>
     /// Inference input resolution. Auto uses the model's native size; smaller
     /// sizes trade depth detail for speed. Values are multiples of the ViT patch size.
+    /// Models exported at a fixed size ignore it.
     /// </summary>
     public enum Resolution
     {
@@ -1542,7 +1837,8 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
         R196,
         R280,
         R392,
-        R518
+        R518,
+        R504
     }
 
     public enum ExecutionProvider
@@ -1550,7 +1846,8 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
         Cpu,
         DirectMl,
         Cuda,
-        CoreMl
+        CoreMl,
+        TensorRt
     }
 
     public enum DepthOutputFormat
@@ -1565,9 +1862,12 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
     #region ICustomDropdownHolder
 
     private static readonly string[] OutputFormatNames = { "Grayscale", "Color", "Rainbow" };
-    private static readonly string[] ModelSizeNames = { "Small", "Base", "Large", "Small Fp32", "Small Int8" };
-    private static readonly string[] ResolutionNames = { "Auto", "196", "280", "392", "518" };
-    private static readonly string[] ExecutionProviderNames = { "CPU", "DirectML", "CUDA", "CoreML" };
+
+    private static readonly string[] ModelSizeNames =
+        { "V2 Small", "V2 Base", "V2 Large", "V2 Small Fp32", "V2 Small Int8", "V3 Small", "V3 Base", "V3 Mono Large", "V3 Metric Large" };
+
+    private static readonly string[] ResolutionNames = { "Auto", "196", "280", "392", "518", "504" };
+    private static readonly string[] ExecutionProviderNames = { "CPU", "DirectML", "CUDA", "CoreML", "TensorRT" };
 
     string ICustomDropdownHolder.GetValueForInput(Guid inputId)
     {
@@ -1580,7 +1880,7 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
         if (inputId == ModelSizeParam.Id)
         {
             var val = _uiModelSize;
-            return val >= 0 && val < ModelSizeNames.Length ? ModelSizeNames[val] : "Small";
+            return val >= 0 && val < ModelSizeNames.Length ? ModelSizeNames[val] : "V3 Small";
         }
 
         if (inputId == InputResolution.Id)
@@ -1671,6 +1971,21 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
 
     #endregion
 
+    #region Camera reference
+
+    public Vector3 CameraPosition { get; set; }
+    public Vector3 CameraTarget { get; set; }
+    public float CameraRoll { get; set; }
+    public CameraDefinition CameraDefinition => _cameraDefinition;
+    public Matrix4x4 WorldToCamera { get; set; }
+    public Matrix4x4 CameraToClipSpace { get; set; }
+    public Matrix4x4 LastObjectToWorld { get; set; }
+
+    private CameraDefinition _cameraDefinition = new();
+    private bool _loggedCameraPose;
+
+    #endregion
+
     #region Cleanup
 
     protected override void Dispose(bool isDisposing)
@@ -1687,21 +2002,19 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder
         // The session is disposed by the worker's own exit path - disposing it here
         // could race an in-flight Run on the worker thread
 
+        _preprocessor.Dispose();
+
         _depthTexture?.Dispose();
         _depthTexture = null;
 
+        _confidenceTexture?.Dispose();
+        _confidenceTexture = null;
+
+        _skyTexture?.Dispose();
+        _skyTexture = null;
+
         _normalizedDepthTexture?.Dispose();
         _normalizedDepthTexture = null;
-
-
-        lock (_textureCacheLock)
-        {
-            foreach (var cachedTexture in _cachedStagingTextures.Values)
-            {
-                cachedTexture?.Dispose();
-            }
-            _cachedStagingTextures.Clear();
-        }
 
         base.Dispose(isDisposing);
     }

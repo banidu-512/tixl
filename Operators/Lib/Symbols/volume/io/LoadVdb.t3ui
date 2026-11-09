@@ -19,7 +19,7 @@
         "Y": 0.0
       },
       "Description": "File path of the .vdb file.",
-      "Usage": "Default"
+      "Usage": "FilePath"
     }
   ],
   "SymbolChildUis": [],

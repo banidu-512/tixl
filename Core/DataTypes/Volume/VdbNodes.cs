@@ -208,7 +208,7 @@ public sealed class VdbInternalNode2<T>
 /// <summary>One entry of the root node table: either an active/inactive tile or an allocated child.</summary>
 public sealed class VdbRootTile<T>
 {
-    public T Value;
+    public T Value = default!;
     public bool Active;
 }
 

@@ -154,7 +154,7 @@ internal class CollabRelayHostTransport : CollabTransport
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
             timeout.CancelAfter(CollabProtocol.ConnectTimeoutMs);
             await client.ConnectAsync(relayHost, relayPort, timeout.Token);
-            client.NoDelay = true;
+            CollabProtocol.ConfigureShowSocket(client);
             client.SendTimeout = CollabProtocol.WriteTimeoutMs;
             var stream = client.GetStream();
 
@@ -182,6 +182,7 @@ internal class CollabRelayHostTransport : CollabTransport
         if (peer.SessionClosed)
             return;
 
+        // A peer with a live data channel takes the frame directly; the relay path would be stale.
         if (peer.TrySendPreferred(type, payload))
             return;
 
@@ -195,12 +196,6 @@ internal class CollabRelayHostTransport : CollabTransport
             return;
 
         WriteToRelay(peer.PresencePeerId, type, payload);
-    }
-
-    /// <summary>Control messages must reach a P2P peer even when its data channel is about to close.</summary>
-    public override void SendJsonOverRelay(CollabPeerConnection peer, object message)
-    {
-        SendOverRelay(peer, CollabProtocol.FrameType.Json, CollabProtocol.EncodeJson(message));
     }
 
     /// <summary>
@@ -349,6 +344,8 @@ internal class CollabRelayHostTransport : CollabTransport
                 }
 
                 OnStatus($"Peer joining via relay (slot {slot})");
+
+                // The WebRTC host builds its peer link here; the relay transport ignores it.
                 OnMemberJoined(member);
             }
             else if (type == "left")
@@ -397,20 +394,7 @@ internal class CollabRelayHostTransport : CollabTransport
         OnPeerDisconnected(peer);
     }
 
-    /// <summary>Creates the per-member link. The WebRTC transport returns one that can prefer a data channel.</summary>
-    protected virtual CollabPeerConnection CreateMemberPeer(int slot, Action? onDetach) =>
-        new(_relayStream, slot, onDetach);
-
-    /// <summary>Called once when a member joins, before any of its frames are dispatched.</summary>
-    protected virtual void OnMemberJoined(CollabPeerConnection peer)
-    {
-    }
-
-    /// <summary>Called once when a member leaves or its relay slot is released.</summary>
-    protected virtual void OnMemberRemoved(CollabPeerConnection peer)
-    {
-    }
-
+    /// <summary>A relayed frame for one member slot. The WebRTC host forwards to peer links instead.</summary>
     protected virtual void DispatchRelayFrame(ReadOnlySpan<byte> frame)
     {
         if (frame.Length < 2)
@@ -447,13 +431,6 @@ internal class CollabRelayHostTransport : CollabTransport
                     answer[CollabProtocol.HeartbeatPingSize] = 0; // explicit: stackalloc is not guaranteed zeroed
                     WriteToRelay(slot, CollabProtocol.FrameType.Heartbeat, answer);
                 }
-                else if (payload.Length == CollabProtocol.HeartbeatPingSize + 1)
-                {
-                    // An echo of our own ping: its payload is still our TickCount64.
-                    var rtt = CollabProtocol.MeasureHeartbeatRtt(payload);
-                    if (rtt >= 0)
-                        peer.LastRttMs = rtt;
-                }
 
                 break;
         }
@@ -479,6 +456,19 @@ internal class CollabRelayHostTransport : CollabTransport
     {
         SendToPeer(peer, CollabProtocol.FrameType.Heartbeat, timestamp);
     }
+
+    /// <summary>Factory for member peers; the WebRTC host creates peers whose stream is a data channel.</summary>
+    protected virtual CollabPeerConnection CreateMemberPeer(int slot, Action? onDetach) =>
+        new CollabPeerConnection(_relayStream, slot, onDetach);
+
+    protected virtual void OnMemberJoined(CollabPeerConnection peer)
+    {
+    }
+
+    protected virtual void OnMemberRemoved(CollabPeerConnection peer)
+    {
+    }
+
 }
 
 /// <summary>
@@ -524,7 +514,7 @@ internal class CollabRelayClientTransport : CollabTransport
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
             timeout.CancelAfter(CollabProtocol.ConnectTimeoutMs);
             await client.ConnectAsync(relayHost, relayPort, timeout.Token);
-            client.NoDelay = true;
+            CollabProtocol.ConfigureShowSocket(client);
             client.SendTimeout = CollabProtocol.WriteTimeoutMs;
             var stream = client.GetStream();
 
@@ -547,9 +537,6 @@ internal class CollabRelayClientTransport : CollabTransport
 
     public override void SendToPeer(CollabPeerConnection peer, CollabProtocol.FrameType type, ReadOnlySpan<byte> payload)
     {
-        if (peer.TrySendPreferred(type, payload))
-            return;
-
         peer.Write(type, payload);
     }
 
@@ -584,6 +571,6 @@ internal class CollabRelayClientTransport : CollabTransport
 
     protected override void EchoHeartbeat(CollabPeerConnection peer, ReadOnlySpan<byte> timestamp)
     {
-        SendToPeer(peer, CollabProtocol.FrameType.Heartbeat, timestamp);
+        peer.Write(CollabProtocol.FrameType.Heartbeat, timestamp);
     }
 }

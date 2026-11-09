@@ -1,10 +1,13 @@
-# DepthAnything V2 Model Download Script
-# Downloads the required ONNX models for the DepthAnything operator
+﻿# DepthAnything Model Download Script
+# Downloads the ONNX models for the DepthAnything operator: Depth Anything 3 (preferred) and Depth Anything V2.
+# Pass model file names to download only those, e.g. .\download_models.ps1 da3-small.onnx
+
+param([string[]]$Only = @())
 
 $ErrorActionPreference = "Stop"
 
 Write-Host "================================================" -ForegroundColor Cyan
-Write-Host "DepthAnything V2 Model Download Script" -ForegroundColor Cyan
+Write-Host "DepthAnything Model Download Script" -ForegroundColor Cyan
 Write-Host "================================================" -ForegroundColor Cyan
 Write-Host ""
 
@@ -15,8 +18,15 @@ $BaseUrl = "https://huggingface.co/onnx-community"
 # Models to download. model_fp16.onnx is the real fp16 export - model.onnx is
 # fp32 despite the half-size naming in older revisions of this script.
 # ExpectedMb guards against the earlier mislabeled fp32 downloads.
+# Depth Anything 3: community ONNX exports of the Apache-2.0 official weights (the Large and Giant
+# any-view checkpoints are CC-BY-NC). ExpectedMb guards against truncated or mislabeled downloads.
 $Models = @(
-    @{Name="depth-anything-v2-small-fp16.onnx"; Url="$BaseUrl/depth-anything-v2-small/resolve/main/onnx/model_fp16.onnx"; ExpectedMb=50; Required=$true},
+    @{Name="da3-small.onnx"; Url="https://huggingface.co/zerochocobo/DepthAnything3_ONNX/resolve/main/da3_small.onnx"; ExpectedMb=96; Required=$true},
+    @{Name="da3-small-int8.onnx"; Url="https://huggingface.co/ohaiibuzzle/DA3-ONNX/resolve/main/da3_s_504x378_int8.onnx"; ExpectedMb=37; Required=$false},
+    @{Name="da3-base-fp16.onnx"; Url="https://huggingface.co/Heliosoph/da3-base-onnx/resolve/main/model_fp16.onnx"; ExpectedMb=198; Required=$false},
+    @{Name="da3-mono-large-int8.onnx"; Url="https://huggingface.co/ohaiibuzzle/DA3-ONNX/resolve/main/da3mono_l_504x378_int8.onnx"; ExpectedMb=431; Required=$false},
+    @{Name="da3-metric-large-fp16.onnx"; Url="https://huggingface.co/Heliosoph/da3metric-large-onnx/resolve/main/model_fp16.onnx"; ExpectedMb=670; Required=$false},
+    @{Name="depth-anything-v2-small-fp16.onnx"; Url="$BaseUrl/depth-anything-v2-small/resolve/main/onnx/model_fp16.onnx"; ExpectedMb=50; Required=$false},
     @{Name="depth-anything-v2-base-fp16.onnx"; Url="$BaseUrl/depth-anything-v2-base/resolve/main/onnx/model_fp16.onnx"; ExpectedMb=194; Required=$false},
     @{Name="depth-anything-v2-large-fp16.onnx"; Url="$BaseUrl/depth-anything-v2-large/resolve/main/onnx/model_fp16.onnx"; ExpectedMb=672; Required=$false}
 )
@@ -45,14 +55,15 @@ function Download-Model {
         $SizeMb = (Get-Item $OutputPath).Length / 1MB
         # fp16 files are roughly half their fp32 counterparts - a size far off
         # the expectation means a mislabeled download; replace it
-        if ([math]::Abs($SizeMb - $ExpectedMb) / $ExpectedMb -lt 0.25) {
+        if ($ExpectedMb -eq 0 -or [math]::Abs($SizeMb - $ExpectedMb) / $ExpectedMb -lt 0.25) {
             Write-Host "✓ $Name already exists (skipping)" -ForegroundColor Gray
             return $true
         }
         Write-Host "! $Name exists with unexpected size $([math]::Round($SizeMb, 1)) MB (expected ~$ExpectedMb MB) - re-downloading" -ForegroundColor Yellow
     }
 
-    Write-Host "Downloading: $Name (~$ExpectedMb MB)..." -ForegroundColor Yellow
+    $Expected = if ($ExpectedMb -gt 0) { "~$ExpectedMb MB" } else { "size unknown" }
+    Write-Host "Downloading: $Name ($Expected)..." -ForegroundColor Yellow
 
     try {
         # Use Invoke-WebRequest with progress tracking
@@ -86,6 +97,10 @@ $FailedCount = 0
 
 Write-Host "Starting downloads..." -ForegroundColor Cyan
 Write-Host ""
+
+if ($Only.Count -gt 0) {
+    $Models = @($Models | Where-Object { $Only -contains $_.Name })
+}
 
 foreach ($Model in $Models) {
     if (Download-Model -Name $Model.Name -Url $Model.Url -ExpectedMb $Model.ExpectedMb -Required $Model.Required) {

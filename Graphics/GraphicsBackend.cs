@@ -115,7 +115,7 @@ public interface IGraphicsBackend : IDisposable
     /// Tries to map for reading without stalling on queued GPU work. Returns false when the
     /// resource still has work in flight (the backend cannot hand over stable contents yet);
     /// callers keep their last good read instead of blocking the render thread. Used by
-    /// pipelined readbacks (the laser camera's capture staging).
+    /// pipelined readbacks (the depth operators' staging).
     /// </summary>
     bool TryMapForRead(GpuResource resource, int subresource, out MappedMemory memory);
 

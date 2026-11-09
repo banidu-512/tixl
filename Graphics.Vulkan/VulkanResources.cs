@@ -43,7 +43,7 @@ internal sealed unsafe class VulkanTexture(VulkanBackend backend, VkImage image,
 
     internal void* Mapped;
 
-    /// <summary>The serial of the frame whose commands last copied into this readback texture; 0 when none did.</summary>
+    /// <summary>The serial of the frame whose commands last filled the readback memory; 0 when never written.</summary>
     internal long ReadbackWrittenInFrameSerial;
 
     /// <summary>False for a swapchain's images: the swapchain owns them and destroying them would be a bug.</summary>
@@ -129,7 +129,7 @@ internal sealed unsafe class VulkanBuffer(VulkanBackend backend, VkBuffer buffer
     /// <summary>Upload and readback memory stays mapped: Vulkan allows it, and remapping per frame is wasted work.</summary>
     internal void* Mapped;
 
-    /// <summary>The serial of the frame whose commands last copied into this readback buffer; 0 when none did.</summary>
+    /// <summary>The serial of the frame whose commands last filled the readback memory; 0 when never written.</summary>
     internal long ReadbackWrittenInFrameSerial;
 
     /// <summary>

@@ -74,6 +74,8 @@ internal static class AppMenuBar
             Interaction.Gamepad.GamepadIndicator.Draw();
             T3Metrics.DrawRenderPerformanceGraph();
 
+            DrawShowControlStatus();
+
             ImGui.SameLine();
 
             if (!UserSettings.Config.EnableKeyboardShortCuts)
@@ -98,6 +100,12 @@ internal static class AppMenuBar
         }
 
         ImGui.PopStyleVar(3);
+    }
+
+    /// <summary>The centered show-control indicator: one short role word per active feature; details on hover.</summary>
+    private static void DrawShowControlStatus()
+    {
+        ShowControlBarStatus.DrawMenuBarIndicator();
     }
 
     private static void DrawDebugServerIndicator()

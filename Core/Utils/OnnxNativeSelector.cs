@@ -60,7 +60,10 @@ public static class OnnxNativeSelector
             }
             catch (InvalidOperationException)
             {
-                // A resolver is already set for this assembly: the default probing stays in charge
+                // A resolver is already set for this assembly: the default probing stays in charge and the
+                // requested build may differ, so say so instead of pretending the choice took effect.
+                Log.Warning($"[ONNX] A native resolver is already set for {Path.GetFileName(ortAssembly.Location)}; " +
+                            $"the requested {(chosen == Build.Gpu ? "CUDA" : "DirectML")} build may not be the one that loads.");
             }
 
             Selected[ortAssembly] = chosen;

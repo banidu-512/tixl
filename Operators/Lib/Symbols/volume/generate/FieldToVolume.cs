@@ -42,8 +42,15 @@ internal sealed class FieldToVolume : Instance<FieldToVolume>
         if (field == null || size.X <= 0 || size.Y <= 0 || size.Z <= 0 || voxelSize <= 0)
         {
             Volume.Value = null;
+            _hasLastKey = false;
             return;
         }
+
+        // Sampling the box is expensive and the result is fully determined by these inputs. Without this
+        // early-out a static graph re-samples (and re-inserts) up to MaxSampleCount voxels every frame.
+        var key = (field, center, size, voxelSize, mode);
+        if (_hasLastKey && key == _lastKey)
+            return;
 
         var bandWorld = 3f * voxelSize;
         var min = center - size * 0.5f;
@@ -60,11 +67,25 @@ internal sealed class FieldToVolume : Instance<FieldToVolume>
         var indexMin = grid.Transform.WorldToIndex(min - new Vector3(bandWorld));
         var indexMax = grid.Transform.WorldToIndex(max + new Vector3(bandWorld));
 
-        var sampleCount = (long)(indexMax.X - indexMin.X + 1) * (indexMax.Y - indexMin.Y + 1) * (indexMax.Z - indexMin.Z + 1);
+        // Compute the extent in double precision: a tiny VoxelSize makes the per-axis differences
+        // overflow int (and the long product overflow past MaxValue back to a small number), which
+        // let the guard pass and froze the editor in a quadrillion-iteration loop.
+        var extentX = (double)indexMax.X - indexMin.X + 1;
+        var extentY = (double)indexMax.Y - indexMin.Y + 1;
+        var extentZ = (double)indexMax.Z - indexMin.Z + 1;
+        var sampleCount = extentX * extentY * extentZ;
         if (sampleCount > MaxSampleCount)
         {
-            Log.Warning($"FieldToVolume: {sampleCount} samples exceed the limit of {MaxSampleCount}; increase VoxelSize or reduce Size.", this);
+            // One line per offending configuration, not one per frame (this ran at 60 Hz before).
+            if (!_hasWarningKey || _lastWarningKey != key)
+            {
+                _lastWarningKey = key;
+                _hasWarningKey = true;
+                Log.Warning($"FieldToVolume: {sampleCount:e1} samples exceed the limit of {MaxSampleCount}; increase VoxelSize or reduce Size.", this);
+            }
+
             Volume.Value = null;
+            _hasLastKey = false;
             return;
         }
 
@@ -101,7 +122,14 @@ internal sealed class FieldToVolume : Instance<FieldToVolume>
 
         grid.Tree.Prune();
         Volume.Value = new VdbVolume(grid);
+        _lastKey = key;
+        _hasLastKey = true;
     }
+
+    private (ScalarField Field, Vector3 Center, Vector3 Size, float VoxelSize, Modes Mode) _lastKey;
+    private (ScalarField Field, Vector3 Center, Vector3 Size, float VoxelSize, Modes Mode) _lastWarningKey;
+    private bool _hasLastKey;
+    private bool _hasWarningKey;
 
     [Input(Guid = "623c40fb-5337-5a30-98c8-a0542cc6ee09")]
     public readonly InputSlot<ScalarField> Field = new();

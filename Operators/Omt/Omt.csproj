@@ -4,7 +4,6 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>disable</Nullable>
-    <UserSecretsId>4ddcedc9-2c55-476d-9aeb-8e052ecd278a</UserSecretsId>
     <ProjectFormatVersion>2</ProjectFormatVersion>
     <RootNamespace>t3.omt</RootNamespace>
     <AssemblyName>$(RootNamespace)</AssemblyName>
@@ -19,6 +18,8 @@
     <NoWarn>$(NoWarn);NU1900;NU1902;NU1903</NoWarn>
     <PackageId>bdbb11ec-1f02-4d1c-b786-24721b9d0a63</PackageId>
     <IsArchived>false</IsArchived>
+    <!-- Frame buffers live in native memory, handed to the codec without pinning. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <!-- Analyzers roughly double operator compile time and run on every hot-reload compile; keep them for Release builds. -->
     <RunAnalyzers Condition="'$(Configuration)' == 'Debug'">false</RunAnalyzers>
   </PropertyGroup>
@@ -102,14 +103,11 @@
     <ProjectReference Include="../../Graphics.Compat\Graphics.Compat.csproj" Private="false" PrivateAssets="all" />
     <ProjectReference Include="../../Logging/Logging.csproj" Private="false" PrivateAssets="all" />
   </ItemGroup>
-  <!-- libomtnet is not on NuGet; its official binary release is vendored and shipped with this package. -->
+  <!-- Open Media Transport is built from vendored source (see Vendor/libomtnet/README.md) and shipped beside this package. -->
   <ItemGroup>
-    <Reference Include="libomtnet">
-      <HintPath>dependencies/libomtnet.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
+    <ProjectReference Include="../../Vendor/libomtnet/libomtnet.csproj" />
   </ItemGroup>
-  <!-- Native dependencies: libvmx under runtimes/<rid>/native so the load context finds it on every platform. -->
+  <!-- Native dependencies: the VMX codec under runtimes/<rid>/native, so each platform finds its own build. -->
   <ItemGroup>
     <Content Include="./dependencies/**/*" CopyToOutputDirectory="PreserveNewest">
       <Link>%(RecursiveDir)%(Filename)%(Extension)</Link>
@@ -159,6 +157,7 @@
     "AssemblyFileName": "$(RootNamespace)",
     "Version": "$(VersionPrefix)",
     "EditorVersion": "$(EditorVersion)",
+    "IsEditorOnly": "$(IsEditorOnly)",
     "OperatorPackages": [$(OperatorReferenceArray)
     ]
 }</OperatorPackageInfoJson>

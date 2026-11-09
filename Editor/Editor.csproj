@@ -65,6 +65,7 @@
     <ItemGroup>
         <PackageReference Include="DataChannelDotnet" Version="1.3.1" />
         <PackageReference Include="ImGui.NET" Version="1.91.6.1" />
+        <PackageReference Include="DataChannelDotnet" Version="1.3.1" />
         <PackageReference Include="Microsoft.Build" Version="18.8.2" />
         <PackageReference Include="Microsoft.CodeAnalysis.Common" Version="5.6.0" />
         <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.6.0" />
@@ -131,12 +132,16 @@
 
     <!-- macOS: libmediapipe_c.dylib resolves its OpenCL imports by dynamic lookup and Apple Silicon
          ships no OpenCL, so a no-op stub must be in the process before the first P/Invoke
-         (MediapipeNativeLibrary loads it from the app directory). Build it for dev builds too -
-         previously only the packaged DMG and the test host produced one, so a plain `dotnet run`
-         of the editor failed with "symbol not found in flat namespace". Needs clang. -->
+         (MediapipeNativeLibrary loads it from the app directory). Built for dev builds too - the
+         packaged DMG and the test host produce their own, so a plain `dotnet run` of the editor
+         otherwise fails with "symbol not found in flat namespace". Needs clang; when it is missing
+         the build continues and only the MediaPipe operators are unavailable. -->
     <Target Name="BuildMediapipeOpenClStub" BeforeTargets="BeforeBuild" Condition="$([MSBuild]::IsOSPlatform('OSX'))">
         <MakeDir Directories="$(OutputPath)" />
-        <Exec Command="clang -arch x86_64 -arch arm64 -shared -o &quot;$(OutputPath)libmediapipe_opencl_stub.dylib&quot; &quot;$(MSBuildThisFileDirectory)../Dependencies/osx/mediapipe-opencl-stub.c&quot;" />
+        <Exec Command="clang -arch x86_64 -arch arm64 -shared -o &quot;$(OutputPath)libmediapipe_opencl_stub.dylib&quot; &quot;$(MSBuildThisFileDirectory)../Dependencies/osx/mediapipe-opencl-stub.c&quot;"
+              ContinueOnError="true" />
+        <Warning Condition="!Exists('$(OutputPath)libmediapipe_opencl_stub.dylib')"
+                 Text="libmediapipe_opencl_stub.dylib was not built (clang missing?); the MediaPipe operators will be unavailable in this build." />
     </Target>
     <!-- =================================//===================================== -->
 
@@ -230,6 +235,7 @@
         <PackageNames Include="Mediapipe">
             <Name>t3.mediapipe</Name>
         </PackageNames>
+        <PackageNames Include="DepthAnything" />
         <!-- Add more as needed -->
     </ItemGroup>
     <PropertyGroup>
@@ -293,7 +299,7 @@
     <!-- Release-only: read-only packages and exports are loaded from bin, so Release output must be exactly
          what the build produces. Debug reads symbols from source and profits from incremental builds;
          cleaning it also gutted the output folder of a running editor. -->
-    <Target Name="ClearBuildOutput" BeforeTargets="BeforeBuild" Condition="'$(Configuration)' == 'Release'">
+    <Target Name="ClearBuildOutput" BeforeTargets="BeforeBuild" Condition="'$(Configuration)' == 'Release' And '$(ClearBuildOutput)' != 'false'">
         <RemoveDir Directories="bin/$(Configuration)" />
     </Target>
 

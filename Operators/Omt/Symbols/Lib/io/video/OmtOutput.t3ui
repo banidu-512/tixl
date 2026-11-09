@@ -1,8 +1,16 @@
 {
   "FormatVersion": 3,
   "Id": "957ef10e-b410-4eb6-8c2a-b813e8df3a3e"/*OmtOutput*/,
-  "Description": "Open Media Transport live video output. B8G8R8A8_UNorm or R8G8B8A8_UNorm textures are required. You can adjust the render format by using a ConvertFormat op or [RenderTarget] like in this example: [TorusMesh]->[DrawMesh]->[RenderTarget]->[OmtOutput]. OMT sources are discovered on the LAN; a receiver connects by picking the source named MACHINENAME (SenderName).",
+  "Description": "Sends a texture as an Open Media Transport (OMT) video stream on the local network.\n\nReceivers find the stream as MACHINE (SenderName); the SourceAddress output shows that name once the sender is announced. Nothing is read back from the GPU while no receiver is connected. The texture must be B8G8R8A8 or R8G8B8A8 (UNorm or Typeless); [ConvertFormat] or [RenderTarget] can provide one, e.g. [TorusMesh]->[DrawMesh]->[RenderTarget]->[OmtOutput].\n\nTo stream a whole output rather than a single texture, add an OMT stream in the output setup instead.\n\nAKA: Open Media Transport, network video output, NDI alternative\n\nTips\n- Without alpha, frames are packed to UYVY on the GPU, which halves the readback; enable alpha only when the receiver needs it.\n- Receive it with [OmtInput] or any other OMT receiver.",
   "InputUis": [
+    {
+      "InputId": "a16c8835-4298-43c0-b240-9ab428f6dba9"/*Texture*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 0.0
+      },
+      "Description": "The video texture to send. It must be in B8G8R8A8 or R8G8B8A8 (UNorm or Typeless) format — [ConvertFormat] or a [RenderTarget] can provide one. Nothing is sent while the input is empty."
+    },
     {
       "InputId": "852d49b4-a3d9-48b0-a855-d41383f7f95e"/*SenderName*/,
       "Position": {
@@ -18,14 +26,10 @@
         "X": -200.0,
         "Y": 135.0
       },
-      "Description": "Frames per second sent to receivers. Rendered frames in between are skipped."
-    },
-    {
-      "InputId": "a16c8835-4298-43c0-b240-9ab428f6dba9"/*Texture*/,
-      "Position": {
-        "X": -200.0,
-        "Y": 0.0
-      }
+      "Description": "Frames per second sent and advertised to receivers. Rendered frames in between are skipped.",
+      "Min": 1,
+      "Max": 120,
+      "ClampMin": true
     },
     {
       "InputId": "e7bbb443-b97e-4446-acb8-10648d65237a"/*EnableAlpha*/,
@@ -33,7 +37,7 @@
         "X": -200.0,
         "Y": 180.0
       },
-      "Description": "Send BGRA with alpha instead of opaque UYVY. Receivers must request BGRA to see it."
+      "Description": "Sends BGRA with the alpha channel instead of opaque UYVY."
     }
   ],
   "SymbolChildUis": [],

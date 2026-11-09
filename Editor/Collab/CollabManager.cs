@@ -45,129 +45,42 @@ internal sealed class CollabManager
     /// <summary>Room code when hosting through a relay; empty for direct sessions.</summary>
     public string RoomCode { get; private set; } = "";
 
-    /// <summary>The relay endpoint the active relay session uses, as "host:port"; empty otherwise.</summary>
+    /// <summary>"host:port" of the relay backing the current session; empty for direct sessions.
+    /// The invite text carries it so a joiner on another network reaches the same room.</summary>
     public string RelayEndpoint { get; private set; } = "";
+
+    /// <summary>IP of the direct session host on a client; null when hosting, on a relay join, or unknown.</summary>
+    public string? ConnectedHostAddress => HostLink?.RemoteAddress?.ToString();
 
     public bool IsSessionActive => State is SessionState.Hosting or SessionState.Connected;
 
-    /// <summary>False when collaboration is switched off in the settings; nothing is hosted, joined or discovered then.</summary>
-    public bool IsEnabled => UserSettings.Config.CollabEnabled || T3.Core.Show.FailoverArbiter.IsEnabled;
+    /// <summary>True when the user ended the last session on purpose; the auto-rejoin respects it.</summary>
+    public bool LeftManually { get; private set; }
 
-    /// <summary>True while a join waits for the user to enter the host's session password.</summary>
-    public bool IsPasswordRequested => _rejoinWithPassword != null;
-
-    /// <summary>Why the password is asked for: the session is locked, or the last one was wrong.</summary>
-    public string PasswordRequestMessage { get; private set; } = "";
-
-    /// <summary>Where the pending join goes, for the prompt: a room code or a host address.</summary>
-    public string PasswordRequestTarget { get; private set; } = "";
-
-    /// <summary>Retries the join that was turned away, now with the entered password.</summary>
-    public void SubmitRequestedPassword(string password)
-    {
-        var rejoin = _rejoinWithPassword;
-        _rejoinWithPassword = null;
-        rejoin?.Invoke(password);
-    }
-
-    public void CancelPasswordRequest()
-    {
-        _rejoinWithPassword = null;
-    }
-
-    /// <summary>
-    /// Ends the join in progress and asks the user for the password instead. The host closes the
-    /// connection when authentication fails, so the answer is applied by joining again.
-    /// </summary>
-    private void RequestPassword(string message)
-    {
-        Action<string>? rejoin = null;
-        var target = "";
-        if (!string.IsNullOrEmpty(_joinedRoomCode))
-        {
-            var relayHost = _joinedRelayHost;
-            var relayPort = _joinedRelayPort;
-            var roomCode = _joinedRoomCode;
-            target = $"room {roomCode}";
-            rejoin = password => JoinViaRelay(relayHost, relayPort, roomCode, password);
-        }
-        else if (TryParseEndpoint(_joinedHost, out var host, out var port))
-        {
-            target = _joinedHost;
-            rejoin = password => JoinDirect(host, port, password);
-        }
-
-        Leave();
-        if (rejoin == null)
-        {
-            ErrorText = message;
-            return;
-        }
-
-        PasswordRequestMessage = message;
-        PasswordRequestTarget = target;
-        _rejoinWithPassword = rejoin;
-    }
-
-    private Action<string>? _rejoinWithPassword;
+    /// <summary>Collaboration on/off — the settings switch gates every session start and join.</summary>
+    public bool IsEnabled => UserSettings.Config.CollabEnabled;
 
     public CollabUserIdentity LocalIdentity => _localIdentity;
 
     /// <summary>Peers currently in the session (UI thread only).</summary>
     public IReadOnlyList<CollabPeerConnection> Peers => _transport?.Peers ?? [];
 
-    /// <summary>"P2P" once a peer uses its own data channel; empty while it is on the relay.</summary>
-    public string DescribePeerLink(CollabPeerConnection peer) => _transport?.DescribePeerLink(peer) ?? "";
-
-    public string DescribePeerLink(int peerId)
+    /// <summary>How each peer is reached ("direct" data channel, relay fallback); empty when unknown.</summary>
+    public IReadOnlyList<(int PeerId, string Link)> PeerLinks
     {
-        foreach (var peer in Peers)
+        get
         {
-            if (peer.AssignedId == peerId)
-                return DescribePeerLink(peer);
+            var result = new List<(int, string)>();
+            foreach (var peer in Peers)
+                result.Add((peer.AssignedId, _transport?.DescribePeerLink(peer) ?? ""));
+
+            return result;
         }
-
-        return "";
-    }
-
-    /// <summary>Round trip of the peer's last heartbeat echo, or -1 when no connection or echo exists.</summary>
-    public int GetPeerRttMs(int peerId)
-    {
-        foreach (var peer in Peers)
-        {
-            if (peer.AssignedId == peerId)
-                return peer.LastRttMs;
-        }
-
-        return -1;
     }
 
     internal CollabWebRtcHostTransport? WebRtcHost => _transport as CollabWebRtcHostTransport;
     internal CollabWebRtcClientTransport? WebRtcClient => _transport as CollabWebRtcClientTransport;
 
-    /// <summary>Adds the session peers reached over a direct connection; relay peers have no address of their own.</summary>
-    public void AddLinkedPeers(List<NetworkPeer> peers)
-    {
-        foreach (var peer in Peers)
-        {
-            if (peer.RemoteAddress != null)
-                peers.Add(new NetworkPeer("Collaboration peer", peer.RemoteAddress));
-        }
-    }
-
-    /// <summary>The link back to the session host on client transports, direct or relay.</summary>
-    private CollabPeerConnection? HostLink => _transport?.HostLink;
-
-    /// <summary>The live session transport, for services that share data between the clients of a session.</summary>
-    internal CollabTransport? PeerSessionTransport => State is SessionState.Hosting or SessionState.Connected ? _transport : null;
-
-    internal bool PeerSessionIsHost => State == SessionState.Hosting;
-
-    public IReadOnlyList<DiscoveredSession> DiscoveredSessions => _discovered;
-
-    private CollabUserIdentity _localIdentity = new();
-
-    private CollabTransport? _transport;
     private CollabVideoHostStreamer? _videoStreamer;
     private CollabVideoReceiver? _videoReceiver;
 
@@ -181,6 +94,25 @@ internal sealed class CollabManager
 
     internal CollabVideoHostStreamer? VideoStreamer => _videoStreamer;
 
+    /// <summary>The machines this instance is linked to right now — the settings panel's network
+    /// check compares them against the selected adapter.</summary>
+    public void AddLinkedPeers(List<NetworkPeer> peers)
+    {
+        foreach (var peer in Peers)
+        {
+            if (peer.RemoteAddress != null)
+                peers.Add(new NetworkPeer("Collaboration peer", peer.RemoteAddress));
+        }
+    }
+
+    /// <summary>The link back to the session host on client transports, direct or relay.</summary>
+    private CollabPeerConnection? HostLink => _transport?.HostLink;
+
+    public IReadOnlyList<DiscoveredSession> DiscoveredSessions => _discovered;
+
+    private CollabUserIdentity _localIdentity = new();
+
+    private CollabTransport? _transport;
     private LanDiscoveryScanner? _discoveryScanner;
     private readonly List<DiscoveredSession> _discovered = [];
 
@@ -193,9 +125,6 @@ internal sealed class CollabManager
     private long _nextRateResetTicks;
 
     private string _password = "";
-
-    /** Sent by the host as the authFail reason; the client matches it to offer another attempt. */
-    private const string WrongPasswordReason = "wrong password";
 
     /// <summary>Inbound op counter per peer for rate limiting, keyed by peer id. UI thread only.</summary>
     private readonly Dictionary<int, int> _opsReceivedThisSecond = new();
@@ -220,7 +149,7 @@ internal sealed class CollabManager
         RefreshLocalIdentity();
     }
 
-    /// <summary>Rebuilds the local identity from user settings (after a Discord login).</summary>
+    /// <summary>Rebuilds the local identity from user settings (after a Discord login or name change).</summary>
     public void RefreshLocalIdentity()
     {
         var config = UserSettings.Config;
@@ -232,9 +161,12 @@ internal sealed class CollabManager
             UserSettings.Save();
         }
 
-        var displayName = string.IsNullOrWhiteSpace(config.CollabDiscordUserName)
-                              ? Environment.UserName
-                              : config.CollabDiscordUserName;
+        // Discord identity wins once logged in; the nickname is the local fallback.
+        var displayName = !string.IsNullOrWhiteSpace(config.CollabDiscordUserName)
+                              ? config.CollabDiscordUserName
+                              : (!string.IsNullOrWhiteSpace(config.CollabDisplayName)
+                                     ? config.CollabDisplayName
+                                     : Environment.UserName);
 
         _localIdentity = new CollabUserIdentity
                              {
@@ -253,36 +185,23 @@ internal sealed class CollabManager
         return name.Length <= 48 ? name : name[..48];
     }
 
-    public void StartHost(int tcpPort, string password, bool enableLanDiscovery, string? projectName = null,
-                          string? interfaceName = null)
+    public void StartHost(int tcpPort, string password, bool enableLanDiscovery, string? projectName = null)
     {
+        LeftManually = false;
+
         if (!IsEnabled)
         {
             ErrorText = "Collaboration is turned off in the settings.";
             return;
         }
 
-        // Hosting is an explicit session choice — it releases the manual-leave latch below, so failover
-        // may keep driving this session again.
-        LeftManually = false;
-
-        if (IsSessionActive)
+        // A join from a still-Connecting session (the previous host never answered) must not leak
+        // its transport: tear down whatever session object still exists, whatever its state.
+        if (State != SessionState.Off)
             Leave();
 
         ++_sessionGeneration;
         ErrorText = "";
-
-        // A named project that isn't focused is opened first: the session snapshots and streams the
-        // focused project, so selecting one in the settings has to make it the one being edited.
-        if (!TryFocusProject(projectName))
-        {
-            ErrorText = $"Can't share '{projectName}': the project could not be opened";
-            StatusText = "Failed to host";
-            State = SessionState.Off;
-            _sessionProjectName = "";
-            return;
-        }
-
         try
         {
             _password = password ?? "";
@@ -300,9 +219,11 @@ internal sealed class CollabManager
                                                                ["host"] = Environment.MachineName,
                                                                ["port"] = tcpPort,
                                                                ["pwd"] = !string.IsNullOrEmpty(_password),
-                                                               ["project"] = _sessionProjectName,
+                                                               ["project"] = projectName
+                                                                             ?? ProjectView.Focused?.OpenedProject.Package.DisplayName
+                                                                             ?? "",
                                                            },
-                                                 interfaceName ?? UserSettings.Config.NetworkInterface);
+                                                 interfaceName: UserSettings.Config.NetworkInterface);
             _transport.PeerDisconnected += OnPeerDisconnectedTransport;
             State = SessionState.Hosting;
             StatusText = $"Hosting on port {tcpPort}";
@@ -314,59 +235,29 @@ internal sealed class CollabManager
             StatusText = "Failed to host";
             _transport = null;
             State = SessionState.Off;
-            _sessionProjectName = "";
         }
     }
-
-    /// <summary>
-    /// Makes the named project the focused one. Empty is a no-op (the focused project is shared);
-    /// false means the project could not be opened, and hosting should not start without it.
-    /// </summary>
-    private static bool TryFocusProject(string? projectName)
-    {
-        if (string.IsNullOrWhiteSpace(projectName))
-            return true;
-
-        var focused = ProjectView.Focused;
-        if (focused != null && MatchesProjectName(focused.OpenedProject.Package.DisplayName, projectName))
-            return true;
-
-        return TryOpenProjectByName(projectName);
-    }
-
 
     /// <summary>
     /// Hosts through a relay so participants behind NATs can join by room code without port
     /// forwarding. Runs async: state goes Connecting until the relay confirms the room.
     /// </summary>
-    public void StartHostViaRelay(string relayHost, int relayPort, string? projectName = null)
+    public void StartHostViaRelay(string relayHost, int relayPort)
     {
+        LeftManually = false;
+
         if (!IsEnabled)
         {
             ErrorText = "Collaboration is turned off in the settings.";
             return;
         }
 
-        if (IsSessionActive)
+        // A join from a still-Connecting session (the previous host never answered) must not leak
+        // its transport: tear down whatever session object still exists, whatever its state.
+        if (State != SessionState.Off)
             Leave();
 
         ErrorText = "";
-        RelayEndpoint = $"{relayHost}:{relayPort}";
-
-        if (!TryFocusProject(projectName))
-        {
-            ErrorText = $"Can't share '{projectName}': the project could not be opened";
-            StatusText = "Failed to host";
-            State = SessionState.Off;
-            _sessionProjectName = "";
-            return;
-        }
-
-        _sessionLog.Clear();
-        _sessionProjectName = projectName
-                              ?? ProjectView.Focused?.OpenedProject.Package.DisplayName
-                              ?? "";
-
         State = SessionState.Connecting;
         StatusText = $"Registering room at {relayHost}:{relayPort}...";
 
@@ -407,24 +298,29 @@ internal sealed class CollabManager
         transport.StartReading();
         _transport = transport;
         RoomCode = transport.AssignedRoomCode;
+        RelayEndpoint = $"{relayHost}:{relayPort}";
         if (transport is CollabWebRtcHostTransport rtcHost)
             _videoStreamer = new CollabVideoHostStreamer(rtcHost);
 
         State = SessionState.Hosting;
-        StatusText = $"Hosting via relay {relayHost}:{relayPort}, room {RoomCode}";
+        StatusText = $"Hosting via relay, room {RoomCode}";
         Log.Info($"Collab: hosting via relay {relayHost}:{relayPort}, room {RoomCode}");
     }
 
     /// <summary>Joins a relay-hosted room by code.</summary>
     public void JoinViaRelay(string relayHost, int relayPort, string roomCode, string password)
     {
+        LeftManually = false;
+
         if (!IsEnabled)
         {
             ErrorText = "Collaboration is turned off in the settings.";
             return;
         }
 
-        if (IsSessionActive)
+        // A join from a still-Connecting session (the previous host never answered) must not leak
+        // its transport: tear down whatever session object still exists, whatever its state.
+        if (State != SessionState.Off)
             Leave();
 
         if (string.IsNullOrWhiteSpace(roomCode))
@@ -434,11 +330,6 @@ internal sealed class CollabManager
         }
 
         ErrorText = "";
-        _joinedHost = "";
-        _joinedRelayHost = relayHost;
-        _joinedRelayPort = relayPort;
-        _joinedRoomCode = roomCode.Trim().ToUpperInvariant();
-        RelayEndpoint = $"{relayHost}:{relayPort}";
         State = SessionState.Connecting;
         StatusText = $"Joining room {roomCode} via {relayHost}:{relayPort}...";
 
@@ -451,7 +342,7 @@ internal sealed class CollabManager
                         var transport = UserSettings.Config.CollabWebRtcEnabled
                                             ? await CollabWebRtcClientTransport.ConnectAsync(relayHost, relayPort, roomCode, CancellationToken.None)
                                             : await CollabRelayClientTransport.ConnectAsync(relayHost, relayPort, roomCode, CancellationToken.None);
-                        _uiThreadActions.Enqueue(() => CompleteRelayClientConnect(transport, generation, passwordToUse));
+                        _uiThreadActions.Enqueue(() => CompleteRelayClientConnect(transport, generation, passwordToUse, relayHost, relayPort, roomCode));
                     }
                     catch (Exception e)
                     {
@@ -460,7 +351,6 @@ internal sealed class CollabManager
                 });
     }
 
-    /// <summary>UI thread: edits sent on a data channel that had already died were lost, so take the host's state again.</summary>
     private void RequestResyncAfterFallback(int generation)
     {
         if (generation != _sessionGeneration || State != SessionState.Connected || HostLink is not { } host)
@@ -471,7 +361,7 @@ internal sealed class CollabManager
     }
 
     /// <summary>UI thread: adopts a joined relay link, unless that join was abandoned meanwhile.</summary>
-    private void CompleteRelayClientConnect(CollabRelayClientTransport transport, int generation, string password)
+    private void CompleteRelayClientConnect(CollabRelayClientTransport transport, int generation, string password, string relayHost, int relayPort, string roomCode)
     {
         if (generation != _sessionGeneration)
         {
@@ -479,9 +369,17 @@ internal sealed class CollabManager
             return;
         }
 
+        // Persist the room anchor BEFORE anything can restart us: the project-download restart
+        // must come back through the same room, or the client sits idle after its relaunch.
+        UserSettings.Config.CollabLastRelayHost = $"{relayHost}:{relayPort}";
+        UserSettings.Config.CollabLastRelayRoom = roomCode;
+        UserSettings.Config.CollabLastSessionHost = "";
+        UserSettings.Save();
+
         _password = password;
         _sessionLog.Clear();
         _transport = transport;
+        RelayEndpoint = $"{relayHost}:{relayPort}";
         transport.PeerDisconnected += OnPeerDisconnectedTransport;
         transport.StartReading();
         if (transport is CollabWebRtcClientTransport rtcClient)
@@ -510,53 +408,34 @@ internal sealed class CollabManager
                                          if (generation != _sessionGeneration)
                                              return;
 
-                                         ErrorText = string.IsNullOrEmpty(RelayEndpoint)
-                                                         ? $"{errorPrefix}: {message}"
-                                                         : $"{errorPrefix}: {message} (relay {RelayEndpoint}). Start a relay there or set one under Advanced.";
+                                         ErrorText = $"{errorPrefix}: {message}";
                                          StatusText = statusText;
                                          State = SessionState.Off;
-                                         _sessionProjectName = "";
                                          Log.Warning($"Collab: {errorPrefix.ToLowerInvariant()}: {message}");
                                      });
     }
 
     public void JoinDirect(string hostAddress, int tcpPort, string password)
     {
+        LeftManually = false;
+
         if (!IsEnabled)
         {
             ErrorText = "Collaboration is turned off in the settings.";
             return;
         }
 
-        // Joining is an explicit session choice — release the manual-leave latch (see Leave).
-        LeftManually = false;
-
-        if (IsSessionActive)
+        // A join from a still-Connecting session (the previous host never answered) must not leak
+        // its transport: tear down whatever session object still exists, whatever its state.
+        if (State != SessionState.Off)
             Leave();
 
         ++_sessionGeneration;
         ErrorText = "";
         _joinedHost = $"{hostAddress}:{tcpPort}";
-        _joinedRelayHost = "";
-        _joinedRelayPort = 0;
-        _joinedRoomCode = "";
         State = SessionState.Connecting;
         StatusText = $"Connecting to {hostAddress}:{tcpPort}...";
 
-        _password = password ?? "";
-        _sessionLog.Clear();
-
-        // The dial (name resolution plus a connect that waits out its timeout when the host is down) runs off the
-        // UI thread: blocking here froze the frame loop for seconds, which a failover standby cannot afford.
-        var generation = _sessionGeneration;
-        var displayName = _localIdentity.DisplayName;
-        var userId = _localIdentity.UserId;
-        _ = Task.Run(() => ConnectDirectInBackground(hostAddress, tcpPort, generation, displayName, userId));
-    }
-
-    private void ConnectDirectInBackground(string hostAddress, int tcpPort, int generation, string displayName, Guid userId)
-    {
-        CollabClientTransport? transport = null;
         try
         {
             if (!IPAddress.TryParse(hostAddress, out var address))
@@ -565,50 +444,29 @@ internal sealed class CollabManager
             if (address == null)
                 throw new ArgumentException($"'{hostAddress}' is not a valid address");
 
-            transport = new CollabClientTransport(new IPEndPoint(address, tcpPort));
-            transport.PeerDisconnected += OnPeerDisconnectedTransport;
+            _password = password ?? "";
+            _sessionLog.Clear();
+            var transport = new CollabClientTransport(new IPEndPoint(address, tcpPort));
+            _transport = transport;
+            _transport.PeerDisconnected += OnPeerDisconnectedTransport;
             transport.Connect();
             transport.SendJson(transport.HostPeer, new
                                                        {
                                                            t = "hello",
                                                            proto = CollabProtocol.ProtocolVersion,
-                                                           name = displayName,
-                                                           userId,
+                                                           name = _localIdentity.DisplayName,
+                                                           userId = _localIdentity.UserId,
                                                        });
-
-            var connected = transport;
-            _uiThreadActions.Enqueue(() => OnDirectConnected(generation, connected));
+            State = SessionState.Connecting;
         }
         catch (Exception e)
         {
-            transport?.Dispose();
-            var message = e.Message;
-            _uiThreadActions.Enqueue(() => OnDirectConnectFailed(generation, message));
+            ErrorText = $"Connection failed: {e.Message}";
+            StatusText = "Connection failed";
+            _transport?.Dispose();
+            _transport = null;
+            State = SessionState.Off;
         }
-    }
-
-    private void OnDirectConnected(int generation, CollabClientTransport transport)
-    {
-        // The session was left or replaced while the dial was running; its result is not wanted anymore.
-        if (generation != _sessionGeneration)
-        {
-            transport.PeerDisconnected -= OnPeerDisconnectedTransport;
-            transport.Dispose();
-            return;
-        }
-
-        _transport = transport;
-        State = SessionState.Connecting;
-    }
-
-    private void OnDirectConnectFailed(int generation, string message)
-    {
-        if (generation != _sessionGeneration)
-            return;
-
-        ErrorText = $"Connection failed: {message}";
-        StatusText = "Connection failed";
-        State = SessionState.Off;
     }
 
     private static IPAddress? ResolveHostName(string host)
@@ -625,47 +483,10 @@ internal sealed class CollabManager
     }
 
     /// <summary>
-    /// Host-side removal of one participant. The peer is told first so a current client can leave
-    /// cleanly; closing the connection then enforces it for clients that ignore the message.
-    /// There is no ban: the participant can rejoin unless the session password keeps them out.
+    /// Ends the session. <paramref name="manual"/> marks a leave the user asked for: the launch
+    /// auto-rejoin then stays quiet instead of dragging the session back, which made Leave look
+    /// broken. Starting or joining a session clears the mark again.
     /// </summary>
-    public bool KickParticipant(int peerId)
-    {
-        if (State != SessionState.Hosting || peerId == 0)
-            return false;
-
-        CollabPeerConnection? target = null;
-        foreach (var peer in Peers)
-        {
-            if (peer.AssignedId != peerId)
-                continue;
-
-            target = peer;
-            break;
-        }
-
-        if (target is not { IsAuthenticated: true })
-            return false;
-
-        // Ride the relay/socket rather than a preferred data channel: that write is flushed before
-        // the close below, and the client accepts this one relay message even while P2P is active.
-        _transport?.SendJsonOverRelay(target, new { t = "kicked", reason = "Removed by the host" });
-        Log.Info($"Collab: removed {target.Name}#{peerId} from the session");
-        _pendingKicks.Add((target, Environment.TickCount64 + KickCloseDelayMs));
-        return true;
-    }
-
-    /// <summary>
-    /// True when the user ended the last session on purpose. The failover link reads it to stop
-    /// re-hosting a session the user just left; starting or joining a session clears it.
-    /// </summary>
-    /// <remarks>
-    /// Failover owns the collab session while enabled — it reconciles manual host/join choices away on
-    /// the next tick, which also means a manual Leave would be undone ~1 s later and the button looked
-    /// broken. Internal leaves (step-down, stale dial) pass <c>manual: false</c> and keep reconciling.
-    /// </remarks>
-    public bool LeftManually { get; internal set; }
-
     public void Leave(bool manual = false)
     {
         LeftManually = manual;
@@ -697,10 +518,6 @@ internal sealed class CollabManager
         _projectDownload = null;
         _hostProjectName = "";
         _sessionProjectName = "";
-        _joinedHost = "";
-        _joinedRelayHost = "";
-        _joinedRelayPort = 0;
-        _joinedRoomCode = "";
         UserSettings.Config.CollabLastSessionHost = "";
         UserSettings.Config.CollabLastRelayHost = "";
         UserSettings.Config.CollabLastRelayRoom = "";
@@ -710,17 +527,21 @@ internal sealed class CollabManager
             // Drop disconnect events from the dead session; replaying them into a future
             // session would remove peers it never had.
         }
-
-        _pendingKicks.Clear();
         _localPresence = new PresencePacket();
         _password = "";
-        _rejoinWithPassword = null;
         RoomCode = "";
         RelayEndpoint = "";
         _undoStack.Clear();
         _redoStack.Clear();
         _activeLocks.Clear();
         UndoNotice = "";
+        // A session's participants must not survive into the next one. Per-peer disconnects do not
+        // run for every peer on teardown, so clear the roster here or stale cursors/participants
+        // reappear as ghosts after reconnecting.
+        _roster.Clear();
+        _rosterUserIds.Clear();
+        _latestPresenceByPeer.Clear();
+        MyPeerId = 0;
 
         // The local undo stack only contains this machine's edits; after a session it no longer
         // matches the shared graph state, so replaying it would corrupt the project.
@@ -738,16 +559,6 @@ internal sealed class CollabManager
     }
 
     private readonly ConcurrentQueue<CollabPeerConnection> _pendingDisconnects = new();
-
-    /// <summary>
-    /// Peers told to leave whose socket is closed a moment later. Closing in the same tick as the
-    /// message races the client's UI-thread drain: the EOF would be handled as a plain host loss
-    /// first and the kick reason would be lost.
-    /// </summary>
-    private readonly List<(CollabPeerConnection Peer, long CloseAtTicks)> _pendingKicks = [];
-
-    /// <summary>How long a kicked peer gets to process the message before its socket is closed.</summary>
-    private const int KickCloseDelayMs = 600;
 
     /// <summary>Session participant names by session id, for display on hosts and clients alike.</summary>
     private readonly Dictionary<int, string> _roster = new();
@@ -770,13 +581,7 @@ internal sealed class CollabManager
         if (transportPeer != null)
         {
             presence = transportPeer.LatestPresence;
-
-            // On a client the only transport peer is the host, and its UserId is never assigned by the
-            // host handshake — the identity lives in the roster (welcome/authOk). Taking the empty value
-            // here dropped the host's cursor on every client, so fall back to the roster.
-            userId = transportPeer.UserId != Guid.Empty
-                         ? transportPeer.UserId
-                         : _rosterUserIds.TryGetValue(peerId, out var peerUserId) ? peerUserId : Guid.Empty;
+            userId = transportPeer.UserId;
         }
         else
         {
@@ -793,15 +598,8 @@ internal sealed class CollabManager
                        CompositionId = presence?.CompositionId ?? Guid.Empty,
                        IsHoveringCanvas = presence?.IsHoveringCanvas ?? false,
                        CursorOnCanvas = presence?.CursorOnCanvas ?? Vector2.Zero,
-                       AccentColor = CollabColors.FromPacked(presence?.ColorRgb ?? 0, userId),
+                       AccentColor = CollabColors.FromId(userId),
                        SelectedChildIds = presence?.SelectedChildIds ?? [],
-                       LeftButtonDown = presence?.IsLeftButtonDown ?? false,
-                       RightButtonDown = presence?.IsRightButtonDown ?? false,
-                       MiddleButtonDown = presence?.IsMiddleButtonDown ?? false,
-                       WheelSpin = presence?.WheelSpin ?? 0,
-                       IsDoubleClick = presence?.IsDoubleClick ?? false,
-                       IsAddingOperator = presence?.IsAddingOperator ?? false,
-                       PressedKeys = presence?.PressedKeys ?? [],
                    };
     }
 
@@ -832,13 +630,6 @@ internal sealed class CollabManager
         public Vector2 CursorOnCanvas;
         public Vector4 AccentColor;
         public Guid[] SelectedChildIds = [];
-        public bool LeftButtonDown;
-        public bool RightButtonDown;
-        public bool MiddleButtonDown;
-        public int WheelSpin;
-        public bool IsDoubleClick;
-        public bool IsAddingOperator;
-        public byte[] PressedKeys = [];
     }
 
     // ---------------------------------------------------------------------------------------
@@ -850,15 +641,6 @@ internal sealed class CollabManager
 
     public void Update()
     {
-        // Switching collaboration off ends a running session and stops everything below, including auto-rejoin.
-        if (!IsEnabled)
-        {
-            if (State != SessionState.Off)
-                Leave(manual: true);
-
-            return;
-        }
-
         // Apply background connect results first: they may install or (when stale) release a
         // transport, and everything below depends on the current session state.
         while (_uiThreadActions.TryDequeue(out var uiThreadAction))
@@ -873,10 +655,9 @@ internal sealed class CollabManager
             }
         }
 
-        // Both pump work that must run on the render thread: the host's deferred GPU readback and
-        // the client's texture upload.
-        _videoStreamer?.Update();
-        _videoReceiver?.Update();
+        // The settings switch ends a running session: no session survives collaboration being off.
+        if (!UserSettings.Config.CollabEnabled && IsSessionActive)
+            Leave();
 
         // Auto-rejoin shortly after launch (e.g. after a project download restarted us).
         if (State == SessionState.Off)
@@ -902,13 +683,15 @@ internal sealed class CollabManager
         if (State == SessionState.Off)
             return;
 
-        ProcessPendingKicks();
         ProcessPendingDisconnects();
 
         // A disconnect handled above can end the session (host loss, relay link death), and
         // Leave() disposes the transport — nothing below may run against it.
         if (State == SessionState.Off)
             return;
+
+        _videoStreamer?.Update();
+        _videoReceiver?.Update();
 
         DrainInboundQueue();
 
@@ -928,61 +711,34 @@ internal sealed class CollabManager
 
     private void TryAutoRejoin()
     {
-        // While failover is enabled the failover link owns session membership (a promoted backup
-        // hosts, a standby follows the active master); a stale persisted host would fight it.
-        if (T3.Core.Show.FailoverArbiter.IsEnabled)
+        // The user ended the last session on purpose; reconnecting would override that choice.
+        if (LeftManually)
             return;
 
+        // A direct join restarts into the host's address...
         var host = UserSettings.Config.CollabLastSessionHost;
-        if (TryParseEndpoint(host, out var hostName, out var port))
+        if (!string.IsNullOrEmpty(host))
         {
-            Log.Info($"Collab: auto-rejoining last session {host}");
-            JoinDirect(hostName, port, UserSettings.Config.CollabPassword ?? "");
-            return;
+            var separator = host.LastIndexOf(':');
+            if (separator > 0 && int.TryParse(host[(separator + 1)..], out var port))
+            {
+                Log.Info($"Collab: auto-rejoining last session {host}");
+                JoinDirect(host[..separator], port, UserSettings.Config.CollabPassword ?? "");
+                return;
+            }
         }
 
-        // A relay join that restarted for a project download comes back through the same room.
+        // ...a relay join that restarted for a project download comes back through the same room.
         var relayHost = UserSettings.Config.CollabLastRelayHost;
         var roomCode = UserSettings.Config.CollabLastRelayRoom;
-        if (TryParseEndpoint(relayHost, out var relayName, out var relayPort) && !string.IsNullOrEmpty(roomCode))
+        if (!string.IsNullOrEmpty(relayHost) && !string.IsNullOrEmpty(roomCode))
         {
-            Log.Info($"Collab: auto-rejoining relay room {roomCode} at {relayHost}");
-            JoinViaRelay(relayName, relayPort, roomCode, UserSettings.Config.CollabPassword ?? "");
-        }
-    }
-
-    private static bool TryParseEndpoint(string? endpoint, out string host, out int port)
-    {
-        host = "";
-        port = 0;
-        if (string.IsNullOrWhiteSpace(endpoint))
-            return false;
-
-        var separator = endpoint.LastIndexOf(':');
-        if (separator <= 0
-            || !int.TryParse(endpoint[(separator + 1)..], out port)
-            || port is <= 0 or > 65535)
-            return false;
-
-        host = endpoint[..separator];
-        return !string.IsNullOrWhiteSpace(host);
-    }
-
-    private void ProcessPendingKicks()
-    {
-        if (_pendingKicks.Count == 0)
-            return;
-
-        var now = Environment.TickCount64;
-        for (var i = _pendingKicks.Count - 1; i >= 0; i--)
-        {
-            if (now < _pendingKicks[i].CloseAtTicks)
-                continue;
-
-            var peer = _pendingKicks[i].Peer;
-            _pendingKicks.RemoveAt(i);
-            peer.SessionClosed = true;
-            peer.Close();
+            var relaySeparator = relayHost.LastIndexOf(':');
+            if (relaySeparator > 0 && int.TryParse(relayHost[(relaySeparator + 1)..], out var relayPort))
+            {
+                Log.Info($"Collab: auto-rejoining relay room {roomCode} at {relayHost}");
+                JoinViaRelay(relayHost[..relaySeparator], relayPort, roomCode, UserSettings.Config.CollabPassword ?? "");
+            }
         }
     }
 
@@ -1020,6 +776,16 @@ internal sealed class CollabManager
             else if (State == SessionState.Connected && ReferenceEquals(peer, (_transport as CollabClientTransport)?.HostPeer))
             {
                 ErrorText = "Disconnected from host";
+                Leave();
+            }
+            else if (State == SessionState.Connecting && _transport != null
+                     && (ReferenceEquals(peer, (_transport as CollabClientTransport)?.HostPeer)
+                         || _transport is CollabRelayClientTransport))
+            {
+                // The host/relay link died while the handshake was still running. Without this the
+                // state stays "Connecting" forever with no error, and the next Join click builds a
+                // second transport without disposing the first.
+                ErrorText = "Could not connect to host";
                 Leave();
             }
             else if (State == SessionState.Connected && _transport is CollabRelayClientTransport)
@@ -1065,7 +831,11 @@ internal sealed class CollabManager
 
     private void HandlePresence(CollabPeerConnection peer, PresencePacket presence)
     {
-        peer.LatestPresence = presence;
+        // On a client the only transport peer is the host link, but the host relays other clients'
+        // presence frames through it. Only the packet that belongs to this peer may replace its
+        // own presence, or another participant's cursor/selection overwrites the host's.
+        if (presence.PeerId == peer.PresencePeerId)
+            peer.LatestPresence = presence;
         _latestPresenceByPeer[presence.PeerId] = presence;
 
         // The host relays presence between clients on the reliable path when UDP isn't available
@@ -1082,9 +852,10 @@ internal sealed class CollabManager
             if (other.UdpEndpoint != null)
                 continue;
 
-            var size = presence.Encode(_presenceScratch);
+            var buffer = new byte[CollabProtocol.MaxPresencePayload];
+            var size = presence.Encode(buffer);
             if (size > 0)
-                _transport?.SendToPeer(other, CollabProtocol.FrameType.Presence, _presenceScratch.AsSpan(0, size));
+                _transport?.SendToPeer(other, CollabProtocol.FrameType.Presence, buffer.AsSpan(0, size));
         }
     }
 
@@ -1121,55 +892,12 @@ internal sealed class CollabManager
                 break;
 
             case "authFail" when State == SessionState.Connecting:
-                var failReason = CollabProtocol.GetString(json, "reason", "authentication failed");
-                if (failReason == WrongPasswordReason)
-                {
-                    RequestPassword("Wrong password. Try again.");
-                    break;
-                }
-
-                ErrorText = "Rejected by host: " + failReason;
+                ErrorText = "Rejected by host: " + CollabProtocol.GetString(json, "reason", "authentication failed");
                 Leave();
                 break;
 
-            case "kicked" when State == SessionState.Connected:
-            {
-                var kickReason = CollabProtocol.GetString(json, "reason", "Removed by the host");
-                ErrorText = kickReason;
-                Log.Info($"Collab: removed by the host: {kickReason}");
-
-                // Leave clears the project name; the shared project closes so the kicked user lands in the project hub.
-                var sharedProject = _hostProjectName;
-                Leave(manual: true);
-                CloseSharedProject(sharedProject);
-                break;
-            }
-
             case "op" when IsSessionActive:
                 HandleOp(peer, json);
-                break;
-
-            case FailoverMirror.MessageType when State == SessionState.Connected:
-                FailoverMirror.Apply(json);
-                break;
-
-            case FailoverMirror.TimeMessageType when State == SessionState.Connected:
-                FailoverMirror.ApplyTime(json, this);
-                break;
-
-            case PeerCameraService.AnnounceType:
-            case PeerCameraService.RequestType:
-            case PeerCameraService.SourceType:
-                PeerCameraService.Instance.HandleMessage(_transport, State == SessionState.Hosting, peer, type, json);
-                break;
-
-            // The failover lease/liveness channel: no-op unless show failover is enabled.
-            case FailoverHealthLink.PingMessageType when State == SessionState.Connected:
-                FailoverHealthLink.ApplyPing(json, this);
-                break;
-
-            case FailoverHealthLink.AckMessageType when State == SessionState.Hosting:
-                FailoverHealthLink.ApplyAck(json);
                 break;
 
             case "undoRequest" when State == SessionState.Hosting:
@@ -1339,7 +1067,7 @@ internal sealed class CollabManager
         var expected = CollabAuth.ComputeMac(key, pending.Nonce);
         if (!CollabAuth.MacsEqual(expected, mac))
         {
-            RejectPeer(peer, WrongPasswordReason);
+            RejectPeer(peer, "wrong password");
             return;
         }
 
@@ -1412,12 +1140,6 @@ internal sealed class CollabManager
         if (!passwordRequired)
             return;
 
-        if (string.IsNullOrEmpty(_password))
-        {
-            RequestPassword("This session is password protected.");
-            return;
-        }
-
         if (!CollabAuth.TryFromHexString(CollabProtocol.GetString(json, "salt"), out var salt)
             || !CollabAuth.TryFromHexString(CollabProtocol.GetString(json, "nonce"), out var nonce))
         {
@@ -1467,19 +1189,9 @@ internal sealed class CollabManager
 
         // Remember the session so a restart (e.g. after a project download) can rejoin, then make
         // sure the host's project is open locally — download it when this machine doesn't have it.
-        if (!string.IsNullOrEmpty(_joinedRoomCode))
-        {
-            UserSettings.Config.CollabLastSessionHost = "";
-            UserSettings.Config.CollabLastRelayHost = $"{_joinedRelayHost}:{_joinedRelayPort}";
-            UserSettings.Config.CollabLastRelayRoom = _joinedRoomCode;
-        }
-        else
-        {
-            UserSettings.Config.CollabLastSessionHost = _joinedHost;
-            UserSettings.Config.CollabLastRelayHost = "";
-            UserSettings.Config.CollabLastRelayRoom = "";
-        }
-
+        UserSettings.Config.CollabLastSessionHost = _joinedHost;
+        UserSettings.Config.CollabLastRelayHost = "";
+        UserSettings.Config.CollabLastRelayRoom = "";
         UserSettings.Save();
         _hostProjectName = CollabProtocol.GetString(json, "project");
         EnsureHostProjectAvailable();
@@ -1488,33 +1200,19 @@ internal sealed class CollabManager
     /// <summary>host:port of the session this client dialed into (persisted for auto-rejoin).</summary>
     private string _joinedHost = "";
 
-    /// <summary>Relay endpoint and room of the session this client joined; empty for direct sessions.</summary>
-    private string _joinedRelayHost = "";
-    private int _joinedRelayPort;
-    private string _joinedRoomCode = "";
-
     private string _sessionProjectName = "";
     private string _hostProjectName = "";
-
-    /// <summary>The project new participants receive; empty when hosting without a project open.</summary>
-    public string SharedProjectName => _sessionProjectName;
-
-    /// <summary>
-    /// The project chosen in the collaboration settings; null means "share the focused project".
-    /// Call sites that host outside the settings panel use it too, so the dropdown applies everywhere.
-    /// </summary>
-    public static string? ConfiguredShareProject =>
-        string.IsNullOrWhiteSpace(UserSettings.Config.CollabShareProject) ? null : UserSettings.Config.CollabShareProject;
 
     /// <summary>
     /// Opens the host's project locally, or asks the host to stream it over when it doesn't exist
     /// here. Once the files have landed the editor restarts and auto-rejoins; from then on the
-    /// session only syncs deltas. Works for direct and relay sessions because both expose a
-    /// <see cref="HostLink"/>, and a relay joiner now persists its room for the rejoin.
+    /// session only syncs deltas.
     /// </summary>
     private void EnsureHostProjectAvailable()
     {
-        if (string.IsNullOrEmpty(_hostProjectName) || HostLink is not { } host)
+        // Only direct sessions: the persisted auto-rejoin target (`_joinedHost`) is a host:port, so
+        // a relay joiner that restarted for a download could not rejoin by room code.
+        if (string.IsNullOrEmpty(_hostProjectName) || _transport is not CollabClientTransport { HostPeer: { } host })
             return;
 
         if (TryOpenProjectByName(_hostProjectName))
@@ -1532,80 +1230,16 @@ internal sealed class CollabManager
         return paren > 0 ? displayName[..paren] : displayName;
     }
 
-    /// <summary>Closes the focused project when it is the shared one, which brings the graph window back to the project hub.</summary>
-    private static void CloseSharedProject(string projectName)
-    {
-        if (string.IsNullOrEmpty(projectName) || ProjectView.Focused is not { } view)
-            return;
-
-        if (MatchesProjectName(view.OpenedProject.Package.DisplayName, projectName))
-            view.Close();
-    }
-
     /// <summary>Opens a local project by display name (short form accepted) into the visible graph window.</summary>
     internal static bool TryOpenProjectByName(string name)
     {
-        // An already opened view is reused: recreating its ProjectView would drop its view state.
-        if (TryFocusOpenProject(name))
+        // Shared with failover and boygrouping: every mode follows the active machine's project the
+        // same way (in place, without a restart, when the project is installed).
+        if (T3.Editor.Show.ProjectFollower.TrySwitchToName(name))
             return true;
 
-        foreach (var p in SymbolPackage.AllPackages)
-        {
-            if (p is not EditorSymbolPackage editorPackage
-                || !MatchesProjectName(editorPackage.DisplayName, name))
-                continue;
-
-            if (!OpenedProject.TryCreate(editorPackage, out var openedProject, out var failureLog)
-                || openedProject == null)
-            {
-                Log.Warning($"Collab: could not open project '{name}': {failureLog}");
-                return false;
-            }
-
-            GraphWindow? graphWindow = null;
-            foreach (var window in GraphWindow.GraphWindowInstances)
-            {
-                if (!window.Config.Visible)
-                    continue;
-
-                graphWindow = window;
-                break;
-            }
-
-            graphWindow ??= GraphWindow.GraphWindowInstances.Count > 0 ? GraphWindow.GraphWindowInstances[0] : null;
-            if (graphWindow == null || !graphWindow.TrySetToProject(openedProject, tryRestoreViewArea: false))
-            {
-                Log.Warning($"Collab: could not open project '{name}' in a graph window");
-                return false;
-            }
-
-            return true;
-        }
-
+        Log.Warning($"Collab: project '{name}' is not installed locally");
         return false;
-    }
-
-    /// <summary>Brings an already opened project's graph view to the front without recreating it.</summary>
-    internal static bool TryFocusOpenProject(string name)
-    {
-        foreach (var window in GraphWindow.GraphWindowInstances)
-        {
-            var view = window.ProjectView;
-            if (view == null || !MatchesProjectName(view.OpenedProject.Package.DisplayName, name))
-                continue;
-
-            window.Config.Visible = true;
-            view.SetAsFocused();
-            return true;
-        }
-
-        return false;
-    }
-
-    private static bool MatchesProjectName(string displayName, string name)
-    {
-        return string.Equals(displayName, name, StringComparison.OrdinalIgnoreCase)
-               || displayName.StartsWith(name + " (", StringComparison.OrdinalIgnoreCase);
     }
 
     // ---------------------------------------------------------------------------------------
@@ -1876,7 +1510,7 @@ internal sealed class CollabManager
                                  ChildId = key.ChildId,
                                  PeerId = peerId,
                                  HolderName = _roster.TryGetValue(peerId, out var name) ? name : "peer",
-                                 Color = GetPresence(peerId)?.AccentColor ?? CollabColors.FromId(userId),
+                                 Color = CollabColors.FromId(userId),
                              };
         }
     }
@@ -2003,33 +1637,12 @@ internal sealed class CollabManager
     // ---------------------------------------------------------------------------------------
 
     /// <summary>Called by the graph overlay each frame; only the latest snapshot is kept.</summary>
-    public void SetLocalPresence(Guid compositionId, Vector2 cursorOnCanvas, bool hoveringCanvas, Guid[] selectedChildIds,
-                                 bool leftButtonDown, bool rightButtonDown, bool middleButtonDown, float wheelSpin,
-                                 bool doubleClick, byte[] pressedKeys, bool addingOperator)
+    public void SetLocalPresence(Guid compositionId, Vector2 cursorOnCanvas, bool hoveringCanvas, Guid[] selectedChildIds)
     {
         _localPresence.CompositionId = compositionId;
         _localPresence.CursorOnCanvas = cursorOnCanvas;
+        _localPresence.Flags = hoveringCanvas ? PresencePacket.FlagHoveringCanvas : (byte)0;
         _localPresence.SelectedChildIds = selectedChildIds;
-
-        byte flags = 0;
-        if (hoveringCanvas)
-            flags |= PresencePacket.FlagHoveringCanvas;
-        if (leftButtonDown)
-            flags |= PresencePacket.FlagLeftButton;
-        if (rightButtonDown)
-            flags |= PresencePacket.FlagRightButton;
-        if (middleButtonDown)
-            flags |= PresencePacket.FlagMiddleButton;
-        if (doubleClick)
-            flags |= PresencePacket.FlagDoubleClick;
-        if (addingOperator)
-            flags |= PresencePacket.FlagAddingOperator;
-        _localPresence.Flags = flags;
-        _localPresence.PressedKeys = pressedKeys;
-
-        // Decaying spin rather than a per-interval delta: presence arrives at 20 Hz, so the receiver can
-        // draw it directly and it fades out on its own when the peer stops scrolling.
-        _localPresence.WheelSpin = (sbyte)Math.Clamp((int)MathF.Round(wheelSpin), -127, 127);
     }
 
     private void SendLocalPresence()
@@ -2039,9 +1652,8 @@ internal sealed class CollabManager
             return;
 
         _nextPresenceSendTicks = now + CollabProtocol.PresenceSendIntervalMs;
-        _localPresence.ColorRgb = UserSettings.Config.CollabCursorColor;
 
-        var buffer = _presenceScratch;
+        var buffer = new byte[CollabProtocol.MaxPresencePayload];
         var size = _localPresence.Encode(buffer);
         if (size <= 0)
             return;
@@ -2108,6 +1720,17 @@ internal sealed class CollabManager
         {
             if (peer.IsTimedOut)
             {
+                // On a client the host link's death IS the session's death: a relay peer has no
+                // socket of its own to close, so the generic path below would only mark it and
+                // leave the session hanging Connected. End the session here instead.
+                if (State is SessionState.Connected or SessionState.Connecting && _transport?.HostLink == peer)
+                {
+                    Log.Info($"Collab: the host link ({peer}) timed out — ending the session");
+                    Leave();
+                    ErrorText = "Lost connection to the session host";
+                    return;
+                }
+
                 Log.Info($"Collab: peer {peer} timed out");
                 peer.SessionClosed = true;
                 peer.Close();
@@ -2123,7 +1746,7 @@ internal sealed class CollabManager
     {
         _discoveryScanner ??= new LanDiscoveryScanner();
         _discovered.Clear();
-        _discoveryScanner.Start(DefaultDiscoveryPort, UserSettings.Config.NetworkInterface);
+        _discoveryScanner.Start(DefaultDiscoveryPort);
     }
 
     public void StopDiscovery()
@@ -2159,7 +1782,7 @@ internal sealed class CollabManager
         if (Environment.TickCount64 - _lastHubScanTicks > 1000)
         {
             _lastHubScanTicks = Environment.TickCount64;
-            _hubScanner.Start(DefaultDiscoveryPort, UserSettings.Config.NetworkInterface); // re-probe; Start restarts its loop cleanly
+            _hubScanner.Start(DefaultDiscoveryPort); // re-probe; Start restarts its loop cleanly
         }
 
         RefreshDiscoveredFrom(_hubScanner);
@@ -2175,7 +1798,7 @@ internal sealed class CollabManager
 
     private void RefreshDiscoveredFrom(LanDiscoveryScanner scanner)
     {
-        var cutoff = DateTime.UtcNow - DiscoveryStaleAfter;
+        var cutoff = DateTime.UtcNow - TimeSpan.FromSeconds(3);
         while (scanner.Results.TryDequeue(out var result))
         {
             var announcement = result.Announcement;
@@ -2184,87 +1807,30 @@ internal sealed class CollabManager
                                   Name = CollabProtocol.GetString(announcement, "name", "TiXL session"),
                                   HostName = CollabProtocol.GetString(announcement, "host", ""),
                                   Address = result.Source.Address.ToString(),
-                                  Port = announcement["port"]?.Value<int>() ?? CollabProtocol.DefaultTcpPort,
-                                  PasswordProtected = announcement["pwd"]?.Value<bool>() ?? false,
+                                  Port = CollabProtocol.TryGetInt(announcement, "port", out var port)
+                                             ? port
+                                             : CollabProtocol.DefaultTcpPort,
+                                  PasswordProtected = CollabProtocol.TryGetBool(announcement, "pwd", out var passwordProtected)
+                                                          ? passwordProtected
+                                                          : false,
                                   Project = CollabProtocol.GetString(announcement, "project", ""),
                               };
 
-            if (IsDiscovered(session.Address, session.Port))
+            if (_discovered.Any(d => d.Address == session.Address && d.Port == session.Port))
                 continue;
 
             _discovered.Add(session);
             Log.Debug($"Collab: discovered session '{session.Name}' at {session.Address}:{session.Port}");
         }
 
-        for (var index = _discovered.Count - 1; index >= 0; index--)
-        {
-            if (_discovered[index].Seen < cutoff)
-                _discovered.RemoveAt(index);
-        }
+        _discovered.RemoveAll(d => d.Seen < cutoff);
     }
-
-    private bool IsDiscovered(string address, int port)
-    {
-        for (var index = 0; index < _discovered.Count; index++)
-        {
-            if (_discovered[index].Address == address && _discovered[index].Port == port)
-                return true;
-        }
-
-        return false;
-    }
-
-    private static readonly TimeSpan DiscoveryStaleAfter = TimeSpan.FromSeconds(3);
-
-    /** UI-thread scratch for encoding presence, so a 20 Hz send does not allocate. */
-    private readonly byte[] _presenceScratch = new byte[CollabProtocol.MaxPresencePayload];
 
     // ---------------------------------------------------------------------------------------
     // Helpers shared with transports
     // ---------------------------------------------------------------------------------------
 
     private void SendJson(CollabPeerConnection peer, object message) => _transport?.SendJson(peer, message);
-
-    /// <summary>Host side: sends one JSON message to every authenticated participant.</summary>
-    internal void BroadcastJson(object message)
-    {
-        if (State != SessionState.Hosting)
-            return;
-
-        foreach (var peer in Peers)
-        {
-            if (peer.IsAuthenticated)
-                SendJson(peer, message);
-        }
-    }
-
-    /// <summary>Host side: sends already-encoded JSON to every participant, for hot paths that skip the serializer.</summary>
-    internal void BroadcastEncodedJson(ReadOnlySpan<byte> payload)
-    {
-        if (State != SessionState.Hosting || _transport == null)
-            return;
-
-        var peers = Peers;
-        for (var index = 0; index < peers.Count; index++)
-        {
-            if (peers[index].IsAuthenticated)
-                _transport.SendToPeer(peers[index], CollabProtocol.FrameType.Json, payload);
-        }
-    }
-
-    /// <summary>Client side: sends already-encoded JSON to the host, for hot paths that skip the serializer.</summary>
-    internal void SendEncodedToHost(ReadOnlySpan<byte> payload)
-    {
-        if (State == SessionState.Connected && HostLink is { } host)
-            _transport?.SendToPeer(host, CollabProtocol.FrameType.Json, payload);
-    }
-
-    /// <summary>Client side: sends one JSON message to the host.</summary>
-    internal void SendToHost(object message)
-    {
-        if (State == SessionState.Connected && HostLink is { } host)
-            SendJson(host, message);
-    }
 
     private void BroadcastSystemMessage(object message, CollabPeerConnection? except = null) => _transport?.BroadcastJson(Peers, message, except);
 
@@ -2383,12 +1949,13 @@ internal sealed class CollabManager
         upload.Sender?.Dispose();
     }
 
-    internal static string? FindProjectFolder(string displayName)
+    private static string? FindProjectFolder(string displayName)
     {
         foreach (var p in SymbolPackage.AllPackages)
         {
             if (p is EditableSymbolProject project
-                && MatchesProjectName(project.DisplayName, displayName))
+                && (string.Equals(project.DisplayName, displayName, StringComparison.OrdinalIgnoreCase)
+                    || project.DisplayName.StartsWith(displayName + " (", StringComparison.OrdinalIgnoreCase)))
             {
                 return project.CsProjectFile.Directory;
             }
@@ -2446,10 +2013,6 @@ internal sealed class CollabManager
                     continue;
                 }
 
-                // The writer queue fills when the partner is slow; reading ahead would only pile the file into memory.
-                if (upload.Peer.QueuedBytes > UploadQueueLimitBytes)
-                    break;
-
                 JObject? message;
                 try
                 {
@@ -2484,8 +2047,6 @@ internal sealed class CollabManager
                 _projectUploads.Remove(peer);
         }
     }
-
-    private const int UploadQueueLimitBytes = 512 * 1024;
 
     private BoygroupDeployer.FileReceiver? _projectDownload;
     private string _projectDownloadFolder = "";
@@ -2563,6 +2124,18 @@ internal sealed class CollabManager
                 _projectDownload = null;
                 StatusText = $"Project '{name}' downloaded — restarting to load it...";
                 Log.Info($"Collab: project '{name}' downloaded; restarting to load it (session will rejoin automatically)");
+
+                // The restart must land IN the downloaded project. Without pinning it, the editor
+                // reopened whatever the startup project was (the host's other project), rejoined,
+                // saw the mismatch and downloaded again - an endless restart cycle.
+                if (_projectDownloadFolder.Length > 0)
+                {
+                    UserSettings.Config.StartupProjectFolder = _projectDownloadFolder;
+                    UserSettings.Config.LastOpenProjectFolder = _projectDownloadFolder;
+                    NetworkProjectRegistry.Register(NetworkProjectRegistry.CollabKind, _projectDownloadFolder);
+                    UserSettings.Save();
+                }
+
                 _restartAtTicks = Environment.TickCount64 + 1500;
                 break;
             }

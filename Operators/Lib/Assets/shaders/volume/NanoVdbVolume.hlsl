@@ -271,7 +271,7 @@ float3 NanoGradient(StructuredBuffer<uint> g, GridInfo info, float3 p)
     [loop]
     for (int axis = 0; axis < 3; axis++)
     {
-        float3 direction = float3(axis == 0, axis == 1, axis == 2);
+        float3 direction = float3(axis == 0 ? 1.0 : 0.0, axis == 1 ? 1.0 : 0.0, axis == 2 ? 1.0 : 0.0);
         gradient += direction * (NanoSample(g, info, p + direction * e, cache) - NanoSample(g, info, p - direction * e, cache));
     }
 

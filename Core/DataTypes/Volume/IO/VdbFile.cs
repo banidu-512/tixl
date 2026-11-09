@@ -545,6 +545,7 @@ public static class VdbFile
 
                 if (!IsSupportedType(gridType))
                 {
+                    volume.SkippedGrids.Add($"{StripSuffix(name)} ({gridType})");
                     _r.BaseStream.Seek(endPos, SeekOrigin.Begin);
                     continue;
                 }
@@ -558,6 +559,7 @@ public static class VdbFile
                 catch (NotSupportedException)
                 {
                     // Unsupported transform or feature: skip just this grid, keep the rest.
+                    volume.SkippedGrids.Add($"{StripSuffix(name)} ({gridType})");
                     grid = null;
                 }
 
@@ -1242,7 +1244,8 @@ public static class VdbFile
                 }
 
                 var payload = ReadBytesChecked(size);
-                var decompressed = Blosc.Decompress(payload);
+                // The block's own size is the real bound; the frame header is untrusted.
+                var decompressed = Blosc.Decompress(payload, data.Length * valueSize);
                 UnpackValues(decompressed, data, isHalf);
             }
             else if ((compression & CompressZip) != 0)
@@ -1327,7 +1330,7 @@ public static class VdbFile
         private byte[] ReadBytesChecked(long size)
         {
             var remaining = _r.BaseStream.Length - _r.BaseStream.Position;
-            if (size < 0 || size > remaining)
+            if (size < 0 || size > remaining || size > int.MaxValue)
                 throw new InvalidDataException($"VDB block of {size} bytes exceeds the {remaining} bytes left in the file");
 
             return _r.ReadBytes((int)size);

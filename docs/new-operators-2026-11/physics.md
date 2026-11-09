@@ -8,9 +8,10 @@ buffer.
 
 That split is why `RigidBody` and `RigidJoint` have no simulation state of their own: a body's id is
 fixed for the lifetime of the operator instance, which is how the world recognises the same body
-across evaluations and only rebuilds what actually changed. Kinematic islands (bodies connected by
-joints) are merged into one rigid body for the solver; a static body cannot be a joint anchor, so use
-a kinematic body as the fixed point instead.
+across evaluations and only rebuilds what actually changed. Joints become solver constraints between
+two bodies; a static body cannot be a joint anchor, so use a kinematic body as the fixed point
+instead. A body is rebuilt only when its shape, kind or mass changes, and a joint whose settings
+change is removed and re-added, so a constraint is never duplicated.
 
 ## PhysicsWorld
 
@@ -28,6 +29,11 @@ is the simulated seconds since the last rebuild, useful for syncing or debugging
 - `Multithreaded` and `Deterministic` control the solver's threading/determinism.
 - `ContactStiffness` tunes contact softness.
 - `Reset` rebuilds the simulation state; `Paused` freezes stepping while keeping the graph running.
+
+*Robustness:* a non-finite input from an upstream graph (NaN or Infinity) cannot poison the
+simulation — gravity keeps its last valid value, and `FixedRate`, `TimeScale` and `ContactStiffness`
+fall back to their defaults before being clamped. An exception inside the world is logged once and
+resets the outputs instead of escaping into the evaluator.
 
 **Outputs:** `OutBuffer` (per-body pose data for the mesh renderers), `BodyCount`, `SimTime`.
 
@@ -99,3 +105,20 @@ as the fixed point.
 
 ![Rope bridge example](shots/example-PhysicsRopeBridgeExample.png)
 *The constraint chain holding the sagging bridge.*
+
+## Examples
+
+All of them build the world, feed it bodies and draw the resulting point buffer with
+`DrawMeshAtPoints`; together they cover every collider shape and joint type.
+
+| Example | Shows |
+| --- | --- |
+| `PhysicsBouncingBallsExample` | Five spheres with bounciness from 0 to 1 — restitution |
+| `PhysicsDominoRunExample` | Fifteen boxes falling in a row — stacking and contact stability |
+| `PhysicsNewtonsCradleExample` | Five spheres hung on ball sockets — constrained motion |
+| `PhysicsParticlesExample` | 77 spheres raining onto a floor — throughput |
+| `PhysicsRopeBridgeExample` | A ten-link bridge held by ball sockets — chains |
+| `PhysicsSeesawExample` | A plank on a hinge over a kinematic fulcrum — hinges |
+| `MeshPhysicsExample` | Bodies driven along a path by distance servos |
+| `PhysicsCapsulesAndCylindersExample` | Capsules and cylinders — the two shapes the others skip |
+| `PhysicsWeldedPairsExample` | Balls welded into pairs — weld joints as compound bodies |

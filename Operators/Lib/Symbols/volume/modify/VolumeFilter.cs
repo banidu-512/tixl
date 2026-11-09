@@ -69,8 +69,8 @@ internal sealed class VolumeFilter : Instance<VolumeFilter>
         }
     }
 
-    private (VdbVolume?, T3.Core.DataTypes.Volume.Tools.VolumeFilter.FilterType, float, int, float) _last = (null, (T3.Core.DataTypes.Volume.Tools.VolumeFilter.FilterType)(-1), -1, -1, 0);
-    private string? _lastError;
+    private (VdbVolume, T3.Core.DataTypes.Volume.Tools.VolumeFilter.FilterType, float, int, float) _last = (null, (T3.Core.DataTypes.Volume.Tools.VolumeFilter.FilterType)(-1), -1, -1, 0);
+    private string _lastError;
 
     [Input(Guid = "0241402e-4fae-5ca3-98be-eb4bcd4fc339")]
     public readonly InputSlot<VdbVolume> Volume = new();

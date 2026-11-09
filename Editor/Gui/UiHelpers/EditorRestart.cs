@@ -1,6 +1,6 @@
 #nullable enable
 using System.Diagnostics;
-using System.IO;
+using T3.Editor.App.Startup;
 using T3.Editor.SystemUi;
 
 namespace T3.Editor.Gui.UiHelpers;
@@ -25,6 +25,7 @@ internal static class EditorRestart
             return false;
         }
 
+        var wasSupervised = CrashWatchdog.IsChildProcess;
         try
         {
             // Collect the carried-over flags first (drop stale wait flags from earlier restarts,
@@ -94,10 +95,12 @@ internal static class EditorRestart
                     startInfo.ArgumentList.Add(arg);
             }
 
+            CrashWatchdog.SetSupervised(false);
             Process.Start(startInfo);
         }
         catch (Exception e)
         {
+            CrashWatchdog.SetSupervised(wasSupervised);
             Log.Warning($"Failed to start a new editor instance: {e.Message}");
             return false;
         }

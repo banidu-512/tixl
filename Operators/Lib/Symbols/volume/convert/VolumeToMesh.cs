@@ -58,8 +58,8 @@ internal sealed class VolumeToMesh : Instance<VolumeToMesh>
         }
     }
 
-    private (VdbVolume?, float) _last = (null, float.NaN);
-    private string? _lastError;
+    private (VdbVolume, float) _last = (null, float.NaN);
+    private string _lastError;
 
     [Input(Guid = "19c6ca3f-d7ff-507f-8d28-2490f0edb66e")]
     public readonly InputSlot<VdbVolume> Volume = new();

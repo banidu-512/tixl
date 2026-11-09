@@ -14,6 +14,7 @@ using T3.Core.Resource.ShaderCompiling;
 using T3.Core.SystemUi;
 using T3.SystemUi;
 using T3.Core.Settings;
+using T3.Core.Utils;
 using T3.IoServices.Midi;
 using T3.Editor.App;
 using T3.Editor.Compilation;
@@ -120,6 +121,15 @@ internal static class Program
 
     private static void Main(string[] args)
     {
+        // Isolated Assimp worker: this process was started by [AssimpImport]/[AssimpExport] and must
+        // not boot the editor. Must run before settings, logging, graphics or the crash watchdog.
+        if (IsolatedAssimpHost.TryRun(args, out var hostExitCode))
+        {
+            Console.Out.Flush();
+            Console.Error.Flush();
+            Environment.Exit(hostExitCode);
+        }
+
         // Must run before any code that may trigger assembly resolution.
         T3.Core.Diagnostics.AssemblyLoadDiagnostics.Install();
 
@@ -132,6 +142,17 @@ internal static class Program
         // Must run before the settings files are read — a restarted instance races the old
         // instance's save-on-quit writes otherwise.
         WaitForPredecessorArg(args);
+
+        // Crash-restart supervision: a --watchdog launch is the supervisor itself — it runs the
+        // restart loop (spawning the real editor as a child) and never gets here.
+        if (App.Startup.CrashWatchdog.TryRunWatchdogMode(args))
+            return;
+
+        // Minimal early settings read (no save-on-quit registration): when crash restart is
+        // enabled, hand over to the supervisor before any splash screen or window appears.
+        _ = new UserSettings(saveOnQuit: false);
+        if (App.Startup.CrashWatchdog.TryHandOffToWatchdog(args))
+            return;
 
         // Before anything starts dotnet: operator compilation and the SDK check call it by name.
         AddDotnetToPathOnMac();
@@ -252,6 +273,11 @@ internal static class Program
         {
             UserSettings.Config.ProjectDirectories.Add(FileLocations.DefaultProjectFolder);
         }
+
+        // Keep the login autostart entry pointing at this build while it is enabled — the path
+        // moves with every checkout/update otherwise.
+        if (UserSettings.Config.AutostartWithSystem && !App.Startup.OsAutostart.TrySetEnabled(true, out var autostartError))
+            Log.Warning($"Could not update the autostart entry: {autostartError}");
 
         // Run after UserSettings is initialized — the crash-recovery dialog needs
         // ProjectDirectories to locate per-project backups under .temp/Backup/.
@@ -406,13 +432,10 @@ internal static class Program
     /// <summary>Set via <c>--autostart</c>: this launch came from the OS login entry, not a manual start.</summary>
     internal static bool StartedByOsAutostart { get; private set; }
 
-    /// <summary>Set via <c>--project &lt;folder&gt;</c>: open this project after startup (used by a boygroup
-    /// client restarting into the project the master just deployed, so the deployed layout applies).</summary>
-    internal static string? ProjectFolderArgument { get; private set; }
-
     /// <summary>
     /// Honors <c>--window=&lt;w&gt;x&lt;h&gt;</c> (or <c>--window &lt;w&gt;x&lt;h&gt;</c>) for a predictable
-    /// non-maximized window, <c>--no-splash</c> and <c>--no-reopen</c>.
+    /// non-maximized window, <c>--no-splash</c>, <c>--no-reopen</c> and <c>--autostart</c>.
+    /// </summary>
     /// </summary>
     private static void ApplyWindowArgs(string[] args)
     {
@@ -448,6 +471,12 @@ internal static class Program
             if (arg.Equals("--no-reopen", StringComparison.OrdinalIgnoreCase))
             {
                 SkipProjectReopen = true;
+                continue;
+            }
+
+            if (arg.Equals(App.Startup.OsAutostart.ArgMarker, StringComparison.OrdinalIgnoreCase))
+            {
+                StartedByOsAutostart = true;
                 continue;
             }
 

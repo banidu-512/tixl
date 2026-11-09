@@ -29,6 +29,12 @@ internal sealed class VolumeToNanoVdb : Instance<VolumeToNanoVdb>
     [Output(Guid = "f6a0d0bb-7bca-5e16-a0e4-6d13f3c1ee75")]
     public readonly Slot<float> VoxelSize = new();
 
+    [Output(Guid = "39bed154-5921-41a7-a84e-463796c20f9c")]
+    public readonly Slot<Vector3> WorldMin = new();
+
+    [Output(Guid = "2a0082da-462a-455e-af7d-e500d79f2f2a")]
+    public readonly Slot<Vector3> WorldMax = new();
+
 
     public VolumeToNanoVdb()
     {
@@ -38,14 +44,18 @@ internal sealed class VolumeToNanoVdb : Instance<VolumeToNanoVdb>
         TreeOffsets.UpdateAction = Update;
         VoxelCount.UpdateAction = Update;
         VoxelSize.UpdateAction = Update;
+        WorldMin.UpdateAction = Update;
+        WorldMax.UpdateAction = Update;
     }
 
     private void Update(EvaluationContext context)
     {
         var volume = Volume.GetValue(context);
         var grid = volume?.GetFloatGrid();
-        if (grid == null)
+        if (grid == null || grid.ActiveVoxelCount == 0)
         {
+            // An empty grid flattens with an inverted bounding box, which the raymarcher's bounds
+            // intersection turns into an infinite march range - a GPU hang. Clear instead.
             ClearOutputs();
             _lastVolume = null;
             return;
@@ -84,6 +94,12 @@ internal sealed class VolumeToNanoVdb : Instance<VolumeToNanoVdb>
             TreeOffsets.Value = new Vector4(leafOffset, lowerOffset, upperOffset, rootOffset);
             VoxelCount.Value = summary.VoxelCount;
             VoxelSize.Value = grid.Transform.VoxelSize;
+
+            // The bounds a field needs to reject samples outside the grid; taken from the same
+            // header the buffer carries, so they cannot drift from the data.
+            var info = nanoBuffer.ReadInfo();
+            WorldMin.Value = info.WorldMin;
+            WorldMax.Value = info.WorldMax;
         }
         catch (Exception e)
         {
@@ -99,6 +115,8 @@ internal sealed class VolumeToNanoVdb : Instance<VolumeToNanoVdb>
         TreeOffsets.Value = Vector4.Zero;
         VoxelCount.Value = 0;
         VoxelSize.Value = 0;
+        WorldMin.Value = Vector3.Zero;
+        WorldMax.Value = Vector3.Zero;
     }
 
     protected override void Dispose(bool disposing)
@@ -109,7 +127,7 @@ internal sealed class VolumeToNanoVdb : Instance<VolumeToNanoVdb>
         base.Dispose(disposing);
     }
 
-    private VdbVolume? _lastVolume;
+    private VdbVolume _lastVolume;
     private readonly BufferWithViews _bufferWithViews = new();
 
     [Input(Guid = "8a677502-fd4d-5284-ab06-fd659490a4fa")]

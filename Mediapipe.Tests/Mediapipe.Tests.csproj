@@ -8,6 +8,7 @@
     <IsTestProject>true</IsTestProject>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <Deterministic>true</Deterministic>
+    <RootNamespace>Mediapipe.Tests</RootNamespace>
     <NoWarn>$(NoWarn);NU1701</NoWarn>
   </PropertyGroup>
 
@@ -22,6 +23,9 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Operators\Mediapipe\Mediapipe.csproj" />
+    <!-- The operator package references Logging with Private=false (the editor supplies it at run time),
+         so the test host has to bring it along for the code paths that log. -->
+    <ProjectReference Include="..\Logging\Logging.csproj" />
   </ItemGroup>
 
   <!-- Ship the same mediapipe_c native the editor carries (Dependencies root on Windows, the platform
@@ -49,5 +53,14 @@
     <MakeDir Directories="$(OutputPath)" />
     <Exec Command="clang -arch x86_64 -arch arm64 -shared -o &quot;$(OutputPath)libmediapipe_opencl_stub.dylib&quot; &quot;$(MSBuildThisFileDirectory)../Dependencies/osx/mediapipe-opencl-stub.c&quot;" />
   </Target>
+
+
+  <!-- Temporary spike: readback measurement needs the graphics stack. -->
+  <ItemGroup>
+    <ProjectReference Include="..\Core\Core.csproj" />
+    <ProjectReference Include="..\Graphics\Graphics.csproj" />
+    <ProjectReference Include="..\Graphics.Compat\Graphics.Compat.csproj" />
+    <ProjectReference Include="..\Graphics.D3D11\Graphics.D3D11.csproj" />
+  </ItemGroup>
 
 </Project>

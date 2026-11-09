@@ -420,6 +420,34 @@ public class PhysicsSimulationTests
     }
 
     [Fact]
+    public void WeldJointHoldsAnOffsetPairTogetherUnderOpposingVelocities()
+    {
+        using var harness = new Harness();
+        harness.Settings.Gravity = Vector3.Zero;
+        var left = harness.AddBody(Sphere(new Vector3(0, 0, 0), velocity: new Vector3(3, 0, 0)));
+        var right = harness.AddBody(Sphere(new Vector3(2, 0, 0), velocity: new Vector3(-3, 0, 0)));
+        harness.AddJoint(new PhysicsJoint
+                             {
+                                 Id = Guid.NewGuid(),
+                                 BodyA = left,
+                                 BodyB = right,
+                                 Type = PhysicsJointType.Weld,
+                                 LocalOffsetB = new Vector3(2, 0, 0),
+                                 Frequency = 60f,
+                             });
+
+        harness.Step(0.5f);
+
+        harness.Sim.TryGetBodyPosition(left.Id, out var leftPosition);
+        harness.Sim.TryGetBodyPosition(right.Id, out var rightPosition);
+
+        // Free bodies closing at 6 m/s would have met in the middle; the weld is what keeps the
+        // offset, and LocalOffsetB is the second body's origin in the first one's frame.
+        Assert.InRange(rightPosition.X - leftPosition.X, 1.95f, 2.05f);
+        Assert.InRange(Math.Abs(rightPosition.Y - leftPosition.Y), 0f, 0.01f);
+    }
+
+    [Fact]
     public void RemovingAnUnrelatedBodyKeepsTheJointOnce()
     {
         using var harness = new Harness();
@@ -692,6 +720,37 @@ public class PhysicsSimulationTests
         {
             Assert.True(largestLead < 0.0001f);
         }
+    }
+
+    [Fact]
+    public void NonFiniteFixedRateFallsBackToTheDefault()
+    {
+        using var harness = new Harness();
+        var sphere = harness.AddBody(Sphere(new Vector3(0, 100, 0)));
+        harness.Settings.FixedRate = float.NaN;
+        harness.Step(1f);
+
+        // A NaN rate would compare as changed every frame and build a NaN step size; the fallback
+        // keeps the world stepping at its default rate instead of rebuilding forever.
+        Assert.InRange(harness.Sim.SimTime, 0.95f, 1.02f);
+        harness.Sim.TryGetBodyPosition(sphere.Id, out var position);
+        Assert.True(position.Y < 99f);
+    }
+
+    [Fact]
+    public void NonFiniteGravityKeepsTheLastValidValue()
+    {
+        using var harness = new Harness();
+        var sphere = harness.AddBody(Sphere(new Vector3(0, 100, 0)));
+        harness.Step(0.1f);
+
+        // NaN would propagate through the integrator into every body and never recover.
+        harness.Settings.Gravity = new Vector3(float.NaN, float.NaN, float.NaN);
+        harness.Step(1f);
+
+        harness.Sim.TryGetBodyPosition(sphere.Id, out var position);
+        Assert.False(float.IsNaN(position.Y), "a NaN gravity must not poison body positions");
+        Assert.InRange(position.Y, 93.5f, 95f);
     }
 
     private static PhysicsBody Box(Vector3 position, Vector3 size, PhysicsBodyKind kind = PhysicsBodyKind.Dynamic)

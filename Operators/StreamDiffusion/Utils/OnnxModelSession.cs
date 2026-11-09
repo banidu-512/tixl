@@ -21,6 +21,12 @@ internal enum ExecutionProvider
 /// </summary>
 internal sealed class OnnxModelSession : IDisposable
 {
+    /// <summary>
+    /// TensorRT optimization profile in ORT's <c>name:dim0xdim1,...</c> syntax. Without explicit profiles the
+    /// provider only covers the shape the graph was traced with, so every other batch size rebuilds a large engine.
+    /// </summary>
+    internal sealed record TensorRtProfile(string MinShapes, string OptShapes, string MaxShapes);
+
     public InferenceSession Session { get; }
     public string Name { get; }
     public string ProviderLabel { get; }
@@ -30,6 +36,7 @@ internal sealed class OnnxModelSession : IDisposable
     private readonly RunOptions _runOptions = new();
 
     private static readonly object PreloadLock = new();
+    private static readonly object TensorRtCreationLock = new();
     private static bool _preloadAttempted;
     private static readonly List<IntPtr> PinnedCudaModules = new();
 
@@ -54,7 +61,7 @@ internal sealed class OnnxModelSession : IDisposable
     }
 
     public static OnnxModelSession? Create(string modelPath, int deviceId, string name,
-        ExecutionProvider provider = ExecutionProvider.Cuda)
+        ExecutionProvider provider = ExecutionProvider.Cuda, TensorRtProfile? tensorRtProfile = null)
     {
         if (!File.Exists(modelPath))
         {
@@ -75,15 +82,28 @@ internal sealed class OnnxModelSession : IDisposable
             _ => new[] { ExecutionProvider.Cpu }
         };
 
-        PreloadCudaRuntimes(modelPath);
+        // CPU has no provider DLL to satisfy; loading the CUDA runtime for it only costs memory and startup time
+        if (provider != ExecutionProvider.Cpu)
+            PreloadCudaRuntimes(modelPath);
 
         // Windows has a CUDA and a DirectML ONNX Runtime native; the first request of the process binds one
         var wantedBuild = provider == ExecutionProvider.DirectMl ? OnnxNativeSelector.Build.DirectMl : OnnxNativeSelector.Build.Gpu;
         var build = OnnxNativeSelector.Select(typeof(InferenceSession).Assembly, wantedBuild);
         if (OperatingSystem.IsWindows() && provider is ExecutionProvider.DirectMl or ExecutionProvider.Cuda or ExecutionProvider.TensorRt && build != wantedBuild)
         {
-            Log.Warning($"[StreamDiffusion] {name}: {OnnxNativeSelector.Describe(wantedBuild)} needs its own ONNX Runtime build, but this session already loaded " +
-                        $"the {OnnxNativeSelector.Describe(build)} one - restart TiXL to switch.");
+            // A runtime that never ships a DirectML native (the last DirectML build is 1.24.4) cannot be switched to by restarting,
+            // so say that instead of suggesting a restart that would never help.
+            if (wantedBuild == OnnxNativeSelector.Build.DirectMl
+                && !OnnxNativeSelector.IsShipped(typeof(InferenceSession).Assembly, OnnxNativeSelector.Build.DirectMl))
+            {
+                Log.Warning($"[StreamDiffusion] {name}: this ONNX Runtime ships no DirectML provider (DirectML builds ended " +
+                            $"after 1.24); continuing on the {OnnxNativeSelector.Describe(build)} build with CUDA/CPU.");
+            }
+            else
+            {
+                Log.Warning($"[StreamDiffusion] {name}: {OnnxNativeSelector.Describe(wantedBuild)} needs its own ONNX Runtime build, but this session already loaded " +
+                            $"the {OnnxNativeSelector.Describe(build)} one - restart TiXL to switch.");
+            }
         }
 
         foreach (var candidate in chain)
@@ -91,17 +111,48 @@ internal sealed class OnnxModelSession : IDisposable
             if (!IsProviderAvailableOnThisPlatform(candidate, build))
                 continue;
 
-            if (candidate is ExecutionProvider.Cuda or ExecutionProvider.TensorRt && OperatingSystem.IsLinux() && !LinuxCudaRuntime.TryPrepare(out var cudaMissing))
+            var cudaMissing = string.Empty;
+            if (candidate is ExecutionProvider.Cuda or ExecutionProvider.TensorRt
+                && ((OperatingSystem.IsLinux() && !LinuxCudaRuntime.TryPrepare(out cudaMissing))
+                    || (OperatingSystem.IsWindows() && !WindowsCudaRuntime.TryPrepare(out cudaMissing))))
             {
                 Log.Info($"[StreamDiffusion] {name}: {EpLabel(candidate)} unavailable ({cudaMissing}), trying next provider");
                 continue;
             }
 
+            // TensorRT's provider DLL imports nvinfer_10.dll by name; load the runtime before asking ORT for the provider
+            if (candidate == ExecutionProvider.TensorRt)
+            {
+                var tensorRtReady = OperatingSystem.IsLinux()
+                                        ? LinuxCudaRuntime.TryPrepareTensorRt(out var trtMissing, out var trtDirectory)
+                                        : WindowsCudaRuntime.TryPrepareTensorRt(out trtMissing, out trtDirectory);
+                if (!tensorRtReady)
+                {
+                    Log.Info($"[StreamDiffusion] {name}: TensorRT unavailable ({trtMissing}), trying next provider");
+                    continue;
+                }
+
+                Log.Info($"[StreamDiffusion] {name}: TensorRT runtime at {trtDirectory}");
+            }
+
             SessionOptions? options = null;
             try
             {
-                options = CreateSessionOptions(candidate, deviceId, modelPath);
-                var session = new InferenceSession(modelPath, options);
+                options = CreateSessionOptions(candidate, deviceId, modelPath, tensorRtProfile);
+
+                // TensorRT writes engine/timing cache files while the session is created. Two sessions built at the
+                // same time can target the same cache, so creation is serialized for that provider only.
+                InferenceSession session;
+                if (candidate == ExecutionProvider.TensorRt)
+                {
+                    lock (TensorRtCreationLock)
+                        session = new InferenceSession(modelPath, options);
+                }
+                else
+                {
+                    session = new InferenceSession(modelPath, options);
+                }
+
                 Log.Info($"[StreamDiffusion] {name}: ready on {EpLabel(candidate)}");
                 return new OnnxModelSession(session, name, EpLabel(candidate));
             }
@@ -126,18 +177,23 @@ internal sealed class OnnxModelSession : IDisposable
     /// while CPU-fallback sessions get the full core count — the previous fixed 2 threads
     /// made a CPU-only UNet 4-8x slower than necessary.
     /// </summary>
-    private static SessionOptions CreateSessionOptions(ExecutionProvider provider, int deviceId, string modelPath)
+    private static SessionOptions CreateSessionOptions(ExecutionProvider provider, int deviceId, string modelPath,
+                                                       TensorRtProfile? tensorRtProfile)
     {
         var options = new SessionOptions
         {
             // ORT 1.24 fails to initialize fp16 transformer graphs (SimplifiedLayerNormFusion) on the CPU at ENABLE_ALL; EXTENDED costs nothing measurable
             GraphOptimizationLevel = provider == ExecutionProvider.Cpu ? GraphOptimizationLevel.ORT_ENABLE_EXTENDED : GraphOptimizationLevel.ORT_ENABLE_ALL,
-            IntraOpNumThreads = provider == ExecutionProvider.Cpu ? Math.Max(4, Environment.ProcessorCount) : 2,
+            // CPU inference runs on a worker, but leave one core for the render thread instead of saturating the machine
+            IntraOpNumThreads = provider == ExecutionProvider.Cpu ? Math.Max(2, Environment.ProcessorCount - 1) : 2,
         };
 
         switch (provider)
         {
             case ExecutionProvider.DirectMl:
+                // Required by the DirectML provider: it neither plans memory ahead nor runs nodes in parallel
+                options.EnableMemoryPattern = false;
+                options.ExecutionMode = ExecutionMode.ORT_SEQUENTIAL;
                 options.AppendExecutionProvider_DML(deviceId);
                 break;
 
@@ -156,15 +212,31 @@ internal sealed class OnnxModelSession : IDisposable
                 Directory.CreateDirectory(trtCache);
                 using (var trtOptions = new OrtTensorRTProviderOptions())
                 {
-                    trtOptions.UpdateOptions(new Dictionary<string, string>
+                    // The builder needs transient workspace on top of the resident sessions. The old 2 GiB cap
+                    // made the VAE decoder's engine build fail on a 16 GB card even with 15 GB free (the builder
+                    // reports the cap as OutOfMemory), which then wedged the stream. 4 GiB builds it; override
+                    // with TIXL_SD_TRT_WORKSPACE_MB on smaller cards.
+                    var workspaceMb = int.TryParse(Environment.GetEnvironmentVariable("TIXL_SD_TRT_WORKSPACE_MB"), out var configured) && configured > 0
+                                          ? configured
+                                          : 4096;
+                    var trtSettings = new Dictionary<string, string>
                     {
                         ["device_id"] = deviceId.ToString(),
-                        ["trt_max_workspace_size"] = "2147483648",
+                        ["trt_max_workspace_size"] = (workspaceMb * 1024L * 1024L).ToString(),
                         ["trt_engine_cache_enable"] = "1",
                         ["trt_engine_cache_path"] = trtCache,
                         ["trt_timing_cache_enable"] = "1",
                         ["trt_timing_cache_path"] = trtCache
-                    });
+                    };
+
+                    if (tensorRtProfile != null)
+                    {
+                        trtSettings["trt_profile_min_shapes"] = tensorRtProfile.MinShapes;
+                        trtSettings["trt_profile_opt_shapes"] = tensorRtProfile.OptShapes;
+                        trtSettings["trt_profile_max_shapes"] = tensorRtProfile.MaxShapes;
+                    }
+
+                    trtOptions.UpdateOptions(trtSettings);
                     options.AppendExecutionProvider_Tensorrt(trtOptions);
                 }
                 break;

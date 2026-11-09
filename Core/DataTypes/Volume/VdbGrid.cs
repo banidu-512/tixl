@@ -227,6 +227,13 @@ public sealed class VdbVolume
 {
     public List<IVdbGrid> Grids { get; } = new();
 
+    /// <summary>
+    /// Grids the file contained but this reader cannot represent, as "name (gridType)". Point caches
+    /// are the common case; without this a load that found only point data would look like an empty
+    /// file rather than an unsupported one.
+    /// </summary>
+    public List<string> SkippedGrids { get; } = new();
+
     public VdbVolume()
     {
     }

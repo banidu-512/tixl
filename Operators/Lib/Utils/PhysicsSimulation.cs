@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Numerics;
+using System.Runtime.CompilerServices;
 using BepuPhysics;
 using BepuPhysics.Collidables;
 using BepuPhysics.CollisionDetection;
@@ -75,17 +76,21 @@ internal sealed class PhysicsSimulation : IDisposable
         _frameBodies = bodies;
         _frameJoints = joints;
 
-        var contactStiffness = Math.Clamp(settings.ContactStiffness, 5f, 120f);
-        var rate = Math.Clamp(settings.FixedRate, 10f, 240f);
+        var contactStiffness = Math.Clamp(FiniteOr(settings.ContactStiffness, 30f), 5f, 120f);
+        var rate = Math.Clamp(FiniteOr(settings.FixedRate, 60f), 10f, 240f);
         var substeps = Math.Clamp(settings.Substeps, 1, 8);
         var iterations = Math.Clamp(settings.SolverIterations, 1, 32);
-        var timeScale = Math.Clamp(settings.TimeScale, 0f, 4f);
+        var timeScale = Math.Clamp(FiniteOr(settings.TimeScale, 1f), 0f, 4f);
         var resetTriggered = settings.Reset && !_wasResetPressed;
         _wasResetPressed = settings.Reset;
 
         // Gravity and stiffness are read through the callback's settings reference, so they can
         // change without rebuilding; the solver layout below is baked into the simulation.
-        _settings.Gravity = settings.Gravity;
+        // A NaN from an upstream graph would otherwise poison every body for the rest of the
+        // session, and a NaN rate would read as "changed" every frame and rebuild the world.
+        if (IsFinite(settings.Gravity))
+            _settings.Gravity = settings.Gravity;
+
         _settings.ContactFrequency = contactStiffness;
 
         var configChanged = rate != _fixedRate
@@ -692,6 +697,11 @@ internal sealed class PhysicsSimulation : IDisposable
                              Quaternion.Normalize(Quaternion.Slerp(from.Orientation, to.Orientation, t)));
     }
 
+    /// <summary>Replaces a NaN or infinite input with the operator's default; graphs can produce both easily.</summary>
+    private static float FiniteOr(float value, float fallback) => float.IsFinite(value) ? value : fallback;
+
+    private static bool IsFinite(in Vector3 value) => float.IsFinite(value.X) && float.IsFinite(value.Y) && float.IsFinite(value.Z);
+
     private static Quaternion NormalizeOrientation(Quaternion orientation)
     {
         var lengthSquared = orientation.LengthSquared();
@@ -741,14 +751,10 @@ internal sealed class PhysicsSimulation : IDisposable
             return descriptor.Id;
 
         // Defensive: a body built outside an operator has no id. Key it by reference so it
-        // survives frames instead of being recreated every evaluation.
-        if (!_implicitIds.TryGetValue(descriptor, out var id))
-        {
-            id = Guid.NewGuid();
-            _implicitIds[descriptor] = id;
-        }
-
-        return id;
+        // survives frames instead of being recreated every evaluation. The table holds the key
+        // weakly, so a descriptor that leaves the graph can be collected instead of pinning
+        // entry forever - a plain dictionary keyed by reference would leak one entry per body.
+        return _implicitIds.GetValue(descriptor, static _ => new IdBox { Id = Guid.NewGuid() }).Id;
     }
 
     private Guid ResolveId(PhysicsJoint descriptor)
@@ -756,13 +762,12 @@ internal sealed class PhysicsSimulation : IDisposable
         if (descriptor.Id != Guid.Empty)
             return descriptor.Id;
 
-        if (!_implicitJointIds.TryGetValue(descriptor, out var id))
-        {
-            id = Guid.NewGuid();
-            _implicitJointIds[descriptor] = id;
-        }
+        return _implicitJointIds.GetValue(descriptor, static _ => new IdBox { Id = Guid.NewGuid() }).Id;
+    }
 
-        return id;
+    private sealed class IdBox
+    {
+        public Guid Id;
     }
 
     private readonly struct ShapeKey : IEquatable<ShapeKey>
@@ -1047,8 +1052,8 @@ internal sealed class PhysicsSimulation : IDisposable
     private readonly PhysicsMaterials _materials = new();
     private readonly Dictionary<Guid, BodyEntry> _bodies = new();
     private readonly Dictionary<Guid, JointEntry> _joints = new();
-    private readonly Dictionary<PhysicsBody, Guid> _implicitIds = new(ReferenceEqualityComparer.Instance);
-    private readonly Dictionary<PhysicsJoint, Guid> _implicitJointIds = new(ReferenceEqualityComparer.Instance);
+    private readonly ConditionalWeakTable<PhysicsBody, IdBox> _implicitIds = new();
+    private readonly ConditionalWeakTable<PhysicsJoint, IdBox> _implicitJointIds = new();
     private readonly List<BodyEntry> _renderOrder = new();
     private readonly HashSet<Guid> _seenBodies = new();
     private readonly HashSet<Guid> _seenJoints = new();

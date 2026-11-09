@@ -22,6 +22,8 @@ using T3.Editor.UiModel.Helpers;
 using T3.Editor.UiModel.ProjectHandling;
 using T3.IoServices.Midi;
 
+using T3.Editor.Gui.Windows;
+
 namespace T3.Editor.Gui;
 
 public static partial class T3Ui
@@ -33,6 +35,7 @@ public static partial class T3Ui
         Playback.Current = DefaultTimelinePlayback;
         ThemeHandling.Initialize();
         OperatorEditCommand.RegisterAsOperatorUndoHandler();
+        CameraSettingsDialog.RegisterAsOpenHandler();
     }
 
     internal static readonly Playback DefaultTimelinePlayback = new();

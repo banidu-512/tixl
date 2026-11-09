@@ -13,6 +13,7 @@ using T3.Graphics.Compat;
 using T3.Core.Utils;
 using T3.Core.Operator.Attributes;
 using t3.streamdiffusion.Onnx;
+using t3.streamdiffusion.V2;
 
 namespace Lib.io.ai;
 
@@ -26,6 +27,14 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
 {
     // Expose pipeline readiness for tests
     internal bool IsPipelineReady() => _pipeline != null;
+
+    private enum InputPixelFormat
+    {
+        Rgba8,
+        Bgra8,
+        Rgba16F,
+        Rgba32F,
+    }
 
     private sealed record GenerationRequest(
         string Prompt,
@@ -42,14 +51,19 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
         byte[]? InputData,
         int InputWidth,
         int InputHeight,
-        bool IsBgra);
+        InputPixelFormat InputFormat);
 
+    // Generation tags stale results from a replaced worker so they cannot be applied to the new model
     private sealed record GenerationResult(
         byte[]? Data,
         int Width,
         int Height,
         float Time,
-        string? Error);
+        string? Error,
+        int Generation = 0);
+
+    // Immutable so the render thread can read the failure state while a worker updates it
+    private sealed record FailureKey(string? Path, int Device, int Type, int Provider);
 
     #region Outputs
 
@@ -129,6 +143,10 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
     [Input(Guid = "A4B5C6D7-E8F9-0123-4567-890123456789")]
     public readonly InputSlot<float> StreamStrength = new(0.6f);
 
+    /// <summary>V2 only: decode one latent instead of a three-latent window. Faster, with less temporal smoothing.</summary>
+    [Input(Guid = "B7C8D9E0-F1A2-3456-7890-123456789012")]
+    public readonly InputSlot<bool> FastDecode = new();
+
     #endregion
 
     #region Constants
@@ -138,12 +156,12 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
     private const int ReadbackTimeoutFrames = 60;
 
     private static readonly string[] ModeNames = { "Text to Image", "Image to Image", "Stream" };
-    private static readonly string[] ModelTypeNames = { "SD 1.5", "SD Turbo", "SDXL Turbo", "FLUX.2 Klein 4B", "SDXL 1.0" };
+    private static readonly string[] ModelTypeNames = { "SD 1.5", "SD Turbo", "SDXL Turbo", "FLUX.2 Klein 4B", "SDXL 1.0", "StreamDiffusion V2" };
     private static readonly string[] ResizeModeNames = { "Stretch", "CenterCrop", "Pad" };
     private static readonly string[] ExecutionProviderNames = { "CPU", "DirectML", "CUDA", "TensorRT", "CoreML" };
 
     public enum ModeOptions { TextToImage, ImageToImage, Stream }
-    public enum ModelTypeOptions { SD15, SDTurbo, SDXLTurbo, FLUX2Klein, SDXL10 }
+    public enum ModelTypeOptions { SD15, SDTurbo, SDXLTurbo, FLUX2Klein, SDXL10, StreamDiffusionV2 }
     public enum ResizeModeOptions { Stretch, CenterCrop, Pad }
 
     #endregion
@@ -151,13 +169,13 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
     #region Fields
 
     // Worker-per-pipeline lifecycle (DepthAnything port)
-    private volatile StableDiffusionPipeline? _pipeline;
+    private volatile IGenerationPipeline? _pipeline;
     private readonly object _stateLock = new();
     private Task? _processingTask;
     private CancellationTokenSource? _workerCts;
     private volatile bool _isInitializing;
     private volatile bool _initFailed;
-    private (string? Path, int Device, int Type, int Provider)? _failedInputs;
+    private FailureKey? _failedInputs;
     private int _workerGeneration;
     private string? _activeModelPath;
     private int _activeDeviceId = -1;
@@ -172,7 +190,6 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
 
     // Render-thread state
     private bool _hasPendingInput;
-    private Texture2D? _lastInputTexture;
     private Texture2D? _outputTexture;
     private Int2 _lastOutputSize;
     private float _lastGenerationTime;
@@ -190,17 +207,20 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
     // so the render thread never waits for the GPU.
     private Texture2D? _readbackTexture;
     private bool _readbackPending;
-    private bool _readbackIsBgra;
+    private InputPixelFormat _readbackFormat;
     private int _readbackWaitFrames;
     private bool _loggedUnsupportedFormat;
 
-    // Worker-side img2img fingerprint (mode 1 only)
+    // Linear -> encoded sRGB for float render-target inputs; a table keeps the per-pixel path cheap
+    private const int SrgbTableSize = 4096;
+    private static readonly byte[] SrgbEncodeTable = CreateSrgbEncodeTable();
+
+    // Worker-side img2img/stream fingerprint (mode 1 and 2); only the current worker reads or writes these
     private int _lastProcessedFingerprint;
     private bool _hasProcessedFingerprint;
 
-    // Staging texture cache + extract buffer pool
-    private readonly ConcurrentDictionary<(int width, int height, Format format), Texture2D> _cachedStagingTextures = new();
-    private readonly object _textureCacheLock = new();
+    // Staging texture + extract buffer pool
+    private Texture2D? _stagingTexture;
     private readonly Stack<byte[]> _extractBufferPool = new();
     private readonly object _poolLock = new();
 
@@ -247,6 +267,7 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
             var triggerGenerate = TriggerGenerate.GetValue(context);
             var autoGenerate = AutoGenerate.GetValue(context);
             var debug = Debug.GetValue(context);
+            var fastDecode = FastDecode.GetValue(context);
 
             _debugLogging = debug;
             _updateFrameCounter++;
@@ -269,12 +290,20 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
             if (pipeline != null)
                 pipeline.VerboseLogging = debug;
 
-            // Re-init trigger: inputs changed OR worker died; blocked by stale-failure state
+            if (pipeline is StreamDiffusionV2Pipeline v2Pipeline)
+                v2Pipeline.FastDecodeEnabled = fastDecode;
+
+            // Re-init trigger: inputs changed OR worker died. A failed initialization is only retried after the
+            // inputs change - otherwise a missing model or unsupported provider would reload every frame.
             var inputsChanged = modelPath != _activeModelPath || deviceId != _activeDeviceId
                                 || modelType != _activeModelType || provider != _activeProvider;
             var workerGone = _processingTask == null || _processingTask.IsCompleted;
+            var failed = _failedInputs;
+            var failedWithSameInputs = _initFailed && failed != null
+                                       && failed.Path == modelPath && failed.Device == deviceId
+                                       && failed.Type == modelType && failed.Provider == provider;
 
-            if (!_isInitializing && (inputsChanged || workerGone))
+            if (!_isInitializing && !failedWithSameInputs && (inputsChanged || workerGone))
             {
                 InitializePipelineWorker(modelPath, deviceId, modelType, provider);
             }
@@ -311,6 +340,14 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
                 OutputSize.Value = _lastOutputSize;
                 GenerationTime.Value = _lastGenerationTime;
                 return;
+            }
+
+            // V2 bakes its resolution into the exported DiT, so the Width/Height inputs cannot apply
+            if (pipeline.TryGetFixedOutputSize(out var fixedWidth, out var fixedHeight))
+            {
+                width = fixedWidth;
+                height = fixedHeight;
+                matchInputSize = false;
             }
 
             // img2img/Stream: continuously chase the latest input frame. Dirty-flag checks can't
@@ -386,18 +423,17 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
                         inputData: null,
                         inputWidth: 0,
                         inputHeight: 0,
-                        isBgra: false);
+                        inputFormat: InputPixelFormat.Rgba8);
                 }
             }
 
             // Complete deferred readback and enqueue
             if (_readbackPending)
             {
-                var (data, w, h) = CompleteReadback();
+                var (data, w, h, format) = CompleteReadback();
                 if (data != null)
                 {
                     _hasPendingInput = false;
-                    _lastInputTexture = inputImage;
 
                     var useImage = mode != 0 && inputImage != null && !inputImage.IsDisposed;
                     if (!useImage)
@@ -419,7 +455,7 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
                             inputData: null,
                             inputWidth: 0,
                             inputHeight: 0,
-                            isBgra: false);
+                            inputFormat: InputPixelFormat.Rgba8);
                     }
                     else
                     {
@@ -441,15 +477,20 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
                             inputData: data,
                             inputWidth: w,
                             inputHeight: h,
-                            isBgra: _readbackIsBgra);
+                            inputFormat: format);
                     }
                 }
             }
 
-            // Drain results (newest wins; coalesce while render thread is busy)
+            // Drain results (newest wins; coalesce while render thread is busy). Results from a replaced worker are
+            // dropped: its model may have different dimensions and its buffers belong to the old pipeline.
+            var generation = Volatile.Read(ref _workerGeneration);
             GenerationResult? newest = null;
             while (_outputQueue.TryDequeue(out var r))
-                newest = r;
+            {
+                if (r != null && r.Generation == generation)
+                    newest = r;
+            }
 
             if (newest != null)
             {
@@ -501,7 +542,7 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
     private void BuildAndEnqueueRequest(string prompt, string? negativePrompt, int mode, int steps, float guidance,
                                         float strength, int seed, int width, int height, int resizeMode,
                                         float preserveDetails, int modelType, byte[]? inputData, int inputWidth,
-                                        int inputHeight, bool isBgra)
+                                        int inputHeight, InputPixelFormat inputFormat)
     {
         var clampedSteps = steps;
         var clampedGuidance = guidance;
@@ -515,6 +556,10 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
             {
                 clampedSteps = Math.Clamp(steps <= 0 ? recommended : steps, 1, 8);
                 clampedGuidance = Math.Clamp(guidance, 0f, 3f);
+            }
+            else if (modelType == (int)ModelTypeOptions.StreamDiffusionV2)
+            {
+                clampedSteps = Math.Clamp(steps, 1, 4);
             }
             else if (mode == 1)
             {
@@ -531,10 +576,17 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
         var request = new GenerationRequest(
             prompt, negativePrompt, mode, clampedSteps, clampedGuidance, strength, seed,
             width, height, resizeMode, preserveDetails,
-            inputData, inputWidth, inputHeight, isBgra);
+            inputData, inputWidth, inputHeight, inputFormat);
 
-        _inputQueue.Enqueue(request);
+        // The request consumes the pending flag. Without this, a txt2img trigger (or an AutoGenerate
+        // parameter change) leaves it set and the render thread re-enqueues every frame, pinning the GPU
+        // in back-to-back generations. The Stream path sets it again every frame by design.
+        _hasPendingInput = false;
+
+        // Publish "in flight" before the worker can see the request. Enqueueing first let the worker finish
+        // (and store false) before this thread stored true, leaving the flag stuck and the op idle forever.
         _requestInFlight = true;
+        _inputQueue.Enqueue(request);
         _workerWake.Set();
     }
 
@@ -542,14 +594,18 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
 
     private void InitializePipelineWorker(string? modelPath, int deviceId, int modelType, int provider)
     {
+        var previousTask = _processingTask;
         StopWorker();
 
-        var validationError = StableDiffusionPipeline.ValidateModelDirectory(modelPath);
+        var validationError = modelType == (int)ModelTypeOptions.StreamDiffusionV2
+                                  ? StreamDiffusionV2Pipeline.ValidateModelDirectory(modelPath)
+                                  : StableDiffusionPipeline.ValidateModelDirectory(modelPath);
         if (validationError.Length > 0)
         {
             _lastStatusMessage = validationError;
             _initFailed = true;
-            _failedInputs = (modelPath, deviceId, modelType, provider);
+            _failedInputs = new FailureKey(modelPath, deviceId, modelType, provider);
+            Log.Warning($"[StreamDiffusion] {validationError}", this);
             return;
         }
 
@@ -585,7 +641,27 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
         var generation = Interlocked.Increment(ref _workerGeneration);
         _workerCts = new CancellationTokenSource();
         var token = _workerCts.Token;
-        _processingTask = Task.Run(() => WorkerLoop(modelPath!, deviceId, modelType, provider, token, generation), token);
+        _processingTask = Task.Run(async () =>
+        {
+            // The previous generation releases its ONNX sessions only when its loop exits. Waiting here keeps the
+            // render thread free while still preventing two sessions from holding GPU memory at the same time.
+            if (previousTask != null)
+            {
+                try
+                {
+                    await previousTask.ConfigureAwait(false);
+                }
+                catch
+                {
+                    // A failing predecessor must not prevent this generation from starting
+                }
+            }
+
+            if (token.IsCancellationRequested)
+                return;
+
+            WorkerLoop(modelPath!, deviceId, modelType, provider, token, generation);
+        }, CancellationToken.None);
     }
 
     private void StopWorker()
@@ -596,19 +672,10 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
         }
         catch { }
 
-        try
-        {
-            if (_processingTask != null)
-            {
-                if (!_processingTask.Wait(5000))
-                {
-                    Log.Warning("[StreamDiffusion] Worker task did not complete within timeout", this);
-                }
-            }
-        }
-        catch { }
-
         _workerWake.Set();
+
+        // Never wait for the worker on the render thread: inference can take seconds. InitializePipelineWorker
+        // chains the next worker after this task, so the old pipeline still releases its GPU memory first.
 
         while (_inputQueue.TryDequeue(out var req))
         {
@@ -630,13 +697,33 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
 
     private void WorkerLoop(string modelPath, int deviceId, int modelType, int provider, CancellationToken token, int generation)
     {
-        var pipeline = new StableDiffusionPipeline();
+        // Only the current worker touches the fingerprint fields from here on: the previous worker is
+        // provably dead (this task awaited it), so the reset cannot be overwritten by a stale write.
+        // Folding the generation into the fingerprint (see ComputeFingerprint) also keeps a swapped
+        // model/device/provider from skipping the first request.
+        _hasProcessedFingerprint = false;
+
+        IGenerationPipeline? pipeline = null;
         var failedToInit = false;
         try
         {
+            bool initialized;
+            if (modelType == (int)ModelTypeOptions.StreamDiffusionV2)
+            {
+                var streamPipeline = new StreamDiffusionV2Pipeline();
+                pipeline = streamPipeline;
+                initialized = streamPipeline.Initialize(modelPath, deviceId, (t3.streamdiffusion.Onnx.ExecutionProvider)provider);
+            }
+            else
+            {
+                var stablePipeline = new StableDiffusionPipeline();
+                pipeline = stablePipeline;
+                initialized = stablePipeline.Initialize(modelPath, deviceId, (ModelType)modelType, (t3.streamdiffusion.Onnx.ExecutionProvider)provider);
+            }
+
             pipeline.VerboseLogging = _debugLogging;
 
-            if (!pipeline.Initialize(modelPath, deviceId, (ModelType)modelType, (t3.streamdiffusion.Onnx.ExecutionProvider)provider))
+            if (!initialized)
             {
                 failedToInit = true;
 
@@ -647,8 +734,8 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
                 {
                     _isInitializing = false;
                     _initFailed = true;
-                    _failedInputs = (_activeModelPath, _activeDeviceId, _activeModelType, _activeProvider);
-                    _lastStatusMessage = "Failed to initialize ONNX pipeline. See log for details.";
+                    _failedInputs = new FailureKey(_activeModelPath, _activeDeviceId, _activeModelType, _activeProvider);
+                    _lastStatusMessage = pipeline?.InitializationError ?? "Failed to initialize ONNX pipeline. See log for details.";
                 }
             }
             else
@@ -673,9 +760,12 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
                 {
                     if (request != null)
                     {
-                        var result = ProcessGenerationRequest(pipeline, request);
+                        // Float render targets are converted here rather than on the render thread; the raw
+                        // staging buffer is returned before the request reaches the pipeline.
+                        request = ConvertRequestInput(request);
+                        var result = ProcessGenerationRequest(pipeline, request, generation);
                         if (!token.IsCancellationRequested && result != null)
-                            _outputQueue.Enqueue(result);
+                            _outputQueue.Enqueue(result with { Generation = generation });
                     }
 
                     if (request?.InputData != null)
@@ -694,7 +784,13 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
             if (!token.IsCancellationRequested)
             {
                 Log.Error($"[StreamDiffusion] Worker loop error: {ex.Message}", this);
-                _outputQueue.Enqueue(new GenerationResult(null, 0, 0, 0, $"Worker error: {ex.Message}"));
+                _outputQueue.Enqueue(new GenerationResult(null, 0, 0, 0, $"Worker error: {ex.Message}", generation));
+
+                // An exception before a pipeline was published is an initialization failure. Without
+                // latching it the retry gate sees "worker gone, same inputs" as a fresh attempt and
+                // reconstructs every ONNX session on the next frame.
+                if (pipeline == null)
+                    failedToInit = true;
             }
 
             _requestInFlight = false;
@@ -702,7 +798,7 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
         finally
         {
             // Worker owns its pipeline - dispose unconditionally; a newer worker may have replaced the field
-            pipeline.Dispose();
+            pipeline?.Dispose();
 
             lock (_stateLock)
             {
@@ -717,8 +813,8 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
                 if (failedToInit)
                 {
                     _initFailed = true;
-                    _failedInputs = (_activeModelPath, _activeDeviceId, _activeModelType, _activeProvider);
-                    _lastStatusMessage = "Failed to initialize ONNX pipeline. See log for details.";
+                    _failedInputs = new FailureKey(_activeModelPath, _activeDeviceId, _activeModelType, _activeProvider);
+                    _lastStatusMessage = pipeline?.InitializationError ?? "Failed to initialize ONNX pipeline. See log for details.";
                 }
             }
 
@@ -727,14 +823,57 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
         }
     }
 
-    private GenerationResult? ProcessGenerationRequest(StableDiffusionPipeline pipeline, GenerationRequest request)
+    /// <summary>
+    /// Converts raw float render-target rows to RGBA8. This runs on the worker: the render thread only copies the
+    /// mapped rows out of the staging texture, so neither the per-pixel conversion nor its sRGB encode stalls a frame.
+    /// </summary>
+    private GenerationRequest ConvertRequestInput(GenerationRequest request)
+    {
+        if (request.InputData == null
+            || request.InputFormat is InputPixelFormat.Rgba8 or InputPixelFormat.Bgra8
+            || request.InputWidth <= 0 || request.InputHeight <= 0)
+        {
+            return request;
+        }
+
+        var halfFloats = request.InputFormat == InputPixelFormat.Rgba16F;
+        var pixelSize = halfFloats ? 8 : 16;
+        var requiredBytes = request.InputWidth * request.InputHeight * pixelSize;
+        if (request.InputData.Length < requiredBytes)
+            return request;
+
+        var converted = RentExtractBuffer(request.InputWidth * request.InputHeight * 4);
+        ConvertFloatToRgba8(request.InputData, converted, request.InputWidth, request.InputHeight, halfFloats);
+        ReturnExtractBuffer(request.InputData);
+        return request with { InputData = converted, InputFormat = InputPixelFormat.Rgba8 };
+    }
+
+    private GenerationResult? ProcessGenerationRequest(IGenerationPipeline pipeline, GenerationRequest request, int generation)
     {
         try
         {
-            // Negative seeds randomize per call, so only fixed-seed requests are safely skippable
-            if (request.Seed >= 0)
+            pipeline.ConfigureStream(request.Steps);
+
+            // Negative seeds randomize per call, so only fixed-seed requests are safely skippable there.
+            // Stream mode consumes one new input frame per request regardless of seed: an unchanged frame can
+            // reuse the previous result, which also stops a frozen source from keeping the GPU busy indefinitely.
+            var canSkipIdentical = request.Seed >= 0 || request.Mode == 2;
+            if (canSkipIdentical)
             {
-                var fingerprint = ComputeFingerprint(request);
+                // A V2 prompt that was swapped in by the background encoder must produce one new frame even when
+                // the input pixels did not change; the version is part of the fingerprint. The worker generation
+                // and the FastDecode state are folded in as well, so a swapped model or decode-window change
+                // always produces one fresh frame - without the render thread writing any worker-side state.
+                var promptVersion = 0;
+                var fingerprintSalt = generation;
+                if (pipeline is StreamDiffusionV2Pipeline v2)
+                {
+                    promptVersion = v2.PromptVersion;
+                    if (v2.FastDecodeEnabled)
+                        fingerprintSalt ^= unchecked((int)0x5A5A5A5A);
+                }
+
+                var fingerprint = ComputeFingerprint(request, promptVersion, fingerprintSalt);
                 if (_hasProcessedFingerprint && fingerprint == _lastProcessedFingerprint)
                     return null; // identical request - keep previous output, spare the GPU
 
@@ -758,14 +897,14 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
                     request.Prompt, request.NegativePrompt, request.InputData,
                     request.InputWidth, request.InputHeight, request.Width, request.Height,
                     request.Steps, request.Guidance, request.Strength, request.Seed,
-                    request.ResizeMode, request.PreserveDetails, request.IsBgra, out error);
+                    request.ResizeMode, request.PreserveDetails, request.InputFormat == InputPixelFormat.Bgra8, out error);
             }
             else if (request.Mode == 2 && request.InputData != null)
             {
                 imageData = pipeline.StreamStep(
                     request.Prompt, request.InputData, request.InputWidth, request.InputHeight,
                     request.Width, request.Height, request.Strength, request.ResizeMode,
-                    request.Seed, request.IsBgra, out error);
+                    request.Seed, request.InputFormat == InputPixelFormat.Bgra8, out error);
             }
             else
             {
@@ -786,7 +925,7 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
         }
     }
 
-    private int ComputeFingerprint(GenerationRequest request)
+    private int ComputeFingerprint(GenerationRequest request, int promptVersion, int fingerprintSalt)
     {
         unchecked
         {
@@ -794,32 +933,26 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
                 request.Prompt, request.NegativePrompt, request.Steps, request.Guidance,
                 request.Strength, request.Seed, request.Width, request.Height);
 
+            hash = (hash * 31) ^ fingerprintSalt;
             hash = (hash * 31) ^ request.ResizeMode;
             hash = (hash * 31) ^ request.PreserveDetails.GetHashCode();
             hash = (hash * 31) ^ request.InputWidth;
             hash = (hash * 31) ^ request.InputHeight;
-            hash = (hash * 31) ^ request.IsBgra.GetHashCode();
+            hash = (hash * 31) ^ request.InputFormat.GetHashCode();
+            hash = (hash * 31) ^ promptVersion;
 
             if (request.InputData == null || request.InputWidth == 0 || request.InputHeight == 0)
                 return hash;
 
-            var xStep = Math.Max(1, request.InputWidth / 16);
-            var yStep = Math.Max(1, request.InputHeight / 16);
-            var rowPitch = request.InputWidth * 4;
+            // Hash every word for model-sized frames and a bounded subset for large inputs. The previous
+            // 16x16 sample could miss a small moving object and freeze a live feed on a false "identical".
+            var pixelCount = request.InputWidth * request.InputHeight;
+            var words = MemoryMarshal.Cast<byte, uint>(request.InputData.AsSpan(0, pixelCount * 4));
+            var step = Math.Max(1, words.Length / 262144);
+            for (var index = 0; index < words.Length; index += step)
+                hash = hash * 31 + (int)words[index];
 
-            for (var y = 0; y < 16; y++)
-            {
-                var rowOffset = y * yStep * rowPitch;
-                for (var x = 0; x < 16; x++)
-                {
-                    var pixelOffset = rowOffset + x * xStep * 4;
-                    var r = request.InputData[pixelOffset + 0];
-                    var g = request.InputData[pixelOffset + 1];
-                    var b = request.InputData[pixelOffset + 2];
-                    hash = hash * 31 + r + (g << 8) + (b << 16);
-                }
-            }
-
+            hash = hash * 31 + (int)words[^1];
             return hash;
         }
     }
@@ -842,17 +975,24 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
         {
             case Format.R8G8B8A8_UNorm:
             case Format.R8G8B8A8_UNorm_SRgb:
-                _readbackIsBgra = false;
+                _readbackFormat = InputPixelFormat.Rgba8;
                 break;
             case Format.B8G8R8A8_UNorm:
             case Format.B8G8R8A8_UNorm_SRgb:
-                _readbackIsBgra = true;
+                _readbackFormat = InputPixelFormat.Bgra8;
+                break;
+            case Format.R16G16B16A16_Float:
+                _readbackFormat = InputPixelFormat.Rgba16F;
+                break;
+            case Format.R32G32B32A32_Float:
+                _readbackFormat = InputPixelFormat.Rgba32F;
                 break;
             default:
                 if (!_loggedUnsupportedFormat)
                 {
                     _loggedUnsupportedFormat = true;
-                    Log.Warning($"[StreamDiffusion] Unsupported input format {desc.Format} - skipping frames", this);
+                    Log.Warning($"[StreamDiffusion] Unsupported input format {desc.Format} - skipping frames. " +
+                                "Connect an RGBA image or a float render target.", this);
                 }
                 _hasPendingInput = false;
                 return;
@@ -866,16 +1006,17 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
         _readbackWaitFrames = 0;
     }
 
-    private (byte[]? data, int width, int height) CompleteReadback()
+    private (byte[]? data, int width, int height, InputPixelFormat format) CompleteReadback()
     {
         var context = ResourceManager.Device.ImmediateContext;
 
         // TryMapForRead only succeeds once the copy is finished, so polling never stalls the render thread.
         var stagingTexture = _readbackTexture;
+        var format = _readbackFormat;
         if (stagingTexture == null)
         {
             _readbackPending = false;
-            return (null, 0, 0);
+            return (null, 0, 0, format);
         }
 
         T3.Graphics.Compat.Texture2D nativeStaging = stagingTexture;
@@ -889,7 +1030,7 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
                 _readbackPending = false;
                 _hasPendingInput = true;
             }
-            return (null, 0, 0);
+            return (null, 0, 0, format);
         }
 
         _readbackPending = false;
@@ -900,14 +1041,16 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
         try
         {
             if (mapped.SizeInBytes <= 0)
-                return (null, 0, 0);
+                return (null, 0, 0, format);
 
-            var buffer = RentExtractBuffer(width * height * 4);
+            // Float rows are copied out raw; the worker converts them to RGBA8 so no per-pixel work runs here
+            var pixelSize = BytesPerPixel(format);
+            var buffer = RentExtractBuffer(width * height * pixelSize);
             unsafe
             {
                 var srcPtr = (byte*)mapped.Data;
                 var rowPitch = mapped.RowPitch;
-                var rowBytes = width * 4;
+                var rowBytes = width * pixelSize;
                 fixed (byte* dst = buffer)
                 {
                     for (var y = 0; y < height; y++)
@@ -917,12 +1060,80 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
                 }
             }
 
-            return (buffer, width, height);
+            return (buffer, width, height, format);
         }
         finally
         {
             context.UnmapSubresource(stagingTexture, 0);
         }
+    }
+
+    private static int BytesPerPixel(InputPixelFormat format)
+    {
+        return format switch
+        {
+            InputPixelFormat.Rgba16F => 8,
+            InputPixelFormat.Rgba32F => 16,
+            _ => 4
+        };
+    }
+
+    /// <summary>
+    /// Converts linear RGBA render-target rows to encoded 8-bit RGBA. Float render targets hold linear color, while the
+    /// image loaders and the diffusion models work in encoded sRGB, so the values have to be encoded on the way out.
+    /// Runs on the worker thread.
+    /// </summary>
+    private static void ConvertFloatToRgba8(byte[] source, byte[] destination, int width, int height, bool halfFloats)
+    {
+        var pixelSize = halfFloats ? 8 : 16;
+        for (var y = 0; y < height; y++)
+        {
+            var sourceRow = y * width * pixelSize;
+            var targetRow = y * width * 4;
+            for (var x = 0; x < width; x++)
+            {
+                var pixel = source.AsSpan(sourceRow + x * pixelSize, pixelSize);
+                var target = targetRow + x * 4;
+                if (halfFloats)
+                {
+                    destination[target + 0] = EncodeSrgb((float)MemoryMarshal.Read<Half>(pixel));
+                    destination[target + 1] = EncodeSrgb((float)MemoryMarshal.Read<Half>(pixel[2..]));
+                    destination[target + 2] = EncodeSrgb((float)MemoryMarshal.Read<Half>(pixel[4..]));
+                }
+                else
+                {
+                    destination[target + 0] = EncodeSrgb(MemoryMarshal.Read<float>(pixel));
+                    destination[target + 1] = EncodeSrgb(MemoryMarshal.Read<float>(pixel[4..]));
+                    destination[target + 2] = EncodeSrgb(MemoryMarshal.Read<float>(pixel[8..]));
+                }
+
+                destination[target + 3] = 255;
+            }
+        }
+    }
+
+    private static byte EncodeSrgb(float linear)
+    {
+        // Also routes NaN and negative values to black
+        if (!(linear > 0f))
+            return 0;
+        if (linear >= 1f)
+            return byte.MaxValue;
+
+        return SrgbEncodeTable[(int)(linear * (SrgbTableSize - 1) + 0.5f)];
+    }
+
+    private static byte[] CreateSrgbEncodeTable()
+    {
+        var table = new byte[SrgbTableSize];
+        for (var index = 0; index < table.Length; index++)
+        {
+            var linear = index / (float)(SrgbTableSize - 1);
+            var encoded = linear <= 0.0031308f ? linear * 12.92f : 1.055f * MathF.Pow(linear, 1f / 2.4f) - 0.055f;
+            table[index] = (byte)(encoded * 255f + 0.5f);
+        }
+
+        return table;
     }
 
     #endregion
@@ -974,32 +1185,32 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
 
     private Texture2D GetOrCreateStagingTexture(int width, int height, Format format)
     {
-        var key = (width, height, format);
-        if (_cachedStagingTextures.TryGetValue(key, out var cached))
-            return cached;
-
-        lock (_textureCacheLock)
+        // One staging texture is enough: readbacks are single-in-flight, and a new input size replaces the
+        // buffer instead of keeping every size the session has ever seen alive.
+        if (_stagingTexture is { IsDisposed: false }
+            && _stagingTexture.Description.Width == width
+            && _stagingTexture.Description.Height == height
+            && _stagingTexture.Description.Format == format)
         {
-            if (_cachedStagingTextures.TryGetValue(key, out cached))
-                return cached;
-
-            var tex = new Texture2D(new T3.Graphics.Compat.Texture2D(ResourceManager.Device, new Texture2DDescription
-            {
-                Width = width,
-                Height = height,
-                MipLevels = 1,
-                ArraySize = 1,
-                Format = format,
-                SampleDescription = new SampleDescription(1, 0),
-                Usage = ResourceUsage.Staging,
-                BindFlags = BindFlags.None,
-                CpuAccessFlags = CpuAccessFlags.Read,
-                OptionFlags = ResourceOptionFlags.None
-            }));
-
-            _cachedStagingTextures[key] = tex;
-            return tex;
+            return _stagingTexture;
         }
+
+        _stagingTexture?.Dispose();
+        _stagingTexture = new Texture2D(new T3.Graphics.Compat.Texture2D(ResourceManager.Device, new Texture2DDescription
+        {
+            Width = width,
+            Height = height,
+            MipLevels = 1,
+            ArraySize = 1,
+            Format = format,
+            SampleDescription = new SampleDescription(1, 0),
+            Usage = ResourceUsage.Staging,
+            BindFlags = BindFlags.None,
+            CpuAccessFlags = CpuAccessFlags.Read,
+            OptionFlags = ResourceOptionFlags.None
+        }));
+
+        return _stagingTexture;
     }
 
     private byte[] RentExtractBuffer(int minimumSize)
@@ -1039,6 +1250,18 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
         if (pipeline == null || _initFailed)
             return IStatusProvider.StatusLevel.Warning;
 
+        try
+        {
+            // A pipeline whose provider fallback failed is still published but cannot stream; the status text
+            // already says "Initialization failed", so the light must not stay green.
+            if (!pipeline.IsInitialized)
+                return IStatusProvider.StatusLevel.Warning;
+        }
+        catch (ObjectDisposedException)
+        {
+            return IStatusProvider.StatusLevel.Warning;
+        }
+
         return string.IsNullOrEmpty(_lastStatusMessage)
             ? IStatusProvider.StatusLevel.Success
             : IStatusProvider.StatusLevel.Warning;
@@ -1061,7 +1284,18 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
             if (!string.IsNullOrEmpty(_lastStatusMessage))
                 return _lastStatusMessage;
 
-            return $"Ready ({pipeline.ProviderLabel}, img2img: {(pipeline.SupportsImg2Img ? "yes" : "no")})";
+            var detail = string.Empty;
+            if (pipeline is StreamDiffusionV2Pipeline v2)
+            {
+                var total = v2.LastEncodeMs + v2.LastDenoiseMs + v2.LastDecodeMs;
+                if (total > 0)
+                    detail = $", {total:F0} ms (enc {v2.LastEncodeMs:F0} / dit {v2.LastDenoiseMs:F0} / dec {v2.LastDecodeMs:F0})";
+
+                if (v2.IsPromptPending)
+                    detail += ", encoding new prompt";
+            }
+
+            return $"Ready ({pipeline.ProviderLabel}, img2img: {(pipeline.SupportsImg2Img ? "yes" : "no")}{detail})";
         }
         catch (ObjectDisposedException)
         {
@@ -1210,31 +1444,35 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
     #endregion
 
     private static string[]? _cachedDeviceNames;
+    private static readonly object DeviceNameCacheLock = new();
 
     private static string[] GetDeviceNames()
     {
         if (_cachedDeviceNames != null)
             return _cachedDeviceNames;
 
-        var names = new List<string>();
-        try
+        // Adapter enumeration can run from any instance's dropdown on any thread, so the lazy cache is built under a lock
+        lock (DeviceNameCacheLock)
         {
-            if (OperatingSystem.IsWindows())
+            if (_cachedDeviceNames != null)
+                return _cachedDeviceNames;
+
+            var names = new List<string>();
+            try
             {
-                AddDxgiAdapterNames(names);
+                if (OperatingSystem.IsWindows())
+                {
+                    AddDxgiAdapterNames(names);
+                }
             }
-        }
-        catch
-        {
-            // Adapter names are only labels for the device dropdown
+            catch
+            {
+                // Adapter names are only labels for the device dropdown
+            }
+
+            _cachedDeviceNames = names.Count > 0 ? names.ToArray() : ["Default"];
         }
 
-        if (names.Count == 0)
-        {
-            names.Add("Default");
-        }
-
-        _cachedDeviceNames = names.Count > 0 ? names.ToArray() : new[] { "Default" };
         return _cachedDeviceNames;
     }
 
@@ -1280,12 +1518,8 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
         _outputTexture = null;
 
 
-        lock (_textureCacheLock)
-        {
-            foreach (var tex in _cachedStagingTextures.Values)
-                tex?.Dispose();
-            _cachedStagingTextures.Clear();
-        }
+        _stagingTexture?.Dispose();
+        _stagingTexture = null;
 
         lock (_poolLock)
         {

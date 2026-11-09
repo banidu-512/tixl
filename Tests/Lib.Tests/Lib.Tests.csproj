@@ -8,6 +8,10 @@
         <IsTestProject>true</IsTestProject>
         <Deterministic>true</Deterministic>
         <RootNamespace>Lib.Tests</RootNamespace>
+        <!-- PhysicsSimulation.cs is shared with the Lib operator package, which compiles with
+             nullable annotations disabled; the flow and annotation warnings only fire in this
+             nullable-aware build (CS8765 is the untagged Equals(object) override). -->
+        <NoWarn>$(NoWarn);CS8602;CS8618;CS8625;CS8765</NoWarn>
     </PropertyGroup>
 
     <ItemGroup>

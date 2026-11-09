@@ -65,8 +65,8 @@ internal sealed class VolumeMorphology : Instance<VolumeMorphology>
         }
     }
 
-    private (VdbVolume?, T3.Core.DataTypes.Volume.Tools.VolumeMorphology.Operation, float) _last = (null, (T3.Core.DataTypes.Volume.Tools.VolumeMorphology.Operation)(-1), -1);
-    private string? _lastError;
+    private (VdbVolume, T3.Core.DataTypes.Volume.Tools.VolumeMorphology.Operation, float) _last = (null, (T3.Core.DataTypes.Volume.Tools.VolumeMorphology.Operation)(-1), -1);
+    private string _lastError;
 
     [Input(Guid = "f762b0d3-0f82-5660-9169-c94524c5a414")]
     public readonly InputSlot<VdbVolume> Volume = new();

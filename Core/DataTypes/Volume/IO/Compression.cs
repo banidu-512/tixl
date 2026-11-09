@@ -165,7 +165,12 @@ public static class Blosc
     public const int HeaderLength = 16;
 
     /// <summary>Decompresses a blosc frame produced by c-blosc 1.x.</summary>
-    public static byte[] Decompress(ReadOnlySpan<byte> input)
+    /// <param name="maxOutputBytes">
+    /// Upper bound for the declared output size. That size comes from the frame header, so a
+    /// truncated or hostile file could otherwise request an arbitrarily large allocation. Callers
+    /// know how many bytes their block holds and should pass it.
+    /// </param>
+    public static byte[] Decompress(ReadOnlySpan<byte> input, int maxOutputBytes = int.MaxValue)
     {
         if (input.Length < HeaderLength)
             throw new InvalidDataException("Blosc: frame too small");
@@ -180,6 +185,8 @@ public static class Blosc
             throw new InvalidDataException("Blosc: invalid header sizes");
         if (cbytes > input.Length)
             throw new InvalidDataException("Blosc: header size exceeds input");
+        if (nbytes > maxOutputBytes)
+            throw new InvalidDataException($"Blosc: declared output of {nbytes} bytes exceeds the expected {maxOutputBytes}");
 
         var output = new byte[nbytes];
 

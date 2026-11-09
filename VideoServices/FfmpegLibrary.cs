@@ -199,10 +199,16 @@ public static class FfmpegLibrary
             => text.Contains("Referenced QT chapter track not found")
                || text.Contains("unable to decode APP fields");
 
+        // swscale repeats its "deprecated pixel format used" notice once per scaled frame of a full-range
+        // (MJPEG, IP-camera) source — a per-frame fact, not a session fact, so even Debug floods the log
+        // with it. Everyone who needs to know it already knows it; drop the line outright.
+        static bool IsPerFrameNoise(string text)
+            => text.Contains("deprecated pixel format used");
+
         FFmpegLogger.LogWriter = static (level, message) =>
                                  {
                                      var text = message?.TrimEnd();
-                                     if (string.IsNullOrEmpty(text))
+                                     if (string.IsNullOrEmpty(text) || IsPerFrameNoise(text))
                                          return;
 
                                      // Webcams emit MJPEG frames with a malformed APPn segment; the decoder still outputs

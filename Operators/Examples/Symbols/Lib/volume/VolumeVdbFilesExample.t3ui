@@ -14,6 +14,14 @@
       }
     },
     {
+      "ChildId": "37564d8e-8266-42b2-9d62-78dfb0a7c4c5",
+      "SymbolName": "Lib.mesh.draw.DrawMesh",
+      "Position": {
+        "X": 1280.3026,
+        "Y": 87.83203
+      }
+    },
+    {
       "ChildId": "73761d62-4033-5776-a587-229f4d69d143",
       "SymbolName": "Lib.image.generate.basic.RenderTarget",
       "Position": {

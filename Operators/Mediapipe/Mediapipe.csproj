@@ -110,6 +110,12 @@
     <ProjectReference Include="../../Logging/Logging.csproj" Private="false" PrivateAssets="all" />
   </ItemGroup>
   <ItemGroup>
+    <!-- The teardown reaper and the pooling helpers are implementation details of the operators, but
+         their invariants (native task closed only after its worker exits, bounded waits) are what the
+         tests exist to pin down. -->
+    <InternalsVisibleTo Include="Mediapipe.Tests" />
+  </ItemGroup>
+  <ItemGroup>
     <PackageReference Include="CppSharp.Runtime" Version="1.1.84.17100" />
     <PackageReference Include="OpenCvSharp4" Version="4.13.0.20260627" />
     <PackageReference Include="OpenCvSharp4.Extensions" Version="4.13.0.20260627" />
@@ -138,6 +144,9 @@
     <PackageAssets Include="Assets/**/*" />
     <PackageSymbols Include="Symbols/**/*.t3" />
     <PackageSymbolUis Include="Symbols/**/*.t3ui" />
+    <!-- Only the operator sources: SourceCode/ is the packaged mirror the editor maps [Guid]s to for
+         "open source" - it is never compiled (TixlAssemblyLoadContext skips it). Shipping the Utils/
+         helpers in it made the editor warn once per file at every start ("defines no operator"). -->
     <PackageSourceCode Include="Symbols/**/*.cs" />
     <PackageMeta Include=".meta/**/*" />
   </ItemGroup>

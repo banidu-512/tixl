@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
@@ -50,6 +50,14 @@ public class HandLandmarkDetection : Instance<HandLandmarkDetection>
     // MediaPipe resizes to its model input (~224px) internally; a camera frame wider than this only
     // burns downsample/memcpy time before hitting that resize.
     private const int MaxInferenceWidth = 640;
+    private const int MaxCachedStagingTextures = 4;
+    private const int MaxPooledBuffers = 4;
+
+    private static readonly int MaxDownscaleThreads = Math.Clamp(Environment.ProcessorCount, 1, 8);
+
+    /// <summary>Xnnpack worker threads used when the InferenceThreads input keeps its default.
+    /// See <see cref="MediaPipeInferenceTuning"/> for why the binding's 0 is a bad default.</summary>
+    private const int DefaultInferenceThreads = MediaPipeInferenceTuning.DefaultThreads;
 
     [Output(Guid = "def01234-5678-90ab-cdef-1234567890ab", DirtyFlagTrigger = DirtyFlagTrigger.Animated)]
     public readonly Slot<Texture2D> OutputTexture = new();
@@ -81,15 +89,21 @@ public class HandLandmarkDetection : Instance<HandLandmarkDetection>
 
     private void Update(EvaluationContext context)
     {
+        // The host can evaluate an instance after it has been disposed (hot reload, package
+        // unload races). Starting a worker here would leak its native task and its thread for the
+        // process lifetime, because Dispose has already run.
+        if (_disposed)
+            return;
+
         var inputTexture = InputTexture.GetValue(context);
         var enabled = Enabled.GetValue(context);
         var debug = Debug.GetValue(context);
-        
+
         var minHandDetectionConfidence = MinHandDetectionConfidence.GetValue(context);
         var minHandPresenceConfidence = MinHandPresenceConfidence.GetValue(context);
         var minTrackingConfidence = MinTrackingConfidence.GetValue(context);
         var maxHands = MaxHands.GetValue(context);
-        
+
         var correctAspectRatio = CorrectAspectRatio.GetValue(context);
         var zScale = ZScale.GetValue(context);
         var constantSize = ConstantSize.GetValue(context);
@@ -98,7 +112,7 @@ public class HandLandmarkDetection : Instance<HandLandmarkDetection>
         if (!enabled || inputTexture == null || inputTexture.IsDisposed)
         {
             OutputTexture.Value = inputTexture!;
-            StopWorker(debug);
+            StopWorker();
             ClearOutputs();
             return;
         }
@@ -110,15 +124,29 @@ public class HandLandmarkDetection : Instance<HandLandmarkDetection>
         _activeConstantSize = constantSize;
         _activeHandSize = handSize;
 
-        if (_processingTask == null || _processingTask.IsCompleted || _handLandmarker == null ||
-            maxHands != _activeMaxHands ||
-            Acceleration.GetValue(context) != _activeAcceleration || InferenceThreads.GetValue(context) != _activeInferenceThreads ||
-            Math.Abs(minHandDetectionConfidence - _activeMinHandDetectionConfidence) > 0.001f ||
-            Math.Abs(minHandPresenceConfidence - _activeMinHandPresenceConfidence) > 0.001f ||
-            Math.Abs(minTrackingConfidence - _activeMinTrackingConfidence) > 0.001f)
+        var acceleration = Acceleration.GetValue(context);
+        var inferenceThreads = InferenceThreads.GetValue(context);
+        var parametersChanged = maxHands != _activeMaxHands
+                                || acceleration != _activeAcceleration
+                                || inferenceThreads != _activeInferenceThreads
+                                || Math.Abs(minHandDetectionConfidence - _activeMinHandDetectionConfidence) > 0.001f
+                                || Math.Abs(minHandPresenceConfidence - _activeMinHandPresenceConfidence) > 0.001f
+                                || Math.Abs(minTrackingConfidence - _activeMinTrackingConfidence) > 0.001f;
+        if (parametersChanged)
+            _initAttempts = 0;
+
+        var initializing = _handLandmarker is null && _processingTask is { IsCompleted: false };
+        var initNeeded = !initializing && (_processingTask == null || _processingTask.IsCompleted || _handLandmarker is null || parametersChanged);
+        var retryDelayMs = MediaPipeInitRetry.BackoffMs(_initAttempts);
+        var retryBlocked = _handLandmarker == null && _initAttempts > 0
+                           && Environment.TickCount64 - _lastInitAttemptTicks < retryDelayMs;
+
+        if (initNeeded && !retryBlocked)
         {
-            _activeAcceleration = Acceleration.GetValue(context);
-            _activeInferenceThreads = InferenceThreads.GetValue(context);
+            _activeAcceleration = acceleration;
+            _activeInferenceThreads = inferenceThreads;
+            _lastInitAttemptTicks = Environment.TickCount64;
+            _initAttempts++;
             InitializeWorker(maxHands, minHandDetectionConfidence, minHandPresenceConfidence, minTrackingConfidence, debug);
         }
 
@@ -141,21 +169,18 @@ public class HandLandmarkDetection : Instance<HandLandmarkDetection>
 
         while (_outputQueue.TryDequeue(out var result))
         {
-            if (result.HandCount > 0)
+            if (_currentResult != null)
             {
-                if (_currentResult != null)
-                {
-                    ReturnPointArrayToPool(_currentResult.Landmarks);
-                    ReturnPointArrayToPool(_currentResult.WorldLandmarks);
-                }
-                _currentResult = result;
+                ReturnPointArrayToPool(_currentResult.Landmarks);
+                ReturnPointArrayToPool(_currentResult.WorldLandmarks);
             }
-            else
-            {
-                ReturnPointArrayToPool(result.Landmarks);
-                ReturnPointArrayToPool(result.WorldLandmarks);
-            }
+
+            // Assign every packet, including an empty one. Keeping the last non-empty result
+            // latched the outputs onto the last face/hand/pose ever seen instead of reporting
+            // that it left the frame - and made the count-zero paths unreachable.
+            _currentResult = result;
         }
+
 
         if (_currentResult != null)
         {
@@ -182,14 +207,14 @@ public class HandLandmarkDetection : Instance<HandLandmarkDetection>
     {
         HandCount.Value = 0;
         _landmarksArray = null;
-        
+
         if (_currentResult != null)
         {
             ReturnPointArrayToPool(_currentResult.Landmarks);
             ReturnPointArrayToPool(_currentResult.WorldLandmarks);
             _currentResult = null;
         }
-        
+
         DebugTexture.Value = null!;
         WorldLandmarksBuffer.Value = null!;
         PointBuffer.Value = null!;
@@ -205,12 +230,14 @@ public class HandLandmarkDetection : Instance<HandLandmarkDetection>
 
     private Task? _processingTask;
     private volatile bool _workerBusy;
+    private long _lastInitAttemptTicks;
+    private int _initAttempts;
     private CancellationTokenSource? _cancellationTokenSource;
     private readonly ConcurrentQueue<HandLandmarkDetectionRequest> _inputQueue = new();
     private readonly ConcurrentQueue<HandLandmarkDetectionResultPacket> _outputQueue = new();
     private HandLandmarkDetectionResultPacket? _currentResult;
     private int _latencyLogCounter;
-    
+
     private int _activeMaxHands = -1;
     private MediaPipeAcceleration? _activeAcceleration;
     private volatile bool _activeConstantSize;
@@ -219,115 +246,122 @@ public class HandLandmarkDetection : Instance<HandLandmarkDetection>
     private float _activeMinHandDetectionConfidence = -1f;
     private float _activeMinHandPresenceConfidence = -1f;
     private float _activeMinTrackingConfidence = -1f;
-    
+
+    private volatile bool _disposed;
     private readonly object _workerLock = new object();
-    
-    private readonly ConcurrentDictionary<(int width, int height), T3.Graphics.Compat.Texture2D> _cachedStagingTextures = new();
+    private readonly MediaPipeWorkerReaper _reaper = new();
+
+    private readonly ConcurrentDictionary<(int width, int height, T3.Graphics.Format format), T3.Graphics.Compat.Texture2D> _cachedStagingTextures = new();
+
     private readonly object _textureCacheLock = new object();
-    
-    private readonly ConcurrentBag<Mat> _matPool = new();
+
     private readonly ConcurrentBag<byte[]> _bufferPool = new();
     private readonly ConcurrentDictionary<int, ConcurrentBag<Point[]>> _pointArrayPool = new();
     private readonly object _poolLock = new object();
 
     #endregion
-    
+
     #region Worker Thread
     private void InitializeWorker(int maxHands, float minHandDetectionConfidence, float minHandPresenceConfidence, float minTrackingConfidence, bool debug)
     {
-        StopWorker(debug);
+        StopWorker();
         _activeMaxHands = maxHands;
         _activeMinHandDetectionConfidence = minHandDetectionConfidence;
         _activeMinHandPresenceConfidence = minHandPresenceConfidence;
         _activeMinTrackingConfidence = minTrackingConfidence;
 
+        // Registry lookup only - the native landmarker creation runs on the worker below.
+        var modelFound = AssetRegistry.TryResolveAddress("Mediapipe:hand_landmarker.task", this, out var fullPath, out _, logWarnings: true);
+        if (!modelFound)
+        {
+            // Not Debug-gated: a missing asset is the one failure a user has to act on, and the retry
+                // backoff keeps this to one message per backoff window.
+                Log.Warning($"[HandLandmarkDetection] Model not found: {fullPath}", this);
+            return;
+        }
+
+        var acceleration = _activeAcceleration ?? MediaPipeAcceleration.Cpu;
+        var inferenceThreads = _activeInferenceThreads;
+
+        _cancellationTokenSource = new CancellationTokenSource();
+        var token = _cancellationTokenSource.Token;
+        _processingTask = Task.Run(() => InitializeAndRunWorker(fullPath, acceleration, inferenceThreads, maxHands,
+                                                                minHandDetectionConfidence, minHandPresenceConfidence,
+                                                                minTrackingConfidence, token, debug), token);
+    }
+
+    private void InitializeAndRunWorker(string fullPath, MediaPipeAcceleration acceleration, int inferenceThreads, int maxHands,
+                                        float minHandDetectionConfidence, float minHandPresenceConfidence, float minTrackingConfidence,
+                                        CancellationToken token, bool debug)
+    {
+        HandLandmarker? landmarker = null;
         try
         {
-            lock (_workerLock)
+            var delegateCase = acceleration == MediaPipeAcceleration.Xnnpack ? Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.Xnnpack
+                : acceleration == MediaPipeAcceleration.Gpu ? Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.GPU
+                : Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU;
+
+            HandLandmarkerOptions BuildOptions(Mediapipe.Tasks.Core.CoreBaseOptions.Delegate selected) => new(
+                new Mediapipe.Tasks.Core.CoreBaseOptions(modelAssetPath: fullPath, delegateCase: selected, numThreads: inferenceThreads),
+                VisionRunningMode.VIDEO,
+                maxHands,
+                minHandDetectionConfidence,
+                minHandPresenceConfidence,
+                minTrackingConfidence
+            );
+
+            try
             {
-                var modelFound = AssetRegistry.TryResolveAddress("Mediapipe:hand_landmarker.task", this, out var fullPath, out _, logWarnings:true);
-                
-                // string modelPath = "../../../../Operators/Mediapipe/Resources/hand_landmarker.task";
-                // string fullPath = System.IO.Path.GetFullPath(modelPath);
-                // AssetRegistry.TryResolveAddress("Lib:resources/mediapipe/hand_landmarker.task", this, out var absolutePath, out _);
-                // string[] possibleModelPaths = {
-                //     absolutePath,
-                //     fullPath,
-                //     System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Models", "hand_landmarker.task"),
-                //     System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "Models", "hand_landmarker.task"),
-                //     "../../Mediapipe-Sharp/src/Mediapipe/Models/hand_landmarker.task",
-                //     "../../../Mediapipe-Sharp/src/Mediapipe/Models/hand_landmarker.task"
-                // };
-                //
-                // bool modelFound = false;
-                // foreach (string path in possibleModelPaths)
-                // {
-                //     if (System.IO.File.Exists(path))
-                //     {
-                //         fullPath = System.IO.Path.GetFullPath(path);
-                //         modelFound = true;
-                //         break;
-                //     }
-                // }
+                landmarker = HandLandmarker.CreateFromOptions(BuildOptions(delegateCase));
+            }
+            catch (Exception gpuEx) when (acceleration != MediaPipeAcceleration.Cpu)
+            {
+                Log.Warning($"[HandLandmarkDetection] GPU acceleration not available ({gpuEx.Message}) - using CPU.", this);
+                landmarker = HandLandmarker.CreateFromOptions(BuildOptions(Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU));
+            }
 
-                if (!modelFound)
+            if (landmarker == null)
+                return;
+
+            var published = false;
+            lock (_handLandmarkerLock)
+            {
+                if (!token.IsCancellationRequested)
                 {
-                    if (debug) Log.Error($"[HandLandmarkDetection] Model not found: {fullPath}", this);
-                    return;
-                }
-
-                var acceleration = _activeAcceleration ?? MediaPipeAcceleration.Cpu;
-//var wantsGpu = acceleration == MediaPipeAcceleration.Gpu;
-var delegateCase = acceleration == MediaPipeAcceleration.Xnnpack ? Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.Xnnpack
-        : acceleration == MediaPipeAcceleration.Gpu ? Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.GPU
-        : Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU;
-var inferenceThreads = _activeInferenceThreads;
-                HandLandmarkerOptions BuildOptions(Mediapipe.Tasks.Core.CoreBaseOptions.Delegate delegateCase) => new(
-                    new Mediapipe.Tasks.Core.CoreBaseOptions(modelAssetPath: fullPath, delegateCase: delegateCase, numThreads: inferenceThreads),
-                    VisionRunningMode.VIDEO,
-                    maxHands,
-                    minHandDetectionConfidence,
-                    minHandPresenceConfidence,
-                    minTrackingConfidence
-                );
-
-                HandLandmarker? landmarker = null;
-                lock (_handLandmarkerLock)
-                {
-                    try
-                    {
-                        landmarker = HandLandmarker.CreateFromOptions(BuildOptions(delegateCase));
-                    }
-                    catch (Exception gpuEx) when (acceleration != MediaPipeAcceleration.Cpu)
-                    {
-                        // The Windows/macOS natives are CPU-only builds, and GPU delegates additionally
-                        // need a working GL/EGL context - never worth crashing the op over.
-                        Log.Warning($"[HandLandmarkDetection] GPU acceleration not available ({gpuEx.Message}) - using CPU.", this);
-                        landmarker = HandLandmarker.CreateFromOptions(BuildOptions(Mediapipe.Tasks.Core.CoreBaseOptions.Delegate.CPU));
-                    }
                     _handLandmarker = landmarker;
-                }
-
-                if (landmarker != null)
-                {
-                    _cancellationTokenSource = new CancellationTokenSource();
-                    var token = _cancellationTokenSource.Token;
-                    // The worker loop owns this instance; StopWorker closes it only after that task has
-                    // exited, so DetectForVideo can never run on a closed landmarker.
-                    _processingTask = Task.Run(() => WorkerLoop(token, landmarker, debug), token);
+                    published = true;
                 }
             }
+
+            if (!published)
+            {
+                try { MediaPipeWorkerReaper.CloseNative(landmarker); } catch { }
+                return;
+            }
+
+            // A later failure starts its backoff from the first step again.
+            _initAttempts = 0;
+
+            // The worker loop owns this instance; StopWorker closes it only after this task exits.
+            WorkerLoop(token, landmarker, debug);
         }
         catch (Exception ex)
         {
-            if (debug) Log.Error($"[HandLandmarkDetection] Init Failed: {ex.Message}", this);
-            lock (_handLandmarkerLock)
+            // Warning, not Debug-gated: this is the path a missing native library, a rejected
+            // delegate or an unreadable model takes, and "nothing happens" with no log is
+            // the worst failure mode. The retry backoff limits it to one message per window.
+            Log.Warning($"[HandLandmarkDetection] Initialization failed: {ex.Message}", this);
+            if (landmarker != null)
             {
-                _handLandmarker = null;
+                try { MediaPipeWorkerReaper.CloseNative(landmarker); } catch { }
+                lock (_handLandmarkerLock)
+                {
+                    if (ReferenceEquals(_handLandmarker, landmarker))
+                        _handLandmarker = null;
+                }
             }
         }
     }
-
     private void WorkerLoop(CancellationToken token, HandLandmarker landmarker, bool debug)
     {
         while (!token.IsCancellationRequested)
@@ -406,72 +440,63 @@ var inferenceThreads = _activeInferenceThreads;
         }
     }
 
-    private void StopWorker(bool debug)
+    private void StopWorker()
     {
         lock (_workerLock)
         {
-            _cancellationTokenSource?.Cancel();
+            var cancellation = _cancellationTokenSource;
+            _cancellationTokenSource = null;
+            cancellation?.Cancel();
+
             var task = _processingTask;
             _processingTask = null;
 
-            HandLandmarker? landmarker;
+            HandLandmarker? nativeTask;
             lock (_handLandmarkerLock)
             {
-                landmarker = _handLandmarker;
+                nativeTask = _handLandmarker;
                 _handLandmarker = null;
             }
 
-            if (landmarker != null)
+            // The task API blocks inside native inference and offers no cancellation, so the native
+            // instance may only be closed after this worker has fully exited - closing it earlier is a
+            // use-after-free in native code. The reaper waits on the thread pool, so the evaluation
+            // thread never blocks on an in-flight inference.
+            _reaper.Queue(task, nativeTask, cancellation);
+
+            while (_inputQueue.TryDequeue(out var pendingRequest))
             {
-                // DetectForVideo cannot be interrupted and runs on the worker outside every lock, so
-                // Close() must wait until that task has fully exited or it is a use-after-free in
-                // native code. The worker loop holds its own reference, making the hand-off safe
-                // without ever blocking the eval thread on an in-flight inference.
-                Task.Run(async () =>
-                {
-                    if (task != null)
-                    {
-                        try { await task; }
-                        catch (Exception) { }
-                    }
-                    try
-                    {
-                        landmarker.Close();
-                    }
-                    catch (Exception ex)
-                    {
-                        if (debug) Log.Error($"[HandLandmarkDetection] Error closing HandLandmarker: {ex.Message}", this);
-                    }
-                });
+                ReturnBufferToPool(pendingRequest.PixelData);
             }
 
-            while (_inputQueue.TryDequeue(out var req))
+            // Results still in flight when the worker stopped own pooled arrays.
+            while (_outputQueue.TryDequeue(out var staleResult))
             {
-                ReturnBufferToPool(req.PixelData);
+                ReturnPointArrayToPool(staleResult.Landmarks);
+                ReturnPointArrayToPool(staleResult.WorldLandmarks);
             }
-            while (_outputQueue.TryDequeue(out _)) { }
         }
     }
-    
+
     #endregion
 
     #region Memory Management
     private T3.Graphics.Compat.Texture2D GetOrCreateStagingTexture(int width, int height, T3.Graphics.Format format)
     {
-        var key = (width, height);
-        
+        var key = (width, height, format);
+
         if (_cachedStagingTextures.TryGetValue(key, out var cachedTexture))
         {
             return cachedTexture;
         }
-        
+
         lock (_textureCacheLock)
         {
             if (_cachedStagingTextures.TryGetValue(key, out cachedTexture))
             {
                 return cachedTexture;
             }
-            
+
             var device = ResourceManager.Device;
             var newTexture = new T3.Graphics.Compat.Texture2D(device, new Texture2DDescription
             {
@@ -480,36 +505,24 @@ var inferenceThreads = _activeInferenceThreads;
                 Usage = ResourceUsage.Staging, BindFlags = BindFlags.None,
                 CpuAccessFlags = CpuAccessFlags.Read, OptionFlags = ResourceOptionFlags.None
             });
-            
+
+            // A resized window or a switched camera produces a new size per step, so an uncapped
+            // cache would keep one full-resolution staging texture per distinct size for the life
+            // of the operator. Only the current size is reused frame to frame.
+            if (_cachedStagingTextures.Count >= MaxCachedStagingTextures)
+            {
+                foreach (var stale in _cachedStagingTextures)
+                {
+                    stale.Value?.Dispose();
+                }
+                _cachedStagingTextures.Clear();
+            }
+
             _cachedStagingTextures[key] = newTexture;
             return newTexture;
         }
     }
-    
-    private Mat GetMat(int rows, int cols, MatType type)
-    {
-        if (_matPool.TryTake(out var mat))
-        {
-            if (mat.Rows == rows && mat.Cols == cols && mat.Type() == type)
-            {
-                return mat;
-            }
-            else
-            {
-                mat.Dispose();
-            }
-        }
-        return new Mat(rows, cols, type);
-    }
-    
-    private void ReturnMatToPool(Mat? mat)
-    {
-        if (mat != null && !mat.IsDisposed)
-        {
-            _matPool.Add(mat);
-        }
-    }
-    
+
     private byte[] GetBuffer(int size)
     {
         if (_bufferPool.TryTake(out var b) && b.Length == size) return b;
@@ -521,9 +534,11 @@ var inferenceThreads = _activeInferenceThreads;
 
     private void ReturnBufferToPool(byte[]? b)
     {
-        if (b != null) _bufferPool.Add(b);
+        // Bounded: each buffer is pinned for its whole life, so a resolution change must not
+            // leave one permanently pinned array per historic size behind.
+            if (b != null && _bufferPool.Count < MaxPooledBuffers) _bufferPool.Add(b);
     }
-    
+
     private Point[] GetPointArray(int size)
     {
         if (!_pointArrayPool.TryGetValue(size, out var pool))
@@ -537,15 +552,15 @@ var inferenceThreads = _activeInferenceThreads;
                 }
             }
         }
-        
+
         if (pool.TryTake(out var arr))
         {
             return arr;
         }
-        
+
         return new Point[size];
     }
-    
+
     private void ReturnPointArrayToPool(Point[]? arr)
     {
         if (arr != null)
@@ -568,75 +583,34 @@ var inferenceThreads = _activeInferenceThreads;
 
     private HandLandmarkDetectionRequest? CreateRequestFromTexture(Texture2D texture)
     {
-        var device = ResourceManager.Device;
         var desc = texture.Description;
-        int width = desc.Width;
-        int height = desc.Height;
 
-        var stagingTexture = GetOrCreateStagingTexture(width, height, desc.Format);
-
-        device.ImmediateContext.CopyResource(texture, stagingTexture);
-        var dataBox = device.ImmediateContext.MapSubresource(stagingTexture, 0, MapMode.Read, MapFlags.None);
-
-        if (dataBox.DataPointer == IntPtr.Zero)
+        // One readback per evaluation frame serves every MediaPipe operator reading this texture: the
+        // mapped copy costs ~2 ms at 1080p and barely less at 640 px, so seven operators on one camera
+        // would otherwise pay it seven times for byte-identical pixels.
+        if (!MediaPipeFrameCache.TryGet(texture, MaxInferenceWidth, 3, out var frame,
+                                        out var inferenceWidth, out var inferenceHeight, out var readbackError))
         {
-            device.ImmediateContext.UnmapSubresource(stagingTexture, 0);
+            Log.Debug($"[HandLandmark] Texture readback failed: {readbackError}", this);
             return null;
         }
 
-        try
+        // The cached array is shared and read-only for this frame; the worker still gets its own pooled
+        // copy because the native Image keeps that pointer for the duration of the inference.
+        byte[] buffer = GetBuffer(frame.Length);
+        System.Buffer.BlockCopy(frame, 0, buffer, 0, frame.Length);
+
+        long ts;
+        lock(_timestampLock) { ts = _frameTimestamp; _frameTimestamp += 33; }
+
+        return new HandLandmarkDetectionRequest
         {
-            // MediaPipe resizes to its model input (~224px) internally; feeding the full camera image
-            // makes that resize - and every memcpy around it - several times more expensive than the
-            // inference itself. Downsample on the way out (the landmarker needs nowhere near 1080p).
-            var downscale = Math.Min(1.0f, (float)MaxInferenceWidth / width);
-            var inferenceWidth = Math.Max(1, (int)(width * downscale));
-            var inferenceHeight = Math.Max(1, (int)(height * downscale));
-
-            byte[] buffer = GetBuffer(inferenceWidth * inferenceHeight * 3);
-            unsafe
-            {
-                IntPtr srcPtr = dataBox.DataPointer;
-                int rowPitch = dataBox.RowPitch;
-
-                fixed (byte* dst = buffer)
-                {
-                    IntPtr dstPtr = (IntPtr)dst;
-                    float sourceXStep = (float)width / inferenceWidth;
-                    float sourceYStep = (float)height / inferenceHeight;
-
-                    Parallel.For(0, inferenceHeight, iy =>
-                    {
-                        byte* rowSrc = (byte*)srcPtr + ((int)(iy * sourceYStep)) * rowPitch;
-                        byte* rowDst = (byte*)dstPtr + iy * inferenceWidth * 3;
-
-                        for (int ix = 0; ix < inferenceWidth; ix++)
-                        {
-                            int sx = (int)(ix * sourceXStep);
-                            rowDst[ix * 3] = rowSrc[sx * 4];     // R
-                            rowDst[ix * 3 + 1] = rowSrc[sx * 4 + 1]; // G
-                            rowDst[ix * 3 + 2] = rowSrc[sx * 4 + 2];     // B
-                        }
-                    });
-                }
-            }
-
-            long ts;
-            lock(_timestampLock) { ts = _frameTimestamp; _frameTimestamp += 33333; }
-
-            return new HandLandmarkDetectionRequest
-            {
-                PixelData = buffer,
-                Width = inferenceWidth,
-                Height = inferenceHeight,
-                Timestamp = ts,
-                SentTickCount = Environment.TickCount64
-            };
-        }
-        finally
-        {
-            device.ImmediateContext.UnmapSubresource(stagingTexture, 0);
-        }
+            PixelData = buffer,
+            Width = inferenceWidth,
+            Height = inferenceHeight,
+            Timestamp = ts,
+            SentTickCount = Environment.TickCount64
+        };
     }
     #endregion
 
@@ -652,7 +626,7 @@ var inferenceThreads = _activeInferenceThreads;
 
         HandCount.Value = result.HandCount;
         _landmarksArray = result.Landmarks;
-        
+
         float aspectRatio = 1.0f;
         if (correctAspectRatio && inputTexture != null!)
         {
@@ -663,19 +637,19 @@ var inferenceThreads = _activeInferenceThreads;
         for (int i = 0; i < result.Landmarks.Length; i++)
         {
             var p = result.Landmarks[i];
-            
+
             p.Position.X *= 2.0f;
             if (correctAspectRatio)
             {
                 p.Position.X *= aspectRatio;
             }
-            
+
             p.Position.Y *= 2.0f;
             p.Position.Z *= zScale;
-            
+
             processedLandmarks[i] = p;
         }
-        
+
         UpdateBuffer(result.WorldLandmarks, ref _worldLandmarksBufferWithViews, WorldLandmarksBuffer);
         UpdateBuffer(processedLandmarks, ref _pointBufferWithViews, PointBuffer);
     }
@@ -692,7 +666,7 @@ var inferenceThreads = _activeInferenceThreads;
         }
 
         int stride = System.Runtime.InteropServices.Marshal.SizeOf<T3.Core.DataTypes.Point>();
-        
+
         if (bufferWithViews == null)
         {
             bufferWithViews = new BufferWithViews();
@@ -705,13 +679,13 @@ var inferenceThreads = _activeInferenceThreads;
         }
 
         ResourceManager.SetupStructuredBuffer(structuredList.TypedElements, stride * points.Length, stride, ref bufferWithViews.Buffer);
-        
+
         if (bufferWithViews.Buffer != null)
         {
              if (bufferWithViews.Srv == null || bufferWithViews.Srv.Description.Buffer.ElementCount != points.Length)
              {
                  bufferWithViews.Srv?.Dispose();
-                 bufferWithViews.Srv = new ShaderResourceView(ResourceManager.Device, bufferWithViews.Buffer, 
+                 bufferWithViews.Srv = new ShaderResourceView(ResourceManager.Device, bufferWithViews.Buffer,
                      new ShaderResourceViewDescription
                      {
                          Format = T3.Graphics.Format.Unknown,
@@ -723,7 +697,7 @@ var inferenceThreads = _activeInferenceThreads;
                          }
                      });
              }
-             
+
              if (bufferWithViews.Uav == null || bufferWithViews.Uav.Description.Buffer.ElementCount != points.Length)
              {
                  bufferWithViews.Uav?.Dispose();
@@ -740,7 +714,7 @@ var inferenceThreads = _activeInferenceThreads;
                          }
                      });
              }
-             
+
              slot.Value = bufferWithViews;
         }
     }
@@ -921,19 +895,15 @@ var inferenceThreads = _activeInferenceThreads;
 
         // Stops the worker task and hands the landmarker to its deferred closer - closing it here
         // directly could hit a frame still running on the worker thread.
-        StopWorker(false);
+        _disposed = true;
+        StopWorker();
 
-        try
-        {
-            lock (_handLandmarkerLock)
-            {
-                _handLandmarker?.Close();
-                _handLandmarker = null;
-            }
-        }
-        catch (Exception)
-        {
-        }
+        // The reaper owns the native instance now; give a running inference a moment to
+        // return, but never hang shutdown on a wedged native library.
+        _reaper.WaitForPending(2000);
+
+        _debugTexture?.Dispose();
+        _debugTexture = null;
 
         _debugTexture?.Dispose();
         _debugTexture = null;
@@ -947,14 +917,6 @@ var inferenceThreads = _activeInferenceThreads;
             _cachedStagingTextures.Clear();
         }
 
-        lock (_poolLock)
-        {
-            while (_matPool.TryTake(out var mat))
-            {
-                mat?.Dispose();
-            }
-            _matPool.Clear();
-        }
 
         lock (_poolLock)
         {
@@ -984,7 +946,7 @@ var inferenceThreads = _activeInferenceThreads;
             _worldLandmarksBufferWithViews.Buffer?.Dispose();
             _worldLandmarksBufferWithViews = null;
         }
-        
+
         if (_pointBufferWithViews != null)
         {
             _pointBufferWithViews.Srv?.Dispose();
@@ -1012,7 +974,7 @@ var inferenceThreads = _activeInferenceThreads;
 
     [Input(Guid = "90abcdef-1234-5678-90ab-cdef12345678")]
     public readonly InputSlot<float> MinHandPresenceConfidence = new(0.5f);
-    
+
     [Input(Guid = "0abcdef1-2345-6789-0abc-def123456789")]
     public readonly InputSlot<float> MinTrackingConfidence = new(0.5f);
 
@@ -1028,9 +990,11 @@ var inferenceThreads = _activeInferenceThreads;
     [Input(Guid = "a1b2c3d4-0001-4a9b-8c2d-101010101010")]
     public readonly InputSlot<MediaPipeAcceleration> Acceleration = new(MediaPipeAcceleration.Xnnpack);
 
-    /// <summary>Worker threads for the Xnnpack acceleration (0 = library default). Ignored by Cpu and Gpu.</summary>
+    /// <summary>Worker threads for the Xnnpack acceleration (0 = library default, which is effectively
+        /// single-threaded). 4 is ~2x faster than the default on a 20-core machine; use 2 when
+        /// several MediaPipe operators run at once. Ignored by Cpu and Gpu.</summary>
     [Input(Guid = "a1b2c3d4-1001-4a9b-8c2d-101010101010")]
-    public readonly InputSlot<int> InferenceThreads = new(0);
+    public readonly InputSlot<int> InferenceThreads = new(DefaultInferenceThreads);
 
     /// <summary>Rescales each hand's landmark cloud around its wrist so its size no longer depends
     /// on the distance to the camera.</summary>
@@ -1045,35 +1009,60 @@ var inferenceThreads = _activeInferenceThreads;
     [Input(Guid = "cdef1234-5678-90ab-cdef-1234567890ab")]
     public readonly InputSlot<float> ZScale = new(1.0f);
     #endregion
-    
+
     #region Texture Conversion (Minimal OpenCV Usage)
-    private Mat Texture2DToMat(Texture2D texture)
+private Mat Texture2DToMat(Texture2D texture)
+{
+    var device = ResourceManager.Device;
+    var desc = texture.Description;
+
+    var stagingTexture = GetOrCreateStagingTexture(desc.Width, desc.Height, desc.Format);
+    try
     {
-        var device = ResourceManager.Device;
-        var desc = texture.Description;
-
-        var stagingTexture = GetOrCreateStagingTexture(desc.Width, desc.Height, desc.Format);
         device.ImmediateContext.CopyResource(texture, stagingTexture);
-
-        var dataBox = device.ImmediateContext.MapSubresource(stagingTexture, 0, MapMode.Read, MapFlags.None);
-        if (dataBox.DataPointer == IntPtr.Zero)
-        {
-            device.ImmediateContext.UnmapSubresource(stagingTexture, 0);
-            return new Mat();
-        }
-
-        var mat = GetMat(desc.Height, desc.Width, MatType.CV_8UC4);
-        try
-        {
-            T3.Graphics.Compat.GraphicsUtilities.CopyMemory(mat.Data, dataBox.DataPointer, (int)mat.Total() * mat.ElemSize());
-        }
-        finally
-        {
-            device.ImmediateContext.UnmapSubresource(stagingTexture, 0);
-        }
-
-        Cv2.CvtColor(mat, mat, ColorConversionCodes.RGBA2BGRA);
-        return mat;
     }
+    catch (Exception ex)
+    {
+        Log.Warning($"[HandLandmark] Debug readback failed: {ex.Message}", this);
+        return new Mat();
+    }
+
+    var dataBox = device.ImmediateContext.MapSubresource(stagingTexture, 0, MapMode.Read, MapFlags.None);
+    if (dataBox.DataPointer == IntPtr.Zero)
+    {
+        device.ImmediateContext.UnmapSubresource(stagingTexture, 0);
+        return new Mat();
+    }
+
+    // Driver row pitch is not guaranteed to be width * 4: copying width * height * 4 bytes
+    // contiguously shears the image whenever rows are padded, and on a tightly allocated
+    // staging texture it reads past the mapped region. Copy row by row instead.
+    var rowBytes = desc.Width * 4;
+    if (dataBox.RowPitch < rowBytes)
+    {
+        Log.Warning($"[HandLandmark] Debug readback: row pitch {dataBox.RowPitch} < {rowBytes}.", this);
+        device.ImmediateContext.UnmapSubresource(stagingTexture, 0);
+        return new Mat();
+    }
+
+    var mat = new Mat(desc.Height, desc.Width, MatType.CV_8UC4);
+    try
+    {
+        var stride = (int)mat.Step();
+        for (var y = 0; y < desc.Height; y++)
+        {
+            T3.Graphics.Compat.GraphicsUtilities.CopyMemory(mat.Data + y * stride,
+                                                            dataBox.DataPointer + y * dataBox.RowPitch,
+                                                            rowBytes);
+        }
+    }
+    finally
+    {
+        device.ImmediateContext.UnmapSubresource(stagingTexture, 0);
+    }
+
+    Cv2.CvtColor(mat, mat, ColorConversionCodes.RGBA2BGRA);
+    return mat;
+}
     #endregion
 }

@@ -56,7 +56,7 @@ cbuffer Params : register(b0)
     float Smoothing;                // 0..1 blend toward the local average
     float SmoothingRadius;          // smoothing reach in voxels
     float Invert;                   // 1 = flip inside/outside sign
-    float Padding4;
+    float BandRowStart;            // ClosestPointBrute: first row of this dispatch's band
     float Padding5;
 }
 
@@ -307,11 +307,24 @@ void Postprocess(uint3 id : SV_DispatchThreadID)
 {
     if (any(id >= VoxelSize))
         return;
+
+    // A voxel that never found a seed (the mesh has no surface inside the bake box, e.g. the
+    // mesh moved out or AutoFit is off and the box is elsewhere) keeps w==0 and seedPos==id:
+    // without this guard its distance computes as 0, which the raymarcher treats as a surface
+    // hit at the first step - the whole box renders as one solid block.
+    if (VoxelRead.Load(int4(id, 0)).w == 0.0)
+    {
+        SdfWrite[id] = ClearValue;
+        return;
+    }
+
     float3 seedPos = VoxelRead.Load(int4(id, 0)).xyz;
     float3 delta = seedPos - float3(id);
     float dist = sqrt(dot(delta, delta)) / DistanceNormalization;
     bool inside = Signed > 0.5 && InsideMaskRead.Load(int4(id, 0)) >= InsideVoteThreshold;
-    if (Invert > 0.5)
+    // Inverting is only meaningful for a signed field; in unsigned mode `inside` is
+    // always false, so flipping it would turn the whole volume negative.
+    if (Invert > 0.5 && Signed > 0.5)
         inside = !inside;
     SdfWrite[id] = inside ? -dist : dist;
 }
@@ -336,7 +349,7 @@ float PointTriangleDistSq(float3 p, float3 a, float3 b, float3 c)
     float vc = d1 * d4 - d3 * d2;
     if (vc <= 0 && d1 >= 0 && d3 <= 0)
     {
-        float v = d1 / (d1 - d3);
+        float v = d1 / max(d1 - d3, 1e-20); // max() keeps degenerate triangles from producing 0/0
         float3 q = a + ab * v - p;
         return dot(q, q);
     }
@@ -348,18 +361,18 @@ float PointTriangleDistSq(float3 p, float3 a, float3 b, float3 c)
     float vb = d5 * d2 - d1 * d6;
     if (vb <= 0 && d2 >= 0 && d6 <= 0)
     {
-        float w = d2 / (d2 - d6);
+        float w = d2 / max(d2 - d6, 1e-20);
         float3 q = a + ac * w - p;
         return dot(q, q);
     }
     float va = d3 * d6 - d5 * d4;
     if (va <= 0 && (d4 - d3) >= 0 && (d5 - d6) >= 0)
     {
-        float w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+        float w = (d4 - d3) / max((d4 - d3) + (d5 - d6), 1e-20);
         float3 q = b + (c - b) * w - p;
         return dot(q, q);
     }
-    float denom = 1.0 / (va + vb + vc);
+    float denom = 1.0 / max(va + vb + vc, 1e-20);
     float v = vb * denom;
     float w = vc * denom;
     float3 q = a + ab * v + ac * w - p;
@@ -371,7 +384,9 @@ float PointTriangleDistSq(float3 p, float3 a, float3 b, float3 c)
 [numthreads(8, 8, 1)]
 void ClosestPointBrute(uint3 tid : SV_DispatchThreadID)
 {
-    uint3 id = uint3(tid.x, tid.y, (uint)SliceZ);
+    // The slice is split into row bands on the CPU so one dispatch can never run past
+    // the OS GPU watchdog; BandRowStart is this dispatch's first row.
+    uint3 id = uint3(tid.x, (uint)BandRowStart + tid.y, (uint)SliceZ);
     if (any(id >= VoxelSize))
         return;
 
@@ -398,7 +413,9 @@ void ApplyInsideSign(uint3 id : SV_DispatchThreadID)
         return;
     float dist = VoxelRead.Load(int4(id, 0)).x;
     bool inside = Signed > 0.5 && InsideMaskRead.Load(int4(id, 0)) >= InsideVoteThreshold;
-    if (Invert > 0.5)
+    // Inverting is only meaningful for a signed field; in unsigned mode `inside` is
+    // always false, so flipping it would turn the whole volume negative.
+    if (Invert > 0.5 && Signed > 0.5)
         inside = !inside;
     SdfWrite[id] = inside ? -dist : dist;
 }
@@ -472,7 +489,9 @@ void FinalizeSdfScatter(uint3 id : SV_DispatchThreadID)
         return;
     float dist = abs(IFloatFlipDist(ScratchRead.Load(int4(id, 0))));
     bool inside = Signed > 0.5 && InsideMaskRead.Load(int4(id, 0)) >= InsideVoteThreshold;
-    if (Invert > 0.5)
+    // Inverting is only meaningful for a signed field; in unsigned mode `inside` is
+    // always false, so flipping it would turn the whole volume negative.
+    if (Invert > 0.5 && Signed > 0.5)
         inside = !inside;
     SdfWrite[id] = inside ? -dist : dist;
 }

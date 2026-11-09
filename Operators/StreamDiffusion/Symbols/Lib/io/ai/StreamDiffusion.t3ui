@@ -1,7 +1,7 @@
 {
   "FormatVersion": 3,
   "Id": "9a7b3c8d-4e2f-5a6b-7c8d-9e0f1a2b3c4d"/*StreamDiffusion*/,
-  "Description": "AI image generation using Stable Diffusion with ONNX Runtime. Supports text-to-image and image-to-image generation.\n\nThis operator runs SD 1.x / SD-Turbo models exported to ONNX. It can generate images from text prompts or transform existing images.\n\nTips:\n- Point `EnginePath` to a folder containing unet.onnx, text_encoder.onnx, vae_decoder.onnx and tokenizer files.\n- Add vae_encoder.onnx to enable img2img mode.\n- Use `TriggerGenerate` for manual generation or enable `AutoGenerate` for continuous output.\n- Adjust `Strength` in img2img mode to control how much the input influences the output.\n- Lower `Steps` = faster but lower quality; 1 step is good for SD Turbo models.\n- `Guidance` controls prompt adherence (1.0 = balanced, higher = stronger prompt).\n- Use `MatchInputSize` in img2img to preserve the input image dimensions.\n- `ResizeMode` controls how the input image fits the output size.\n- `PreserveDetails` blends the original input back into the result for structure retention.\n\nAKA: stable diffusion, ai, generation, diffusion, onnx, directml, streamdiffusion, txt2img, img2img",
+  "Description": "AI image generation using Stable Diffusion with ONNX Runtime. Supports text-to-image, image-to-image and continuous video streams.\n\nThis operator runs SD 1.x / SD-Turbo models exported to ONNX, or the causal Wan2.1 video model of StreamDiffusion V2. It can generate images from text prompts, transform existing images or restyle a live video stream.\n\nTips:\n- Point `EnginePath` to a folder containing unet.onnx, text_encoder.onnx, vae_decoder.onnx and tokenizer files.\n- Add vae_encoder.onnx to enable img2img mode.\n- Use `TriggerGenerate` for manual generation or enable `AutoGenerate` for continuous output.\n- Adjust `Strength` in img2img mode to control how much the input influences the output.\n- Lower `Steps` = faster but lower quality; 1 step is good for SD Turbo models.\n- `Guidance` controls prompt adherence (1.0 = balanced, higher = stronger prompt).\n- Use `MatchInputSize` in img2img to preserve the input image dimensions.\n- `ResizeMode` controls how the input image fits the output size.\n- `PreserveDetails` blends the original input back into the result for structure retention.\n- `ModelType` = StreamDiffusion V2 switches to the video pipeline: set Mode to Stream, point `EnginePath` at the V2 export folder, and use a CUDA or TensorRT GPU (DirectML is not supported for V2). Width/Height come from the export and Steps selects 1-4.\n\nAKA: stable diffusion, ai, generation, diffusion, onnx, directml, streamdiffusion, txt2img, img2img, streamdiffusion v2, video diffusion, wan",
   "InputUis": [
     {
       "InputId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"/*EnginePath*/,
@@ -59,6 +59,14 @@
       "Description": "Momentarily true to trigger a single generation when AutoGenerate is off."
     },
     {
+      "InputId": "b7c8d9e0-f1a2-3456-7890-123456789012"/*FastDecode*/,
+      "Position": {
+        "X": -250.0,
+        "Y": 525.0
+      },
+      "Description": "V2 only: decode one latent instead of a three-latent window. Saves about 20 ms per frame on TensorRT with slightly less temporal smoothing."
+    },
+    {
       "InputId": "b8c9d0e1-f2a3-4567-1234-678901234567"/*Guidance*/,
       "Position": {
         "X": -250.0,
@@ -109,7 +117,7 @@
         "X": -250.0,
         "Y": 200.0
       },
-      "Description": "Number of denoising steps. More = better quality but slower. SD Turbo models work well with 1 step.",
+      "Description": "Number of denoising steps. More = better quality but slower. SD Turbo models work well with 1 step. StreamDiffusion V2 uses 1-4 steps and restarts its stream when this changes.",
       "Min": 1,
       "Max": 50,
       "ClampMin": true
@@ -145,7 +153,7 @@
         "X": -250.0,
         "Y": 250.0
       },
-      "Description": "Source image for img2img mode. Ignored in txt2img mode."
+      "Description": "Source image for img2img and Stream mode. Ignored in txt2img mode. Accepts RGBA images and float render targets; linear float values are encoded to sRGB before generation."
     },
     {
       "InputId": "e2f3a4b5-c6d7-8901-2345-678901234567"/*ResizeMode*/,
@@ -169,7 +177,7 @@
         "X": -250.0,
         "Y": -250.0
       },
-      "Description": "Model variant label (informational only). The actual model is defined by the ONNX files in EnginePath. This does not change runtime behavior."
+      "Description": "Model family. Selects the pipeline for StreamDiffusion V2; for the Stable Diffusion options the exported files define the actual model. Changing it restarts the worker."
     },
     {
       "InputId": "f3a4b5c6-d7e8-9012-3456-789012345678"/*PreserveDetails*/,

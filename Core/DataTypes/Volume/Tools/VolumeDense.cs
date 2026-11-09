@@ -80,9 +80,19 @@ public static class VolumeDense
         if (bbox.IsEmpty)
             return null!;
 
-        var sizeX = Math.Clamp(bbox.Max.X - bbox.Min.X + 2, 1, maxSize);
-        var sizeY = Math.Clamp(bbox.Max.Y - bbox.Min.Y + 2, 1, maxSize);
-        var sizeZ = Math.Clamp(bbox.Max.Z - bbox.Min.Z + 2, 1, maxSize);
+        var srcExtentX = bbox.Max.X - bbox.Min.X + 2;
+        var srcExtentY = bbox.Max.Y - bbox.Min.Y + 2;
+        var srcExtentZ = bbox.Max.Z - bbox.Min.Z + 2;
+
+        // An axis beyond maxSize is downsampled proportionally instead of being cropped to the
+        // lower corner: the bake must cover the whole volume or the texture path renders a
+        // fragment of it with bounds that claim otherwise.
+        var sizeX = Math.Min(srcExtentX, maxSize);
+        var sizeY = Math.Min(srcExtentY, maxSize);
+        var sizeZ = Math.Min(srcExtentZ, maxSize);
+        var stepX = (float)srcExtentX / sizeX;
+        var stepY = (float)srcExtentY / sizeY;
+        var stepZ = (float)srcExtentZ / sizeZ;
 
         // Three individually clamped axes can still multiply past int.MaxValue (2048^3 is 8.6e9),
         // which would overflow the array length. Shrink all axes proportionally to the budget.
@@ -98,16 +108,20 @@ public static class VolumeDense
         var data = new float[sizeX * sizeY * sizeZ];
         for (var z = 0; z < sizeZ; z++)
         {
+            var srcZ = bbox.Min.Z + (int)(z * stepZ);
             for (var y = 0; y < sizeY; y++)
             {
+                var srcY = bbox.Min.Y + (int)(y * stepY);
                 for (var x = 0; x < sizeX; x++)
                 {
-                    data[x + y * sizeX + z * sizeX * sizeY] = grid.Tree.GetValue(new VdbCoord(bbox.Min.X + x, bbox.Min.Y + y, bbox.Min.Z + z));
+                    var srcX = bbox.Min.X + (int)(x * stepX);
+                    data[x + y * sizeX + z * sizeX * sizeY] = grid.Tree.GetValue(new VdbCoord(srcX, srcY, srcZ));
                 }
             }
         }
 
-        return new DenseVolume(data, sizeX, sizeY, sizeZ, bbox.Min, grid.Transform.VoxelSize, grid.Background);
+        return new DenseVolume(data, sizeX, sizeY, sizeZ, bbox.Min, grid.Transform.VoxelSize, grid.Background,
+                               new Vector3(stepX, stepY, stepZ));
     }
 
     /// <summary>Changes voxel size by trilinear resampling of the source grid.</summary>
@@ -165,6 +179,7 @@ public static class VolumeDense
                     var values = new float[VdbLeafNode<float>.Size];
                     var active = new bool[VdbLeafNode<float>.Size];
                     var anyActive = false;
+                    var anyInterior = false;
 
                     for (var i = 0; i < VdbLeafNode<float>.Size; i++)
                     {
@@ -182,6 +197,7 @@ public static class VolumeDense
                                 // Beyond the band only the sign survives, as +-background, so a solid's
                                 // interior stays inside.
                                 values[i] = value < 0 ? -source.Background : source.Background;
+                                anyInterior |= value < 0;
                                 continue;
                             }
                         }
@@ -197,7 +213,17 @@ public static class VolumeDense
                     }
 
                     if (!anyActive)
+                    {
+                        // A fully-interior leaf of a level set reads as outside unless the tree keeps
+                        // it: its samples are all the negative background, so add it inactive and let
+                        // GetValue return the stored (negative) values. An all-outside leaf is dropped.
+                        if (!anyInterior)
+                            continue;
+
+                        var solidLeaf = target.Tree.AddLeaf(leafOrigin);
+                        Array.Copy(values, solidLeaf.Values, values.Length);
                         continue;
+                    }
 
                     var leaf = target.Tree.AddLeaf(leafOrigin);
                     Array.Copy(values, leaf.Values, values.Length);
@@ -218,7 +244,8 @@ public static class VolumeDense
 /// <summary>A dense (x-fastest) float block extracted from a grid, with its index-space origin.</summary>
 public sealed class DenseVolume
 {
-    public DenseVolume(float[] data, int sizeX, int sizeY, int sizeZ, VdbCoord origin, float voxelSize, float background)
+    public DenseVolume(float[] data, int sizeX, int sizeY, int sizeZ, VdbCoord origin, float voxelSize, float background,
+                       Vector3? indexStep = null)
     {
         Data = data;
         SizeX = sizeX;
@@ -227,6 +254,7 @@ public sealed class DenseVolume
         Origin = origin;
         VoxelSize = voxelSize;
         Background = background;
+        IndexStep = indexStep ?? Vector3.One;
     }
 
     public float[] Data { get; }
@@ -234,6 +262,11 @@ public sealed class DenseVolume
     public int SizeY { get; }
     public int SizeZ { get; }
     public VdbCoord Origin { get; }
+
+    /// <summary>The per-voxel spacing of the bake in SOURCE index units: 1 when the bake sampled
+    /// one-to-one, larger when an axis was downsampled to fit MaxDenseVoxels/a resolution cap.</summary>
+    public Vector3 IndexStep { get; }
+
     public float VoxelSize { get; }
     public float Background { get; }
 

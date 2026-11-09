@@ -1,19 +1,18 @@
 #nullable enable
 using ImGuiNET;
 using T3.Core.DataTypes.Vector;
+using T3.Editor.Collab;
 using T3.Editor.Gui.Input;
 using T3.Editor.Gui.Styling;
 using T3.Editor.Gui.UiHelpers;
 using T3.Editor.Show;
-using T3.Editor.UiModel.ProjectHandling;
 
 namespace T3.Editor.Gui.Windows;
 
 /// <summary>
-/// The "Boygrouping" panel: enable this instance, choose Master or Slave, and — on a master — add the
-/// TiXL instances found on the network. There is no address, password or scan step: enabled instances
-/// announce themselves, and adding one invites it to connect. Deployment shares the master's output
-/// setups; each slave presents the outputs bound in its own Local Bindings.
+/// The "Boygrouping" panel of the settings window: distribute a show to render nodes, vvvv-style —
+/// a server instance deploys project files and live graph/output state to clients, controls
+/// playback, and each client renders only the outputs assigned to it in the Output Setup.
 /// </summary>
 internal sealed partial class SettingsWindow
 {
@@ -22,391 +21,331 @@ internal sealed partial class SettingsWindow
         var manager = BoygroupManager.Instance;
         var config = UserSettings.Config;
 
-        FormInputs.AddSectionSubHeader("Boygrouping");
-        FormInputs.AddVerticalSpace();
-
-        var enabled = config.BoygroupEnabled;
-        if (FormInputs.AddCheckBox("Enable",
-                                   ref enabled,
-                                   """
-                                   Makes this instance visible to the other TiXL instances on the network.
-                                   A master can then add it as a render node.
-                                   """,
-                                   false))
-        {
-            config.BoygroupEnabled = enabled;
-            changed = true;
-            manager.SetEnabled(enabled);
-        }
-
-        if (!config.BoygroupEnabled)
-        {
-            DrawBoygroupStatus(manager);
-            DrawCameraSharing(ref changed);
-            DrawBoygroupError(manager);
-            return;
-        }
+        // Boygrouping is switched through the menu-bar mode selector; this panel configures the
+        // role and connection and runs the session. Starting or joining claims the boygroup mode,
+        // which ends a failover/collab session on this machine (the modes are mutually exclusive).
 
         FormInputs.AddVerticalSpace();
+
+        // -------------------------------------------------------------------------------------
+        // Identity & connection
+        // -------------------------------------------------------------------------------------
+        FormInputs.AddSectionSubHeader("Identity");
+        FormInputs.AddVerticalSpace();
+
         changed |= FormInputs.AddStringInput("Node name",
                                              ref config.BoygroupClientName,
                                              null,
                                              null,
                                              """
-                                             This machine's name on the network and in the master's client list.
-                                             Defaults to the OS machine name.
+                                             This machine's name in a boygroup group. Defaults to the OS machine name.
+                                             Output Setup assignments reference this name.
                                              """);
 
-        FormInputs.AddVerticalSpace();
-        DrawNetworkInterface(ref changed);
+        changed |= FormInputs.AddInt("Port",
+                                     ref config.BoygroupPort,
+                                     1024, 65535, 1,
+                                     "TCP port for boygroup sessions. Must match between server and clients.",
+                                     44720);
+
+        changed |= FormInputs.AddStringInput("Password",
+                                             ref config.CollabPassword,
+                                             null,
+                                             null,
+                                             "Optional. Required on the server and all clients of a group. Strongly recommended: deploying writes project files on clients.");
+
         FormInputs.AddVerticalSpace();
 
-        var role = config.BoygroupRole;
-        if (FormInputs.AddEnumDropdown(ref role, "Role",
-                                       """
-                                       Master shares its output setup and show state and drives playback.
-                                       Slave renders what a master sends and keeps its own display bindings.
-                                       """))
+        // -------------------------------------------------------------------------------------
+        // Enable switch and role
+        // -------------------------------------------------------------------------------------
+        FormInputs.AddSectionSubHeader("Session");
+        FormInputs.AddVerticalSpace();
+
+        ImGui.TextUnformatted("Role");
+        CustomComponents.TooltipForLastItem("A master hosts the show and deploys to render nodes; a slave renders what the master sends.");
+        ImGui.Indent();
+        var roleChanged = false;
+        if (ImGui.RadioButton("Master (server)", config.BoygroupIsMaster))
         {
-            config.BoygroupRole = role;
-            changed = true;
-            manager.ApplyRole();
+            config.BoygroupIsMaster = true;
+            roleChanged = true;
         }
-
-        FormInputs.AddVerticalSpace();
-        DrawBoygroupStatus(manager);
-        FormInputs.AddVerticalSpace();
-
-        if (config.BoygroupRole == BoygroupRole.Master)
-            DrawMasterSection(manager);
-        else
-            DrawSlaveSection(manager);
-
-        DrawCameraSharing(ref changed);
-        DrawBoygroupError(manager);
-    }
-
-    private static void DrawBoygroupStatus(BoygroupManager manager)
-    {
-        if (manager.State == BoygroupManager.BoygroupState.Off)
-            return;
-
-        ImGui.PushStyleColor(ImGuiCol.Text,
-                             manager.State == BoygroupManager.BoygroupState.WaitingForMaster
-                                 ? UiColors.StatusWarning.Rgba
-                                 : UiColors.StatusActivated.Rgba);
-        ImGui.TextWrapped(manager.StatusText);
-        ImGui.PopStyleColor();
-    }
-
-    private static void DrawBoygroupError(BoygroupManager manager)
-    {
-        if (string.IsNullOrEmpty(manager.ErrorText))
-            return;
-
-        FormInputs.AddVerticalSpace();
-        ImGui.PushStyleColor(ImGuiCol.Text, UiColors.StatusWarning.Rgba);
-        ImGui.TextWrapped(manager.ErrorText);
-        ImGui.PopStyleColor();
-    }
-
-    // ---------------------------------------------------------------------------------------
-    // Master
-    // ---------------------------------------------------------------------------------------
-
-    private static void DrawMasterSection(BoygroupManager manager)
-    {
-        FormInputs.AddSectionSubHeader("Render nodes");
-        FormInputs.AddVerticalSpace();
-
-        OutputSetupHandling.TryGetActiveSetup(out var setup, out _);
-        var nodes = manager.DiscoveredServers;
-        var clients = manager.Clients;
-        if (nodes.Count == 0 && clients.Count == 0)
-            ImGui.TextDisabled("Looking for other TiXL instances on this network...");
-
-        DrawRenderNodeTable(manager, setup);
-
-        // Saved nodes that are neither connected nor visible right now; without this they could only
-        // be removed during the short time they are discovered.
-        var offline = BoygroupManager.RememberedNodes
-                                         .Where(n => !manager.IsClientConnected(n)
-                                                     && !nodes.Any(node => string.Equals(node.Name, n, StringComparison.OrdinalIgnoreCase)))
-                                         .ToList();
-        if (offline.Count > 0)
-        {
-            FormInputs.AddVerticalSpace(6);
-            ImGui.TextDisabled("Saved, not found:");
-            foreach (var name in offline)
-            {
-                ImGui.PushID("offline" + name);
-                ImGui.Bullet();
-                ImGui.TextUnformatted(name);
-                ImGui.SameLine();
-                if (ImGui.SmallButton("Forget"))
-                    BoygroupManager.ForgetNode(name);
-                ImGui.PopID();
-            }
-        }
-
-        DrawMasterDiagnostics(manager);
-
-        FormInputs.AddVerticalSpace();
-        FormInputs.AddSectionSubHeader("Inputs");
-        FormInputs.AddVerticalSpace();
-        CustomComponents.HelpText("""
-                                  MIDI and OSC received on this machine are mirrored to the render nodes, so
-                                  their graphs see the same values without their own controllers. A
-                                  [VideoDeviceInput] streams its camera over OMT and a render node presents
-                                  that stream instead of opening a local camera.
-                                  """);
-        FormInputs.SetCursorToParameterEdit();
-        ImGui.TextWrapped(manager.InputRelaySummary);
-
-        FormInputs.AddVerticalSpace();
-        FormInputs.AddSectionSubHeader("Show control");
-        FormInputs.AddVerticalSpace();
-
-        FormInputs.SetCursorToParameterEdit();
-        if (ImGui.Button("Sync time now"))
-            manager.SendTimeSyncNow();
 
         ImGui.SameLine();
-        ImGui.TextDisabled(manager.TimeFollowSummary);
-
-        // No deploy button: setups and graph changes are pushed as they happen. The summary only
-        // reports what the last automatic push covered.
-        if (!string.IsNullOrEmpty(manager.DeploySummary))
+        if (ImGui.RadioButton("Slave (render node)", !config.BoygroupIsMaster))
         {
-            FormInputs.AddVerticalSpace(6);
-            FormInputs.SetCursorToParameterEdit();
-            ImGui.TextDisabled(manager.DeploySummary);
+            config.BoygroupIsMaster = false;
+            roleChanged = true;
+        }
+
+        ImGui.Unindent();
+        if (roleChanged && config.BoygroupEnabled)
+        {
+            UserSettings.Save();
+            manager.Leave();
+            manager.ApplyEnabledSetting();
+        }
+
+        changed |= roleChanged;
+
+        FormInputs.AddVerticalSpace();
+
+        if (manager.State == BoygroupManager.BoygroupState.Off)
+        {
+            _boygroupGroup ??= UserSettings.Config.BoygroupGroups.FirstOrDefault() ?? "Main";
+
+            if (CustomComponents.DrawCtaButton("Start Server", Icon.None, UiColors.ForegroundFull, UiColors.StatusActivated, Color.Transparent))
+            {
+                ShowControlMode.Activate(ShowControlMode.Boygroup);
+                manager.StartServer(config.BoygroupPort, config.CollabPassword, _boygroupGroup);
+            }
+
+            CustomComponents.TooltipForLastItem("This machine becomes the boygroup server: it deploys files and live state to clients and drives playback.");
+
+            FormInputs.AddVerticalSpace();
+            ImGui.TextUnformatted("Join a group:");
+            ImGui.PushID("##boygroupgroup");
+            if (ImGui.InputText("Group", ref _boygroupGroup, 64, ImGuiInputTextFlags.EnterReturnsTrue))
+            {
+                ShowControlMode.Activate(ShowControlMode.Boygroup);
+                manager.JoinServer("127.0.0.1", config.BoygroupPort, _boygroupGroup, config.CollabPassword);
+            }
+
+            ImGui.PopID();
+            ImGui.SameLine();
+            if (ImGui.Button("Join"))
+            {
+                ShowControlMode.Activate(ShowControlMode.Boygroup);
+                manager.JoinServer(_boygroupServerAddress ?? "127.0.0.1", config.BoygroupPort, _boygroupGroup, config.CollabPassword);
+            }
+
+            CustomComponents.TooltipForLastItem("Address of the boygroup server. Clients on the same network also appear below via discovery.");
+
+            DrawDiscoveredServers(manager, config.BoygroupPort, ref changed);
+        }
+        else
+        {
+            DrawBoygroupSession(manager);
+        }
+
+        if (!string.IsNullOrEmpty(manager.ErrorText))
+        {
+            FormInputs.AddVerticalSpace();
+            ImGui.PushStyleColor(ImGuiCol.Text, UiColors.StatusWarning.Rgba);
+            ImGui.TextWrapped(manager.ErrorText);
+            ImGui.PopStyleColor();
+        }
+
+        FormInputs.AddVerticalSpace();
+
+        // -------------------------------------------------------------------------------------
+        // Groups (multiboygrouping)
+        // -------------------------------------------------------------------------------------
+        FormInputs.AddSectionSubHeader("Groups (multiboygrouping)");
+        CustomComponents.HelpText("""
+                                  A server can host several groups (e.g. 'Wall', 'Floor'). Clients join one group each;
+                                  deploy and playback controls act per group. A client may also connect to two different
+                                  servers by running the join twice with different group names on separate ports.
+                                  """);
+        FormInputs.AddVerticalSpace();
+
+        var groups = config.BoygroupGroups;
+        var removeIndex = -1;
+        for (var index = 0; index < groups.Count; index++)
+        {
+            ImGui.PushID(index);
+            var group = groups[index];
+            if (ImGui.InputText("##group", ref group, 64))
+                groups[index] = group;
+
+            ImGui.SameLine();
+            if (ImGui.SmallButton("Remove") && groups.Count > 1)
+                removeIndex = index;
+
+            ImGui.PopID();
+        }
+
+        if (removeIndex >= 0)
+        {
+            groups.RemoveAt(removeIndex);
+            changed = true;
+        }
+
+        if (ImGui.SmallButton("Add group"))
+        {
+            groups.Add($"Group {groups.Count + 1}");
+            changed = true;
+        }
+
+        FormInputs.AddVerticalSpace();
+
+        // -------------------------------------------------------------------------------------
+        // Deploy options
+        // -------------------------------------------------------------------------------------
+        FormInputs.AddSectionSubHeader("Deployment");
+        changed |= FormInputs.AddCheckBox("Deploy & sync when a node joins",
+                                          ref config.BoygroupAutoDeployOnJoin,
+                                          """
+                                          The master runs Deploy & Sync automatically shortly after a render node
+                                          joins the group, so an added slave is current without anyone clicking.
+                                          Nodes that are already up to date are left running (no restart).
+                                          """,
+                                          true);
+
+        changed |= FormInputs.AddCheckBox("Mirror project folder",
+                                          ref config.BoygroupDeployMirror,
+                                          """
+                                          When deploying, also delete files on clients that the server's project does not
+                                          have. Off by default: extra client-side files are only reported, never removed.
+                                          """,
+                                          false);
+
+        changed |= FormInputs.AddCheckBox("Auto-join after restart",
+                                          ref config.BoygroupAutoJoin,
+                                          """
+                                          Clients remember their server and group and rejoin automatically on launch —
+                                          used after a deployment restarts the client to apply new files.
+                                          """,
+                                          true);
+
+        DrawNetworkInterface(ref changed);
+    }
+
+    private static string? _boygroupGroup;
+    private static string? _boygroupServerAddress;
+
+    private static void DrawBoygroupSession(BoygroupManager manager)
+    {
+        ImGui.PushStyleColor(ImGuiCol.Text, UiColors.StatusActivated.Rgba);
+        ImGui.TextUnformatted(manager.StatusText);
+        ImGui.PopStyleColor();
+
+        FormInputs.AddVerticalSpace();
+
+        if (manager.State == BoygroupManager.BoygroupState.Server)
+        {
+            DrawBoygroupClients(manager);
+
+            FormInputs.AddVerticalSpace();
+            FormInputs.AddSectionSubHeader("Playback control");
+            FormInputs.AddVerticalSpace();
+
+            if (ImGui.Button("Play all"))
+                manager.SendPlayControl(true);
+
+            ImGui.SameLine();
+            if (ImGui.Button("Pause all"))
+                manager.SendPlayControl(false);
+
+            ImGui.SameLine();
+            if (ImGui.Button("Sync time now"))
+                manager.SendTimeSyncNow();
+
+            ImGui.SameLine();
+            ImGui.TextDisabled(manager.TimeFollowSummary);
+
+            FormInputs.AddVerticalSpace();
+        }
+        else
+        {
+            ImGui.Bullet();
+            ImGui.TextUnformatted($"Group: {manager.GroupName}");
+            ImGui.Bullet();
+            ImGui.TextUnformatted(manager.TimeFollowSummary);
+            ImGui.Bullet();
+            ImGui.TextUnformatted(manager.DeploySummary);
+        }
+
+        FormInputs.AddVerticalSpace();
+        if (ImGui.Button("Deploy & Sync"))
+            manager.DeployAndSync();
+
+        ImGui.SameLine();
+        if (ImGui.Button("Leave"))
+            manager.Leave(manual: true);
+
+        if (manager.State == BoygroupManager.BoygroupState.Client && manager.RestartPending)
+        {
+            FormInputs.AddVerticalSpace();
+            ImGui.PushStyleColor(ImGuiCol.Text, UiColors.StatusActivated.Rgba);
+            ImGui.TextUnformatted("Deployment finished — restart to apply new files...");
+            ImGui.PopStyleColor();
         }
     }
 
-    /// <summary>
-    /// One row per render node: connected nodes first (they stop announcing themselves, so without
-    /// this a node would drop out of the list right after being added), then the instances that are
-    /// visible but not connected. Columns line the numbers up; row borders separate the nodes.
-    /// </summary>
-    private static void DrawRenderNodeTable(BoygroupManager manager, T3.Core.Output.Setup? setup)
+    private static void DrawBoygroupClients(BoygroupManager manager)
     {
         var clients = manager.Clients;
-        var available = manager.DiscoveredServers.Where(n => !IsConnected(manager, n)).ToArray();
-        if (clients.Count == 0 && available.Length == 0)
-            return;
-
-        const ImGuiTableFlags flags = ImGuiTableFlags.BordersOuter | ImGuiTableFlags.BordersInnerH
-                                      | ImGuiTableFlags.RowBg | ImGuiTableFlags.SizingStretchProp
-                                      | ImGuiTableFlags.NoSavedSettings;
-
-        if (!ImGui.BeginTable("renderNodes", 7, flags))
-            return;
-
-        ImGui.TableSetupColumn("Render node", ImGuiTableColumnFlags.WidthStretch, 1.4f);
-        ImGui.TableSetupColumn("Status", ImGuiTableColumnFlags.WidthFixed, 74);
-        ImGui.TableSetupColumn("RTT", ImGuiTableColumnFlags.WidthFixed, 52);
-        ImGui.TableSetupColumn("Sync", ImGuiTableColumnFlags.WidthFixed, 58);
-        ImGui.TableSetupColumn("Delay", ImGuiTableColumnFlags.WidthFixed, 176);
-        ImGui.TableSetupColumn("", ImGuiTableColumnFlags.WidthFixed, 64);
-        ImGui.TableHeadersRow();
-
-        // Snapshot: Remove mutates the client list.
-        foreach (var client in clients.ToArray())
+        if (clients.Count == 0)
         {
-            ImGui.PushID("client" + client.Address + client.Name);
-            ImGui.TableNextRow();
+            ImGui.TextDisabled("No clients connected. Start TiXL on the render nodes and join this server.");
+            return;
+        }
 
-            ImGui.TableSetColumnIndex(0);
-            ImGui.TextUnformatted($"{client.Name}  ({client.Address})");
-            CustomComponents.StylizedText(DescribeClientDetails(client), Fonts.FontSmall, UiColors.TextMuted);
-            if (client.MachineConfig?.Bindings.Count > 0)
-            {
-                CustomComponents.StylizedText(BoygroupManager.DescribeBindings(client.MachineConfig, setup),
-                                              Fonts.FontSmall, UiColors.TextMuted);
-            }
-
-            ImGui.TableSetColumnIndex(1);
-            ImGui.PushStyleColor(ImGuiCol.Text, (client.IsDeployed ? UiColors.StatusActivated : UiColors.StatusWarning).Rgba);
-            ImGui.TextUnformatted(client.StatusText);
+        ImGui.TextUnformatted("Clients:");
+        foreach (var client in clients)
+        {
+            var statusColor = client.IsDeployed ? UiColors.StatusActivated : UiColors.StatusWarning;
+            ImGui.PushStyleColor(ImGuiCol.Text, UiColors.Text.Rgba);
+            ImGui.Bullet();
+            ImGui.TextUnformatted($"{client.Name}  ({client.Address})  group: {client.Group}");
             ImGui.PopStyleColor();
 
-            ImGui.TableSetColumnIndex(2);
-            ImGui.TextDisabled(client.RttMs >= 0 ? $"{client.RttMs:0} ms" : "—");
+            ImGui.SameLine();
+            ImGui.PushStyleColor(ImGuiCol.Text, statusColor.Rgba);
+            ImGui.TextUnformatted(client.StatusText);
+            ImGui.PopStyleColor();
+        }
+    }
 
-            ImGui.TableSetColumnIndex(3);
-            ImGui.TextDisabled(client.SyncErrorMs > -0.5 ? $"{client.SyncErrorMs:+0.0;-0.0;0} ms" : "—");
-            CustomComponents.TooltipForLastItem("Drift the client measured when it applied the last timeline anchors.");
+    private static bool _boygroupDiscoveryActive;
+    private static DateTime _boygroupDiscoveryUntil;
+    private static readonly List<BoygroupManager.DiscoveredServer> _boygroupDiscovered = [];
 
-            ImGui.TableSetColumnIndex(4);
-            DrawDelayButtons(manager, client);
+    private static void DrawDiscoveredServers(BoygroupManager manager, int discoveryPort, ref bool changed)
+    {
+        FormInputs.AddVerticalSpace();
+        ImGui.TextUnformatted("Servers on this network:");
+        ImGui.SameLine();
 
-            ImGui.TableSetColumnIndex(5);
-            if (ImGui.SmallButton("Remove"))
-                manager.RemoveClient(client);
-            CustomComponents.TooltipForLastItem("Disconnect this render node and remove it from the saved list.");
-            ImGui.PopID();
+        if (!_boygroupDiscoveryActive)
+        {
+            if (ImGui.SmallButton("Scan"))
+            {
+                _boygroupDiscovered.Clear();
+                manager.StartDiscovery();
+                _boygroupDiscoveryActive = true;
+                _boygroupDiscoveryUntil = DateTime.UtcNow + TimeSpan.FromSeconds(6);
+            }
+        }
+        else
+        {
+            ImGui.TextDisabled("scanning...");
         }
 
-        foreach (var node in available)
+        manager.DrainDiscovery();
+
+        if (_boygroupDiscoveryActive && DateTime.UtcNow > _boygroupDiscoveryUntil)
         {
-            ImGui.PushID(node.Address + node.Port);
-            ImGui.TableNextRow();
+            manager.StopDiscovery();
+            _boygroupDiscoveryActive = false;
+        }
 
-            ImGui.TableSetColumnIndex(0);
-            ImGui.TextUnformatted($"{node.Name}  ({node.Address})");
-            var saved = BoygroupManager.RememberedNodes.Any(n => string.Equals(n, node.Name, StringComparison.OrdinalIgnoreCase));
-            if (saved && !node.IsMaster)
-                CustomComponents.StylizedText("Saved — reconnects automatically", Fonts.FontSmall, UiColors.TextMuted);
+        foreach (var server in manager.DiscoveredServers)
+        {
+            ImGui.Bullet();
+            ImGui.TextUnformatted($"{server.ServerName}  ({server.Address}:{server.Port})  groups: {string.Join(", ", server.Groups)}");
 
-            ImGui.TableSetColumnIndex(1);
-            ImGui.TextDisabled(node.IsMaster ? "master" : "available");
-
-            for (var column = 2; column <= 4; column++)
+            ImGui.SameLine();
+            ImGui.PushID(server.Address + server.Port);
+            if (ImGui.SmallButton("Join"))
             {
-                ImGui.TableSetColumnIndex(column);
-                ImGui.TextDisabled("—");
+                manager.JoinServer(server.Address, server.Port, _boygroupGroup ?? server.Groups.FirstOrDefault() ?? "Main",
+                                   UserSettings.Config.CollabPassword);
             }
 
-            ImGui.TableSetColumnIndex(5);
-            if (!node.IsMaster)
-            {
-                if (ImGui.SmallButton(saved ? "Reconnect" : "Add"))
-                    manager.InviteClient(node);
-                CustomComponents.TooltipForLastItem(saved
-                                                        ? "Saved render node — asks it to connect again."
-                                                        : "Ask this instance to render the show on this machine.");
-
-                if (saved && ImGui.SmallButton("Forget"))
-                    BoygroupManager.ForgetNode(node.Name);
-                CustomComponents.TooltipForLastItem("Stop reconnecting this node after a restart.");
-            }
-
             ImGui.PopID();
         }
-
-        ImGui.EndTable();
-    }
-
-    /// <summary>Per-node presentation delay. Positive runs the node later, which is how projector or
-    /// capture latency differences between machines are lined up.</summary>
-    internal static void DrawDelayButtons(BoygroupManager manager, BoygroupManager.ClientInfo client)
-    {
-        if (ImGui.SmallButton("-10"))
-            manager.SetClientDelay(client, client.DelayMs - 10);
-
-        ImGui.SameLine(0, 2);
-        if (ImGui.SmallButton("-1"))
-            manager.SetClientDelay(client, client.DelayMs - 1);
-
-        ImGui.SameLine(0, 6);
-        CustomComponents.StylizedText($"{client.DelayMs:+0;-0;0} ms", Fonts.FontSmall,
-                                      client.DelayMs == 0 ? UiColors.TextMuted : UiColors.StatusActivated);
-
-        ImGui.SameLine(0, 6);
-        if (ImGui.SmallButton("+1"))
-            manager.SetClientDelay(client, client.DelayMs + 1);
-
-        ImGui.SameLine(0, 2);
-        if (ImGui.SmallButton("+10"))
-            manager.SetClientDelay(client, client.DelayMs + 10);
-
-        CustomComponents.TooltipForLastItem($"Shifts this node in time by up to ±{BoygroupManager.MaxSyncDelayMs} ms. "
-                                            + "The master re-syncs the node immediately and remembers the value.");
-    }
-
-    private static string DescribeClientDetails(BoygroupManager.ClientInfo client)
-    {
-        var parts = new List<string>();
-        parts.Add($"clock {client.ClockOffsetMs:+0.0;-0.0;0} ms");
-        if (client.SyncAgeMs >= 0)
-            parts.Add(client.SyncAgeMs < 1000 ? $"synced {client.SyncAgeMs:0} ms ago" : $"synced {client.SyncAgeMs / 1000:0} s ago");
-        if (client.ClientFps > 0)
-            parts.Add($"{client.ClientFps:0} fps");
-        if (!string.IsNullOrEmpty(client.ClientVersion))
-            parts.Add($"v{client.ClientVersion}");
-
-        return string.Join(" · ", parts);
-    }
-
-    private static void DrawMasterDiagnostics(BoygroupManager manager)
-    {
-        var config = UserSettings.Config;
-        FormInputs.AddVerticalSpace();
-        FormInputs.AddSectionSubHeader("Diagnostics");
-        FormInputs.AddVerticalSpace();
-
-        var network = string.IsNullOrWhiteSpace(config.NetworkInterface) ? "Automatic" : config.NetworkInterface;
-        FormInputs.SetCursorToParameterEdit();
-        ImGui.TextDisabled($"Port {config.BoygroupPort} · {network}");
-
-        var uptime = TimeSpan.FromSeconds(manager.SessionUptimeSeconds);
-        FormInputs.SetCursorToParameterEdit();
-        ImGui.TextDisabled($"Uptime {uptime.ToString(@"hh\:mm\:ss")} · master {manager.EditorFps:0} fps");
-
-        FormInputs.SetCursorToParameterEdit();
-        ImGui.TextDisabled($"Connected {manager.Clients.Count} · saved {BoygroupManager.RememberedNodes.Count}"
-                           + $" · discovered {manager.DiscoveredServers.Count}");
-    }
-
-    private static bool IsConnected(BoygroupManager manager, BoygroupManager.DiscoveredServer node)
-    {
-        foreach (var client in manager.Clients)
-        {
-            if (client.Address == node.Address || string.Equals(client.Name, node.Name, StringComparison.OrdinalIgnoreCase))
-                return true;
-        }
-
-        return false;
-    }
-
-    // ---------------------------------------------------------------------------------------
-    // Slave
-    // ---------------------------------------------------------------------------------------
-
-    private static void DrawSlaveSection(BoygroupManager manager)
-    {
-        if (manager.State == BoygroupManager.BoygroupState.WaitingForMaster)
-        {
-            var remembered = UserSettings.Config.BoygroupMasterName;
-            CustomComponents.HelpText(string.IsNullOrEmpty(remembered)
-                                          ? """
-                                            Looking for a master on the network. An enabled slave joins the first master that
-                                            appears; it can also be added from a master's render-node list.
-                                            """
-                                          : $"""
-                                             Looking for master '{remembered}'. An enabled slave reconnects to it as soon as it
-                                             appears, and to any other master while this one is absent.
-                                             """);
-            return;
-        }
-
-        if (manager.State != BoygroupManager.BoygroupState.Client)
-            return;
-
-        ImGui.Bullet();
-        ImGui.TextUnformatted(string.IsNullOrEmpty(manager.MasterName) ? $"Group: {manager.GroupName}" : $"Master: {manager.MasterName} · group {manager.GroupName}");
-        ImGui.Bullet();
-        ImGui.TextUnformatted(manager.TimeFollowSummary);
-        ImGui.Bullet();
-        ImGui.TextUnformatted(manager.DeploySummary);
-        ImGui.Bullet();
-        ImGui.TextWrapped(manager.InputRelaySummary);
-
-        FormInputs.AddVerticalSpace(6);
-        FormInputs.SetCursorToParameterEdit();
-        var sync = manager.SyncErrorMs > -0.5 ? $"{manager.SyncErrorMs:+0.0;-0.0;0} ms" : "—";
-        ImGui.TextDisabled($"Clock offset {manager.ClockOffsetMs:+0.0;-0.0;0} ms · sync error {sync}"
-                           + $" · delay {manager.ClientDelayMs:+0;-0;0} ms · {manager.EditorFps:0} fps");
-
-        FormInputs.AddVerticalSpace();
-        CustomComponents.HelpText("""
-                                  The master's audio/control inputs drive this machine: MIDI and OSC are
-                                  replayed into the same operators, and a webcam is received over OMT.
-                                  Local controllers take over again while the master sends no input.
-                                  The master's output setups are applied here automatically. Which output
-                                  reaches which display, stream or laser is set in Output Setup → Local
-                                  Bindings on this machine and never overwritten by the master.
-                                  """);
     }
 }

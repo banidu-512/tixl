@@ -49,5 +49,14 @@
         "Y": 90.0
       }
     }
+  ,
+    {
+      "OutputId": "39bed154-5921-41a7-a84e-463796c20f9c"/*WorldMin*/,
+      "Position": { "X": 300.0, "Y": 240.0 }
+    },
+    {
+      "OutputId": "2a0082da-462a-455e-af7d-e500d79f2f2a"/*WorldMax*/,
+      "Position": { "X": 300.0, "Y": 270.0 }
+    }
   ]
 }

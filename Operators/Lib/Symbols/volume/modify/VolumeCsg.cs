@@ -69,10 +69,10 @@ internal sealed class VolumeCsg : Instance<VolumeCsg>
         }
     }
 
-    private VdbVolume? _lastA;
-    private VdbVolume? _lastB;
+    private VdbVolume _lastA;
+    private VdbVolume _lastB;
     private T3.Core.DataTypes.Volume.Tools.VolumeCsg.Operation _lastOp = (T3.Core.DataTypes.Volume.Tools.VolumeCsg.Operation)(-1);
-    private string? _lastError;
+    private string _lastError;
 
     [Input(Guid = "c8eda1a2-1379-572e-92d1-ea640a6b9e61")]
     public readonly InputSlot<VdbVolume> VolumeA = new();

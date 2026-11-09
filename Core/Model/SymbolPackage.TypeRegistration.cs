@@ -62,7 +62,7 @@ public partial class SymbolPackage
                      (writer, obj) => writer.WriteValue((float)obj),
                      jsonToken =>
                      {
-                         if (jsonToken.Type == JTokenType.Float || jsonToken.Type == JTokenType.Integer)
+                         if (jsonToken is { Type: JTokenType.Float or JTokenType.Integer })
                              return jsonToken.Value<float>();
 
                          // Must be a float: SetValueFromJson casts the boxed result to T, and a boxed
@@ -72,7 +72,9 @@ public partial class SymbolPackage
         RegisterType(typeof(int), "int",
                      InputDefaultValueCreator<int>,
                      (writer, obj) => writer.WriteValue((int)obj),
-                     jsonToken => jsonToken?.Value<int>()??0);
+                     jsonToken => jsonToken is { Type: JTokenType.Integer or JTokenType.Float }
+                                      ? (int)Math.Round(jsonToken.Value<double>())
+                                      : jsonToken?.Value<int>() ?? 0);
         RegisterType(typeof(bool), "bool",
                      InputDefaultValueCreator<bool>,
                      (writer, obj) => writer.WriteValue((bool)obj),
@@ -80,7 +82,9 @@ public partial class SymbolPackage
         RegisterType(typeof(double), "double",
                      InputDefaultValueCreator<double>,
                      (writer, obj) => writer.WriteValue((double)obj),
-                     jsonToken => jsonToken?.Value<double>()??0d);
+                     jsonToken => jsonToken is { Type: JTokenType.Integer or JTokenType.Float }
+                                      ? jsonToken.Value<double>()
+                                      : jsonToken?.Value<double>() ?? 0);
 
         RegisterType(typeof(string), "string",
                      () => new InputValue<string>(string.Empty),

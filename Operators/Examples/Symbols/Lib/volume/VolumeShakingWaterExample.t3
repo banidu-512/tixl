@@ -163,6 +163,11 @@
           }
         },
         {
+          "Id": "9505b4aa-0ee1-4d0a-b215-f17194c71be4"/*AmplitudeScale*/,
+          "Type": "System.Single",
+          "Value": -13.0
+        },
+        {
           "Id": "9a54d73f-0cd4-4ba2-afc2-8e8bc156c6ba"/*SpeedFactor*/,
           "Type": "System.Single",
           "Value": 1.0

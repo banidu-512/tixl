@@ -47,12 +47,7 @@ internal static class OutputPresentation
         // every stream-bound (network) output. Disposing the senders matters — NDI/Spout senders
         // would otherwise keep re-sending their last frame from their own loops.
         var failoverSuppressed = T3.Core.Show.FailoverArbiter.IsOutputSuppressed;
-
-        // A settled standby keeps warm-capable senders open (nothing is sent), so their sources are already there
-        // when the active machine fails. In any other muted state - a handover, a fence, a fault - they go.
-        var warmStandby = failoverSuppressed
-                          && T3.Core.Show.FailoverArbiter.Role == T3.Core.Show.FailoverArbiter.NodeRole.Standby;
-        if (failoverSuppressed && !warmStandby)
+        if (failoverSuppressed)
             OutputStreaming.DisposeAll();
 
         foreach (var output in setup.Outputs)
@@ -61,16 +56,11 @@ internal static class OutputPresentation
             if (!output.IsSending)
                 continue;
 
-            // A laser output presents nothing here, whatever its bindings say: it has no canvas
-            // composite - its frame is vector content streamed by the laser driver (LaserDriver).
-            // Checked on the output and not just on the binding, so a stale display binding on a
-            // laser output (configs from older builds, hand-edited files) can never throw the input
-            // full-screen onto a wall - in any binding order.
-            if (output.Kind == OutputDefinition.Kinds.Laser || HasLaserBinding(machineConfig, output.Id))
+            // Show distribution: an output assigned to a specific boygroup node is presented only
+            // there. Empty assignment keeps the classic every-machine behavior.
+            if (!string.IsNullOrEmpty(output.MachineName) && output.MachineName != Show.BoygroupManager.LocalNodeName)
                 continue;
 
-            // Each machine presents what its own Local Bindings connect: the setup is shared, but which
-            // output goes to which display or stream is machine state (outputs.machine.json).
             var binding = machineConfig.FindBinding(output.Id);
             if (binding == null)
                 continue;
@@ -84,12 +74,7 @@ internal static class OutputPresentation
             if (binding.IsStream)
             {
                 if (failoverSuppressed)
-                {
-                    if (warmStandby)
-                        OutputStreaming.Standby(machineConfig, output, binding);
-
                     continue;
-                }
 
                 OutputStreaming.Send(machineConfig, output, binding);
             }

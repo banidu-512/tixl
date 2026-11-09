@@ -46,11 +46,23 @@ internal sealed class PhysicsWorld : Instance<PhysicsWorld>
                 _hasLoggedError = true;
             }
 
-            _simulation.Release();
+            // Release disposes Bepu state and can itself fail while the simulation is already broken;
+            // a throw here would escape the catch and defeat the handler above.
+            try
+            {
+                _simulation.Release();
+            }
+            catch (Exception releaseException)
+            {
+                Log.Error($"PhysicsWorld release after failure failed: {releaseException.Message}", this);
+            }
+
             OutBuffer.Value = null;
             OutBuffer.DirtyFlag.Invalidate();
             BodyCount.Value = 0;
             BodyCount.DirtyFlag.Invalidate();
+            SimTime.Value = 0;
+            SimTime.DirtyFlag.Invalidate();
         }
     }
 
@@ -133,7 +145,7 @@ internal sealed class PhysicsWorld : Instance<PhysicsWorld>
     private bool EnsurePointBuffer(int count)
     {
         if (ResourceManager.Device == null)
-            return false;
+            return WarnBufferFailure("PhysicsWorld: no graphics device to create the point buffer with");
 
         var totalBytes = count * Point.Stride;
         if (_pointBuffer != null && _pointBuffer.Description.SizeInBytes == totalBytes)
@@ -143,19 +155,36 @@ internal sealed class PhysicsWorld : Instance<PhysicsWorld>
 
         ResourceManager.SetupStructuredBuffer(totalBytes, Point.Stride, ref _pointBuffer);
         if (_pointBuffer == null)
-            return false;
+            return WarnBufferFailure($"PhysicsWorld: structured buffer creation failed for {totalBytes} bytes");
 
         ResourceManager.CreateStructuredBufferSrv(_pointBuffer, ref _bufferWithViews.Srv);
         ResourceManager.CreateStructuredBufferUav(_pointBuffer, UnorderedAccessViewBufferFlags.None, ref _bufferWithViews.Uav);
         if (_bufferWithViews.Srv == null || _bufferWithViews.Uav == null)
         {
+            var detail = $"srv={_bufferWithViews.Srv != null}, uav={_bufferWithViews.Uav != null}";
             ReleasePointBuffer();
-            return false;
+            return WarnBufferFailure($"PhysicsWorld: buffer views failed ({detail})");
         }
 
         _bufferWithViews.Buffer = _pointBuffer;
         _points = new Point[count];
+        _hasLoggedBufferWarning = false;
         return true;
+    }
+
+    /// <summary>
+    /// A missing device or a refusing driver leaves the output null, which downstream looks like
+    /// "no bodies" - say why, but only once, or a broken frame would repeat it every evaluation.
+    /// </summary>
+    private bool WarnBufferFailure(string message)
+    {
+        if (!_hasLoggedBufferWarning)
+        {
+            Log.Warning(message, this);
+            _hasLoggedBufferWarning = true;
+        }
+
+        return false;
     }
 
     private void ReleasePointBuffer()
@@ -185,6 +214,7 @@ internal sealed class PhysicsWorld : Instance<PhysicsWorld>
     private readonly List<PhysicsBody> _frameBodies = new();
     private readonly List<PhysicsJoint> _frameJoints = new();
     private bool _hasLoggedError;
+    private bool _hasLoggedBufferWarning;
 
     private Point[] _points;
     private BufferWithViews _bufferWithViews = new();

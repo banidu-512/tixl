@@ -1,5 +1,5 @@
 #nullable enable
-using System.Globalization;
+using Lib.Utils;
 using T3.Core.Utils;
 
 namespace Lib.point.io;
@@ -7,6 +7,30 @@ namespace Lib.point.io;
 /// <summary>
 /// Loads a CSV file and routes its columns into the attributes of a point buffer.
 /// </summary>
+/// <remarks>
+/// <para>
+/// Columns are matched by header name, so their order in the file does not matter. Unmapped
+/// attributes keep their point defaults. The file is cached: it is re-read when <c>FilePath</c>
+/// changes, when <c>Reload</c> flanks, or when a column mapping changes (which rebuilds from the
+/// already parsed rows without touching the disk).
+/// </para>
+/// <para>
+/// Threading: <see cref="Update"/> runs on the evaluation thread; <see cref="ICustomDropdownHolder"/>
+/// methods run on the UI thread. The shared state is limited to the published column-name snapshot,
+/// the header source-path cache and the status snapshot. The arrays and status objects are immutable
+/// and replaced as a whole, never mutated, so the UI can enumerate them while the evaluation thread
+/// swaps them; claim and publish order is serialized by a small lock.
+/// Everything else (parsed rows, header lookup, GPU buffer, applied mapping) is owned by the
+/// evaluation thread.
+/// </para>
+/// <para>
+/// Robustness: malformed cells fall back to attribute defaults, non-finite numbers are rejected,
+/// file errors are reported through <see cref="IStatusProvider"/> instead of throwing, and the
+/// parse/upload path is wrapped so a bad file cannot take the editor down. Files above 128 MiB and
+/// files with more than <c>MaxPointCount</c> data rows are refused with a status message before a
+/// point array is allocated.
+/// </para>
+/// </remarks>
 [Guid("3e2b155e-52cd-4a58-9b7c-602d7a36e19c")]
 internal sealed class CsvToPoints : Instance<CsvToPoints>, IStatusProvider, ICustomDropdownHolder
 {
@@ -153,12 +177,12 @@ internal sealed class CsvToPoints : Instance<CsvToPoints>, IStatusProvider, ICus
 
     IStatusProvider.StatusLevel IStatusProvider.GetStatusLevel()
     {
-        return _statusLevel;
+        return _status.Level;
     }
 
     string? IStatusProvider.GetStatusMessage()
     {
-        return _statusMessage;
+        return _status.Message;
     }
 
     string? ICustomDropdownHolder.GetValueForInput(Guid inputId)
@@ -171,9 +195,10 @@ internal sealed class CsvToPoints : Instance<CsvToPoints>, IStatusProvider, ICus
         var path = FilePath.Value ?? string.Empty;
         if (!string.Equals(path, _headerSourcePath, StringComparison.Ordinal))
         {
-            LoadColumnNames(path);
+            LoadColumnNamesFromHeader(path);
         }
 
+        // The published snapshot is never mutated; returning it directly is safe across threads.
         return _columnOptions;
     }
 
@@ -190,6 +215,23 @@ internal sealed class CsvToPoints : Instance<CsvToPoints>, IStatusProvider, ICus
 
     private void Update(EvaluationContext context)
     {
+        try
+        {
+            UpdateInternal(context);
+        }
+        catch (Exception exception)
+        {
+            // User data must never be able to take the editor down. Report the failure and keep
+            // the output empty; pressing Reload retries the file.
+            LogError($"Failed to load CSV: {exception.Message}");
+            UpdatePointBuffer(null);
+            SetStatus($"Failed to load CSV: {exception.Message}", IStatusProvider.StatusLevel.Error);
+            Points.Value = _pointBuffer;
+        }
+    }
+
+    private void UpdateInternal(EvaluationContext context)
+    {
         var reloadRequested = MathUtils.WasTriggered(Reload.GetValue(context), ref _reloadTriggered);
         if (reloadRequested)
         {
@@ -202,12 +244,16 @@ internal sealed class CsvToPoints : Instance<CsvToPoints>, IStatusProvider, ICus
 
         if (string.IsNullOrWhiteSpace(path))
         {
-            if (!string.IsNullOrEmpty(_headerSourcePath))
+            if (_columnOptions.Length > 1 || !string.IsNullOrEmpty(_headerSourcePath))
             {
-                LoadColumnNames(string.Empty);
+                InvalidateColumnOptions();
             }
 
             _loadedPath = string.Empty;
+            _rows = null;
+            _headers.Clear();
+            _headerIndices.Clear();
+            _lastLoggedError = string.Empty;
             _appliedMap = UnmappedColumns;
             _appliedRotationMode = rotationMode;
             _appliedColorIs0To255 = colorIs0To255;
@@ -252,18 +298,23 @@ internal sealed class CsvToPoints : Instance<CsvToPoints>, IStatusProvider, ICus
         Points.Value = _pointBuffer;
     }
 
+    /// <summary>
+    /// Parses the whole file into rows. Sets <c>_loadedPath</c> even on failure so the file is not
+    /// re-read on every frame; an explicit <c>Reload</c> flank retries it.
+    /// </summary>
+    /// <remarks>Evaluation thread only.</remarks>
     private bool LoadFile(string path)
     {
         _loadedPath = path;
-        _headerSourcePath = path;
+        InvalidateColumnOptions();
         _rows = null;
         _headers.Clear();
         _headerIndices.Clear();
-        _columnOptions.Clear();
-        _columnOptions.Add(NoColumnOption);
+        _lastLoggedError = string.Empty;
 
         if (!TryGetFilePath(path, out var resolvedPath))
         {
+            LogWarn($"File not found: {path}");
             UpdatePointBuffer(null);
             SetStatus($"File not found: {path}", IStatusProvider.StatusLevel.Warning);
             return false;
@@ -271,9 +322,32 @@ internal sealed class CsvToPoints : Instance<CsvToPoints>, IStatusProvider, ICus
 
         try
         {
-            var rows = ParseCsv(File.ReadAllText(resolvedPath));
+            // One stream for the length check and the read, so the length cannot drift between them.
+            using var stream = new FileStream(resolvedPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            if (stream.Length > MaxCsvFileSizeInBytes)
+            {
+                var megabyteLimit = MaxCsvFileSizeInBytes / (1024 * 1024);
+                var message = $"The CSV is {stream.Length / (1024f * 1024f):0.0} MB; files above {megabyteLimit} MB are not loaded to protect memory.";
+                LogWarn(message);
+                UpdatePointBuffer(null);
+                SetStatus(message, IStatusProvider.StatusLevel.Error);
+                return false;
+            }
+
+            using var reader = new StreamReader(stream);
+            var rows = CsvPointParser.Parse(reader.ReadToEnd(), MaxPointCount + 1, out var exceededRowLimit);
+            if (exceededRowLimit)
+            {
+                var message = $"The CSV has more than {MaxPointCount} data rows; only buffers of up to {MaxPointCount} points are supported.";
+                LogWarn(message);
+                UpdatePointBuffer(null);
+                SetStatus(message, IStatusProvider.StatusLevel.Error);
+                return false;
+            }
+
             if (rows.Count == 0)
             {
+                LogWarn("The CSV file is empty.");
                 UpdatePointBuffer(null);
                 SetStatus("The CSV file is empty.", IStatusProvider.StatusLevel.Warning);
                 return false;
@@ -284,7 +358,7 @@ internal sealed class CsvToPoints : Instance<CsvToPoints>, IStatusProvider, ICus
 
             for (var i = 0; i < _headers.Count; i++)
             {
-                var header = _headers[i].Trim().TrimStart('\uFEFF');
+                var header = CsvPointParser.NormalizeHeader(_headers[i]);
                 _headers[i] = header;
                 if (header.Length > 0)
                 {
@@ -293,71 +367,139 @@ internal sealed class CsvToPoints : Instance<CsvToPoints>, IStatusProvider, ICus
             }
 
             _rows = rows;
-            RefreshColumnOptions();
+            PublishColumnOptions(path, _headers);
             return true;
         }
         catch (Exception exception)
         {
+            LogError($"Failed to read CSV: {exception.Message}");
             UpdatePointBuffer(null);
             SetStatus($"Failed to read CSV: {exception.Message}", IStatusProvider.StatusLevel.Error);
             return false;
         }
     }
 
-    private void LoadColumnNames(string path)
+    /// <summary>
+    /// Reads only the header line for the column dropdown. Runs on the UI thread and must not touch
+    /// evaluation-thread state; the result is published as a new immutable snapshot under the
+    /// header lock, so an older request can never overwrite a newer one.
+    /// </summary>
+    private void LoadColumnNamesFromHeader(string path)
     {
-        _headerSourcePath = path;
-        _columnOptions.Clear();
-        _columnOptions.Add(NoColumnOption);
-
-        if (string.IsNullOrWhiteSpace(path) || !TryGetFilePath(path, out var resolvedPath))
+        int version;
+        lock (_headerLock)
         {
-            return;
+            version = ++_headerVersion;
+            _headerSourcePath = path;
         }
 
-        try
+        var options = new[] { NoColumnOption };
+        var hasResult = false;
+
+        if (string.IsNullOrWhiteSpace(path))
         {
-            using var reader = new StreamReader(resolvedPath);
-            var firstLine = reader.ReadLine();
-            if (firstLine == null)
+            hasResult = true; // No file: the dropdown offers only "(none)".
+        }
+        else if (TryGetFilePath(path, out var resolvedPath))
+        {
+            try
             {
-                return;
-            }
-
-            var rows = ParseCsv(firstLine);
-            if (rows.Count == 0)
-            {
-                return;
-            }
-
-            var headers = rows[0];
-            for (var i = 0; i < headers.Length; i++)
-            {
-                var header = headers[i].Trim().TrimStart('\uFEFF');
-                if (header.Length > 0)
+                using var reader = new StreamReader(resolvedPath);
+                var firstLine = reader.ReadLine();
+                if (firstLine == null)
                 {
-                    _columnOptions.Add(header);
+                    hasResult = true; // Empty file: no columns to offer.
+                }
+                else
+                {
+                    var rows = CsvPointParser.Parse(firstLine);
+                    if (rows.Count > 0)
+                    {
+                        options = BuildColumnOptions(rows[0]);
+                    }
+
+                    hasResult = true;
                 }
             }
+            catch
+            {
+                // The evaluation pass reports unreadable files; the dropdown just stays empty here.
+            }
         }
-        catch
+
+        lock (_headerLock)
         {
-            // The evaluation pass reports unreadable files; the dropdown just stays empty here.
+            if (version != _headerVersion)
+            {
+                return; // A newer request or a full load owns the snapshot now.
+            }
+
+            if (!string.Equals(_headerSourcePath, path, StringComparison.Ordinal))
+            {
+                return; // Another path was claimed while this header was being read.
+            }
+
+            if (hasResult)
+            {
+                _columnOptions = options;
+            }
+            else
+            {
+                // Release the claim so a later frame can retry a file that was briefly unavailable.
+                _headerSourcePath = string.Empty;
+            }
         }
     }
 
-    private void RefreshColumnOptions()
+    private void InvalidateColumnOptions()
     {
-        _columnOptions.Clear();
-        _columnOptions.Add(NoColumnOption);
-        for (var i = 0; i < _headers.Count; i++)
+        lock (_headerLock)
         {
-            var header = _headers[i];
+            _headerVersion++;
+            _headerSourcePath = string.Empty;
+            _columnOptions = new[] { NoColumnOption };
+        }
+    }
+
+    private void PublishColumnOptions(string path, IReadOnlyList<string> headers)
+    {
+        var options = BuildColumnOptions(headers);
+
+        lock (_headerLock)
+        {
+            // A newer UI request for another path wins; keep its snapshot instead.
+            if (_headerSourcePath.Length > 0 && !string.Equals(_headerSourcePath, path, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            _headerVersion++;
+            _headerSourcePath = path;
+            _columnOptions = options;
+        }
+    }
+
+    private static string[] BuildColumnOptions(IReadOnlyList<string> headers)
+    {
+        var options = new string[headers.Count + 1];
+        options[0] = NoColumnOption;
+        var count = 1;
+
+        for (var i = 0; i < headers.Count; i++)
+        {
+            var header = CsvPointParser.NormalizeHeader(headers[i]);
             if (header.Length > 0)
             {
-                _columnOptions.Add(header);
+                options[count++] = header;
             }
         }
+
+        if (count != options.Length)
+        {
+            Array.Resize(ref options, count);
+        }
+
+        return options;
     }
 
     private ColumnMap ResolveColumns(EvaluationContext context)
@@ -393,187 +535,56 @@ internal sealed class CsvToPoints : Instance<CsvToPoints>, IStatusProvider, ICus
         return _headerIndices.TryGetValue(columnName, out var index) ? index : -1;
     }
 
+    /// <remarks>Evaluation thread only.</remarks>
     private void RebuildPoints(in ColumnMap map, RotationModes rotationMode, bool colorIs0To255)
     {
-        if (_rows == null || _rows.Count == 0)
+        var rows = _rows;
+        if (rows == null || rows.Count == 0)
         {
+            LogWarn("The CSV has no data rows.");
             UpdatePointBuffer(null);
             SetStatus("The CSV has no data rows.", IStatusProvider.StatusLevel.Warning);
             return;
         }
 
-        var points = new List<Point>(_rows.Count);
-        foreach (var row in _rows)
+        if (rows.Count > MaxPointCount)
         {
-            points.Add(new Point
-                           {
-                               Position = new Vector3(GetFloat(row, map.PositionX, 0),
-                                                      GetFloat(row, map.PositionY, 0),
-                                                      GetFloat(row, map.PositionZ, 0)),
-                               F1 = GetFloat(row, map.F1, 1),
-                               F2 = GetFloat(row, map.F2, 1),
-                               Color = new Vector4(GetColor(row, map.ColorR, colorIs0To255),
-                                                   GetColor(row, map.ColorG, colorIs0To255),
-                                                   GetColor(row, map.ColorB, colorIs0To255),
-                                                   GetColor(row, map.ColorA, colorIs0To255)),
-                               Scale = new Vector3(GetFloat(row, map.ScaleX, 1),
-                                                   GetFloat(row, map.ScaleY, 1),
-                                                   GetFloat(row, map.ScaleZ, 1)),
-                               Orientation = BuildOrientation(GetFloat(row, map.RotationW, 1),
-                                                              GetFloat(row, map.RotationX, 0),
-                                                              GetFloat(row, map.RotationY, 0),
-                                                              GetFloat(row, map.RotationZ, 0),
-                                                              rotationMode),
-                           });
+            LogWarn($"The CSV has {rows.Count} rows; a point buffer supports at most {MaxPointCount}.");
+            UpdatePointBuffer(null);
+            SetStatus($"The CSV has {rows.Count} rows; a point buffer supports at most {MaxPointCount}.",
+                      IStatusProvider.StatusLevel.Error);
+            return;
+        }
+
+        var isQuaternion = rotationMode == RotationModes.Quaternion;
+        var points = new Point[rows.Count];
+        for (var i = 0; i < rows.Count; i++)
+        {
+            var row = rows[i];
+            points[i] = new Point
+                            {
+                                Position = new Vector3(CsvPointParser.GetFloat(row, map.PositionX, 0),
+                                                       CsvPointParser.GetFloat(row, map.PositionY, 0),
+                                                       CsvPointParser.GetFloat(row, map.PositionZ, 0)),
+                                F1 = CsvPointParser.GetFloat(row, map.F1, 1),
+                                F2 = CsvPointParser.GetFloat(row, map.F2, 1),
+                                Color = new Vector4(CsvPointParser.GetColor(row, map.ColorR, colorIs0To255),
+                                                    CsvPointParser.GetColor(row, map.ColorG, colorIs0To255),
+                                                    CsvPointParser.GetColor(row, map.ColorB, colorIs0To255),
+                                                    CsvPointParser.GetColor(row, map.ColorA, colorIs0To255)),
+                                Scale = new Vector3(CsvPointParser.GetFloat(row, map.ScaleX, 1),
+                                                    CsvPointParser.GetFloat(row, map.ScaleY, 1),
+                                                    CsvPointParser.GetFloat(row, map.ScaleZ, 1)),
+                                Orientation = CsvPointParser.BuildOrientation(CsvPointParser.GetFloat(row, map.RotationW, 1),
+                                                                              CsvPointParser.GetFloat(row, map.RotationX, 0),
+                                                                              CsvPointParser.GetFloat(row, map.RotationY, 0),
+                                                                              CsvPointParser.GetFloat(row, map.RotationZ, 0),
+                                                                              isQuaternion),
+                            };
         }
 
         UpdatePointBuffer(points);
-        SetStatus($"Loaded {points.Count} points · {CountMapped(map)} attributes mapped", IStatusProvider.StatusLevel.Success);
-    }
-
-    private static Quaternion BuildOrientation(float w, float x, float y, float z, RotationModes rotationMode)
-    {
-        if (rotationMode == RotationModes.Quaternion)
-        {
-            var quaternion = new Quaternion(x, y, z, w);
-            return quaternion.LengthSquared() > 0.000001f ? Quaternion.Normalize(quaternion) : Quaternion.Identity;
-        }
-
-        var qx = Quaternion.CreateFromAxisAngle(Vector3.UnitX, x * (MathF.PI / 180f));
-        var qy = Quaternion.CreateFromAxisAngle(Vector3.UnitY, y * (MathF.PI / 180f));
-        var qz = Quaternion.CreateFromAxisAngle(Vector3.UnitZ, z * (MathF.PI / 180f));
-        // Euler order XYZ rotates around Z first, then Y, then X.
-        return Quaternion.Concatenate(Quaternion.Concatenate(qz, qy), qx);
-    }
-
-    private static float GetColor(string[] row, int index, bool colorIs0To255)
-    {
-        if (index < 0 || index >= row.Length || !TryParseNumber(row[index], out var value))
-        {
-            return 1;
-        }
-
-        return colorIs0To255 ? value / 255f : value;
-    }
-
-    private static float GetFloat(string[] row, int index, float fallback)
-    {
-        if (index < 0 || index >= row.Length || !TryParseNumber(row[index], out var value))
-        {
-            return fallback;
-        }
-
-        return value;
-    }
-
-    private static bool TryParseNumber(string raw, out float value)
-    {
-        value = 0;
-        if (string.IsNullOrWhiteSpace(raw))
-        {
-            return false;
-        }
-
-        var text = raw.AsSpan().Trim();
-        if (float.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out value))
-        {
-            return float.IsFinite(value);
-        }
-
-        // Fixture exports append units ("-2.25m", "26.8°", "300W"); retry without the unit suffix only.
-        var end = text.Length;
-        while (end > 0 && (char.IsLetter(text[end - 1]) || text[end - 1] is '°' or '%'))
-        {
-            end--;
-        }
-
-        return end > 0
-               && end < text.Length
-               && float.TryParse(text[..end], NumberStyles.Float, CultureInfo.InvariantCulture, out value)
-               && float.IsFinite(value);
-    }
-
-    private static List<string[]> ParseCsv(string text)
-    {
-        var rows = new List<string[]>();
-        var fields = new List<string>();
-        var field = new StringBuilder();
-        var inQuotes = false;
-
-        for (var i = 0; i < text.Length; i++)
-        {
-            var c = text[i];
-            if (inQuotes)
-            {
-                if (c == '"')
-                {
-                    if (i + 1 < text.Length && text[i + 1] == '"')
-                    {
-                        field.Append('"');
-                        i++;
-                    }
-                    else
-                    {
-                        inQuotes = false;
-                    }
-                }
-                else
-                {
-                    field.Append(c);
-                }
-
-                continue;
-            }
-
-            switch (c)
-            {
-                case '"':
-                    inQuotes = true;
-                    break;
-                case ',':
-                    fields.Add(field.ToString());
-                    field.Clear();
-                    break;
-                case '\r':
-                    break;
-                case '\n':
-                    AddRow(rows, fields, field);
-                    break;
-                default:
-                    field.Append(c);
-                    break;
-            }
-        }
-
-        if (field.Length > 0 || fields.Count > 0)
-        {
-            AddRow(rows, fields, field);
-        }
-
-        return rows;
-    }
-
-    private static void AddRow(List<string[]> rows, List<string> fields, StringBuilder field)
-    {
-        fields.Add(field.ToString());
-        field.Clear();
-
-        var isEmpty = true;
-        for (var i = 0; i < fields.Count; i++)
-        {
-            if (!string.IsNullOrWhiteSpace(fields[i]))
-            {
-                isEmpty = false;
-                break;
-            }
-        }
-
-        if (!isEmpty)
-        {
-            rows.Add(fields.ToArray());
-        }
-
-        fields.Clear();
+        SetStatus($"Loaded {points.Length} points · {CountMapped(map)} attributes mapped", IStatusProvider.StatusLevel.Success);
     }
 
     private static int CountMapped(in ColumnMap map)
@@ -598,9 +609,16 @@ internal sealed class CsvToPoints : Instance<CsvToPoints>, IStatusProvider, ICus
         return count;
     }
 
-    private void UpdatePointBuffer(List<Point>? points)
+    /// <summary>
+    /// Uploads the points, reusing the GPU buffer while the point count is unchanged.
+    /// </summary>
+    /// <remarks>
+    /// Evaluation thread only. A count change disposes and recreates the buffer because a structured
+    /// buffer cannot be resized in place; downstream operators re-read the slot every frame.
+    /// </remarks>
+    private void UpdatePointBuffer(Point[]? points)
     {
-        var count = points?.Count ?? 0;
+        var count = points?.Length ?? 0;
         if (count == 0)
         {
             _pointBuffer?.Dispose();
@@ -615,24 +633,41 @@ internal sealed class CsvToPoints : Instance<CsvToPoints>, IStatusProvider, ICus
             _pointBuffer = null;
         }
 
-        var array = points!.ToArray();
         if (_pointBuffer == null)
         {
             _pointBuffer = new BufferWithViews();
-            ResourceManager.SetupStructuredBuffer(array, Point.Stride * count, Point.Stride, ref _pointBuffer.Buffer);
+            ResourceManager.SetupStructuredBuffer(points!, Point.Stride * count, Point.Stride, ref _pointBuffer.Buffer);
             ResourceManager.CreateStructuredBufferSrv(_pointBuffer.Buffer, ref _pointBuffer.Srv);
             ResourceManager.CreateStructuredBufferUav(_pointBuffer.Buffer, UnorderedAccessViewBufferFlags.None, ref _pointBuffer.Uav);
         }
         else
         {
-            ResourceManager.Device.ImmediateContext.UpdateSubresource(array, _pointBuffer.Buffer);
+            ResourceManager.Device.ImmediateContext.UpdateSubresource(points!, _pointBuffer.Buffer!);
         }
     }
 
     private void SetStatus(string message, IStatusProvider.StatusLevel level)
     {
-        _statusMessage = message;
-        _statusLevel = level;
+        // One immutable snapshot keeps the message and level consistent for a reader.
+        _status = new StatusSnapshot(message, level);
+    }
+
+    private void LogWarn(string message)
+    {
+        Log.Warning($"CsvToPoints: {message}", this);
+    }
+
+    private void LogError(string message)
+    {
+        // File failures happen once per load; the catch-all can repeat every frame. Log the first
+        // occurrence of a message and stay quiet while it persists.
+        if (string.Equals(_lastLoggedError, message, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _lastLoggedError = message;
+        Log.Error($"CsvToPoints: {message}", this);
     }
 
     private InputSlot<string>? GetMappingSlot(Guid inputId)
@@ -661,6 +696,10 @@ internal sealed class CsvToPoints : Instance<CsvToPoints>, IStatusProvider, ICus
         if (disposing)
         {
             _pointBuffer?.Dispose();
+            _pointBuffer = null;
+            _rows = null;
+            _headers.Clear();
+            _headerIndices.Clear();
         }
 
         base.Dispose(disposing);
@@ -688,17 +727,48 @@ internal sealed class CsvToPoints : Instance<CsvToPoints>, IStatusProvider, ICus
 
     private const string NoColumnOption = "(none)";
 
-    private readonly List<string> _columnOptions = new() { NoColumnOption };
+    /// <summary>Refuse files that would need more memory than the editor should reserve for one op.</summary>
+    private const long MaxCsvFileSizeInBytes = 128L * 1024 * 1024;
+
+    /// <summary>
+    /// Upper bound for one point buffer. Also keeps <see cref="Point.Stride"/> * count inside an
+    /// <see cref="int"/>; the parser stops after this many data rows.
+    /// </summary>
+    private const int MaxPointCount = 2_000_000;
+
+    /// <summary>Reports a status message and level as one consistent pair.</summary>
+    private sealed class StatusSnapshot
+    {
+        public readonly string Message;
+        public readonly IStatusProvider.StatusLevel Level;
+
+        public StatusSnapshot(string message, IStatusProvider.StatusLevel level)
+        {
+            Message = message;
+            Level = level;
+        }
+    }
+
+    // Shared with the UI thread. The options array is published as a whole, never mutated.
+    private readonly object _headerLock = new();
+    private volatile string[] _columnOptions = new[] { NoColumnOption };
+    private volatile string _headerSourcePath = string.Empty;
+
+    // Guards the publish order of _columnOptions; only touched inside _headerLock.
+    private int _headerVersion;
+
+    // Evaluation-thread-only state.
     private readonly List<string> _headers = new();
     private readonly Dictionary<string, int> _headerIndices = new(StringComparer.OrdinalIgnoreCase);
-    private string _headerSourcePath = string.Empty;
-    private string _loadedPath = string.Empty;
     private List<string[]>? _rows;
+    private string _loadedPath = string.Empty;
     private BufferWithViews? _pointBuffer;
     private ColumnMap _appliedMap = UnmappedColumns;
     private RotationModes _appliedRotationMode;
     private bool _appliedColorIs0To255;
     private bool _reloadTriggered;
-    private string _statusMessage = "No CSV file selected.";
-    private IStatusProvider.StatusLevel _statusLevel = IStatusProvider.StatusLevel.Notice;
+    private string _lastLoggedError = string.Empty;
+
+    // Read by the UI thread; replaced atomically on the evaluation thread.
+    private volatile StatusSnapshot _status = new("No CSV file selected.", IStatusProvider.StatusLevel.Notice);
 }

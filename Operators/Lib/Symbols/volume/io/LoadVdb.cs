@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Numerics;
+using System.Threading;
 using T3.Core.DataTypes;
 using T3.Core.DataTypes.Volume;
 using T3.Core.DataTypes.Volume.Tools;
@@ -91,12 +92,18 @@ internal sealed class LoadVdb : Instance<LoadVdb>
                                      // finished volume would only be published if something else
                                      // invalidated the chain. The next frame's invalidation pass
                                      // picks this up and runs Update again.
-                                     Volume.DirtyFlag.Invalidate();
+                                     //
+                                     // Bump the version atomically instead of calling Invalidate():
+                                     // that method also rewrites InvalidationTick, the pass-scoped
+                                     // bookkeeping the evaluation thread owns, and writing it from
+                                     // here would race with the invalidation walk. A dirty version is
+                                     // all this wake-up needs, and an extra increment is harmless.
+                                     Interlocked.Increment(ref Volume.DirtyFlag.SourceVersion);
                                      return result;
                                  });
     }
 
-    private void PublishCompletedLoad(string? gridName)
+    private void PublishCompletedLoad(string gridName)
     {
         if (_loadTask is not { IsCompleted: true })
             return;
@@ -130,7 +137,12 @@ internal sealed class LoadVdb : Instance<LoadVdb>
 
         if (volume.Grids.Count == 0)
         {
-            Log.Warning($"No supported grids found in {result.Path}", this);
+            // Say what was in the file rather than just that nothing usable came out: a Houdini
+            // point cache is a perfectly valid file that this reader cannot represent.
+            var skipped = volume.SkippedGrids.Count > 0
+                              ? $" (skipped unsupported grids: {string.Join(", ", volume.SkippedGrids)})"
+                              : string.Empty;
+            Log.Warning($"No supported grids found in {result.Path}{skipped}", this);
             Volume.Value = null;
         }
         else
@@ -147,8 +159,8 @@ internal sealed class LoadVdb : Instance<LoadVdb>
 
     private sealed class LoadResult
     {
-        public VdbVolume? Volume;
-        public string? Error;
+        public VdbVolume Volume;
+        public string Error;
         public string Path = string.Empty;
     }
 
@@ -156,10 +168,10 @@ internal sealed class LoadVdb : Instance<LoadVdb>
     private static bool IsDrivePath(string path)
         => path.Length >= 2 && char.IsLetter(path[0]) && path[1] == ':';
 
-    private string? _lastPath;
-    private string? _lastGridName;
+    private string _lastPath;
+    private string _lastGridName;
     private DateTime _lastWriteTime;
-    private Task<LoadResult>? _loadTask;
+    private Task<LoadResult> _loadTask;
 
     [Input(Guid = "e16c0dad-a228-5a6f-964b-82986746836e")]
     public readonly InputSlot<string> Path = new();

@@ -4,6 +4,7 @@ using T3.Core.Output;
 using T3.Editor.Gui.Styling;
 using T3.Editor.UiModel.ProjectHandling;
 using T3.Editor.UiModel.Selection;
+using T3.Editor.Show;
 
 namespace T3.Editor.Gui.Windows.OutputSetup;
 
@@ -242,7 +243,7 @@ internal static class SetupEntityContextMenu
 
             case SetupEntityKinds.Plug:
                 // A render node's display belongs to that machine; only its binding is offered here.
-                if (T3.Editor.Show.BoygroupManager.Instance.TryGetRemoteDisplayPlug(id, out var remoteClient, out var remoteDisplayIndex))
+                if (Show.BoygroupManager.Instance.TryGetRemoteDisplayPlug(id, out var remoteClient, out var remoteDisplayIndex))
                 {
                     var remoteConfig = remoteClient.MachineConfig;
                     var remoteBound = remoteConfig == null
@@ -251,7 +252,7 @@ internal static class SetupEntityContextMenu
                     if (remoteBound != null
                         && CustomComponents.DrawMenuItem(15, $"Unbind {remoteBound.Name}"))
                     {
-                        T3.Editor.Show.BoygroupManager.Instance.UnbindRemoteOutput(remoteClient, remoteBound.Id, remoteDisplayIndex);
+                        Show.BoygroupManager.Instance.UnbindRemoteOutput(remoteClient, remoteBound.Id, remoteDisplayIndex);
                     }
 
                     break;

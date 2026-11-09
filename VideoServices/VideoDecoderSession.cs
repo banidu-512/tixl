@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Threading;
 using Sdcb.FFmpeg.Codecs;
@@ -68,12 +69,25 @@ public sealed class VideoDecoderSession : IDisposable
     /// <paramref name="inputFormat"/> forces the demuxer by short name (e.g. <c>v4l2</c>, <c>dshow</c>) for
     /// URLs that content probing cannot identify, like capture device nodes.
     /// </summary>
+    /// <param name="cancellationToken">Checked before opening and between frame reads, so a cancelled live
+    /// session stops decoding at its next frame boundary instead of after the I/O timeout. It does not abort
+    /// an I/O call already in flight — <paramref name="ioTimeout"/> is what bounds those.</param>
+    /// <param name="ioTimeout">The longest a single blocking open or packet read may take before FFmpeg
+    /// abandons it (<c>rw_timeout</c>); <see cref="TimeSpan.Zero"/> leaves the protocol's own timeout in
+    /// charge. Protocols without a socket timeout (plain HTTP, RTMP) need this to notice a source that
+    /// stopped sending — without it a stalled read blocks its thread indefinitely.</param>
     public static unsafe VideoDecoderSession? TryOpen(string url, VideoPlaybackOptimization optimization, out string? error,
                                                       IReadOnlyDictionary<string, string>? demuxerOptions = null,
-                                                      string? inputFormat = null,
-                                                      bool lowLatency = false)
+                                                      CancellationToken cancellationToken = default,
+                                                      TimeSpan ioTimeout = default)
     {
         error = null;
+        if (cancellationToken.IsCancellationRequested)
+        {
+            error = "Cancelled.";
+            return null;
+        }
+
         if (!FfmpegLibrary.EnsureInitialized())
         {
             error = FfmpegLibrary.StatusError ?? "FFmpeg is not available";
@@ -107,10 +121,11 @@ public sealed class VideoDecoderSession : IDisposable
         MediaDictionary? options = null;
         try
         {
-            options = new MediaDictionary();
-            if (demuxerOptions != null)
+            var effectiveOptions = WithIoTimeout(demuxerOptions, ioTimeout);
+            if (effectiveOptions != null)
             {
-                foreach (var pair in demuxerOptions)
+                options = new MediaDictionary();
+                foreach (var pair in effectiveOptions)
                     options[pair.Key] = pair.Value;
             }
 
@@ -182,7 +197,8 @@ public sealed class VideoDecoderSession : IDisposable
                 Log.Info("Zero-copy decode skipped: stream pixel format isn't a supported 4:2:0 surface. "
                          + "Using hardware decode with CPU read-back.");
 
-            return new VideoDecoderSession(formatContext, codecContext, videoStream, usesHardware, zeroCopy, hwDeviceCtx);
+            return new VideoDecoderSession(formatContext, codecContext, videoStream, usesHardware, zeroCopy, hwDeviceCtx,
+                                           cancellationToken);
         }
         catch (Exception e)
         {
@@ -194,6 +210,27 @@ public sealed class VideoDecoderSession : IDisposable
         {
             options?.Dispose();
         }
+    }
+
+    /// <summary>
+    /// Adds FFmpeg's <c>rw_timeout</c> — the hard bound on a single blocking read or open — to the caller's
+    /// demuxer options. It is the generic backstop for protocols without a socket timeout of their own (plain
+    /// HTTP, RTMP); RTSP keeps using its own <c>timeout</c>. A copy is returned so the caller's dictionary is
+    /// never mutated.
+    /// </summary>
+    private static IReadOnlyDictionary<string, string>? WithIoTimeout(IReadOnlyDictionary<string, string>? demuxerOptions,
+                                                                     TimeSpan ioTimeout)
+    {
+        if (ioTimeout <= TimeSpan.Zero)
+            return demuxerOptions;
+
+        var merged = demuxerOptions == null
+                         ? new Dictionary<string, string>()
+                         : new Dictionary<string, string>(demuxerOptions);
+
+        merged["rw_timeout"] = Math.Max(1, (long)ioTimeout.TotalMicroseconds)
+                              .ToString(CultureInfo.InvariantCulture);
+        return merged;
     }
 
     /// <summary>
@@ -400,7 +437,11 @@ public sealed class VideoDecoderSession : IDisposable
     public unsafe bool TryReadNextFrame(out long framePts)
     {
         framePts = 0;
-        var pendingReads = 0;
+
+        // A cancelled live session stops here, at the frame boundary, rather than after the I/O timeout.
+        if (_cancellation.IsCancellationRequested)
+            return false;
+
         while (true)
         {
             // FFmpeg clears the receiving frame before reporting EOF, so decode into a scratch frame: at the end of
@@ -530,12 +571,14 @@ public sealed class VideoDecoderSession : IDisposable
     }
 
     private unsafe VideoDecoderSession(FormatContext formatContext, CodecContext codecContext,
-                                       MediaStream videoStream, bool usesHardware, bool zeroCopy, AVBufferRef* hwDeviceCtx)
+                                       MediaStream videoStream, bool usesHardware, bool zeroCopy, AVBufferRef* hwDeviceCtx,
+                                       CancellationToken cancellation)
     {
         _formatContext = formatContext;
         _codecContext = codecContext;
         _videoStreamIndex = videoStream.Index;
         _hwDeviceCtx = hwDeviceCtx;
+        _cancellation = cancellation;
         UsesHardwareDecode = usesHardware;
         UsesZeroCopy = zeroCopy;
         _zeroCopy = zeroCopy;
@@ -601,4 +644,5 @@ public sealed class VideoDecoderSession : IDisposable
     private readonly bool _zeroCopy;
     private bool _lastFrameReadBack;
     private bool _draining;
+    private readonly CancellationToken _cancellation;
 }

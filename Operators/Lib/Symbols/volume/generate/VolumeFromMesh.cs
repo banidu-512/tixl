@@ -83,15 +83,15 @@ internal sealed class VolumeFromMesh : Instance<VolumeFromMesh>
         }
     }
 
-    private MeshGeometry? _lastMesh;
+    private MeshGeometry _lastMesh;
     private int _lastMeshVersion = -1;
     private float _lastVoxelSize = -1;
     private int _lastBand = -1;
     private VolumeModes _lastMode = (VolumeModes)(-1);
-    private string? _lastError;
+    private string _lastError;
 
     [Input(Guid = "e4c8434c-5d4a-57b7-996e-5006785e8cf8")]
-    public readonly InputSlot<MeshGeometry?> Geometry = new();
+    public readonly InputSlot<MeshGeometry> Geometry = new();
 
     [Input(Guid = "5dc83de1-24e8-52c8-9ef4-2ad2aafab51f")]
     public readonly InputSlot<float> VoxelSize = new();

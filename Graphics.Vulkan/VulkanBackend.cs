@@ -1246,6 +1246,27 @@ public sealed unsafe class VulkanBackend : IGraphicsBackend, IDisposable
         }
     }
 
+    /// <summary>The mapped view of a resource's host-visible memory; default when the resource has none.</summary>
+    private static MappedMemory MappedMemoryOf(GpuResource resource)
+    {
+        switch (resource)
+        {
+            case VulkanBuffer buffer when buffer.Mapped != null:
+                return new MappedMemory(buffer.Mapped, buffer.Description.SizeInBytes, buffer.Description.SizeInBytes,
+                                        buffer.Description.SizeInBytes);
+
+            case VulkanTexture texture when texture.Mapped != null:
+            {
+                var rowPitch = texture.Description.Width * FormatSizes.BytesPerPixel(texture.Description.Format);
+                var size = SizeOf(texture.Description);
+                return new MappedMemory(texture.Mapped, rowPitch, (int)size, (int)size);
+            }
+
+            default:
+                return default;
+        }
+    }
+
     public bool TryMapForRead(GpuResource resource, int subresource, out MappedMemory memory)
     {
         // Host-visible readback memory is mapped for its lifetime, so the only question is whether the GPU has

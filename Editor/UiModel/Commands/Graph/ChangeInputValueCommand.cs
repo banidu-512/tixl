@@ -9,6 +9,14 @@ public sealed class ChangeInputValueCommand : ICommand
     public string Name => "Change Input Value";
     public bool IsUndoable => true;
 
+    /// <summary>
+    /// Whether applying this value marks the composition as modified. Remote show state (a render
+    /// node receiving its master's live values) clears it: those aren't local edits, and marking
+    /// them dirty saves the node's project with values the master never wrote, which the deploy then
+    /// sees as a difference and answers with another restart.
+    /// </summary>
+    public bool MarksModified { get; init; } = true;
+
     /// <param name="childInstance">The edited op's instance, when the caller has one. Used to insert
     /// keys in the op's local time (composing enclosing time-clip remaps); without it keys land at the
     /// global playback time, which is wrong inside a remapped clip.</param>
@@ -137,7 +145,8 @@ public sealed class ChangeInputValueCommand : ICommand
             InvalidateInstances(inputParentSymbol, symbolChild);
         }
         
-        inputParentSymbolUi.FlagAsModified();
+        if (MarksModified)
+            inputParentSymbolUi.FlagAsModified();
     }
 
     private void InvalidateInstances(Symbol inputParentSymbol, Symbol.Child symbolChild)

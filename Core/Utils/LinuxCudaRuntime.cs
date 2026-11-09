@@ -1,3 +1,4 @@
+#nullable enable
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -22,10 +23,22 @@ public static class LinuxCudaRuntime
         "libcudart.so.12", "libcublasLt.so.12", "libcublas.so.12", "libcurand.so.10", "libcufft.so.11", "libcudnn.so.9"
     };
 
+    /** The TensorRT 10 runtime the provider links against. Optional helpers are skipped when absent. */
+    private static readonly string[] TensorRtLibraries =
+    {
+        "libnvinfer.so.10", "libnvinfer_dispatch.so.10", "libnvinfer_lean.so.10",
+        "libnvinfer_plugin.so.10", "libnvonnxparser.so.10"
+    };
+
+    private static readonly string[] TensorRtRequiredLibraries = { "libnvinfer.so.10", "libnvonnxparser.so.10" };
+
     private static readonly object Lock = new();
     private static readonly List<IntPtr> LoadedHandles = new();
     private static string? _failure;
     private static bool _probed;
+    private static string? _tensorRtFailure;
+    private static string? _tensorRtDirectory;
+    private static bool _tensorRtProbed;
 
     public static bool TryPrepare(out string reason)
     {
@@ -41,6 +54,26 @@ public static class LinuxCudaRuntime
             return _failure == null;
         }
     }
+
+    /// <summary>Loads the TensorRT 10 runtime the ONNX Runtime provider links against, so the provider does not
+    /// depend on LD_LIBRARY_PATH having been set before the process started.</summary>
+    public static bool TryPrepareTensorRt(out string reason, out string directory)
+    {
+        lock (Lock)
+        {
+            if (!_tensorRtProbed)
+            {
+                _tensorRtProbed = true;
+                _tensorRtFailure = ProbeTensorRt();
+            }
+
+            reason = _tensorRtFailure ?? string.Empty;
+            directory = _tensorRtDirectory ?? string.Empty;
+            return _tensorRtFailure == null;
+        }
+    }
+
+    public static bool TryPrepareTensorRt(out string reason) => TryPrepareTensorRt(out reason, out _);
 
     private static string? Probe()
     {
@@ -58,6 +91,85 @@ public static class LinuxCudaRuntime
 
         return $"{string.Join(", ", missing)} not found. The ONNX Runtime GPU build needs the CUDA 12 runtime and cuDNN 9 " +
                "(NVIDIA driver 525 or newer, Pascal or newer GPU). Install them, or point CUDA_PATH at the toolkit";
+    }
+
+    private static string? ProbeTensorRt()
+    {
+        var missing = new List<string>();
+        foreach (var dir in CollectTensorRtSearchDirs())
+        {
+            if (!File.Exists(Path.Combine(dir, "libnvinfer.so.10")))
+                continue;
+
+            _tensorRtDirectory = dir;
+            missing.Clear();
+            foreach (var library in TensorRtLibraries)
+            {
+                var path = Path.Combine(dir, library);
+                if (!File.Exists(path))
+                {
+                    if (TensorRtRequiredLibraries.Contains(library))
+                        missing.Add(library);
+                    continue;
+                }
+
+                if (NativeLibrary.TryLoad(path, out var handle))
+                {
+                    LoadedHandles.Add(handle);
+                }
+                else if (TensorRtRequiredLibraries.Contains(library))
+                {
+                    missing.Add(library);
+                }
+            }
+
+            if (missing.Count == 0)
+                return null;
+
+            return $"TensorRT 10 found in {dir}, but {string.Join(", ", missing)} could not be loaded";
+        }
+
+        return "TensorRT 10 runtime not found (libnvinfer.so.10). Install TensorRT 10, set TENSORRT_ROOT, " +
+               "or add its lib folder to LD_LIBRARY_PATH";
+    }
+
+    private static List<string> CollectTensorRtSearchDirs()
+    {
+        var dirs = new List<string>();
+
+        void Add(string? dir)
+        {
+            if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir) && !dirs.Contains(dir))
+                dirs.Add(dir);
+        }
+
+        foreach (var variable in new[] { "TENSORRT_ROOT", "TENSORRT_PATH", "TRT_PATH", "TENSORRT_HOME" })
+        {
+            var root = Environment.GetEnvironmentVariable(variable);
+            if (string.IsNullOrEmpty(root))
+                continue;
+
+            Add(root);
+            Add(Path.Combine(root, "lib"));
+            Add(Path.Combine(root, "lib64"));
+        }
+
+        foreach (var root in new[] { "/usr/local/TensorRT", "/opt/TensorRT", "/usr/src/tensorrt" })
+        {
+            Add(Path.Combine(root, "lib"));
+            Add(Path.Combine(root, "lib64"));
+        }
+
+        foreach (var entry in (Environment.GetEnvironmentVariable("LD_LIBRARY_PATH") ?? string.Empty)
+                               .Split(':', StringSplitOptions.RemoveEmptyEntries))
+        {
+            Add(entry.Trim());
+        }
+
+        Add("/usr/lib/x86_64-linux-gnu");
+        Add("/usr/lib64");
+        Add("/usr/lib");
+        return dirs;
     }
 
     private static bool TryLoad(string library, List<string> searchDirs)

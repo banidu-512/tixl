@@ -1,5 +1,9 @@
 using System;
+using System.Threading;
+using System.Threading.Tasks;
+using T3.Graphics;
 using T3.Graphics.Compat;
+using T3.Core.Logging;
 using T3.Core.Resource;
 
 #pragma warning disable CS8981
@@ -39,91 +43,110 @@ public class DepthThreshold : Instance<DepthThreshold>
 
         if (depthTexture == null || depthTexture.IsDisposed)
         {
+            ResetReadback();
             MaskTexture.Value = null;
             PixelRatio.Value = 0;
             return;
         }
 
-        var device = ResourceManager.Device;
         var desc = depthTexture.Description;
-
-        // Create or update mask texture
-        if (_maskTexture == null || _maskTexture.Description.Width != desc.Width || _maskTexture.Description.Height != desc.Height)
+        if (desc.Format != Format.R32_Float)
         {
-            _maskTexture?.Dispose();
-            var maskDesc = new Texture2DDescription
+            if (!_loggedUnsupportedFormat)
             {
-                Width = desc.Width,
-                Height = desc.Height,
-                MipLevels = 1,
-                ArraySize = 1,
-                Format = Format.R8_UNorm,
-                SampleDescription = new SampleDescription(1, 0),
-                Usage = ResourceUsage.Default,
-                BindFlags = BindFlags.ShaderResource | BindFlags.RenderTarget,
-                OptionFlags = ResourceOptionFlags.None
-            };
-            _maskTexture = new Texture2D(new T3.Graphics.Compat.Texture2D(device, maskDesc));
+                _loggedUnsupportedFormat = true;
+                Log.Warning($"[DepthThreshold] Unsupported depth format {desc.Format}; expected R32_Float.", this);
+            }
+
+            ResetReadback();
+            MaskTexture.Value = null;
+            PixelRatio.Value = 0;
+            return;
         }
 
-        // Get depth data
-        var stagingTexture = GetOrCreateStagingTexture(desc.Width, desc.Height, desc.Format);
-        device.ImmediateContext.CopyResource(depthTexture, stagingTexture);
-        var dataBox = device.ImmediateContext.MapSubresource(stagingTexture, 0, MapMode.Read, MapFlags.None);
+        EnsureMaskTexture(desc.Width, desc.Height);
 
-        if (dataBox.DataPointer == IntPtr.Zero)
-        {
-            device.ImmediateContext.UnmapSubresource(stagingTexture, 0);
+        // Read the previous frame's copy first. A map that isn't ready costs nothing and keeps the last
+        // mask; never issue a new copy over a pending one, or the readback can be starved forever.
+        if (_readbackPending && !TryCompleteReadback())
             return;
+
+        // Only one copy in flight: this is the frame-to-frame back-pressure that keeps the render thread
+        // from queueing GPU work faster than it can be read back.
+        var stagingTexture = GetOrCreateStagingTexture(desc.Width, desc.Height, desc.Format);
+        ResourceManager.Device.ImmediateContext.CopyResource(depthTexture, stagingTexture);
+
+        _readbackPending = true;
+        _waitFrames = 0;
+        _pendingWidth = desc.Width;
+        _pendingHeight = desc.Height;
+        _pendingMinThreshold = minThreshold;
+        _pendingMaxThreshold = maxThreshold;
+        _pendingInvert = invert;
+        _pendingUseNormalized = useNormalized;
+    }
+
+    private bool TryCompleteReadback()
+    {
+        var stagingTexture = _stagingTexture;
+        if (stagingTexture == null || stagingTexture.IsDisposed || stagingTexture.Native == null)
+        {
+            _readbackPending = false;
+            return true;
+        }
+
+        // Non-blocking map: a device reset or a saturated queue leaves this false until the copy retires.
+        if (!ResourceManager.Device.Backend.TryMapForRead(stagingTexture.Native, 0, out var mapped))
+        {
+            _waitFrames++;
+            if (_waitFrames <= ReadbackTimeoutFrames)
+                return false;
+
+            // A device reset can leave the copy unfinished forever; drop it and start over next frame.
+            _readbackPending = false;
+            return true;
         }
 
         try
         {
-            int width = desc.Width;
-            int height = desc.Height;
-            var depthData = new float[width * height];
+            var width = _pendingWidth;
+            var height = _pendingHeight;
+            var pixelCount = width * height;
+            if (pixelCount <= 0 || mapped.SizeInBytes <= 0)
+                return true;
 
-            // Copy data from staging texture
-            IntPtr srcPtr = dataBox.DataPointer;
-            int rowPitch = dataBox.RowPitch;
+            if (_maskData == null || _maskData.Length != pixelCount)
+                _maskData = new byte[pixelCount];
 
-            for (int y = 0; y < height; y++)
+            var actualMin = _pendingMinThreshold;
+            var actualMax = _pendingMaxThreshold;
+
+            if (_pendingUseNormalized)
             {
-                int dstOffset = y * width;
-
-                for (int x = 0; x < width; x++)
+                var dataMin = float.MaxValue;
+                var dataMax = float.MinValue;
+                unsafe
                 {
-                    unsafe
+                    for (var y = 0; y < height; y++)
                     {
-                        IntPtr rowSrcPtr = srcPtr + (y * rowPitch) + (x * sizeof(float));
-                        depthData[dstOffset + x] = *((float*)rowSrcPtr);
-                    }
-                }
-            }
+                        var row = (float*)((byte*)mapped.Data + (long)y * mapped.RowPitch);
+                        for (var x = 0; x < width; x++)
+                        {
+                            var d = row[x];
+                            if (float.IsNaN(d) || float.IsInfinity(d))
+                                continue;
 
-            // Calculate actual min/max if using normalized thresholds
-            float actualMin = minThreshold;
-            float actualMax = maxThreshold;
-
-            if (useNormalized)
-            {
-                float dataMin = float.MaxValue;
-                float dataMax = float.MinValue;
-
-                foreach (var d in depthData)
-                {
-                    if (!float.IsNaN(d) && !float.IsInfinity(d))
-                    {
-                        if (d < dataMin) dataMin = d;
-                        if (d > dataMax) dataMax = d;
+                            if (d < dataMin) dataMin = d;
+                            if (d > dataMax) dataMax = d;
+                        }
                     }
                 }
 
-                float range = dataMax - dataMin;
+                var range = dataMax - dataMin;
                 if (range > 0.0001f)
                 {
-                    actualMin = dataMin + minThreshold * range;
-                    actualMax = dataMin + maxThreshold * range;
+                    actualMin = dataMin + _pendingMinThreshold * range;
+                    actualMax = dataMin + _pendingMaxThreshold * range;
                 }
                 else
                 {
@@ -132,28 +155,44 @@ public class DepthThreshold : Instance<DepthThreshold>
                 }
             }
 
-            // Create binary mask
-            var maskData = new byte[width * height];
-            int passCount = 0;
+            var maskData = _maskData;
+            var maskTexture = _maskTexture;
+            if (maskData == null || maskTexture == null)
+                return true;
 
-            Parallel.For(0, width * height, i =>
-            {
-                float depth = depthData[i];
-                bool inRange = depth >= actualMin && depth <= actualMax &&
-                              !float.IsNaN(depth) && !float.IsInfinity(depth);
+            var invert = _pendingInvert;
+            var passCount = 0;
 
-                if (invert) inRange = !inRange;
+            // Per-row partitions keep the inner loop free of Interlocked traffic (one atomic per row).
+            Parallel.For(0, height,
+                         () => 0,
+                         (y, _, localCount) =>
+                         {
+                             unsafe
+                             {
+                                 var row = (float*)((byte*)mapped.Data + (long)y * mapped.RowPitch);
+                                 var offset = y * width;
+                                 for (var x = 0; x < width; x++)
+                                 {
+                                     var depth = row[x];
+                                     var inRange = depth >= actualMin && depth <= actualMax &&
+                                                   !float.IsNaN(depth) && !float.IsInfinity(depth);
+                                     if (invert) inRange = !inRange;
 
-                maskData[i] = inRange ? (byte)255 : (byte)0;
+                                     maskData[offset + x] = inRange ? (byte)255 : (byte)0;
+                                     if (inRange) localCount++;
+                                 }
+                             }
 
-                if (inRange) System.Threading.Interlocked.Increment(ref passCount);
-            });
+                             return localCount;
+                         },
+                         localCount => Interlocked.Add(ref passCount, localCount));
 
             var handle = System.Runtime.InteropServices.GCHandle.Alloc(maskData, System.Runtime.InteropServices.GCHandleType.Pinned);
             try
             {
                 var dataOut = new DataBox(handle.AddrOfPinnedObject(), width, 0);
-                device.ImmediateContext.UpdateSubresource(dataOut, _maskTexture);
+                ResourceManager.Device.ImmediateContext.UpdateSubresource(dataOut, maskTexture);
             }
             finally
             {
@@ -161,43 +200,70 @@ public class DepthThreshold : Instance<DepthThreshold>
             }
 
             MaskTexture.Value = _maskTexture;
-            PixelRatio.Value = (float)passCount / (width * height);
+            PixelRatio.Value = pixelCount > 0 ? (float)passCount / pixelCount : 0f;
+            return true;
         }
         finally
         {
-            device.ImmediateContext.UnmapSubresource(stagingTexture, 0);
+            ResourceManager.Device.ImmediateContext.UnmapSubresource(stagingTexture, 0);
+            _readbackPending = false;
         }
     }
 
-    private Texture2D GetOrCreateStagingTexture(int width, int height, Format format)
+    private void EnsureMaskTexture(int width, int height)
     {
-        var key = (width, height, format);
+        if (_maskTexture != null && _maskTexture.Description.Width == width && _maskTexture.Description.Height == height)
+            return;
 
-        if (_cachedStagingTextures.TryGetValue(key, out var cachedTexture))
-            return cachedTexture;
-
-        lock (_textureCacheLock)
+        _maskTexture?.Dispose();
+        var maskDesc = new Texture2DDescription
         {
-            if (_cachedStagingTextures.TryGetValue(key, out cachedTexture))
-                return cachedTexture;
+            Width = width,
+            Height = height,
+            MipLevels = 1,
+            ArraySize = 1,
+            Format = Format.R8_UNorm,
+            SampleDescription = new SampleDescription(1, 0),
+            Usage = ResourceUsage.Default,
+            BindFlags = BindFlags.ShaderResource | BindFlags.RenderTarget,
+            OptionFlags = ResourceOptionFlags.None
+        };
+        _maskTexture = new Texture2D(new T3.Graphics.Compat.Texture2D(ResourceManager.Device, maskDesc));
+    }
 
-            var newTexture = new Texture2D(new T3.Graphics.Compat.Texture2D(ResourceManager.Device, new Texture2DDescription
-            {
-                Width = width,
-                Height = height,
-                MipLevels = 1,
-                ArraySize = 1,
-                Format = format,
-                SampleDescription = new SampleDescription(1, 0),
-                Usage = ResourceUsage.Staging,
-                BindFlags = BindFlags.None,
-                CpuAccessFlags = CpuAccessFlags.Read,
-                OptionFlags = ResourceOptionFlags.None
-            }));
+    /// <summary>One staging texture, replaced on size/format change: a resized input must not accumulate buffers.</summary>
+    private T3.Graphics.Compat.Texture2D GetOrCreateStagingTexture(int width, int height, Format format)
+    {
+        if (_stagingTexture is { IsDisposed: false }
+            && _stagingTexture.Description.Width == width
+            && _stagingTexture.Description.Height == height
+            && _stagingTexture.Description.Format == format)
+            return _stagingTexture;
 
-            _cachedStagingTextures[key] = newTexture;
-            return newTexture;
-        }
+        ResetReadback();
+        _stagingTexture?.Dispose();
+        _stagingTexture = new Texture2D(new T3.Graphics.Compat.Texture2D(ResourceManager.Device, new Texture2DDescription
+        {
+            Width = width,
+            Height = height,
+            MipLevels = 1,
+            ArraySize = 1,
+            Format = format,
+            SampleDescription = new SampleDescription(1, 0),
+            Usage = ResourceUsage.Staging,
+            BindFlags = BindFlags.None,
+            CpuAccessFlags = CpuAccessFlags.Read,
+            OptionFlags = ResourceOptionFlags.None
+        }));
+
+        return _stagingTexture;
+    }
+
+    private void ResetReadback()
+    {
+        // A pending copy is never left mapped; only the boolean and the staging texture need resetting.
+        _readbackPending = false;
+        _waitFrames = 0;
     }
 
     protected override void Dispose(bool isDisposing)
@@ -207,12 +273,8 @@ public class DepthThreshold : Instance<DepthThreshold>
         _maskTexture?.Dispose();
         _maskTexture = null;
 
-        lock (_textureCacheLock)
-        {
-            foreach (var texture in _cachedStagingTextures.Values)
-                texture?.Dispose();
-            _cachedStagingTextures.Clear();
-        }
+        _stagingTexture?.Dispose();
+        _stagingTexture = null;
 
         base.Dispose(isDisposing);
     }
@@ -238,9 +300,20 @@ public class DepthThreshold : Instance<DepthThreshold>
 
     #region Private Fields
 
+    private const int ReadbackTimeoutFrames = 60;
+
     private Texture2D? _maskTexture;
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<(int, int, Format), Texture2D> _cachedStagingTextures = new();
-    private readonly object _textureCacheLock = new object();
+    private T3.Graphics.Compat.Texture2D? _stagingTexture;
+    private byte[]? _maskData;
+    private bool _readbackPending;
+    private bool _loggedUnsupportedFormat;
+    private int _waitFrames;
+    private int _pendingWidth;
+    private int _pendingHeight;
+    private float _pendingMinThreshold;
+    private float _pendingMaxThreshold;
+    private bool _pendingInvert;
+    private bool _pendingUseNormalized;
 
     #endregion
 }

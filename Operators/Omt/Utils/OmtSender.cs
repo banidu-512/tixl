@@ -1,46 +1,41 @@
 #nullable enable
-using System.Buffers;
-using System.Diagnostics;
-using T3.Core.Output;
+using libomtnet;
 using T3.Core.Output.Streaming;
 using T3.Core.Resource.Assets;
 using T3.Core.Stats;
-using T3.Core.Utils;
-using libomtnet;
+using T3.Graphics.Compat;
 
 namespace Lib.Utils;
 
 /// <summary>
 /// One OMT sender. Used by the <c>OmtOutput</c> op and offered to the output setup through
 /// <see cref="OmtStreamProvider"/>, so both paths share one implementation.
-/// <para>Encoding a frame with the VMX codec costs several milliseconds, so it happens on a worker thread: the
-/// render loop only copies the frame to a staging texture, reads one from two copies ago into a pooled buffer (the
-/// GPU has finished with it by then) and hands that over. Frames queue up at most two deep and the oldest is
-/// dropped, which keeps the stream live instead of falling behind.</para>
-/// <para>Like the NDI sender, the frame is packed to UYVY on the GPU unless alpha is sent — that halves the
-/// readback and spares the encoder a colour conversion. With alpha, frames are sent as BGRA, the only 32-bit
-/// format OMT has.</para>
-/// <para>Lifetime: a native <see cref="OMTSend"/> is owned by the worker thread it was created for, and that
-/// thread frees it when it stops. Renaming or disposing therefore never frees a sender a native call is still
-/// inside — the render thread only swaps the current instance, and a worker that outlived its sender (a native
-/// call can stall on a dead network for longer than any join waits) cleans up on its own when it returns.</para>
+/// <para>The render thread only does GPU work: the frame is packed to UYVY (unless alpha is sent), copied into a ring
+/// of staging textures, and the copy from two frames ago — finished by then — is read into native memory and handed
+/// over. Encoding with the VMX codec costs several milliseconds, so it runs on the sender's own thread; at most two
+/// frames wait there and the oldest is dropped, which keeps the stream live instead of falling behind.</para>
+/// <para>Lifetime: each native <see cref="OMTSend"/> belongs to a <see cref="SendSession"/>, whose thread creates it
+/// (binding sockets and announcing it over DNS-SD), sends with it and disposes it. Renaming or disposing only asks
+/// the session to stop, so neither ever blocks the render loop, and nothing native is freed while a call on another
+/// thread is still inside it.</para>
 /// </summary>
 internal sealed class OmtSender : IOutputStreamSender
 {
     public OmtSender(string name)
     {
         _requestedName = SanitizeName(name);
+        _lastRenameInput = name;
     }
 
     public string Name => _requestedName;
 
-    public string? LastError => _lastError;
+    public string? LastError => _lastError ?? _session?.Error;
 
     /// <summary>
-    /// The name receivers discover, as "MACHINE (Source Name)"; null until the sender is open. A user picks this
-    /// in a receiver, so showing it is the only way to know what this machine advertises.
+    /// The name receivers discover, as "MACHINE (Source Name)"; null until the sender is announced. A user picks
+    /// this in a receiver, so showing it is the only way to know what this machine advertises.
     /// </summary>
-    public string? AdvertisedAddress => _sender?.Address;
+    public string? AdvertisedAddress => _session?.Address;
 
     /// <summary>Frames per second sent and advertised to receivers; rendered frames in between are skipped.</summary>
     public int FrameRate = 60;
@@ -55,17 +50,15 @@ internal sealed class OmtSender : IOutputStreamSender
     }
 
     /// <summary>Re-targets the sender; takes effect on the next <see cref="Send"/>.</summary>
-    public void Rename(string name)
+    public void Rename(string? name)
     {
         // Called every evaluation: only a changed name is worth sanitizing again.
-        if (ReferenceEquals(name, _lastRenameInput) || name == _lastRenameInput)
+        if (string.Equals(name, _lastRenameInput, StringComparison.Ordinal))
             return;
 
         _lastRenameInput = name;
         _requestedName = SanitizeName(name);
     }
-
-    private string? _lastRenameInput;
 
     public bool Send(Texture2D frame)
     {
@@ -80,6 +73,13 @@ internal sealed class OmtSender : IOutputStreamSender
             Log.Debug(e.ToString(), this);
             return false;
         }
+    }
+
+    public void Dispose()
+    {
+        _session?.RequestStop();
+        _session = null;
+        ReleasePipeline();
     }
 
     private bool SendCore(Texture2D frame)
@@ -126,32 +126,42 @@ internal sealed class OmtSender : IOutputStreamSender
 
         var width = description.Width;
         var height = description.Height;
-
-        // VMX refuses anything smaller, and a 1-pixel-wide frame is a mistake rather than a stream.
-        if (width < MinimumDimension || height < MinimumDimension)
+        if (width < MinDimension || height < MinDimension)
         {
-            _lastError = $"Frames must be at least {MinimumDimension}x{MinimumDimension} pixels (got {width}x{height})";
+            _lastError = $"Frames must be at least {MinDimension}x{MinDimension} pixels (got {width}x{height})";
             return false;
         }
 
-        var packsToUyvy = !EnableAlpha;
-
-        if (!EnsureOpen())
-            return false;
-
-        var sender = _sender!;
         _lastError = null;
 
-        // Nothing to encode for while nobody is connected. Probing occasionally still lets the first frame reach a
-        // receiver that connects later, at the cost of at most one probe interval of latency.
-        if (sender.Connections == 0 && !IsDueForIdleProbe())
+        // A new name starts a new session; the old one announces its departure and closes on its own thread.
+        if (_session == null || _session.Name != _requestedName || _session.IsFinished)
+        {
+            _session?.RequestStop();
+            _session = SendSession.TryStart(_requestedName, out var startError);
+            if (_session == null)
+            {
+                _lastError = $"Could not start the OMT sender: {startError}";
+                return false;
+            }
+        }
+
+        var session = _session;
+
+        // Checked before any GPU work: with nobody watching, reading the frame back only to drop it is waste.
+        if (session.Connections <= 0)
+        {
+            _queuedSlots.Clear();
+            _nextSendTimeSec = 0;
             return true;
+        }
 
         if (!IsDueAtFrameRate())
             return true;
 
-        // A frame of another shape than the pipeline was built for starts over. The sender itself survives, since
-        // OMT rebuilds its codec when the frame size or rate changes.
+        // UYVY carries no alpha, and a typeless frame can't be sampled for the conversion without knowing its format.
+        var packsToUyvy = !EnableAlpha && format is Format.B8G8R8A8_UNorm or Format.R8G8B8A8_UNorm;
+
         var shapeChanged = _stagingTextures.Count > 0
                            && (width != _width || height != _height || packsToUyvy != _packsToUyvy || format != _sourceFormat);
         if (shapeChanged)
@@ -170,10 +180,8 @@ internal sealed class OmtSender : IOutputStreamSender
             copySource = _packedTexture!;
         }
 
+        // At most LatencyInFrames copies wait at this point, so one of the SlotCount slots is always free.
         var freeSlot = FindFreeSlot();
-        if (freeSlot < 0)
-            return false;
-
         context.CopySubresourceRegion(copySource, 0, null, _stagingTextures[freeSlot], 0);
         _queuedSlots.Enqueue(freeSlot);
 
@@ -181,96 +189,55 @@ internal sealed class OmtSender : IOutputStreamSender
         if (_queuedSlots.Count <= LatencyInFrames)
             return true;
 
-        var readSlot = _queuedSlots.Dequeue();
-        TryQueueReadback(context, readSlot, width, height, packsToUyvy, format);
+        ReadBackAndQueue(session, _queuedSlots.Dequeue());
         return true;
     }
 
-    public void Dispose()
-    {
-        StopWorker();
-        Release();
-    }
-
-    private void TryQueueReadback(T3.Graphics.Compat.DeviceContext context, int slot, int width, int height, bool packsToUyvy,
-                                  Format format)
+    private void ReadBackAndQueue(SendSession session, int slot)
     {
         var staging = _stagingTextures[slot];
-        var dataBox = context.MapSubresource(staging, 0, T3.Graphics.Compat.MapMode.Read, T3.Graphics.Compat.MapFlags.None, out _);
+        var context = ResourceManager.Device.ImmediateContext;
+        var dataBox = context.MapSubresource(staging, 0, MapMode.Read, MapFlags.None);
         try
         {
+            if (dataBox.IsEmpty || dataBox.RowPitch <= 0)
+                return;
+
+            var rowBytes = _packsToUyvy ? _packedWidth * 4 : _width * 4;
             var stride = dataBox.RowPitch;
-            var length = stride * height;
-            var buffer = ArrayPool<byte>.Shared.Rent(length);
+            if (stride < rowBytes)
+                return;
 
-            Marshal.Copy(dataBox.DataPointer, buffer, 0, length);
+            // The mapping only covers the last row's pixels, not its padding; the buffer still spans whole rows,
+            // since that is what OMT reads.
+            var length = stride * _height;
+            var mappedLength = stride * (_height - 1) + rowBytes;
+            var buffer = session.RentBuffer(length);
+            if (buffer == null)
+                return;
 
-            // OMT has no RGBA codec; a raw RGBA frame would reach receivers with red and blue swapped.
-            if (!packsToUyvy && format is Format.R8G8B8A8_UNorm or Format.R8G8B8A8_Typeless)
-                SwapRedAndBlue(buffer, width * 4, stride, height);
+            unsafe
+            {
+                System.Buffer.MemoryCopy((void*)dataBox.DataPointer, (void*)buffer.Data, buffer.Capacity, mappedLength);
+            }
 
-            Enqueue(new PendingFrame(buffer, length, stride, width, height, EnableAlpha, _clock.Elapsed.Ticks));
+            // The pack shader writes whole pixel pairs, so an odd width goes out one column wider.
+            buffer.Width = _packsToUyvy ? _packedWidth * 2 : _width;
+            buffer.Height = _height;
+            buffer.Stride = stride;
+            buffer.Length = length;
+            buffer.Codec = _packsToUyvy ? OMTCodec.UYVY : OMTCodec.BGRA;
+            buffer.HasAlpha = EnableAlpha;
+            buffer.SwapRedAndBlue = !_packsToUyvy && _sourceFormat is Format.R8G8B8A8_UNorm or Format.R8G8B8A8_Typeless;
+            buffer.FrameRate = FrameRate > 0 ? FrameRate : DefaultFrameRate;
+
+            // OMT timestamps are 100 ns ticks; passing them keeps OMT from pacing (sleeping) on its own clock.
+            buffer.Timestamp = (long)(FrameTiming.VisualFrameTimeSec * TimeSpan.TicksPerSecond);
+            session.Enqueue(buffer);
         }
         finally
         {
             context.UnmapSubresource(staging, 0);
-        }
-    }
-
-    /// <summary>
-    /// BGRA stored in memory as RGBA: swapping the two end bytes of every pixel makes it what OMT expects. Rows
-    /// are <paramref name="rowPitch"/> apart, which a staging texture may pad beyond the pixels themselves.
-    /// <para>Runs on every readback frame of the alpha path, so whole pixels are swapped as SIMD vectors: keeping
-    /// one byte pair per 32-bit pixel fixed and rotating the other two is the same swap without touching alpha.</para>
-    /// </summary>
-    private static void SwapRedAndBlue(byte[] buffer, int rowBytes, int rowPitch, int height)
-    {
-        var keepOddBytes = new Vector<uint>(0xFF00FF00u);  // alpha and green stay where they are
-        var keepEvenBytes = new Vector<uint>(0x00FF00FFu); // red and blue come from the rotation
-        var vectorBytes = Vector<uint>.Count * 4;
-
-        for (var y = 0; y < height; y++)
-        {
-            var rowStart = y * rowPitch;
-            var row = buffer.AsSpan(rowStart, rowBytes);
-            var x = 0;
-            for (; x + vectorBytes <= rowBytes; x += vectorBytes)
-            {
-                var pixels = MemoryMarshal.Cast<byte, uint>(row.Slice(x, vectorBytes));
-                var pixel = new Vector<uint>(pixels);
-                var rotated = (pixel << 16) | (pixel >> 16);
-                (pixel & keepOddBytes | rotated & keepEvenBytes).CopyTo(pixels);
-            }
-
-            for (; x < rowBytes; x += 4)
-                (buffer[rowStart + x], buffer[rowStart + x + 2]) = (buffer[rowStart + x + 2], buffer[rowStart + x]);
-        }
-    }
-
-    private bool EnsureOpen()
-    {
-        if (_sender != null && _openedName == _requestedName)
-            return true;
-
-        // Supersede instead of dispose: the worker started with the old sender frees it when it notices it is
-        // no longer the current one. Freeing it here could race a native call that is still inside it.
-        _sender = null;
-        _openedName = null;
-
-        try
-        {
-            var sender = new OMTSend(_requestedName, OMTQuality.Default);
-            _sender = sender;
-            _openedName = _requestedName;
-            StartWorker(sender);
-            return true;
-        }
-        catch (Exception e)
-        {
-            _lastError = $"Could not start the OMT sender: {e.Message}";
-            Log.Debug(e.ToString(), this);
-            _sender = null;
-            return false;
         }
     }
 
@@ -373,6 +340,8 @@ internal sealed class OmtSender : IOutputStreamSender
     /// <summary>
     /// Whether this frame is the one to send for the next 1/<see cref="FrameRate"/> step of the visual clock. The
     /// render loop runs at the display's rate, so a 30 fps stream from a 60 Hz loop takes every second frame.
+    /// A frame is due when it is closer to the step than the next frame would be, so an exact multiple never
+    /// flips on rounding.
     /// </summary>
     private bool IsDueAtFrameRate()
     {
@@ -394,18 +363,7 @@ internal sealed class OmtSender : IOutputStreamSender
         return true;
     }
 
-    /// <summary>With no receiver connected, capture a frame this often so a late connection is picked up quickly.</summary>
-    private bool IsDueForIdleProbe()
-    {
-        var now = _clock.ElapsedMilliseconds;
-        if (now - _lastIdleProbeMs < IdleProbeIntervalMs)
-            return false;
-
-        _lastIdleProbeMs = now;
-        return true;
-    }
-
-    /** A slot neither queued for readback nor holding a frame the worker still sends. */
+    /** A slot not queued for readback; -1 only if the ring invariant above were broken. */
     private int FindFreeSlot()
     {
         for (var i = 0; i < _stagingTextures.Count; i++)
@@ -417,150 +375,6 @@ internal sealed class OmtSender : IOutputStreamSender
         return -1;
     }
 
-    private void Enqueue(PendingFrame frame)
-    {
-        lock (_queueLock)
-        {
-            // Live video: a frame that waited behind two others is stale, so it is dropped rather than sent late.
-            while (_queue.Count >= MaxQueuedFrames)
-            {
-                var stale = _queue.Dequeue();
-                ArrayPool<byte>.Shared.Return(stale.Buffer);
-            }
-
-            _queue.Enqueue(frame);
-        }
-
-        _frameAvailable.Set();
-    }
-
-    private void StartWorker(OMTSend sender)
-    {
-        // Always a new thread: a worker of a superseded sender (a rename) winds down on its own, and the
-        // new sender has no thread of its own to send with otherwise - it would stay silent after a rename.
-        _exit = false;
-        _worker = new Thread(WorkerProc)
-                      {
-                          IsBackground = true,
-                          Name = "OmtStreamSender",
-                          Priority = ThreadPriority.AboveNormal,
-                      };
-        _worker.Start(sender);
-    }
-
-    private void StopWorker()
-    {
-        var worker = _worker;
-        if (worker == null)
-            return;
-
-        _exit = true;
-        _frameAvailable.Set();
-
-        // When this times out the worker is still inside a native call; it frees its own sender and queue
-        // when the call returns. Nothing here touches pooled buffers or the sender after giving up.
-        worker.Join(TimeSpan.FromSeconds(WorkerJoinTimeoutSeconds));
-        _worker = null;
-    }
-
-    private void WorkerProc(object? state)
-    {
-        if (state is not OMTSend sender)
-            return;
-
-        try
-        {
-            while (!_exit && ReferenceEquals(_sender, sender))
-            {
-                _frameAvailable.WaitOne(100);
-
-                PendingFrame? pending = null;
-                lock (_queueLock)
-                {
-                    if (_queue.Count > 0)
-                        pending = _queue.Dequeue();
-                }
-
-                if (pending == null)
-                    continue;
-
-                try
-                {
-                    SendFrame(sender, pending);
-                }
-                catch (Exception e)
-                {
-                    _lastError = $"OMT send failed: {e.Message}";
-                    Log.Debug(e.ToString(), this);
-                }
-                finally
-                {
-                    ArrayPool<byte>.Shared.Return(pending.Buffer);
-                }
-            }
-        }
-        finally
-        {
-            // This instance is the thread's own: freeing it here can never race a native call, and a
-            // teardown that stopped waiting leaves the whole cleanup to this thread.
-            try
-            {
-                sender.Dispose();
-            }
-            catch (Exception e)
-            {
-                Log.Debug($"Disposing the OMT sender threw: {e.Message}", this);
-            }
-
-            lock (_queueLock)
-            {
-                while (_queue.Count > 0)
-                    ArrayPool<byte>.Shared.Return(_queue.Dequeue().Buffer);
-            }
-        }
-    }
-
-    private void SendFrame(OMTSend sender, PendingFrame pending)
-    {
-        var handle = GCHandle.Alloc(pending.Buffer, GCHandleType.Pinned);
-        try
-        {
-            var frame = new OMTMediaFrame
-                            {
-                                Type = OMTFrameType.Video,
-                                Codec = (int)(pending.PacksToUyvy ? OMTCodec.UYVY : OMTCodec.BGRA),
-                                Width = pending.Width,
-                                Height = pending.Height,
-                                Stride = pending.Stride,
-                                FrameRateN = Math.Max(1, FrameRate),
-                                FrameRateD = 1,
-                                AspectRatio = (float)pending.Width / pending.Height,
-                                ColorSpace = pending.Height >= 720 ? OMTColorSpace.BT709 : OMTColorSpace.BT601,
-                                Flags = pending.HasAlpha ? OMTVideoFlags.Alpha : OMTVideoFlags.None,
-
-                                // -1 would make OMT pace the caller to the frame rate, which the render loop already does.
-                                Timestamp = pending.Timestamp,
-                                Data = handle.AddrOfPinnedObject(),
-                                DataLength = pending.Length,
-                            };
-
-            sender.Send(frame);
-        }
-        finally
-        {
-            handle.Free();
-        }
-    }
-
-    private void Release()
-    {
-        // The native sender belongs to its worker thread, which frees it when it stops; this side only
-        // drops the reference so the advertised address stops reporting while the worker winds down.
-        _sender = null;
-        _openedName = null;
-        ReleasePipeline();
-    }
-
     private void ReleasePipeline()
     {
         _queuedSlots.Clear();
@@ -568,18 +382,18 @@ internal sealed class OmtSender : IOutputStreamSender
             stagingTexture.Dispose();
 
         _stagingTextures.Clear();
-        T3.Graphics.Compat.GraphicsUtilities.Dispose(ref _packedUav);
-        T3.Graphics.Compat.GraphicsUtilities.Dispose(ref _packedTexture);
+        GraphicsUtilities.Dispose(ref _packedUav);
+        GraphicsUtilities.Dispose(ref _packedTexture);
     }
 
     /// <summary>
-    /// OMT derives the discoverable name from the machine name, so a source name carrying the separator or a
-    /// newline would make the source undiscoverable on the network.
+    /// OMT derives the discoverable name from the machine name, so a name carrying the separator or a newline would
+    /// make the source undiscoverable on the network.
     /// </summary>
-    private static string SanitizeName(string name)
+    private static string SanitizeName(string? name)
     {
         var sanitized = OMTAddress.SanitizeName(name ?? string.Empty);
-        return string.IsNullOrWhiteSpace(sanitized) ? "TiXL" : sanitized;
+        return string.IsNullOrWhiteSpace(sanitized) ? DefaultName : sanitized.Trim();
     }
 
     private static bool IsSupported(Format format)
@@ -587,12 +401,297 @@ internal sealed class OmtSender : IOutputStreamSender
         return format is Format.B8G8R8A8_UNorm or Format.R8G8B8A8_UNorm or Format.B8G8R8A8_Typeless or Format.R8G8B8A8_Typeless;
     }
 
-    private sealed record PendingFrame(byte[] Buffer, int Length, int Stride, int Width, int Height, bool HasAlpha, long Timestamp)
+    /// <summary>
+    /// One announced source: the native sender, the thread that is its only user, and the frames waiting to be
+    /// encoded. Never restarted; a rename gets a new session.
+    /// </summary>
+    private sealed class SendSession
     {
-        public bool PacksToUyvy => !HasAlpha;
+        private SendSession(string name)
+        {
+            Name = name;
+        }
+
+        public static SendSession? TryStart(string name, out string? error)
+        {
+            var session = new SendSession(name);
+            try
+            {
+                var thread = new Thread(session.ThreadProc)
+                                 {
+                                     IsBackground = true,
+                                     Name = "OmtSender",
+                                     Priority = ThreadPriority.AboveNormal,
+                                 };
+                thread.Start();
+                error = null;
+                return session;
+            }
+            catch (Exception e)
+            {
+                error = e.Message;
+                return null;
+            }
+        }
+
+        public readonly string Name;
+
+        public volatile string? Address;
+        public volatile string? Error;
+
+        /** Receivers connected; written by the session thread, so the render thread never asks the transport. */
+        public volatile int Connections;
+
+        /** The thread ended for good (couldn't open the sender); the owner starts a fresh session. */
+        public bool IsFinished => _finished;
+
+        /** Returns at once; the thread notices within one wait and cleans up after itself. */
+        public void RequestStop()
+        {
+            _stopRequested = true;
+            SignalFrameAvailable();
+        }
+
+        /// <summary>Memory for the next frame, reused from an encoded one when large enough; null once closed.</summary>
+        public OmtFrameBuffer? RentBuffer(int length)
+        {
+            OmtFrameBuffer? buffer = null;
+            lock (_lock)
+            {
+                if (_closed)
+                    return null;
+
+                if (_free.Count > 0)
+                    buffer = _free.Pop();
+            }
+
+            if (buffer != null && buffer.Capacity >= length)
+                return buffer;
+
+            buffer?.Free();
+            return OmtFrameBuffer.TryAllocate(length);
+        }
+
+        public void Enqueue(OmtFrameBuffer buffer)
+        {
+            lock (_lock)
+            {
+                if (_closed)
+                {
+                    buffer.Free();
+                    return;
+                }
+
+                // Live video: a frame that waited behind two others is stale, so it is dropped rather than sent late.
+                while (_queue.Count >= MaxQueuedFrames)
+                    Recycle(_queue.Dequeue());
+
+                _queue.Enqueue(buffer);
+            }
+
+            SignalFrameAvailable();
+        }
+
+        private void SignalFrameAvailable()
+        {
+            _frameAvailable.Set();
+        }
+
+        private void ThreadProc()
+        {
+            OMTSend? sender = null;
+            try
+            {
+                try
+                {
+                    // Binds sockets and registers with DNS-SD, which is why it happens here and not on the render thread.
+                    sender = new OMTSend(Name, OMTQuality.Default);
+                    sender.SetSenderInformation(new OMTSenderInfo("TiXL", "TiXL", typeof(OmtSender).Assembly.GetName().Version?.ToString() ?? string.Empty));
+                    Address = sender.Address;
+                    Log.Debug($"OMT sender '{Address}' at {sender.URL}");
+                }
+                catch (Exception e)
+                {
+                    Error = e.Message;
+                    Log.Warning($"Could not start the OMT sender '{Name}': {e.Message}");
+
+                    // Retried by the owner with a fresh session after a pause, rather than once per frame.
+                    WaitUntilStopped(RetryDelayMs);
+                    return;
+                }
+
+                var lastConnections = -1;
+                while (!_stopRequested)
+                {
+                    _frameAvailable.WaitOne(WaitTimeoutMs);
+
+                    var connections = sender.Connections;
+                    Connections = connections;
+                    if (connections != lastConnections)
+                    {
+                        // Logged on change only, so the network path can be checked without a receiver-side tool.
+                        Log.Debug($"OMT '{Address}': {connections} receiver(s)");
+                        lastConnections = connections;
+                    }
+
+                    OmtFrameBuffer? buffer;
+                    lock (_lock)
+                    {
+                        buffer = _queue.Count > 0 ? _queue.Dequeue() : null;
+                    }
+
+                    if (buffer == null)
+                        continue;
+
+                    try
+                    {
+                        SendFrame(sender, buffer);
+                        Error = null;
+                    }
+                    catch (Exception e)
+                    {
+                        Error = $"OMT send failed: {e.Message}";
+                        Log.Debug(e.ToString());
+                    }
+                    finally
+                    {
+                        lock (_lock)
+                        {
+                            Recycle(buffer);
+                        }
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                // Last line of defence: an exception leaving a thread terminates the process.
+                Error = e.Message;
+                Log.Warning($"OMT sender '{Name}' stopped: {e.Message}");
+            }
+            finally
+            {
+                if (sender != null)
+                {
+                    try
+                    {
+                        sender.Dispose();
+                    }
+                    catch (Exception e)
+                    {
+                        Log.Debug($"Disposing the OMT sender threw: {e.Message}");
+                    }
+                }
+
+                Connections = 0;
+                Address = null;
+                Close();
+                _finished = true;
+            }
+        }
+
+        private void WaitUntilStopped(int timeoutMs)
+        {
+            var deadline = Environment.TickCount64 + timeoutMs;
+            while (!_stopRequested && Environment.TickCount64 < deadline)
+                _frameAvailable.WaitOne(WaitTimeoutMs);
+        }
+
+        private static void SendFrame(OMTSend sender, OmtFrameBuffer buffer)
+        {
+            if (buffer.SwapRedAndBlue)
+                SwapRedAndBlue(buffer);
+
+            var frame = new OMTMediaFrame
+                            {
+                                Type = OMTFrameType.Video,
+                                Codec = (int)buffer.Codec,
+                                Width = buffer.Width,
+                                Height = buffer.Height,
+                                Stride = buffer.Stride,
+                                FrameRateN = buffer.FrameRate,
+                                FrameRateD = 1,
+                                AspectRatio = (float)buffer.Width / buffer.Height,
+
+                                // Matches the pack shader, which converts with BT.709 at every size.
+                                ColorSpace = OMTColorSpace.BT709,
+                                Flags = buffer.HasAlpha ? OMTVideoFlags.Alpha : OMTVideoFlags.None,
+                                Timestamp = buffer.Timestamp,
+                                Data = buffer.Data,
+                                DataLength = buffer.Length,
+                            };
+
+            sender.Send(frame);
+        }
+
+        /// <summary>
+        /// OMT has no RGBA codec; a raw RGBA frame would reach receivers with red and blue swapped. Done here rather
+        /// than on the render thread, and as SIMD over whole pixels: keeping alpha and green fixed and rotating the
+        /// other two bytes is the same swap.
+        /// </summary>
+        private static unsafe void SwapRedAndBlue(OmtFrameBuffer buffer)
+        {
+            var keepOddBytes = new Vector<uint>(0xFF00FF00u);
+            var keepEvenBytes = new Vector<uint>(0x00FF00FFu);
+            var rowPixels = buffer.Width;
+            var data = (byte*)buffer.Data;
+
+            for (var y = 0; y < buffer.Height; y++)
+            {
+                var row = new Span<uint>(data + (long)y * buffer.Stride, rowPixels);
+                var x = 0;
+                for (; x + Vector<uint>.Count <= row.Length; x += Vector<uint>.Count)
+                {
+                    var slice = row.Slice(x, Vector<uint>.Count);
+                    var pixel = new Vector<uint>(slice);
+                    var rotated = (pixel << 16) | (pixel >> 16);
+                    ((pixel & keepOddBytes) | (rotated & keepEvenBytes)).CopyTo(slice);
+                }
+
+                for (; x < row.Length; x++)
+                {
+                    var pixel = row[x];
+                    row[x] = (pixel & 0xFF00FF00u) | ((pixel << 16) & 0x00FF0000u) | ((pixel >> 16) & 0x000000FFu);
+                }
+            }
+        }
+
+        /** Under the lock. Keeps one buffer for reuse; more would only hold memory. */
+        private void Recycle(OmtFrameBuffer buffer)
+        {
+            if (_closed || _free.Count >= MaxQueuedFrames + 1)
+            {
+                buffer.Free();
+                return;
+            }
+
+            _free.Push(buffer);
+        }
+
+        private void Close()
+        {
+            lock (_lock)
+            {
+                _closed = true;
+                while (_queue.Count > 0)
+                    _queue.Dequeue().Free();
+
+                while (_free.Count > 0)
+                    _free.Pop().Free();
+            }
+
+        }
+
+        private volatile bool _stopRequested;
+        private volatile bool _finished;
+        private readonly Lock _lock = new();
+        private readonly Queue<OmtFrameBuffer> _queue = new();
+        private readonly Stack<OmtFrameBuffer> _free = new();
+        /** Never disposed: the render thread may still signal it after the thread ended. */
+        private readonly AutoResetEvent _frameAvailable = new(false);
+        private bool _closed;
     }
 
-    /** Frames read back but not sent yet; older ones are dropped, since a late frame is worse than a missing one. */
+    /** Frames read back but not encoded yet; older ones are dropped, since a late frame is worse than a missing one. */
     private const int MaxQueuedFrames = 2;
 
     /** Copies between writing a staging texture and reading it: enough for the GPU to be done with it. */
@@ -601,29 +700,24 @@ internal sealed class OmtSender : IOutputStreamSender
     /** Queued copies plus the one being written. */
     private const int SlotCount = LatencyInFrames + 1;
 
-    private const int MinimumDimension = 16;
+    /** VMX refuses anything smaller. */
+    private const int MinDimension = 16;
 
-    /** How long a teardown waits for the worker before leaving the cleanup to the worker itself. */
-    private const int WorkerJoinTimeoutSeconds = 2;
+    /** How often the session thread wakes without frames, to refresh the receiver count and notice a stop. */
+    private const int WaitTimeoutMs = 100;
 
-    /** How long to keep capturing frames while no receiver is connected. */
-    private const int IdleProbeIntervalMs = 250;
+    private const int RetryDelayMs = 2000;
 
+    private const string DefaultName = "TiXL";
+
+    /** Advertised when no rate is set, where every rendered frame is sent. */
+    private const int DefaultFrameRate = 60;
     private const string PackShaderAddress = "Lib:shaders/img/rgba-to-uyvy-cs.hlsl";
 
-    private readonly Lock _queueLock = new();
-    private readonly Queue<PendingFrame> _queue = new();
-    private readonly AutoResetEvent _frameAvailable = new(false);
-    private readonly Stopwatch _clock = Stopwatch.StartNew();
-
-    private Thread? _worker;
-    private volatile bool _exit;
-
-    /** The sender the current worker owns; swapped by the render thread, supersession is how an old worker stops. */
-    private volatile OMTSend? _sender;
+    private SendSession? _session;
     private string _requestedName;
-    private string? _openedName;
-    private volatile string? _lastError;
+    private string? _lastRenameInput;
+    private string? _lastError;
 
     private int _width;
     private int _height;
@@ -640,6 +734,4 @@ internal sealed class OmtSender : IOutputStreamSender
 
     /** Visual-clock time the next frame is due at; 0 restarts the schedule. */
     private double _nextSendTimeSec;
-
-    private long _lastIdleProbeMs;
 }

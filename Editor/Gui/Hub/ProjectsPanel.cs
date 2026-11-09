@@ -42,13 +42,45 @@ internal static class ProjectsPanel
             // 0. Live collaboration sessions — join straight from the hub.
             DrawCollabSessions();
 
-            FormInputs.AddSectionHeader("Local projects");
-            _drawnProjectFolders.Clear();
+            // Show-control projects (boygroup deploy targets, collab downloads) get their own
+            // group so an operator sees which projects belong to the distributed show.
+            var networkKinds = new Dictionary<string, string>();
+            foreach (var (kind, folder) in NetworkProjectRegistry.All())
+                networkKinds[folder] = kind;
+
+            FormInputs.AddSectionHeader("Network projects");
+            var hasNetworkProjects = false;
             foreach (var package in EditableSymbolProject.AllProjects)
             {
-                // The card's ImGui ID comes from the folder, so a same-folder duplicate would
-                // draw twice with conflicting IDs - the assert the hub must never trigger.
-                if (!_drawnProjectFolders.Add(package.Folder))
+                var kind = networkKinds.GetValueOrDefault(package.Folder);
+                if (kind == null)
+                    continue;
+
+                hasNetworkProjects = true;
+                DrawProjectItem(window, package);
+                DrawNetworkBadge(kind);
+            }
+
+            foreach (var (kind, folder) in NetworkProjectRegistry.All())
+            {
+                if (EditableSymbolProject.AllProjects.Any(p => p.Folder == folder))
+                    continue;
+
+                hasNetworkProjects = true;
+                ImGui.Bullet();
+                ImGui.TextUnformatted(Path.GetFileName(folder.TrimEnd(Path.DirectorySeparatorChar)));
+                ImGui.SameLine();
+                ImGui.TextDisabled("not loaded - starts with the show");
+            }
+
+            if (!hasNetworkProjects)
+                ImGui.TextDisabled("none yet - a boygroup deploy or a collab download adds this machine's show projects here");
+
+            ImGui.Separator();
+            FormInputs.AddSectionHeader("Local projects");
+            foreach (var package in EditableSymbolProject.AllProjects)
+            {
+                if (networkKinds.ContainsKey(package.Folder))
                     continue;
 
                 DrawProjectItem(window, package);
@@ -94,9 +126,6 @@ internal static class ProjectsPanel
     private static void DrawCollabSessions()
     {
         var collab = CollabManager.Instance;
-        if (!collab.IsEnabled)
-            return;
-
         collab.RefreshDiscoveryFromHub();
 
         var hasOwnSession = collab.State != CollabManager.SessionState.Off;
@@ -121,10 +150,10 @@ internal static class ProjectsPanel
             var title = string.IsNullOrEmpty(session.Name) ? $"{session.Address}:{session.Port}" : session.Name;
             var subtitle = session.PasswordProtected ? $"{session.Address}:{session.Port}  (password protected)"
                                                      : $"{session.Address}:{session.Port}";
-            var clicked = DrawSessionRow($"collab-{session.Address}:{session.Port}",
-                                         title,
+            var clicked = DrawSessionRow(title,
                                          subtitle,
                                          session.Project is { Length: > 0 } p ? p : null,
+                                         null,
                                          null,
                                          isActive: false,
                                          locked: false);
@@ -460,11 +489,7 @@ internal static class ProjectsPanel
             // Collab: host a session that shares exactly this project (pick the project first,
             // then share it — instead of sharing whatever happens to be focused).
             var collab = CollabManager.Instance;
-            if (!collab.IsEnabled)
-            {
-                // Collaboration is off in the settings: no host or join entries.
-            }
-            else if (collab.State == CollabManager.SessionState.Off)
+            if (collab.State == CollabManager.SessionState.Off)
             {
                 if (CustomComponents.DrawMenuItem(_hostSessionId, "Host Collaboration Session", reserveIconColumn: false))
                 {
@@ -481,7 +506,7 @@ internal static class ProjectsPanel
                 if (CustomComponents.DrawMenuItem(_leaveSessionId, $"Leave Collaboration Session ({collab.StatusText})",
                                                   reserveIconColumn: false))
                 {
-                    collab.Leave(manual: true);
+                    collab.Leave();
                     ImGui.CloseCurrentPopup();
                 }
             }
@@ -526,6 +551,16 @@ internal static class ProjectsPanel
 
         ImGui.PopID();
         return wasOpened;
+    }
+
+    /// <summary>A small kind tag after a network project row (boygroup / collab).</summary>
+    private static void DrawNetworkBadge(string kind)
+    {
+        ImGui.SameLine();
+        var color = kind == NetworkProjectRegistry.CollabKind ? UiColors.StatusActivated : UiColors.StatusOkay;
+        ImGui.PushStyleColor(ImGuiCol.Text, color.Rgba);
+        ImGui.TextUnformatted($"[{kind}]");
+        ImGui.PopStyleColor();
     }
 
     private static void DrawArchivedItem(ProjectSetup.ArchivedProjectInfo archivedProject)

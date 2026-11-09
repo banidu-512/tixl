@@ -82,7 +82,7 @@ internal sealed class VolumeInfo : Instance<VolumeInfo>
         _lastVolume = volume;
     }
 
-    private VdbVolume? _lastVolume;
+    private VdbVolume _lastVolume;
 
     [Input(Guid = "9de3a513-9065-5207-a4ae-3780bf007dd3")]
     public readonly InputSlot<VdbVolume> Volume = new();

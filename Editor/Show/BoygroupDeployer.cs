@@ -1,6 +1,7 @@
 #nullable enable
 using System.IO;
 using System.Security.Cryptography;
+using System.Security.Cryptography;
 using Newtonsoft.Json.Linq;
 using T3.Core.Logging;
 
@@ -34,16 +35,26 @@ internal static class BoygroupDeployer
         public string RelativePath = "";
         public long Size;
         public long LastWriteTicks;
+
+        /// <summary>Content hash, computed for small project files only (large media would make a
+        /// join slow). Lets the diff recognize identical content whose mtime moved — a client that
+        /// rewrites an unchanged project file on launch must not be re-sent and restarted forever.</summary>
+        public string? Hash;
     }
 
-    /// <summary>relPath → (size, mtime). Fast compare, same quick-check model as rsync.</summary>
-    public static Dictionary<string, InventoryEntry> BuildInventory(string projectFolder)
+    private const long MaxHashedBytes = 8 * 1024 * 1024;
+
+    /// <summary>relPath → (size, mtime). Fast compare, same quick-check model as rsync. Files under
+    /// <paramref name="excludedRelativeDir"/> (slash-separated, relative to the project root) are left
+    /// out: the output setups travel as live <c>setupJson</c> messages instead, and a client that
+    /// re-serializes its applied setup would otherwise diff against the master's file forever.</summary>
+    public static Dictionary<string, InventoryEntry> BuildInventory(string projectFolder, string? excludedRelativeDir = null)
     {
         var inventory = new Dictionary<string, InventoryEntry>(PathComparer);
         if (string.IsNullOrEmpty(projectFolder) || !Directory.Exists(projectFolder))
             return inventory;
 
-        foreach (var filePath in EnumerateProjectFiles(projectFolder))
+        foreach (var filePath in EnumerateProjectFiles(projectFolder, excludedRelativeDir))
         {
             try
             {
@@ -54,6 +65,7 @@ internal static class BoygroupDeployer
                                               RelativePath = relative,
                                               Size = info.Length,
                                               LastWriteTicks = info.LastWriteTimeUtc.Ticks,
+                                              Hash = info.Length <= MaxHashedBytes ? ComputeHash(filePath) : null,
                                           };
             }
             catch (IOException)
@@ -65,8 +77,13 @@ internal static class BoygroupDeployer
         return inventory;
     }
 
-    private static IEnumerable<string> EnumerateProjectFiles(string projectFolder)
+    private static IEnumerable<string> EnumerateProjectFiles(string projectFolder, string? excludedRelativeDir)
     {
+        var excludedPrefix = string.IsNullOrEmpty(excludedRelativeDir)
+                                 ? null
+                                 : excludedRelativeDir.Replace('\\', '/').TrimEnd('/') + "/";
+        var projectPrefix = projectFolder.Replace('\\', '/').TrimEnd('/') + "/";
+
         // Enumerate depth-first so the exclusion check is per directory segment; obj/bin build
         // outputs never deploy either.
         var stack = new Stack<string>();
@@ -77,6 +94,10 @@ internal static class BoygroupDeployer
             var directoryName = Path.GetFileName(directory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
             if (directory != projectFolder &&
                 (ExcludedDirectories.Contains(directoryName, StringComparer.OrdinalIgnoreCase) || directoryName is "obj" or "bin"))
+                continue;
+
+            var directoryRelative = directory.Replace('\\', '/').TrimEnd('/');
+            if (excludedPrefix != null && (directoryRelative + "/").StartsWith(projectPrefix + excludedPrefix, StringComparison.OrdinalIgnoreCase))
                 continue;
 
             foreach (var file in Directory.EnumerateFiles(directory))
@@ -106,16 +127,33 @@ internal static class BoygroupDeployer
         }
     }
 
+    private static string? ComputeHash(string filePath)
+    {
+        try
+        {
+            using var stream = File.OpenRead(filePath);
+            return Convert.ToHexString(SHA256.HashData(stream));
+        }
+        catch (IOException)
+        {
+            return null; // Locked or vanished mid-inventory; the mtime path still decides.
+        }
+    }
+
     public static JObject BuildInventoryMessage(Dictionary<string, InventoryEntry> inventory)
     {
         var files = new JObject();
         foreach (var (relativePath, entry) in inventory)
         {
-            files[relativePath] = new JObject
-                                      {
-                                          ["s"] = entry.Size,
-                                          ["m"] = entry.LastWriteTicks,
-                                      };
+            var fileEntry = new JObject
+                                {
+                                    ["s"] = entry.Size,
+                                    ["m"] = entry.LastWriteTicks,
+                                };
+            if (entry.Hash != null)
+                fileEntry["h"] = entry.Hash;
+
+            files[relativePath] = fileEntry;
         }
 
         return new JObject
@@ -141,6 +179,7 @@ internal static class BoygroupDeployer
                                               RelativePath = relativePath,
                                               Size = entry["s"]?.Value<long>() ?? 0,
                                               LastWriteTicks = entry["m"]?.Value<long>() ?? 0,
+                                              Hash = entry["h"]?.Value<string>(),
                                           };
         }
 
@@ -148,6 +187,11 @@ internal static class BoygroupDeployer
     }
 
     /// <summary>Files the client needs, in stable order (smallest first so most files land early).</summary>
+    /// <summary>Timestamp comparison slack: a write time round-tripped through another filesystem
+    /// (NTFS 100 ns vs ext4 ns) does not reproduce the master's ticks bit-exactly, so exact
+    /// equality would re-send every transferred file on every deploy.</summary>
+    public static readonly long MtimeToleranceTicks = TimeSpan.FromSeconds(2).Ticks;
+
     public static List<string> ComputeMissingFiles(Dictionary<string, InventoryEntry> serverInventory,
                                                    Dictionary<string, InventoryEntry> clientInventory)
     {
@@ -155,11 +199,28 @@ internal static class BoygroupDeployer
         foreach (var (relativePath, serverEntry) in serverInventory)
         {
             if (!clientInventory.TryGetValue(relativePath, out var clientEntry)
-                || clientEntry.Size != serverEntry.Size
-                || clientEntry.LastWriteTicks != serverEntry.LastWriteTicks)
+                || clientEntry.Size != serverEntry.Size)
             {
                 missing.Add(relativePath);
+                continue;
             }
+
+            if (Math.Abs(clientEntry.LastWriteTicks - serverEntry.LastWriteTicks) <= MtimeToleranceTicks)
+                continue; // Same size, same time: current.
+
+            // Same size, moved time: the content decides. A render node rewrites an unchanged
+            // project file on launch (migrations, re-save), which moved its mtime; re-sending it
+            // would restart the node every cycle. Both sides hash small files, so identical
+            // content is provably current.
+            if (clientEntry.Hash != null && serverEntry.Hash != null)
+            {
+                if (!string.Equals(clientEntry.Hash, serverEntry.Hash, StringComparison.OrdinalIgnoreCase))
+                    missing.Add(relativePath);
+
+                continue;
+            }
+
+            missing.Add(relativePath);
         }
 
         missing.Sort((a, b) =>
@@ -321,13 +382,15 @@ internal static class BoygroupDeployer
                 }
 
                 var fullPath = SafeProjectPath(_projectFolder, RelativePath);
-                // Old file may be read-only or open by a watcher; a replace attempt surfaces that
-                // as the deploy error instead of silently corrupting. The move replaces in one step,
-                // so a failure leaves the previous file intact instead of none.
                 if (File.Exists(fullPath))
+                {
+                    // Old file may be read-only or open by a watcher; a replace attempt surfaces that
+                    // as the deploy error instead of silently corrupting.
                     File.SetAttributes(fullPath, FileAttributes.Normal);
+                    File.Delete(fullPath);
+                }
 
-                File.Move(_tempPath!, fullPath, overwrite: true);
+                File.Move(_tempPath!, fullPath);
 
                 // Restore the server's write time so the next inventory diff sees the file as equal
                 // (SetLastWriteTimeUtc is supported on all platforms).
@@ -423,11 +486,8 @@ internal static class BoygroupDeployer
     private static string SafeRelativePath(JObject message)
     {
         var path = message["path"]?.Value<string>() ?? "";
-        foreach (var segment in path.Split('/', '\\'))
-        {
-            if (segment == "..")
-                throw new IOException($"Refusing unsafe path: {path}");
-        }
+        if (path.Contains(".."))
+            throw new IOException($"Refusing unsafe path: {path}");
 
         return path;
     }

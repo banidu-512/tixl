@@ -16,6 +16,19 @@ Surface quality guide: with Smoothing at 0 the raw voxel field shows staircase a
 
 Invert flips inside and outside - useful for hollow shells, rooms or carving. Smoothing can be tweaked after a bake without re-baking it. The [SdfTexture] output can be inspected with [ShowTexture3d].
 
+Limits and failure behaviour: Resolution is capped at 256, which uses about 500 MB of GPU memory (about 63 MB at 128 and 8 MB at 64). If that allocation fails, the bake reports it in the status bar, releases the partial allocation and waits for a changed input before retrying. Meshes above about 4.2 million triangles exceed the GPU dispatch limit and are rejected with a message instead of being baked. A failed bake never retries in a loop, never blocks the app and never crashes it - change an input or pulse Bake to try again.
+
+## Robustness
+
+The operator is written to be safe to leave in a live composition:
+
+- **Thread safe.** All shared state and GPU work is serialized through one state lock, and the per-frame guard sits inside it so two evaluation threads cannot start duplicate bakes. The status bar reads progress lock-free (volatile fields) so the UI never waits behind a running bake step.
+- **Memory safe.** Volume allocation is all-or-nothing: if one of the seven volumes cannot be allocated the partial set is released and the bake stays retryable. All numeric inputs are sanitized against NaN and Infinity before they reach the constant buffer, the face count is validated against the D3D11 dispatch cap, and the only CPU readback is a fixed 24-byte bounds struct.
+- **Non-blocking.** A bake is a queue of GPU work units spread over BakeFrames frames. The published volume is only replaced by a single copy after the bake completes, so downstream rendering always samples a complete field.
+- **Unkillable.** Every queue step is wrapped in exception handling that aborts the bake, unbinds the compute stage and reports through the status bar. Every shader loop has a compile-time or buffer-derived bound, so no input can produce an unbounded GPU loop. The exact closest-point mode is split into row bands sized so a single dispatch cannot outrun the OS GPU watchdog (which would reset the device and take the application with it). After a failure the bake only retries once an input actually changes.
+
+Peak GPU memory for the working volumes (seven volumes, 30 bytes per voxel): ~8 MB at Resolution 64, ~63 MB at 128, ~500 MB at 256.
+
 ## Input Parameters
 | Name (Relevancy & Type) | Description |
 |---|---|
