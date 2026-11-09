@@ -173,6 +173,38 @@ inside an XML comment in `AssimpImportHost.csproj`; fixed. The test passes with 
 `TiXL.exe --assimp-host ... --probe` and `dotnet TiXL.dll --assimp-host ... --probe` both answer.
 See `.tests-manual/assimp-import-export.md` for the remaining visual pass.
 
+### Visual pass (2026-11-09, Windows, Direct3D 11)
+
+Ran the editor checks with generated assets in `D:\TiXLDEV\assimp-test-assets` (a two-bone
+skinned/animated glTF and quad-cube OBJ+MTL variants).
+
+**Verified**
+
+- PBR materials: the DamagedHelmet example and a single-material OBJ+MTL render with their base colors.
+- N-gon geometry: the 6-quad cube imports as 8 points / 6 faces / 1 part; `[BevelGeometry]` produces
+  80 points / 114 faces / closed volume 0.976 and renders a rounded cube.
+- Multi-object: `gltf-scene-test-01.glb` reports `MeshCount 3` and draws all three objects.
+- Hot reload: overwriting a project asset changed `VertexCount` from 24 to 3 automatically.
+- A missing file clears the model and the editor stays alive; a valid path recovers.
+
+**Open**
+
+- **Multi-material `[DrawScene]`:** with two materials (two cubes, 3+3 faces, or six alternating
+  faces) only the second material's parts render; the first material's parts are black. The import
+  data is correct (two materials with the expected colors, six chunks with material indices 0/1) and
+  a single material renders, so this is in the shared `DrawScene`/material-binding path, not the
+  converter. Needs a separate fix.
+- **GPU skinning render:** the generated glTF imports with 2 bones / 4 joints / 1 clip, the skin
+  weights and animated matrices are correct, and the skinned vertex buffer at t=0 matches the source
+  vertices. But `[DrawMesh]` of `[SkinMesh].Result` renders black on D3D11, while the unskinned
+  pass-through renders. This points at the `SkinMesh` compute-to-vertex-buffer path rather than the
+  Assimp data.
+- A broken file at an absolute path did not replace the previously loaded model in one run; the
+  missing-path case did clear it. Needs a status-provider check.
+
+**Environment:** compute shaders require `TIXL_BACKEND=d3d11` on this Windows machine; the default
+Vulkan path fails to load `spirv-opt`.
+
 ### Verification
 
 - Lib builds on Linux in Debug and Release (analyzers on) without warnings in the new files.
