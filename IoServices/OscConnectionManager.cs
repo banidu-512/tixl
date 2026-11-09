@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Text;
 using System.Threading.Tasks;
 using Rug.Osc;
+using T3.Core.IO;
 using T3.Core.Logging;
 
 namespace T3.IoServices;
@@ -186,6 +187,10 @@ public static class OscConnectionManager
 
         private void ForwardMessage(OscMessage message)
         {
+            // Capture the packet once per port, not once per consumer: the master forwards the original
+            // bytes so every argument type survives on the render node.
+            RemoteInputBus.CaptureOsc(Port, message.ToByteArray());
+
             foreach (var consumer in Consumers)
             {
                 consumer.ProcessMessage(message);

@@ -30,6 +30,10 @@ internal sealed partial class SettingsWindow : Window
         Interface,
         Theme,
         Projects,
+        Startup,
+        Boygroup,
+        Collaboration,
+        Failover,
         Audio,
         Midi,
         InputDevices,
@@ -349,6 +353,26 @@ internal sealed partial class SettingsWindow : Window
                     FormInputs.AddVerticalSpace();
 
                     ColorThemeEditor.DrawEditor();
+                    break;
+
+                case Categories.Startup:
+                    FormInputs.AddVerticalSpace();
+                    DrawStartupPanel(ref changed);
+                    break;
+
+                case Categories.Boygroup:
+                    FormInputs.AddVerticalSpace();
+                    DrawBoygroupPanel(ref changed);
+                    break;
+
+                case Categories.Collaboration:
+                    FormInputs.AddVerticalSpace();
+                    DrawCollabPanel(ref changed);
+                    break;
+
+                case Categories.Failover:
+                    FormInputs.AddVerticalSpace();
+                    DrawFailoverPanel(ref changed);
                     break;
 
                 case Categories.Projects:
@@ -861,6 +885,10 @@ internal sealed partial class SettingsWindow : Window
                                                                         Categories.Interface  => "User Interface",
                                                                         Categories.Theme      => "Color Theme",
                                                                         Categories.Projects   => "Project specific settings",
+                                                                        Categories.Startup    => "Startup and Recovery",
+                                                                        Categories.Boygroup   => "Boygrouping",
+                                                                        Categories.Collaboration => "Collaboration",
+                                                                        Categories.Failover   => "Show Failover",
                                                                         Categories.Audio      => "Audio System",
                                                                         Categories.Midi       => "Midi & OSC",
                                                                         Categories.InputDevices => "Input Devices",

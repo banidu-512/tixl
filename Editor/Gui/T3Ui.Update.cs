@@ -30,10 +30,26 @@ namespace T3.Editor.Gui;
 
 public static partial class T3Ui
 {
+    private static readonly T3.Core.Show.FailoverConfig _failoverConfig = new();
+
     internal static void ProcessFrame()
     {
         Profiling.KeepFrameData();
         App.DebugProtocol.DebugServer.ProcessMainThreadQueue();
+        // Reused instance: this runs every frame, and the arbiter only copies what actually changed.
+        _failoverConfig.Enabled = UserSettings.Config.FailoverEnabled;
+        _failoverConfig.ShowId = UserSettings.Config.FailoverShowId;
+        _failoverConfig.Priority = UserSettings.Config.FailoverPriority;
+        _failoverConfig.HeartbeatMs = UserSettings.Config.FailoverHeartbeatMs;
+        _failoverConfig.TimeoutFactor = UserSettings.Config.FailoverTimeoutFactor;
+        _failoverConfig.Preempt = UserSettings.Config.FailoverPreempt;
+        _failoverConfig.NetworkInterfaceName = UserSettings.Config.NetworkInterface;
+        // Advertised so the standby can open the same show; empty while the hub is shown.
+        _failoverConfig.ProjectName = Show.ProjectFollower.OpenProjectName ?? "";
+        T3.Core.Show.FailoverArbiter.ApplyConfig(_failoverConfig);
+        Show.FailoverProjectFollow.Update();
+        Show.BoygroupManager.Instance.Update();
+        Collab.CollabManager.Instance.Update();
         //ImGui.PushStyleColor(ImGuiCol.Text, UiColors.Text.Rgba);
         DragAndDropHandling.Update();
         MagGraph.Ui.DropHandling.DrawDragIndicator();
@@ -155,6 +171,9 @@ public static partial class T3Ui
         // welcome window is closed (see the IsVisible guard below).
         CheckForVersionWelcome();
 
+        // Once the layout is up, load the project configured in Settings → Startup.
+        App.Startup.StartupProjectLoader.CheckOncePerLaunch();
+
         if (IsWindowLayoutComplete() && _versionWelcomeChecked && !WindowManager.WelcomeWindow.IsVisible)
         {
             if (!UserSettings.IsUserNameDefined())
@@ -221,7 +240,9 @@ public static partial class T3Ui
         if (isNewVersion)
             AutoBackup.PreUpgradeSnapshot.CreateForExistingProjects();
 
-        if (UserSettings.Config.ShowWelcomeOnStartup || isNewVersion)
+        // An OS-autostarted launch is a show machine booting — don't pop the welcome over the
+        // startup project; just record the version as seen.
+        if (!Program.StartedByOsAutostart && (UserSettings.Config.ShowWelcomeOnStartup || isNewVersion))
             WindowManager.WelcomeWindow.Open();
         else
             VersionMarker.MarkCurrentVersionSeen();

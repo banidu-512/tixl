@@ -3,6 +3,7 @@ using T3.Core.Output;
 using T3.Editor.UiModel.ProjectHandling;
 using T3.Editor.UiModel.Selection;
 using Vector2 = System.Numerics.Vector2;
+using T3.Editor.Show;
 
 namespace T3.Editor.Gui.Windows.OutputSetup;
 
@@ -96,6 +97,15 @@ internal static class SetupRouting
             var plugId = dragKind == SetupEntityKinds.Plug ? dragId : targetId;
             var otherKind = dragKind == SetupEntityKinds.Plug ? targetKind : dragKind;
             var otherId = dragKind == SetupEntityKinds.Plug ? targetId : dragId;
+
+            // A render node's display is bound on that machine: the master only sends the request.
+            if (Show.BoygroupManager.Instance.TryGetRemoteDisplayPlug(plugId, out var remoteClient, out var remoteDisplay))
+            {
+                if (otherKind == SetupEntityKinds.Output && setup.FindOutput(otherId) != null)
+                    Show.BoygroupManager.Instance.BindRemoteOutput(remoteClient, otherId, remoteDisplay);
+
+                return;
+            }
 
             if (otherKind == SetupEntityKinds.Output)
             {
