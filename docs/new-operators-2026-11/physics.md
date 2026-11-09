@@ -105,3 +105,20 @@ as the fixed point.
 
 ![Rope bridge example](shots/example-PhysicsRopeBridgeExample.png)
 *The constraint chain holding the sagging bridge.*
+
+## Examples
+
+All of them build the world, feed it bodies and draw the resulting point buffer with
+`DrawMeshAtPoints`; together they cover every collider shape and joint type.
+
+| Example | Shows |
+| --- | --- |
+| `PhysicsBouncingBallsExample` | Five spheres with bounciness from 0 to 1 — restitution |
+| `PhysicsDominoRunExample` | Fifteen boxes falling in a row — stacking and contact stability |
+| `PhysicsNewtonsCradleExample` | Five spheres hung on ball sockets — constrained motion |
+| `PhysicsParticlesExample` | 77 spheres raining onto a floor — throughput |
+| `PhysicsRopeBridgeExample` | A ten-link bridge held by ball sockets — chains |
+| `PhysicsSeesawExample` | A plank on a hinge over a kinematic fulcrum — hinges |
+| `MeshPhysicsExample` | Bodies driven along a path by distance servos |
+| `PhysicsCapsulesAndCylindersExample` | Capsules and cylinders — the two shapes the others skip |
+| `PhysicsWeldedPairsExample` | Balls welded into pairs — weld joints as compound bodies |
