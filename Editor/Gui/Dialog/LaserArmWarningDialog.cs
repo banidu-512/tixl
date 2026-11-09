@@ -33,20 +33,26 @@ internal sealed class LaserArmWarningDialog : ModalDialog
             if (ImGui.IsWindowAppearing())
                 _dontShowAgain = false;
 
-            FormInputs.AddSectionHeader("Laser safety warning");
+            FormInputs.AddSectionHeader("Laser safety");
 
             FormInputs.AddVerticalSpace(4);
 
             ImGui.PushTextWrapPos(ImGui.GetContentRegionAvail().X);
-            ImGui.TextUnformatted("Lasers are powerful and dangerous, hence they should be handled with care and safety for the audience in mind.");
+            ImGui.TextUnformatted("A laser beam is concentrated light: it can hurt eyes faster than you can blink. A few habits keep everyone - and your hardware - safe.");
             ImGui.Spacing();
-            ImGui.TextUnformatted("Please comply with your local regulations.");
+            ImGui.TextUnformatted("Keep the beam above head height, and never aim it at people, animals or reflective surfaces.");
             ImGui.Spacing();
-            ImGui.TextUnformatted("The TiXL developers cannot be held responsible for misuse of laser equipment.");
+            ImGui.TextUnformatted("Know where your projector's key switch and emergency stop are, and test them before every session.");
             ImGui.Spacing();
-            ImGui.TextUnformatted("Don't shoot rays towards your audience, always use a safety switch on your hardware.");
+            ImGui.TextUnformatted("Check the rules where you perform - beams over an audience are regulated in most countries.");
             ImGui.Spacing();
-            ImGui.TextUnformatted("Avoid burning your laser hardware by limiting the laser scan rate and specify a safety area.");
+            ImGui.TextUnformatted("Set a safe area and a sane scan rate on your laser output - your scanners will thank you.");
+            ImGui.PopTextWrapPos();
+
+            FormInputs.AddVerticalSpace(6);
+
+            ImGui.PushTextWrapPos(ImGui.GetContentRegionAvail().X);
+            ImGui.TextColored(_footnoteColor, "TiXL keeps every beam dark until you arm it - but you are the safety system.");
             ImGui.PopTextWrapPos();
 
             FormInputs.AddVerticalSpace(6);
@@ -88,4 +94,6 @@ internal sealed class LaserArmWarningDialog : ModalDialog
     }
 
     private bool _dontShowAgain;
+
+    private static readonly Vector4 _footnoteColor = new(0.65f, 0.75f, 0.65f, 1f);
 }
