@@ -3,7 +3,6 @@ using T3.Core.Animation;
 using T3.Core.Audio;
 using T3.Core.Audio.Graph;
 using T3.Core.Resource;
-using T3.Core.Stats;
 using T3.Editor.App;
 using T3.Editor.Gui.Dialog;
 using T3.Editor.Compilation;
@@ -25,7 +24,6 @@ using T3.Editor.UiModel;
 using T3.Editor.UiModel.ProjectHandling;
 using T3.Editor.UiModel.Selection;
 using T3.SystemUi;
-using T3.Editor.Gui.Windows.TimeLine;
 
 namespace T3.Editor.Gui;
 
@@ -37,20 +35,22 @@ public static partial class T3Ui
     {
         Profiling.KeepFrameData();
         App.DebugProtocol.DebugServer.ProcessMainThreadQueue();
+        Collab.CollabManager.Instance.Update();
         // Reused instance: this runs every frame, and the arbiter only copies what actually changed.
         _failoverConfig.Enabled = UserSettings.Config.FailoverEnabled;
         _failoverConfig.ShowId = UserSettings.Config.FailoverShowId;
         _failoverConfig.Priority = UserSettings.Config.FailoverPriority;
         _failoverConfig.HeartbeatMs = UserSettings.Config.FailoverHeartbeatMs;
         _failoverConfig.TimeoutFactor = UserSettings.Config.FailoverTimeoutFactor;
-        _failoverConfig.Preempt = UserSettings.Config.FailoverPreempt;
         _failoverConfig.NetworkInterfaceName = UserSettings.Config.NetworkInterface;
-        // Advertised so the standby can open the same show; empty while the hub is shown.
-        _failoverConfig.ProjectName = Show.ProjectFollower.OpenProjectName ?? "";
+        _failoverConfig.Preempt = UserSettings.Config.FailoverPreempt;
+        _failoverConfig.StallMs = UserSettings.Config.FailoverStallMs;
+        _failoverConfig.Fencing = UserSettings.Config.FailoverFencing;
+        _failoverConfig.CollabPort = UserSettings.Config.CollabPort;
         T3.Core.Show.FailoverArbiter.ApplyConfig(_failoverConfig);
-        Show.FailoverProjectFollow.Update();
         Show.BoygroupManager.Instance.Update();
-        Collab.CollabManager.Instance.Update();
+        Show.FailoverCollabLink.Instance.Update();
+        Show.PeerCameraService.Instance.Update();
         //ImGui.PushStyleColor(ImGuiCol.Text, UiColors.Text.Rgba);
         DragAndDropHandling.Update();
         MagGraph.Ui.DropHandling.DrawDragIndicator();
@@ -63,7 +63,6 @@ public static partial class T3Ui
         
         // Prepare the current frame 
         RenderStatsCollector.StartNewFrame();
-        OpTimings.StartNewFrame();
         
         UpdateModifiedProjects();
 
@@ -78,7 +77,7 @@ public static partial class T3Ui
             // the mix only through the implicit default bus, so without this it would be decoded and fed but
             // never routed — silent in the rendered file while audible live. (The collector's own transport
             // gate already treats recording as running, so it expects to be called here.)
-            AudioGraphCollector.CollectLooseSources(ProjectView.Focused.TryGetCompositionInstance());
+            AudioGraphCollector.CollectLooseSources(ProjectView.Focused.CompositionInstance);
         }
 
         ScreenshotWriter.Update();
@@ -98,14 +97,10 @@ public static partial class T3Ui
 
         FitViewToSelectionHandling.ProcessNewFrame();
         SrvManager.RemoveForDisposedTextures();
-        GpuResourceReleasing.Update();
         KeyActionHandling.InitializeFrame();
 
         CompatibleMidiDeviceHandling.RescanIfDevicesChanged();
         CompatibleMidiDeviceHandling.UpdateConnectedDevices();
-        Interaction.Gamepad.GamepadIndicator.Update();
-        T3.IoServices.SpaceMouseInput.Update();
-        T3.IoServices.SpaceMouseInput.IsAvailableToOperators = UserSettings.Config.SpaceMouseUsage == UserSettings.InputDeviceUsages.Operators;
 
         var nodeSelection = ProjectView.Focused?.NodeSelection;
         if (nodeSelection != null)
@@ -115,12 +110,6 @@ public static partial class T3Ui
             MouseInput.SelectedChildId = selectedInstance?.SymbolChildId ?? Guid.Empty;
             NodeSelection.InvalidateSelectedOpsForTransformGizmo(nodeSelection);
         }
-
-        // Playback shortcuts are global and must fire once per frame, no matter how many timelines are shown.
-        TimeControls.HandleTimeControlActions();
-        RecordingSession.OnFrame();
-
-        CheckIfEscapeCouldCancelSomething();
 
         // Draw everything!
         LayoutHandling.DrawMainDockSpace();
@@ -153,14 +142,13 @@ public static partial class T3Ui
         _couldNotLoadProjectDialog.Draw();
         _missingOperatorsDialog.Draw();
         _sendCrashReportsDialog.Draw();
-        ShareSessionDialog.Draw();
+        CreateFromTemplateDialog.Draw();
         _userNameDialog.Draw();
         _collabPasswordDialog.Draw();
         Windows.AssetLib.FolderImportDialog.Instance.Draw();
         AboutDialog.Draw();
         ExitDialog.Draw();
         LaserArmWarningDialog.Draw();
-        AiModelSetupWizard.Draw();
         OperatorHelp.EditDescriptionDialog.Draw();
         SkillMapPopup.Draw();
 
@@ -196,19 +184,12 @@ public static partial class T3Ui
             else if (!_missingOperatorsChecked && !IsAnyPopupOpen)
             {
                 _missingOperatorsChecked = true;
-                if (UserSettings.Config.ShowMissingSymbolsWarningOnStartup)
-                    _missingOperatorsDialog.ShowIfOperatorsAreMissing();
+                _missingOperatorsDialog.ShowIfOperatorsAreMissing();
             }
             else if (!_crashReportsChecked && !IsAnyPopupOpen)
             {
                 _crashReportsChecked = true;
                 _sendCrashReportsDialog.ShowIfReportsArePending();
-            }
-            else if (!_aiModelSetupChecked && !IsAnyPopupOpen)
-            {
-                // Last in the startup chain: a fresh installation without AI models gets the setup once
-                _aiModelSetupChecked = true;
-                AiModelSetupWizard.ShowOnFirstStartIfNeeded();
             }
         }
 
@@ -265,7 +246,6 @@ public static partial class T3Ui
     private static bool _blockedProjectsChecked;
     private static bool _missingOperatorsChecked;
     private static bool _crashReportsChecked;
-    private static bool _aiModelSetupChecked;
 
     private static void UpdateModifiedProjects()
     {

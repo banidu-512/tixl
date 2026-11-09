@@ -46,6 +46,10 @@ Three layers of software safety ship with the laser output. They reduce risk fro
 **The app-bar LASER master button**:
 
 * Defaults to **off** on every editor start; no light leaves the projector until you click it.
+* **Arming it the first time asks for a safety confirmation**: a warning dialog with the bench rules
+  (local regulations, audience safety, hardware safety switch, scan-rate and safe-area limits). **OK**
+  arms the master, **Cancel** keeps everything off, and *Don't show this message again* remembers the
+  acknowledgement for future sessions.
 * A click zeroes every beam at once - the scanners keep scanning the last geometry (settled, so they never park mid-stroke) with the intensity zeroed.
 * It stays orange while any laser output is still uncalibrated: the alignment rectangle, not show content, is what streams.
 * **A device E-stop disarms it.** When a projector reports its hardware/network E-stop engaged, the master latches off for *all* laser outputs; re-arming the master is the operator action that sends the clear command - and if the cause persists, the master drops again. No code path clears an E-stop automatically.
