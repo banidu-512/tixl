@@ -32,6 +32,11 @@
           "Value": "Xnnpack"
         },
         {
+          "Id": "a1b2c3d4-1004-4a9b-8c2d-101010101010"/*InferenceThreads*/,
+          "Type": "System.Int32",
+          "Value": 2
+        },
+        {
           "Id": "a1b2c3d4-e5f6-4798-89ab-cdef12345693"/*Debug*/,
           "Type": "System.Boolean",
           "Value": true
@@ -53,6 +58,11 @@
           "Id": "a1b2c3d4-0003-4a9b-8c2d-101010101010"/*Acceleration*/,
           "Type": "Lib.io.video.mediapipe.MediaPipeAcceleration",
           "Value": "Xnnpack"
+        },
+        {
+          "Id": "a1b2c3d4-1003-4a9b-8c2d-101010101010"/*InferenceThreads*/,
+          "Type": "System.Int32",
+          "Value": 2
         },
         {
           "Id": "cdef0123-4567-890a-bcde-f01234567890"/*CorrectAspectRatio*/,
@@ -99,6 +109,11 @@
           "Id": "a1b2c3d4-0006-4a9b-8c2d-101010101010"/*Acceleration*/,
           "Type": "Lib.io.video.mediapipe.MediaPipeAcceleration",
           "Value": "Xnnpack"
+        },
+        {
+          "Id": "a1b2c3d4-1006-4a9b-8c2d-101010101010"/*InferenceThreads*/,
+          "Type": "System.Int32",
+          "Value": 2
         }
       ],
       "Outputs": []
@@ -132,6 +147,11 @@
           "Value": "Xnnpack"
         },
         {
+          "Id": "a1b2c3d4-1001-4a9b-8c2d-101010101010"/*InferenceThreads*/,
+          "Type": "System.Int32",
+          "Value": 2
+        },
+        {
           "Id": "abcdef12-3456-7890-abcd-ef1234567890"/*Debug*/,
           "Type": "System.Boolean",
           "Value": true
@@ -158,6 +178,11 @@
           "Id": "a1b2c3d4-0005-4a9b-8c2d-101010101010"/*Acceleration*/,
           "Type": "Lib.io.video.mediapipe.MediaPipeAcceleration",
           "Value": "Xnnpack"
+        },
+        {
+          "Id": "a1b2c3d4-1005-4a9b-8c2d-101010101010"/*InferenceThreads*/,
+          "Type": "System.Int32",
+          "Value": 2
         }
       ],
       "Outputs": []
@@ -171,6 +196,11 @@
           "Id": "a1b2c3d4-0002-4a9b-8c2d-101010101010"/*Acceleration*/,
           "Type": "Lib.io.video.mediapipe.MediaPipeAcceleration",
           "Value": "Xnnpack"
+        },
+        {
+          "Id": "a1b2c3d4-1002-4a9b-8c2d-101010101010"/*InferenceThreads*/,
+          "Type": "System.Int32",
+          "Value": 2
         },
         {
           "Id": "e2f3a4b5-c6d7-58e9-f0a1-234567890bd3"/*Debug*/,
@@ -199,6 +229,11 @@
           "Id": "a1b2c3d4-0007-4a9b-8c2d-101010101010"/*Acceleration*/,
           "Type": "Lib.io.video.mediapipe.MediaPipeAcceleration",
           "Value": "Xnnpack"
+        },
+        {
+          "Id": "a1b2c3d4-1007-4a9b-8c2d-101010101010"/*InferenceThreads*/,
+          "Type": "System.Int32",
+          "Value": 2
         },
         {
           "Id": "abcdef12-3456-7890-abcd-ef1234567890"/*CorrectAspectRatio*/,
