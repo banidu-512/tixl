@@ -62,7 +62,7 @@ public partial class SymbolPackage
                      (writer, obj) => writer.WriteValue((float)obj),
                      jsonToken =>
                      {
-                         if (jsonToken.Type == JTokenType.Float || jsonToken.Type == JTokenType.Integer)
+                         if (jsonToken is { Type: JTokenType.Float or JTokenType.Integer })
                              return jsonToken.Value<float>();
 
                          return 0;
@@ -70,7 +70,9 @@ public partial class SymbolPackage
         RegisterType(typeof(int), "int",
                      InputDefaultValueCreator<int>,
                      (writer, obj) => writer.WriteValue((int)obj),
-                     jsonToken => jsonToken?.Value<int>()??0);
+                     jsonToken => jsonToken is { Type: JTokenType.Integer or JTokenType.Float }
+                                      ? (int)Math.Round(jsonToken.Value<double>())
+                                      : jsonToken?.Value<int>() ?? 0);
         RegisterType(typeof(bool), "bool",
                      InputDefaultValueCreator<bool>,
                      (writer, obj) => writer.WriteValue((bool)obj),
@@ -78,7 +80,9 @@ public partial class SymbolPackage
         RegisterType(typeof(double), "double",
                      InputDefaultValueCreator<double>,
                      (writer, obj) => writer.WriteValue((double)obj),
-                     jsonToken => jsonToken?.Value<double>()??0);
+                     jsonToken => jsonToken is { Type: JTokenType.Integer or JTokenType.Float }
+                                      ? jsonToken.Value<double>()
+                                      : jsonToken?.Value<double>() ?? 0);
 
         RegisterType(typeof(string), "string",
                      () => new InputValue<string>(string.Empty),
@@ -434,6 +438,15 @@ public partial class SymbolPackage
 
         RegisterType(typeof(ParticleSystem), "ParticleSystem",
                      () => new InputValue<ParticleSystem>(null));
+
+        // Rigid-body descriptions passed from body/joint operators into Lib.physics.PhysicsWorld.
+        // Simulation state lives inside the world, so these are plain references and null means
+        // "unconnected". Unregistered slot types make the operator unresolvable at load time.
+        RegisterType(typeof(PhysicsBody), "PhysicsBody",
+                     () => new InputValue<PhysicsBody>(null));
+
+        RegisterType(typeof(PhysicsJoint), "PhysicsJoint",
+                     () => new InputValue<PhysicsJoint>(null));
 
         RegisterType(typeof(T3.Core.Operator.GizmoVisibility), "GizmoVisibility",
                      InputDefaultValueCreator<T3.Core.Operator.GizmoVisibility>,

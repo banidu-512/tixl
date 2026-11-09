@@ -11,6 +11,7 @@ using T3.Editor.Gui.Windows.RenderExport;
 using T3.Editor.Gui.Windows.TimeLine;
 
 using T3.Editor.Gui.Windows.OutputSetup;
+using T3.Editor.Collab;
 
 namespace T3.Editor.Gui.UiHelpers;
 
@@ -23,11 +24,41 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
     internal UserSettings(bool saveOnQuit) : base("userSettings.json", saveOnQuit: saveOnQuit)
     {
         RemoveDuplicateProjectDirectories();
+        RemoveDuplicateBoygroupGroups();
     }
 
     protected override void OnBeforeSave()
     {
         RemoveDuplicateProjectDirectories();
+        RemoveDuplicateBoygroupGroups();
+    }
+
+    /// <summary>
+    /// Repeated server starts used to append the same group over and over, leaving the panel with a
+    /// column of identical "Main" rows. Strip duplicates and blanks on load and save.
+    /// </summary>
+    private static void RemoveDuplicateBoygroupGroups()
+    {
+        var groups = Config.BoygroupGroups;
+        if (groups == null || groups.Count < 2)
+            return;
+
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var keptCount = 0;
+        for (var index = 0; index < groups.Count; index++)
+        {
+            var name = groups[index].Trim();
+            if (name.Length == 0 || !seen.Add(name))
+                continue;
+
+            groups[keptCount++] = name;
+        }
+
+        if (keptCount < groups.Count)
+            groups.RemoveRange(keptCount, groups.Count - keptCount);
+
+        if (groups.Count == 0)
+            groups.Add("Main");
     }
 
     /// Duplicated entries make project loading fail on the next start, so they are stripped on load and save.
@@ -107,6 +138,21 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public string LastOpenProjectFolder = string.Empty;
 
         public readonly ToastSettings Toasts = new();
+
+        // Startup & recovery
+        /// <summary>Project folder that opens automatically on the next launch. Empty starts with the Hub.</summary>
+        public string StartupProjectFolder = "";
+
+        /// <summary>Installs a per-user OS login entry (Windows Run key, Linux XDG autostart, macOS LaunchAgent).</summary>
+        /// <summary>Master switch for the Startup panel: project autoload, login autostart and
+        /// crash restart only act while this is on. Disabled by default: an editor is a plain
+        /// editor until startup automation is switched on.</summary>
+        public bool StartupEnabled = false;
+
+        public bool AutostartWithSystem = false;
+
+        /// <summary>Relaunch the editor automatically after a crash via a supervisor process.</summary>
+        public bool CrashAutoRestart = false;
 
         // UI-Elements
         public bool ShowThumbnails = true;
@@ -221,6 +267,96 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public string UserName = UndefinedUserName;
         public bool EnableAutoBackup = true;
         public bool MinimalBackup = true;
+
+        /// <summary>The network adapter TiXL binds to for hosting collaboration and boygrouping,
+        /// LAN discovery and failover heartbeats (Settings → Network). Empty = all interfaces.</summary>
+        public string NetworkInterface = "";
+
+        // Collaboration
+        /// <summary>Persistent participant id; also seeds the per-user accent color.</summary>
+        public string CollabUserId = "";
+
+        /// <summary>Display name override. Falls back to the Discord name, then the OS user name.</summary>
+        public string CollabDisplayName = "";
+
+        /// <summary>Master switch: collaboration sessions can be hosted or joined. When off, no
+        /// session is hosted or joined and nothing is discovered on the network. Disabled by default:
+        /// a show machine does nothing on the network until it is switched on.</summary>
+        public bool CollabEnabled = false;
+
+        public int CollabPort = CollabProtocol.DefaultTcpPort;
+        public bool CollabLanDiscovery = true;
+        public string CollabPassword = "";
+
+        /// <summary>host:port of the relay used for room-code sessions. Empty = default relay.</summary>
+        public string CollabRelayAddress = "";
+
+        /// <summary>Relay room join anchor: rejoin after a restart (e.g. a project download)
+        /// comes back through the same room. Cleared on leave and by a direct-session join.</summary>
+        public string CollabLastRelayHost = "";
+        public string CollabLastRelayRoom = "";
+
+        /// <summary>Relay sessions authenticate over the relay, then try a direct WebRTC path between
+        /// the machines. Falls back to the relay when no direct path is possible.</summary>
+        public bool CollabWebRtcEnabled = true;
+
+        /// <summary>Streams the host's rendered output to the participants over the peer-to-peer
+        /// video track ("Share preview"). Applies to peers that join afterwards.</summary>
+        public bool CollabSharePreview = true;
+
+        /// <summary>Comma-separated STUN/TURN URLs for the direct path. Empty = a public STUN server.</summary>
+        public string CollabWebRtcIceServers = "";
+
+        /// <summary>Project folders participating in show-control features ("kind:folder" entries,
+        /// kind = boygroup | collab). The Hub lists them under "Network projects".</summary>
+        public List<string> NetworkProjectRefs = [];
+
+        /// <summary>host:port of the last joined collab session — auto-rejoined on launch, which is
+        /// what brings a client back after a project download restarted the editor.</summary>
+        public string CollabLastSessionHost = "";
+
+        public string CollabDiscordClientId = "";
+        public string CollabDiscordClientSecret = "";
+        public string CollabDiscordUserId = "";
+        public string CollabDiscordUserName = "";
+        public string CollabDiscordUserAvatar = "";
+
+        // Boygrouping (show distribution to render nodes)
+        /// <summary>Master switch: this machine participates in boygrouping. When set, the role
+        /// below starts automatically shortly after launch — a show machine comes up in its role
+        /// without anyone clicking.</summary>
+        public bool BoygroupEnabled = false;
+
+        /// <summary>true = this machine is a master (server); false = slave (render node).</summary>
+        public bool BoygroupIsMaster = false;
+
+        public string BoygroupClientName = "";
+        public int BoygroupPort = 44720;
+        public bool BoygroupAutoJoin = true;
+        public bool BoygroupDeployMirror = false;
+        /// <summary>The master deploys and syncs to a render node as soon as it joins the group,
+        /// so an added slave is current without anyone clicking Deploy &amp; Sync.</summary>
+        public bool BoygroupAutoDeployOnJoin = true;
+
+        /// <summary>Deploy-restart flood guard, persisted across the restarts it guards: if more
+        /// than four deploy restarts happen inside two minutes the client stops restarting for
+        /// five minutes and logs loudly, so a perpetually-diffing file can never loop a show
+        /// machine.</summary>
+        public int BoygroupDeployRestartCount = 0;
+        public long BoygroupDeployRestartWindowStartTicks = 0;
+        public long BoygroupDeployRestartBlockedUntilTicks = 0;
+
+        public List<string> BoygroupGroups = ["Main"];
+        public string BoygroupLastServer = "";
+        public string BoygroupLastGroup = "";
+
+        // Show failover (active/standby output arbitration)
+        public bool FailoverEnabled = false;
+        public string FailoverShowId = "tixl-show";
+        public int FailoverPriority = 100;
+        public int FailoverHeartbeatMs = 500;
+        public int FailoverTimeoutFactor = 3;
+        public bool FailoverPreempt = true;
 
         public float GizmoSize = 100;
 

@@ -51,6 +51,9 @@ Reference and how-tos for the day-to-day work: the UI, the graph, connecting inp
 
 - [TiXL for VJ and live performances](LivePerformances.md)
 - [Output Setup](OutputSetup.md) — projection mapping, multi-display and Spout / NDI outputs.
+- [Live collaboration](Collaboration.md) — several editors on one graph, over LAN or a relay.
+- [Boygrouping and show failover](BoygroupingAndFailover.md) — render nodes and redundant show machines.
+- [Startup and recovery](StartupAndRecovery.md) — startup project, start with the system, restart after a crash.
 - [Using backups](Backups.md)
 - [Sharing example projects](SharingExampleProjects.md)
 - [FAQ](FAQ.md)
