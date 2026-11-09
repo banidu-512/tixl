@@ -44,8 +44,12 @@ public static partial class T3Ui
         _failoverConfig.TimeoutFactor = UserSettings.Config.FailoverTimeoutFactor;
         _failoverConfig.Preempt = UserSettings.Config.FailoverPreempt;
         _failoverConfig.NetworkInterfaceName = UserSettings.Config.NetworkInterface;
+        // Advertised so the standby can open the same show; empty while the hub is shown.
+        _failoverConfig.ProjectName = Show.ProjectFollower.OpenProjectName ?? "";
         T3.Core.Show.FailoverArbiter.ApplyConfig(_failoverConfig);
+        Show.FailoverProjectFollow.Update();
         Show.BoygroupManager.Instance.Update();
+        Collab.CollabManager.Instance.Update();
         //ImGui.PushStyleColor(ImGuiCol.Text, UiColors.Text.Rgba);
         DragAndDropHandling.Update();
         MagGraph.Ui.DropHandling.DrawDragIndicator();

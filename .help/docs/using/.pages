@@ -24,6 +24,7 @@ nav:
   - RemoveStaticBackground.md
   # Live use and data
   - LivePerformances.md
+  - Collaboration.md
   - BoygroupingAndFailover.md
   - StartupAndRecovery.md
   - Backups.md

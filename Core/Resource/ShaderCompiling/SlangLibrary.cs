@@ -43,6 +43,18 @@ internal static unsafe class SlangLibrary
             if (OperatingSystem.IsWindows())
                 _ = SetDllDirectory(GetBinFolder(compiler));
 
+            // The in-process compiler runs the SPIR-V optimizer from spirv-opt in the compiler's own
+            // bin folder; when that file is missing the failure surfaces per shader as "failed to
+            // load downstream compiler 'spirv-opt'". Say it once here instead.
+            var compilerBin = GetBinFolder(compiler);
+            if (compilerBin != null && !File.Exists(Path.Combine(compilerBin,
+                    OperatingSystem.IsWindows() ? "spirv-opt.exe" : "spirv-opt")))
+            {
+                Log.Warning($"Collab/shader note: '{compilerBin}' does not contain spirv-opt. "
+                          + "Compute shaders will fail with 'failed to load downstream compiler'. "
+                          + "Install the Slang release's whole bin folder, or the editor falls back below.");
+            }
+
             foreach (var candidate in LibraryCandidates(compiler))
             {
                 if (!File.Exists(candidate) || !NativeLibrary.TryLoad(candidate, out var library))

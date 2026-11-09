@@ -2,6 +2,7 @@
 using System.Net;
 using T3.Core.Show;
 using T3.Core.Utils;
+using T3.Editor.Collab;
 
 namespace T3.Editor.Show;
 
@@ -34,6 +35,7 @@ internal static class NetworkPeerCheck
     public static void CollectPeers(List<NetworkPeer> peers)
     {
         peers.Clear();
+        CollabManager.Instance.AddLinkedPeers(peers);
         BoygroupManager.Instance.AddLinkedPeers(peers);
 
         _failoverAddresses.Clear();

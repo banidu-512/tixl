@@ -18,15 +18,7 @@ internal sealed partial class SettingsWindow
     {
         var config = UserSettings.Config;
 
-        changed |= FormInputs.AddCheckBox("Enable show failover",
-                                          ref config.FailoverEnabled,
-                                          """
-                                          Two machines run the same composition; exactly one (ACTIVE) streams network
-                                          outputs. If it dies, the Standby takes over automatically and streams until
-                                          the master returns. Artnet, sACN and stream outputs (NDI/Spout) honor this;
-                                          local display windows keep rendering on both machines.
-                                          """,
-                                          false);
+        // Failover is switched through the menu-bar mode selector; this panel configures the pair.
 
         changed |= FormInputs.AddStringInput("Show Id",
                                              ref config.FailoverShowId,

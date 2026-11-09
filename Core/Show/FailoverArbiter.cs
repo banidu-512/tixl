@@ -29,6 +29,12 @@ public sealed record FailoverConfig
     /// <summary>Adapter name the heartbeat sockets bind to; empty = all interfaces (OS route).</summary>
     public string NetworkInterfaceName = "";
 
+    /// <summary>
+    /// The project this node runs, advertised in the heartbeat so the standby can open the same
+    /// one. Empty while the editor shows the hub.
+    /// </summary>
+    public string ProjectName = "";
+
     public FailoverConfig Copy() => new()
                                          {
                                              Enabled = Enabled,
@@ -38,6 +44,7 @@ public sealed record FailoverConfig
                                              TimeoutFactor = TimeoutFactor,
                                              Preempt = Preempt,
                                              NetworkInterfaceName = NetworkInterfaceName,
+                                             ProjectName = ProjectName,
                                          };
 
     public bool ConfigEquals(FailoverConfig? other)
@@ -49,7 +56,8 @@ public sealed record FailoverConfig
                && HeartbeatMs == other.HeartbeatMs
                && TimeoutFactor == other.TimeoutFactor
                && Preempt == other.Preempt
-               && NetworkInterfaceName == other.NetworkInterfaceName;
+               && NetworkInterfaceName == other.NetworkInterfaceName
+               && ProjectName == other.ProjectName;
     }
 }
 
@@ -102,6 +110,7 @@ public static class FailoverArbiter
     {
         public int Priority;
         public bool AdvertisesActive;
+        public string ProjectName = "";
         public long LastHeardTicks;
         public string NodeId = "";
         public string Address = "";
@@ -191,6 +200,44 @@ public static class FailoverArbiter
         {
             lock (Gate)
                 return _takeoverCount;
+        }
+    }
+
+    /// <summary>True while this node streams the show (the active peer defines the show's project).</summary>
+    public static bool IsActiveNode
+    {
+        get
+        {
+            lock (Gate)
+                return _role == NodeRole.Active;
+        }
+    }
+
+    /// <summary>
+    /// The project the live active peer advertises, or null when no active peer is known. The
+    /// standby opens it so a takeover renders the same show.
+    /// </summary>
+    public static string? ActivePeerProjectName
+    {
+        get
+        {
+            lock (Gate)
+            {
+                var now = Environment.TickCount64;
+                var timeout = TimeoutMs;
+                PeerInfo? bestActive = null;
+                foreach (var peer in _peers.Values)
+                {
+                    if (now - peer.LastHeardTicks > timeout || !peer.AdvertisesActive)
+                        continue;
+
+                    if (bestActive == null || Beats(peer.Priority, peer.NodeId, bestActive.Priority, bestActive.NodeId))
+                        bestActive = peer;
+                }
+
+                var projectName = bestActive?.ProjectName;
+                return string.IsNullOrEmpty(projectName) ? null : projectName;
+            }
         }
     }
 
@@ -285,6 +332,21 @@ public static class FailoverArbiter
         // IPAddress.Any follows the default interface — the common show setup (single LAN NIC).
         // A pinned adapter (Settings → Network) binds and joins on that adapter's address instead.
         var pinnedAddress = T3.Core.Utils.LanInterfaces.ResolveAddress(_config.NetworkInterfaceName);
+
+        // Unpinned multicast follows the OS's default adapter, which is not necessarily the show
+        // network on a machine with Wi-Fi, a VPN or Hyper-V adapters. Two such machines then cannot
+        // hear each other and BOTH become Active - both stream the show. Worth a loud warning.
+        if (pinnedAddress == null)
+        {
+            var usable = T3.Core.Utils.LanInterfaces.GetUsable();
+            if (usable.Count > 1)
+            {
+                Log.Warning("Failover: heartbeats are not pinned to an adapter and this machine has "
+                          + $"{usable.Count} usable network interfaces. If the pair ends up both ACTIVE, "
+                          + "pick the show network under Settings → Network (failover rebinds immediately).");
+            }
+        }
+
         _role = NodeRole.Probing;
         _lastStateChangeTicks = Environment.TickCount64;
         _peers.Clear();
@@ -378,12 +440,14 @@ public static class FailoverArbiter
     {
         Socket? socket;
         string showId;
+        string projectName;
         int priority;
         bool advertiseActive;
         lock (Gate)
         {
             socket = _heartbeatSocket;
             showId = _config.ShowId;
+            projectName = _config.ProjectName ?? "";
             priority = _config.Priority;
             // A contested node is muted but has claimed the role: it must advertise that claim, or
             // the current active keeps streaming through the handover until it hears the new active.
@@ -399,6 +463,7 @@ public static class FailoverArbiter
                                                                                  id = NodeId,
                                                                                  prio = priority,
                                                                                  active = advertiseActive,
+                                                                                 proj = projectName,
                                                                              }));
 
         try
@@ -460,6 +525,7 @@ public static class FailoverArbiter
 
                     peer.Priority = heartbeat.Prio;
                     peer.AdvertisesActive = heartbeat.Active;
+                    peer.ProjectName = heartbeat.Proj ?? "";
                     peer.NodeId = heartbeat.Id;
                     peer.LastHeardTicks = Environment.TickCount64;
                     peer.Address = remote is IPEndPoint endpoint ? endpoint.Address.ToString() : "";
@@ -478,6 +544,9 @@ public static class FailoverArbiter
         public string? Id { get; set; }
         public int Prio { get; set; }
         public bool Active { get; set; }
+
+        /// <summary>Project the sending node runs; empty or absent on older builds.</summary>
+        public string? Proj { get; set; }
     }
 
     /// <summary>Does (priority, id) win the election against the other side? Deterministic from both sides.</summary>

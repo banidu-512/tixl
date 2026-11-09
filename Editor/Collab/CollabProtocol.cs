@@ -37,6 +37,10 @@ internal static class CollabProtocol
     public const int DefaultTcpPort = 44700;
     public const int DefaultRelayPort = 44710;
 
+    /// <summary>Relay used when the relay address setting is empty. TiXLCollabRelay is expected to
+    /// run there; hosts and joiners must point at the same relay to see each other's rooms.</summary>
+    public const string DefaultRelayHost = "10.0.0.222";
+
     /// <summary>Hard upper bound for one reliable frame including the type byte.</summary>
     public const int MaxFrameSize = 4 * 1024 * 1024;
 
@@ -44,7 +48,8 @@ internal static class CollabProtocol
     public const int MaxJsonPayload = 1024 * 1024;
 
     /// <summary>Expected size of one presence datagram with a full selection list (connId, flags, guid, 2 floats, count, 15 guids).</summary>
-    public const int MaxPresencePayload = 2 + 16 + 8 + 1 + 15 * 16;
+    public const int MaxPresencePayload = 2 + 16 + 8 + 1 + 15 * 16 + 1 + 3 + 1 + MaxPressedKeysPerPresence;
+    public const int MaxPressedKeysPerPresence = 4;
 
     public const int MaxPeers = 16;
     public const int MaxSelectionIdsPerPresence = 15;
@@ -97,7 +102,11 @@ internal static class CollabProtocol
         Json = 1,
         Presence = 2,
         Heartbeat = 3,
+        Signal = 4,
     }
+
+    /// <summary>Hard upper bound for one WebRTC signaling frame.</summary>
+    public const int MaxSignalPayload = 64 * 1024;
 
     /// <summary>Opens a TCP connection, giving up after <see cref="ConnectTimeoutMs"/>. Throws on failure.</summary>
     public static TcpClient ConnectWithTimeout(IPEndPoint endPoint)
@@ -187,6 +196,14 @@ internal static class CollabProtocol
         return Encoding.UTF8.GetBytes(json);
     }
 
+    /// <summary>Whether a JSON frame is a kick — the one relay message that must survive an
+    /// active peer-to-peer data channel (see the WebRTC client's dispatch).</summary>
+    public static bool IsKickJson(ReadOnlySpan<byte> payload)
+    {
+        return TryDecodeJson(payload, out var json)
+               && string.Equals(GetString(json, "t"), "kicked", StringComparison.Ordinal);
+    }
+
     public static bool TryDecodeJson(ReadOnlySpan<byte> payload, out JObject json)
     {
         json = null!;
@@ -254,11 +271,90 @@ internal static class CollabProtocol
         }
     }
 
+    /// <summary>
+    /// Round trip of a heartbeat this side sent: the echo carries our own TickCount64, so the age of
+    /// that stamp is the trip there and back. Out-of-range values (an echo from a previous session,
+    /// or a clock jump) are ignored instead of reported as a latency.
+    /// </summary>
+    public static int MeasureHeartbeatRtt(ReadOnlySpan<byte> echo)
+    {
+        if (echo.Length != HeartbeatPingSize + 1)
+            return -1;
+
+        var sent = BitConverter.ToInt64(echo);
+        var rtt = Environment.TickCount64 - sent;
+        return rtt is >= 0 and <= 10_000 ? (int)rtt : -1;
+    }
+
+    /// <summary>Long read for values that do not fit an int — TickCount64 stamps, for instance.</summary>
+    public static bool TryGetLong(JObject json, string property, out long value)
+    {
+        value = 0;
+        if (!json.TryGetValue(property, out var token))
+            return false;
+
+        switch (token.Type)
+        {
+            case JTokenType.Integer:
+                value = token.Value<long>();
+                return true;
+            case JTokenType.Float:
+                value = (long)token.Value<double>();
+                return true;
+            case JTokenType.String:
+                return long.TryParse(token.Value<string>(), out value);
+            default:
+                return false;
+        }
+    }
+
     public static bool TryGetInt(JObject json, string property, out int value)
     {
         value = 0;
-        return json.TryGetValue(property, out var token)
-               && int.TryParse(token.Value<string>(), out value);
+        if (!json.TryGetValue(property, out var token))
+            return false;
+
+        switch (token.Type)
+        {
+            case JTokenType.Integer:
+                value = token.Value<int>();
+                return true;
+            case JTokenType.String:
+                return int.TryParse(token.Value<string>(), out value);
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>
+    /// Type-tolerant bool read for fields from UNTRUSTED senders (LAN discovery announcements): a
+    /// string like "x" or an object token must be a miss, not a FormatException out of the frame loop.
+    /// </summary>
+    public static bool TryGetBool(JObject json, string property, out bool value)
+    {
+        value = false;
+        if (!json.TryGetValue(property, out var token))
+            return false;
+
+        switch (token.Type)
+        {
+            case JTokenType.Boolean:
+                value = token.Value<bool>();
+                return true;
+            case JTokenType.Integer:
+            {
+                var number = token.Value<long>();
+                if (number is < 0 or > 1)
+                    return false;
+
+                value = number == 1;
+                return true;
+            }
+            case JTokenType.String:
+                return bool.TryParse(token.Value<string>(), out value);
+            default:
+                return false;
+        }
     }
 }
 
@@ -275,14 +371,35 @@ internal sealed class PresencePacket
     public Vector2 CursorOnCanvas;
     public Guid[] SelectedChildIds = [];
 
+    /// <summary>Decaying wheel-spin value (signed ticks), appended to the payload so peers can show
+    /// scrolling. Zero for peers on an older build that doesn't send it.</summary>
+    public sbyte WheelSpin;
+
+    /// <summary>The participant's chosen cursor color as 0xRRGGBB; 0 lets receivers derive one from the user id.</summary>
+    public int ColorRgb;
+
+    /// <summary>Key codes held right now, as the interaction overlay labels them.</summary>
+    public byte[] PressedKeys = [];
+
     public const byte FlagHoveringCanvas = 0x01;
+    public const byte FlagLeftButton = 0x02;
+    public const byte FlagRightButton = 0x04;
+    public const byte FlagMiddleButton = 0x08;
+    public const byte FlagDoubleClick = 0x10;
+    public const byte FlagAddingOperator = 0x20;
 
     public bool IsHoveringCanvas => (Flags & FlagHoveringCanvas) != 0;
+    public bool IsLeftButtonDown => (Flags & FlagLeftButton) != 0;
+    public bool IsRightButtonDown => (Flags & FlagRightButton) != 0;
+    public bool IsMiddleButtonDown => (Flags & FlagMiddleButton) != 0;
+    public bool IsDoubleClick => (Flags & FlagDoubleClick) != 0;
+    public bool IsAddingOperator => (Flags & FlagAddingOperator) != 0;
 
     public int Encode(Span<byte> target)
     {
         var selectionCount = Math.Min(SelectedChildIds.Length, CollabProtocol.MaxSelectionIdsPerPresence);
-        var size = 2 + 16 + 8 + 1 + selectionCount * 16;
+        var keyCount = Math.Min(PressedKeys.Length, CollabProtocol.MaxPressedKeysPerPresence);
+        var size = 2 + 16 + 8 + 1 + selectionCount * 16 + 1 + 3 + 1 + keyCount;
         if (target.Length < size)
             return 0;
 
@@ -296,6 +413,17 @@ internal sealed class PresencePacket
         {
             SelectedChildIds[i].TryWriteBytes(target.Slice(27 + i * 16, 16));
         }
+
+        // Everything after the selection list is appended rather than inserted: an older peer reads
+        // exactly the bytes it knows and ignores the rest, so mixed builds keep exchanging cursors.
+        var tail = 27 + selectionCount * 16;
+        target[tail] = unchecked((byte)WheelSpin);
+        target[tail + 1] = (byte)(ColorRgb >> 16);
+        target[tail + 2] = (byte)(ColorRgb >> 8);
+        target[tail + 3] = (byte)ColorRgb;
+        target[tail + 4] = (byte)keyCount;
+        for (var i = 0; i < keyCount; i++)
+            target[tail + 5 + i] = PressedKeys[i];
 
         return size;
     }
@@ -322,6 +450,16 @@ internal sealed class PresencePacket
                                                       BinaryPrimitives.ReadSingleLittleEndian(payload.Slice(22, 4))),
                          SelectedChildIds = new Guid[selectionCount],
                      };
+
+        var wheelOffset = 27 + selectionCount * 16;
+        packet.WheelSpin = payload.Length > wheelOffset ? unchecked((sbyte)payload[wheelOffset]) : (sbyte)0;
+
+        if (payload.Length >= wheelOffset + 5)
+        {
+            packet.ColorRgb = (payload[wheelOffset + 1] << 16) | (payload[wheelOffset + 2] << 8) | payload[wheelOffset + 3];
+            var keyCount = Math.Min((int)payload[wheelOffset + 4], Math.Min(CollabProtocol.MaxPressedKeysPerPresence, payload.Length - wheelOffset - 5));
+            packet.PressedKeys = payload.Slice(wheelOffset + 5, keyCount).ToArray();
+        }
 
         for (var i = 0; i < selectionCount; i++)
         {
