@@ -14,9 +14,10 @@ namespace Lib.io.video
     /// <remarks>
     /// All network I/O and decoding happen on a background capture thread; evaluation never blocks on it.
     /// Each connection attempt is a <see cref="CaptureRun"/> that owns its FFmpeg session outright, so stopping
-    /// is just a cancel: the run tears itself down, and FFmpeg's interrupt callback makes a blocked open or
-    /// read observe the cancel within ~100 ms. Runs are tagged with an id, and frames or status from a run
-    /// that is no longer active are dropped, so a slow-to-exit run can never overwrite a newer one.
+    /// is just a cancel: the run tears itself down, and FFmpeg's <c>rw_timeout</c> bounds any single blocking
+    /// read, so a source that stops sending cannot pin the thread. Runs are tagged with an id, and frames or
+    /// status from a run that is no longer active are dropped, so a slow-to-exit run can never overwrite a
+    /// newer one.
     /// </remarks>
     [Guid("D9A7233D-5D03-4268-A58B-465972852A5B")]
     internal sealed class VideoStreamInput : Instance<VideoStreamInput>, IStatusProvider
@@ -176,8 +177,8 @@ namespace Lib.io.video
 
         /// <summary>
         /// Cancels the active run without waiting for it; its frames and status are ignored from here on. The next
-        /// run starts once this one has exited (see <see cref="HaveRetiredRunsExited"/>), which with interruptible
-        /// FFmpeg I/O takes about 100 ms.
+        /// run starts once this one has exited (see <see cref="HaveRetiredRunsExited"/>), which takes until the
+        /// frame read already in flight returns — bounded by the stream's I/O timeout.
         /// </summary>
         private void StopCapture(string statusMessage)
         {
