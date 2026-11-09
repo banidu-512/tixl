@@ -129,6 +129,9 @@ public class WebcamInput : Instance<WebcamInput>, ICustomDropdownHolder, IStatus
 
     private void Update(EvaluationContext context)
     {
+        // The capture thread watches this to honour DeactivateWhenNotShowing: an operator that stops being
+        // evaluated cannot be told about it, so the thread times the gap itself.
+        _lastEvaluationMs = Environment.TickCount64;
         CameraSources.Provider?.EnsureStarted();
 
         // Edge-triggered: a connected input held at true must not restart the camera on every frame.
@@ -148,6 +151,8 @@ public class WebcamInput : Instance<WebcamInput>, ICustomDropdownHolder, IStatus
                                                 ApplyRotationData.GetValue(context),
                                                 Scale.GetValue(context),
                                                 Reposition.GetValue(context));
+
+        _deactivateWhenIdle = DeactivateWhenNotShowing.GetValue(context);
 
         if (Active.GetValue(context))
         {
@@ -256,20 +261,28 @@ public class WebcamInput : Instance<WebcamInput>, ICustomDropdownHolder, IStatus
 
     private void StopCaptureThread()
     {
-        if (_captureThread == null)
-            return;
+        // Release the references of threads that already exited, whether or not one is running now.
+        _stoppingThreads.RemoveAll(static thread => !thread.IsAlive);
 
-        // Never wait on the evaluation thread: opening a camera can block for seconds (permission prompts,
-        // slow drivers). The thread sees the cancellation and exits on its own. Its token source is not
-        // disposed, because the thread still waits on its handle.
-        _cancellationTokenSource?.Cancel();
-        if (_captureThread.IsAlive)
-            _stoppingThreads.Add(_captureThread);
+        if (_captureThread != null)
+        {
+            // Never wait on the evaluation thread: opening a camera can block for seconds (permission
+            // prompts, slow drivers). The thread sees the cancellation and exits on its own. Its token
+            // source is not disposed, because the thread still waits on its handle.
+            _cancellationTokenSource?.Cancel();
+            if (_captureThread.IsAlive)
+                _stoppingThreads.Add(_captureThread);
 
-        _captureThread = null;
-        _cancellationTokenSource = null;
+            _captureThread = null;
+            _cancellationTokenSource = null;
+        }
+
         _activeMode = default; // "zero before the first frame" — the settings window must not show a stale size.
-        SetStatus("Stopped");
+
+        // Also when no thread is running: a start that had to wait for a previous capture leaves that
+        // "Waiting for the previous capture..." message behind, and the operator is off now.
+        if (!string.Equals(_lastStatusMessage, StoppedStatus, StringComparison.Ordinal))
+            SetStatus(StoppedStatus);
     }
 
     /** Keeps trying until cancelled, so a camera that is busy or unplugged resumes on its own. */
@@ -284,8 +297,22 @@ public class WebcamInput : Instance<WebcamInput>, ICustomDropdownHolder, IStatus
                 return;
             }
 
+            var reopenDelayMs = ReopenIntervalMs;
+
             while (!token.IsCancellationRequested)
             {
+                // Nothing evaluates this operator any more, so stop holding the camera (and the bus
+                // bandwidth) for a graph that is not being rendered. Parking here keeps the thread ready
+                // to reopen the moment the operator is evaluated again.
+                if (IsPausedForIdleFrame())
+                {
+                    SetStatus("Paused (not rendered)");
+                    token.WaitHandle.WaitOne(IdlePollIntervalMs);
+                    continue;
+                }
+
+                var attemptStartedMs = Environment.TickCount64;
+                var deliveredFrames = false;
                 using (var stream = provider.TryOpen(settings.DeviceName, settings.Mode, out var error))
                 {
                     if (stream == null)
@@ -296,7 +323,14 @@ public class WebcamInput : Instance<WebcamInput>, ICustomDropdownHolder, IStatus
                     {
                         SetStatus("Waiting for first frame...");
                         Interlocked.Exchange(ref _streamReopenSignal, 1);
-                        ReadFramesUntilStreamEnds(stream, token);
+                        deliveredFrames = ReadFramesUntilStreamEnds(stream, token);
+
+                        // A stop closed the stream on purpose, and its state reports that as a disconnect.
+                        // Reporting it here would overwrite the "Stopped" status with an error the user
+                        // cannot act on — the reason a normal stop showed "Camera disconnected".
+                        if (token.IsCancellationRequested)
+                            return;
+
                         if (stream.State == CameraStreamState.Denied)
                         {
                             SetStatus("Error: Access to the camera was denied.");
@@ -308,7 +342,17 @@ public class WebcamInput : Instance<WebcamInput>, ICustomDropdownHolder, IStatus
                     }
                 }
 
-                token.WaitHandle.WaitOne(ReopenIntervalMs);
+                // Back off while the camera keeps failing: a device that has just been closed often needs a
+                // moment before it can be opened again, and reopening it every second is what turns that
+                // into a camera that never comes back. A stream that ran for a while, or delivered frames
+                // before dying, is a real disconnect — retry those at the normal pace.
+                var lifetimeMs = Environment.TickCount64 - attemptStartedMs;
+                if (deliveredFrames || lifetimeMs >= HealthyStreamMs)
+                    reopenDelayMs = ReopenIntervalMs;
+                else
+                    reopenDelayMs = Math.Min(reopenDelayMs * 2, MaxReopenIntervalMs);
+
+                token.WaitHandle.WaitOne(reopenDelayMs);
             }
         }
         catch (Exception e)
@@ -318,19 +362,27 @@ public class WebcamInput : Instance<WebcamInput>, ICustomDropdownHolder, IStatus
         }
     }
 
-    private void ReadFramesUntilStreamEnds(ICameraStream stream, CancellationToken token)
+    /** Reads until the stream ends or the capture is cancelled; true if at least one frame arrived. */
+    private bool ReadFramesUntilStreamEnds(ICameraStream stream, CancellationToken token)
     {
         var capturedPixels = Array.Empty<byte>();
         var scratchPixels = Array.Empty<byte>();
         var lastReportedSize = new Int2(0, 0);
+        var deliveredFrames = false;
 
         while (!token.IsCancellationRequested && stream.State == CameraStreamState.Open)
         {
+            // Leaving closes the stream; the caller's loop parks until the operator is evaluated again.
+            if (IsPausedForIdleFrame())
+                return deliveredFrames;
+
             if (!stream.TryReadFrame(ref capturedPixels, out var width, out var height))
             {
                 Thread.Sleep(FramePollIntervalMs);
                 continue;
             }
+
+            deliveredFrames = true;
 
             if (width != lastReportedSize.X || height != lastReportedSize.Y)
             {
@@ -355,6 +407,8 @@ public class WebcamInput : Instance<WebcamInput>, ICustomDropdownHolder, IStatus
                 _hasNewFrame = true;
             }
         }
+
+        return deliveredFrames;
     }
 
     private static void ApplyImageTransform(in ImageTransform transform, ref byte[] pixels, ref byte[] scratch, int width, int height)
@@ -488,6 +542,13 @@ public class WebcamInput : Instance<WebcamInput>, ICustomDropdownHolder, IStatus
             ResourceManager.Device.ImmediateContext.UpdateSubresource(dataBox, _gpuTexture, 0);
         }
     }
+
+    /// <summary>
+    /// True once DeactivateWhenNotShowing is on and no evaluation has run for a while — the only way an
+    /// operator can notice that nothing renders it, since an unrendered operator is never updated again.
+    /// </summary>
+    private bool IsPausedForIdleFrame()
+        => _deactivateWhenIdle && Environment.TickCount64 - _lastEvaluationMs > DeactivateTimeoutMs;
 
     private void SetStatus(string message) => _lastStatusMessage = message;
 
@@ -728,6 +789,18 @@ public class WebcamInput : Instance<WebcamInput>, ICustomDropdownHolder, IStatus
     private const int BytesPerPixel = 4;
     private const int FramePollIntervalMs = 2;
     private const int ReopenIntervalMs = 1000;
+
+    /** A stream that lasted this long was working, so a failure after it is a real disconnect, not thrash. */
+    private const int HealthyStreamMs = 1500;
+
+    /** Ceiling of the reopen backoff: a camera that is gone should not be polled harder than this. */
+    private const int MaxReopenIntervalMs = 5000;
+
+    /** How long capture may stay unused before DeactivateWhenNotShowing releases the camera. */
+    private const int DeactivateTimeoutMs = 3000;
+    private const int IdlePollIntervalMs = 250;
+
+    private const string StoppedStatus = "Stopped";
     private const string NoDevicesOption = "No devices found";
 
     private readonly Lock _frameLock = new();
@@ -736,6 +809,11 @@ public class WebcamInput : Instance<WebcamInput>, ICustomDropdownHolder, IStatus
 
     /** Set by the capture thread when a camera opened, consumed by the next evaluation. */
     private int _streamReopenSignal;
+
+    /** Written by the evaluation thread, read by the capture thread; a stale read only delays a pause. */
+    private volatile bool _deactivateWhenIdle;
+
+    private long _lastEvaluationMs = Environment.TickCount64;
     private CameraMode _activeMode;
 
     /** Camera list for the dropdowns; see <see cref="GetCameraOptions"/>. */

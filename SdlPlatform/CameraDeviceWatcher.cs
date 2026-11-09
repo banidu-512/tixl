@@ -45,7 +45,9 @@ internal static class CameraDeviceWatcher
 
     private static string? ReadWindowsSignature()
     {
-        var signature = new StringBuilder();
+        // Sorted, because the interface-list order is not guaranteed to be stable between calls. Treating
+        // a reordered list as a change restarts camera support, which closes the cameras that are running.
+        var interfaces = new List<string>();
         foreach (var category in _windowsCameraCategories)
         {
             var categoryId = category;
@@ -62,12 +64,13 @@ internal static class CameraDeviceWatcher
                 if (result != CrSuccess)
                     return null;
 
-                signature.Append(buffer).Append('|');
+                interfaces.AddRange(new string(buffer).Split('\0', StringSplitOptions.RemoveEmptyEntries));
                 break;
             }
         }
 
-        return signature.ToString();
+        interfaces.Sort(StringComparer.Ordinal);
+        return string.Join('\n', interfaces);
     }
 
     private const int CrSuccess = 0;
@@ -101,7 +104,7 @@ internal static class CameraDeviceWatcher
         if (_captureDeviceClass == IntPtr.Zero)
             return null;
 
-        var signature = new StringBuilder();
+        var ids = new List<string>();
         var pool = objc_autoreleasePoolPush();
         try
         {
@@ -118,10 +121,8 @@ internal static class CameraDeviceWatcher
                 if (uniqueId != IntPtr.Zero && CFStringGetCString(uniqueId, buffer, buffer.Length, CfStringEncodingUtf8) != 0)
                 {
                     var length = Array.IndexOf(buffer, (byte)0);
-                    signature.Append(Encoding.UTF8.GetString(buffer, 0, length >= 0 ? length : buffer.Length));
+                    ids.Add(Encoding.UTF8.GetString(buffer, 0, length >= 0 ? length : buffer.Length));
                 }
-
-                signature.Append('|');
             }
         }
         finally
@@ -129,7 +130,8 @@ internal static class CameraDeviceWatcher
             objc_autoreleasePoolPop(pool);
         }
 
-        return signature.ToString();
+        ids.Sort(StringComparer.Ordinal);
+        return string.Join('\n', ids);
     }
 
     private const string LibObjc = "/usr/lib/libobjc.A.dylib";
