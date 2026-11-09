@@ -121,6 +121,8 @@ internal sealed class CollabManager
     private const int MaxSessionLogEntries = 10_000;
 
     private long _nextHeartbeatTicks;
+    private long _nextRttProbeTicks;
+    private const int RttProbeIntervalMs = 2000;
     private long _nextPresenceSendTicks;
     private long _nextRateResetTicks;
 
@@ -1022,6 +1024,21 @@ internal sealed class CollabManager
                 Log.Info($"Collab: replay complete ({_syncBatch} ops)");
                 break;
 
+            case "rttPing":
+                if (CollabProtocol.TryGetLong(json, "stamp", out var probeStamp))
+                    SendJson(peer, new { t = "rttPong", stamp = probeStamp });
+                break;
+
+            case "rttPong":
+                if (CollabProtocol.TryGetLong(json, "stamp", out var answered) && peer.AssignedId != int.MaxValue)
+                {
+                    var rtt = Environment.TickCount64 - answered;
+                    if (rtt is >= 0 and <= 10_000)
+                        peer.LastRttMs = (int)rtt;
+                }
+
+                break;
+
             case "peerJoined" when State == SessionState.Connected:
             {
                 var name = CollabProtocol.GetString(json, "name", "?");
@@ -1814,6 +1831,13 @@ internal sealed class CollabManager
         _nextHeartbeatTicks = now + CollabProtocol.HeartbeatIntervalMs;
         var timestamp = BitConverter.GetBytes(Environment.TickCount64);
 
+        // Round-trip probe: the binary heartbeat echo only comes back on some transports (a data
+        // channel answers on the relay, or not at all), so latency rides a JSON message instead —
+        // the same path chat uses, which works on every transport.
+        var sendRttProbe = now >= _nextRttProbeTicks;
+        if (sendRttProbe)
+            _nextRttProbeTicks = now + RttProbeIntervalMs;
+
         foreach (var peer in Peers)
         {
             if (peer.IsTimedOut)
@@ -1836,7 +1860,11 @@ internal sealed class CollabManager
             }
 
             if (peer.IsAuthenticated)
+            {
                 _transport?.SendToPeer(peer, CollabProtocol.FrameType.Heartbeat, timestamp);
+                if (sendRttProbe)
+                    SendJson(peer, new { t = "rttPing", stamp = Environment.TickCount64 });
+            }
         }
     }
 

@@ -285,6 +285,28 @@ internal static class CollabProtocol
         return rtt is >= 0 and <= 10_000 ? (int)rtt : -1;
     }
 
+    /// <summary>Long read for values that do not fit an int — TickCount64 stamps, for instance.</summary>
+    public static bool TryGetLong(JObject json, string property, out long value)
+    {
+        value = 0;
+        if (!json.TryGetValue(property, out var token))
+            return false;
+
+        switch (token.Type)
+        {
+            case JTokenType.Integer:
+                value = token.Value<long>();
+                return true;
+            case JTokenType.Float:
+                value = (long)token.Value<double>();
+                return true;
+            case JTokenType.String:
+                return long.TryParse(token.Value<string>(), out value);
+            default:
+                return false;
+        }
+    }
+
     public static bool TryGetInt(JObject json, string property, out int value)
     {
         value = 0;
