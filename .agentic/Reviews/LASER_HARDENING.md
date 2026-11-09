@@ -136,6 +136,28 @@ filter **107 passed, 0 failed**; `Lib` and `Editor` 0 errors 0 warnings.
 Review observations deliberately left alone: EtherDream per-chunk allocation (GC pressure only, already
 documented in pass 3), and the PONK Keepalive master bypass — documented above.
 
+## Fifth pass — EtherDream hardware smoke test (2026-11-08)
+
+Drove the shipped stack against a real DAC (EtherDream-protocol device at 10.0.0.90, clone-style firmware
+that answers `?`/`p` on TCP 7765) via a standalone harness (`LaserOutputStream.Create` + blanked frames at
+30 Hz, no light by construction: content I=0, door `BeamEnable=false`, 5% ceilings at the door and device).
+Harness: `D:\TiXLDEV\tmp-etherdream-smoke\EtherDreamSmoke`.
+
+All phases pass: connect 216 ms; master-off halts playback with the connection warm; armed dark stream at
+~24–30 Hz holds 'Streaming' for 6 s; the frame watchdog blanks ~1 s after the last fresh frame and its
+Warning persists; resume clears it; dispose is bounded (2–63 ms).
+
+**Found and fixed on hardware:** the send loop's completed-frame status reset ("Streaming", Success)
+overwrote the watchdog's Warning within milliseconds — the UI read 'Streaming' while the output was
+watchdog-blanked. The reset is now gated on `!_watchdogBlanked` (EtherDream) and PONK gained the mirror
+reset gated on `!_watchdogBlanked && !_keepaliveOverrideReported`, so its watchdog/send-error warnings
+clear on resume but the keepalive bypass stays visible for the whole session. 107 laser tests pass.
+
+Noted, not fixed: at dispose the stack logs `Dac._socket is unavailable` — the reflection-based socket-kill
+escape hatch (pass 1) does not bind against LaserCore.EtherDream.Net 2.0.0 on this firmware; a wedged send
+still recovers via the bounded-wait + connection-recycle ladder, but the immediate socket kill is a no-op.
+Recorded as a residual risk.
+
 ## Verification
 
 Windows (this worktree, .NET SDK 10.0.201, Debug):

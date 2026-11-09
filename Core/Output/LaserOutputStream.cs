@@ -1078,7 +1078,10 @@ public sealed class LaserOutputStream : IDisposable
 
                         // A completed frame after a warning (stall, halt recovery) means the show
                         // is back - the status line must not stay on the old warning forever.
-                        if (_status.Level != IStatusProvider.StatusLevel.Success)
+                        // But the frame watchdog's blank frames complete too: while the watchdog
+                        // is active its Warning must persist (the fresh-frame enqueue clears
+                        // _watchdogBlanked, and the next completed frame returns to Streaming).
+                        if (_status.Level != IStatusProvider.StatusLevel.Success && !_watchdogBlanked)
                             SetStatus("Streaming", IStatusProvider.StatusLevel.Success);
                     }
                 }
@@ -1827,6 +1830,14 @@ private void HandleConnectionStateChanged(bool isConnected)
                     _consecutiveErrors = 0;
                     _lastFrame = frame;
                     _lastFrameBlanked = frameIsBlanked;
+
+                    // A good frame after a warning means the show is back - clear it, but never
+                    // while the watchdog is still blanking (its Warning persists until fresh
+                    // frames arrive) or while the keepalive override session is active (its
+                    // Warning is the documented visibility of the master bypass).
+                    if (!_watchdogBlanked && !_keepaliveOverrideReported
+                                          && _status.Level != IStatusProvider.StatusLevel.Success)
+                        SetStatus("Streaming", IStatusProvider.StatusLevel.Success);
                 }
                 catch (OperationCanceledException)
                 {
