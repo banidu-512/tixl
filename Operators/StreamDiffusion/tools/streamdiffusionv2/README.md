@@ -80,6 +80,10 @@ instead of repeating the error every frame. The cap defaults to 4096 MB and can 
 `TIXL_SD_TRT_WORKSPACE_MB` (set it lower on cards with little free memory). The provider cache lives in `trt_cache` next to the model files and can be deleted
 to force a rebuild.
 
+The provider statuses above are from Windows. Linux uses the same CUDA/TensorRT path (the CUDA 13 requirements apply,
+so Pascal GPUs fall back to CPU); macOS (arm64) builds and falls back from CoreML to CPU, but has not been verified at
+runtime - the CoreML provider does not support every exported graph shape.
+
 ## Design notes
 
 - The reference mutates per-layer KV caches in place with data-dependent control flow. Here the DiT step is stateless:
