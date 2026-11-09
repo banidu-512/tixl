@@ -21,6 +21,10 @@ namespace T3.Editor.Gui.UiHelpers;
 ///  todo - make internal, make extendable by external packages
 public sealed class UserSettings : Settings<UserSettings.ConfigData>
 {
+    /// <summary>Sync-source values for <see cref="ConfigData.BoygroupClockSync"/>.</summary>
+    public const string SyncInternal = "Internal";
+    public const string SyncPtp = "PTP";
+
     internal UserSettings(bool saveOnQuit) : base("userSettings.json", saveOnQuit: saveOnQuit)
     {
         RemoveDuplicateProjectDirectories();
@@ -144,6 +148,11 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public string StartupProjectFolder = "";
 
         /// <summary>Installs a per-user OS login entry (Windows Run key, Linux XDG autostart, macOS LaunchAgent).</summary>
+        /// <summary>Master switch for the Startup panel: project autoload, login autostart and
+        /// crash restart only act while this is on. Disabled by default: an editor is a plain
+        /// editor until startup automation is switched on.</summary>
+        public bool StartupEnabled = false;
+
         public bool AutostartWithSystem = false;
 
         /// <summary>Relaunch the editor automatically after a crash via a supervisor process.</summary>
@@ -162,9 +171,6 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
 
         /// <summary>When true, the Welcome window opens automatically at startup. Toggled from that window.</summary>
         public bool ShowWelcomeOnStartup = true;
-
-        /// <summary>When true, a warning lists symbols with operators that could not be found, once after startup.</summary>
-        public bool ShowMissingSymbolsWarningOnStartup = true;
 
         /// <summary>Whether the next launch offers crashes that were never reported.</summary>
         public bool AskToSendCrashReports = true;
@@ -209,9 +215,6 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
 
         /// <summary>Opacity of a surface's content previewed over its photo — on the traced quad and on its Board card.</summary>
         public float OutputSetupContentPreviewOpacity = 0.65f;
-
-        /// <summary>Opacity of an output's picture carried back through a corner pin onto a surface's Board card.</summary>
-        public float OutputSetupProjectionPreviewOpacity = 0f;
 
         /// <summary>Whether the output setup's rect fields read in pixels of what they sit on, or as ratios of it.
         /// The values are stored as ratios either way; this is only how they are shown and typed.</summary>
@@ -269,6 +272,10 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public bool EnableAutoBackup = true;
         public bool MinimalBackup = true;
 
+        /// <summary>The network adapter TiXL binds to for hosting collaboration and boygrouping,
+        /// LAN discovery and failover heartbeats (Settings → Network). Empty = all interfaces.</summary>
+        public string NetworkInterface = "";
+
         // Collaboration
         /// <summary>Persistent participant id; also seeds the per-user accent color.</summary>
         public string CollabUserId = "";
@@ -276,9 +283,41 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         /// <summary>Display name override. Falls back to the Discord name, then the OS user name.</summary>
         public string CollabDisplayName = "";
 
+        /// <summary>Master switch: collaboration sessions can be hosted or joined. When off, no
+        /// session is hosted or joined and nothing is discovered on the network. Disabled by default:
+        /// a show machine does nothing on the network until it is switched on.</summary>
+        public bool CollabEnabled = false;
+
         public int CollabPort = CollabProtocol.DefaultTcpPort;
         public bool CollabLanDiscovery = true;
         public string CollabPassword = "";
+
+        /// <summary>The participant's own cursor color as 0xRRGGBB. 0 = derive it from the user id.</summary>
+        public int CollabCursorColor = 0;
+
+        /// <summary>host:port of the relay used for room-code sessions. Empty = default relay.</summary>
+
+        public string CollabRelayAddress = "";
+
+        /// <summary>Relay room join anchor: rejoin after a restart (e.g. a project download)
+        /// comes back through the same room. Cleared on leave and by a direct-session join.</summary>
+        public string CollabLastRelayHost = "";
+        public string CollabLastRelayRoom = "";
+
+        /// <summary>Relay sessions authenticate over the relay, then try a direct WebRTC path between
+        /// the machines. Falls back to the relay when no direct path is possible.</summary>
+        public bool CollabWebRtcEnabled = true;
+
+        /// <summary>Streams the host's rendered output to the participants over the peer-to-peer
+        /// video track ("Share preview"). Applies to peers that join afterwards.</summary>
+        public bool CollabSharePreview = true;
+
+        /// <summary>Comma-separated STUN/TURN URLs for the direct path. Empty = a public STUN server.</summary>
+        public string CollabWebRtcIceServers = "";
+
+        /// <summary>Project folders participating in show-control features ("kind:folder" entries,
+        /// kind = boygroup | collab). The Hub lists them under "Network projects".</summary>
+        public List<string> NetworkProjectRefs = [];
 
         /// <summary>host:port of the last joined collab session — auto-rejoined on launch, which is
         /// what brings a client back after a project download restarted the editor.</summary>
@@ -306,6 +345,12 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         /// <summary>The master deploys and syncs to a render node as soon as it joins the group,
         /// so an added slave is current without anyone clicking Deploy &amp; Sync.</summary>
         public bool BoygroupAutoDeployOnJoin = true;
+
+        /// <summary>Where a render node takes its playback clock from. Internal = TiXL's own
+        /// NTP-style exchange over the session link (default, needs nothing). Ptp = the OS clock is
+        /// trusted because something else (a PTP daemon, e.g. linuxptp/phc2sys or w32time with a
+        /// PTP source) disciplines it — anchors then apply with near-zero offset error.</summary>
+        public string BoygroupClockSync = "Internal";
 
         /// <summary>Deploy-restart flood guard, persisted across the restarts it guards: if more
         /// than four deploy restarts happen inside two minutes the client stops restarting for

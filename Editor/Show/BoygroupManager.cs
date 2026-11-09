@@ -1,5 +1,6 @@
 #nullable enable
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
@@ -221,7 +222,6 @@ internal sealed class BoygroupManager
             _transport.PeerDisconnected += OnPeerDisconnected;
             State = BoygroupState.Server;
             StatusText = $"Serving group '{group}' on port {port}";
-            PersistJoinTarget("127.0.0.1", group);
             Log.Info($"Boygroup: server started (group '{group}', port {port})");
         }
         catch (SocketException e)
@@ -304,6 +304,7 @@ internal sealed class BoygroupManager
         }
 
         _password = "";
+        ResetClockSync();
         GroupName = "";
         RestartPending = false;
         State = BoygroupState.Off;
@@ -452,7 +453,10 @@ internal sealed class BoygroupManager
                 }
                 else
                 {
-                    TryAutoJoin();
+                    // Auto-join alone must not claim the boygroup mode: joining anywhere else (the
+                    // hub, a collab or failover session) pulled the machine into a group behind the
+                    // operator's back, which made turning boygrouping off look ineffective.
+                    Log.Info("Boygroup: disabled - not auto-joining (enable the mode to follow a master)");
                 }
             }
             else if (_autoJoinAttempted && !_leftManually && UserSettings.Config.BoygroupEnabled && !UserSettings.Config.BoygroupIsMaster)
@@ -488,6 +492,8 @@ internal sealed class BoygroupManager
         RunScheduledAutoDeploy();
         SendHeartbeats();
         SendTimeSync();
+        SendClockPings();
+        ApplyPendingAnchor();
         MaybeSendBindings();
         ProcessPendingRestart();
 
@@ -496,6 +502,7 @@ internal sealed class BoygroupManager
             PumpInputReplication();
             ReRequestPendingInventories();
             FollowSharedProject();
+            SyncLiveValues();
             BroadcastPlayStateOnChange();
         }
 
@@ -723,6 +730,15 @@ internal sealed class BoygroupManager
 
                 break;
 
+            // Live values from the master. Applied without marking the project modified: they are
+            // show state, not edits — a dirty project gets saved, differs from the master's file and
+            // is deployed back with a restart.
+            case "op" when State == BoygroupState.Client:
+                if (json["op"] is JObject valueOp)
+                    CollabCommandWire.ApplyOp(valueOp, markModified: false);
+
+                break;
+
             case "bindings" when State == BoygroupState.Server:
                 HandleClientBindings(json);
                 break;
@@ -733,6 +749,23 @@ internal sealed class BoygroupManager
 
             case "unbindOutput" when State == BoygroupState.Client:
                 HandleRemoteBinding(json, bind: false);
+                break;
+
+            case "clockPing" when State == BoygroupState.Server:
+                // Timestamp both ends of the master's handling so the client can subtract its own
+                // processing; the two are the same instant here, but the shape keeps NTP semantics.
+                SendJson(peer, new
+                                   {
+                                       t = "clockPong",
+                                       id = json["id"]?.Value<long>() ?? 0,
+                                       c1 = json["c1"]?.Value<long>() ?? 0,
+                                       m2 = PreciseUtcNowTicks(),
+                                       m3 = PreciseUtcNowTicks(),
+                                   });
+                break;
+
+            case "clockPong" when State == BoygroupState.Client:
+                HandleClockPong(json);
                 break;
 
             case "play" when State == BoygroupState.Client:
@@ -836,6 +869,10 @@ internal sealed class BoygroupManager
 
         Log.Info($"Boygroup: client authenticated: {client.Name} ({client.Address}) group '{client.Group}'");
 
+        // The new node starts from the values saved on disk. Forget the change baseline so the next
+        // sync pass sends every live value, not just the ones that happen to change afterwards.
+        _sentValues.Clear();
+
         // A node that appears is served: schedule a deploy shortly after the handshake (the delay
         // debounces a burst of joins into one pass; clients mid-deploy keep their own transfer).
         if (UserSettings.Config.BoygroupAutoDeployOnJoin)
@@ -919,6 +956,9 @@ internal sealed class BoygroupManager
         }
 
         var mirror = UserSettings.Config.BoygroupDeployMirror;
+        // Remember what this pass is for: _autoDeployOnlyUndeployed leaked from an earlier
+        // join-triggered pass and silently dropped manual deploys for already-deployed nodes.
+        _autoDeployOnlyUndeployed = onlyUndeployed;
         var setupsFolderRelative = Path.GetRelativePath(projectFolder, SetupFiles.FolderIn(projectFolder));
         var inventory = BoygroupDeployer.BuildInventory(projectFolder, setupsFolderRelative);
 
@@ -943,7 +983,11 @@ internal sealed class BoygroupManager
         }
 
         PushSetupToGroup();
-        PushGraphSnapshotToGroup();
+
+        // No graph snapshot: the files below carry the structure, and SyncLiveValues keeps the node
+        // on the master's live values. Rebuilding the node's composition here on every deploy was
+        // what dropped its connections and made it restart in a loop.
+        SendCurrentValuesToGroup();
     }
 
     /// <summary>A node joined without a project open: name ours so it can create the folder and
@@ -1209,19 +1253,135 @@ internal sealed class BoygroupManager
         }
     }
 
-    private void PushGraphSnapshotToGroup()
+    /// <summary>
+    /// Master side: sends only the input values that changed since the last pass. The project files
+    /// (graph structure, operators, assets) are deployed once; everything after that is live show
+    /// state. The old full graph snapshot deleted and rebuilt the node's whole composition on every
+    /// deploy — which is what made nodes restart in a loop and crash while rendering.
+    /// </summary>
+    private void SyncLiveValues()
     {
-        var focused = ProjectView.Focused;
-        var compositionUi = focused?.InstView?.Symbol.GetSymbolUi();
-        if (compositionUi == null)
-        {
-            Log.Info("Boygroup: no open composition to snapshot");
+        if (State != BoygroupState.Server || _clients.Count == 0)
             return;
+
+        var now = Environment.TickCount64;
+        if (now < _nextValueSyncTicks)
+            return;
+
+        _nextValueSyncTicks = now + ValueSyncIntervalMs;
+
+        var compositionUi = ProjectView.Focused?.InstView?.Symbol.GetSymbolUi();
+        if (compositionUi == null)
+            return;
+
+        // A different composition means a different set of keys; comparing against the old baseline
+        // would suppress the first values of the new one.
+        if (compositionUi.Symbol.Id != _valueSyncCompositionId)
+        {
+            _valueSyncCompositionId = compositionUi.Symbol.Id;
+            _sentValues.Clear();
         }
 
-        var snapshotOp = CollabCommandWire.BuildSnapshotOp(compositionUi);
-        BroadcastToGroup(new { t = "snapshot", op = snapshotOp });
+        var ops = new List<JObject>();
+        foreach (var childUi in compositionUi.ChildUis.Values)
+        {
+            var child = childUi.SymbolChild;
+            foreach (var (inputId, input) in child.Inputs)
+            {
+                var token = CollabCommandWire.InputValueToToken(input.IsDefault ? input.DefaultValue : input.Value);
+                if (token == null || token.Type == JTokenType.Null)
+                    continue;
+
+                var valueJson = token.ToString(Formatting.None);
+                var key = $"{child.Id:N}/{inputId:N}";
+                if (_sentValues.TryGetValue(key, out var previous) && previous == valueJson)
+                    continue;
+
+                _sentValues[key] = valueJson;
+                ops.Add(new JObject
+                            {
+                                ["type"] = "set_input",
+                                ["c"] = compositionUi.Symbol.Id,
+                                ["ch"] = child.Id,
+                                ["i"] = inputId,
+                                ["v"] = token,
+                            });
+            }
+        }
+
+        BroadcastValueOps(ops);
     }
+
+    /// <summary>
+    /// Sends value ops in bounded batches. A big composition's first pass covers every input; one
+    /// unbounded message would run into the session's JSON payload cap and kill the link.
+    /// </summary>
+    private void BroadcastValueOps(List<JObject> ops)
+    {
+        for (var offset = 0; offset < ops.Count; offset += MaxValueOpsPerMessage)
+        {
+            var batch = new JArray();
+            for (var i = offset; i < Math.Min(offset + MaxValueOpsPerMessage, ops.Count); i++)
+                batch.Add(ops[i]);
+
+            BroadcastToGroup(new
+                                 {
+                                     t = "op",
+                                     op = new JObject
+                                              {
+                                                  ["type"] = "batch",
+                                                  ["ops"] = batch,
+                                              },
+                                 });
+        }
+    }
+
+    private const int MaxValueOpsPerMessage = 400;
+
+    /// <summary>
+    /// Sends every current value of the focused composition, ignoring the change baseline. A node
+    /// that just joined or received files starts from the values saved on disk; this puts it on the
+    /// master's live values immediately instead of waiting for each one to change again.
+    /// </summary>
+    private void SendCurrentValuesToGroup()
+    {
+        var compositionUi = ProjectView.Focused?.InstView?.Symbol.GetSymbolUi();
+        if (compositionUi == null)
+            return;
+
+        var ops = new List<JObject>();
+        foreach (var childUi in compositionUi.ChildUis.Values)
+        {
+            var child = childUi.SymbolChild;
+            foreach (var (inputId, input) in child.Inputs)
+            {
+                var token = CollabCommandWire.InputValueToToken(input.IsDefault ? input.DefaultValue : input.Value);
+                if (token == null || token.Type == JTokenType.Null)
+                    continue;
+
+                _sentValues[$"{child.Id:N}/{inputId:N}"] = token.ToString(Formatting.None);
+                ops.Add(new JObject
+                            {
+                                ["type"] = "set_input",
+                                ["c"] = compositionUi.Symbol.Id,
+                                ["ch"] = child.Id,
+                                ["i"] = inputId,
+                                ["v"] = token,
+                            });
+            }
+        }
+
+        // A full push covers every value, so the incremental baseline restarts from it.
+        _valueSyncCompositionId = compositionUi.Symbol.Id;
+        BroadcastValueOps(ops);
+    }
+
+    /// <summary>Values last broadcast per child/input, so only changes travel.</summary>
+    private readonly Dictionary<string, string> _sentValues = [];
+
+    private Guid _valueSyncCompositionId;
+    private long _nextValueSyncTicks;
+    private const int ValueSyncIntervalMs = 500;
 
     private static string? GetProjectFolder()
     {
@@ -1259,7 +1419,20 @@ internal sealed class BoygroupManager
 
         var inventory = BoygroupDeployer.BuildInventory(projectFolder,
                                                         Path.GetRelativePath(projectFolder, SetupFiles.FolderIn(projectFolder)));
-        SendJson(((_transport as BoygroupClientTransport)!).ServerPeer,
+        SendInventoryToMaster(inventory);
+    }
+
+    /// <summary>Sends this machine's project inventory, answering the master's requestInventory.</summary>
+    private void SendInventoryToMaster(Dictionary<string, BoygroupDeployer.InventoryEntry>? inventory = null)
+    {
+        var projectFolder = GetProjectFolder();
+        if (string.IsNullOrEmpty(projectFolder) || _transport is not BoygroupClientTransport transport)
+            return;
+
+        inventory ??= BoygroupDeployer.BuildInventory(projectFolder,
+                                                      Path.GetRelativePath(projectFolder, SetupFiles.FolderIn(projectFolder)));
+
+        SendJson(transport.ServerPeer,
                  new JObject
                      {
                          ["t"] = "inventory",
@@ -1277,6 +1450,21 @@ internal sealed class BoygroupManager
         var name = CollabProtocol.GetString(json, "name", "");
         if (string.IsNullOrEmpty(name))
             return;
+
+        // The master runs a project this machine already has: switch to it in place (a no-op when it
+        // is already shown). Receiving a second copy into a bootstrap folder would restart the node
+        // for a project that is right here — and the deploy then diffs against what it really shows.
+        if (ProjectFollower.TrySwitchToName(name))
+        {
+            _bootstrapProjectFolder = null;
+            DeploySummary = $"Following the master's project '{name}'";
+            Log.Info($"Boygroup: following the master onto project '{name}' without a restart");
+
+            // Answer the pending inventory request with the project we just opened, so the deploy
+            // diffs against it instead of waiting for the next re-request.
+            SendInventoryToMaster();
+            return;
+        }
 
         var root = UserSettings.Config.ProjectDirectories.FirstOrDefault();
         if (string.IsNullOrEmpty(root))
@@ -1626,7 +1814,10 @@ internal sealed class BoygroupManager
             return;
         }
 
-        if (config.BoygroupDeployRestartWindowStartTicks == 0 || now - config.BoygroupDeployRestartWindowStartTicks > 120_000)
+        // A window of ten minutes, not two: restarts that follow each reboot by a few minutes (the
+        // join -> deploy -> restart cycle) always fell outside the old window, so the counter reset
+        // and the guard could never trip. Tripping it now really keeps the node up.
+        if (config.BoygroupDeployRestartWindowStartTicks == 0 || now - config.BoygroupDeployRestartWindowStartTicks > DeployRestartWindowMs)
         {
             config.BoygroupDeployRestartWindowStartTicks = now;
             config.BoygroupDeployRestartCount = 1;
@@ -1634,11 +1825,14 @@ internal sealed class BoygroupManager
         else
         {
             config.BoygroupDeployRestartCount++;
-            if (config.BoygroupDeployRestartCount > 4)
+            if (config.BoygroupDeployRestartCount > MaxDeployRestartsPerWindow)
             {
                 config.BoygroupDeployRestartBlockedUntilTicks = now + 300_000;
                 config.BoygroupDeployRestartCount = 0;
-                Log.Warning("Boygroup: more than four deploy restarts in two minutes - blocking further deploy restarts for five minutes (restart-loop guard)");
+                UserSettings.Save();
+                Log.Warning($"Boygroup: more than {MaxDeployRestartsPerWindow} deploy restarts in ten minutes - blocking further deploy restarts for five minutes (restart-loop guard) - staying up");
+                DeploySummary += " - restart blocked (loop guard)";
+                return;
             }
         }
 
@@ -1667,21 +1861,34 @@ internal sealed class BoygroupManager
         _deployedRelativePaths.Clear();
         if (!needsReload)
         {
+            // Nothing the running editor can't hot-apply arrived — but the node may still be showing
+            // a different project than the master. Follow it in place instead of restarting.
+            if (GetProjectFolder() is { Length: > 0 } deployedFolder
+                && !ProjectFollower.IsOpen(deployedFolder)
+                && ProjectFollower.TrySwitchTo(deployedFolder))
+            {
+                DeploySummary += " - followed the master's project";
+                return;
+            }
+
             Log.Info($"Boygroup: deploy changed {_deployFilesDone} live-applicable file(s) - staying up without a restart");
             DeploySummary += " - applied live";
             return;
         }
 
         // A render node must come back into the show it was deployed, not into the Hub: pin the
-        // deployed project as the startup project so the restart reopens it (StartupProjectLoader).
-        // Only for the slave role - a master's editor restarts are the operator's business.
-        if (State == BoygroupState.Client && config.BoygroupEnabled && !config.BoygroupIsMaster)
+        // deployed project for the restart. Both restart paths are covered — the reopen-last-session
+        // loader (the default) and the startup-project one. Only for the slave role; a master's
+        // editor restarts are the operator's business.
+        if (State == BoygroupState.Client && config.BoygroupEnabled && !config.BoygroupIsMaster
+            && GetProjectFolder() is { Length: > 0 } deployedProject)
         {
-            if (GetProjectFolder() is { Length: > 0 } deployedProject)
-                config.StartupProjectFolder = deployedProject;
+            ProjectFollower.PinForRestart(deployedProject);
         }
-
-        UserSettings.Save();
+        else
+        {
+            UserSettings.Save();
+        }
 
         RestartPending = true;
         // Brief delay so the panel shows what happened before the process exits.
@@ -1696,6 +1903,10 @@ internal sealed class BoygroupManager
     }
 
     private long _restartAtTicks;
+
+    /// <summary>Restart-flood window and budget; see <see cref="HandleDeployDone"/>.</summary>
+    private const long DeployRestartWindowMs = 10 * 60_000;
+    private const int MaxDeployRestartsPerWindow = 4;
 
     private void ProcessPendingRestart()
     {
@@ -1716,13 +1927,23 @@ internal sealed class BoygroupManager
         if (State != BoygroupState.Server)
             return;
 
+        // An explicit play/pause pushes the next time sync immediately: the anchor carries the new
+        // speed, so every node switches on the same beat instead of at each node's next 10 Hz tick.
+        SendPlayControlBroadcast(play);
+        SendTimeSyncNow();
+    }
+
+    private void SendPlayControlBroadcast(bool play)
+    {
         BroadcastToGroup(new { t = "play", playing = play, bars = Playback.Current?.TimeInBars ?? 0 });
     }
 
     private void ApplyPlayControl(JObject json)
     {
+        // The play state itself rides the time anchors (speed 0 vs 1); this only handles the case
+        // where a node receives a play control without any anchor yet.
         var playing = json["playing"]?.Value<bool>() ?? false;
-        if (Playback.Current != null)
+        if (Playback.Current != null && _lastSyncStopwatch < 0)
             Playback.Current.PlaybackSpeed = playing ? 1.0 : 0.0;
     }
 
@@ -1784,54 +2005,237 @@ internal sealed class BoygroupManager
         if (playback == null)
             return;
 
+        // Remember where the master started, whether from this panel or its own transport keys,
+        // so StopAll can reset to it when the timeline settings ask for that.
+        if (Math.Abs(_lastMasterSpeed) < 1e-3 && Math.Abs(playback.PlaybackSpeed) > 1e-3)
+            _playStartBars = playback.TimeInBars;
+        _lastMasterSpeed = playback.PlaybackSpeed;
+
+        // Play-at anchor: the bars the master will have at an instant slightly in the future, sent
+        // with that instant on the master's UTC clock. Clients convert it with their measured clock
+        // offset and switch when their own monotonic clock reaches it, so a late or jittery packet
+        // does not shift the phase — the anchors line up on the timeline itself.
+        var lead = TimeSpan.FromMilliseconds(AnchorLeadMs);
+        var anchorBars = playback.TimeInBars + playback.PlaybackSpeed * lead.TotalSeconds * playback.Bpm / 240.0;
         BroadcastToGroup(new
                              {
                                  t = "time",
-                                 bars = playback.TimeInBars,
+                                 bars = anchorBars,
                                  speed = playback.PlaybackSpeed,
                                  bpm = playback.Bpm,
-                                 at = Environment.TickCount64,
+                                 at = PreciseUtcNowTicks() + lead.Ticks,
                              });
     }
 
-    private long _lastSyncWallMs = -1;
-    private double _lastSyncBars;
-    private double _lastSyncSpeed;
-    private double _lastSyncBpm = 120;
+    /// <summary>How far ahead a play-at anchor is scheduled: enough for LAN jitter, shorter than the send cadence.</summary>
+    private const int AnchorLeadMs = 80;
 
+    // Clock offset (master UTC - local UTC), taken from the sample with the least round trip. A
+    // render node follows the master's phase from its OWN monotonic clock between anchors, so the
+    // timeline keeps advancing every frame with no per-packet jitter.
+    private long _clockOffsetTicks;
+    private long _clockBestRttTicks = long.MaxValue;
+    private long _clockBestSampleUtc;
+    private long _nextClockPingTicks;
+    private long _clockPingId;
+    private int _clockSamples;
+
+    /// <summary>Whether playback anchors apply with the OS clock trusted (a PTP discipline daemon
+    /// keeps it within microseconds of the show reference) or with TiXL's own NTP exchange.</summary>
+    private static bool UsesOsClock => string.Equals(UserSettings.Config.BoygroupClockSync,
+                                                     UserSettings.SyncPtp, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// UTC now, from the best clock this machine has. GetSystemTimePreciseAsFileTime is 100 ns
+    /// resolution without the ~15 ms smoothing of DateTime.UtcNow; used for both the NTP stamps and
+    /// (in PTP mode) the anchor instants.
+    /// </summary>
+    private static long PreciseUtcNowTicks()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            GetSystemTimePreciseAsFileTime(out var fileTime);
+            return new DateTime(1601, 1, 1, 0, 0, 0, DateTimeKind.Utc).Ticks + fileTime;
+        }
+
+        return DateTime.UtcNow.Ticks; // Linux/macOS: DateTime.UtcNow already reads clock_gettime(CLOCK_REALTIME).
+    }
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = false)]
+    private static extern void GetSystemTimePreciseAsFileTime(out long fileTime);
+
+    private void SendClockPings()
+    {
+        if (State != BoygroupState.Client)
+            return;
+
+        var now = Environment.TickCount64;
+        if (now < _nextClockPingTicks)
+            return;
+
+        // A burst establishes the offset quickly; after that a slow refresh tracks clock drift.
+        _nextClockPingTicks = now + (_clockSamples < 8 ? 1000 : 10_000);
+        if (_transport is not BoygroupClientTransport clientTransport)
+            return;
+
+        // PTP mode trusts the OS clock: nothing to measure against the master.
+        if (UsesOsClock)
+            return;
+
+        SendJson(clientTransport.ServerPeer,
+                 new
+                 {
+                     t = "clockPing",
+                     id = ++_clockPingId,
+                     c1 = PreciseUtcNowTicks(),
+                 });
+    }
+
+    private void HandleClockPong(JObject json)
+    {
+        if (json["id"]?.Value<long>() != _clockPingId)
+            return;
+
+        var c1 = json["c1"]?.Value<long>() ?? 0;
+        var m2 = json["m2"]?.Value<long>() ?? 0;
+        var m3 = json["m3"]?.Value<long>() ?? 0;
+        var c4 = PreciseUtcNowTicks();
+        if (c1 == 0 || m2 == 0 || m3 == 0)
+            return;
+
+        var roundTrip = (c4 - c1) - (m3 - m2);
+        if (roundTrip < 0)
+            return;
+
+        // NTP offset: the master's clock minus this machine's, at the middle of the round trip.
+        var offset = ((m2 - c1) + (m3 - c4)) / 2;
+        _clockSamples++;
+
+        // The least-queueing sample is the most symmetric. A sample older than a minute is replaced
+        // even when it is not better, so a clock that was adjusted does not pin the offset forever.
+        if (roundTrip <= _clockBestRttTicks || c4 - _clockBestSampleUtc > TimeSpan.TicksPerMinute)
+        {
+            _clockOffsetTicks = offset;
+            _clockBestRttTicks = roundTrip;
+            _clockBestSampleUtc = c4;
+        }
+    }
+
+    private void ResetClockSync()
+    {
+        _clockOffsetTicks = 0;
+        _clockBestRttTicks = long.MaxValue;
+        _clockBestSampleUtc = 0;
+        _clockSamples = 0;
+        _nextClockPingTicks = 0;
+        _hasAnchor = false;
+        _lastSyncStopwatch = -1;
+        _syncErrorMs = -1;
+    }
+
+    private bool _hasAnchor;
+    private double _anchorLocalStopwatch = -1;
+    private double _anchorBars;
+    private double _anchorSpeed;
+    private double _anchorBpm = 120;
+
+    /// <summary>Client side: converts the master's play-at instant into this machine's monotonic clock.</summary>
     private void ApplyTimeSync(JObject json)
     {
+        var playback = Playback.Current;
+        var masterUtc = json["at"]?.Value<long>() ?? 0;
+        if (playback == null || masterUtc == 0)
+            return;
+
+        // PTP mode: the OS clock is the shared reference, no offset to subtract. Internal mode:
+        // subtract the measured offset so the instant lands in this machine's clock domain.
+        var localUtc = UsesOsClock ? masterUtc : masterUtc - _clockOffsetTicks;
+        var deltaSecs = (localUtc - DateTime.UtcNow.Ticks) / (double)TimeSpan.TicksPerSecond;
+        _anchorLocalStopwatch = Stopwatch.GetTimestamp() + deltaSecs * Stopwatch.Frequency;
+
+        _anchorBars = json["bars"]?.Value<double>() ?? 0;
+        _anchorSpeed = json["speed"]?.Value<double>() ?? 0;
+        _anchorBpm = json["bpm"]?.Value<double>() ?? 120;
+        _hasAnchor = true;
+    }
+
+    /// <summary>Client side: switches to the anchor once its instant arrives, then dead-reckons from there.</summary>
+    private void ApplyPendingAnchor()
+    {
+        if (!_hasAnchor || Stopwatch.GetTimestamp() < _anchorLocalStopwatch)
+            return;
+
         var playback = Playback.Current;
         if (playback == null)
             return;
 
-        _lastSyncWallMs = Environment.TickCount64;
-        _lastSyncBars = json["bars"]?.Value<double>() ?? 0;
-        _lastSyncSpeed = json["speed"]?.Value<double>() ?? 0;
-        _lastSyncBpm = json["bpm"]?.Value<double>() ?? 120;
+        // A late anchor still carries the right instant: advance its bars by the lateness rather
+        // than snapping back to where the master was when it sent the packet.
+        var nowTicks = Stopwatch.GetTimestamp();
+        var lateSecs = Math.Max(0, (nowTicks - _anchorLocalStopwatch) / Stopwatch.Frequency);
+        var targetBars = _anchorBars + _anchorSpeed * lateSecs * _anchorBpm / 240.0;
 
-        playback.PlaybackSpeed = _lastSyncSpeed;
-        playback.Bpm = _lastSyncBpm;
+        // Self-check: compare the new anchor with where the previous trajectory says the timeline
+        // should be at this same instant. A node following a wrong clock still looks busy, so the
+        // measured correction is the only honest signal that it is actually in phase.
+        var measuredCorrection = MeasureAnchorCorrection(nowTicks, targetBars);
+        if (measuredCorrection > -0.5)
+            _syncErrorMs = _syncErrorMs < -0.5 ? measuredCorrection : _syncErrorMs * 0.7 + measuredCorrection * 0.3;
+
+        _lastSyncStopwatch = nowTicks;
+        _lastSyncBars = targetBars;
+        _lastSyncSpeed = _anchorSpeed;
+        _lastSyncBpm = _anchorBpm;
+        _lastAnchorTicks = Environment.TickCount64;
+
+        playback.PlaybackSpeed = _anchorSpeed;
+        playback.Bpm = _anchorBpm;
         ApplyIntegratedTime();
 
-        var playing = _lastSyncSpeed != 0;
-        TimeFollowSummary = playing
-                                ? $"Following master: {_lastSyncBars:0.00} bars @ {_lastSyncBpm:0} bpm"
+        _hasAnchor = false;
+        TimeFollowSummary = _anchorSpeed != 0
+                                ? $"Following master: {_lastSyncBars:0.00} bars @ {_anchorBpm:0} bpm"
                                 : "Following master (paused)";
     }
 
-    /// <summary>Dead-reckons between master updates so the time cursor moves every frame, not in 10 Hz steps.</summary>
+    /// <summary>Milliseconds the timeline had to be corrected to match the new anchor; -1 when unknown.</summary>
+    private double MeasureAnchorCorrection(double nowTicks, double targetBars)
+    {
+        if (_lastSyncStopwatch < 0 || _anchorBpm <= 0)
+            return -1;
+
+        if (Math.Abs(_lastSyncSpeed - _anchorSpeed) > 1e-9 || Math.Abs(_lastSyncBpm - _anchorBpm) > 1e-6)
+            return -1; // Paused, resumed or changed tempo: the two trajectories are not comparable.
+
+        var barsPerSec = Math.Abs(_anchorSpeed) * _anchorBpm / 240.0;
+
+        // A paused node still has a phase; convert the bar offset at 1x so it reads in milliseconds too.
+        var msPerBar = barsPerSec > 1e-9 ? 1000.0 / barsPerSec : 240.0 / _anchorBpm * 1000.0;
+        var predictedBars = _lastSyncBars + _lastSyncSpeed * ((nowTicks - _lastSyncStopwatch) / Stopwatch.Frequency) * _lastSyncBpm / 240.0;
+        return (targetBars - predictedBars) * msPerBar;
+    }
+
+    private double _lastSyncStopwatch = -1;
+    private double _lastSyncBars;
+    private double _lastSyncSpeed;
+    private double _lastSyncBpm = 120;
+    private double _syncErrorMs = -1;
+    private long _lastAnchorTicks;
+
+    /// <summary>Dead-reckons between anchors so the time cursor moves every frame, not in 10 Hz steps.</summary>
     private void ApplyIntegratedTime()
     {
         var playback = Playback.Current;
-        if (playback == null || _lastSyncWallMs < 0)
+        if (playback == null || _lastSyncStopwatch < 0)
             return;
 
-        // Monotonic host clock: TimeOfDay would wrap at midnight and throw the time cursor away.
-        var elapsedSecs = (Environment.TickCount64 - _lastSyncWallMs) / 1000.0;
+        // Stopwatch is monotonic: TimeOfDay would wrap at midnight and throw the time cursor away.
+        var elapsedSecs = (Stopwatch.GetTimestamp() - _lastSyncStopwatch) / (double)Stopwatch.Frequency;
         playback.TimeInBars = _lastSyncBars + _lastSyncSpeed * elapsedSecs * _lastSyncBpm / 240.0;
     }
 
+    private double _lastMasterSpeed;
+    private double _playStartBars;
     // ---------------------------------------------------------------------------------------
     // Discovery
     // ---------------------------------------------------------------------------------------
