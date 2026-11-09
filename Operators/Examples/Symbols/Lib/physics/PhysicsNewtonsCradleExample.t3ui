@@ -1,0 +1,247 @@
+{
+  "FormatVersion": 3,
+  "Id": "248675b1-7feb-5ff1-9443-53cff7da76ca"/*PhysicsNewtonsCradleExample*/,
+  "Description": "A five-ball Newton's cradle: one ball is released and the opposite ball swings out.\n\nEvery ball hangs from a kinematic anchor on a ball-socket [RigidJoint]. The balls have Bounciness 1 and no friction, and are spaced with a small gap so the collisions are resolved one pair after the other.\n\nAKA: pendulum, momentum, swinging balls\n\nTips\n- A kinematic [RigidBody] is the fixed end of a joint; a static one cannot be joined.\n- LocalOffsetB of the first joint compensates for the ball starting off to the side.",
+  "InputUis": [],
+  "SymbolChildUis": [
+    {
+      "ChildId": "140248f7-6834-523d-b44e-f34003f9666c",
+      "SymbolName": "Lib.render.camera.Camera",
+      "Position": {
+        "X": 2400.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "1c0c620c-197f-5555-8f5a-78780a037e27",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 0.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "1f5f87e6-3e3e-5ec1-a9a8-573078b55102",
+      "SymbolName": "Lib.render.transform.Group",
+      "Position": {
+        "X": 2100.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "285d339f-93c3-52e2-89be-a7859fa039a2",
+      "SymbolName": "Lib.mesh.draw.DrawMeshUnlit",
+      "Position": {
+        "X": 1800.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "2cf87c20-083a-5b09-af4a-cf415723b770",
+      "SymbolName": "Lib.physics.RigidJoint",
+      "Position": {
+        "X": 600.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "3591456b-9615-50d7-995e-278043b0fd6e",
+      "SymbolName": "Lib.physics.RigidJoint",
+      "Position": {
+        "X": 600.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "3f1d5960-28ca-56f3-984e-57a9c612a4b8",
+      "SymbolName": "Lib.mesh.generate.CubeMesh",
+      "Position": {
+        "X": 1200.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "4a387212-baec-517c-b9c3-34a2bab2cc62",
+      "SymbolName": "Lib.mesh.modify.TransformMesh",
+      "Position": {
+        "X": 1500.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "55b66d96-8dcb-58bc-9036-dae379559716",
+      "SymbolName": "Lib.physics.RigidJoint",
+      "Position": {
+        "X": 600.0,
+        "Y": 600.0
+      }
+    },
+    {
+      "ChildId": "679992a1-2383-5525-98c3-35bf724ce982",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 0.0,
+        "Y": 1200.0
+      }
+    },
+    {
+      "ChildId": "827cd642-342b-5163-93b2-e0266f649def",
+      "SymbolName": "Lib.physics.RigidJoint",
+      "Position": {
+        "X": 600.0,
+        "Y": 900.0
+      }
+    },
+    {
+      "ChildId": "8f29bfe7-6ed6-5e41-b0fd-34ef42f0ad1c",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 0.0,
+        "Y": 900.0
+      }
+    },
+    {
+      "ChildId": "9f159af7-be75-5761-9a25-35356aad2928",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 300.0,
+        "Y": 600.0
+      }
+    },
+    {
+      "ChildId": "abc3f8fe-5378-53cc-be14-f922947c35c8",
+      "SymbolName": "Lib.mesh.generate.SphereMesh",
+      "Position": {
+        "X": 1200.0,
+        "Y": -300.0
+      }
+    },
+    {
+      "ChildId": "ae673dbf-fa7c-531b-917b-7ddc0dcb6db8",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 0.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "b45bf7b6-a0e4-50b0-83ab-34a57724305a",
+      "SymbolName": "Lib.physics.PhysicsWorld",
+      "Position": {
+        "X": 1200.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "be25f51d-f855-53b1-800d-831732a3049b",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 0.0,
+        "Y": 600.0
+      }
+    },
+    {
+      "ChildId": "c919f997-959c-5a52-abef-ae60b629c6ac",
+      "SymbolName": "Lib.physics.RigidJoint",
+      "Position": {
+        "X": 600.0,
+        "Y": 1200.0
+      }
+    },
+    {
+      "ChildId": "c9df8423-a2d7-53cb-8b76-aef0cb0e785e",
+      "SymbolName": "Lib.mesh.draw.DrawMeshAtPoints",
+      "Position": {
+        "X": 1500.0,
+        "Y": -150.0
+      }
+    },
+    {
+      "ChildId": "cf1d4632-f158-5354-a3a5-882f7dff54e2",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 300.0,
+        "Y": 900.0
+      }
+    },
+    {
+      "ChildId": "d8f7011f-ae90-51c8-90a0-75daebc1fcc4",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 300.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "eacff16f-9e23-5130-8cf1-428fec2ea350",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 300.0,
+        "Y": 1200.0
+      }
+    },
+    {
+      "ChildId": "fbff8ac5-ba82-5940-9678-6cbed61f9bfe",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 300.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "fe9b5d4b-33ba-5289-a371-302fe956087c",
+      "SymbolName": "Lib.image.generate.basic.RenderTarget",
+      "Position": {
+        "X": 2700.0,
+        "Y": 0.0
+      }
+    }
+  ],
+  "OutputUis": [
+    {
+      "OutputId": "8220d84f-5a53-5343-95cf-c92c3344a923"/*Output*/,
+      "Position": {
+        "X": 3000.0,
+        "Y": 0.0
+      }
+    }
+  ],
+  "Settings": {
+    "OutputWindows": [
+      {
+  "ShowGizmos": "On",
+  "TransformGizmoMode": "Move",
+  "BackgroundColor": [
+    0.1,
+    0.1,
+    0.1,
+    1.0
+  ],
+  "CameraControlMode": "AutoUseFirstCam",
+  "CameraPosition": [
+    0.0,
+    0.0,
+    2.4142134
+  ],
+  "CameraTarget": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "CameraRoll": 0.0,
+  "CameraSpeed": 1.0,
+  "ResolutionTitle": "Fill",
+  "ResolutionWidth": 0,
+  "ResolutionHeight": 0,
+  "ResolutionUseAsAspectRatio": true,
+  "IsPinned": true,
+  "PinnedInstancePath": [
+    "2ff53617-5755-81aa-9ca5-147a3c81896d"
+  ],
+  "PinnedOutputId": "00000000-0000-0000-0000-000000000000",
+  "PinnedEntityKind": "None",
+  "PinnedEntityId": "00000000-0000-0000-0000-000000000000"
+}
+    ]
+  }
+}

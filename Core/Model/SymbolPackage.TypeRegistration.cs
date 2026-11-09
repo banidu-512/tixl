@@ -438,6 +438,15 @@ public partial class SymbolPackage
         RegisterType(typeof(ParticleSystem), "ParticleSystem",
                      () => new InputValue<ParticleSystem>(null));
 
+        // Rigid-body descriptions passed from body/joint operators into Lib.physics.PhysicsWorld.
+        // Simulation state lives inside the world, so these are plain references and null means
+        // "unconnected". Unregistered slot types make the operator unresolvable at load time.
+        RegisterType(typeof(PhysicsBody), "PhysicsBody",
+                     () => new InputValue<PhysicsBody>(null));
+
+        RegisterType(typeof(PhysicsJoint), "PhysicsJoint",
+                     () => new InputValue<PhysicsJoint>(null));
+
         RegisterType(typeof(T3.Core.Operator.GizmoVisibility), "GizmoVisibility",
                      InputDefaultValueCreator<T3.Core.Operator.GizmoVisibility>,
                      (writer, obj) => writer.WriteValue(obj.ToString()),

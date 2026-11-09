@@ -1,0 +1,145 @@
+{
+  "FormatVersion": 3,
+  "Id": "efa358f6-8f07-448f-ad9e-d911c41a2098"/*RigidBody*/,
+  "Description": "Declares one rigid body for [PhysicsWorld].\n\nOutputs a description, not a live body: the world owns the simulation state. Use Kind Static for colliders that never move, and Kind Kinematic for infinite-mass bodies that follow the Position input or serve as joint anchors.\n\nAKA: collider, physics body, box, sphere, capsule, cylinder\n\nTips\n- Static and kinematic bodies ignore Mass.\n- Do not let a joint partner overlap its anchor collider; the contact pushes them apart.",
+  "InputUis": [
+    {
+      "InputId": "050f6d8c-40ff-4450-b4a1-69bf4ff2b3be"/*Size*/,
+      "Position": {
+        "X": 0.0,
+        "Y": 675.0
+      },
+      "Description": "Full extents of a box collider."
+    },
+    {
+      "InputId": "09fe2b00-ad21-4103-84fd-bf970c329bb2"/*Enabled*/,
+      "Position": {
+        "X": 0.0,
+        "Y": 135.0
+      },
+      "Description": "Removes the body from the simulation when off, including its joints."
+    },
+    {
+      "InputId": "1b9b7bbd-aba7-4a23-8f78-c1366f260f75"/*GravityScale*/,
+      "Position": {
+        "X": 0.0,
+        "Y": 225.0
+      },
+      "Description": "Multiplier on world gravity for this body. 0 makes it float."
+    },
+    {
+      "InputId": "28d83ea4-beb0-4e39-bb27-dc714c48c69f"/*Friction*/,
+      "Position": {
+        "X": 0.0,
+        "Y": 180.0
+      },
+      "Description": "Contact friction. Pairs combine as the geometric mean."
+    },
+    {
+      "InputId": "3d837671-9883-43b0-a889-764ae0fbb6e6"/*AngularVelocity*/,
+      "Position": {
+        "X": 0.0,
+        "Y": 45.0
+      },
+      "Description": "Initial angular velocity in radians per second."
+    },
+    {
+      "InputId": "5072f21a-83a3-41a7-83cd-f702d9c89c84"/*Position*/,
+      "Position": {
+        "X": 0.0,
+        "Y": 495.0
+      },
+      "Description": "Initial world position. A change teleports the body."
+    },
+    {
+      "InputId": "5f6cc54b-9221-42b9-87d7-a0f9669c64b2"/*Shape*/,
+      "Position": {
+        "X": 0.0,
+        "Y": 630.0
+      },
+      "Description": "Collider shape: Box, Sphere, Capsule or Cylinder."
+    },
+    {
+      "InputId": "70f094d8-c499-40bf-ab28-0081297a5985"/*Kind*/,
+      "Position": {
+        "X": 0.0,
+        "Y": 270.0
+      },
+      "Description": "Dynamic bodies fall and collide; Static bodies never move; Kinematic bodies have infinite mass and follow their transform."
+    },
+    {
+      "InputId": "847babc8-53b1-457d-ab45-f85b8eff80c9"/*Bounciness*/,
+      "Position": {
+        "X": 0.0,
+        "Y": 90.0
+      },
+      "Description": "Restitution approximation: 0 is dead, 1 is very bouncy."
+    },
+    {
+      "InputId": "890a457a-af9a-4d23-80b5-07014c95ee27"/*Rotation*/,
+      "Position": {
+        "X": 0.0,
+        "Y": 585.0
+      },
+      "Description": "Initial rotation in degrees (yaw around Y, pitch around X, roll around Z)."
+    },
+    {
+      "InputId": "974ca0a2-5f02-4ccd-817b-5114070b243e"/*Mass*/,
+      "Position": {
+        "X": 0.0,
+        "Y": 450.0
+      },
+      "Description": "Mass of a dynamic body in kilograms. Ignored for static and kinematic bodies."
+    },
+    {
+      "InputId": "a7a684cf-2d9b-4cc5-948b-a07dd990e08a"/*LinearDamping*/,
+      "Position": {
+        "X": 0.0,
+        "Y": 360.0
+      },
+      "Description": "Drag applied to linear velocity per second."
+    },
+    {
+      "InputId": "acd5e765-3086-4489-bbab-aab68881a2c0"/*AngularDamping*/,
+      "Position": {
+        "X": 0.0,
+        "Y": 0.0
+      },
+      "Description": "Drag applied to angular velocity per second."
+    },
+    {
+      "InputId": "c63d5ebe-108d-4afd-ba39-2cbda0d62011"/*Radius*/,
+      "Position": {
+        "X": 0.0,
+        "Y": 540.0
+      },
+      "Description": "Radius of sphere, capsule and cylinder colliders."
+    },
+    {
+      "InputId": "d8d048f0-6517-497e-878d-24fc95ed8a64"/*Length*/,
+      "Position": {
+        "X": 0.0,
+        "Y": 315.0
+      },
+      "Description": "Length of the cylindrical section of capsule and cylinder colliders."
+    },
+    {
+      "InputId": "e965e0ce-38ce-46da-a7ac-e730d7876d29"/*LinearVelocity*/,
+      "Position": {
+        "X": 0.0,
+        "Y": 405.0
+      },
+      "Description": "Initial linear velocity. Changing it applies the new velocity."
+    }
+  ],
+  "SymbolChildUis": [],
+  "OutputUis": [
+    {
+      "OutputId": "165a613b-df3a-4d84-b5af-1c72a381fa15"/*OutBody*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 0.0
+      }
+    }
+  ]
+}

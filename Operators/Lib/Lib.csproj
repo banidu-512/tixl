@@ -143,6 +143,10 @@
     <PackageReference Include="SkiaSharp.NativeAssets.macOS" Version="4.148.0" Condition="$([MSBuild]::IsOSPlatform('OSX'))" />
     <PackageReference Include="SixLabors.Fonts" Version="$(SixLaborsFontsVersion)" />
     <PackageReference Include="LibTessDotNet" Version="1.1.15" />
+    <!-- Pure managed rigid-body engine: no native binaries, so the same package restores on
+         Windows, macOS and Linux and follows the graph to a Linux build unchanged. The 2.5
+         beta line is what upstream ships; 2.4.0 is the last stable release. -->
+    <PackageReference Include="BepuPhysics" Version="2.5.0-beta.33" />
     <!-- Assimp model import/export ([AssimpImport], [AssimpExport]). Ships native builds for win/linux/osx
          x64 and arm64 under runtimes/; AssimpNet loads them with its own resolver (see AssimpNative). -->
     <PackageReference Include="AssimpNetter" Version="6.0.5" />
