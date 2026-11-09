@@ -742,10 +742,7 @@ internal sealed class CollabWebRtcHostTransport : CollabRelayHostTransport
         var peer = FindPeer(frame[0]);
         if (peer != null && _links.TryGetValue(peer, out var activeLink) && activeLink.IsActive
             && type != CollabProtocol.FrameType.Heartbeat)
-        {
-            Log.Debug($"Collab diag: host dropped relay type={type} from {peer} (channel active)");
             return;
-        }
 
         base.DispatchRelayFrame(frame);
     }
