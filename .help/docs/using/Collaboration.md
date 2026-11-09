@@ -33,7 +33,7 @@ On join a client downloads the host's project if it doesn't have it, restarts in
 - **Late joiners** receive a snapshot of every composition the session has touched, replacing their local state in those compositions.
 - **Soft parameter locks**: a parameter someone is editing is shown disabled for everyone else until it is released.
 
-The **Collaboration** window shows the participants and a session chat.
+The **Collaboration** window shows the participants and a session chat. Each participant row shows the round trip to that machine; everyone can pick their own cursor color, which other participants see within a moment. The host can remove a participant ("Remove" + confirmation): the removed editor leaves the session and lands in the project hub, and may rejoin unless the session has a password.
 
 ## Platforms
 
