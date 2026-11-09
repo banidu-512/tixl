@@ -1,7 +1,7 @@
 {
   "FormatVersion": 3,
   "Id": "aa6cc41a-29c5-4cd1-8648-ba18d656f237",
-  "Description": "Box, sphere, capsule and cylinder are the four collider shapes; this example shows the two that the other examples never use.\n\nThree [RigidBody] capsules and two cylinders are dropped from the same height with Bounciness from 0 to 1. Capsules and cylinders need Radius and Length (the length of the straight, middle section), while spheres use Radius only and boxes use Size.\n\nThe point buffer stores each collider's extents as the point scale, so the cylinder mesh drawn by [DrawMeshAtPoints] covers the collider exactly.\n\nAKA: physics shapes, capsule, cylinder, convex collider\n\nTips\n- Cylinders tip over and roll; capsules roll smoothly, which is why they are the usual choice for characters and debris.\n- Set Reset on [PhysicsWorld] to drop them again.",
+  "Description": "Box, sphere, capsule and cylinder are the four collider shapes; this example shows the two that the other examples never use.\n\nThree [RigidBody] capsules and two cylinders are dropped from the same height with Bounciness from 0 to 1. Capsules and cylinders need Radius and Length (the length of the straight, middle section), while spheres use Radius only and boxes use Size.\n\nThe point buffer stores each collider's extents as the point scale, so the cylinder mesh drawn by [DrawMeshAtPoints] matches the collider size; capsules are drawn as a stretched cylinder, since there is no capsule mesh.\n\nAKA: physics shapes, capsule, cylinder, convex collider\n\nTips\n- Cylinders tip over and roll; capsules roll smoothly, which is why they are the usual choice for characters and debris.\n- Set Reset on [PhysicsWorld] to drop them again.",
   "InputUis": [],
   "SymbolChildUis": [
     {
