@@ -11,15 +11,12 @@ namespace T3.Editor.Gui.Dialog;
 
 /// <summary>
 /// Shown the first time the LASER master button is armed: a laser safety warning the user
-/// must confirm before any output can light up. "Don't show this message again" persists
-/// the acknowledgement in the user settings; Cancel leaves the master off.
+/// must confirm before any output can light up. OK arms the master directly;
+/// "Don't show this message again" persists the acknowledgement in the user settings;
+/// Cancel leaves the master off.
 /// </summary>
 internal sealed class LaserArmWarningDialog : ModalDialog
 {
-    /// <summary>Set while the dialog is confirmed with OK - the master button reads it right
-    /// after Draw() and arms the master. One-shot, reset on the next ShowNextFrame().</summary>
-    internal bool Confirmed;
-
     internal void Draw()
     {
         // No minimum height, so the dialog hugs its content without empty space below the buttons.
@@ -30,9 +27,6 @@ internal sealed class LaserArmWarningDialog : ModalDialog
 
         if (BeginDialog("###LaserArmWarning"))
         {
-            if (ImGui.IsWindowAppearing())
-                Confirmed = false;
-
             FormInputs.AddSectionHeader("Laser safety warning");
 
             FormInputs.AddVerticalSpace(4);
@@ -69,7 +63,6 @@ internal sealed class LaserArmWarningDialog : ModalDialog
 
             if (CustomComponents.DrawCtaButton("OK", isEnabled: true, enableTriggerWithReturn: true))
             {
-                Confirmed = true;
                 if (_dontShowAgain)
                 {
                     UserSettings.Config.LaserSafetyWarningAcknowledged = true;
@@ -77,6 +70,8 @@ internal sealed class LaserArmWarningDialog : ModalDialog
                     Log.Debug("Laser arm warning acknowledged - won't be shown again");
                 }
 
+                LaserMasterEnable.Enabled = true;
+                Log.Debug("Laser master enable -> ENABLED (green) - armed through the safety warning");
                 ImGui.CloseCurrentPopup();
             }
 
