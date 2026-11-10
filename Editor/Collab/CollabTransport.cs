@@ -208,6 +208,10 @@ internal abstract class CollabTransport : IDisposable
     /// <summary>Raised on a network thread when a peer disconnected. The manager removes it on the UI thread.</summary>
     public event Action<CollabPeerConnection>? PeerDisconnected;
 
+    /// <summary>Raised on a network thread when a lobby whisper for the host arrives on a relay
+    /// control link. The manager queues it for the UI thread.</summary>
+    public event Action<string, string>? LobbyWhisperReceived;
+
     public event Action<string>? StatusMessage;
 
     /// <summary>Connected peers. Client transports expose only their host link so heartbeat and
@@ -258,6 +262,8 @@ internal abstract class CollabTransport : IDisposable
     protected void OnPeerDisconnected(CollabPeerConnection peer) => PeerDisconnected?.Invoke(peer);
 
     protected void OnStatus(string message) => StatusMessage?.Invoke(message);
+
+    protected void OnLobbyWhisper(string from, string text) => LobbyWhisperReceived?.Invoke(from, text);
 
     public abstract void Dispose();
 

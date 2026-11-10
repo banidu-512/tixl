@@ -42,9 +42,6 @@ internal static class CollabRelayWire
 {
     public const byte BroadcastSlot = 0xFF;
 
-    /// <summary>Slot of a relay-to-host frame that carries a JSON control message instead of member traffic.</summary>
-    public const byte ControlSlot = 0xFE;
-
     /// <summary>Longest control line accepted from the relay (identity fields make them longer than a bare slot number).</summary>
     public const int ControlLineLimit = 4096;
 
@@ -66,13 +63,6 @@ internal static class CollabRelayWire
                               ["room"] = (roomCode ?? "").Trim(),
                               ["v"] = 2,
                           };
-
-        // A little-endian length prefix can start with '{', so bare control lines on the host stream
-        // are ambiguous. Asking for framed control makes the relay send them as frames on ControlSlot;
-        // a relay that does not know the field keeps sending lines and says nothing in its reply.
-        if (role == "host")
-            request["ctl"] = "frame";
-
         if (hello != null)
         {
             void Add(string key, string value)
@@ -204,6 +194,117 @@ internal static class CollabRelayWire
 
         throw new IOException("relay handshake line too long");
     }
+
+    /// <summary>
+    /// Updates a hosted session's listing while it runs (Change entry / Delete entry). The room
+    /// key authenticates the call. Returns null on success, else a readable reason.
+    /// </summary>
+    public static async Task<string?> UpdateListingAsync(string relayHost, int relayPort, string roomCode, string roomKey,
+                                                         string title, string purpose, string project, bool listed,
+                                                         CancellationToken cancellation)
+    {
+        using var client = new TcpClient();
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
+        timeout.CancelAfter(CollabProtocol.ConnectTimeoutMs);
+        await client.ConnectAsync(relayHost, relayPort, timeout.Token);
+        var stream = client.GetStream();
+        var request = new JObject
+                          {
+                              ["role"] = "update",
+                              ["room"] = (roomCode ?? "").Trim(),
+                              ["key"] = roomKey ?? "",
+                              ["v"] = 2,
+                          };
+        if (!string.IsNullOrEmpty(title))
+            request["title"] = title;
+        if (!string.IsNullOrEmpty(purpose))
+            request["purpose"] = purpose;
+        if (!string.IsNullOrEmpty(project))
+            request["project"] = project;
+        if (listed)
+            request["public"] = true;
+
+        await stream.WriteAsync(Encoding.UTF8.GetBytes(Newtonsoft.Json.JsonConvert.SerializeObject(request, _asciiJson) + "\n"), timeout.Token);
+        var (ok, detail, _, _) = await ReadControlReplyAsync(stream, timeout.Token);
+        return ok ? null : (detail.Length > 0 ? detail : "the relay refused the update");
+    }
+
+    /// <summary>
+    /// Sends a whisper to a hosted session's host. With <paramref name="onReply"/> the connection
+    /// stays open and the host's replies ("to" the sender's name) arrive through it; without it
+    /// this is the host's key-authenticated reply path.
+    /// </summary>
+    public static async Task<string?> SendWhisperAsync(string relayHost, int relayPort, string roomCode,
+                                                       string fromName, string lang, string text,
+                                                       string roomKey = "", string replyTo = "",
+                                                       Action<string, string>? onReply = null,
+                                                       CancellationToken cancellation = default)
+    {
+        var reply = roomKey.Length > 0 && replyTo.Length > 0;
+        using var client = new TcpClient();
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
+        timeout.CancelAfter(CollabProtocol.ConnectTimeoutMs);
+        await client.ConnectAsync(relayHost, relayPort, timeout.Token);
+        var stream = client.GetStream();
+        var request = new JObject
+                          {
+                              ["role"] = "whisper",
+                              ["room"] = (roomCode ?? "").Trim(),
+                              ["v"] = 2,
+                              ["name"] = fromName ?? "",
+                              ["text"] = text ?? "",
+                          };
+        if (fromName.Length > 0)
+            request["lang"] = lang ?? "";
+        if (reply)
+        {
+            request["key"] = roomKey;
+            request["to"] = replyTo;
+        }
+        else if (onReply != null)
+        {
+            request["listen"] = true;
+        }
+
+        await stream.WriteAsync(Encoding.UTF8.GetBytes(Newtonsoft.Json.JsonConvert.SerializeObject(request, _asciiJson) + "\n"), timeout.Token);
+        var (ok, detail, _, _) = await ReadControlReplyAsync(stream, timeout.Token);
+        if (!ok)
+            return detail.Length > 0 ? detail : "the relay refused the whisper";
+
+        if (!reply && onReply == null)
+            return null;
+
+        // Keep reading: replies arrive as {"t":"whisper","from":...,"text":...} control lines.
+        var readForever = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
+        while (true)
+        {
+            string line;
+            try
+            {
+                line = await ReadLineAsync(stream, readForever.Token);
+            }
+            catch (Exception e) when (e is IOException or OperationCanceledException or ObjectDisposedException)
+            {
+                return null;
+            }
+
+            JObject json;
+            try
+            {
+                json = JObject.Parse(line);
+            }
+            catch (Newtonsoft.Json.JsonException)
+            {
+                continue;
+            }
+
+            var type = CollabProtocol.GetString(json, "t");
+            if (type != "whisper")
+                continue;
+
+            onReply!(CollabProtocol.GetString(json, "from"), CollabProtocol.GetString(json, "text"));
+        }
+    }
 }
 
 /// <summary>
@@ -231,9 +332,6 @@ internal class CollabRelayHostTransport : CollabTransport
     private readonly CancellationTokenSource _cancellation = new();
     private readonly Timer _keepAliveTimer;
 
-    /// <summary>The relay agreed to send control messages as frames, so no byte value on the stream is a line marker.</summary>
-    private readonly bool _framedControl;
-
     /** The relay drops connections idle for 90 s; a host waiting for its first member sends nothing else. */
     private const int KeepAliveIntervalMs = 15_000;
 
@@ -245,8 +343,6 @@ internal class CollabRelayHostTransport : CollabTransport
         _relayClient = relayClient;
         _relayStream = relayClient.GetStream();
         AssignedRoomCode = assignedRoomCode;
-        _framedControl = CollabRelayWire.HandshakeReplies.TryGetValue(relayClient, out var reply)
-                         && reply["ctl"]?.Value<string>() == "frame";
         _keepAliveTimer = new Timer(_ => SendKeepAlive(), null, KeepAliveIntervalMs, KeepAliveIntervalMs);
     }
 
@@ -378,14 +474,13 @@ internal class CollabRelayHostTransport : CollabTransport
         {
             while (!cancellation.IsCancellationRequested)
             {
-                // With a legacy relay, control lines and frames share the stream and '{' marks a line.
-                // That is ambiguous (a little-endian length can start with 0x7B), which is why a relay
-                // that understands framed control sends its control messages as frames instead.
+                // Control lines and frames share the stream; a frame length prefix can never start
+                // with '{' (that would be a >2 GiB length), so the discriminator is unambiguous.
                 var first = _relayStream.ReadByte();
                 if (first < 0)
                     break;
 
-                if (!_framedControl && first == '{')
+                if (first == '{')
                 {
                     var line = await ReadRestOfLineAsync((byte)first, cancellation);
                     HandleControlLine(line);
@@ -406,12 +501,6 @@ internal class CollabRelayHostTransport : CollabTransport
 
                 if (!await CollabProtocol.TryReadExactAsync(_relayStream, buffer.AsMemory(0, length), cancellation))
                     break;
-
-                if (_framedControl && buffer[0] == CollabRelayWire.ControlSlot)
-                {
-                    HandleControlLine(Encoding.UTF8.GetString(buffer, 2, length - 2));
-                    continue;
-                }
 
                 DispatchRelayFrame(buffer.AsSpan(0, length));
             }
@@ -461,7 +550,11 @@ internal class CollabRelayHostTransport : CollabTransport
         {
             var json = JObject.Parse(line);
             var type = CollabProtocol.GetString(json, "t");
-            if (!CollabProtocol.TryGetInt(json, "slot", out var slot) || slot <= 0 || slot >= CollabRelayWire.BroadcastSlot)
+            var slot = 0;
+
+            // Whispers carry no slot: they are lobby chatter, not session members.
+            if (type != "whisper"
+                && (!CollabProtocol.TryGetInt(json, "slot", out slot) || slot <= 0 || slot >= CollabRelayWire.BroadcastSlot))
                 return;
 
             if (type == "member")
@@ -503,6 +596,11 @@ internal class CollabRelayHostTransport : CollabTransport
                     peer.SessionClosed = true;
                     RemovePeer(peer);
                 }
+            }
+            else if (type == "whisper")
+            {
+                // A lobby whisper for the host. The relay cleaned and length-capped the fields.
+                OnLobbyWhisper(CollabProtocol.GetString(json, "from"), CollabProtocol.GetString(json, "text"));
             }
         }
         catch (Newtonsoft.Json.JsonException)
