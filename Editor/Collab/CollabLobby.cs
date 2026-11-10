@@ -5,7 +5,8 @@ using Newtonsoft.Json.Linq;
 
 namespace T3.Editor.Collab;
 
-/// <summary>One session a relay lists: enough to pick it from a table and join it.</summary>
+/// <summary>One session a relay or the web backend lists: enough to pick it from a table and join it.
+/// <paramref name="Relay"/> is "host:port" when the listing carries the host's relay address.</summary>
 internal sealed record LobbyRoom(string Code,
                                  string Title,
                                  string Purpose,
@@ -15,7 +16,8 @@ internal sealed record LobbyRoom(string Code,
                                  bool HostVerified,
                                  int Members,
                                  int MaxMembers,
-                                 bool PasswordProtected);
+                                 bool PasswordProtected,
+                                 string Relay = "");
 
 /// <summary>
 /// The session browser's data: asks a relay which sessions its hosts chose to list. Only hosts
@@ -186,7 +188,74 @@ internal static class CollabLobbyWhisper
             _listenRoom = "";
             _messages.Clear();
         }
+        _backendSince = 0;
+        _lastBackendPollTicks = 0;
     }
+
+    /// <summary>Whisper through the self-hosted backend instead of a relay listener connection.</summary>
+    public static void SendViaBackend(string room, string myName, string text)
+    {
+        if (string.IsNullOrWhiteSpace(text) || string.IsNullOrWhiteSpace(room))
+            return;
+
+        lock (_gate)
+        {
+            if (_listenRoom != room)
+            {
+                StopListening();
+                _messages.Clear();
+            }
+            _listenRoom = room;
+            _messages.Add(new Entry { From = myName, Text = text, Mine = true });
+        }
+
+        _backendSince = 0;
+        CollabWebLobby.SendWhisper(room, myName, text);
+    }
+
+    /// <summary>
+    /// Drains the backend whisper thread for the active conversation. Called from the UI every
+    /// frame; the actual network poll runs at most every few seconds on a pool thread.
+    /// </summary>
+    public static void PollBackend(string room, string myName)
+    {
+        if (!CollabWebLobby.IsConfigured || room.Length == 0 || myName.Length == 0)
+            return;
+
+        var now = Environment.TickCount64;
+        if (now < _lastBackendPollTicks + BackendPollIntervalMs)
+            return;
+
+        _lastBackendPollTicks = now;
+        var since = _backendSince;
+        _ = Task.Run(async () =>
+                         {
+                             try
+                             {
+                                 var whispers = await CollabWebLobby.PollWhispersAsync(room, "", myName, since, CancellationToken.None);
+                                 if (whispers.Count == 0)
+                                     return;
+
+                                 lock (_gate)
+                                 {
+                                     foreach (var (from, text, isHostReply, at) in whispers)
+                                     {
+                                         if (isHostReply)
+                                             _messages.Add(new Entry { From = from, Text = text, Mine = false });
+                                         _backendSince = Math.Max(_backendSince, at);
+                                     }
+                                 }
+                             }
+                             catch (Exception e)
+                             {
+                                 Log.Debug($"Collab backend: visitor whisper poll failed: {e.Message}");
+                             }
+                         });
+    }
+
+    private const int BackendPollIntervalMs = 3_000;
+    private static long _backendSince;
+    private static long _lastBackendPollTicks;
 
     private static void StopListening()
     {

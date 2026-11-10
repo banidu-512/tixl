@@ -782,7 +782,20 @@ internal sealed partial class SettingsWindow
         FormInputs.AddVerticalSpace(4);
 
         ParseRelayAddress(UserSettings.Config.CollabRelayAddress, out var relayHost, out var relayPort);
-        if (!_lobbyLoadedOnce)
+        var useBackend = CollabWebLobby.IsConfigured;
+        if (useBackend)
+        {
+            if (!_lobbyLoadedOnce)
+            {
+                _lobbyLoadedOnce = true;
+                CollabWebLobby.Refresh();
+            }
+            else if (!CollabWebLobby.IsRefreshing && DateTime.UtcNow - CollabWebLobby.LastRefreshUtc > TimeSpan.FromSeconds(15))
+            {
+                CollabWebLobby.Refresh();
+            }
+        }
+        else if (!_lobbyLoadedOnce)
         {
             _lobbyLoadedOnce = true;
             CollabLobby.Refresh(relayHost, relayPort);
@@ -792,6 +805,8 @@ internal sealed partial class SettingsWindow
             // Live entries: a host's Change entry appears here within seconds, not on manual refresh.
             CollabLobby.Refresh(relayHost, relayPort);
         }
+
+        var rooms = useBackend ? CollabWebLobby.Rooms : CollabLobby.Rooms;
 
         var fontSize = ImGui.GetFontSize();
         FormInputs.SetIndentToLeft();
@@ -815,21 +830,26 @@ internal sealed partial class SettingsWindow
         }
 
         ImGui.SameLine();
-        ImGui.BeginDisabled(CollabLobby.IsRefreshing);
+        ImGui.BeginDisabled(useBackend ? CollabWebLobby.IsRefreshing : CollabLobby.IsRefreshing);
         if (ImGui.Button("Refresh"))
-            CollabLobby.Refresh(relayHost, relayPort);
+        {
+            if (useBackend)
+                CollabWebLobby.Refresh();
+            else
+                CollabLobby.Refresh(relayHost, relayPort);
+        }
 
         ImGui.EndDisabled();
 
         // Auto match: the Silkroad button. Joins the first listed session that passes the filters.
-        var autoMatch = FindAutoMatch();
+        var autoMatch = FindAutoMatch(rooms);
         ImGui.SameLine();
         ImGui.BeginDisabled(autoMatch == null);
         if (ImGui.Button("Auto match") && autoMatch != null)
         {
             ShowControlMode.Activate(ShowControlMode.Collab);
             CollabLobbyWhisper.Reset();
-            manager.JoinViaRelay(relayHost, relayPort, autoMatch.Code, UserSettings.Config.CollabPassword ?? "");
+            JoinListedRoom(manager, autoMatch);
         }
 
         ImGui.EndDisabled();
@@ -868,7 +888,7 @@ internal sealed partial class SettingsWindow
             ImGui.TableHeadersRow();
 
             var rowNumber = 0;
-            foreach (var room in CollabLobby.Rooms)
+            foreach (var room in rooms)
             {
                 if (_lobbyPurposeFilter != "All" && !string.Equals(room.Purpose, _lobbyPurposeFilter, StringComparison.OrdinalIgnoreCase))
                     continue;
@@ -925,8 +945,11 @@ internal sealed partial class SettingsWindow
             ImGui.EndTable();
         }
 
-        if (CollabLobby.Rooms.Count == 0 && !CollabLobby.IsRefreshing && string.IsNullOrEmpty(CollabLobby.ErrorText))
-            ImGui.TextDisabled("No listed sessions on this relay right now.");
+        if (rooms.Count == 0 && !(useBackend ? CollabWebLobby.IsRefreshing : CollabLobby.IsRefreshing)
+            && string.IsNullOrEmpty(useBackend ? CollabWebLobby.ErrorText : CollabLobby.ErrorText))
+            ImGui.TextDisabled(useBackend
+                                   ? "No listed sessions on the backend right now."
+                                   : "No listed sessions on this relay right now.");
 
         ImGui.BeginDisabled(selected == null);
         if (ImGui.Button("Join Session") || (joinNow && selected != null))
@@ -935,8 +958,7 @@ internal sealed partial class SettingsWindow
             {
                 ShowControlMode.Activate(ShowControlMode.Collab);
                 CollabLobbyWhisper.Reset();
-                ParseRelayAddress(CollabLobby.RelayEndpoint, out var joinHost, out var joinPort);
-                manager.JoinViaRelay(joinHost, joinPort, selected.Code, UserSettings.Config.CollabPassword ?? "");
+                JoinListedRoom(manager, selected);
             }
         }
 
@@ -951,6 +973,9 @@ internal sealed partial class SettingsWindow
         if (selected != null)
         {
             FormInputs.AddVerticalSpace(4);
+            if (useBackend)
+                CollabLobbyWhisper.PollBackend(selected.Code, manager.LocalIdentity.DisplayName);
+
             var whispers = CollabLobbyWhisper.Messages;
             if (whispers.Count > 0)
             {
@@ -974,9 +999,17 @@ internal sealed partial class SettingsWindow
             ImGui.BeginDisabled(_lobbyWhisperInput.Length == 0);
             if (ImGui.Button("Whisper") && selected != null)
             {
-                CollabLobbyWhisper.Send(CollabLobby.RelayEndpoint, selected.Code,
-                                        manager.LocalIdentity.DisplayName, manager.LocalIdentity.Lang,
-                                        _lobbyWhisperInput);
+                if (useBackend)
+                {
+                    CollabLobbyWhisper.SendViaBackend(selected.Code, manager.LocalIdentity.DisplayName, _lobbyWhisperInput);
+                }
+                else
+                {
+                    CollabLobbyWhisper.Send(CollabLobby.RelayEndpoint, selected.Code,
+                                            manager.LocalIdentity.DisplayName, manager.LocalIdentity.Lang,
+                                            _lobbyWhisperInput);
+                }
+
                 _lobbyWhisperInput = "";
             }
 
@@ -987,10 +1020,27 @@ internal sealed partial class SettingsWindow
         FormInputs.SetIndentToParameters();
     }
 
-    /// <summary>The first listed session that passes the current filters; null when none does.</summary>
-    private static LobbyRoom? FindAutoMatch()
+    /// <summary>
+    /// Joins a room from either listing source: the relay list is joined on the relay the browser
+    /// read it from; a backend row carries the host's relay address in the row itself.
+    /// </summary>
+    private static void JoinListedRoom(CollabManager manager, LobbyRoom room)
     {
-        foreach (var room in CollabLobby.Rooms)
+        if (room.Relay.Length > 0)
+        {
+            ParseJoinAddress(room.Relay, CollabProtocol.DefaultRelayPort, out var joinHost, out var joinPort);
+            manager.JoinViaRelay(joinHost, joinPort, room.Code, UserSettings.Config.CollabPassword ?? "");
+            return;
+        }
+
+        ParseRelayAddress(CollabLobby.RelayEndpoint, out var relayHost, out var relayPort);
+        manager.JoinViaRelay(relayHost, relayPort, room.Code, UserSettings.Config.CollabPassword ?? "");
+    }
+
+    /// <summary>The first listed session that passes the current filters; null when none does.</summary>
+    private static LobbyRoom? FindAutoMatch(IReadOnlyList<LobbyRoom> rooms)
+    {
+        foreach (var room in rooms)
         {
             if (_lobbyPurposeFilter != "All" && !string.Equals(room.Purpose, _lobbyPurposeFilter, StringComparison.OrdinalIgnoreCase))
                 continue;

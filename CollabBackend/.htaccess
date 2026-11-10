@@ -1,0 +1,7 @@
+# TiXL collab backend: the API is the only public file; data/ holds the SQLite database.
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteRule ^(.*)$ api.php [QSA,L]
+</IfModule>

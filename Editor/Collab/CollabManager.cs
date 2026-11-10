@@ -518,6 +518,23 @@ internal sealed class CollabManager
         _roomKey = roomKey;
         _currentTarget = new SessionTarget(Hosting: true, Relay: true, relayHost, relayPort, RoomCode, password, roomKey);
         _localVerified = IsVerifiedByRelay(transport.RelayReply, "you");
+
+        // List the session in the web backend's browser too, when one is configured. It carries
+        // the relay address so the browser can hand a joiner straight to the room.
+        if (CollabWebLobby.IsConfigured)
+        {
+            var config = UserSettings.Config;
+            CollabWebLobby.Register(RoomCode, roomKey,
+                                    string.IsNullOrWhiteSpace(config.CollabSessionTitle)
+                                        ? $"{LocalIdentity.DisplayName}'s session"
+                                        : config.CollabSessionTitle.Trim(),
+                                    config.CollabSessionPurpose ?? "",
+                                    ProjectView.Focused?.OpenedProject.Package.DisplayName ?? "",
+                                    LocalIdentity.DisplayName, LocalIdentity.Lang,
+                                    !string.IsNullOrEmpty(password),
+                                    config.CollabListSession);
+        }
+
         if (_reconnectTarget is { Hosting: true } reopened)
         {
             // Only a relay without room keys answers a taken code with a different one.
@@ -758,6 +775,11 @@ internal sealed class CollabManager
             // back to a session that is gone for good.
             if (State == SessionState.Hosting)
                 BroadcastSystemMessage(new { t = "sessionEnded" }, except: null);
+
+            // Delete entry: the listing goes away even though the room key is about to be cleared.
+            if (State == SessionState.Hosting && RoomCode.Length > 0 && _roomKey.Length > 0)
+                CollabWebLobby.Unregister(RoomCode, _roomKey);
+            _whisperSince = 0;
         }
 
         _currentTarget = null;
@@ -1600,7 +1622,65 @@ internal sealed class CollabManager
         SendStateHashes();
         SendLocalPresence();
         RefreshDiscoveredSessions();
+        UpdateBackendListing();
     }
+
+    /// <summary>
+    /// Heartbeats the web-backend listing and polls the whisper thread while hosting. Both run
+    /// on pool threads; results land on the UI thread through the usual queues.
+    /// </summary>
+    private void UpdateBackendListing()
+    {
+        if (State != SessionState.Hosting || !CollabWebLobby.IsConfigured || RoomCode.Length == 0 || _roomKey.Length == 0)
+            return;
+
+        var now = Environment.TickCount64;
+        if (now >= _nextBackendHeartbeatTicks)
+        {
+            _nextBackendHeartbeatTicks = now + BackendHeartbeatIntervalMs;
+            CollabWebLobby.Heartbeat(RoomCode, _roomKey, Peers.Count + 1);
+        }
+
+        if (now >= _nextWhisperPollTicks)
+        {
+            _nextWhisperPollTicks = now + WhisperPollIntervalMs;
+            var room = RoomCode;
+            var key = _roomKey;
+            var since = _whisperSince;
+            _ = Task.Run(async () =>
+                             {
+                                 try
+                                 {
+                                     var whispers = await CollabWebLobby.PollWhispersAsync(room, key, "", since, CancellationToken.None);
+                                     if (whispers.Count == 0)
+                                         return;
+
+                                     _uiThreadActions.Enqueue(() =>
+                                                              {
+                                                                  foreach (var (from, text, isHostReply, at) in whispers)
+                                                                  {
+                                                                      if (isHostReply)
+                                                                          continue; // own replies are appended at send time
+
+                                                                      _lobbyWhispers.Add(new LobbyWhisperEntry { From = from, Text = text });
+                                                                      AppendChat(null, $"{from} whispers: {text}");
+                                                                      _whisperSince = Math.Max(_whisperSince, at);
+                                                                  }
+                                                              });
+                                 }
+                                 catch (Exception e)
+                                 {
+                                     Log.Debug($"Collab backend: whisper poll failed: {e.Message}");
+                                 }
+                             });
+        }
+    }
+
+    private const int BackendHeartbeatIntervalMs = 30_000;
+    private const int WhisperPollIntervalMs = 5_000;
+    private long _nextBackendHeartbeatTicks;
+    private long _nextWhisperPollTicks;
+    private long _whisperSince;
 
     private long _rejoinCheckTicks;
     private bool _rejoinAttempted;
@@ -3504,7 +3584,7 @@ internal sealed class CollabManager
     /// <summary>Host: answers a browser whisper. Fire-and-forget; failures land in the log.</summary>
     public void ReplyToLobbyWhisper(string to, string text)
     {
-        if (State != SessionState.Hosting || _currentTarget is not { Relay: true } target || text.Length == 0)
+        if (State != SessionState.Hosting || text.Length == 0)
             return;
 
         _lobbyWhispers.Add(new LobbyWhisperEntry
@@ -3516,51 +3596,67 @@ internal sealed class CollabManager
 
         var room = RoomCode;
         var key = _roomKey;
-        _ = Task.Run(async () =>
-                         {
-                             try
+
+        if (_currentTarget is { Relay: true } target)
+        {
+            _ = Task.Run(async () =>
                              {
-                                 var error = await CollabRelayWire.SendWhisperAsync(target.Host, target.Port, room,
-                                                                                    "", "", text, key, to);
-                                 if (error != null)
-                                     Log.Warning($"Collab: whisper reply failed: {error}");
-                             }
-                             catch (Exception e)
-                             {
-                                 Log.Warning($"Collab: whisper reply failed: {e.Message}");
-                             }
-                         });
+                                 try
+                                 {
+                                     var error = await CollabRelayWire.SendWhisperAsync(target.Host, target.Port, room,
+                                                                                        "", "", text, key, to);
+                                     if (error != null)
+                                         Log.Warning($"Collab: whisper reply failed: {error}");
+                                 }
+                                 catch (Exception e)
+                                 {
+                                     Log.Warning($"Collab: whisper reply failed: {e.Message}");
+                                 }
+                             });
+        }
+
+        if (CollabWebLobby.IsConfigured)
+            CollabWebLobby.ReplyWhisper(room, key, to, text);
     }
 
     /// <summary>
-    /// Host: updates the relay's listing of the running session (Change entry, Delete entry).
-    /// Fire-and-forget; a failure is logged and shown as the session error.
+    /// Host: updates the listing of the running session (Change entry, Delete entry) in the
+    /// web backend and, when the relay keeps its own list, there too.
     /// </summary>
     public void UpdateSessionListing(string title, string purpose, string project, bool listed)
     {
-        if (State != SessionState.Hosting || _currentTarget is not { Relay: true } target)
+        if (State != SessionState.Hosting)
             return;
 
         var room = RoomCode;
         var key = _roomKey;
-        _ = Task.Run(async () =>
-                         {
-                             try
+
+        if (_currentTarget is { Relay: true } target)
+        {
+            _ = Task.Run(async () =>
                              {
-                                 var error = await CollabRelayWire.UpdateListingAsync(target.Host, target.Port, room, key,
-                                                                                      title, purpose, project, listed,
-                                                                                      CancellationToken.None);
-                                 if (error != null)
+                                 try
                                  {
-                                     Log.Warning($"Collab: listing update failed: {error}");
-                                     _uiThreadActions.Enqueue(() => ErrorText = $"Updating the session listing failed: {error}");
+                                     var error = await CollabRelayWire.UpdateListingAsync(target.Host, target.Port, room, key,
+                                                                                          title, purpose, project, listed,
+                                                                                          CancellationToken.None);
+                                     if (error != null)
+                                     {
+                                         Log.Warning($"Collab: listing update failed: {error}");
+                                         _uiThreadActions.Enqueue(() => ErrorText = $"Updating the session listing failed: {error}");
+                                     }
                                  }
-                             }
-                             catch (Exception e)
-                             {
-                                 Log.Warning($"Collab: listing update failed: {e.Message}");
-                             }
-                         });
+                                 catch (Exception e)
+                                 {
+                                     Log.Warning($"Collab: listing update failed: {e.Message}");
+                                 }
+                             });
+        }
+
+        if (CollabWebLobby.IsConfigured)
+        {
+            CollabWebLobby.Update(room, key, title, purpose, project, listed);
+        }
     }
 
     private void AppendChat(string? name, string text)

@@ -1,0 +1,325 @@
+#nullable enable
+using System.IO;
+using System.Net.Http;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+using Newtonsoft.Json.Linq;
+using T3.Editor.Gui.UiHelpers;
+
+namespace T3.Editor.Collab;
+
+/// <summary>
+/// The HTTP session browser: talks to a self-hosted collab backend (CollabBackend/api.php) that
+/// keeps the party-matching list, whispers and WebRTC signaling. The browser prefers this
+/// backend when an address is configured; the relay's own listing covers the no-backend case.
+/// </summary>
+internal static class CollabWebLobby
+{
+    /// <summary>Result of the last successful refresh. Replaced as a whole, never changed in place.</summary>
+    public static IReadOnlyList<LobbyRoom> Rooms => _rooms;
+
+    public static bool IsRefreshing => _refreshing != 0;
+
+    /// <summary>Why the last refresh failed; empty after a success.</summary>
+    public static string ErrorText { get; private set; } = "";
+
+    public static DateTime LastRefreshUtc { get; private set; } = DateTime.MinValue;
+
+    private static volatile LobbyRoom[] _rooms = [];
+    private static int _refreshing;
+
+    private static readonly HttpClient _http = CreateClient();
+
+    private static HttpClient CreateClient()
+    {
+        var client = new HttpClient { Timeout = TimeSpan.FromSeconds(8) };
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("TiXLCollab/1.0");
+        return client;
+    }
+
+    /// <summary>The configured backend base URL without a trailing slash; empty when unset.</summary>
+    public static string BackendUrl => (UserSettings.Config.CollabBackendUrl ?? "").Trim().TrimEnd('/');
+
+    public static bool IsConfigured => BackendUrl.Length > 0;
+
+    /// <summary>Fetches the backend's session list. Fire-and-forget; results land in Rooms.</summary>
+    public static void Refresh()
+    {
+        if (!IsConfigured || Interlocked.Exchange(ref _refreshing, 1) != 0)
+            return;
+
+        _ = Task.Run(async () =>
+                         {
+                             try
+                             {
+                                 var (rooms, error) = await FetchListAsync(CancellationToken.None);
+                                 if (error != null)
+                                 {
+                                     ErrorText = $"Could not load the session list: {error}";
+                                 }
+                                 else
+                                 {
+                                     _rooms = rooms;
+                                     ErrorText = "";
+                                     LastRefreshUtc = DateTime.UtcNow;
+                                 }
+                             }
+                             finally
+                             {
+                                 Interlocked.Exchange(ref _refreshing, 0);
+                             }
+                         });
+    }
+
+    private static async Task<(LobbyRoom[] Rooms, string? Error)> FetchListAsync(CancellationToken cancellation)
+    {
+        using var response = await _http.GetAsync(BackendUrl + "?op=list", cancellation);
+        var text = await response.Content.ReadAsStringAsync(cancellation);
+        JObject json;
+        try
+        {
+            json = JObject.Parse(text);
+        }
+        catch (Newtonsoft.Json.JsonException)
+        {
+            return ([], "the backend answered with something that is not JSON");
+        }
+
+        if (!(json["ok"]?.Value<bool>() ?? false))
+            return ([], json["error"]?.Value<string>() ?? "the backend refused the list request");
+
+        var rooms = new List<LobbyRoom>();
+        foreach (var token in json["rooms"] ?? new JArray())
+        {
+            if (token is not JObject entry)
+                continue;
+
+            var code = CollabProtocol.GetString(entry, "code");
+            if (string.IsNullOrEmpty(code))
+                continue;
+
+            CollabProtocol.TryGetBool(entry, "pwd", out var passwordProtected);
+            CollabProtocol.TryGetInt(entry, "members", out var members);
+            CollabProtocol.TryGetInt(entry, "max", out var maxMembers);
+            rooms.Add(new LobbyRoom(code,
+                                    CollabProtocol.GetString(entry, "title"),
+                                    CollabProtocol.GetString(entry, "purpose"),
+                                    CollabProtocol.GetString(entry, "project"),
+                                    CollabProtocol.GetString(entry, "host"),
+                                    CollabProtocol.GetString(entry, "lang"),
+                                    false,
+                                    members,
+                                    maxMembers,
+                                    passwordProtected,
+                                    CollabProtocol.GetString(entry, "relay")));
+        }
+
+        return (rooms.ToArray(), null);
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Host side: the listing lifecycle of a hosted session
+    // ---------------------------------------------------------------------------------------
+
+    private static async Task<(JToken? Body, string? Error)> PostAsync(string op, JObject payload, CancellationToken cancellation)
+    {
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post, $"{BackendUrl}?op={op}");
+            request.Content = new StringContent(payload.ToString(Newtonsoft.Json.Formatting.None), Encoding.UTF8, "application/json");
+            using var response = await _http.SendAsync(request, cancellation);
+            var text = await response.Content.ReadAsStringAsync(cancellation);
+            JObject json;
+            try
+            {
+                json = JObject.Parse(text);
+            }
+            catch (Newtonsoft.Json.JsonException)
+            {
+                return (null, "the backend answered with something that is not JSON");
+            }
+
+            var ok = json["ok"]?.Value<bool>() ?? false;
+            return ok ? (json, null) : (null, json["error"]?.Value<string>() ?? "the backend refused the request");
+        }
+        catch (Exception e) when (e is HttpRequestException or TaskCanceledException or InvalidOperationException)
+        {
+            return (null, e.Message);
+        }
+    }
+
+    private static JObject RoomPayload(string room, string key)
+    {
+        return new JObject
+                   {
+                       ["room"] = room,
+                       ["key"] = key,
+                   };
+    }
+
+    /// <summary>Registers the hosted session in the backend's list. Fire-and-forget.</summary>
+    public static void Register(string room, string key, string title, string purpose, string project,
+                                string hostName, string lang, bool passwordProtected, bool listed)
+    {
+        if (!IsConfigured)
+            return;
+
+        var payload = RoomPayload(room, key);
+        payload["title"] = title;
+        payload["purpose"] = purpose;
+        payload["project"] = project;
+        payload["host"] = hostName;
+        payload["lang"] = lang;
+        payload["pwd"] = passwordProtected;
+        payload["listed"] = listed;
+        payload["members"] = 1;
+        payload["max"] = 18;
+
+        _ = Task.Run(async () =>
+                         {
+                             var (_, error) = await PostAsync("register", payload, CancellationToken.None);
+                             if (error != null)
+                                 Log.Debug($"Collab backend: register failed: {error}");
+                         });
+    }
+
+    /// <summary>Keeps the listing alive; the backend expires entries without heartbeats in 90 s.</summary>
+    public static void Heartbeat(string room, string key, int members)
+    {
+        if (!IsConfigured)
+            return;
+
+        var payload = RoomPayload(room, key);
+        payload["members"] = members;
+        _ = Task.Run(async () =>
+                         {
+                             var (_, error) = await PostAsync("heartbeat", payload, CancellationToken.None);
+                             if (error != null)
+                                 Log.Debug($"Collab backend: heartbeat failed: {error}");
+                         });
+    }
+
+    /// <summary>Change entry: title/purpose/visibility of the running session.</summary>
+    public static void Update(string room, string key, string title, string purpose, string project, bool listed)
+    {
+        if (!IsConfigured)
+            return;
+
+        var payload = RoomPayload(room, key);
+        payload["title"] = title;
+        payload["purpose"] = purpose;
+        payload["project"] = project;
+        payload["listed"] = listed;
+        _ = Task.Run(async () =>
+                         {
+                             var (_, error) = await PostAsync("update", payload, CancellationToken.None);
+                             if (error != null)
+                                 Log.Debug($"Collab backend: update failed: {error}");
+                         });
+    }
+
+    /// <summary>Delete entry: removes the listing (session ended or unlisted).</summary>
+    public static void Unregister(string room, string key)
+    {
+        if (!IsConfigured)
+            return;
+
+        _ = Task.Run(async () =>
+                         {
+                             var (_, error) = await PostAsync("unregister", RoomPayload(room, key), CancellationToken.None);
+                             if (error != null)
+                                 Log.Debug($"Collab backend: unregister failed: {error}");
+                         });
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Whispers: pre-join contact through the backend
+    // ---------------------------------------------------------------------------------------
+
+    /// <summary>A visitor whispers the host of a listed session.</summary>
+    public static void SendWhisper(string room, string myName, string text)
+    {
+        if (!IsConfigured)
+            return;
+
+        var payload = new JObject
+                          {
+                              ["room"] = room,
+                              ["name"] = myName,
+                              ["text"] = text,
+                          };
+        _ = Task.Run(async () =>
+                         {
+                             var (_, error) = await PostAsync("whisper", payload, CancellationToken.None);
+                             if (error != null)
+                             {
+                                 lock (_whisperGate)
+                                     _whisperErrors.Add(error);
+                             }
+                         });
+    }
+
+    /// <summary>Host: answers a whisper.</summary>
+    public static void ReplyWhisper(string room, string key, string to, string text)
+    {
+        if (!IsConfigured)
+            return;
+
+        var payload = new JObject
+                          {
+                              ["room"] = room,
+                              ["key"] = key,
+                              ["to"] = to,
+                              ["text"] = text,
+                          };
+        _ = Task.Run(async () =>
+                         {
+                             var (_, error) = await PostAsync("whisper", payload, CancellationToken.None);
+                             if (error != null)
+                             {
+                                 lock (_whisperGate)
+                                     _whisperErrors.Add(error);
+                             }
+                         });
+    }
+
+    /// <summary>Polls the whisper thread. Host passes its key; a visitor passes its own name.</summary>
+    public static async Task<IReadOnlyList<(string From, string Text, bool IsHostReply, long At)>> PollWhispersAsync(
+        string room, string key, string visitorName, long since, CancellationToken cancellation)
+    {
+        if (!IsConfigured)
+            return [];
+
+        var url = $"{BackendUrl}?op=whispers&room={Uri.EscapeDataString(room)}&since={since}";
+        if (key.Length > 0)
+            url += "&key=" + Uri.EscapeDataString(key);
+        else if (visitorName.Length > 0)
+            url += "&name=" + Uri.EscapeDataString(visitorName);
+
+        using var response = await _http.GetAsync(url, cancellation);
+        var text = await response.Content.ReadAsStringAsync(cancellation);
+        var json = JObject.Parse(text);
+        if (!(json["ok"]?.Value<bool>() ?? false))
+            return [];
+
+        var result = new List<(string, string, bool, long)>();
+        foreach (var token in json["whispers"] ?? new JArray())
+        {
+            if (token is not JObject entry)
+                continue;
+
+            CollabProtocol.TryGetBool(entry, "host", out var isHostReply);
+            CollabProtocol.TryGetInt(entry, "at", out var at);
+            result.Add((CollabProtocol.GetString(entry, "from"),
+                        CollabProtocol.GetString(entry, "text"),
+                        isHostReply,
+                        at));
+        }
+
+        return result;
+    }
+
+    private static readonly object _whisperGate = new();
+    private static readonly List<string> _whisperErrors = [];
+}
