@@ -342,6 +342,152 @@ internal static class CollabCommandWire
                    };
     }
 
+    /// <summary>Target size of one snapshot message, well under <see cref="CollabProtocol.MaxJsonPayload"/>.</summary>
+    private const int SnapshotChunkChars = 256 * 1024;
+
+    /// <summary>
+    /// The state of a composition as a sequence of ops that each fit into one message: an
+    /// apply_snapshot that clears the composition and restores the first children, followed by
+    /// restore_children ops for the rest. A connection between children of different chunks is
+    /// carried by both ends and gets added when the second end arrives.
+    /// </summary>
+    public static List<JObject> BuildSnapshotOps(SymbolUi compositionUi)
+    {
+        var compositionSymbol = compositionUi.Symbol;
+        var ops = new List<JObject>();
+        var items = new JArray();
+        var chars = 0;
+
+        void Flush()
+        {
+            ops.Add(new JObject
+                        {
+                            ["type"] = ops.Count == 0 ? "apply_snapshot" : "restore_children",
+                            ["c"] = compositionSymbol.Id,
+                            ["items"] = items,
+                        });
+            items = new JArray();
+            chars = 0;
+        }
+
+        foreach (var childUi in compositionUi.ChildUis.Values)
+        {
+            var item = ChildRestoreToJson(CaptureChildRestoreData(compositionSymbol, childUi));
+            var itemChars = item.ToString(Formatting.None).Length;
+            if (itemChars > CollabProtocol.MaxJsonPayload / 2)
+            {
+                Log.Warning($"Collab: '{childUi.SymbolChild.ReadableName}' is too large to sync ({itemChars / 1024} KiB) and was left out");
+                continue;
+            }
+
+            if (items.Count > 0 && chars + itemChars > SnapshotChunkChars)
+                Flush();
+
+            items.Add(item);
+            chars += itemChars;
+        }
+
+        // Also for an empty composition: the receiver still has to clear its copy.
+        if (items.Count > 0 || ops.Count == 0)
+            Flush();
+
+        return ops;
+    }
+
+    /// <summary>
+    /// Fingerprint of everything <see cref="BuildSnapshotOp"/> would carry for a composition. Host
+    /// and clients compare it to detect a drifted copy. It must not depend on enumeration order
+    /// (dictionaries and the connection list are filled in a different order on each machine), so
+    /// children are hashed in id order, object properties in name order and each child's
+    /// connections sorted. Value arrays keep their order — it is part of the value.
+    /// </summary>
+    public static string ComputeCompositionHash(SymbolUi compositionUi)
+    {
+        var compositionSymbol = compositionUi.Symbol;
+        var lines = new List<string>(compositionUi.ChildUis.Count);
+        var builder = new System.Text.StringBuilder();
+        foreach (var childUi in compositionUi.ChildUis.Values)
+        {
+            builder.Clear();
+            AppendCanonical(builder, ChildRestoreToJson(CaptureChildRestoreData(compositionSymbol, childUi)));
+            lines.Add(builder.ToString());
+        }
+
+        lines.Sort(StringComparer.Ordinal);
+
+        using var hash = System.Security.Cryptography.IncrementalHash.CreateHash(System.Security.Cryptography.HashAlgorithmName.SHA256);
+        foreach (var line in lines)
+        {
+            hash.AppendData(System.Text.Encoding.UTF8.GetBytes(line));
+            hash.AppendData(_hashLineSeparator);
+        }
+
+        return Convert.ToHexString(hash.GetHashAndReset(), 0, 8);
+    }
+
+    private static readonly byte[] _hashLineSeparator = [(byte)'\n'];
+
+    private static void AppendCanonical(System.Text.StringBuilder builder, JToken? token)
+    {
+        if (token == null)
+        {
+            builder.Append("null");
+            return;
+        }
+
+        switch (token)
+        {
+            case JObject obj:
+                builder.Append('{');
+                foreach (var property in obj.Properties().OrderBy(p => p.Name, StringComparer.Ordinal))
+                {
+                    builder.Append(property.Name).Append(':');
+                    if (property.Name == "conns" && property.Value is JArray connections)
+                    {
+                        var entries = new List<string>(connections.Count);
+                        var entryBuilder = new System.Text.StringBuilder();
+                        foreach (var connection in connections)
+                        {
+                            entryBuilder.Clear();
+                            AppendCanonical(entryBuilder, connection);
+                            entries.Add(entryBuilder.ToString());
+                        }
+
+                        entries.Sort(StringComparer.Ordinal);
+                        builder.Append('[');
+                        foreach (var entry in entries)
+                            builder.Append(entry).Append(',');
+
+                        builder.Append(']');
+                    }
+                    else
+                    {
+                        AppendCanonical(builder, property.Value);
+                    }
+
+                    builder.Append(',');
+                }
+
+                builder.Append('}');
+                break;
+
+            case JArray array:
+                builder.Append('[');
+                foreach (var element in array)
+                {
+                    AppendCanonical(builder, element);
+                    builder.Append(',');
+                }
+
+                builder.Append(']');
+                break;
+
+            default:
+                builder.Append(token.ToString(Formatting.None));
+                break;
+        }
+    }
+
     /// <summary>Live capture of one child's state — the snapshot counterpart of the delete command's payload.</summary>
     private static CollabChildRestoreData CaptureChildRestoreData(Symbol compositionSymbol, SymbolUi.Child childUi)
     {
@@ -488,6 +634,169 @@ internal static class CollabCommandWire
         }
     }
 
+    /// <summary>
+    /// Whether the graph still shows what this op did. Per-user undo asks this before reverting
+    /// one of a user's edits: when someone else changed the same target since, reverting would
+    /// throw their change away, so that edit is skipped instead. Anything that can't be checked
+    /// counts as still in effect.
+    /// </summary>
+    public static bool IsOpStillInEffect(JObject op)
+    {
+        try
+        {
+            return IsOpStillInEffect(op, null);
+        }
+        catch (Exception e)
+        {
+            Log.Debug($"Collab: could not check op '{CollabProtocol.GetString(op, "type")}': {e.Message}");
+            return true;
+        }
+    }
+
+    /// <param name="superseded">Targets a later op of the same batch already decided; an earlier
+    /// op on the same target is expected to be overwritten and is not checked.</param>
+    private static bool IsOpStillInEffect(JObject op, HashSet<string>? superseded)
+    {
+        var type = CollabProtocol.GetString(op, "type");
+        switch (type)
+        {
+            case "batch":
+            {
+                if (op["ops"] is not JArray ops)
+                    return true;
+
+                var decided = superseded ?? new HashSet<string>(StringComparer.Ordinal);
+                for (var index = ops.Count - 1; index >= 0; index--)
+                {
+                    if (ops[index] is JObject subOp && !IsOpStillInEffect(subOp, decided))
+                        return false;
+                }
+
+                return true;
+            }
+
+            case "set_input":
+            {
+                if (!CollabProtocol.TryGetGuid(op, "ch", out var childId) || !CollabProtocol.TryGetGuid(op, "i", out var inputId))
+                    return true;
+
+                if (superseded != null && !superseded.Add($"input|{childId}|{inputId}"))
+                    return true;
+
+                if (!TryGetComposition(op, out var compositionUi)
+                    || !compositionUi.Symbol.Children.TryGetValue(childId, out var child)
+                    || !child.Inputs.TryGetValue(inputId, out var input))
+                    return false;
+
+                var expected = op["v"];
+                if (expected == null || expected.Type == JTokenType.Null)
+                    return true;
+
+                // Compared as JSON text: both sides went through the same writer, while token
+                // comparison trips over float-versus-double representations of one value.
+                var current = InputValueToToken(input.Value);
+                return current != null
+                       && string.Equals(current.ToString(Formatting.None), expected.ToString(Formatting.None), StringComparison.Ordinal);
+            }
+
+            case "rename":
+            {
+                if (!CollabProtocol.TryGetGuid(op, "ch", out var childId))
+                    return true;
+
+                if (superseded != null && !superseded.Add($"name|{childId}"))
+                    return true;
+
+                if (!TryGetComposition(op, out var compositionUi) || !compositionUi.ChildUis.TryGetValue(childId, out var childUi))
+                    return false;
+
+                return string.Equals(childUi.SymbolChild.Name ?? "", CollabProtocol.GetString(op, "name"), StringComparison.Ordinal);
+            }
+
+            case "move":
+            {
+                if (!TryGetComposition(op, out var compositionUi) || op["items"] is not JArray items)
+                    return true;
+
+                foreach (var token in items)
+                {
+                    if (token is not JObject item || !CollabProtocol.TryGetGuid(item, "id", out var id))
+                        continue;
+
+                    if (superseded != null && !superseded.Add($"pos|{id}"))
+                        continue;
+
+                    // Only operators are checked; other canvas elements can't be looked up here.
+                    if (!compositionUi.ChildUis.TryGetValue(id, out var childUi))
+                        continue;
+
+                    var x = item["x"]?.Value<float>() ?? 0f;
+                    var y = item["y"]?.Value<float>() ?? 0f;
+                    if (childUi.PosOnCanvas.X != x || childUi.PosOnCanvas.Y != y)
+                        return false;
+                }
+
+                return true;
+            }
+
+            case "add_child":
+            {
+                if (!CollabProtocol.TryGetGuid(op, "id", out var childId))
+                    return true;
+
+                if (superseded != null && !superseded.Add($"child|{childId}"))
+                    return true;
+
+                return TryGetComposition(op, out var compositionUi) && compositionUi.Symbol.Children.ContainsKey(childId);
+            }
+
+            case "del_children":
+            {
+                if (!TryGetComposition(op, out var compositionUi) || op["ids"] is not JArray ids)
+                    return true;
+
+                foreach (var token in ids)
+                {
+                    if (!Guid.TryParse(token.ToString(), out var childId))
+                        continue;
+
+                    if (superseded != null && !superseded.Add($"child|{childId}"))
+                        continue;
+
+                    if (compositionUi.Symbol.Children.ContainsKey(childId))
+                        return false;
+                }
+
+                return true;
+            }
+
+            case "add_conn":
+            case "del_conn":
+            {
+                if (!CollabProtocol.TryGetGuid(op, "src", out var sourceId)
+                    || !CollabProtocol.TryGetGuid(op, "ss", out var sourceSlotId)
+                    || !CollabProtocol.TryGetGuid(op, "dst", out var targetId)
+                    || !CollabProtocol.TryGetGuid(op, "ds", out var targetSlotId))
+                    return true;
+
+                if (superseded != null && !superseded.Add($"conn|{sourceId}|{sourceSlotId}|{targetId}|{targetSlotId}"))
+                    return true;
+
+                if (!TryGetComposition(op, out var compositionUi))
+                    return false;
+
+                var exists = compositionUi.Symbol.Connections.Any(c => c.SourceParentOrChildId == sourceId
+                                                                       && c.SourceSlotId == sourceSlotId
+                                                                       && c.TargetParentOrChildId == targetId
+                                                                       && c.TargetSlotId == targetSlotId);
+                return exists == (type == "add_conn");
+            }
+
+            default:
+                return true;
+        }
+    }
+
     private static JObject CloneWith(JObject op, params (string Key, JToken? Value)[] overrides)
     {
         var clone = (JObject)op.DeepClone();
@@ -603,9 +912,16 @@ internal static class CollabCommandWire
 
         var multiInputIndex = op["idx"]?.Value<int>() ?? 0;
         var connection = new Symbol.Connection(sourceId, sourceSlotId, targetId, targetSlotId);
+        var symbol = compositionUi.Symbol;
 
         if (add)
         {
+            // A concurrent delete may have removed an endpoint before this op was ordered behind
+            // it. Guid.Empty addresses the composition's own inputs/outputs.
+            if ((sourceId != Guid.Empty && !symbol.Children.ContainsKey(sourceId))
+                || (targetId != Guid.Empty && !symbol.Children.ContainsKey(targetId)))
+                return;
+
             // Re-adding an existing connection is a no-op in Symbol.AddConnection's normal index
             // handling, but skip explicitly to keep the sync replay idempotent.
             if (compositionUi.Symbol.Connections.Any(c => c.SourceParentOrChildId == sourceId
@@ -619,7 +935,26 @@ internal static class CollabCommandWire
         }
         else
         {
-            var command = new DeleteConnectionCommand(compositionUi.Symbol, connection, multiInputIndex);
+            // Symbol.RemoveConnection removes whatever sits at (target slot, index). After a
+            // concurrent edit, or when an op is applied a second time, that can be a different
+            // connection — so resolve the index of the connection this op actually names and do
+            // nothing when it is already gone.
+            var atInput = new List<Symbol.Connection>();
+            foreach (var existing in symbol.Connections)
+            {
+                if (existing.TargetParentOrChildId == targetId && existing.TargetSlotId == targetSlotId)
+                    atInput.Add(existing);
+            }
+
+            bool IsNamedConnection(Symbol.Connection c) => c.SourceParentOrChildId == sourceId && c.SourceSlotId == sourceSlotId;
+
+            var index = multiInputIndex >= 0 && multiInputIndex < atInput.Count && IsNamedConnection(atInput[multiInputIndex])
+                            ? multiInputIndex
+                            : atInput.FindIndex(IsNamedConnection);
+            if (index < 0)
+                return;
+
+            var command = new DeleteConnectionCommand(symbol, connection, index);
             command.Do();
         }
     }
@@ -848,8 +1183,18 @@ internal static class CollabCommandWire
             }
         }
 
+        // Lower multi-input indices first, so each connection lands at the index it names.
+        pendingConnections.Sort((a, b) => a.MultiInputIndex.CompareTo(b.MultiInputIndex));
+
         foreach (var (connection, multiInputIndex) in pendingConnections)
         {
+            // An end that is not here (yet): with a snapshot sent in several parts the other end
+            // arrives in a later part and brings the connection with it.
+            var children = compositionUi.Symbol.Children;
+            if ((connection.SourceParentOrChildId != Guid.Empty && !children.ContainsKey(connection.SourceParentOrChildId))
+                || (connection.TargetParentOrChildId != Guid.Empty && !children.ContainsKey(connection.TargetParentOrChildId)))
+                continue;
+
             // Re-adding an existing connection is skipped to keep replays idempotent.
             if (compositionUi.Symbol.Connections.Any(c => c.SourceParentOrChildId == connection.SourceParentOrChildId
                                                            && c.SourceSlotId == connection.SourceSlotId

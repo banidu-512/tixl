@@ -33,7 +33,9 @@ namespace T3.Editor.Collab;
 /// </summary>
 internal static class CollabProtocol
 {
-    public const int ProtocolVersion = 1;
+    /// <summary>2: host-sequenced ops (seq/from/cid, echo to the sender, opNack) and stateHash.
+    /// Version 1 peers would apply their own echoed ops twice, so mixed sessions are refused.</summary>
+    public const int ProtocolVersion = 2;
     public const int DefaultTcpPort = 44700;
     public const int DefaultRelayPort = 44710;
 

@@ -689,9 +689,10 @@ internal sealed class CollabWebRtcHostTransport : CollabRelayHostTransport
     }
 
     public static new async Task<CollabWebRtcHostTransport> ConnectAsync(string relayHost, int relayPort, string roomCode,
-                                                                     CancellationToken cancellation)
+                                                                     CancellationToken cancellation,
+                                                                     CollabRelayHello? hello = null)
     {
-        var (client, room) = await OpenRoomAsync(relayHost, relayPort, roomCode, cancellation);
+        var (client, room) = await OpenRoomAsync(relayHost, relayPort, roomCode, cancellation, hello);
         try
         {
             return new CollabWebRtcHostTransport(client, room);
@@ -742,10 +743,7 @@ internal sealed class CollabWebRtcHostTransport : CollabRelayHostTransport
         var peer = FindPeer(frame[0]);
         if (peer != null && _links.TryGetValue(peer, out var activeLink) && activeLink.IsActive
             && type != CollabProtocol.FrameType.Heartbeat)
-        {
-            Log.Debug($"Collab diag: host dropped relay type={type} from {peer} (channel active)");
             return;
-        }
 
         base.DispatchRelayFrame(frame);
     }
@@ -830,9 +828,10 @@ internal sealed class CollabWebRtcClientTransport : CollabRelayClientTransport
     }
 
     public static new async Task<CollabWebRtcClientTransport> ConnectAsync(string relayHost, int relayPort, string roomCode,
-                                                                       CancellationToken cancellation)
+                                                                       CancellationToken cancellation,
+                                                                       CollabRelayHello? hello = null)
     {
-        var client = await JoinRoomAsync(relayHost, relayPort, roomCode, cancellation);
+        var client = await JoinRoomAsync(relayHost, relayPort, roomCode, cancellation, hello);
         try
         {
             return new CollabWebRtcClientTransport(client);

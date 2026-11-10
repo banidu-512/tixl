@@ -21,6 +21,10 @@ namespace T3.Editor.Gui.UiHelpers;
 ///  todo - make internal, make extendable by external packages
 public sealed class UserSettings : Settings<UserSettings.ConfigData>
 {
+    /// <summary>Sync-source values for <see cref="ConfigData.BoygroupClockSync"/>.</summary>
+    public const string SyncInternal = "Internal";
+    public const string SyncPtp = "PTP";
+
     internal UserSettings(bool saveOnQuit) : base("userSettings.json", saveOnQuit: saveOnQuit)
     {
         RemoveDuplicateProjectDirectories();
@@ -134,6 +138,12 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         /// <summary>0 keeps them for as long as their project is loaded, which avoids rebuild hitches.</summary>
         public int ReleaseUnusedRenderTargetsAfterSeconds = 0;
 
+        /// <summary>
+        /// Set when the user confirms the laser safety warning shown the first time the LASER
+        /// master button is armed. While false, arming opens the warning dialog first.
+        /// </summary>
+        public bool LaserSafetyWarningAcknowledged = false;
+
         /// <summary>Folder of the project that was open when the editor closed; empty if it closed in the project hub.</summary>
         public string LastOpenProjectFolder = string.Empty;
 
@@ -168,6 +178,9 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         /// <summary>When true, the Welcome window opens automatically at startup. Toggled from that window.</summary>
         public bool ShowWelcomeOnStartup = true;
 
+        /// <summary>When true, a warning lists symbols with operators that could not be found, once after startup.</summary>
+        public bool ShowMissingSymbolsWarningOnStartup = true;
+
         /// <summary>Whether the next launch offers crashes that were never reported.</summary>
         public bool AskToSendCrashReports = true;
 
@@ -179,6 +192,10 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public bool EnableIdleMotion = true;
         public bool SuspendRenderingWhenHidden = true;
         public bool UseVSync = true;
+
+        /// <summary>Caps the short side of outputs sized by their window ("Fill" and aspect presets), e.g. in focus mode on high-res displays.</summary>
+        [JsonConverter(typeof(StringEnumConverter))]
+        public WindowFillResolutionLimits MaxWindowFillResolution = WindowFillResolutionLimits.Unlimited;
 
         /** Frames per second to render at with vsync; 0 renders every refresh of the pacing display. */
         public int TargetFrameRate = 0;
@@ -211,9 +228,6 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
 
         /// <summary>Opacity of a surface's content previewed over its photo — on the traced quad and on its Board card.</summary>
         public float OutputSetupContentPreviewOpacity = 0.65f;
-
-        /// <summary>Opacity of an output's picture carried back through a corner pin onto a surface's Board card.</summary>
-        public float OutputSetupProjectionPreviewOpacity = 0f;
 
         /// <summary>Whether the output setup's rect fields read in pixels of what they sit on, or as ratios of it.
         /// The values are stored as ratios either way; this is only how they are shown and typed.</summary>
@@ -295,6 +309,7 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public int CollabCursorColor = 0;
 
         /// <summary>host:port of the relay used for room-code sessions. Empty = default relay.</summary>
+
         public string CollabRelayAddress = "";
 
         /// <summary>Relay room join anchor: rejoin after a restart (e.g. a project download)
@@ -327,6 +342,25 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public string CollabDiscordUserName = "";
         public string CollabDiscordUserAvatar = "";
 
+        /// <summary>Language tag of the Discord profile ("hu", "en-US"); shown next to the name in sessions.</summary>
+        public string CollabDiscordLocale = "";
+
+        /// <summary>Keeps the Discord token in this file so the account stays confirmed to other
+        /// participants across restarts. Off: the token lives in memory only and a restart needs a new login.</summary>
+        public bool CollabDiscordStayLoggedIn = false;
+
+        public string CollabDiscordAccessToken = "";
+        public string CollabDiscordTokenExpiresUtc = "";
+
+        /// <summary>Title shown in the relay's session list when hosting.</summary>
+        public string CollabSessionTitle = "";
+
+        /// <summary>What the session is for (Jam, Show, Teaching, Help); shown in the session list.</summary>
+        public string CollabSessionPurpose = "Jam";
+
+        /// <summary>Lists a hosted relay session in the relay's session browser. Off: only people with the session ID find it.</summary>
+        public bool CollabListSession = false;
+
         // Boygrouping (show distribution to render nodes)
         /// <summary>Master switch: this machine participates in boygrouping. When set, the role
         /// below starts automatically shortly after launch — a show machine comes up in its role
@@ -343,6 +377,12 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         /// <summary>The master deploys and syncs to a render node as soon as it joins the group,
         /// so an added slave is current without anyone clicking Deploy &amp; Sync.</summary>
         public bool BoygroupAutoDeployOnJoin = true;
+
+        /// <summary>Where a render node takes its playback clock from. Internal = TiXL's own
+        /// NTP-style exchange over the session link (default, needs nothing). Ptp = the OS clock is
+        /// trusted because something else (a PTP daemon, e.g. linuxptp/phc2sys or w32time with a
+        /// PTP source) disciplines it — anchors then apply with near-zero offset error.</summary>
+        public string BoygroupClockSync = "Internal";
 
         /// <summary>Deploy-restart flood guard, persisted across the restarts it guards: if more
         /// than four deploy restarts happen inside two minutes the client stops restarting for
@@ -469,6 +509,16 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
     {
         Legacy,
         Magnetic,
+    }
+
+    /** Values are the largest short side in pixels; 0 means no limit. */
+    public enum WindowFillResolutionLimits
+    {
+        Unlimited = 0,
+        Max720p = 720,
+        Max1080p = 1080,
+        Max1440p = 1440,
+        Max2160p = 2160,
     }
 
     /** Who an input device drives; Editor means the camera of the output. Stored by name. */

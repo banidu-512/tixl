@@ -16,7 +16,24 @@ internal sealed class CollabUserIdentity
     public string Source { get; init; } = "local";
     public string AvatarUrl { get; init; } = "";
 
+    /// <summary>Language tag from the Discord profile ("hu", "en-US"); empty when not logged in.</summary>
+    public string Lang { get; init; } = "";
+
     public Vector4 AccentColor => CollabColors.FromPacked(UserSettings.Config.CollabCursorColor, UserId);
+
+    /// <summary>
+    /// The participant id of a Discord account. Derived from the account id, so the same person
+    /// has the same id (and color, and undo history) on every machine and in every session, and
+    /// a host can compute it from the account the relay verified.
+    /// </summary>
+    public static Guid UserIdForDiscordAccount(string discordId)
+    {
+        var hash = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes("tixl-collab-discord:" + discordId));
+        return new Guid(hash.AsSpan(0, 16));
+    }
+
+    /// <summary>Short display form of a language tag for lists: "hu" -> "HU", "en-US" -> "EN-US".</summary>
+    public static string FormatLang(string lang) => string.IsNullOrWhiteSpace(lang) ? "--" : lang.Trim().ToUpperInvariant();
 }
 
 internal static class CollabColors
