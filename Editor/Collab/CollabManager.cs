@@ -524,7 +524,7 @@ internal sealed class CollabManager
         if (CollabWebLobby.IsConfigured)
         {
             var config = UserSettings.Config;
-            CollabWebLobby.Register(RoomCode, roomKey,
+            CollabWebLobby.Register(RoomCode, roomKey, $"{relayHost}:{relayPort}",
                                     string.IsNullOrWhiteSpace(config.CollabSessionTitle)
                                         ? $"{LocalIdentity.DisplayName}'s session"
                                         : config.CollabSessionTitle.Trim(),

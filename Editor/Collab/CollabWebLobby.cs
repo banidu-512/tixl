@@ -159,13 +159,14 @@ internal static class CollabWebLobby
     }
 
     /// <summary>Registers the hosted session in the backend's list. Fire-and-forget.</summary>
-    public static void Register(string room, string key, string title, string purpose, string project,
+    public static void Register(string room, string key, string relayEndpoint, string title, string purpose, string project,
                                 string hostName, string lang, bool passwordProtected, bool listed)
     {
         if (!IsConfigured)
             return;
 
         var payload = RoomPayload(room, key);
+        payload["relay"] = relayEndpoint ?? "";
         payload["title"] = title;
         payload["purpose"] = purpose;
         payload["project"] = project;

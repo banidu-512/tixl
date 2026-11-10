@@ -60,7 +60,9 @@ try {
     };
 } catch (Throwable $e) {
     http_response_code(500);
-    echo json_encode(['ok' => false, 'error' => 'backend error']);
+    // Temporary diagnosis aid: ?debug=1 reveals the underlying reason; remove once stable.
+    $detail = isset($_GET['debug']) ? $e->getMessage() . ' @ ' . basename($e->getFile()) . ':' . $e->getLine() : '';
+    echo json_encode(['ok' => false, 'error' => 'backend error', 'detail' => $detail]);
     error_log('tixl-api: ' . $e->getMessage());
 }
 
@@ -74,8 +76,8 @@ function db(): PDO
     }
 
     $dir = __DIR__ . '/data';
-    if (!is_dir($dir)) {
-        mkdir($dir, 0700, true);
+    if (!is_dir($dir) && !@mkdir($dir, 0775, true) && !is_dir($dir)) {
+        throw new RuntimeException('cannot create the data folder (permissions?)');
     }
 
     $pdo = new PDO('sqlite:' . $dir . '/collab.sqlite', null, null, [
@@ -86,6 +88,7 @@ function db(): PDO
     $pdo->exec('CREATE TABLE IF NOT EXISTS rooms (
         room TEXT PRIMARY KEY,
         key_hash TEXT NOT NULL,
+        relay TEXT NOT NULL DEFAULT "",
         title TEXT NOT NULL DEFAULT "",
         purpose TEXT NOT NULL DEFAULT "",
         project TEXT NOT NULL DEFAULT "",
@@ -99,6 +102,13 @@ function db(): PDO
         signals TEXT NOT NULL DEFAULT "[]",
         updated INTEGER NOT NULL DEFAULT 0
     )');
+
+    // A database created by an older version may lack newer columns; add them in place.
+    $columns = $pdo->query('PRAGMA table_info(rooms)')->fetchAll(PDO::FETCH_COLUMN, 1);
+    if (!in_array('relay', $columns, true)) {
+        $pdo->exec('ALTER TABLE rooms ADD COLUMN relay TEXT NOT NULL DEFAULT ""');
+    }
+
     return $pdo;
 }
 
@@ -209,21 +219,43 @@ function op_register(array $input): void
             respond_error('relay must be host:port');
         }
 
+        // Fields the caller leaves out must not wipe what the room already has (a reconnecting
+        // host sends a partial hello): the update merges, the insert fills defaults.
+        $pwd = isset($input['pwd']) ? (!empty($input['pwd']) ? 1 : 0) : null;
+        $listed = isset($input['listed']) ? (!empty($input['listed']) ? 1 : 0) : null;
+        $members = isset($input['members']) ? max(1, (int)$input['members']) : null;
+        $maxMembers = isset($input['max']) ? max(2, (int)$input['max']) : null;
+
+        if ($existing !== null) {
+            $stmt = db()->prepare('UPDATE rooms SET key_hash = ?, relay = CASE WHEN ? = "" THEN relay ELSE ? END,
+                             title = CASE WHEN ? = "" THEN title ELSE ? END,
+                             purpose = CASE WHEN ? = "" THEN purpose ELSE ? END,
+                             project = CASE WHEN ? = "" THEN project ELSE ? END,
+                             host = CASE WHEN ? = "" THEN host ELSE ? END,
+                             lang = CASE WHEN ? = "" THEN lang ELSE ? END,
+                             pwd = COALESCE(?, pwd),
+                             listed = COALESCE(?, listed),
+                             members = COALESCE(?, members),
+                             max_members = COALESCE(?, max_members),
+                             updated = ?
+                           WHERE room = ?');
+            $stmt->execute([
+                key_hash($key),
+                $relay, $relay,
+                text_field($input, 'title', MAX_TITLE), text_field($input, 'title', MAX_TITLE),
+                text_field($input, 'purpose', MAX_PURPOSE), text_field($input, 'purpose', MAX_PURPOSE),
+                text_field($input, 'project', MAX_PROJECT), text_field($input, 'project', MAX_PROJECT),
+                text_field($input, 'host', MAX_NAME), text_field($input, 'host', MAX_NAME),
+                text_field($input, 'lang', MAX_LANG), text_field($input, 'lang', MAX_LANG),
+                $pwd, $listed, $members, $maxMembers,
+                time(),
+                $room,
+            ]);
+            respond_ok(['room' => $room]);
+        }
+
         $stmt = db()->prepare('INSERT INTO rooms (room, key_hash, relay, title, purpose, project, host, lang, pwd, listed, members, max_members, updated)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                           ON CONFLICT(room) DO UPDATE SET
-                             key_hash = excluded.key_hash,
-                             relay = excluded.relay,
-                             title = excluded.title,
-                             purpose = excluded.purpose,
-                             project = excluded.project,
-                             host = excluded.host,
-                             lang = excluded.lang,
-                             pwd = excluded.pwd,
-                             listed = excluded.listed,
-                             members = excluded.members,
-                             max_members = excluded.max_members,
-                             updated = excluded.updated');
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
     $stmt->execute([
         $room,
         key_hash($key),
@@ -233,10 +265,10 @@ function op_register(array $input): void
         text_field($input, 'project', MAX_PROJECT),
         text_field($input, 'host', MAX_NAME),
         text_field($input, 'lang', MAX_LANG),
-        !empty($input['pwd']) ? 1 : 0,
-        !empty($input['listed']) ? 1 : 0,
-        max(1, (int)($input['members'] ?? 1)),
-        max(2, (int)($input['max'] ?? 18)),
+        $pwd ?? 0,
+        $listed ?? 0,
+        $members ?? 1,
+        $maxMembers ?? 18,
         time(),
     ]);
 
@@ -332,14 +364,15 @@ function op_whisper(array $input): void
     }
 
     $key = (string)($input['key'] ?? '');
-    $from = text_field($input, 'name', MAX_NAME);
     $text = text_field($input, 'text', MAX_TEXT);
-    if ($from === '' || $text === '') {
-        respond_error('name and text required');
+    if ($text === '') {
+        respond_error('text required');
     }
 
     // With the room key this is the host replying; the reply is visible to the visitor it names.
+    // Without it this is a visitor whispering, which carries the visitor's name.
     $isHostReply = false;
+    $from = '';
     $to = '';
     if ($key !== '') {
         if (!key_matches($found, $key)) {
@@ -349,6 +382,11 @@ function op_whisper(array $input): void
         $to = text_field($input, 'to', MAX_NAME);
         if ($to === '') {
             respond_error('to required');
+        }
+    } else {
+        $from = text_field($input, 'name', MAX_NAME);
+        if ($from === '') {
+            respond_error('name required');
         }
     }
 
@@ -442,10 +480,11 @@ function op_signal(array $input): void
     }
 
     $signals = decode_list((string)$found['signals'], 16);
-    foreach ($signals as $signal) {
+    foreach ($signals as $index => $signal) {
         if ($signal['kind'] === 'offer' && $signal['nonce'] === $nonce) {
-            $signal['answer'] = $sdp;
-            $signal['answered'] = time();
+            // Write through the index: a foreach copy would silently drop the answer.
+            $signals[$index]['answer'] = $sdp;
+            $signals[$index]['answered'] = time();
             save_signals($room, $signals);
             respond_ok();
         }
