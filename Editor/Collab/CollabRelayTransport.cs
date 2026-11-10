@@ -22,9 +22,119 @@ namespace T3.Editor.Collab;
 ///
 /// Handshake, authentication and ops are unchanged end-to-end — the relay only splices bytes.
 /// </summary>
+/// <summary>
+/// What a peer tells the relay about itself when it opens or joins a room. The token lets the relay
+/// confirm the Discord account; the rest describes the room for the session list. The key is the
+/// room's secret: whoever presents it may re-open the room after its host went silent.
+/// </summary>
+internal sealed record CollabRelayHello(string Token = "",
+                                        string Name = "",
+                                        string Lang = "",
+                                        string Key = "",
+                                        string Instance = "",
+                                        string Title = "",
+                                        string Purpose = "",
+                                        string Project = "",
+                                        bool Public = false,
+                                        bool PasswordProtected = false);
+
 internal static class CollabRelayWire
 {
     public const byte BroadcastSlot = 0xFF;
+
+    /// <summary>Longest control line accepted from the relay (identity fields make them longer than a bare slot number).</summary>
+    public const int ControlLineLimit = 4096;
+
+    /// <summary>The relay's answer to re-opening a room whose host is still there.</summary>
+    public const string RoomHasLiveHostError = "room has a live host";
+
+    /// <summary>The relay's reply to the handshake, per connection: who the relay says we and the host are.</summary>
+    public static readonly System.Runtime.CompilerServices.ConditionalWeakTable<TcpClient, JObject> HandshakeReplies = new();
+
+    private static readonly Newtonsoft.Json.JsonSerializerSettings _asciiJson
+        = new() { StringEscapeHandling = Newtonsoft.Json.StringEscapeHandling.EscapeNonAscii };
+
+    /// <summary>The handshake line. "v":2 asks the relay for the longer replies; empty fields are left out to keep the line short.</summary>
+    public static string BuildRequest(string role, string roomCode, CollabRelayHello? hello)
+    {
+        var request = new JObject
+                          {
+                              ["role"] = role,
+                              ["room"] = (roomCode ?? "").Trim(),
+                              ["v"] = 2,
+                          };
+        if (hello != null)
+        {
+            void Add(string key, string value)
+            {
+                if (!string.IsNullOrEmpty(value))
+                    request[key] = value;
+            }
+
+            Add("token", hello.Token);
+            Add("name", hello.Name);
+            Add("lang", hello.Lang);
+            Add("key", hello.Key);
+            Add("inst", hello.Instance);
+            Add("title", hello.Title);
+            Add("purpose", hello.Purpose);
+            Add("project", hello.Project);
+            if (hello.Public)
+                request["public"] = true;
+
+            if (hello.PasswordProtected)
+                request["pwd"] = true;
+        }
+
+        return Newtonsoft.Json.JsonConvert.SerializeObject(request, _asciiJson) + "\n";
+    }
+
+    /// <summary>
+    /// Asks a relay for its listed rooms. Throws with a readable message when the relay cannot be
+    /// reached or does not keep a list.
+    /// </summary>
+    public static async Task<JArray> FetchRoomListAsync(string relayHost, int relayPort, CancellationToken cancellation)
+    {
+        using var client = new TcpClient();
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
+        timeout.CancelAfter(CollabProtocol.ConnectTimeoutMs);
+        await client.ConnectAsync(relayHost, relayPort, timeout.Token);
+        var stream = client.GetStream();
+        await stream.WriteAsync(Encoding.UTF8.GetBytes(BuildRequest("list", "", null)), timeout.Token);
+
+        // One line, but with up to a few hundred rooms on it.
+        const int maxListBytes = 512 * 1024;
+        using var received = new MemoryStream();
+        var buffer = new byte[8192];
+        while (received.Length < maxListBytes)
+        {
+            var read = await stream.ReadAsync(buffer, timeout.Token);
+            if (read == 0)
+                break;
+
+            received.Write(buffer, 0, read);
+            if (Array.IndexOf(buffer, (byte)'\n', 0, read) >= 0)
+                break;
+        }
+
+        JObject reply;
+        try
+        {
+            reply = JObject.Parse(Encoding.UTF8.GetString(received.ToArray()));
+        }
+        catch (Newtonsoft.Json.JsonException)
+        {
+            throw new Exception("the relay sent a malformed session list");
+        }
+
+        if (!(reply["ok"]?.Value<bool>() ?? false))
+        {
+            var detail = reply["error"]?.Value<string>() ?? "";
+            throw new Exception(detail == "unknown role" ? "this relay is too old to list sessions" : detail);
+        }
+
+        return reply["rooms"] as JArray ?? new JArray();
+    }
 
     public const int SlotOffsetInHostFrame = 4; // [int32 length][byte slot][byte type][payload]
 
@@ -70,7 +180,7 @@ internal static class CollabRelayWire
     {
         var sb = new StringBuilder(64);
         var buffer = new byte[1];
-        while (sb.Length < 256)
+        while (sb.Length < ControlLineLimit)
         {
             var read = await stream.ReadAsync(buffer, cancellation);
             if (read == 0)
@@ -94,6 +204,9 @@ internal static class CollabRelayWire
 internal class CollabRelayHostTransport : CollabTransport
 {
     public string AssignedRoomCode { get; private set; } = "";
+
+    /// <summary>The relay's handshake reply: carries what the relay verified about this host.</summary>
+    public JObject? RelayReply => CollabRelayWire.HandshakeReplies.TryGetValue(_relayClient, out var reply) ? reply : null;
 
     public override IReadOnlyList<CollabPeerConnection> Peers => _peerSnapshot;
 
@@ -129,9 +242,10 @@ internal class CollabRelayHostTransport : CollabTransport
     public void StartReading() => _ = Task.Run(() => ReadRelayLoopAsync(_cancellation.Token));
 
     /// <summary>Connects to the relay and registers as a room owner. Throws with a readable message on failure.</summary>
-    public static async Task<CollabRelayHostTransport> ConnectAsync(string relayHost, int relayPort, string roomCode, CancellationToken cancellation)
+    public static async Task<CollabRelayHostTransport> ConnectAsync(string relayHost, int relayPort, string roomCode, CancellationToken cancellation,
+                                                                    CollabRelayHello? hello = null)
     {
-        var (client, room) = await OpenRoomAsync(relayHost, relayPort, roomCode, cancellation);
+        var (client, room) = await OpenRoomAsync(relayHost, relayPort, roomCode, cancellation, hello);
         try
         {
             return new CollabRelayHostTransport(client, room);
@@ -145,7 +259,8 @@ internal class CollabRelayHostTransport : CollabTransport
 
     /// <summary>Shared by the relay and WebRTC host transports: both need a registered room first.</summary>
     protected static async Task<(TcpClient Client, string Room)> OpenRoomAsync(string relayHost, int relayPort, string roomCode,
-                                                                               CancellationToken cancellation)
+                                                                               CancellationToken cancellation,
+                                                                               CollabRelayHello? hello = null)
     {
         var client = new TcpClient();
         try
@@ -158,16 +273,14 @@ internal class CollabRelayHostTransport : CollabTransport
             client.SendTimeout = CollabProtocol.WriteTimeoutMs;
             var stream = client.GetStream();
 
-            var request = string.IsNullOrEmpty(roomCode)
-                              ? "{\"role\":\"host\",\"room\":\"\"}\n"
-                              : $"{{\"role\":\"host\",\"room\":\"{roomCode.Replace("\"", "")}\"}}\n";
-            var bytes = Encoding.UTF8.GetBytes(request);
+            var bytes = Encoding.UTF8.GetBytes(CollabRelayWire.BuildRequest("host", roomCode, hello));
             await stream.WriteAsync(bytes, timeout.Token);
 
             var (ok, detail, _, reply) = await CollabRelayWire.ReadControlReplyAsync(stream, timeout.Token);
             if (!ok)
                 throw new Exception(string.IsNullOrEmpty(detail) ? "relay refused the room" : detail);
 
+            CollabRelayWire.HandshakeReplies.AddOrUpdate(client, reply);
             return (client, reply["room"]?.Value<string>() ?? "");
         }
         catch
@@ -305,7 +418,7 @@ internal class CollabRelayHostTransport : CollabTransport
         var sb = new StringBuilder(64);
         sb.Append((char)firstByte);
         var buffer = new byte[1];
-        while (sb.Length < 256)
+        while (sb.Length < CollabRelayWire.ControlLineLimit)
         {
             var read = await _relayStream.ReadAsync(buffer, cancellation);
             if (read == 0)
@@ -337,6 +450,18 @@ internal class CollabRelayHostTransport : CollabTransport
 
                 CollabPeerConnection? member = null;
                 member = CreateMemberPeer(slot, () => RemovePeer(member));
+
+                // The relay checked the member's Discord token; what it reports here cannot be
+                // forged by the member, unlike the name in the member's own hello.
+                CollabProtocol.TryGetBool(json, "verified", out var verified);
+                if (verified)
+                {
+                    member.IsVerified = true;
+                    member.VerifiedName = CollabProtocol.GetString(json, "name");
+                    member.DiscordId = CollabProtocol.GetString(json, "did");
+                    member.Lang = CollabProtocol.GetString(json, "lang");
+                }
+
                 lock (_peers)
                 {
                     _peers.Add(member);
@@ -483,6 +608,9 @@ internal class CollabRelayClientTransport : CollabTransport
     private readonly TcpClient _relayClient;
     private readonly CancellationTokenSource _cancellation = new();
 
+    /// <summary>The relay's handshake reply: who the relay says we and the host are.</summary>
+    public JObject? RelayReply => CollabRelayWire.HandshakeReplies.TryGetValue(_relayClient, out var reply) ? reply : null;
+
     protected CollabRelayClientTransport(TcpClient relayClient)
     {
         _relayClient = relayClient;
@@ -490,9 +618,10 @@ internal class CollabRelayClientTransport : CollabTransport
     }
 
     /// <summary>Connects to the relay and joins the room. Throws with a readable message on failure.</summary>
-    public static async Task<CollabRelayClientTransport> ConnectAsync(string relayHost, int relayPort, string roomCode, CancellationToken cancellation)
+    public static async Task<CollabRelayClientTransport> ConnectAsync(string relayHost, int relayPort, string roomCode, CancellationToken cancellation,
+                                                                      CollabRelayHello? hello = null)
     {
-        var client = await JoinRoomAsync(relayHost, relayPort, roomCode, cancellation);
+        var client = await JoinRoomAsync(relayHost, relayPort, roomCode, cancellation, hello);
         try
         {
             return new CollabRelayClientTransport(client);
@@ -505,7 +634,8 @@ internal class CollabRelayClientTransport : CollabTransport
     }
 
     /// <summary>Shared by the relay and WebRTC client transports: both join the room the same way.</summary>
-    protected static async Task<TcpClient> JoinRoomAsync(string relayHost, int relayPort, string roomCode, CancellationToken cancellation)
+    protected static async Task<TcpClient> JoinRoomAsync(string relayHost, int relayPort, string roomCode, CancellationToken cancellation,
+                                                         CollabRelayHello? hello = null)
     {
         var client = new TcpClient();
         try
@@ -518,14 +648,14 @@ internal class CollabRelayClientTransport : CollabTransport
             client.SendTimeout = CollabProtocol.WriteTimeoutMs;
             var stream = client.GetStream();
 
-            var request = $"{{\"role\":\"join\",\"room\":\"{roomCode.Trim().Replace("\"", "")}\"}}\n";
-            var bytes = Encoding.UTF8.GetBytes(request);
+            var bytes = Encoding.UTF8.GetBytes(CollabRelayWire.BuildRequest("join", roomCode, hello));
             await stream.WriteAsync(bytes, timeout.Token);
 
-            var (ok, detail, _, _) = await CollabRelayWire.ReadControlReplyAsync(stream, timeout.Token);
+            var (ok, detail, _, reply) = await CollabRelayWire.ReadControlReplyAsync(stream, timeout.Token);
             if (!ok)
                 throw new Exception(string.IsNullOrEmpty(detail) ? "could not join room" : detail);
 
+            CollabRelayWire.HandshakeReplies.AddOrUpdate(client, reply);
             return client;
         }
         catch

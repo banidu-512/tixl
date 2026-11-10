@@ -78,6 +78,20 @@ internal sealed class CollabPeerConnection
 
     public Guid UserId { get; set; }
     public string Name { get; set; } = "";
+
+    /// <summary>True when the relay confirmed this peer's Discord account. Name, language and
+    /// account id then come from Discord, not from what the peer says about itself.</summary>
+    public bool IsVerified { get; set; }
+
+    public string VerifiedName { get; set; } = "";
+    public string DiscordId { get; set; } = "";
+
+    /// <summary>Language tag of the peer (Discord locale, e.g. "hu" or "en-US"); empty when unknown.</summary>
+    public string Lang { get; set; } = "";
+
+    /// <summary>Port this peer would host a direct session on; used when it takes over as host.</summary>
+    public int ListenPort { get; set; }
+
     public byte PresencePeerId => (byte)AssignedId;
 
     /// <summary>Latest presence. Swapped atomically by reference; never mutated in place.</summary>

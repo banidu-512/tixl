@@ -38,6 +38,18 @@ internal sealed partial class SettingsWindow
 
         DrawDiscordLoginButton();
 
+        if (FormInputs.AddCheckBox("Stay logged in",
+                                   ref config.CollabDiscordStayLoggedIn,
+                                   """
+                                   Keeps the Discord login in the settings file, so you stay verified for other
+                                   participants after restarting TiXL. Off: the login is forgotten when TiXL closes.
+                                   """,
+                                   false))
+        {
+            changed = true;
+            CollabDiscordAuth.ApplyStayLoggedIn();
+        }
+
         FormInputs.AddVerticalSpace();
 
         changed |= FormInputs.AddStringInput("Nickname",
@@ -60,6 +72,24 @@ internal sealed partial class SettingsWindow
         changed |= DrawSecretInput("Session password", ref config.CollabPassword,
                                    "Empty = anyone with the session ID can join. Recommended when the ID is shared widely.");
 
+        changed |= FormInputs.AddCheckBox("List in session browser",
+                                          ref config.CollabListSession,
+                                          """
+                                          Shows a session you host in the relay's list of open sessions, with your name,
+                                          the title and how many people are in it. Off: only people who have the
+                                          session ID can find it. Applies to the next session you host.
+                                          """,
+                                          false);
+        if (config.CollabListSession)
+        {
+            changed |= FormInputs.AddStringInput("Session title",
+                                                 ref config.CollabSessionTitle,
+                                                 $"{manager.LocalIdentity.DisplayName}'s session",
+                                                 null,
+                                                 "What people see in the session browser.");
+            changed |= DrawPurposeInput(ref config.CollabSessionPurpose);
+        }
+
         FormInputs.AddVerticalSpace();
 
         if (manager.IsSessionActive)
@@ -68,12 +98,26 @@ internal sealed partial class SettingsWindow
         }
         else
         {
+            if (manager.IsReconnecting)
+            {
+                // The link dropped; the session is being found again (or taken over).
+                FormInputs.DrawInputLabel("Status");
+                CustomComponents.StylizedText(manager.StatusText, Fonts.FontNormal, UiColors.StatusWarning);
+                FormInputs.SetCursorToParameterEdit();
+                if (ImGui.SmallButton("Stop Reconnecting"))
+                    manager.Leave(manual: true);
+            }
+
             FormInputs.AddVerticalSpace();
             CustomComponents.HelpText("""
                                       No session is running. Use the menu bar at the top:
                                       Collab ▸ Host session starts one and gives you a session ID;
                                       Collab ▸ Join session connects with the ID the host shared.
+                                      Or pick a listed session below.
                                       """);
+
+            if (!manager.IsReconnecting)
+                DrawSessionBrowser(manager);
         }
 
         if (!string.IsNullOrEmpty(manager.ErrorText))
@@ -281,6 +325,16 @@ internal sealed partial class SettingsWindow
                 ImGui.TextUnformatted(string.IsNullOrEmpty(name) ? "unnamed participant" : name);
                 ImGui.PopStyleColor();
 
+                var info = manager.GetParticipantInfo(peerId);
+                ImGui.SameLine();
+                ImGui.TextDisabled(CollabUserIdentity.FormatLang(info.Lang));
+                if (!info.Verified)
+                {
+                    ImGui.SameLine();
+                    ImGui.TextDisabled("unverified");
+                    CustomComponents.TooltipForLastItem("This name is what the participant typed in. Names confirmed by a Discord login through the relay do not carry this mark.");
+                }
+
                 if (peerId == 0)
                 {
                     ImGui.SameLine();
@@ -311,10 +365,19 @@ internal sealed partial class SettingsWindow
 
                     ImGui.PopID();
                     CustomComponents.TooltipForLastItem("Removes this participant from the session. They can join again unless the session has a password.");
+
+                    ImGui.SameLine();
+                    ImGui.PushID("makehost" + peerId);
+                    if (ImGui.SmallButton("Make Host"))
+                        _pendingHostTransferPeerId = peerId;
+
+                    ImGui.PopID();
+                    CustomComponents.TooltipForLastItem("Hands the session over to this participant. It keeps running on their machine; you stay in it as a participant.");
                 }
             }
 
             DrawKickConfirmation(manager);
+            DrawHostTransferConfirmation(manager);
         }
 
         FormInputs.AddVerticalSpace();
@@ -329,7 +392,10 @@ internal sealed partial class SettingsWindow
                                   How it works:
                                   - Late joiners receive full snapshots of the compositions edited in the session - their local changes to those compositions are replaced by the host's state.
                                   - Graph edits are synchronized: adding and deleting operators, connections, parameter changes, renames and moving nodes.
-                                  - Undo/Redo are session-wide while connected: Ctrl+Z reverts the last edit of ANY participant (the host keeps the shared history).
+                                  - Undo/Redo work per person while connected: Ctrl+Z reverts YOUR last edit. An edit someone else has changed since is skipped.
+                                  - If the connection drops, TiXL reconnects by itself and sends your unconfirmed edits again.
+                                  - If the host disappears, the participant who joined first takes over after about 20 seconds; the host can also hand over with "Make Host".
+                                  - Copies that drift apart are noticed within seconds and repaired from the host's state.
                                   - Parameters someone is editing are soft-locked: they appear disabled with a "(locked)" marker until released.
                                   - For sessions over the internet, the relay session ID works without port forwarding; a LAN host needs an open/forwarded port or a VPN like Tailscale.
                                   """);
@@ -567,6 +633,229 @@ internal sealed partial class SettingsWindow
         {
             FormInputs.SetCursorToParameterEdit();
             CustomComponents.StylizedText(CollabManager.Instance.LocalIdentity.DisplayName, Fonts.FontNormal, UiColors.StatusActivated);
+            ImGui.SameLine();
+            ImGui.TextDisabled(CollabUserIdentity.FormatLang(UserSettings.Config.CollabDiscordLocale));
+            CustomComponents.TooltipForLastItem("Language of your Discord profile. Shown next to your name in sessions and in the session browser.");
+            ImGui.SameLine();
+            if (ImGui.SmallButton("Log Out"))
+                CollabDiscordAuth.LogOut();
+
+            FormInputs.SetCursorToParameterEdit();
+            if (CollabDiscordAuth.HasValidToken)
+            {
+                ImGui.TextDisabled("Relay sessions show this account as verified.");
+            }
+            else
+            {
+                ImGui.PushStyleColor(ImGuiCol.Text, UiColors.StatusWarning.Rgba);
+                ImGui.TextWrapped("Log in again to appear as verified - the login of an earlier run was not kept.");
+                ImGui.PopStyleColor();
+            }
         }
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Session browser
+    // ---------------------------------------------------------------------------------------
+
+    private static readonly string[] _sessionPurposes = ["Jam", "Show", "Teaching", "Help", "Other"];
+    private static string _lobbyFilter = "";
+    private static string _lobbyPurposeFilter = "All";
+    private static string _lobbySelectedCode = "";
+    private static bool _lobbyLoadedOnce;
+
+    private static bool DrawPurposeInput(ref string purpose)
+    {
+        var changed = false;
+        FormInputs.DrawInputLabel("Purpose");
+        ImGui.SetNextItemWidth(FormInputs.GetAvailableInputSize(null, false, true).X);
+        if (ImGui.BeginCombo("##collabPurpose", string.IsNullOrEmpty(purpose) ? "Jam" : purpose))
+        {
+            foreach (var option in _sessionPurposes)
+            {
+                if (!ImGui.Selectable(option, option == purpose))
+                    continue;
+
+                purpose = option;
+                changed = true;
+            }
+
+            ImGui.EndCombo();
+        }
+
+        return changed;
+    }
+
+    /// <summary>
+    /// The sessions the relay lists: who hosts, what it is about, how full it is. Pick a row and
+    /// join. Only sessions whose host turned on "List in session browser" show up here.
+    /// </summary>
+    private static void DrawSessionBrowser(CollabManager manager)
+    {
+        FormInputs.AddVerticalSpace();
+        FormInputs.AddSectionSubHeader("Open sessions");
+        FormInputs.AddVerticalSpace(4);
+
+        ParseRelayAddress(UserSettings.Config.CollabRelayAddress, out var relayHost, out var relayPort);
+        if (!_lobbyLoadedOnce)
+        {
+            _lobbyLoadedOnce = true;
+            CollabLobby.Refresh(relayHost, relayPort);
+        }
+
+        var fontSize = ImGui.GetFontSize();
+        FormInputs.SetIndentToLeft();
+        ImGui.SetNextItemWidth(fontSize * 11);
+        ImGui.InputTextWithHint("##lobbyFilter", "Name or title", ref _lobbyFilter, 64);
+
+        ImGui.SameLine();
+        ImGui.SetNextItemWidth(fontSize * 7);
+        if (ImGui.BeginCombo("##lobbyPurpose", _lobbyPurposeFilter))
+        {
+            if (ImGui.Selectable("All", _lobbyPurposeFilter == "All"))
+                _lobbyPurposeFilter = "All";
+
+            foreach (var option in _sessionPurposes)
+            {
+                if (ImGui.Selectable(option, option == _lobbyPurposeFilter))
+                    _lobbyPurposeFilter = option;
+            }
+
+            ImGui.EndCombo();
+        }
+
+        ImGui.SameLine();
+        ImGui.BeginDisabled(CollabLobby.IsRefreshing);
+        if (ImGui.Button("Refresh"))
+            CollabLobby.Refresh(relayHost, relayPort);
+
+        ImGui.EndDisabled();
+        if (CollabLobby.IsRefreshing)
+        {
+            ImGui.SameLine();
+            ImGui.TextDisabled("loading...");
+        }
+
+        if (!string.IsNullOrEmpty(CollabLobby.ErrorText))
+        {
+            ImGui.PushStyleColor(ImGuiCol.Text, UiColors.StatusWarning.Rgba);
+            ImGui.TextWrapped(CollabLobby.ErrorText);
+            ImGui.PopStyleColor();
+        }
+
+        LobbyRoom? selected = null;
+        var joinNow = false;
+        const ImGuiTableFlags tableFlags = ImGuiTableFlags.BordersInnerH | ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY;
+        var tableHeight = ImGui.GetFrameHeightWithSpacing() * 8;
+        if (ImGui.BeginTable("##collabLobby", 6, tableFlags, new Vector2(0, tableHeight)))
+        {
+            ImGui.TableSetupScrollFreeze(0, 1);
+            ImGui.TableSetupColumn("Lang", ImGuiTableColumnFlags.WidthFixed, fontSize * 3.5f);
+            ImGui.TableSetupColumn("Host", ImGuiTableColumnFlags.WidthStretch, 0.24f);
+            ImGui.TableSetupColumn("Title", ImGuiTableColumnFlags.WidthStretch, 0.42f);
+            ImGui.TableSetupColumn("Purpose", ImGuiTableColumnFlags.WidthStretch, 0.16f);
+            ImGui.TableSetupColumn("Members", ImGuiTableColumnFlags.WidthFixed, fontSize * 4.5f);
+            ImGui.TableSetupColumn("Access", ImGuiTableColumnFlags.WidthFixed, fontSize * 5f);
+            ImGui.TableHeadersRow();
+
+            foreach (var room in CollabLobby.Rooms)
+            {
+                if (_lobbyPurposeFilter != "All" && !string.Equals(room.Purpose, _lobbyPurposeFilter, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                if (_lobbyFilter.Length > 0
+                    && !room.HostName.Contains(_lobbyFilter, StringComparison.OrdinalIgnoreCase)
+                    && !room.Title.Contains(_lobbyFilter, StringComparison.OrdinalIgnoreCase)
+                    && !room.Project.Contains(_lobbyFilter, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                var isSelected = room.Code == _lobbySelectedCode;
+                ImGui.TableNextRow();
+                ImGui.TableNextColumn();
+                ImGui.PushID(room.Code);
+                if (ImGui.Selectable(CollabUserIdentity.FormatLang(room.Lang), isSelected,
+                                     ImGuiSelectableFlags.SpanAllColumns | ImGuiSelectableFlags.AllowDoubleClick))
+                {
+                    _lobbySelectedCode = room.Code;
+                    isSelected = true;
+                    joinNow = ImGui.IsMouseDoubleClicked(ImGuiMouseButton.Left);
+                }
+
+                ImGui.PopID();
+                if (isSelected)
+                    selected = room;
+
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted(string.IsNullOrEmpty(room.HostName) ? "unnamed" : room.HostName);
+                if (!room.HostVerified)
+                {
+                    ImGui.SameLine();
+                    ImGui.TextDisabled("?");
+                    CustomComponents.TooltipForLastItem("This name is not confirmed by a Discord login.");
+                }
+
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted(room.Title);
+                if (!string.IsNullOrEmpty(room.Project))
+                    CustomComponents.TooltipForLastItem($"Project: {room.Project}");
+
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted(room.Purpose);
+
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted($"{room.Members}/{room.MaxMembers}");
+
+                ImGui.TableNextColumn();
+                ImGui.TextDisabled(room.PasswordProtected ? "password" : "open");
+            }
+
+            ImGui.EndTable();
+        }
+
+        if (CollabLobby.Rooms.Count == 0 && !CollabLobby.IsRefreshing && string.IsNullOrEmpty(CollabLobby.ErrorText))
+            ImGui.TextDisabled("No listed sessions on this relay right now.");
+
+        ImGui.BeginDisabled(selected == null);
+        if (ImGui.Button("Join Session") || (joinNow && selected != null))
+        {
+            if (selected != null)
+            {
+                ShowControlMode.Activate(ShowControlMode.Collab);
+                ParseRelayAddress(CollabLobby.RelayEndpoint, out var joinHost, out var joinPort);
+                manager.JoinViaRelay(joinHost, joinPort, selected.Code, UserSettings.Config.CollabPassword ?? "");
+            }
+        }
+
+        ImGui.EndDisabled();
+        if (selected is { PasswordProtected: true })
+        {
+            ImGui.SameLine();
+            ImGui.TextDisabled("uses the session password above, or asks for it");
+        }
+
+        FormInputs.SetIndentToParameters();
+    }
+
+    private static int _pendingHostTransferPeerId = -1;
+
+    /// <summary>Two-step handover: the button asks, this confirms.</summary>
+    private static void DrawHostTransferConfirmation(CollabManager manager)
+    {
+        if (_pendingHostTransferPeerId < 0)
+            return;
+
+        var name = manager.Roster.TryGetValue(_pendingHostTransferPeerId, out var found) ? found : $"#{_pendingHostTransferPeerId}";
+        FormInputs.AddVerticalSpace(4);
+        ImGui.TextWrapped($"Make {name} the host? The session continues on their machine and you stay in it as a participant.");
+
+        if (ImGui.Button("Make Host"))
+        {
+            manager.TransferHostTo(_pendingHostTransferPeerId);
+            _pendingHostTransferPeerId = -1;
+        }
+
+        ImGui.SameLine();
+        if (ImGui.Button("Cancel##hostTransfer"))
+            _pendingHostTransferPeerId = -1;
     }
 }

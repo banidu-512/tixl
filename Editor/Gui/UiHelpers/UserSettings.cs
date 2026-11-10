@@ -342,6 +342,25 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public string CollabDiscordUserName = "";
         public string CollabDiscordUserAvatar = "";
 
+        /// <summary>Language tag of the Discord profile ("hu", "en-US"); shown next to the name in sessions.</summary>
+        public string CollabDiscordLocale = "";
+
+        /// <summary>Keeps the Discord token in this file so the account stays confirmed to other
+        /// participants across restarts. Off: the token lives in memory only and a restart needs a new login.</summary>
+        public bool CollabDiscordStayLoggedIn = false;
+
+        public string CollabDiscordAccessToken = "";
+        public string CollabDiscordTokenExpiresUtc = "";
+
+        /// <summary>Title shown in the relay's session list when hosting.</summary>
+        public string CollabSessionTitle = "";
+
+        /// <summary>What the session is for (Jam, Show, Teaching, Help); shown in the session list.</summary>
+        public string CollabSessionPurpose = "Jam";
+
+        /// <summary>Lists a hosted relay session in the relay's session browser. Off: only people with the session ID find it.</summary>
+        public bool CollabListSession = false;
+
         // Boygrouping (show distribution to render nodes)
         /// <summary>Master switch: this machine participates in boygrouping. When set, the role
         /// below starts automatically shortly after launch — a show machine comes up in its role
