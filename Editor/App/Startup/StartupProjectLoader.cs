@@ -1,6 +1,7 @@
-#nullable enable
+﻿#nullable enable
 using System.IO;
 using ImGuiNET;
+using T3.Core.Logging;
 using T3.Editor.Gui.UiHelpers;
 using T3.Editor.Gui.Window;
 using T3.Editor.UiModel;
@@ -25,8 +26,24 @@ internal static class StartupProjectLoader
         if (_checked || ImGui.GetFrameCount() <= 2)
             return;
 
+        // An explicit --project argument always wins: scripted and launcher-driven sessions don't
+        // depend on the Startup setting.
+        var cliFolder = Program.ProjectFolderArgument;
+
         // The Startup master switch gates the autoload: an editor with it disabled starts
         // normally with the Hub even when a startup project is still configured.
+        if (!string.IsNullOrWhiteSpace(cliFolder))
+        {
+            var graphWindowForCli = GetGraphWindow();
+            if (graphWindowForCli == null && ImGui.GetFrameCount() <= MaxFramesToAwaitGraphWindow)
+                return;
+
+            _checked = true;
+            if (!TryOpen(cliFolder))
+                Log.Warning($"Could not open the project folder passed with --project: {cliFolder}");
+            return;
+        }
+
         if (!UserSettings.Config.StartupEnabled)
         {
             _checked = true;

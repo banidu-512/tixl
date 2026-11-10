@@ -1,4 +1,4 @@
-#nullable enable
+﻿#nullable enable
 using T3.Graphics.Compat;
 using T3.Editor.Gui.Windows.OutputSetup;
 using SilkWindows;
@@ -428,6 +428,9 @@ internal static class Program
 
     /// <summary>Set via <c>--no-reopen</c> — starts in the project hub, so scripted sessions get a predictable start.</summary>
     internal static bool SkipProjectReopen { get; private set; }
+
+    /// <summary>Set via <c>--project=&lt;folder&gt;</c> — opens this project folder instead of the last session.</summary>
+    internal static string? ProjectFolderArgument { get; private set; }
 
     /// <summary>Set via <c>--autostart</c>: this launch came from the OS login entry, not a manual start.</summary>
     internal static bool StartedByOsAutostart { get; private set; }

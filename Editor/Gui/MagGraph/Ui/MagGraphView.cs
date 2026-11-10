@@ -1,4 +1,4 @@
-#nullable enable
+﻿#nullable enable
 using System.Diagnostics;
 using System.IO;
 using ImGuiNET;
@@ -203,22 +203,6 @@ internal sealed partial class MagGraphView : ScalableCanvas, IGraphView
     }
 
     public bool HasActiveInteraction => _context.StateMachine.CurrentState != GraphStates.Default;
-
-    /// <summary>
-    /// Bounds of a node exactly as drawn here (animated position, full height including its input
-    /// rows) — the symbol UI's own size only covers the one-line variant. Used by overlays that frame nodes.
-    /// </summary>
-    internal bool TryGetItemBounds(Guid id, out Vector2 posOnCanvas, out Vector2 size)
-    {
-        posOnCanvas = default;
-        size = default;
-        if (!_context.Layout.Items.TryGetValue(id, out var item) || item.IsCollapsedAway)
-            return false;
-
-        posOnCanvas = item.DampedPosOnCanvas;
-        size = item.Size;
-        return true;
-    }
 
     /** For the app menu, which offers the graph's edit actions without being part of its drawing. */
     internal GraphUiContext Context => _context;

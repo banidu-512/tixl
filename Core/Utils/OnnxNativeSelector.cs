@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
@@ -69,6 +69,13 @@ public static class OnnxNativeSelector
             Selected[ortAssembly] = chosen;
             return chosen;
         }
+    }
+
+    /// <summary>True when this build's native runtime folder is shipped next to the given ONNX Runtime assembly.</summary>
+    public static bool IsShipped(Assembly ortAssembly, Build build)
+    {
+        var assemblyDir = Path.GetDirectoryName(ortAssembly.Location) ?? AppContext.BaseDirectory;
+        return HasNative(assemblyDir, build);
     }
 
     public static string Describe(Build build) => build == Build.Gpu ? "CUDA" : "DirectML";

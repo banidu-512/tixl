@@ -1,4 +1,4 @@
-#nullable enable
+﻿#nullable enable
 using System.Threading;
 using T3.Core.Utils;
 using T3.Core.Video;
@@ -602,8 +602,6 @@ namespace Lib.io.video
                 Width = width;
                 Height = height;
             }
-
-            base.Dispose(isDisposing);
         }
 
         private const int NoRunId = 0;

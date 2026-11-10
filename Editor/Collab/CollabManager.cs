@@ -1,4 +1,4 @@
-#nullable enable
+﻿#nullable enable
 using System.Collections.Concurrent;
 using System.IO;
 using System.Net;
@@ -823,6 +823,52 @@ internal sealed class CollabManager
                 JoinViaRelay(relayHost[..relaySeparator], relayPort, roomCode, UserSettings.Config.CollabPassword ?? "");
             }
         }
+    }
+
+    // -- Password-request dialog: a join turned away by a locked session asks for the password --
+    private string? _passwordRequestMessage;
+    private string? _passwordRequestTarget;
+    private (bool relay, string host, int port, string roomCode)? _pendingPasswordJoin;
+
+    /// <summary>True while a join is waiting for the session password (drives the password dialog).</summary>
+    public bool IsPasswordRequested => _passwordRequestMessage != null;
+
+    /// <summary>The message the rejecting side sent along with the password request.</summary>
+    public string PasswordRequestMessage => _passwordRequestMessage ?? "";
+
+    /// <summary>The session being joined, for the dialog's subtitle.</summary>
+    public string? PasswordRequestTarget => _passwordRequestTarget;
+
+    /// <summary>Called by the transport when a join was rejected because the session is locked.</summary>
+    public void RequestSessionPassword(string message, string target, bool relay, string host, int port, string roomCode)
+    {
+        _passwordRequestMessage = string.IsNullOrEmpty(message) ? "This session is password protected." : message;
+        _passwordRequestTarget = target;
+        _pendingPasswordJoin = (relay, host, port, roomCode);
+    }
+
+    /// <summary>Retries the pending join with the password the user entered.</summary>
+    public void SubmitRequestedPassword(string password)
+    {
+        var pending = _pendingPasswordJoin;
+        _passwordRequestMessage = null;
+        _passwordRequestTarget = null;
+        _pendingPasswordJoin = null;
+        if (pending == null)
+            return;
+
+        if (pending.Value.relay)
+            JoinViaRelay(pending.Value.host, pending.Value.port, pending.Value.roomCode, password);
+        else
+            JoinDirect(pending.Value.host, pending.Value.port, password);
+    }
+
+    /// <summary>Abandons the pending password join.</summary>
+    public void CancelPasswordRequest()
+    {
+        _passwordRequestMessage = null;
+        _passwordRequestTarget = null;
+        _pendingPasswordJoin = null;
     }
 
     /// <summary>Closes the focused project when it is the one the session shared.</summary>

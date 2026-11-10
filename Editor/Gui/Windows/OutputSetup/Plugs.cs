@@ -1,4 +1,4 @@
-#nullable enable
+﻿#nullable enable
 using T3.Editor.SystemUi;
 using T3.Core.DataTypes.Vector;
 using T3.Core.Output;
@@ -156,22 +156,6 @@ internal static class Plugs
             BindOutputToLaser(machineConfig, outputId, plugId);
         else
             BindOutputToStream(machineConfig, outputId, plugId);
-    }
-
-    /// <summary>Drops an output's binding; the next frame's presentation pass takes its window down.</summary>
-    /// <summary>Drops one of an output's bindings, keeping the others.</summary>
-    public static void UnbindOutput(MachineConfig machineConfig, Guid outputId, Guid plugId)
-    {
-        for (var i = machineConfig.Bindings.Count - 1; i >= 0; i--)
-        {
-            var binding = machineConfig.Bindings[i];
-            if (binding.OutputId != outputId || BoundPlugId(binding) != plugId)
-                continue;
-
-            machineConfig.Bindings.RemoveAt(i);
-        }
-
-        OutputSetupHandling.SaveActive();
     }
 
     public static void UnbindOutput(MachineConfig machineConfig, Guid outputId)

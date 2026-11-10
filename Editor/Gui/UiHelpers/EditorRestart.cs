@@ -1,5 +1,6 @@
-#nullable enable
+﻿#nullable enable
 using System.Diagnostics;
+using System.IO;
 using T3.Editor.App.Startup;
 using T3.Editor.SystemUi;
 

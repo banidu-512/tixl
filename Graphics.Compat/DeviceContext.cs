@@ -1,4 +1,4 @@
-using System.Numerics;
+﻿using System.Numerics;
 using T3.Graphics;
 
 namespace T3.Graphics.Compat;
@@ -389,24 +389,6 @@ public sealed class DeviceContext
         var size = SizeOf(resource);
         stream = new DataStream(box.DataPointer, size, mode != MapMode.WriteDiscard, mode != MapMode.Read);
         return box;
-    }
-
-    /// <summary>
-    /// Maps for reading without waiting for queued GPU work. Returns false when the backend
-    /// cannot hand over stable contents yet; callers keep their last good read instead of
-    /// stalling the render thread. Used by the laser camera's pipelined capture staging.
-    /// </summary>
-    public unsafe bool TryMapSubresourceForRead(Resource resource, int subresource, out DataStream stream)
-    {
-        stream = null;
-        if (resource.Native == null)
-            return false;
-
-        if (!Backend.TryMapForRead(resource.Native, subresource, out var mapped))
-            return false;
-
-        stream = new DataStream((IntPtr)mapped.Data, mapped.SizeInBytes, canRead: true, canWrite: false);
-        return true;
     }
 
     /// <summary>Reports how large the mapped mip is, which the dynamic-texture upload path uses.</summary>

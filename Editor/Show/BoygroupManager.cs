@@ -1,4 +1,4 @@
-#nullable enable
+﻿#nullable enable
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO;
@@ -1225,6 +1225,18 @@ internal sealed class BoygroupManager
             client.StatusText = "checking project";
             SendJson(client.Peer, new { t = "requestInventory" });
         }
+    }
+
+    /// <summary>
+    /// A boygroup server forwards setup edits to its render nodes as they are saved. A machine that
+    /// isn't serving a group has no one to forward to, so this is a no-op there.
+    /// </summary>
+    public void OnSetupSaved()
+    {
+        if (State != BoygroupState.Server)
+            return;
+
+        PushSetupToGroup();
     }
 
     /// <summary>Pushes the active output setup file so clients render the master's output config.</summary>

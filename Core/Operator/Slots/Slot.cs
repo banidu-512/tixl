@@ -1,4 +1,4 @@
-#nullable enable
+﻿#nullable enable
 using System;
 using System.Linq;
 using System.Runtime.CompilerServices;
@@ -358,7 +358,6 @@ public class Slot<T> : ISlot, ITimeClipRemapTarget
     }
 
     protected Slot<T>[] InputConnections = [];
-    private bool _reportedEmptyConnection;
 
     public int InvalidateGraph()
     {

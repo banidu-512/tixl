@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Threading;
 using Sdcb.FFmpeg.Codecs;
@@ -78,6 +78,7 @@ public sealed class VideoDecoderSession : IDisposable
     /// stopped sending — without it a stalled read blocks its thread indefinitely.</param>
     public static unsafe VideoDecoderSession? TryOpen(string url, VideoPlaybackOptimization optimization, out string? error,
                                                       IReadOnlyDictionary<string, string>? demuxerOptions = null,
+                                                      string? inputFormat = null, bool lowLatency = false,
                                                       CancellationToken cancellationToken = default,
                                                       TimeSpan ioTimeout = default)
     {
@@ -436,6 +437,7 @@ public sealed class VideoDecoderSession : IDisposable
     /// </summary>
     public unsafe bool TryReadNextFrame(out long framePts)
     {
+        var pendingReads = 0;
         framePts = 0;
 
         // A cancelled live session stops here, at the frame boundary, rather than after the I/O timeout.

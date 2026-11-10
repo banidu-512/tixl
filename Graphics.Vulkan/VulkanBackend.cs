@@ -1,4 +1,4 @@
-using System.Runtime.CompilerServices;
+﻿using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using T3.Graphics;
 using Vortice.Vulkan;
@@ -1242,27 +1242,6 @@ public sealed unsafe class VulkanBackend : IGraphicsBackend, IDisposable
 
             default:
                 GraphicsLog.WarnOnce("Only resources created with readback or upload memory can be mapped.");
-                return default;
-        }
-    }
-
-    /// <summary>The mapped view of a resource's host-visible memory; default when the resource has none.</summary>
-    private static MappedMemory MappedMemoryOf(GpuResource resource)
-    {
-        switch (resource)
-        {
-            case VulkanBuffer buffer when buffer.Mapped != null:
-                return new MappedMemory(buffer.Mapped, buffer.Description.SizeInBytes, buffer.Description.SizeInBytes,
-                                        buffer.Description.SizeInBytes);
-
-            case VulkanTexture texture when texture.Mapped != null:
-            {
-                var rowPitch = texture.Description.Width * FormatSizes.BytesPerPixel(texture.Description.Format);
-                var size = SizeOf(texture.Description);
-                return new MappedMemory(texture.Mapped, rowPitch, (int)size, (int)size);
-            }
-
-            default:
                 return default;
         }
     }
