@@ -1,4 +1,4 @@
-#nullable enable
+﻿#nullable enable
 using T3.Graphics.Compat;
 using T3.Editor.Gui.Windows.OutputSetup;
 using SilkWindows;
@@ -14,6 +14,7 @@ using T3.Core.Resource.ShaderCompiling;
 using T3.Core.SystemUi;
 using T3.SystemUi;
 using T3.Core.Settings;
+using T3.Core.Utils;
 using T3.IoServices.Midi;
 using T3.Editor.App;
 using T3.Editor.Compilation;
@@ -33,6 +34,7 @@ using T3.Editor.UiModel.Helpers;
 using T3.Editor.UiModel.ProjectHandling;
 using SDL;
 using T3.SdlPlatform;
+using T3.SystemUi;
 using ShaderCompiler = T3.Core.Resource.ShaderCompiling.ShaderCompiler;
 
 namespace T3.Editor;
@@ -119,6 +121,15 @@ internal static class Program
 
     private static void Main(string[] args)
     {
+        // Isolated Assimp worker: this process was started by [AssimpImport]/[AssimpExport] and must
+        // not boot the editor. Must run before settings, logging, graphics or the crash watchdog.
+        if (IsolatedAssimpHost.TryRun(args, out var hostExitCode))
+        {
+            Console.Out.Flush();
+            Console.Error.Flush();
+            Environment.Exit(hostExitCode);
+        }
+
         // Must run before any code that may trigger assembly resolution.
         T3.Core.Diagnostics.AssemblyLoadDiagnostics.Install();
 
@@ -418,6 +429,9 @@ internal static class Program
     /// <summary>Set via <c>--no-reopen</c> — starts in the project hub, so scripted sessions get a predictable start.</summary>
     internal static bool SkipProjectReopen { get; private set; }
 
+    /// <summary>Set via <c>--project=&lt;folder&gt;</c> — opens this project folder instead of the last session.</summary>
+    internal static string? ProjectFolderArgument { get; private set; }
+
     /// <summary>Set via <c>--autostart</c>: this launch came from the OS login entry, not a manual start.</summary>
     internal static bool StartedByOsAutostart { get; private set; }
 
@@ -429,12 +443,31 @@ internal static class Program
     private static void ApplyWindowArgs(string[] args)
     {
         const string windowFlag = "--window";
+        const string projectFlag = "--project";
         for (var i = 0; i < args.Length; i++)
         {
             var arg = args[i];
             if (arg.Equals("--no-splash", StringComparison.OrdinalIgnoreCase))
             {
                 SkipSplash = true;
+                continue;
+            }
+
+            if (arg.Equals(App.Startup.OsAutostart.ArgMarker, StringComparison.OrdinalIgnoreCase))
+            {
+                StartedByOsAutostart = true;
+                continue;
+            }
+
+            if (arg.StartsWith(projectFlag + "=", StringComparison.OrdinalIgnoreCase))
+            {
+                ProjectFolderArgument = arg[(projectFlag.Length + 1)..];
+                continue;
+            }
+
+            if (arg.Equals(projectFlag, StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+            {
+                ProjectFolderArgument = args[i + 1];
                 continue;
             }
 
