@@ -1,6 +1,5 @@
 using ImGuiNET;
 using System.Diagnostics;
-using T3.Core.Operator;
 using T3.Editor.Gui.MagGraph.Interaction;
 using T3.Editor.Gui.Interaction;
 using T3.Editor.Gui.Interaction.Keyboard;
@@ -106,19 +105,10 @@ namespace T3.Editor.Gui.MagGraph.States
                     instance = hoveredItem.Instance;
             }
 
-            if (instance == null || !CanOpen(instance))
+            if (instance == null || instance.Children.Count == 0)
                 return;
 
             context.ProjectView.TrySetCompositionOpToChild(instance.SymbolChildId);
-        }
-
-        /// <summary>
-        /// Empty ops of editable packages can be entered so content can be added to them.
-        /// Empty read-only ops (most Lib ops) have nothing to show and nothing can be added.
-        /// </summary>
-        private static bool CanOpen(Instance instance)
-        {
-            return instance.Children.Count > 0 || !instance.Symbol.SymbolPackage.IsReadOnly;
         }
 
         private static bool IsHorizontallySnapped(MagGraphConnection connection)
@@ -197,33 +187,20 @@ namespace T3.Editor.Gui.MagGraph.States
                                   // {
                                   //     Modifications.DeleteSelectedOps(context);
                                   // }
+
+                                  if (UserActions.CloseOperator.Triggered())
+                                  {
+                                      context.ProjectView.TrySetCompositionOpToParent();
+                                  }
+                                  else if (UserActions.OpenOperator.Triggered())
+                                  {
+                                      OpenSelectedOrHoveredOperator(context);
+                                  }
                               }
 
                               if (!context.View.IsHovered)
                                   return;
 
-                              // Open children or parent component with keyboard
-                              if (UserActions.CloseOperator.Triggered() && ProjectView.Focused != null)
-                              {
-                                  ProjectView.Focused.TrySetCompositionOpToParent();
-                              }
-
-                              if (UserActions.OpenOperator.Triggered() && ProjectView.Focused != null)
-                              {
-                                  var isWindowActive = ImGui.IsWindowFocused() || ImGui.IsWindowHovered(ImGuiHoveredFlags.AllowWhenBlockedByPopup);
-
-                                  // Check if we have either an active (selected) item or a hovered item
-                                  var itemToOpen = context.ActiveItem ?? context.HoveredItem;
-
-                                  if (isWindowActive && itemToOpen != null && itemToOpen.Variant == MagGraphItem.Variants.Operator)
-                                  {
-                                      Debug.Assert(itemToOpen.Instance != null);
-                                      if (itemToOpen.Instance.Children.Count > 0)
-                                      {
-                                          ProjectView.Focused.TrySetCompositionOpToChild(itemToOpen.Instance.SymbolChildId);
-                                      }
-                                  }
-                              }
                               // Mouse click
                               var clickedDown = ImGui.IsMouseClicked(ImGuiMouseButton.Left);
                               if (!clickedDown)
@@ -267,7 +244,7 @@ namespace T3.Editor.Gui.MagGraph.States
                                           // MagGraph scope to the legacy graph, so it's correctly saved for the Symbol in the user settings...
                                           //ProjectView.Focused?.GraphCanvas?.SetTargetScope(context.Canvas.GetTargetScope());
 
-                                          if (CanOpen(context.ActiveItem.Instance))
+                                          if (context.ActiveItem.Instance.Children.Count > 0)
                                           {
                                               ProjectView.Focused.TrySetCompositionOpToChild(context.ActiveItem.Instance.SymbolChildId);
                                           }
