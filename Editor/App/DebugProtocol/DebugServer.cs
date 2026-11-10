@@ -987,11 +987,32 @@ internal static class DebugServer
                 collab.SendChat(request["text"]?.Value<string>() ?? "");
                 break;
 
+            case "lobby-whisper":
+            {
+                ParseRelayParam(request, out var relayHost, out var relayPort);
+                var room = request["room"]?.Value<string>() ?? "";
+                var text = request["text"]?.Value<string>() ?? "";
+                CollabLobbyWhisper.Send($"{relayHost}:{relayPort}", room,
+                                        collab.LocalIdentity.DisplayName, collab.LocalIdentity.Lang, text);
+                break;
+            }
+
+            case "update-listing":
+            {
+                var title = request["title"]?.Value<string>() ?? "";
+                var purpose = request["purpose"]?.Value<string>() ?? "";
+                var listed = request["listed"]?.Value<bool>() ?? false;
+                collab.UpdateSessionListing(title, purpose,
+                                            ProjectView.Focused?.OpenedProject.Package.DisplayName ?? "",
+                                            listed);
+                break;
+            }
+
             case "status":
                 break;
 
             default:
-                context.SendError("INVALID_PARAM", "collab requires op = host | host-relay | join | join-relay | leave | chat | status");
+                context.SendError("INVALID_PARAM", "collab requires op = host | host-relay | join | join-relay | leave | chat | lobby-whisper | update-listing | status");
                 return;
         }
 

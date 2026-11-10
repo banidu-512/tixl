@@ -144,6 +144,18 @@ internal static class Program
                 return;
             }
 
+            if (role == "update")
+            {
+                await HandleUpdateAsync(client, request);
+                return;
+            }
+
+            if (role == "whisper")
+            {
+                await HandleWhisperAsync(client, request);
+                return;
+            }
+
             var identity = role is "host" or "join" ? await ResolveIdentityAsync(request) : Identity.Unknown;
             if (_requireDiscord && !identity.Verified && role is "host" or "join")
             {
@@ -298,6 +310,214 @@ internal static class Program
         }
     }
 
+    // ---------------------------------------------------------------------------------------
+    // Lobby services: live listing updates (Change/Delete entry) and whispers to a session's
+    // host. Both are one-shot request/reply connections; a whisperer can stay listening for
+    // the host's reply as {"t":"whisper"} control lines.
+    // ---------------------------------------------------------------------------------------
+
+    private const int MaxWhisperListenersPerRoom = 16;
+    private const int MaxWhispersPerListenerPerSecond = 3;
+
+    /// <summary>A host updates its listing while the session runs (Change entry / Delete entry).
+    /// The room key authenticates the request; only the host instance knows it.</summary>
+    private static async Task HandleUpdateAsync(TcpClient client, Request request)
+    {
+        if (!Rooms.TryGetValue(SanitizeCode(request.Room), out var room) || room.Key.Length == 0)
+        {
+            await WriteLineAsync(client, "{\"ok\":false,\"error\":\"room not found\"}");
+            client.Close();
+            return;
+        }
+
+        var updated = false;
+        lock (room.Gate)
+        {
+            if (CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(room.Key),
+                                                        Encoding.UTF8.GetBytes(request.Key)))
+            {
+                if (request.Title.Length > 0)
+                    room.Title = request.Title;
+                if (request.Purpose.Length > 0)
+                    room.Purpose = request.Purpose;
+                if (request.Project.Length > 0)
+                    room.Project = request.Project;
+                room.Public = request.Public;
+                updated = true;
+            }
+        }
+
+        await WriteLineAsync(client, updated ? "{\"ok\":true}" : "{\"ok\":false,\"error\":\"not the host\"}");
+        client.Close();
+    }
+
+    /// <summary>
+    /// A whisper to a session's host. A guest sends name + text; the relay delivers it on the
+    /// host's control link as {"t":"whisper","from":...,"text":...}. With "listen" the connection
+    /// stays open and receives the host's replies ("to" the whisperer's name) as control lines.
+    /// The host replies with a key-authenticated whisper carrying "to".
+    /// </summary>
+    private static async Task HandleWhisperAsync(TcpClient client, Request request)
+    {
+        if (!Rooms.TryGetValue(SanitizeCode(request.Room), out var room)
+            || room.Owner is not { Connected: true })
+        {
+            await WriteLineAsync(client, "{\"ok\":false,\"error\":\"room not found\"}");
+            client.Close();
+            return;
+        }
+
+        // The host's reply path: key-authenticated, routed to the whisperer by name.
+        if (request.Key.Length > 0)
+        {
+            var allowed = false;
+            var from = "";
+            lock (room.Gate)
+            {
+                if (room.Key.Length > 0
+                    && CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(room.Key),
+                                                               Encoding.UTF8.GetBytes(request.Key)))
+                {
+                    allowed = true;
+                    from = room.Host.Name;
+                }
+            }
+
+            if (!allowed || request.To.Length == 0 || request.Text.Length == 0)
+            {
+                await WriteLineAsync(client, "{\"ok\":false,\"error\":\"not the host\"}");
+                client.Close();
+                return;
+            }
+
+            var delivered = 0;
+            var reply = Json(w =>
+                             {
+                                 w.WriteString("t", "whisper");
+                                 w.WriteString("from", from);
+                                 w.WriteString("text", request.Text);
+                             });
+            List<TcpClient>? dead = null;
+            lock (room.Gate)
+            {
+                foreach (var listener in room.WhisperListeners)
+                {
+                    if (!string.Equals(listener.Name, request.To, StringComparison.OrdinalIgnoreCase)
+                        || !listener.Client.Connected)
+                    {
+                        if (!listener.Client.Connected)
+                            (dead ??= new List<TcpClient>()).Add(listener.Client);
+                        continue;
+                    }
+
+                    _ = DeliverWhisperAsync(listener.Client, reply);
+                    delivered++;
+                }
+
+                if (dead != null)
+                {
+                    foreach (var deadClient in dead)
+                        room.WhisperListeners.RemoveAll(l => l.Client == deadClient);
+                }
+            }
+
+            await WriteLineAsync(client, delivered > 0
+                                             ? "{\"ok\":true,\"delivered\":" + delivered + "}"
+                                             : "{\"ok\":false,\"error\":\"whisperer gone\"}");
+            client.Close();
+            return;
+        }
+
+        // A guest's whisper: forward to the host and, when asked, keep listening for replies.
+        if (request.Text.Length == 0 || request.Name.Length == 0)
+        {
+            await WriteLineAsync(client, "{\"ok\":false,\"error\":\"name and text required\"}");
+            client.Close();
+            return;
+        }
+
+        var owner = room.Owner;
+        var forwarded = Json(w =>
+                             {
+                                 w.WriteString("t", "whisper");
+                                 w.WriteString("from", request.Name);
+                                 w.WriteString("lang", request.Lang);
+                                 w.WriteString("text", request.Text);
+                             });
+        if (owner != null)
+            await WriteLineAsync(owner, forwarded);
+
+        if (!request.Listen)
+        {
+            await WriteLineAsync(client, "{\"ok\":true}");
+            client.Close();
+            return;
+        }
+
+        if (!client.Connected)
+            return;
+
+        // Register as a listener; the connection then reads (and discards) anything the client
+        // sends so a closed socket is noticed and the listener is dropped.
+        lock (room.Gate)
+        {
+            if (room.WhisperListeners.Count >= MaxWhisperListenersPerRoom)
+            {
+                // Full: still tell the client ok so it does not retry a storm; replies just won't arrive.
+                WriteLineAsync(client, "{\"ok\":true,\"listening\":false}").Wait(1000);
+                client.Close();
+                return;
+            }
+
+            room.WhisperListeners.Add(new WhisperListener(client, request.Name));
+        }
+
+        Console.WriteLine($"whisper listener '{request.Name}' on {room.Code}");
+        await WriteLineAsync(client, "{\"ok\":true,\"listening\":true}");
+        await ReadUntilClosedAsync(client, room);
+    }
+
+    private static async Task DeliverWhisperAsync(TcpClient listenerClient, string line)
+    {
+        try
+        {
+            await WriteLineAsync(listenerClient, line);
+        }
+        catch (Exception e) when (e is IOException or SocketException or ObjectDisposedException or OperationCanceledException)
+        {
+            // The listener's read loop notices the failure and unregisters it.
+        }
+    }
+
+    /// <summary>Keeps a whisper listener connection until it closes, then unregisters it.</summary>
+    private static async Task ReadUntilClosedAsync(TcpClient client, Room room)
+    {
+        try
+        {
+            var buffer = new byte[1024];
+            var stream = client.GetStream();
+            while (true)
+            {
+                var read = await stream.ReadAsync(buffer, CancellationToken.None);
+                if (read == 0)
+                    break;
+            }
+        }
+        catch (Exception e) when (e is IOException or SocketException or ObjectDisposedException or OperationCanceledException)
+        {
+            // Normal close path.
+        }
+
+        lock (room.Gate)
+        {
+            room.WhisperListeners.RemoveAll(l => l.Client == client);
+        }
+
+        client.Close();
+    }
+
+    internal sealed record WhisperListener(TcpClient Client, string Name);
+
     /// <summary>
     /// Registers a room for a host. A requested code that is free is granted. A code that is taken
     /// yields a fresh one — unless the request carries that room's key: then this is the session
@@ -438,6 +658,11 @@ internal static class Program
 
                     room.Members.Clear();
                     room.MemberIdentities.Clear();
+
+                    // Whisper listeners have nowhere to deliver to either.
+                    foreach (var listener in room.WhisperListeners)
+                        listener.Client.Close();
+                    room.WhisperListeners.Clear();
                 }
 
                 return false;
@@ -723,6 +948,9 @@ internal static class Program
                                   string Title,
                                   string Purpose,
                                   string Project,
+                                  string Text,
+                                  string To,
+                                  bool Listen,
                                   bool Public,
                                   bool PasswordProtected);
 
@@ -772,6 +1000,9 @@ internal static class Program
                                Text("title", 64),
                                Text("purpose", 24),
                                Text("project", 64),
+                               Text("text", 256),
+                               Text("to", 48),
+                               Flag("listen"),
                                Flag("public"),
                                Flag("pwd"));
         }
@@ -957,6 +1188,7 @@ internal static class Program
         public string Project = "";
         public bool Public;
         public bool PasswordProtected;
+        public readonly List<WhisperListener> WhisperListeners = [];
 
         /// <summary>TickCount64 of the last frame from the host.</summary>
         public long LastOwnerActivityTicks = Environment.TickCount64;

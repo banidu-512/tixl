@@ -194,6 +194,117 @@ internal static class CollabRelayWire
 
         throw new IOException("relay handshake line too long");
     }
+
+    /// <summary>
+    /// Updates a hosted session's listing while it runs (Change entry / Delete entry). The room
+    /// key authenticates the call. Returns null on success, else a readable reason.
+    /// </summary>
+    public static async Task<string?> UpdateListingAsync(string relayHost, int relayPort, string roomCode, string roomKey,
+                                                         string title, string purpose, string project, bool listed,
+                                                         CancellationToken cancellation)
+    {
+        using var client = new TcpClient();
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
+        timeout.CancelAfter(CollabProtocol.ConnectTimeoutMs);
+        await client.ConnectAsync(relayHost, relayPort, timeout.Token);
+        var stream = client.GetStream();
+        var request = new JObject
+                          {
+                              ["role"] = "update",
+                              ["room"] = (roomCode ?? "").Trim(),
+                              ["key"] = roomKey ?? "",
+                              ["v"] = 2,
+                          };
+        if (!string.IsNullOrEmpty(title))
+            request["title"] = title;
+        if (!string.IsNullOrEmpty(purpose))
+            request["purpose"] = purpose;
+        if (!string.IsNullOrEmpty(project))
+            request["project"] = project;
+        if (listed)
+            request["public"] = true;
+
+        await stream.WriteAsync(Encoding.UTF8.GetBytes(Newtonsoft.Json.JsonConvert.SerializeObject(request, _asciiJson) + "\n"), timeout.Token);
+        var (ok, detail, _, _) = await ReadControlReplyAsync(stream, timeout.Token);
+        return ok ? null : (detail.Length > 0 ? detail : "the relay refused the update");
+    }
+
+    /// <summary>
+    /// Sends a whisper to a hosted session's host. With <paramref name="onReply"/> the connection
+    /// stays open and the host's replies ("to" the sender's name) arrive through it; without it
+    /// this is the host's key-authenticated reply path.
+    /// </summary>
+    public static async Task<string?> SendWhisperAsync(string relayHost, int relayPort, string roomCode,
+                                                       string fromName, string lang, string text,
+                                                       string roomKey = "", string replyTo = "",
+                                                       Action<string, string>? onReply = null,
+                                                       CancellationToken cancellation = default)
+    {
+        var reply = roomKey.Length > 0 && replyTo.Length > 0;
+        using var client = new TcpClient();
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
+        timeout.CancelAfter(CollabProtocol.ConnectTimeoutMs);
+        await client.ConnectAsync(relayHost, relayPort, timeout.Token);
+        var stream = client.GetStream();
+        var request = new JObject
+                          {
+                              ["role"] = "whisper",
+                              ["room"] = (roomCode ?? "").Trim(),
+                              ["v"] = 2,
+                              ["name"] = fromName ?? "",
+                              ["text"] = text ?? "",
+                          };
+        if (fromName.Length > 0)
+            request["lang"] = lang ?? "";
+        if (reply)
+        {
+            request["key"] = roomKey;
+            request["to"] = replyTo;
+        }
+        else if (onReply != null)
+        {
+            request["listen"] = true;
+        }
+
+        await stream.WriteAsync(Encoding.UTF8.GetBytes(Newtonsoft.Json.JsonConvert.SerializeObject(request, _asciiJson) + "\n"), timeout.Token);
+        var (ok, detail, _, _) = await ReadControlReplyAsync(stream, timeout.Token);
+        if (!ok)
+            return detail.Length > 0 ? detail : "the relay refused the whisper";
+
+        if (!reply && onReply == null)
+            return null;
+
+        // Keep reading: replies arrive as {"t":"whisper","from":...,"text":...} control lines.
+        var readForever = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
+        while (true)
+        {
+            string line;
+            try
+            {
+                line = await ReadLineAsync(stream, readForever.Token);
+            }
+            catch (Exception e) when (e is IOException or OperationCanceledException or ObjectDisposedException)
+            {
+                return null;
+            }
+
+            JObject json;
+            try
+            {
+                json = JObject.Parse(line);
+            }
+            catch (Newtonsoft.Json.JsonException)
+            {
+                continue;
+            }
+
+            var type = CollabProtocol.GetString(json, "t");
+            if (type != "whisper")
+                continue;
+
+            onReply!(CollabProtocol.GetString(json, "from"), CollabProtocol.GetString(json, "text"));
+        }
+    }
 }
 
 /// <summary>
@@ -439,7 +550,11 @@ internal class CollabRelayHostTransport : CollabTransport
         {
             var json = JObject.Parse(line);
             var type = CollabProtocol.GetString(json, "t");
-            if (!CollabProtocol.TryGetInt(json, "slot", out var slot) || slot <= 0 || slot >= CollabRelayWire.BroadcastSlot)
+            var slot = 0;
+
+            // Whispers carry no slot: they are lobby chatter, not session members.
+            if (type != "whisper"
+                && (!CollabProtocol.TryGetInt(json, "slot", out slot) || slot <= 0 || slot >= CollabRelayWire.BroadcastSlot))
                 return;
 
             if (type == "member")
@@ -481,6 +596,11 @@ internal class CollabRelayHostTransport : CollabTransport
                     peer.SessionClosed = true;
                     RemovePeer(peer);
                 }
+            }
+            else if (type == "whisper")
+            {
+                // A lobby whisper for the host. The relay cleaned and length-capped the fields.
+                OnLobbyWhisper(CollabProtocol.GetString(json, "from"), CollabProtocol.GetString(json, "text"));
             }
         }
         catch (Newtonsoft.Json.JsonException)

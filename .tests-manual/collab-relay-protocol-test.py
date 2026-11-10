@@ -112,5 +112,32 @@ rooms = json.loads(raw)["rooms"]
 mine = [x for x in rooms if x["code"] == tr["room"]][0]
 check("list line is pure ASCII", all(c < 128 for c in raw))
 check("title and name are cut to length", len(mine["title"]) <= 64 and len(mine["host"]) <= 48, mine)
+# 8. live listing update (Change entry / Delete entry): key-authenticated
+u = conn({"role": "host", "room": "", "v": 2, "key": "kU", "title": "Old title", "purpose": "Jam", "public": True}); ur = line(u); ucode = ur["room"]
+check("listed after host", any(x["code"] == ucode for x in line(conn({"role": "list"}))["rooms"]))
+bad = conn({"role": "update", "room": ucode, "key": "WRONG", "title": "Hacked"}); badr = line(bad)
+check("update with wrong key refused", badr.get("ok") is False, badr)
+up = conn({"role": "update", "room": ucode, "key": "kU", "title": "New title", "purpose": "Review", "public": False}); upr = line(up)
+check("unlist accepted", upr.get("ok") is True, upr)
+check("unlisted room gone from list", not any(x["code"] == ucode for x in line(conn({"role": "list"}))["rooms"]))
+relist = conn({"role": "update", "room": ucode, "key": "kU", "title": "New title", "purpose": "Review", "public": True}); relr = line(relist)
+check("change entry accepted", relr.get("ok") is True, relr)
+mine = [x for x in line(conn({"role": "list"}))["rooms"] if x["code"] == ucode]
+check("list shows new title", len(mine) == 1 and mine[0]["title"] == "New title" and mine[0]["purpose"] == "Review", mine)
+
+# 9. whispers: guest line reaches the host link, host reply reaches the listening guest
+h = conn({"role": "host", "room": "", "v": 2, "key": "kW", "name": "HostW"}); wr = line(h); wcode = wr["room"]
+w = conn({"role": "whisper", "room": wcode, "name": "Visitor", "text": "can I join?", "listen": True}); wl = line(w)
+check("whisper sent", wl.get("ok") is True, wl)
+hostline = line(h)
+check("host receives whisper", hostline.get("t") == "whisper" and hostline["from"] == "Visitor" and hostline["text"] == "can I join?", hostline)
+rep = conn({"role": "whisper", "room": wcode, "key": "kW", "to": "Visitor", "text": "yes in 5 min"}); got = line(rep)
+check("host reply delivered", got.get("ok") is True and got.get("delivered") == 1, got)
+guestline = line(w)
+check("listener gets reply", guestline.get("t") == "whisper" and guestline["from"] == "HostW", guestline)
+ghost = conn({"role": "whisper", "room": "NOPE01", "name": "V", "text": "hi"}); g = line(ghost)
+check("whisper to unknown room", g.get("ok") is False, g)
+h.close(); w.close()
+
 print("ALL PASS" if ok else "SOME FAILED")
 sys.exit(0 if ok else 1)

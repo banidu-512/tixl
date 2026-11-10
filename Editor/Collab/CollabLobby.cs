@@ -92,3 +92,115 @@ internal static class CollabLobby
                      });
     }
 }
+
+/// <summary>
+/// A visitor's whisper conversation with one listed session's host: each whisper opens a relay
+/// connection, delivers the line to the host's control link and, while the conversation is the
+/// active one, stays listening there for the host's replies. Not part of a session chat - the
+/// whisperer has not joined (yet).
+/// </summary>
+internal static class CollabLobbyWhisper
+{
+    public sealed class Entry
+    {
+        public DateTime Time = DateTime.Now;
+        public string From = "";
+        public string Text = "";
+        public bool Mine;
+    }
+
+    private static readonly object _gate = new();
+    private static readonly List<Entry> _messages = [];
+    private static CancellationTokenSource? _listenCancel;
+    private static string _listenRoom = "";
+
+    /// <summary>The conversation, oldest first. Guarded by <see cref="_gate"/>; read every frame.</summary>
+    public static IReadOnlyList<Entry> Messages
+    {
+        get
+        {
+            lock (_gate)
+                return _messages.ToArray();
+        }
+    }
+
+    /// <summary>Sends a whisper to a listed session's host and listens for its reply. Safe to
+    /// call from the UI thread; the network work runs on a pool thread.</summary>
+    public static void Send(string relayEndpoint, string room, string myName, string lang, string text)
+    {
+        if (string.IsNullOrWhiteSpace(text) || string.IsNullOrWhiteSpace(room))
+            return;
+
+        var (host, port) = SplitEndpoint(relayEndpoint);
+        if (port <= 0)
+            return;
+
+        lock (_gate)
+        {
+            if (_listenRoom != room)
+                StopListening();
+            _listenRoom = room;
+            _messages.Add(new Entry { From = myName, Text = text, Mine = true });
+        }
+
+        var previousListen = _listenCancel;
+        var listenCts = new CancellationTokenSource();
+        _listenCancel = listenCts;
+        previousListen?.Cancel();
+
+        _ = Task.Run(async () =>
+                         {
+                             try
+                             {
+                                 var error = await CollabRelayWire.SendWhisperAsync(host, port, room, myName, lang, text,
+                                                                                    onReply: (from, reply) =>
+                                                                                    {
+                                                                                        lock (_gate)
+                                                                                            _messages.Add(new Entry
+                                                                                                              {
+                                                                                                                  From = from,
+                                                                                                                  Text = reply,
+                                                                                                              });
+                                                                                    },
+                                                                                    cancellation: listenCts.Token);
+                                 if (error != null)
+                                 {
+                                     lock (_gate)
+                                         _messages.Add(new Entry { From = "", Text = error, Mine = false });
+                                 }
+                             }
+                             catch (Exception e)
+                             {
+                                 lock (_gate)
+                                     _messages.Add(new Entry { From = "", Text = $"whisper failed: {e.Message}", Mine = false });
+                             }
+                         });
+    }
+
+    /// <summary>Drops the conversation and its listener connection (join, room switch, close).</summary>
+    public static void Reset()
+    {
+        lock (_gate)
+        {
+            StopListening();
+            _listenRoom = "";
+            _messages.Clear();
+        }
+    }
+
+    private static void StopListening()
+    {
+        _listenCancel?.Cancel();
+        _listenCancel?.Dispose();
+        _listenCancel = null;
+    }
+
+    private static (string Host, int Port) SplitEndpoint(string endpoint)
+    {
+        var text = (endpoint ?? "").Trim();
+        var separator = text.LastIndexOf(':');
+        if (separator <= 0 || !int.TryParse(text[(separator + 1)..], out var port))
+            return (text, 0);
+        return (text[..separator], port);
+    }
+}
