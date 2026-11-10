@@ -9,6 +9,7 @@ using T3.Editor.Gui.Interaction;
 using T3.Editor.Gui.Styling;
 using T3.Editor.Gui.UiHelpers;
 using T3.Editor.UiModel.InputsAndTypes;
+using T3.Editor.UiModel.ProjectHandling;
 
 namespace T3.Editor.Gui.Windows;
 
@@ -72,22 +73,27 @@ internal sealed partial class SettingsWindow
         changed |= DrawSecretInput("Session password", ref config.CollabPassword,
                                    "Empty = anyone with the session ID can join. Recommended when the ID is shared widely.");
 
-        changed |= FormInputs.AddCheckBox("List in session browser",
-                                          ref config.CollabListSession,
-                                          """
-                                          Shows a session you host in the relay's list of open sessions, with your name,
-                                          the title and how many people are in it. Off: only people who have the
-                                          session ID can find it. Applies to the next session you host.
-                                          """,
-                                          false);
-        if (config.CollabListSession)
+        // While a session runs, the "Session browser entry" section in DrawActiveSession owns the
+        // listing (live Change entry); the pre-host controls here would only duplicate it.
+        if (!manager.IsSessionActive)
         {
-            changed |= FormInputs.AddStringInput("Session title",
-                                                 ref config.CollabSessionTitle,
-                                                 $"{manager.LocalIdentity.DisplayName}'s session",
-                                                 null,
-                                                 "What people see in the session browser.");
-            changed |= DrawPurposeInput(ref config.CollabSessionPurpose);
+            changed |= FormInputs.AddCheckBox("List in session browser",
+                                              ref config.CollabListSession,
+                                              """
+                                              Shows a session you host in the relay's list of open sessions, with your name,
+                                              the title and how many people are in it. Off: only people who have the
+                                              session ID can find it. Applies to the next session you host.
+                                              """,
+                                              false);
+            if (config.CollabListSession)
+            {
+                changed |= FormInputs.AddStringInput("Session title",
+                                                     ref config.CollabSessionTitle,
+                                                     $"{manager.LocalIdentity.DisplayName}'s session",
+                                                     null,
+                                                     "What people see in the session browser.");
+                changed |= DrawPurposeInput(ref config.CollabSessionPurpose);
+            }
         }
 
         FormInputs.AddVerticalSpace();
@@ -208,6 +214,10 @@ internal sealed partial class SettingsWindow
     private static DateTime _discoveryScanUntil;
     private static readonly List<CollabManager.DiscoveredSession> _discovered = [];
     private static string _joinAddress = "";
+    private static string _whisperReplyInput = "";
+    private static string _replyToName = "";
+    private static string _lobbyWhisperInput = "";
+    private static readonly System.Numerics.Vector4 _whisperOwnColor = new(0.55f, 0.8f, 0.55f, 1f);
 
     private static void DrainDiscoveryResults()
     {
@@ -297,6 +307,35 @@ internal sealed partial class SettingsWindow
             CustomComponents.TooltipForLastItem("Copies the relay address and room code as a single invite. The other person can use \"Paste Invite and Join\" under Join.");
         }
 
+        // The listing is editable while the session runs, like a party-matching entry: title,
+        // purpose and visibility go to the relay with the room key, without restarting the session.
+        if (manager.State == CollabManager.SessionState.Hosting && manager.RelayEndpoint.Length > 0)
+        {
+            var config = UserSettings.Config;
+            FormInputs.AddVerticalSpace();
+            FormInputs.AddSectionSubHeader("Session browser entry");
+            FormInputs.AddVerticalSpace(4);
+            FormInputs.AddCheckBox("Listed in session browser", ref config.CollabListSession,
+                                   """
+                                   On: the session shows up in other people's session browser with the
+                                   title and purpose below. Off: only people with the session ID can
+                                   find it. Applies right away; the session keeps running either way.
+                                   """,
+                                   false);
+            FormInputs.AddStringInput("Title", ref config.CollabSessionTitle,
+                                      $"{manager.LocalIdentity.DisplayName}'s session",
+                                      null, "What the session browser shows.");
+            DrawPurposeInput(ref config.CollabSessionPurpose);
+            if (ImGui.SmallButton("Update entry"))
+            {
+                manager.UpdateSessionListing(config.CollabSessionTitle, config.CollabSessionPurpose,
+                                             ProjectView.Focused?.OpenedProject.Package.DisplayName ?? "",
+                                             config.CollabListSession);
+            }
+
+            CustomComponents.TooltipForLastItem("Sends the title, purpose and visibility above to the relay so other people's session browsers see them.");
+        }
+
         FormInputs.AddVerticalSpace();
         FormInputs.AddSectionSubHeader("Participants");
         FormInputs.AddVerticalSpace(4);
@@ -378,6 +417,52 @@ internal sealed partial class SettingsWindow
 
             DrawKickConfirmation(manager);
             DrawHostTransferConfirmation(manager);
+        }
+
+        // Lobby whispers: visitors asking about the session before joining, with the reply box.
+        // Replies go to whoever whispered last; a second host input is not worth the clutter.
+        if (manager.State == CollabManager.SessionState.Hosting && manager.RelayEndpoint.Length > 0)
+        {
+            FormInputs.AddVerticalSpace();
+            FormInputs.AddSectionSubHeader("Whispers");
+            FormInputs.AddVerticalSpace(4);
+
+            var whispers = manager.LobbyWhispers;
+            if (whispers.Count == 0)
+            {
+                ImGui.TextDisabled("People can whisper you from the session browser before they join.");
+            }
+            else
+            {
+                foreach (var whisper in whispers)
+                {
+                    if (whisper.FromHost)
+                    {
+                        ImGui.TextColored(_whisperOwnColor, "You");
+                    }
+                    else
+                    {
+                        ImGui.TextUnformatted(whisper.From);
+                    }
+
+                    ImGui.SameLine();
+                    ImGui.TextWrapped(whisper.Text);
+                }
+
+                _replyToName = whispers.Last(w => !w.FromHost).From;
+                FormInputs.AddVerticalSpace(4);
+                ImGui.SetNextItemWidth(-72);
+                ImGui.InputTextWithHint("##whisperReply", $"Reply to {_replyToName}...", ref _whisperReplyInput, 256);
+                ImGui.SameLine();
+                ImGui.BeginDisabled(_whisperReplyInput.Length == 0);
+                if (ImGui.Button("Send##whisper"))
+                {
+                    manager.ReplyToLobbyWhisper(_replyToName, _whisperReplyInput);
+                    _whisperReplyInput = "";
+                }
+
+                ImGui.EndDisabled();
+            }
         }
 
         FormInputs.AddVerticalSpace();
@@ -697,11 +782,31 @@ internal sealed partial class SettingsWindow
         FormInputs.AddVerticalSpace(4);
 
         ParseRelayAddress(UserSettings.Config.CollabRelayAddress, out var relayHost, out var relayPort);
-        if (!_lobbyLoadedOnce)
+        var useBackend = CollabWebLobby.IsConfigured;
+        if (useBackend)
+        {
+            if (!_lobbyLoadedOnce)
+            {
+                _lobbyLoadedOnce = true;
+                CollabWebLobby.Refresh();
+            }
+            else if (!CollabWebLobby.IsRefreshing && DateTime.UtcNow - CollabWebLobby.LastRefreshUtc > TimeSpan.FromSeconds(15))
+            {
+                CollabWebLobby.Refresh();
+            }
+        }
+        else if (!_lobbyLoadedOnce)
         {
             _lobbyLoadedOnce = true;
             CollabLobby.Refresh(relayHost, relayPort);
         }
+        else if (!CollabLobby.IsRefreshing && DateTime.UtcNow - CollabLobby.LastRefreshUtc > TimeSpan.FromSeconds(15))
+        {
+            // Live entries: a host's Change entry appears here within seconds, not on manual refresh.
+            CollabLobby.Refresh(relayHost, relayPort);
+        }
+
+        var rooms = useBackend ? CollabWebLobby.Rooms : CollabLobby.Rooms;
 
         var fontSize = ImGui.GetFontSize();
         FormInputs.SetIndentToLeft();
@@ -725,11 +830,34 @@ internal sealed partial class SettingsWindow
         }
 
         ImGui.SameLine();
-        ImGui.BeginDisabled(CollabLobby.IsRefreshing);
+        ImGui.BeginDisabled(useBackend ? CollabWebLobby.IsRefreshing : CollabLobby.IsRefreshing);
         if (ImGui.Button("Refresh"))
-            CollabLobby.Refresh(relayHost, relayPort);
+        {
+            if (useBackend)
+                CollabWebLobby.Refresh();
+            else
+                CollabLobby.Refresh(relayHost, relayPort);
+        }
 
         ImGui.EndDisabled();
+
+        // Auto match: the Silkroad button. Joins the first listed session that passes the filters.
+        var autoMatch = FindAutoMatch(rooms);
+        ImGui.SameLine();
+        ImGui.BeginDisabled(autoMatch == null);
+        if (ImGui.Button("Auto match") && autoMatch != null)
+        {
+            ShowControlMode.Activate(ShowControlMode.Collab);
+            CollabLobbyWhisper.Reset();
+            JoinListedRoom(manager, autoMatch);
+        }
+
+        ImGui.EndDisabled();
+        if (autoMatch != null)
+            CustomComponents.TooltipForLastItem($"Joins \"{autoMatch.Title}\" by {autoMatch.HostName} right away.");
+        else
+            CustomComponents.TooltipForLastItem("No listed session passes the current filters.");
+
         if (CollabLobby.IsRefreshing)
         {
             ImGui.SameLine();
@@ -747,9 +875,10 @@ internal sealed partial class SettingsWindow
         var joinNow = false;
         const ImGuiTableFlags tableFlags = ImGuiTableFlags.BordersInnerH | ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY;
         var tableHeight = ImGui.GetFrameHeightWithSpacing() * 8;
-        if (ImGui.BeginTable("##collabLobby", 6, tableFlags, new Vector2(0, tableHeight)))
+        if (ImGui.BeginTable("##collabLobby", 7, tableFlags, new Vector2(0, tableHeight)))
         {
             ImGui.TableSetupScrollFreeze(0, 1);
+            ImGui.TableSetupColumn("#", ImGuiTableColumnFlags.WidthFixed, fontSize * 2f);
             ImGui.TableSetupColumn("Lang", ImGuiTableColumnFlags.WidthFixed, fontSize * 3.5f);
             ImGui.TableSetupColumn("Host", ImGuiTableColumnFlags.WidthStretch, 0.24f);
             ImGui.TableSetupColumn("Title", ImGuiTableColumnFlags.WidthStretch, 0.42f);
@@ -758,7 +887,8 @@ internal sealed partial class SettingsWindow
             ImGui.TableSetupColumn("Access", ImGuiTableColumnFlags.WidthFixed, fontSize * 5f);
             ImGui.TableHeadersRow();
 
-            foreach (var room in CollabLobby.Rooms)
+            var rowNumber = 0;
+            foreach (var room in rooms)
             {
                 if (_lobbyPurposeFilter != "All" && !string.Equals(room.Purpose, _lobbyPurposeFilter, StringComparison.OrdinalIgnoreCase))
                     continue;
@@ -769,8 +899,11 @@ internal sealed partial class SettingsWindow
                     && !room.Project.Contains(_lobbyFilter, StringComparison.OrdinalIgnoreCase))
                     continue;
 
+                rowNumber++;
                 var isSelected = room.Code == _lobbySelectedCode;
                 ImGui.TableNextRow();
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted(rowNumber.ToString());
                 ImGui.TableNextColumn();
                 ImGui.PushID(room.Code);
                 if (ImGui.Selectable(CollabUserIdentity.FormatLang(room.Lang), isSelected,
@@ -812,8 +945,11 @@ internal sealed partial class SettingsWindow
             ImGui.EndTable();
         }
 
-        if (CollabLobby.Rooms.Count == 0 && !CollabLobby.IsRefreshing && string.IsNullOrEmpty(CollabLobby.ErrorText))
-            ImGui.TextDisabled("No listed sessions on this relay right now.");
+        if (rooms.Count == 0 && !(useBackend ? CollabWebLobby.IsRefreshing : CollabLobby.IsRefreshing)
+            && string.IsNullOrEmpty(useBackend ? CollabWebLobby.ErrorText : CollabLobby.ErrorText))
+            ImGui.TextDisabled(useBackend
+                                   ? "No listed sessions on the backend right now."
+                                   : "No listed sessions on this relay right now.");
 
         ImGui.BeginDisabled(selected == null);
         if (ImGui.Button("Join Session") || (joinNow && selected != null))
@@ -821,8 +957,8 @@ internal sealed partial class SettingsWindow
             if (selected != null)
             {
                 ShowControlMode.Activate(ShowControlMode.Collab);
-                ParseRelayAddress(CollabLobby.RelayEndpoint, out var joinHost, out var joinPort);
-                manager.JoinViaRelay(joinHost, joinPort, selected.Code, UserSettings.Config.CollabPassword ?? "");
+                CollabLobbyWhisper.Reset();
+                JoinListedRoom(manager, selected);
             }
         }
 
@@ -833,7 +969,92 @@ internal sealed partial class SettingsWindow
             ImGui.TextDisabled("uses the session password above, or asks for it");
         }
 
+        // Whisper the host of the picked session before joining, like a party-matching Whisper.
+        if (selected != null)
+        {
+            FormInputs.AddVerticalSpace(4);
+            if (useBackend)
+                CollabLobbyWhisper.PollBackend(selected.Code, manager.LocalIdentity.DisplayName);
+
+            var whispers = CollabLobbyWhisper.Messages;
+            if (whispers.Count > 0)
+            {
+                foreach (var whisper in whispers)
+                {
+                    if (whisper.Mine)
+                        ImGui.TextColored(_whisperOwnColor, "You");
+                    else if (whisper.From.Length > 0)
+                        ImGui.TextUnformatted(selected.HostName);
+                    else
+                        ImGui.TextColored(UiColors.StatusWarning.Rgba, "!");
+
+                    ImGui.SameLine();
+                    ImGui.TextWrapped(whisper.Text);
+                }
+            }
+
+            ImGui.SetNextItemWidth(-150);
+            ImGui.InputTextWithHint("##lobbyWhisper", $"Whisper {selected.HostName}...", ref _lobbyWhisperInput, 256);
+            ImGui.SameLine();
+            ImGui.BeginDisabled(_lobbyWhisperInput.Length == 0);
+            if (ImGui.Button("Whisper") && selected != null)
+            {
+                if (useBackend)
+                {
+                    CollabLobbyWhisper.SendViaBackend(selected.Code, manager.LocalIdentity.DisplayName, _lobbyWhisperInput);
+                }
+                else
+                {
+                    CollabLobbyWhisper.Send(CollabLobby.RelayEndpoint, selected.Code,
+                                            manager.LocalIdentity.DisplayName, manager.LocalIdentity.Lang,
+                                            _lobbyWhisperInput);
+                }
+
+                _lobbyWhisperInput = "";
+            }
+
+            ImGui.EndDisabled();
+            ImGui.TextDisabled("Asks the host something before you join. They can answer here.");
+        }
+
         FormInputs.SetIndentToParameters();
+    }
+
+    /// <summary>
+    /// Joins a room from either listing source: the relay list is joined on the relay the browser
+    /// read it from; a backend row carries the host's relay address in the row itself.
+    /// </summary>
+    private static void JoinListedRoom(CollabManager manager, LobbyRoom room)
+    {
+        if (room.Relay.Length > 0)
+        {
+            ParseJoinAddress(room.Relay, CollabProtocol.DefaultRelayPort, out var joinHost, out var joinPort);
+            manager.JoinViaRelay(joinHost, joinPort, room.Code, UserSettings.Config.CollabPassword ?? "");
+            return;
+        }
+
+        ParseRelayAddress(CollabLobby.RelayEndpoint, out var relayHost, out var relayPort);
+        manager.JoinViaRelay(relayHost, relayPort, room.Code, UserSettings.Config.CollabPassword ?? "");
+    }
+
+    /// <summary>The first listed session that passes the current filters; null when none does.</summary>
+    private static LobbyRoom? FindAutoMatch(IReadOnlyList<LobbyRoom> rooms)
+    {
+        foreach (var room in rooms)
+        {
+            if (_lobbyPurposeFilter != "All" && !string.Equals(room.Purpose, _lobbyPurposeFilter, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            if (_lobbyFilter.Length > 0
+                && !room.HostName.Contains(_lobbyFilter, StringComparison.OrdinalIgnoreCase)
+                && !room.Title.Contains(_lobbyFilter, StringComparison.OrdinalIgnoreCase)
+                && !room.Project.Contains(_lobbyFilter, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            return room;
+        }
+
+        return null;
     }
 
     private static int _pendingHostTransferPeerId = -1;

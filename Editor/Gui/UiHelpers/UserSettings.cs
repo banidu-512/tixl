@@ -361,6 +361,15 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         /// <summary>Lists a hosted relay session in the relay's session browser. Off: only people with the session ID find it.</summary>
         public bool CollabListSession = false;
 
+        /// <summary>Bot token that lets this editor post and read session cards in a Discord lobby channel (serverless session browser).</summary>
+        public string CollabDiscordBotToken = "";
+
+        /// <summary>The Discord channel whose messages are the session browser (a forum post channel or a normal text channel).</summary>
+        public string CollabDiscordLobbyChannelId = "";
+
+        /// <summary>Base URL of a self-hosted collab backend (CollabBackend/api.php): the session browser, whispers and WebRTC signaling.</summary>
+        public string CollabBackendUrl = "";
+
         // Boygrouping (show distribution to render nodes)
         /// <summary>Master switch: this machine participates in boygrouping. When set, the role
         /// below starts automatically shortly after launch — a show machine comes up in its role
