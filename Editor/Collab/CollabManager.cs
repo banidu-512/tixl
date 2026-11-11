@@ -934,6 +934,14 @@ internal sealed class CollabManager
                                  var zipPath = CollabProjectTransfer.ZipProject(folder, null, CancellationToken.None);
                                  try
                                  {
+                                     var zipSize = new FileInfo(zipPath).Length;
+                                     if (zipSize > CollabProjectTransfer.MaxProjectBytes)
+                                     {
+                                         AppendChat(null, $"The project is {zipSize / 1024 / 1024} MB - larger than the 100 MB the server takes, so it was not shared. Joiners use their local copy.");
+                                         Log.Warning($"Collab: project snapshot too large to share ({zipSize} bytes)");
+                                         return;
+                                     }
+
                                      var error = await CollabProjectTransfer.UploadZipAsync(
                                          room, key, zipPath,
                                          percent => _uiThreadActions.Enqueue(
