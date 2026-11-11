@@ -728,6 +728,21 @@ internal sealed partial class SettingsWindow
             ImGui.PushStyleColor(ImGuiCol.Text, UiColors.StatusWarning.Rgba);
             ImGui.TextWrapped(CollabDiscordAuth.StatusText);
             ImGui.PopStyleColor();
+
+            // Some desktops (notably Linux ones) swallow the browser-open request; always leave
+            // a way in by hand. Clicking copies the link to the clipboard.
+            var authorizeUrl = CollabDiscordAuth.LastAuthorizeUrl;
+            if (!string.IsNullOrEmpty(authorizeUrl))
+            {
+                FormInputs.SetCursorToParameterEdit();
+                ImGui.TextDisabled("If no browser opened, open this link yourself (click to copy):");
+                ImGui.PushFont(Fonts.FontSmall);
+                if (ImGui.Selectable(authorizeUrl))
+                    ImGui.SetClipboardText(authorizeUrl);
+
+                ImGui.PopFont();
+                CustomComponents.TooltipForLastItem("Copies the Discord login link to the clipboard");
+            }
         }
         else if (!string.IsNullOrEmpty(UserSettings.Config.CollabDiscordUserId))
         {

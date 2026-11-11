@@ -45,6 +45,10 @@ internal static class CollabDiscordAuth
     public static LoginState State { get; private set; } = LoginState.Idle;
     public static string StatusText { get; private set; } = "";
 
+    /// <summary>The authorize link of the most recent login attempt. The UI offers it for manual
+    /// opening because some desktops (notably Linux ones) swallow the browser-open request.</summary>
+    public static string LastAuthorizeUrl { get; private set; } = "";
+
     /// <summary>The invite of the community server; membership there is what "logged in" means.</summary>
     public const string InviteCode = "YmSyQdeH3S";
 
@@ -176,6 +180,7 @@ internal static class CollabDiscordAuth
                                $"&code_challenge={codeChallenge}" +
                                "&code_challenge_method=S256";
 
+            LastAuthorizeUrl = authorizeUrl;
             CoreUi.Instance.OpenWithDefaultApplication(authorizeUrl);
             StatusText = "Waiting for the Discord login in your browser...";
 
@@ -252,6 +257,7 @@ internal static class CollabDiscordAuth
             CollabManager.Instance.RefreshLocalIdentity();
 
             State = LoginState.Done;
+            LastAuthorizeUrl = "";
             StatusText = $"Logged in as {profile.UserName} · {guild.Name}";
             Log.Info($"Collab: Discord login successful ({profile.UserName}, guild '{guild.Name}')");
         }
