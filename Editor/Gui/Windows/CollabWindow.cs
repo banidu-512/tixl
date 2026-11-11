@@ -1217,9 +1217,9 @@ internal sealed class CollabWindow : Window
         var avatarTexture = CollabAvatars.GetTexture(avatarUrl);
         var avatarMin = cursor;
         var avatarMax = avatarMin + new Vector2(avatarSize);
+        ImGui.SetCursorScreenPos(avatarMin);
         if (avatarTexture != null)
         {
-            ImGui.SetCursorScreenPos(avatarMin);
             ImGui.Image((IntPtr)avatarTexture.ImGuiTextureId, new Vector2(avatarSize));
         }
         else
@@ -1228,8 +1228,7 @@ internal sealed class CollabWindow : Window
             var initial = string.IsNullOrEmpty(name) ? "?" : name[..1].ToUpperInvariant();
             var textSize = ImGui.CalcTextSize(initial);
             dl.AddText(avatarMin + (new Vector2(avatarSize) - textSize) * 0.5f, UiColors.Text, initial);
-            ImGui.SetCursorScreenPos(avatarMax);
-            ImGui.Dummy(Vector2.Zero);
+            ImGui.Dummy(new Vector2(avatarSize));
         }
 
         ImGui.SameLine();
