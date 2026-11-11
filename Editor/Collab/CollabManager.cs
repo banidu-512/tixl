@@ -3889,6 +3889,24 @@ internal sealed class CollabManager
                     relayHost.SendPresenceTo(peer, buffer.AsSpan(0, size));
             }
         }
+        else if (_transport is CollabBackendWire.CollabBackendClientTransport backendClient)
+        {
+            if (backendClient.HostLink is { } hostLink)
+                backendClient.SendToPeer(hostLink, CollabProtocol.FrameType.Presence, payload);
+        }
+        else if (_transport is CollabBackendWire.CollabBackendHostTransport backendHost)
+        {
+            _localPresence.PeerId = 0;
+            size = _localPresence.Encode(buffer);
+            if (size <= 0)
+                return;
+
+            foreach (var peer in backendHost.Peers)
+            {
+                if (peer.IsAuthenticated)
+                    backendHost.SendToPeer(peer, CollabProtocol.FrameType.Presence, buffer.AsSpan(0, size));
+            }
+        }
     }
 
     // ---------------------------------------------------------------------------------------
