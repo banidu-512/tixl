@@ -174,7 +174,7 @@ internal sealed class CollabWindow : Window
             buttonsTotal += widths[i];
         }
 
-        var margin = 6;
+        var margin = 6f;
         var gap = Math.Max(4, (ImGui.GetWindowSize().X - margin * 2 - buttonsTotal) / (count - 1));
 
         var x = margin;
