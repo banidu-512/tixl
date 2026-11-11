@@ -138,6 +138,12 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         /// <summary>0 keeps them for as long as their project is loaded, which avoids rebuild hitches.</summary>
         public int ReleaseUnusedRenderTargetsAfterSeconds = 0;
 
+        /// <summary>
+        /// Set when the user confirms the laser safety warning shown the first time the LASER
+        /// master button is armed. While false, arming opens the warning dialog first.
+        /// </summary>
+        public bool LaserSafetyWarningAcknowledged = false;
+
         /// <summary>Folder of the project that was open when the editor closed; empty if it closed in the project hub.</summary>
         public string LastOpenProjectFolder = string.Empty;
 
@@ -172,6 +178,9 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         /// <summary>When true, the Welcome window opens automatically at startup. Toggled from that window.</summary>
         public bool ShowWelcomeOnStartup = true;
 
+        /// <summary>When true, a warning lists symbols with operators that could not be found, once after startup.</summary>
+        public bool ShowMissingSymbolsWarningOnStartup = true;
+
         /// <summary>Whether the next launch offers crashes that were never reported.</summary>
         public bool AskToSendCrashReports = true;
 
@@ -183,6 +192,10 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public bool EnableIdleMotion = true;
         public bool SuspendRenderingWhenHidden = true;
         public bool UseVSync = true;
+
+        /// <summary>Caps the short side of outputs sized by their window ("Fill" and aspect presets), e.g. in focus mode on high-res displays.</summary>
+        [JsonConverter(typeof(StringEnumConverter))]
+        public WindowFillResolutionLimits MaxWindowFillResolution = WindowFillResolutionLimits.Unlimited;
 
         /** Frames per second to render at with vsync; 0 renders every refresh of the pacing display. */
         public int TargetFrameRate = 0;
@@ -328,6 +341,59 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public string CollabDiscordUserId = "";
         public string CollabDiscordUserName = "";
         public string CollabDiscordUserAvatar = "";
+
+        /// <summary>Language tag of the Discord profile ("hu", "en-US"); shown next to the name in sessions.</summary>
+        public string CollabDiscordLocale = "";
+
+        /// <summary>Keeps the Discord token in this file so the account stays confirmed to other
+        /// participants across restarts. Off: the token lives in memory only and a restart needs a new login.</summary>
+        public bool CollabDiscordStayLoggedIn = false;
+
+        public string CollabDiscordAccessToken = "";
+        public string CollabDiscordTokenExpiresUtc = "";
+
+        /// <summary>Title shown in the relay's session list when hosting.</summary>
+        public string CollabSessionTitle = "";
+
+        /// <summary>What the session is for (Jam, Show, Teaching, Help); shown in the session list.</summary>
+        public string CollabSessionPurpose = "Jam";
+
+        /// <summary>Lists a hosted relay session in the relay's session browser. Off: only people with the session ID find it.</summary>
+        public bool CollabListSession = false;
+
+        /// <summary>Bot token that lets this editor post and read session cards in a Discord lobby channel (serverless session browser).</summary>
+        public string CollabDiscordBotToken = "";
+
+        /// <summary>The Discord channel whose messages are the session browser (a forum post channel or a normal text channel).</summary>
+        public string CollabDiscordLobbyChannelId = "";
+
+        /// <summary>Base URL of a self-hosted collab backend (CollabBackend/api.php): the session browser, whispers and WebRTC signaling.</summary>
+        public string CollabBackendUrl = "";
+
+        /// <summary>Party form: Online (through the backend server) when true, Local (LAN) when false.</summary>
+        public bool CollabPartyOnline = true;
+
+        /// <summary>Party form: Controllable (participants may edit) when true, Spectating when false.</summary>
+        public bool CollabPartyControllable = true;
+
+        // Remote management (the Collab window's Remote tab). The installation keeps a device id
+        // and secret issued when the owner's 6-digit code was redeemed, so it needs no Discord
+        // login; the owner sees its computers through the backend instead of this file.
+        /// <summary>Name shown to the owner for this computer. Empty = the machine name.</summary>
+        public string CollabRemoteName = "";
+
+        /// <summary>Id of this installation in the remote registry (set by pairing).</summary>
+        public string CollabRemoteDeviceId = "";
+
+        /// <summary>Long-lived secret that authenticates this installation's heartbeats and reports.</summary>
+        public string CollabRemoteDeviceKey = "";
+
+        /// <summary>Display name of the Discord account this installation is paired with.</summary>
+        public string CollabRemoteOwner = "";
+
+        /// <summary>Local consent switch: the installation only heartbeats and accepts a managed
+        /// session while this is on. Pairing turns it on; it can be turned off at any time.</summary>
+        public bool CollabRemoteAllow = false;
 
         // Boygrouping (show distribution to render nodes)
         /// <summary>Master switch: this machine participates in boygrouping. When set, the role
@@ -477,6 +543,16 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
     {
         Legacy,
         Magnetic,
+    }
+
+    /** Values are the largest short side in pixels; 0 means no limit. */
+    public enum WindowFillResolutionLimits
+    {
+        Unlimited = 0,
+        Max720p = 720,
+        Max1080p = 1080,
+        Max1440p = 1440,
+        Max2160p = 2160,
     }
 
     /** Who an input device drives; Editor means the camera of the output. Stored by name. */
