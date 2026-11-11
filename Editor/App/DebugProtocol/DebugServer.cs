@@ -972,6 +972,38 @@ internal static class DebugServer
                 break;
             }
 
+            case "remote-pair":
+                CollabWindow.StartRemotePairing();
+                break;
+
+            case "remote-redeem":
+            {
+                var code = request["code"]?.Value<string>() ?? "";
+                _ = CollabRemote.PairInstallationAsync(code, CancellationToken.None);
+                break;
+            }
+
+            case "remote-list":
+                _ = CollabRemote.RefreshDevicesAsync(CancellationToken.None);
+                break;
+
+            case "remote-connect":
+            {
+                var device = request["device"]?.Value<string>() ?? "";
+                if (device.Length == 0)
+                {
+                    context.SendError("INVALID_PARAM", "remote-connect requires device = <id>");
+                    return;
+                }
+
+                CollabWindow.ConnectRemoteDevice(device);
+                break;
+            }
+
+            case "remote-forget":
+                CollabRemote.ForgetInstallation();
+                break;
+
             case "read-only":
                 collab.SetParticipantsCanEdit(!(request["value"]?.Value<bool>() ?? true));
                 break;
@@ -1087,6 +1119,11 @@ internal static class DebugServer
                                ["videoEncoded"] = collab.VideoStreamer?.EncodedFrames ?? 0,
                                ["videoViewers"] = collab.VideoStreamer?.ViewerCount ?? 0,
                                ["videoDecoded"] = collab.VideoReceiver?.DecodedFrames ?? 0,
+                               ["remotePaired"] = CollabRemote.IsPaired,
+                               ["remoteOwner"] = CollabRemote.PairedOwner,
+                               ["remoteCode"] = CollabWindow.RemotePairingCode,
+                               ["remoteDevices"] = CollabRemote.Devices.Count,
+                               ["remoteError"] = CollabRemote.ListError,
                                ["participantsCanEdit"] = collab.ParticipantsCanEdit,
                                ["readOnly"] = collab.ReadOnlyForParticipants,
                                ["pendingJoins"] = collab.PendingJoinRequests.Count,
