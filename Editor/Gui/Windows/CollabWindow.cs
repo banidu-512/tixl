@@ -139,6 +139,17 @@ internal sealed class CollabWindow : Window
         }
 
         FormInputs.AddVerticalSpace(4);
+        var canEdit = collab.ParticipantsCanEdit;
+        if (ImGui.Checkbox("Participants can edit (off = spectators)", ref canEdit))
+            collab.SetParticipantsCanEdit(canEdit);
+
+        CustomComponents.TooltipForLastItem("""
+                                            On: everyone can change the shared project. Off: participants are
+                                            spectators - they see your cursors, presence and chat, but the host
+                                            drops their graph changes.
+                                            """);
+
+        FormInputs.AddVerticalSpace(4);
         var projectName = ProjectView.Focused?.OpenedProject.Package.DisplayName ?? "";
         if (ImGui.Button("Form Party (via backend)", new Vector2(190, 0)))
         {
@@ -147,8 +158,9 @@ internal sealed class CollabWindow : Window
         }
 
         CustomComponents.TooltipForLastItem("""
-                                            Hosts a relay-free session: it is listed in the party browser
-                                            and joins run over WebRTC. Needs the backend URL in Settings.
+                                            Hosts a relay-free session: joiners ask first, you confirm in the
+                                            popup, and the session runs over WebRTC. Needs the backend URL in
+                                            Settings.
                                             """);
 
         ImGui.SameLine();
@@ -170,6 +182,11 @@ internal sealed class CollabWindow : Window
                              projectName.Length > 0 ? projectName : null);
             _selectedTab = Tab.Session;
         }
+
+        // The project context note: parties are formed for the open project and outlive browsing.
+        FormInputs.AddVerticalSpace(6);
+        ImGui.TextDisabled("The party stays alive while you browse other projects,");
+        ImGui.TextDisabled("until you close the party, unload the project or exit TiXL.");
     }
 
     // ---------------------------------------------------------------------------------------
@@ -188,13 +205,53 @@ internal sealed class CollabWindow : Window
             return;
         }
 
+        // Spectator state: the host toggles, guests see the badge.
+        if (collab.State == CollabManager.SessionState.Hosting)
+        {
+            var canEdit = collab.ParticipantsCanEdit;
+            if (ImGui.Checkbox("Participants can edit (off = spectators)", ref canEdit))
+                collab.SetParticipantsCanEdit(canEdit);
+        }
+        else if (collab.ReadOnlyForParticipants)
+        {
+            ImGui.TextColored(UiColors.StatusWarning, "Read-only session: the host set participants to spectators.");
+        }
+
         DrawHostPreview(collab);
         DrawRoster(collab);
         DrawDivider();
+        DrawJoinRequests(collab);
         DrawListingControls(collab);
         DrawWhispers(collab);
         DrawDivider();
         DrawLeaveButton(collab);
+    }
+
+    /// <summary>Host: the pending join requests, also shown in the popup window.</summary>
+    private static void DrawJoinRequests(CollabManager collab)
+    {
+        var requests = collab.PendingJoinRequests;
+        if (requests.Count == 0 || collab.State != CollabManager.SessionState.Hosting)
+            return;
+
+        FormInputs.AddSectionHeader("Join requests");
+        FormInputs.AddVerticalSpace(4);
+        foreach (var request in requests)
+        {
+            ImGui.PushID(request.TicketId);
+            ImGui.TextUnformatted(request.Name);
+            ImGui.SameLine();
+            if (ImGui.SmallButton("Confirm"))
+                collab.ApproveJoin(request.TicketId);
+
+            ImGui.SameLine();
+            if (ImGui.SmallButton("Decline"))
+                collab.RejectJoin(request.TicketId, block: false);
+
+            ImGui.PopID();
+        }
+
+        FormInputs.AddVerticalSpace(4);
     }
 
     private static void DrawLeaveButton(CollabManager collab)

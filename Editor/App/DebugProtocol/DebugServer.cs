@@ -952,6 +952,26 @@ internal static class DebugServer
                 break;
             }
 
+            case "join-respond":
+            {
+                var requests = collab.PendingJoinRequests;
+                var index = request["index"]?.Value<int>() ?? 0;
+                var approve = request["approve"]?.Value<bool>() ?? true;
+                if (requests.Count == 0)
+                {
+                    context.SendError("INVALID_PARAM", "no pending join requests");
+                    return;
+                }
+
+                var target = requests[Math.Min(index, requests.Count - 1)];
+                if (approve)
+                    collab.ApproveJoin(target.TicketId);
+                else
+                    collab.RejectJoin(target.TicketId, block: request["block"]?.Value<bool>() ?? false);
+
+                break;
+            }
+
             case "join-relay":
             {
                 Show.ShowControlMode.Activate(Show.ShowControlMode.Collab);

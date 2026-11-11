@@ -323,4 +323,149 @@ internal static class CollabWebLobby
 
     private static readonly object _whisperGate = new();
     private static readonly List<string> _whisperErrors = [];
+
+    // ---------------------------------------------------------------------------------------
+    // Join tickets: the relay-free session rendezvous
+    // ---------------------------------------------------------------------------------------
+
+    /// <summary>One signal message in a ticket: the editor's own signal JSON fields.</summary>
+    public sealed record TicketMessage(string From, string Type, string Sdp, string Candidate, string Mid);
+
+    /// <summary>One open join ticket as the host sees it.</summary>
+    public sealed record JoinTicket(string Id, string Name, string Lang, string State, long At, int Messages);
+
+    private static async Task<(JToken? Body, string? Error)> GetAsync(string op, string query, CancellationToken cancellation)
+    {
+        try
+        {
+            using var response = await _http.GetAsync($"{BackendUrl}?op={op}{query}", cancellation);
+            var text = await response.Content.ReadAsStringAsync(cancellation);
+            JObject json;
+            try
+            {
+                json = JObject.Parse(text);
+            }
+            catch (Newtonsoft.Json.JsonException)
+            {
+                return (null, "the backend answered with something that is not JSON");
+            }
+
+            return (json["ok"]?.Value<bool>() ?? false) ? (json, null) : (null, json["error"]?.Value<string>() ?? "refused");
+        }
+        catch (Exception e) when (e is HttpRequestException or TaskCanceledException or InvalidOperationException)
+        {
+            return (null, e.Message);
+        }
+    }
+
+    /// <summary>Guest: asks the backend for a join ticket (the rendezvous for one WebRTC handshake).</summary>
+    public static async Task<string> JoinRequestAsync(string room, string myName, string lang, CancellationToken cancellation)
+    {
+        var payload = new JObject
+                          {
+                              ["room"] = room,
+                              ["name"] = myName,
+                              ["lang"] = lang ?? "",
+                          };
+        var (body, error) = await PostAsync("join-request", payload, cancellation);
+        if (error != null)
+            throw new Exception(error);
+
+        return body?["ticket"]?.Value<string>() ?? throw new Exception("the backend sent no ticket");
+    }
+
+    /// <summary>Host: the open join tickets of the session.</summary>
+    public static async Task<(IReadOnlyList<JoinTicket> Tickets, string? Error)> FetchTicketsAsync(
+        string room, string key, CancellationToken cancellation)
+    {
+        var (body, error) = await GetAsync("tickets", $"&room={Uri.EscapeDataString(room)}&key={Uri.EscapeDataString(key)}", cancellation);
+        if (error != null)
+            return ([], error);
+
+        var tickets = new List<JoinTicket>();
+        foreach (var token in body?["tickets"] ?? new JArray())
+        {
+            if (token is not JObject entry)
+                continue;
+
+            CollabProtocol.TryGetInt(entry, "msgs", out var msgs);
+            tickets.Add(new JoinTicket(CollabProtocol.GetString(entry, "id"),
+                                       CollabProtocol.GetString(entry, "name"),
+                                       CollabProtocol.GetString(entry, "lang"),
+                                       CollabProtocol.GetString(entry, "state", "pending"),
+                                       CollabProtocol.TryGetInt(entry, "at", out var at) ? at : 0,
+                                       msgs));
+        }
+
+        return (tickets, null);
+    }
+
+    /// <summary>Posts one WebRTC signal message into a ticket. The host authenticates with the
+    /// room key; a guest with its ticket id.</summary>
+    public static async Task<string?> PostTicketMessageAsync(string room, string key, string ticket, byte[] payload, CancellationToken cancellation)
+    {
+        JObject message;
+        try
+        {
+            message = JObject.Parse(Encoding.UTF8.GetString(payload));
+        }
+        catch (Newtonsoft.Json.JsonException)
+        {
+            return "malformed signal";
+        }
+
+        var payloadJson = new JObject
+                              {
+                                  ["room"] = room,
+                                  ["ticket"] = ticket,
+                                  ["message"] = message,
+                              };
+        if (key.Length > 0)
+            payloadJson["key"] = key;
+
+        var (_, error) = await PostAsync("ticket-put", payloadJson, cancellation);
+        return error;
+    }
+
+    /// <summary>Reads the ticket's signal messages after the given index, plus its state.</summary>
+    public static async Task<(IReadOnlyList<TicketMessage> Messages, string State, string? Error)> FetchTicketMessagesAsync(
+        string room, string key, string ticket, long since, CancellationToken cancellation)
+    {
+        var query = $"&room={Uri.EscapeDataString(room)}&ticket={Uri.EscapeDataString(ticket)}&since={since}";
+        if (key.Length > 0)
+            query += "&key=" + Uri.EscapeDataString(key);
+
+        var (body, error) = await GetAsync("ticket-get", query, cancellation);
+        if (error != null)
+            return ([], "pending", error);
+
+        var messages = new List<TicketMessage>();
+        foreach (var token in body?["msgs"] ?? new JArray())
+        {
+            if (token is not JObject entry)
+                continue;
+
+            messages.Add(new TicketMessage(CollabProtocol.GetString(entry, "from"),
+                                           CollabProtocol.GetString(entry, "t"),
+                                           CollabProtocol.GetString(entry, "sdp"),
+                                           CollabProtocol.GetString(entry, "candidate"),
+                                           CollabProtocol.GetString(entry, "mid")));
+        }
+
+        return (messages, body is JObject bodyObject ? CollabProtocol.GetString(bodyObject, "state", "pending") : "pending", null);
+    }
+
+    /// <summary>Host: sets a join ticket's state (approved starts the WebRTC negotiation).</summary>
+    public static async Task<string?> SetTicketStateAsync(string room, string key, string ticket, string state, CancellationToken cancellation)
+    {
+        var payload = new JObject
+                          {
+                              ["room"] = room,
+                              ["key"] = key,
+                              ["ticket"] = ticket,
+                              ["state"] = state,
+                          };
+        var (_, error) = await PostAsync("ticket-state", payload, cancellation);
+        return error;
+    }
 }

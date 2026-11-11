@@ -9,6 +9,7 @@ using Newtonsoft.Json.Linq;
 using T3.Core.Model;
 using T3.Editor.Gui.UiHelpers;
 using T3.Editor.Gui.Window;
+using T3.Editor.Gui.Windows.Layouts;
 using T3.Editor.Show;
 using T3.Editor.UiModel;
 using T3.Editor.UiModel.Commands;
@@ -757,6 +758,179 @@ internal sealed class CollabManager
         }
     }
 
+    // ---------------------------------------------------------------------------------------
+    // Relay-free backend sessions: discovery and WebRTC signaling via the web backend, the
+    // session itself rides WebRTC data channels. No relay, no port forwarding.
+    // ---------------------------------------------------------------------------------------
+
+    /// <summary>The room-code alphabet the relay uses, so backend codes look the same.</summary>
+    private static string NewRoomCode()
+    {
+        const string alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+        Span<char> code = stackalloc char[6];
+        for (var i = 0; i < code.Length; i++)
+            code[i] = alphabet[Random.Shared.Next(0, alphabet.Length)];
+
+        return new string(code);
+    }
+
+    /// <summary>
+    /// Hosts a relay-free session: the web backend lists the room and carries the WebRTC
+    /// signaling, the session itself rides data channels. Requires a configured backend.
+    /// </summary>
+    public void StartHostViaBackend()
+    {
+        if (!_reconnectAttemptInFlight)
+            CancelReconnect();
+
+        LeftManually = false;
+        ShowControlMode.Activate(ShowControlMode.Collab);
+
+        if (!IsEnabled)
+        {
+            ErrorText = "Collaboration is turned off in the settings.";
+            return;
+        }
+
+        if (!CollabWebLobby.IsConfigured)
+        {
+            ErrorText = "No party backend configured (Settings > Collaboration > Advanced).";
+            return;
+        }
+
+        if (State != SessionState.Off)
+            Leave();
+
+        ++_sessionGeneration;
+        ErrorText = "";
+
+        var room = NewRoomCode();
+        var key = Guid.NewGuid().ToString("N");
+        _password = UserSettings.Config.CollabPassword ?? "";
+        _sessionLog.Clear();
+        _sessionProjectName = ProjectView.Focused?.OpenedProject.Package.DisplayName ?? "";
+
+        try
+        {
+            var transport = new CollabBackendWire.CollabBackendHostTransport(room, key);
+            transport.JoinRequested += OnJoinRequested;
+            _transport = transport;
+            _transport.PeerDisconnected += OnPeerDisconnectedTransport;
+            RoomCode = room;
+            _roomKey = key;
+            RelayEndpoint = CollabWebLobby.BackendUrl;
+            _currentTarget = new SessionTarget(Hosting: true, Relay: false, CollabWebLobby.BackendUrl, 0, room, _password, key);
+            State = SessionState.Hosting;
+            ParticipantsCanEdit = true;
+            _pendingJoinRequests.Clear();
+            _readOnlyNoticeShownFor.Clear();
+            StatusText = $"Hosting via the backend, room {room}";
+            Log.Info($"Collab: backend session started (room {room})");
+
+            var config = UserSettings.Config;
+            CollabWebLobby.Register(room, key, "",
+                                    string.IsNullOrWhiteSpace(config.CollabSessionTitle)
+                                        ? $"{LocalIdentity.DisplayName}'s session"
+                                        : config.CollabSessionTitle.Trim(),
+                                    config.CollabSessionPurpose ?? "",
+                                    _sessionProjectName,
+                                    LocalIdentity.DisplayName, LocalIdentity.Lang,
+                                    !string.IsNullOrEmpty(_password),
+                                    config.CollabListSession);
+        }
+        catch (Exception e)
+        {
+            ErrorText = $"Backend hosting failed: {e.Message}";
+            StatusText = "Failed to host";
+            _transport?.Dispose();
+            _transport = null;
+            State = SessionState.Off;
+        }
+    }
+
+    /// <summary>Joins a backend-hosted room: a join ticket, a WebRTC handshake through the
+    /// backend, then the session runs on the data channel. Async; state Connecting meanwhile.</summary>
+    public void JoinViaBackend(string room)
+    {
+        if (!_reconnectAttemptInFlight)
+            CancelReconnect();
+
+        LeftManually = false;
+
+        if (!IsEnabled)
+        {
+            ErrorText = "Collaboration is turned off in the settings.";
+            return;
+        }
+
+        if (!CollabWebLobby.IsConfigured)
+        {
+            ErrorText = "No party backend configured (Settings > Collaboration > Advanced).";
+            return;
+        }
+
+        if (State != SessionState.Off)
+            Leave();
+
+        var generation = ++_sessionGeneration;
+        ErrorText = "";
+        _joinedHost = CollabWebLobby.BackendUrl;
+        State = SessionState.Connecting;
+        StatusText = $"Joining room {room} via the backend...";
+
+        _password = UserSettings.Config.CollabPassword ?? "";
+        _sessionLog.Clear();
+        _currentTarget = new SessionTarget(Hosting: false, Relay: false, CollabWebLobby.BackendUrl, 0, room, _password, "");
+
+        _ = Task.Run(async () =>
+                         {
+                             try
+                             {
+                                 var transport = new CollabBackendWire.CollabBackendClientTransport(room, TruncateName(LocalIdentity.DisplayName), LocalIdentity.Lang);
+                                 await transport.ConnectAsync(CancellationToken.None);
+                                 _uiThreadActions.Enqueue(() => CompleteBackendJoin(transport, generation, room));
+                             }
+                             catch (Exception e)
+                             {
+                                 var message = e.Message;
+                                 _uiThreadActions.Enqueue(() =>
+                                                          {
+                                                              if (generation != _sessionGeneration)
+                                                                  return;
+
+                                                              ErrorText = $"Join failed: {message}";
+                                                              StatusText = "Join failed";
+                                                              _transport?.Dispose();
+                                                              _transport = null;
+                                                              State = SessionState.Off;
+                                                          });
+                             }
+                         });
+    }
+
+    private void CompleteBackendJoin(CollabBackendWire.CollabBackendClientTransport transport, int generation, string room)
+    {
+        // The user may have left or started another session while the handshake ran.
+        if (generation != _sessionGeneration)
+        {
+            transport.Dispose();
+            return;
+        }
+
+        _sessionLog.Clear();
+        _transport = transport;
+        _transport.PeerDisconnected += OnPeerDisconnectedTransport;
+        RoomCode = room;
+        RelayEndpoint = CollabWebLobby.BackendUrl;
+        _roomKey = "";
+
+        // The data channel is open: the hello goes out now and authentication runs on it.
+        transport.SendJson(transport.HostLink!, BuildHello());
+        State = SessionState.Connected;
+        StatusText = $"Connected as {LocalIdentity.DisplayName}";
+        Log.Info($"Collab: joined backend room {room}");
+    }
+
     /// <summary>
     /// Ends the session. <paramref name="manual"/> marks a leave the user asked for: the launch
     /// auto-rejoin then stays quiet instead of dragging the session back, which made Leave look
@@ -780,6 +954,10 @@ internal sealed class CollabManager
             if (State == SessionState.Hosting && RoomCode.Length > 0 && _roomKey.Length > 0)
                 CollabWebLobby.Unregister(RoomCode, _roomKey);
             _whisperSince = 0;
+            _pendingJoinRequests.Clear();
+            WindowManager.CollabJoinRequestWindow.Config.Visible = false;
+            ParticipantsCanEdit = true;
+            ReadOnlyForParticipants = false;
         }
 
         _currentTarget = null;
@@ -888,6 +1066,11 @@ internal sealed class CollabManager
         var firstLoss = _reconnectTarget == null;
         var target = _reconnectTarget ?? _currentTarget;
         if (target == null || !IsEnabled)
+            return false;
+
+        // A backend session has no dial target to retry (the WebRTC handshake ran through the
+        // backend's tickets); a fresh join is the only way back. Ends cleanly instead.
+        if (target is { Relay: false, Port: 0 })
             return false;
 
         List<Guid>? editedCompositions = null;
@@ -1971,6 +2154,10 @@ internal sealed class CollabManager
                 Leave();
                 break;
 
+            case "canEdit":
+                HandleCanEdit(peer, json);
+                break;
+
             case "op" when IsSessionActive:
                 HandleOp(peer, json);
                 break;
@@ -2523,6 +2710,20 @@ internal sealed class CollabManager
     {
         if (!peer.IsAuthenticated)
             return;
+
+        // Spectator mode: the host drops every graph op from participants while the toggle is
+        // off. Chat and presence are separate messages and keep flowing.
+        if (State == SessionState.Hosting && !ParticipantsCanEdit)
+        {
+            if (!_readOnlyNoticeShownFor.Contains(peer.AssignedId))
+            {
+                _readOnlyNoticeShownFor.Add(peer.AssignedId);
+                Log.Info($"Collab: dropped an op from {peer} (participants cannot edit)");
+                SendJson(peer, new { t = "canEdit", value = false });
+            }
+
+            return;
+        }
 
         if (json["op"] is not JObject op)
             return;
@@ -3579,6 +3780,94 @@ internal sealed class CollabManager
 
                                      AppendChat(null, $"{from} whispers: {text}");
                                  });
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Spectator mode and join approval
+    // ---------------------------------------------------------------------------------------
+
+    /// <summary>Host toggle: when off, the host drops every graph op from participants (spectators
+    /// can watch and chat but not change anything). Broadcast as canEdit so guests can show it.</summary>
+    public bool ParticipantsCanEdit { get; private set; } = true;
+
+    /// <summary>Guest view: the host runs the session in spectator mode.</summary>
+    public bool ReadOnlyForParticipants { get; private set; }
+
+    /// <summary>One waiting join request: who, which ticket, when.</summary>
+    public sealed class PendingJoinRequest
+    {
+        public string TicketId = "";
+        public string Name = "";
+        public string Lang = "";
+        public DateTime At = DateTime.Now;
+    }
+
+    private readonly List<PendingJoinRequest> _pendingJoinRequests = [];
+    private readonly HashSet<int> _readOnlyNoticeShownFor = [];
+
+    /// <summary>Join requests waiting for the host's decision. UI thread only.</summary>
+    public IReadOnlyList<PendingJoinRequest> PendingJoinRequests => _pendingJoinRequests;
+
+    /// <summary>Host: approves a join request; the negotiation starts right away.</summary>
+    public void ApproveJoin(string ticketId)
+    {
+        var request = _pendingJoinRequests.FirstOrDefault(r => r.TicketId == ticketId);
+        if (request != null)
+            _pendingJoinRequests.Remove(request);
+
+        AppendChat(null, $"{request?.Name ?? "A visitor"} was confirmed into the session");
+        (_transport as CollabBackendWire.CollabBackendHostTransport)?.ApproveTicket(ticketId);
+        WindowManager.CollabJoinRequestWindow.Config.Visible = false;
+    }
+
+    /// <summary>Host: declines a join request; blocked names are declined automatically from now on.</summary>
+    public void RejectJoin(string ticketId, bool block)
+    {
+        var request = _pendingJoinRequests.FirstOrDefault(r => r.TicketId == ticketId);
+        if (request != null)
+            _pendingJoinRequests.Remove(request);
+
+        if (request != null)
+            AppendChat(null, $"{request.Name}'s join request was declined{(block ? " (blocked)" : "")}");
+        (_transport as CollabBackendWire.CollabBackendHostTransport)?.RejectTicket(ticketId, block);
+        if (_pendingJoinRequests.Count == 0)
+            WindowManager.CollabJoinRequestWindow.Config.Visible = false;
+    }
+
+    /// <summary>Host: toggles spectator mode and tells everyone.</summary>
+    public void SetParticipantsCanEdit(bool value)
+    {
+        if (State != SessionState.Hosting || ParticipantsCanEdit == value)
+            return;
+
+        ParticipantsCanEdit = value;
+        _readOnlyNoticeShownFor.Clear();
+        _transport?.BroadcastJson(Peers, new { t = "canEdit", value });
+        AppendChat(null, value ? "Participants can edit again" : "Participants are spectators now (read-only)");
+        Log.Info($"Collab: participants can edit = {value}");
+    }
+
+    private void OnJoinRequested(string name, string ticketId)
+    {
+        _uiThreadActions.Enqueue(() =>
+                                 {
+                                     _pendingJoinRequests.Add(new PendingJoinRequest
+                                                                  {
+                                                                      TicketId = ticketId,
+                                                                      Name = name,
+                                                                  });
+                                     AppendChat(null, $"{name} requests to join the party");
+                                     WindowManager.CollabJoinRequestWindow.Config.Visible = true;
+                                     WindowManager.CollabJoinRequestWindow.RequestWindowFocus();
+                                 });
+    }
+
+    private void HandleCanEdit(CollabPeerConnection peer, JObject json)
+    {
+        ReadOnlyForParticipants = !(json["value"]?.Value<bool>() ?? true);
+        AppendChat(null, ReadOnlyForParticipants
+                             ? "The host made the session read-only: you can watch and chat"
+                             : "The host allows editing again");
     }
 
     /// <summary>Host: answers a browser whisper. Fire-and-forget; failures land in the log.</summary>
