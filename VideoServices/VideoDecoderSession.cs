@@ -1,7 +1,8 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Threading;
 using Sdcb.FFmpeg.Codecs;
+using Sdcb.FFmpeg.Common;
 using Sdcb.FFmpeg.Formats;
 using Sdcb.FFmpeg.Raw;
 using Sdcb.FFmpeg.Utils;
@@ -65,6 +66,8 @@ public sealed class VideoDecoderSession : IDisposable
     /// <summary>
     /// Opens <paramref name="url"/> (file or network stream) and selects the best video stream. Returns null
     /// on failure. <paramref name="demuxerOptions"/> passes demuxer options (e.g. <c>rtsp_transport=tcp</c>).
+    /// <paramref name="inputFormat"/> forces the demuxer by short name (e.g. <c>v4l2</c>, <c>dshow</c>) for
+    /// URLs that content probing cannot identify, like capture device nodes.
     /// </summary>
     /// <param name="cancellationToken">Checked before opening and between frame reads, so a cancelled live
     /// session stops decoding at its next frame boundary instead of after the I/O timeout. It does not abort
@@ -75,6 +78,7 @@ public sealed class VideoDecoderSession : IDisposable
     /// stopped sending — without it a stalled read blocks its thread indefinitely.</param>
     public static unsafe VideoDecoderSession? TryOpen(string url, VideoPlaybackOptimization optimization, out string? error,
                                                       IReadOnlyDictionary<string, string>? demuxerOptions = null,
+                                                      string? inputFormat = null, bool lowLatency = false,
                                                       CancellationToken cancellationToken = default,
                                                       TimeSpan ioTimeout = default)
     {
@@ -91,6 +95,29 @@ public sealed class VideoDecoderSession : IDisposable
             return null;
         }
 
+        InputFormat? forcedFormat = null;
+        if (!string.IsNullOrEmpty(inputFormat))
+        {
+            try
+            {
+                var found = InputFormat.FindByShortName(inputFormat);
+                if (found == null)
+                {
+                    // Means the demuxer was never registered (no avdevice_register_all) or the name is
+                    // wrong — passing an empty format would silently fall back to byte-probing the URL.
+                    error = $"Input format '{inputFormat}' not found in this FFmpeg build.";
+                    return null;
+                }
+
+                forcedFormat = found;
+            }
+            catch (Exception e)
+            {
+                error = $"Unknown input format '{inputFormat}': {e.Message}";
+                return null;
+            }
+        }
+
         FormatContext? formatContext = null;
         MediaDictionary? options = null;
         try
@@ -103,7 +130,18 @@ public sealed class VideoDecoderSession : IDisposable
                     options[pair.Key] = pair.Value;
             }
 
-            formatContext = FormatContext.OpenInputUrl(url, null, options);
+            if (lowLatency)
+            {
+                // Live capture: skip the demuxer's probe/frame buffering and hand decoded frames straight
+                // through. Callers may pass no demuxer options (local capture devices) — create the
+                // dictionary here. fflags are comma/plus-composed — merge with any caller-provided value.
+                options ??= new MediaDictionary();
+                var fflags = options.ContainsKey("fflags") ? options["fflags"] + "+nobuffer" : "nobuffer";
+                options["fflags"] = fflags;
+                options["avioflags"] = "direct";
+            }
+
+            formatContext = FormatContext.OpenInputUrl(url, forcedFormat, options);
             formatContext.LoadStreamInfo();
 
             var stream = formatContext.FindBestStreamOrNull(AVMediaType.Video);
@@ -147,6 +185,8 @@ public sealed class VideoDecoderSession : IDisposable
             {
                 codecContext = new CodecContext(codec);
                 codecContext.FillParameters(codecParameters);
+                if (lowLatency)
+                    codecContext.Flags |= AV_CODEC_FLAG.LowDelay;
                 codecContext.Open();
             }
 
@@ -165,7 +205,7 @@ public sealed class VideoDecoderSession : IDisposable
         }
         catch (Exception e)
         {
-            error = "Failed to open video: " + e.Message;
+            error = "Failed to open video: " + e;
             formatContext?.Dispose();
             return null;
         }
@@ -399,6 +439,7 @@ public sealed class VideoDecoderSession : IDisposable
     /// </summary>
     public unsafe bool TryReadNextFrame(out long framePts)
     {
+        var pendingReads = 0;
         framePts = 0;
 
         // A cancelled live session stops here, at the frame boundary, rather than after the I/O timeout.
@@ -407,9 +448,13 @@ public sealed class VideoDecoderSession : IDisposable
 
         while (true)
         {
-            var receive = _codecContext.ReceiveFrame(_frame);
+            // FFmpeg clears the receiving frame before reporting EOF, so decode into a scratch frame: at the end of
+            // the stream CurrentFrame keeps the final frame, which is what a target past the footage resolves to.
+            var receive = _codecContext.ReceiveFrame(_receivedFrame);
             if (receive == CodecResult.Success)
             {
+                _frame.Unref();
+                ffmpeg.av_frame_move_ref(_frame, _receivedFrame);
                 var pts = _frame.BestEffortTimestamp;
                 framePts = pts != NoPts ? pts : _frame.Pts;
 
@@ -442,17 +487,44 @@ public sealed class VideoDecoderSession : IDisposable
                 continue;
             }
 
-            try
+            if (read == CodecResult.Again)
             {
-                if (_packet.StreamIndex == _videoStreamIndex)
-                    _codecContext.SendPacket(_packet);
+                // Non-blocking demuxers (avfoundation, live devices) have no packet ready yet. The packet is
+                // unfilled, and sending it would put the decoder into drain mode and end the stream.
+                if (++pendingReads > MaxPendingReads)
+                    return false;
+
+                Thread.Sleep(1);
+                continue;
             }
-            finally
+
+            if (_packet.StreamIndex == _videoStreamIndex)
             {
-                _packet.Unref();
+                // Raw call instead of CodecContext.SendPacket: Sdcb's wrapper throws on any negative
+                // return without exposing the code, but AVERROR_INVALIDDATA must be skippable — live
+                // capture devices start streaming mid-frame, so the first buffer(s) are fragments the
+                // decoder rejects. The ffmpeg CLI drops those packets and carries on; so does this.
+                var sendResult = ffmpeg.avcodec_send_packet(_codecContext, _packet);
+                if (sendResult == AvErrorInvalidData)
+                {
+                    Log.Debug("Skipped an undecodable packet (fragmentary start of a live stream).");
+                }
+                else if (sendResult < 0)
+                {
+                    _packet.Unref();
+                    throw new FFmpegException($"Error sending a packet for decoding: [FFmpeg error {sendResult}]");
+                }
             }
+
+            _packet.Unref();
         }
     }
+
+    // AVERROR_INVALIDDATA — see the send-packet handling above.
+    private const int AvErrorInvalidData = -1094995529;
+
+    /** How many consecutive 1 ms EAGAIN waits a read tolerates (at least ~5 s) before reporting the stream as lost. */
+    private const int MaxPendingReads = 5000;
 
     /// <summary>
     /// Seeks to the keyframe at or before <paramref name="targetPts"/> and flushes the decoder. The caller
@@ -488,6 +560,7 @@ public sealed class VideoDecoderSession : IDisposable
     public unsafe void Dispose()
     {
         _frame.Dispose();
+        _receivedFrame.Dispose();
         _swFrame.Dispose();
         _packet.Dispose();
         _codecContext.Dispose();
@@ -569,6 +642,7 @@ public sealed class VideoDecoderSession : IDisposable
     private readonly int _videoStreamIndex;
     private readonly Packet _packet = new();
     private readonly Frame _frame = new();
+    private readonly Frame _receivedFrame = new();
     private readonly Frame _swFrame = new();
     private unsafe AVBufferRef* _hwDeviceCtx;
     private readonly bool _zeroCopy;
