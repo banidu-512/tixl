@@ -518,7 +518,8 @@ internal static class CollabBackendWire
                             }
                             else
                             {
-                                Log.Debug($"Collab backend host: join request from {ticket.Name}");
+                                Log.Debug($"Collab backend host: join request from {ticket.Name}"
+                                          + $" (ticket claim '{ticket.Claim}', expected '{_autoApproveClaim}')");
                                 JoinRequested?.Invoke(ticket.Name, ticket.Id);
                             }
                         }
@@ -742,6 +743,7 @@ internal static class CollabBackendWire
         public async Task ConnectAsync(CancellationToken cancellation, Func<string, CancellationToken, Task>? prepare = null)
         {
             _ticket = await CollabWebLobby.JoinRequestAsync(_room, _name, _lang, _claim, cancellation);
+            Log.Debug($"Collab backend client: join ticket opened (claim '{_claim}')");
 
             // The host confirms the request in a popup first; the negotiation waits for it.
             var approvalDeadline = Environment.TickCount64 + 90_000;
