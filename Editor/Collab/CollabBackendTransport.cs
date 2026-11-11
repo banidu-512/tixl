@@ -714,6 +714,7 @@ internal static class CollabBackendWire
         private readonly CancellationTokenSource _cancellation = new();
         private string _ticket = "";
         private long _since;
+        private int _pollFailures;
         private BackendRtcLink? _link;
         private CollabPeerConnection? _hostPeer;
         private volatile bool _connected;
@@ -803,6 +804,7 @@ internal static class CollabBackendWire
                     var (messages, _, error) = await CollabWebLobby.FetchTicketMessagesAsync(_room, "", _ticket, Interlocked.Read(ref _since), cancellation);
                     if (error == null)
                     {
+                        Interlocked.Exchange(ref _pollFailures, 0);
                         foreach (var message in messages.Where(m => m.From == "host"))
                         {
                             Log.Debug($"Collab backend client: got {message.Type} from host");
@@ -817,7 +819,10 @@ internal static class CollabBackendWire
                     }
                     else
                     {
-                        Log.Debug($"Collab backend client: signals poll failed: {error}");
+                        // A rate-limited server answers with an error page; backing off keeps the
+                        // block from extending.
+                        var failures = Interlocked.Increment(ref _pollFailures);
+                        Log.Debug($"Collab backend client: signals poll failed ({failures}): {error}");
                     }
                 }
                 catch (Exception e)
@@ -827,7 +832,9 @@ internal static class CollabBackendWire
 
                 try
                 {
-                    await Task.Delay(2000, cancellation);
+                    var failures = _pollFailures;
+                    var delay = 2000 + Math.Min(28_000, failures * failures * 2000);
+                    await Task.Delay(delay, cancellation);
                 }
                 catch (OperationCanceledException)
                 {
