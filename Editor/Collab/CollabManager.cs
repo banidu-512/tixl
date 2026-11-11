@@ -378,9 +378,7 @@ internal sealed class CollabManager
                                  DisplayName = TruncateName(displayName),
                                  Source = string.IsNullOrEmpty(config.CollabDiscordUserId) ? "local" : "discord",
                                  Lang = string.IsNullOrEmpty(config.CollabDiscordUserId) ? "" : (config.CollabDiscordLocale ?? ""),
-                                 AvatarUrl = string.IsNullOrEmpty(config.CollabDiscordUserId)
-                                                 ? ""
-                                                 : $"https://cdn.discordapp.com/avatars/{config.CollabDiscordUserId}/{config.CollabDiscordUserAvatar}.png",
+                                 AvatarUrl = BuildAvatarUrl(config.CollabDiscordUserId, config.CollabDiscordUserAvatar),
                              };
     }
 
@@ -388,6 +386,19 @@ internal sealed class CollabManager
     {
         name = name?.Trim() ?? "";
         return name.Length <= 48 ? name : name[..48];
+    }
+
+    /// <summary>The Discord CDN avatar: the custom image when the account has one, otherwise one
+    /// of the default avatars Discord assigns by user id.</summary>
+    private static string BuildAvatarUrl(string userId, string avatarHash)
+    {
+        if (string.IsNullOrEmpty(userId))
+            return "";
+
+        if (string.IsNullOrEmpty(avatarHash))
+            return ulong.TryParse(userId, out var id) ? $"https://cdn.discordapp.com/embed/avatars/{id % 5}.png" : "";
+
+        return $"https://cdn.discordapp.com/avatars/{userId}/{avatarHash}.png";
     }
 
     public void StartHost(int tcpPort, string password, bool enableLanDiscovery, string? projectName = null)
