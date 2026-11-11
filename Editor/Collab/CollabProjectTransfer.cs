@@ -59,9 +59,37 @@ internal static class CollabProjectTransfer
         }
     }
 
-    /// <summary>Uploads a zip as the party's project snapshot. Returns null on success.</summary>
-    public static async Task<string?> UploadAsync(string room, string key, string projectName, string zipPath,
-                                                  Action<int>? progress, CancellationToken cancellation)
+    /// <summary>
+    /// Newest write time of the project's own files. A party that runs for hours can gain new
+    /// operators or assets; comparing this with the snapshot's upload time tells the host whether
+    /// joiners would get a stale project.
+    /// </summary>
+    public static DateTime NewestWriteUtc(string folder)
+    {
+        var newest = DateTime.MinValue;
+        try
+        {
+            foreach (var path in EnumerateProjectFiles(folder))
+            {
+                var written = File.GetLastWriteTimeUtc(path);
+                if (written > newest)
+                    newest = written;
+            }
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            // A file vanished mid-scan; the last known time is good enough for a refresh decision.
+        }
+
+        return newest;
+    }
+
+    /// <summary>
+    /// Starts the upload slot for a party. Called BEFORE zipping: the backend drops the previous
+    /// archive and reports "uploading", so a joiner arriving now waits for the fresh snapshot
+    /// instead of downloading the stale one.
+    /// </summary>
+    public static async Task<string?> BeginUploadAsync(string room, string key, string projectName, CancellationToken cancellation)
     {
         var init = await PostJsonAsync("project-init", new JObject
                                                           {
@@ -69,9 +97,13 @@ internal static class CollabProjectTransfer
                                                               ["key"] = key,
                                                               ["name"] = projectName,
                                                           }, cancellation);
-        if (init.Error != null)
-            return init.Error;
+        return init.Error;
+    }
 
+    /// <summary>Uploads a zip into the slot opened by <see cref="BeginUploadAsync"/>. Returns null on success.</summary>
+    public static async Task<string?> UploadZipAsync(string room, string key, string zipPath,
+                                                     Action<int>? progress, CancellationToken cancellation)
+    {
         await using var stream = File.OpenRead(zipPath);
         var buffer = new byte[ChunkSize];
         long sent = 0;
@@ -103,7 +135,6 @@ internal static class CollabProjectTransfer
                                                                              {
                                                                                  ["room"] = room,
                                                                                  ["key"] = key,
-                                                                                 ["name"] = projectName,
                                                                              }, cancellation);
         return finishOk == null && finishError == null ? null : finishError;
     }
