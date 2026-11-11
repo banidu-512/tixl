@@ -266,9 +266,12 @@ internal sealed class CollabManager
                        ["name"] = _localIdentity.DisplayName,
                        ["userId"] = _localIdentity.UserId,
                        ["lang"] = _localIdentity.Lang,
+                       ["avatar"] = TruncateAvatar(_localIdentity.AvatarUrl),
                        ["port"] = UserSettings.Config.CollabPort,
                    };
     }
+
+    private static string TruncateAvatar(string url) => string.IsNullOrEmpty(url) ? "" : url.Length <= 220 ? url : url[..220];
 
     /// <summary>What the relay is told when opening or joining a room. UI thread: reads the settings.</summary>
     private CollabRelayHello BuildRelayHello(bool hosting, string roomKey, string password)
@@ -1182,6 +1185,8 @@ internal sealed class CollabManager
         _roster.Clear();
         _rosterUserIds.Clear();
         _participants.Clear();
+        _rosterAvatars.Clear();
+        _peerPingMs.Clear();
         _localVerified = false;
         _roomKey = "";
         _latestPresenceByPeer.Clear();
@@ -1736,6 +1741,95 @@ internal sealed class CollabManager
     private readonly Dictionary<int, string> _roster = new();
     public IReadOnlyDictionary<int, string> Roster => _roster;
 
+    /// <summary>Discord avatar URLs by session id (empty when the participant is not logged in).</summary>
+    private readonly Dictionary<int, string> _rosterAvatars = new();
+
+    /// <summary>Last measured round-trip time to a peer, in milliseconds (0 = not measured yet).</summary>
+    private readonly Dictionary<int, int> _peerPingMs = new();
+    private long _nextPingTicks;
+
+    /// <summary>The participant's Discord avatar URL, or "" when they have none.</summary>
+    public string GetPeerAvatarUrl(int peerId)
+        => _rosterAvatars.TryGetValue(peerId, out var url) ? url : "";
+
+    /// <summary>My own Discord avatar URL, or "" when not logged in.</summary>
+    public string LocalAvatarUrl => _localIdentity.AvatarUrl;
+
+    /// <summary>The participant's Discord locale ("en-US"), or "" when unknown.</summary>
+    public string GetPeerLang(int peerId)
+        => _participants.TryGetValue(peerId, out var info) ? info.Lang : "";
+
+    /// <summary>Last measured round-trip time to a peer in milliseconds, or 0 when not measured yet.</summary>
+    public int GetPeerPingMs(int peerId)
+        => _peerPingMs.TryGetValue(peerId, out var ms) ? ms : 0;
+
+    /// <summary>
+    /// Pins a participant's work into my output window, rendering it locally from the synced
+    /// project — no video stream involved. Shows the composition they are working in, or their
+    /// selected operator when they have one.
+    /// </summary>
+    public bool PinPeerWork(int peerId)
+    {
+        if (GetPresence(peerId) is not { } presence || presence.CompositionId == Guid.Empty)
+            return false;
+
+        if (!TryFindCompositionInstance(presence.CompositionId, out var compositionInstance, out var view))
+            return false;
+
+        var pinned = compositionInstance;
+        foreach (var selectedChildId in presence.SelectedChildIds)
+        {
+            if (compositionInstance.Children.TryGetChildInstance(selectedChildId, out var child, allowCreate: false) && child != null)
+            {
+                pinned = child;
+                break;
+            }
+        }
+
+        if (!T3.Editor.Gui.Windows.Output.OutputWindow.TryGetPrimaryOutputWindow(out var outputWindow))
+            return false;
+
+        outputWindow.Pinning.PinInstance(pinned, view);
+        return true;
+    }
+
+    /// <summary>Finds an instance of the given composition symbol among the open graphs, breadth-first.</summary>
+    private static bool TryFindCompositionInstance(Guid compositionId, out T3.Core.Operator.Instance found, out ProjectView? view)
+    {
+        found = null!;
+        view = null;
+        var queue = new Queue<(T3.Core.Operator.Instance Instance, ProjectView? View)>();
+        var visited = new HashSet<Guid>();
+
+        foreach (var window in WindowManager.GetAllWindows().OfType<T3.Editor.Gui.Window.GraphWindow>())
+        {
+            if (window.ProjectView?.CompositionInstance is { } compositionInstance)
+                queue.Enqueue((compositionInstance, window.ProjectView));
+        }
+
+        if (queue.Count == 0 && ProjectView.Focused?.CompositionInstance is { } focused)
+            queue.Enqueue((focused, ProjectView.Focused));
+
+        while (queue.Count > 0)
+        {
+            var (instance, projectView) = queue.Dequeue();
+            if (instance.Symbol.Id == compositionId)
+            {
+                found = instance;
+                view = projectView;
+                return true;
+            }
+
+            if (!visited.Add(instance.Symbol.Id))
+                continue; // recursive graphs would loop forever
+
+            foreach (var child in ((IReadOnlyDictionary<Guid, T3.Core.Operator.Instance>)instance.Children).Values)
+                queue.Enqueue((child, projectView));
+        }
+
+        return false;
+    }
+
     public string DescribePeerLink(CollabPeerConnection peer) => _transport?.DescribePeerLink(peer) ?? "";
 
     public string DescribePeerLink(int peerId)
@@ -1939,6 +2033,19 @@ internal sealed class CollabManager
 
         ProcessPendingKicks();
         ProcessPendingDisconnects();
+
+        // Measure latency to every peer so the roster can show it.
+        if (Environment.TickCount64 > _nextPingTicks)
+        {
+            _nextPingTicks = Environment.TickCount64 + 2000;
+            foreach (var pingPeer in Peers)
+            {
+                if (!pingPeer.IsAuthenticated)
+                    continue;
+
+                SendJson(pingPeer, new { t = "ping", ts = Environment.TickCount64 });
+            }
+        }
 
         // A disconnect handled above can end the session (host loss, relay link death), and
         // Leave() disposes the transport — nothing below may run against it.
@@ -2429,6 +2536,7 @@ internal sealed class CollabManager
                     if (CollabProtocol.TryGetGuid(json, "userId", out var joinedUserId))
                         _rosterUserIds[joinedId] = joinedUserId;
 
+                    _rosterAvatars[joinedId] = CollabProtocol.GetString(json, "avatar");
                     _participants[joinedId] = ReadParticipantInfo(json);
                 }
 
@@ -2478,6 +2586,18 @@ internal sealed class CollabManager
                 AppendChat(sender, text);
                 if (State == SessionState.Hosting)
                     BroadcastSystemMessage(json, except: peer);
+                break;
+            }
+
+            case "ping" when IsSessionActive:
+                SendJson(peer, new { t = "pong", ts = json["ts"] });
+                break;
+
+            case "pong" when IsSessionActive:
+            {
+                if (CollabProtocol.TryGetLong(json, "ts", out var sentTs))
+                    _peerPingMs[peer.AssignedId] = (int)Math.Clamp(Environment.TickCount64 - sentTs, 0, 60_000);
+
                 break;
             }
 
@@ -2547,6 +2667,8 @@ internal sealed class CollabManager
         peer.ListenPort = CollabProtocol.TryGetInt(json, "port", out var listenPort) && listenPort is > 0 and < 65536
                               ? listenPort
                               : CollabProtocol.DefaultTcpPort;
+
+        _rosterAvatars[peer.AssignedId] = TruncateAvatar(CollabProtocol.GetString(json, "avatar"));
 
         if (!CollabProtocol.TryGetInt(json, "proto", out var peerProtocol) || peerProtocol != CollabProtocol.ProtocolVersion)
         {
@@ -2624,6 +2746,7 @@ internal sealed class CollabManager
                                      ["name"] = other.Name,
                                      ["lang"] = other.Lang,
                                      ["verified"] = other.IsVerified,
+                                     ["avatar"] = _rosterAvatars.TryGetValue(other.AssignedId, out var otherAvatar) ? otherAvatar : "",
                                      ["addr"] = other.RemoteAddress?.ToString() ?? "",
                                      ["port"] = other.ListenPort,
                                  });
@@ -2658,6 +2781,7 @@ internal sealed class CollabManager
                                        name = peer.Name,
                                        lang = peer.Lang,
                                        verified = peer.IsVerified,
+                                       avatar = _rosterAvatars.TryGetValue(peer.AssignedId, out var joinedAvatar) ? joinedAvatar : "",
                                        addr = peer.RemoteAddress?.ToString() ?? "",
                                        port = peer.ListenPort,
                                    }, except: peer);
@@ -2760,6 +2884,8 @@ internal sealed class CollabManager
             _roster[id] = name;
             if (CollabProtocol.TryGetGuid(entry, "userId", out var rosterUserId))
                 _rosterUserIds[id] = rosterUserId;
+
+            _rosterAvatars[id] = CollabProtocol.GetString(entry, "avatar");
 
             _participants[id] = ReadParticipantInfo(entry);
             Log.Info($"Collab: {name} is in this session");
@@ -4141,7 +4267,7 @@ internal sealed class CollabManager
         }
     }
 
-    private void AppendChat(string? name, string text)
+    public void AppendChat(string? name, string text)
     {
         _chatLog.Add(new ChatEntry { Name = name, Text = text });
         if (_chatLog.Count > MaxChatEntries)

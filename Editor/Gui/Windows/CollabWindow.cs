@@ -1196,31 +1196,136 @@ internal sealed class CollabWindow : Window
 
     private static void DrawRoster(CollabManager collab)
     {
-        SectionHeader($"Participants ({collab.Roster.Count + 1})");
+        SectionHeader($"Party ({collab.Roster.Count + 1})");
 
         var dl = ImGui.GetWindowDrawList();
         var isHost = collab.State == CollabManager.SessionState.Hosting;
         if (!isHost)
             _pendingKickPeerId = -1;
 
-        DrawNameChip(dl, "You" + (isHost ? "  (host)" : ""), UiColors.StatusActivated, true);
+        // The host's own row carries Leave; every guest row carries Kick and Pin.
+        DrawPartyRow(collab, null, isHost);
 
-        foreach (var (peerId, name) in collab.Roster)
+        foreach (var (peerId, _) in collab.Roster)
         {
-            var link = collab.DescribePeerLink(peerId);
-            var suffix = link.Length > 0 ? $"  · {link}" : "";
-            var isSpectated = CollabSpectator.IsSpectatingPeer(peerId);
-            var isAddingOperator = collab.GetPresence(peerId)?.IsAddingOperator ?? false;
-            DrawNameChip(dl, name + suffix + (!isHost ? "  (host)" : "") + (isSpectated ? "  · following" : "") + (isAddingOperator ? "  · adding operator" : ""),
-                         isSpectated ? UiColors.StatusAutomated : UiColors.Text, false);
-
-            _menuPeerId = peerId;
-            ImGui.PushID(peerId);
-            CustomComponents.ContextMenuForItem(DrawPeerMenu, name, "##peerMenu");
-            ImGui.PopID();
+            DrawPartyRow(collab, peerId, isHost);
         }
 
         DrawKickConfirmation(collab);
+    }
+
+    private static void DrawPartyRow(CollabManager collab, int? peerId, bool isHost)
+    {
+        var uiScale = T3Ui.UiScaleFactor;
+        var avatarSize = 26 * uiScale;
+        var dl = ImGui.GetWindowDrawList();
+
+        var name = peerId.HasValue ? collab.Roster[peerId.Value] : collab.LocalIdentity.DisplayName;
+        var isSelf = !peerId.HasValue;
+        var isFollowing = peerId.HasValue && CollabSpectator.IsSpectatingPeer(peerId.Value);
+        var isSpectated = peerId.HasValue && (collab.GetPresence(peerId.Value)?.IsAddingOperator ?? false);
+
+        ImGui.PushID(peerId ?? -1);
+
+        // The row background doubles as the click target for the context menu.
+        var rowMin = ImGui.GetCursorScreenPos();
+        var rowHeight = avatarSize + 8 * uiScale;
+        var rowWidth = ImGui.GetContentRegionAvail().X;
+        dl.AddRectFilled(rowMin, rowMin + new Vector2(rowWidth, rowHeight),
+                         (isFollowing ? UiColors.StatusAutomated : UiColors.ForegroundFull).Fade(0.12f), 4 * uiScale);
+        ImGui.Dummy(new Vector2(rowWidth, rowHeight));
+        CustomComponents.ContextMenuForItem(DrawPeerMenu, name, "##peerMenu");
+
+        var cursor = rowMin + new Vector2(4 * uiScale, 4 * uiScale);
+
+        // Avatar: the Discord logo, or a rounded tile with the initial while it loads.
+        var avatarUrl = isSelf ? collab.LocalAvatarUrl : collab.GetPeerAvatarUrl(peerId.Value);
+        var avatarTexture = CollabAvatars.GetTexture(avatarUrl);
+        var avatarMin = cursor;
+        var avatarMax = avatarMin + new Vector2(avatarSize);
+        if (avatarTexture != null)
+        {
+            ImGui.SetCursorScreenPos(avatarMin);
+            ImGui.Image((IntPtr)avatarTexture.ImGuiTextureId, new Vector2(avatarSize));
+        }
+        else
+        {
+            dl.AddRectFilled(avatarMin, avatarMax, UiColors.StatusAutomated.Fade(0.35f), 4 * uiScale);
+            var initial = string.IsNullOrEmpty(name) ? "?" : name[..1].ToUpperInvariant();
+            var textSize = ImGui.CalcTextSize(initial);
+            dl.AddText(avatarMin + (new Vector2(avatarSize) - textSize) * 0.5f, UiColors.Text, initial);
+            ImGui.SetCursorScreenPos(avatarMax);
+            ImGui.Dummy(Vector2.Zero);
+        }
+
+        ImGui.SameLine();
+        cursor = ImGui.GetCursorScreenPos() + new Vector2(6 * uiScale, 0);
+
+        // Name on the first line, role note on the second.
+        ImGui.SetCursorScreenPos(cursor + new Vector2(0, 2 * uiScale));
+        ImGui.BeginGroup();
+        ImGui.PushFont(Fonts.FontBold);
+        ImGui.TextUnformatted(name);
+        ImGui.PopFont();
+
+        var roleNote = isHost && isSelf ? "host"
+                     : !isSelf && !isHost ? "host"
+                     : isFollowing ? "following"
+                     : isSpectated ? "adding operator"
+                     : "";
+        var location = isSelf ? CollabUserIdentity.FormatLang(collab.LocalIdentity.Lang) : CollabUserIdentity.FormatLang(collab.GetPeerLang(peerId.Value));
+        var secondLine = string.Join("  ·  ", new[] { roleNote, location }.Where(s => !string.IsNullOrEmpty(s)));
+        if (secondLine.Length > 0)
+        {
+            ImGui.PushFont(Fonts.FontSmall);
+            ImGui.TextDisabled(secondLine);
+            ImGui.PopFont();
+        }
+
+        ImGui.EndGroup();
+
+        // Ping on the right, then the row buttons.
+        ImGui.SameLine();
+        var rightEdge = rowMin + new Vector2(rowWidth, rowHeight);
+        var ping = isSelf ? 0 : collab.GetPeerPingMs(peerId.Value);
+        if (ping > 0)
+        {
+            var pingLabel = $"{ping} ms";
+            var pingSize = ImGui.CalcTextSize(pingLabel);
+            ImGui.SetCursorScreenPos(new Vector2(rightEdge.X - 150 * uiScale, rowMin.Y + (rowHeight - pingSize.Y) * 0.5f));
+            ImGui.TextDisabled(pingLabel);
+        }
+
+        ImGui.SameLine();
+        ImGui.SetCursorScreenPos(new Vector2(rightEdge.X - 96 * uiScale, rowMin.Y + 3 * uiScale));
+        ImGui.BeginGroup();
+        if (!isSelf)
+        {
+            if (ImGui.SmallButton("Pin"))
+            {
+                if (!collab.PinPeerWork(peerId.Value))
+                    collab.AppendChat(null, $"{name}'s work is not synced here yet");
+            }
+
+            CustomComponents.TooltipForLastItem("Show their work in your output, rendered locally from the synced project");
+
+            if (isHost)
+            {
+                ImGui.SameLine();
+                if (ImGui.SmallButton("Kick"))
+                    _pendingKickPeerId = peerId.Value;
+            }
+        }
+        else if (isHost)
+        {
+            if (ImGui.SmallButton("Leave"))
+                collab.Leave();
+        }
+
+        ImGui.EndGroup();
+
+        ImGui.SetCursorScreenPos(rowMin + new Vector2(0, rowHeight + 6 * uiScale));
+        ImGui.Dummy(Vector2.Zero);
     }
 
     private static void DrawKickConfirmation(CollabManager collab)
