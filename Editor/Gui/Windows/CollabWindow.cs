@@ -75,39 +75,39 @@ internal sealed class CollabWindow : Window
     }
 
 
-    /// <summary>The window's three areas, matching the party/remote/boygroup split.</summary>
+    /// <summary>The window's areas: chat, party matching, party management, remote and boygroup.</summary>
     private enum Tab
     {
-        Party,
+        Chat,
+        PartyMatching,
+        PartyManagement,
         Remote,
         Boygroup,
     }
 
-    /// <summary>The Party tab's sub-tabs: the session view and the chat.</summary>
-    private enum PartyTab
-    {
-        Info,
-        Chat,
-    }
+    private static Tab _selectedTab = Tab.PartyMatching;
 
-    private static Tab _selectedTab = Tab.Party;
-    private static PartyTab _partyTab = PartyTab.Info;
-
-    /// <summary>Selects a tab by name (Party, Remote, Boygroup, or the Party sub-tabs Session/Chat);
-    /// used by the debug bridge.</summary>
+    /// <summary>Selects a tab by name (Chat, PartyMatching, PartyManagement, Remote, Boygroup, or
+    /// the aliases Session/Search); used by the debug bridge.</summary>
     internal bool TrySelectTab(string name)
     {
         if (string.Equals(name, "Chat", StringComparison.OrdinalIgnoreCase))
         {
-            _selectedTab = Tab.Party;
-            _partyTab = PartyTab.Chat;
+            _selectedTab = Tab.Chat;
             return true;
         }
 
-        if (string.Equals(name, "Session", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(name, "Session", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(name, "Management", StringComparison.OrdinalIgnoreCase))
         {
-            _selectedTab = Tab.Party;
-            _partyTab = PartyTab.Info;
+            _selectedTab = Tab.PartyManagement;
+            return true;
+        }
+
+        if (string.Equals(name, "Search", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(name, "Matching", StringComparison.OrdinalIgnoreCase))
+        {
+            _selectedTab = Tab.PartyMatching;
             return true;
         }
 
@@ -130,19 +130,21 @@ internal sealed class CollabWindow : Window
             return;
         }
 
-        DrawTabButtons();
-        FormInputs.AddVerticalSpace(4);
-        DrawSubTabButtons(collab);
+        DrawTabLine();
         FormInputs.AddVerticalSpace(2);
 
         switch (_selectedTab)
         {
-            case Tab.Party:
-                if (_partyTab == PartyTab.Chat)
-                    DrawChatTab(collab);
-                else
-                    DrawPartyTab(collab);
+            case Tab.Chat:
+                DrawChatTab(collab);
+                break;
 
+            case Tab.PartyMatching:
+                DrawPartyTab(collab);
+                break;
+
+            case Tab.PartyManagement:
+                DrawManagementTab(collab);
                 break;
 
             case Tab.Remote:
@@ -155,50 +157,13 @@ internal sealed class CollabWindow : Window
         }
     }
 
-    /// <summary>The active tab's sub-tabs, drawn as a small breadcrumb row under the main tabs.</summary>
-    private static void DrawSubTabButtons(CollabManager collab)
+    /// <summary>Five separate tabs in one line, right-aligned like the party-matching reference.
+    /// The active one is highlighted; a click switches the tab. SetCursorPosX takes window-LOCAL
+    /// coordinates - screen-space math here placed the row off-window.</summary>
+    private static void DrawTabLine()
     {
-        switch (_selectedTab)
-        {
-            case Tab.Party:
-            {
-                var infoLabel = collab.State == CollabManager.SessionState.Off ? "Party search" : "Party infos";
-                SubTab(ref _partyTab, PartyTab.Chat, "Chat");
-                ImGui.SameLine(0, 4);
-                SubTab(ref _partyTab, PartyTab.Info, infoLabel);
-                break;
-            }
-
-            case Tab.Remote:
-            case Tab.Boygroup:
-                ImGui.TextDisabled("Management");
-                break;
-        }
-    }
-
-    private static void SubTab(ref PartyTab current, PartyTab value, string label)
-    {
-        var active = current == value;
-        if (active)
-        {
-            ImGui.PushStyleColor(ImGuiCol.Button, UiColors.StatusActivated.Rgba);
-            ImGui.PushStyleColor(ImGuiCol.ButtonHovered, UiColors.StatusActivated.Rgba);
-        }
-
-        if (ImGui.Button(label))
-            current = value;
-
-        if (active)
-            ImGui.PopStyleColor(2);
-    }
-
-    /// <summary>Three small toggle buttons in the top-right corner, like the party-matching
-    /// reference. The active one is highlighted; a click switches the tab. SetCursorPosX takes
-    /// window-LOCAL coordinates - screen-space math here placed the row off-window.</summary>
-    private static void DrawTabButtons()
-    {
-        var labels = new[] { "Party", "Remote", "Boygroup" };
-        var tabs = new[] { Tab.Party, Tab.Remote, Tab.Boygroup };
+        var labels = new[] { "Chat", "Party matching", "Party management", "Remote", "Boygroup" };
+        var tabs = new[] { Tab.Chat, Tab.PartyMatching, Tab.PartyManagement, Tab.Remote, Tab.Boygroup };
 
         var widthTotal = 0f;
         foreach (var label in labels)
@@ -225,23 +190,36 @@ internal sealed class CollabWindow : Window
     }
 
     // ---------------------------------------------------------------------------------------
-    // Party tab: the session browser plus the hosting controls
+    // Party matching tab: the session browser plus the hosting controls
     // ---------------------------------------------------------------------------------------
 
     private static void DrawPartyTab(CollabManager collab)
     {
-        if (collab.State == CollabManager.SessionState.Off)
-        {
-            DrawHostControls(collab);
-            FormInputs.AddVerticalSpace(8);
-            DrawSessionBrowser(collab);
-        }
-        else
+        if (collab.State != CollabManager.SessionState.Off)
         {
             ImGui.TextWrapped(collab.StatusText);
             FormInputs.AddVerticalSpace(4);
             ImGui.TextDisabled("Leave the current session to browse and join another one.");
+            return;
         }
+
+        DrawHostControls(collab);
+        FormInputs.AddVerticalSpace(8);
+        DrawSessionBrowser(collab);
+    }
+
+    /// <summary>The connected session's management view: status, the party roster with every
+    /// member, their ping and the per-row actions, join requests, whispers, leave.</summary>
+    private static void DrawManagementTab(CollabManager collab)
+    {
+        if (collab.State == CollabManager.SessionState.Off)
+        {
+            ImGui.TextDisabled("No session is running. Host one on Party search");
+            ImGui.TextDisabled("or join a listed session there.");
+            return;
+        }
+
+        DrawSessionTab(collab);
     }
 
     private static void DrawHostControls(CollabManager collab)
@@ -331,8 +309,7 @@ internal sealed class CollabWindow : Window
                                  projectName.Length > 0 ? projectName : null);
             }
 
-            _selectedTab = Tab.Party;
-            _partyTab = PartyTab.Info;
+            _selectedTab = Tab.PartyManagement;
         }
 
         ImGui.EndDisabled();
@@ -807,7 +784,9 @@ internal sealed class CollabWindow : Window
                                      _remoteUiActions.Enqueue(() =>
                                                               {
                                                                   _remoteClaim = "";
-                                                                  CollabManager.Instance.JoinViaBackend(room);
+                                                                  // The claim lets the managed host auto-approve
+                                                                  // this join without an approval popup.
+                                                                  CollabManager.Instance.JoinViaBackend(room, claim);
                                                               });
                                      await CollabRemoteApi.AttachAsync(token, deviceId, claim, CancellationToken.None);
                                      return;
@@ -1194,31 +1173,136 @@ internal sealed class CollabWindow : Window
 
     private static void DrawRoster(CollabManager collab)
     {
-        SectionHeader($"Participants ({collab.Roster.Count + 1})");
+        SectionHeader($"Party ({collab.Roster.Count + 1})");
 
         var dl = ImGui.GetWindowDrawList();
         var isHost = collab.State == CollabManager.SessionState.Hosting;
         if (!isHost)
             _pendingKickPeerId = -1;
 
-        DrawNameChip(dl, "You" + (isHost ? "  (host)" : ""), UiColors.StatusActivated, true);
+        // The host's own row carries Leave; every guest row carries Kick and Pin.
+        DrawPartyRow(collab, null, isHost);
 
-        foreach (var (peerId, name) in collab.Roster)
+        foreach (var (peerId, _) in collab.Roster)
         {
-            var link = collab.DescribePeerLink(peerId);
-            var suffix = link.Length > 0 ? $"  · {link}" : "";
-            var isSpectated = CollabSpectator.IsSpectatingPeer(peerId);
-            var isAddingOperator = collab.GetPresence(peerId)?.IsAddingOperator ?? false;
-            DrawNameChip(dl, name + suffix + (!isHost ? "  (host)" : "") + (isSpectated ? "  · following" : "") + (isAddingOperator ? "  · adding operator" : ""),
-                         isSpectated ? UiColors.StatusAutomated : UiColors.Text, false);
-
-            _menuPeerId = peerId;
-            ImGui.PushID(peerId);
-            CustomComponents.ContextMenuForItem(DrawPeerMenu, name, "##peerMenu");
-            ImGui.PopID();
+            DrawPartyRow(collab, peerId, isHost);
         }
 
         DrawKickConfirmation(collab);
+    }
+
+    private static void DrawPartyRow(CollabManager collab, int? peerId, bool isHost)
+    {
+        var uiScale = T3Ui.UiScaleFactor;
+        var avatarSize = 26 * uiScale;
+        var dl = ImGui.GetWindowDrawList();
+
+        var name = peerId.HasValue ? collab.Roster[peerId.Value] : collab.LocalIdentity.DisplayName;
+        var isSelf = !peerId.HasValue;
+        var isFollowing = peerId.HasValue && CollabSpectator.IsSpectatingPeer(peerId.Value);
+        var isSpectated = peerId.HasValue && (collab.GetPresence(peerId.Value)?.IsAddingOperator ?? false);
+
+        ImGui.PushID(peerId ?? -1);
+
+        // The row background doubles as the click target for the context menu.
+        var rowMin = ImGui.GetCursorScreenPos();
+        var rowHeight = avatarSize + 8 * uiScale;
+        var rowWidth = ImGui.GetContentRegionAvail().X;
+        dl.AddRectFilled(rowMin, rowMin + new Vector2(rowWidth, rowHeight),
+                         (isFollowing ? UiColors.StatusAutomated : UiColors.ForegroundFull).Fade(0.12f), 4 * uiScale);
+        ImGui.Dummy(new Vector2(rowWidth, rowHeight));
+        CustomComponents.ContextMenuForItem(DrawPeerMenu, name, "##peerMenu");
+
+        var cursor = rowMin + new Vector2(4 * uiScale, 4 * uiScale);
+
+        // Avatar: the Discord logo, or a rounded tile with the initial while it loads.
+        var avatarUrl = isSelf ? collab.LocalAvatarUrl : collab.GetPeerAvatarUrl(peerId.Value);
+        var avatarTexture = CollabAvatars.GetTexture(avatarUrl);
+        var avatarMin = cursor;
+        var avatarMax = avatarMin + new Vector2(avatarSize);
+        ImGui.SetCursorScreenPos(avatarMin);
+        if (avatarTexture != null)
+        {
+            ImGui.Image((IntPtr)avatarTexture.ImGuiTextureId, new Vector2(avatarSize));
+        }
+        else
+        {
+            dl.AddRectFilled(avatarMin, avatarMax, UiColors.StatusAutomated.Fade(0.35f), 4 * uiScale);
+            var initial = string.IsNullOrEmpty(name) ? "?" : name[..1].ToUpperInvariant();
+            var textSize = ImGui.CalcTextSize(initial);
+            dl.AddText(avatarMin + (new Vector2(avatarSize) - textSize) * 0.5f, UiColors.Text, initial);
+            ImGui.Dummy(new Vector2(avatarSize));
+        }
+
+        ImGui.SameLine();
+        cursor = ImGui.GetCursorScreenPos() + new Vector2(6 * uiScale, 0);
+
+        // Name on the first line, role note on the second.
+        ImGui.SetCursorScreenPos(cursor + new Vector2(0, 2 * uiScale));
+        ImGui.BeginGroup();
+        ImGui.PushFont(Fonts.FontBold);
+        ImGui.TextUnformatted(name);
+        ImGui.PopFont();
+
+        var roleNote = isHost && isSelf ? "host"
+                     : !isSelf && !isHost ? "host"
+                     : isFollowing ? "following"
+                     : isSpectated ? "adding operator"
+                     : "";
+        var location = isSelf ? CollabUserIdentity.FormatLang(collab.LocalIdentity.Lang) : CollabUserIdentity.FormatLang(collab.GetPeerLang(peerId.Value));
+        var secondLine = string.Join("  ·  ", new[] { roleNote, location }.Where(s => !string.IsNullOrEmpty(s)));
+        if (secondLine.Length > 0)
+        {
+            ImGui.PushFont(Fonts.FontSmall);
+            ImGui.TextDisabled(secondLine);
+            ImGui.PopFont();
+        }
+
+        ImGui.EndGroup();
+
+        // Ping on the right, then the row buttons.
+        ImGui.SameLine();
+        var rightEdge = rowMin + new Vector2(rowWidth, rowHeight);
+        var ping = isSelf ? 0 : collab.GetPeerPingMs(peerId.Value);
+        if (ping > 0)
+        {
+            var pingLabel = $"{ping} ms";
+            var pingSize = ImGui.CalcTextSize(pingLabel);
+            ImGui.SetCursorScreenPos(new Vector2(rightEdge.X - 150 * uiScale, rowMin.Y + (rowHeight - pingSize.Y) * 0.5f));
+            ImGui.TextDisabled(pingLabel);
+        }
+
+        ImGui.SameLine();
+        ImGui.SetCursorScreenPos(new Vector2(rightEdge.X - 96 * uiScale, rowMin.Y + 3 * uiScale));
+        ImGui.BeginGroup();
+        if (!isSelf)
+        {
+            if (ImGui.SmallButton("Pin"))
+            {
+                if (!collab.PinPeerWork(peerId.Value))
+                    collab.AppendChat(null, $"{name}'s work is not synced here yet");
+            }
+
+            CustomComponents.TooltipForLastItem("Show their work in your output, rendered locally from the synced project");
+
+            if (isHost)
+            {
+                ImGui.SameLine();
+                if (ImGui.SmallButton("Kick"))
+                    _pendingKickPeerId = peerId.Value;
+            }
+        }
+        else if (isHost)
+        {
+            if (ImGui.SmallButton("Leave"))
+                collab.Leave();
+        }
+
+        ImGui.EndGroup();
+
+        ImGui.SetCursorScreenPos(rowMin + new Vector2(0, rowHeight + 6 * uiScale));
+        ImGui.Dummy(Vector2.Zero);
+        ImGui.PopID();
     }
 
     private static void DrawKickConfirmation(CollabManager collab)
@@ -1507,8 +1591,7 @@ internal sealed class CollabWindow : Window
                 ShowControlMode.Activate(ShowControlMode.Collab);
                 CollabLobbyWhisper.Reset();
                 JoinListedRoom(collab, selected);
-                _selectedTab = Tab.Party;
-            _partyTab = PartyTab.Info;
+                _selectedTab = Tab.PartyManagement;
             }
         }
 
