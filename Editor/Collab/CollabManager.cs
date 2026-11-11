@@ -852,21 +852,6 @@ internal sealed class CollabManager
                                     listInBrowser && config.CollabListSession,
                                     ParticipantsCanEdit);
 
-            // Share the project itself so joiners start from the same snapshot and never have to
-            // match files by hand. Runs in the background; the party is usable while it uploads.
-            var packageForSharing = FindAnyOpenedProject();
-            var projectFolder = packageForSharing?.Folder;
-            var projectNameForSharing = packageForSharing?.DisplayName ?? _sessionProjectName;
-
-            if (string.IsNullOrEmpty(projectFolder))
-            {
-                AppendChat(null, "No project is open, so the party has no project to share");
-                Log.Info("Collab: hosting without a project snapshot (no project open)");
-            }
-            else
-            {
-                UploadPartyProject(projectFolder, projectNameForSharing, room, key, announce: true);
-            }
         }
         catch (Exception e)
         {
@@ -877,169 +862,6 @@ internal sealed class CollabManager
             _transport = null;
             State = SessionState.Off;
         }
-    }
-
-    // -- Project handoff: the snapshot joiners download -------------------------------------
-
-    private string _sharedProjectFolder = "";
-    private string _sharedProjectName = "";
-    private int _projectUploadRunning;
-    private DateTime _lastProjectUploadUtc = DateTime.MinValue;
-    private string _sharedRoom = "";
-    private string _sharedRoomKey = "";
-    private int _projectUploadFailures;
-    private DateTime _nextProjectUploadUtc = DateTime.MinValue;
-
-    /// <summary>
-    /// Zips and uploads the party project. Runs in the background; a second call while one is in
-    /// flight is ignored (the snapshot being uploaded is at least as new as the caller saw).
-    /// </summary>
-    private void UploadPartyProject(string folder, string name, string room, string key, bool announce)
-    {
-        // Shared hosting rate-limits rapid requests; a failed upload waits before retrying.
-        if (Interlocked.Exchange(ref _projectUploadRunning, 1) != 0)
-            return;
-
-        if (DateTime.UtcNow < _nextProjectUploadUtc)
-        {
-            Interlocked.Exchange(ref _projectUploadRunning, 0);
-            return;
-        }
-
-        _sharedProjectFolder = folder;
-        _sharedProjectName = name;
-        _sharedRoom = room;
-        _sharedRoomKey = key;
-
-        // Sample before zipping: files written during the upload are caught by the next refresh.
-        var newestAtStart = CollabProjectTransfer.NewestWriteUtc(folder);
-
-        _ = Task.Run(async () =>
-                         {
-                             try
-                             {
-                                 if (announce)
-                                     _uiThreadActions.Enqueue(() => StatusText = "Preparing the project for the party...");
-
-                                 // Open the slot first: from here on the backend reports
-                                 // "uploading", so a joiner waits instead of taking the old zip.
-                                 var beginError = await CollabProjectTransfer.BeginUploadAsync(room, key, name, CancellationToken.None);
-                                 if (beginError != null)
-                                 {
-                                     Log.Warning($"Collab: could not start the project upload: {beginError}");
-                                     _uiThreadActions.Enqueue(() => AppendChat(null, $"Sharing the project failed: {beginError}"));
-                                     return;
-                                 }
-
-                                 var zipPath = CollabProjectTransfer.ZipProject(folder, null, CancellationToken.None);
-                                 try
-                                 {
-                                     var zipSize = new FileInfo(zipPath).Length;
-                                     if (zipSize > CollabProjectTransfer.MaxProjectBytes)
-                                     {
-                                         AppendChat(null, $"The project is {zipSize / 1024 / 1024} MB - larger than the 100 MB the server takes, so it was not shared. Joiners use their local copy.");
-                                         Log.Warning($"Collab: project snapshot too large to share ({zipSize} bytes)");
-                                         return;
-                                     }
-
-                                     var error = await CollabProjectTransfer.UploadZipAsync(
-                                         room, key, zipPath,
-                                         percent => _uiThreadActions.Enqueue(
-                                             () => StatusText = $"Uploading the project for joiners... {percent}%"),
-                                         CancellationToken.None);
-
-                                     if (error == null)
-                                     {
-                                         _lastProjectUploadUtc = DateTime.UtcNow;
-                                         Interlocked.Exchange(ref _projectUploadFailures, 0);
-                                     }
-                                     else
-                                     {
-                                         // The server (or its protection) refused us: back off instead of
-                                         // hammering it into a longer block.
-                                         var failures = Interlocked.Increment(ref _projectUploadFailures);
-                                         var delay = Math.Min(300.0, 30.0 * Math.Pow(2, Math.Min(4, failures)));
-                                         _nextProjectUploadUtc = DateTime.UtcNow.AddSeconds(delay);
-                                         error = $"the server refused the upload ({error}) - retrying in {delay:0}s";
-                                     }
-
-                                     _uiThreadActions.Enqueue(() =>
-                                                              {
-                                                                  StatusText = error == null
-                                                                                   ? $"Hosting via the backend, room {room} - project shared"
-                                                                                   : $"Hosting via the backend, room {room}";
-                                                                  if (announce || error != null)
-                                                                      AppendChat(null, error == null
-                                                                                           ? "The project is ready for joiners to download"
-                                                                                           : $"Sharing the project failed: {error}");
-                                                              });
-                                 }
-                                 finally
-                                 {
-                                     try
-                                     {
-                                         File.Delete(zipPath);
-                                     }
-                                     catch (IOException)
-                                     {
-                                         // Temp file; the OS cleans it up eventually.
-                                     }
-                                 }
-                             }
-                             catch (Exception e)
-                             {
-                                 Log.Warning($"Collab: preparing the project failed: {e.Message}");
-                                 _uiThreadActions.Enqueue(() => AppendChat(null, $"Sharing the project failed: {e.Message}"));
-                             }
-                             finally
-                             {
-                                 Interlocked.Exchange(ref _projectUploadRunning, 0);
-
-                                 // Files written while the zip ran are only in the next upload - but
-                                 // never hammer: a failed upload waits out its backoff first.
-                                 var failed = Volatile.Read(ref _projectUploadFailures) > 0;
-                                 if (!failed && newestAtStart > _lastProjectUploadUtc)
-                                 {
-                                     _uiThreadActions.Enqueue(() =>
-                                                              {
-                                                                  Log.Debug("Collab: project files changed during the upload - refreshing the snapshot");
-                                                                  UploadPartyProject(_sharedProjectFolder, _sharedProjectName, _sharedRoom, _sharedRoomKey, announce: false);
-                                                              });
-                                 }
-                                 else if (failed)
-                                 {
-                                     var waitUntil = _nextProjectUploadUtc;
-                                     _ = Task.Run(async () =>
-                                                     {
-                                                         var delay = waitUntil - DateTime.UtcNow;
-                                                         if (delay > TimeSpan.Zero)
-                                                             await Task.Delay(delay);
-                                                         UploadPartyProject(_sharedProjectFolder, _sharedProjectName, _sharedRoom, _sharedRoomKey, announce: false);
-                                                     });
-                                 }
-                             }
-                         });
-    }
-
-    /// <summary>
-    /// Host: before a joiner downloads, make sure the snapshot is not stale. A long party can gain
-    /// new operators or assets that the live op stream does not carry; only a fresh zip does.
-    /// </summary>
-    private void RefreshProjectSnapshotIfChanged()
-    {
-        if (State != SessionState.Hosting || !CollabWebLobby.IsConfigured
-            || RoomCode.Length == 0 || _roomKey.Length == 0 || _sharedProjectFolder.Length == 0)
-            return;
-
-        if (_projectUploadRunning != 0)
-            return;
-
-        var newest = CollabProjectTransfer.NewestWriteUtc(_sharedProjectFolder);
-        if (newest <= _lastProjectUploadUtc.AddSeconds(2))
-            return;
-
-        AppendChat(null, "Project files changed since the last share - refreshing the copy for joiners");
-        UploadPartyProject(_sharedProjectFolder, _sharedProjectName, RoomCode, _roomKey, announce: false);
     }
 
     /// <summary>Joins a backend-hosted room: a join ticket, a WebRTC handshake through the
@@ -1082,8 +904,7 @@ internal sealed class CollabManager
                              try
                              {
                                  var transport = new CollabBackendWire.CollabBackendClientTransport(room, TruncateName(LocalIdentity.DisplayName), LocalIdentity.Lang, _joinClaim);
-                                 await transport.ConnectAsync(CancellationToken.None,
-                                                              (ticket, ct) => ReceivePartyProjectAsync(room, ticket, ct));
+                                 await transport.ConnectAsync(CancellationToken.None);
                                  _uiThreadActions.Enqueue(() => CompleteBackendJoin(transport, generation, room));
                              }
                              catch (Exception e)
@@ -1228,95 +1049,6 @@ internal sealed class CollabManager
         Log.Debug($"Collab feed: {message}");
     }
 
-    /// <summary>
-    /// Downloads the party's project snapshot (when the host shared one), extracts it into the
-    /// projects folder and loads it, so this machine runs the host's exact project. Runs on a pool
-    /// thread; the load step hops to the UI thread and is awaited.
-    /// </summary>
-    private async Task ReceivePartyProjectAsync(string room, string ticket, CancellationToken cancellation)
-    {
-        // The host may be refreshing the snapshot right now (it re-zips when project files
-        // changed); wait for it instead of downloading a stale archive.
-        string state = "none";
-        var name = "";
-        var waitDeadline = Environment.TickCount64 + 180_000;
-        while (true)
-        {
-            var (fetchedState, fetchedName, _, infoError) = await CollabProjectTransfer.FetchInfoAsync(room, cancellation);
-            if (infoError.Length > 0)
-            {
-                Log.Debug($"Collab: project info failed: {infoError}");
-                return;
-            }
-
-            state = fetchedState;
-            name = fetchedName;
-            if (state != "uploading")
-                break;
-
-            if (Environment.TickCount64 > waitDeadline)
-            {
-                Log.Warning("Collab: the host's project upload did not finish in time - joining without the snapshot");
-                return;
-            }
-
-            _uiThreadActions.Enqueue(() => StatusText = "Waiting for the host to finish sharing the project...");
-            await Task.Delay(2000, cancellation);
-        }
-
-        if (state != "ready")
-        {
-            Log.Info($"Collab: the party has no project snapshot ({state}) - joining with the local project");
-            return;
-        }
-
-        var (zipPath, downloadError) = await CollabProjectTransfer.DownloadAsync(
-            room, ticket,
-            percent => _uiThreadActions.Enqueue(() => StatusText = $"Downloading the party project... {percent}%"),
-            cancellation);
-
-        if (zipPath == null)
-        {
-            Log.Warning($"Collab: project download failed: {downloadError}");
-            _uiThreadActions.Enqueue(() => AppendChat(null, $"Could not download the party project: {downloadError}"));
-            return;
-        }
-
-        var completed = new TaskCompletionSource<bool>();
-        _uiThreadActions.Enqueue(() =>
-                                {
-                                    try
-                                    {
-                                        var folder = CollabProjectTransfer.ExtractToProjects(zipPath, name);
-                                        if (!ProjectSetup.TryLoadProjectFromFolder(folder, out var loadError))
-                                        {
-                                            AppendChat(null, $"Could not load the party project: {loadError}");
-                                        }
-                                        else
-                                        {
-                                            AppendChat(null, $"The host's project was downloaded and loaded: {Path.GetFileName(folder)}");
-                                        }
-                                    }
-                                    catch (Exception e)
-                                    {
-                                        AppendChat(null, $"Could not prepare the party project: {e.Message}");
-                                    }
-                                    finally
-                                    {
-                                        completed.TrySetResult(true);
-                                    }
-                                });
-
-        await completed.Task;
-        try
-        {
-            File.Delete(zipPath);
-        }
-        catch (IOException)
-        {
-            // Temp file.
-        }
-    }
 
     private void CompleteBackendJoin(CollabBackendWire.CollabBackendClientTransport transport, int generation, string room)
     {
@@ -1376,6 +1108,7 @@ internal sealed class CollabManager
             WindowManager.CollabJoinRequestWindow.Config.Visible = false;
             ParticipantsCanEdit = true;
             ReadOnlyForParticipants = false;
+            UserSettings.Config.CollabLastBackendRoom = "";
         }
 
         _currentTarget = null;
@@ -2318,6 +2051,14 @@ internal sealed class CollabManager
                 JoinViaRelay(relayHost[..relaySeparator], relayPort, roomCode, UserSettings.Config.CollabPassword ?? "");
             }
         }
+
+        // ...and a backend party rejoins its room (the backend still knows it).
+        var backendRoom = UserSettings.Config.CollabLastBackendRoom;
+        if (!string.IsNullOrEmpty(backendRoom))
+        {
+            Log.Info($"Collab: auto-rejoining backend room {backendRoom}");
+            JoinViaBackend(backendRoom);
+        }
     }
 
     // -- Password-request dialog: a join turned away by a locked session asks for the password --
@@ -3050,9 +2791,9 @@ internal sealed class CollabManager
     /// </summary>
     private void EnsureHostProjectAvailable()
     {
-        // Only direct sessions: the persisted auto-rejoin target (`_joinedHost`) is a host:port, so
-        // a relay joiner that restarted for a download could not rejoin by room code.
-        if (string.IsNullOrEmpty(_hostProjectName) || _transport is not CollabClientTransport { HostPeer: { } host })
+        // Works over every client transport: the transfer rides the session's data channel, and
+        // the editor restarts into the downloaded project, rejoining automatically.
+        if (string.IsNullOrEmpty(_hostProjectName))
             return;
 
         if (TryOpenProjectByName(_hostProjectName))
@@ -3060,7 +2801,7 @@ internal sealed class CollabManager
 
         Log.Info($"Collab: requesting project '{_hostProjectName}' from host");
         StatusText = $"Downloading project '{ShortProjectName(_hostProjectName)}' from host...";
-        SendJson(host, new { t = "requestProject", project = _hostProjectName });
+        SendJson(HostLink!, new { t = "requestProject", project = _hostProjectName });
     }
 
     internal static string ShortProjectName(string displayName)
@@ -4240,10 +3981,6 @@ internal sealed class CollabManager
         var request = _pendingJoinRequests.FirstOrDefault(r => r.TicketId == ticketId);
         if (request != null)
             _pendingJoinRequests.Remove(request);
-
-        // Refresh a stale project snapshot first: the joiner downloads right after this approval,
-        // and file-level changes (new operators, assets) only travel in a fresh zip.
-        RefreshProjectSnapshotIfChanged();
 
         AppendChat(null, $"{request?.Name ?? "A visitor"} was confirmed into the session");
         (_transport as CollabBackendWire.CollabBackendHostTransport)?.ApproveTicket(ticketId);
