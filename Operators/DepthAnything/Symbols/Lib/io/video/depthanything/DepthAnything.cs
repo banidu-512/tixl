@@ -179,6 +179,16 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
         var debug = Debug.GetValue(context);
         var modelSize = (ModelSize)ModelSizeParam.GetValue(context);
         var provider = (ExecutionProvider)ExecutionProviderParam.GetValue(context);
+
+        // The AI settings' DirectML preference flips the default provider on Windows,
+        // e.g. for AMD/Intel machines without a usable CUDA stack. An explicit
+        // non-default choice is never overridden.
+        if (provider == ExecutionProvider.Cuda
+            && T3.Core.Settings.AiModelSettings.Config.PreferDirectMlForOnnx
+            && OperatingSystem.IsWindows())
+        {
+            provider = ExecutionProvider.DirectMl;
+        }
         _requestedInputSize = ((Resolution)InputResolution.GetValue(context)) switch
         {
             Resolution.R196 => 196,
@@ -770,6 +780,13 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
 
     private string? FindModelPath(string modelName, bool debug)
     {
+        // The model store (AI settings) first: that is where the settings window downloads models
+        if (T3.Core.Settings.AiModelSettings.TryGetStoredFile(T3.Core.Settings.AiModelSettings.DepthAnythingFamilyFolder,
+                                                             modelName, out var storedPath))
+        {
+            return storedPath;
+        }
+
         // Try AssetRegistry first
         try
         {

@@ -23,6 +23,11 @@ internal sealed partial class SettingsWindow : Window
     internal SettingsWindow()
     {
         Config.Title = "Settings";
+
+        // The sidebar plus the 560px content column; tall enough that the Collaboration
+        // participant table (and its per-row actions) and the AI model browser are
+        // visible without manual resizing.
+        WindowSizeOverride = new Vector2(700, 1000);
     }
 
     private enum Categories
@@ -31,6 +36,7 @@ internal sealed partial class SettingsWindow : Window
         Theme,
         Projects,
         Startup,
+        AiModels,
         Boygroup,
         Collaboration,
         Failover,
@@ -96,7 +102,9 @@ internal sealed partial class SettingsWindow : Window
             {
                 var name = category == Categories.Midi
                                ? "Midi & OSC"
-                               : CustomComponents.HumanReadablePascalCase(Enum.GetName(category));
+                               : category == Categories.AiModels
+                                   ? "AI Models"
+                                   : CustomComponents.HumanReadablePascalCase(Enum.GetName(category));
                 if (NavigationSidebar.Item(name, _activeCategory == category))
                     SelectCategory(category);
             }
@@ -105,7 +113,7 @@ internal sealed partial class SettingsWindow : Window
         }
         NavigationSidebar.EndColumn();
 
-        NavigationSidebar.BeginContentPanel(CategoryTitle(_activeCategory), this);
+        NavigationSidebar.BeginContentPanel(CategoryTitle(_activeCategory), this, alwaysShowScrollbar: true);
         {
             if (_scrollContentToTop)
             {
@@ -114,6 +122,7 @@ internal sealed partial class SettingsWindow : Window
             }
 
             FormInputs.SetIndentToParameters();
+            FormInputs.PushMaxContentWidth(560);
             switch (_activeCategory)
             {
                 case Categories.Interface:
@@ -235,6 +244,14 @@ internal sealed partial class SettingsWindow : Window
                                                       "Short messages in the menu bar that tell what a keyboard shortcut did, and tips about related shortcuts.",
                                                       UserSettings.Defaults.Toasts.Enabled);
 
+                    changed |= FormInputs.AddCheckBox("Show missing symbols warning at startup",
+                                                      ref UserSettings.Config.ShowMissingSymbolsWarningOnStartup,
+                                                      """
+                                                      Warning shown once after startup when symbols use operators that could not be found (missing package or deleted operator).
+                                                      The operators stay in your files and the gaps still show in the graph and the startup log; this only hides the summary.
+                                                      """,
+                                                      UserSettings.Defaults.ShowMissingSymbolsWarningOnStartup);
+
                     FormInputs.ApplyIndent();
                     if (ImGui.Button("Show Tips Again"))
                     {
@@ -280,6 +297,17 @@ internal sealed partial class SettingsWindow : Window
 
                     FormInputs.AddVerticalSpace();
                     FormInputs.AddSectionSubHeader("Output");
+
+                    changed |= FormInputs.AddEnumDropdown(ref UserSettings.Config.MaxWindowFillResolution,
+                                                          "Max Fill Resolution",
+                                                          """
+                                                          Limits the render resolution of outputs that take their size from the window,
+                                                          like "Fill" in the Output Window and the background in focus mode.
+                                                          On high-resolution displays this keeps the frame rate reasonable;
+                                                          the image is upscaled to fill the window. Fixed resolutions like 4k are not affected.
+                                                          """,
+                                                          UserSettings.Defaults.MaxWindowFillResolution,
+                                                          GetWindowFillLimitLabel);
 
                     changed |= FormInputs.AddFloat("Sequential screenshots",
                                                    ref UserSettings.Config.ContinuousScreenshotDelay,
@@ -358,6 +386,10 @@ internal sealed partial class SettingsWindow : Window
                 case Categories.Startup:
                     FormInputs.AddVerticalSpace();
                     DrawStartupPanel(ref changed);
+                    break;
+
+                case Categories.AiModels:
+                    DrawAiModelsPanel(ref changed);
                     break;
 
                 case Categories.Boygroup:
@@ -703,6 +735,8 @@ internal sealed partial class SettingsWindow : Window
                 }
             }
 
+            FormInputs.PopMaxContentWidth();
+
             if (changed)
                 UserSettings.Save();
 
@@ -880,12 +914,20 @@ internal sealed partial class SettingsWindow : Window
         ImGui.TextUnformatted(text);
     }
 
+    private static string GetWindowFillLimitLabel(UserSettings.WindowFillResolutionLimits limit)
+    {
+        return limit == UserSettings.WindowFillResolutionLimits.Unlimited
+                   ? "Unlimited"
+                   : $"{(int)limit}p";
+    }
+
     private static string CategoryTitle(Categories category) => category switch
                                                                     {
                                                                         Categories.Interface  => "User Interface",
                                                                         Categories.Theme      => "Color Theme",
                                                                         Categories.Projects   => "Project specific settings",
                                                                         Categories.Startup    => "Startup and Recovery",
+                                                                        Categories.AiModels   => "AI Models",
                                                                         Categories.Boygroup   => "Boygrouping",
                                                                         Categories.Collaboration => "Collaboration",
                                                                         Categories.Failover   => "Show Failover",

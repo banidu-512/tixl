@@ -259,7 +259,8 @@ internal sealed class StableDiffusionPipeline : IGenerationPipeline
             _gpuLatents?.Dispose();
             _gpuLatents = null;
             if (provider is ExecutionProvider.Cuda or ExecutionProvider.TensorRt
-                && Environment.GetEnvironmentVariable("TIXL_SD_GPU_LATENTS") == "1")
+                && Environment.GetEnvironmentVariable("TIXL_SD_GPU_LATENTS") == "1"
+                && !_unet!.InputIsFloat16(_unet.PrimaryInputName))
             {
                 _gpuLatents = GpuLatentOps.TryCreate(modelDirectory, deviceId);
                 if (_gpuLatents != null)
@@ -813,6 +814,14 @@ Log.Info($"[StreamDiffusion] Pipeline ready ({_unet!.ProviderLabel}, " +
                 dense.Buffer.Span.CopyTo(result);
                 return result;
             }
+
+            if (output.AsTensor<Float16>() is DenseTensor<Float16> half)
+            {
+                var source = half.Buffer.Span;
+                var result = new float[source.Length];
+                OnnxModelSession.ConvertHalfToFloat(source, result);
+                return result;
+            }
         }
 
         throw new InvalidOperationException("Text encoder produced no float output");
@@ -876,7 +885,9 @@ Log.Info($"[StreamDiffusion] Pipeline ready ({_unet!.ProviderLabel}, " +
     {
         ResolveUnetInputNames();
 
-        if (!_unetBindingFailed)
+        // fp16 exports keep fp16 all the way through; the pre-bound float buffers cannot feed them,
+        // so they run through the plain path, which builds tensors of the type each input declares
+        if (!_unetBindingFailed && !UnetIsHalfPrecision())
         {
             try
             {
@@ -922,6 +933,25 @@ Log.Info($"[StreamDiffusion] Pipeline ready ({_unet!.ProviderLabel}, " +
         return RunUnetUnbound(latents, timestep, embedding, latentWidth, latentHeight);
     }
 
+    /** fp16 exports (e.g. the official onnxruntime/sd-turbo files) keep Float16 IO; the pre-bound
+     * float buffers cannot feed those sessions, so they take the plain-run path with half tensors. */
+    private bool UnetIsHalfPrecision() => _unet!.InputIsFloat16(_unetSampleName!);
+
+    /** Adds the tensor an input expects from float data: fp32 for normal sessions, fp16 for half-precision exports. */
+    private static void AddTensorInput(List<NamedOnnxValue> inputs, string name, float[] data, bool half, int[] dims)
+    {
+        if (half)
+        {
+            var halfTensor = new DenseTensor<Float16>(dims);
+            OnnxModelSession.ConvertFloatToHalf(data, halfTensor.Buffer.Span);
+            inputs.Add(NamedOnnxValue.CreateFromTensor(name, halfTensor));
+        }
+        else
+        {
+            inputs.Add(NamedOnnxValue.CreateFromTensor(name, new DenseTensor<float>(data, dims)));
+        }
+    }
+
     private float[] RunUnetUnbound(float[] latents, int timestep, float[] embedding, int latentWidth, int latentHeight)
     {
         var sampleName = _unetSampleName!;
@@ -929,13 +959,14 @@ Log.Info($"[StreamDiffusion] Pipeline ready ({_unet!.ProviderLabel}, " +
         var timestepName = _unetTimestepName!;
         var timestepIsFloat = _unetTimestepIsFloat;
 
-        var sampleTensor = new DenseTensor<float>(latents, new[] { 1, 4, latentHeight, latentWidth });
-        var embeddingTensor = new DenseTensor<float>(embedding,
-            new[] { 1, ClipTokenizer.MaxLength, embedding.Length / ClipTokenizer.MaxLength });
+        var inputs = new List<NamedOnnxValue>();
+        AddTensorInput(inputs, sampleName, latents, _unet!.InputIsFloat16(sampleName), new[] { 1, 4, latentHeight, latentWidth });
 
-        var inputs = new List<NamedOnnxValue> { NamedOnnxValue.CreateFromTensor(sampleName, sampleTensor) };
-
-        if (timestepIsFloat)
+        if (_unet.InputIsFloat16(timestepName))
+        {
+            inputs.Add(NamedOnnxValue.CreateFromTensor(timestepName, new DenseTensor<Float16>(new[] { (Float16)timestep }, new[] { 1 })));
+        }
+        else if (timestepIsFloat)
         {
             inputs.Add(NamedOnnxValue.CreateFromTensor(timestepName, new DenseTensor<float>(new[] { (float)timestep }, new[] { 1 })));
         }
@@ -946,7 +977,9 @@ Log.Info($"[StreamDiffusion] Pipeline ready ({_unet!.ProviderLabel}, " +
 
         if (embeddingName != null)
         {
-            inputs.Add(NamedOnnxValue.CreateFromTensor(embeddingName, embeddingTensor));
+            AddTensorInput(inputs, embeddingName, embedding,
+                           _unet.InputIsFloat16(embeddingName),
+                           new[] { 1, ClipTokenizer.MaxLength, embedding.Length / ClipTokenizer.MaxLength });
         }
 
         using var outputs = _unet!.Session.Run(inputs, new[] { _unet.PrimaryOutputName });
@@ -957,6 +990,13 @@ Log.Info($"[StreamDiffusion] Pipeline ready ({_unet!.ProviderLabel}, " +
             {
                 var eps = new float[dense.Length];
                 dense.Buffer.Span.CopyTo(eps);
+                return eps;
+            }
+
+            if (output.AsTensor<Float16>() is DenseTensor<Float16> half)
+            {
+                var eps = new float[half.Length];
+                OnnxModelSession.ConvertHalfToFloat(half.Buffer.Span, eps);
                 return eps;
             }
         }
@@ -1645,7 +1685,12 @@ Log.Info($"[StreamDiffusion] Pipeline ready ({_unet!.ProviderLabel}, " +
                 _inputShapeLong = Array.ConvertAll(inputShape, v => (long)v);
                 _outputShapeLong = Array.ConvertAll(outputShape, v => (long)v);
 
-                if (!_bindingFailed)
+                // fp16 exports keep Float16 IO; the float-facing buffers convert on the way in and out
+                _halfMode = _session.InputIsFloat16(_inputName) || _session.OutputIsFloat16(_outputName);
+                _halfInput = _session.InputIsFloat16(_inputName) ? new Float16[inputLength] : null;
+                _halfOutput = _session.OutputIsFloat16(_outputName) ? new Float16[outputLength] : null;
+
+                if (!_bindingFailed && !_halfMode)
                 {
                     try
                     {
@@ -1667,7 +1712,7 @@ Log.Info($"[StreamDiffusion] Pipeline ready ({_unet!.ProviderLabel}, " +
 
         public void Run()
         {
-            if (_binding != null)
+            if (_binding != null && !_halfMode)
             {
                 try
                 {
@@ -1688,14 +1733,31 @@ Log.Info($"[StreamDiffusion] Pipeline ready ({_unet!.ProviderLabel}, " +
                 }
             }
 
-            var inputTensor = new DenseTensor<float>(Input, _inputShape);
-            var inputs = new List<NamedOnnxValue> { NamedOnnxValue.CreateFromTensor(_inputName, inputTensor) };
+            NamedOnnxValue input;
+            if (_halfInput != null)
+            {
+                var halfTensor = new DenseTensor<Float16>(_inputShape);
+                OnnxModelSession.ConvertFloatToHalf(Input, halfTensor.Buffer.Span);
+                input = NamedOnnxValue.CreateFromTensor(_inputName, halfTensor);
+            }
+            else
+            {
+                input = NamedOnnxValue.CreateFromTensor(_inputName, new DenseTensor<float>(Input, _inputShape));
+            }
+
+            var inputs = new List<NamedOnnxValue> { input };
             using var outputs = _session.Session.Run(inputs, new[] { _outputName });
             foreach (var output in outputs)
             {
                 if (output.AsTensor<float>() is DenseTensor<float> dense)
                 {
                     dense.Buffer.Span.CopyTo(_output);
+                    return;
+                }
+
+                if (output.AsTensor<Float16>() is DenseTensor<Float16> half)
+                {
+                    OnnxModelSession.ConvertHalfToFloat(half.Buffer.Span, _output);
                     return;
                 }
             }
@@ -1710,6 +1772,9 @@ Log.Info($"[StreamDiffusion] Pipeline ready ({_unet!.ProviderLabel}, " +
             _output = Array.Empty<float>();
             _inputShape = Array.Empty<int>();
             _outputShape = Array.Empty<int>();
+            _halfInput = null;
+            _halfOutput = null;
+            _halfMode = false;
         }
 
         private void DisposeBinding()
@@ -1744,6 +1809,9 @@ Log.Info($"[StreamDiffusion] Pipeline ready ({_unet!.ProviderLabel}, " +
         private OrtValue? _inputValue;
         private OrtValue? _outputValue;
         private bool _bindingFailed;
+        private bool _halfMode;
+        private Float16[]? _halfInput;
+        private Float16[]? _halfOutput;
     }
 
     private void DisposeSessions()

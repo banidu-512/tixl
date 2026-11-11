@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
@@ -71,21 +71,29 @@ public static class OnnxNativeSelector
         }
     }
 
-    public static string Describe(Build build) => build == Build.Gpu ? "CUDA" : "DirectML";
-
-    /// <summary>
-    /// Whether <paramref name="build"/>'s native is shipped next to <paramref name="ortAssembly"/>. ONNX Runtime
-    /// DirectML builds stopped after 1.24.4, so callers that offer DirectML as a choice need this to say
-    /// "not available in this runtime" instead of "restart to switch" (which would never succeed).
-    /// </summary>
+    /// <summary>True when this build's native runtime folder is shipped next to the given ONNX Runtime assembly.</summary>
     public static bool IsShipped(Assembly ortAssembly, Build build)
     {
-        if (!OperatingSystem.IsWindows())
-            return true;
-
         var assemblyDir = Path.GetDirectoryName(ortAssembly.Location) ?? AppContext.BaseDirectory;
         return HasNative(assemblyDir, build);
     }
+
+    /// <summary>
+    /// True when an operator package already bound a native build in this session. Switching between
+    /// the CUDA and DirectML builds then needs a restart; before the first use it takes effect immediately.
+    /// </summary>
+    public static bool IsAnyNativeBound
+    {
+        get
+        {
+            lock (Lock)
+            {
+                return Selected.Count > 0;
+            }
+        }
+    }
+
+    public static string Describe(Build build) => build == Build.Gpu ? "CUDA" : "DirectML";
 
     private static bool HasNative(string assemblyDir, Build build)
         => File.Exists(Path.Combine(assemblyDir, build == Build.Gpu ? GpuFolder : DirectMlFolder, "onnxruntime.dll"));
@@ -95,8 +103,11 @@ public static class OnnxNativeSelector
         if (!libraryName.StartsWith("onnxruntime", StringComparison.OrdinalIgnoreCase))
             return IntPtr.Zero;
 
-        // The DirectML runtime beside the build is preferred over a (possibly older) system DirectML.dll
-        var directMl = Path.Combine(folder, "DirectML.dll");
+        // A user-configured DirectML.dll (AI settings) wins over the one beside the build,
+        // which is itself preferred over a (possibly older) system DirectML.dll
+        var configured = T3.Core.Settings.AiModelSettings.Config.DirectMlDirectory;
+        var directMl = !string.IsNullOrEmpty(configured) ? Path.Combine(configured, "DirectML.dll")
+                                                         : Path.Combine(folder, "DirectML.dll");
         if (File.Exists(directMl))
             NativeLibrary.TryLoad(directMl, out _);
 

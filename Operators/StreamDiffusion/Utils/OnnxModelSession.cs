@@ -380,6 +380,20 @@ internal sealed class OnnxModelSession : IDisposable
     public IReadOnlyDictionary<string, NodeMetadata> Outputs => Session.OutputMetadata;
 
     /// <summary>
+    /// True when the named input expects Float16 tensors. fp16 exports (e.g. the official
+    /// onnxruntime/sd-turbo files) keep fp16 all the way through the graph, unlike optimum exports
+    /// that keep fp16 weights but cast the IO back to fp32.
+    /// </summary>
+    public bool InputIsFloat16(string inputName)
+        => Session.InputMetadata.TryGetValue(inputName, out var metadata)
+           && metadata.ElementDataType == TensorElementType.Float16;
+
+    /// <summary>True when the named output produces Float16 tensors.</summary>
+    public bool OutputIsFloat16(string outputName)
+        => Session.OutputMetadata.TryGetValue(outputName, out var metadata)
+           && metadata.ElementDataType == TensorElementType.Float16;
+
+    /// <summary>
     /// Finds a float input by tensor rank, optionally preferring a name fragment.
     /// Used to locate the UNet sample/timestep/embeddings across export variants.
     /// </summary>
@@ -421,6 +435,13 @@ internal sealed class OnnxModelSession : IDisposable
                 dense.Buffer.Span.CopyTo(copy.Buffer.Span);
                 return copy;
             }
+
+            if (output.AsTensor<Float16>() is DenseTensor<Float16> half)
+            {
+                var copy = new DenseTensor<float>(half.Dimensions);
+                ConvertHalfToFloat(half.Buffer.Span, copy.Buffer.Span);
+                return copy;
+            }
         }
 
         throw new InvalidOperationException($"{Name}: output '{outputName}' is not a float tensor");
@@ -446,6 +467,20 @@ internal sealed class OnnxModelSession : IDisposable
         }
 
         return string.Empty;
+    }
+
+    /** Converts a Float16 buffer to float32 element by element. */
+    internal static void ConvertHalfToFloat(ReadOnlySpan<Float16> source, Span<float> target)
+    {
+        for (var i = 0; i < source.Length; i++)
+            target[i] = source[i].ToFloat();
+    }
+
+    /** Converts a float buffer to Float16 element by element. */
+    internal static void ConvertFloatToHalf(ReadOnlySpan<float> source, Span<Float16> target)
+    {
+        for (var i = 0; i < source.Length; i++)
+            target[i] = (Float16)source[i];
     }
 
     public void Dispose()

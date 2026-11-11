@@ -89,13 +89,9 @@ public sealed class AiModelSettings : T3.Core.IO.Settings<AiModelSettings.Config
     public static void ResetRuntimeProbes()
     {
         if (OperatingSystem.IsWindows())
-        {
             WindowsCudaRuntime.ResetProbes();
-        }
         else if (OperatingSystem.IsLinux())
-        {
             LinuxCudaRuntime.ResetProbes();
-        }
     }
 
     /**

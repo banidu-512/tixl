@@ -19,7 +19,7 @@ namespace T3.Editor.Gui.Windows;
 internal sealed partial class SettingsWindow
 {
     /** Which family the model browser lists; All shows every entry grouped by family. */
-    private enum AiModelBrowserFilter { All, DepthAnything, StreamDiffusion }
+    private enum AiModelBrowserFilter { All, DepthAnything, StreamDiffusion, MediaPipe }
 
     private static AiModelBrowserFilter _aiBrowserFilter = AiModelBrowserFilter.All;
 
@@ -33,8 +33,14 @@ internal sealed partial class SettingsWindow
         var directMlChanged = false;
 
         DrawAiStoreSection(ref aiConfigChanged);
+
+        FormInputs.AddVerticalSpace(16);
         DrawAiModelBrowserSection();
+
+        FormInputs.AddVerticalSpace(16);
         DrawAiSetupCheckSection();
+
+        FormInputs.AddVerticalSpace(16);
         DrawAiEnginesSection(ref aiConfigChanged, ref directMlChanged);
 
         if (aiConfigChanged || directMlChanged)
@@ -49,8 +55,14 @@ internal sealed partial class SettingsWindow
 
     private static void DrawAiStoreSection(ref bool aiConfigChanged)
     {
-        PanelLayout.BeginSection("Model Store",
-                                 "Where downloaded AI models live. Set this to a drive with room to spare - models are multi-gigabyte and deliberately kept out of the TiXL installation and the git repository. The operators find them here automatically.");
+        FormInputs.AddSectionSubHeader("Model Store");
+        CustomComponents.HelpText(
+            """
+            Where downloaded AI models live. Set this to a drive with room to spare - models are
+            multi-gigabyte and deliberately kept out of the TiXL installation and the git repository.
+            The operators find them here automatically.
+            """);
+        FormInputs.AddVerticalSpace();
 
         var previousDirectory = AiModelSettings.Config.ModelsDirectory;
         aiConfigChanged |= FormInputs.AddFilePicker("Store folder",
@@ -93,19 +105,16 @@ internal sealed partial class SettingsWindow
             var sizeText = AiModelCatalog.FormatSize(_aiStoreSizeBytes);
             ImGui.TextUnformatted($"Store size: {sizeText}");
             ImGui.SameLine(0, 8 * T3Ui.UiScaleFactor);
-            if (ImGui.Button("Refresh"))
+            if (ImGui.SmallButton("Refresh"))
                 _aiStoreSizeValid = false;
         }
-
-        PanelLayout.EndSection();
     }
 
     // ---------------------------------------------------------------- setup check / one-click
 
     private static void DrawAiSetupCheckSection()
     {
-        PanelLayout.BeginSection("Setup Check",
-                                 "Checks everything the AI operators need: CUDA/TensorRT runtimes, the model store and the models for DepthAnything and StreamDiffusion. \"Setup wizard\" lets you pick models with descriptions; \"Download defaults\" installs the fastest model of every family missing one. The MediaPipe tracking models ship bundled with TiXL and need no setup.");
+        FormInputs.AddSectionSubHeader("Setup Check");
 
         // Run once per session when the page is first opened, so the state of things is
         // visible without a click. Re-checking stays on the button.
@@ -115,10 +124,18 @@ internal sealed partial class SettingsWindow
             AiSetupChecker.Run();
         }
 
+        CustomComponents.HelpText(
+            """
+            Checks everything the AI operators need: CUDA/TensorRT runtimes, the model store and the
+            models for DepthAnything, StreamDiffusion and MediaPipe. "Download defaults" installs the
+            fastest working model of every family that is missing one.
+            """);
+        FormInputs.AddVerticalSpace();
+
         if (AiSetupChecker.IsFixing)
         {
             DrawStatusLine(UiColors.StatusActivated, AiSetupChecker.FixProgressText.Length > 0 ? AiSetupChecker.FixProgressText : "Working…");
-            PanelLayout.Space(PanelLayout.SpaceS);
+            FormInputs.AddVerticalSpace();
         }
 
         FormInputs.ApplyIndent();
@@ -127,15 +144,6 @@ internal sealed partial class SettingsWindow
         {
             ImGui.BeginDisabled();
         }
-
-        if (CustomComponents.DrawCtaButton("Setup wizard…", Icon.None, UiColors.ForegroundFull, UiColors.StatusActivated, Color.Transparent))
-        {
-            T3Ui.AiModelSetupWizard.ShowNextFrame();
-        }
-
-        CustomComponents.TooltipForLastItem("Choose the models to install, installer-style, with a description of each.",
-                                            "Downloads go into the model store and continue if the wizard is closed.");
-        ImGui.SameLine(0, 8 * T3Ui.UiScaleFactor);
 
         if (ImGui.Button("Run check"))
         {
@@ -146,7 +154,7 @@ internal sealed partial class SettingsWindow
                                             "Probing CUDA/TensorRT loads the runtime DLLs, exactly like the operators do later.");
         ImGui.SameLine(0, 8 * T3Ui.UiScaleFactor);
 
-        if (ImGui.Button("Download defaults"))
+        if (CustomComponents.DrawCtaButton("Download defaults", Icon.None, UiColors.ForegroundFull, UiColors.StatusActivated, Color.Transparent))
         {
             if (AiSetupChecker.LastCheckAt == DateTime.MinValue)
                 AiSetupChecker.Run();
@@ -163,13 +171,12 @@ internal sealed partial class SettingsWindow
 
         if (AiSetupChecker.LastCheckAt == DateTime.MinValue)
         {
-            PanelLayout.Space(PanelLayout.SpaceS);
+            FormInputs.AddVerticalSpace();
             CustomComponents.HelpText("Not checked yet in this session.");
-            PanelLayout.EndSection();
             return;
         }
 
-        PanelLayout.Space(PanelLayout.SpaceM);
+        FormInputs.AddVerticalSpace();
         foreach (var item in AiSetupChecker.LastResults)
         {
             var color = item.Result switch
@@ -182,26 +189,21 @@ internal sealed partial class SettingsWindow
 
             DrawStatusLine(color, $"{item.ResultText}  {item.Title}");
             CustomComponents.TooltipForLastItem(item.Title, item.Detail);
-
-            // Rows that need attention carry the "what to do" guidance directly on the page;
-            // OK rows keep it in the tooltip to keep the list compact.
-            if (item.Result is AiCheckResult.Fixable or AiCheckResult.Missing && !string.IsNullOrWhiteSpace(item.Detail))
-            {
-                ImGui.Indent();
-                CustomComponents.HelpText(item.Detail);
-                ImGui.Unindent();
-            }
         }
-
-        PanelLayout.EndSection();
     }
 
     // ---------------------------------------------------------------- engines
 
     private static void DrawAiEnginesSection(ref bool aiConfigChanged, ref bool directMlChanged)
     {
-        PanelLayout.BeginSection("Engine Runtimes",
-                                 "The ONNX operators run on CUDA, TensorRT or DirectML. Their runtimes are found automatically (PATH, TENSORRT_ROOT, the NVIDIA install folders). A folder set here wins over all of them, e.g. when the toolkit lives on another drive.");
+        FormInputs.AddSectionSubHeader("Engine Runtimes");
+        CustomComponents.HelpText(
+            """
+            The ONNX operators run on CUDA, TensorRT or DirectML. Their runtimes are found automatically
+            (PATH, TENSORRT_ROOT, the NVIDIA install folders). A folder set here wins over all of them,
+            e.g. when the toolkit lives on another drive.
+            """);
+        FormInputs.AddVerticalSpace();
 
         DrawEngineStatus("CUDA 12 runtime (cuDNN 9)", () => OperatingSystem.IsWindows()
                                                             ? WindowsCudaRuntime.TryPrepare(out var reason)
@@ -280,8 +282,6 @@ internal sealed partial class SettingsWindow
 
         CustomComponents.TooltipForLastItem("Re-probes CUDA and TensorRT after installing or moving a runtime.",
                                             "Operators pick the change up on their next use without a restart.");
-
-        PanelLayout.EndSection();
     }
 
     private static void DrawEngineStatus(string title, Func<bool> probe, Func<string?> configuredFolder)
@@ -297,36 +297,32 @@ internal sealed partial class SettingsWindow
 
     private static void DrawAiModelBrowserSection()
     {
-        PanelLayout.BeginSection("Model Browser", "Compatible models for the AI operators. Downloads land in the model store; the operators find them automatically.");
+        FormInputs.AddSectionSubHeader("Model Browser");
+        CustomComponents.HelpText("Compatible models for the AI operators. Downloads land in the model store; the operators find them automatically.");
 
+        FormInputs.AddVerticalSpace();
+        FormInputs.ApplyIndent();
         CustomComponents.SegmentedButton(ref _aiBrowserFilter);
-        PanelLayout.Space(PanelLayout.SpaceM);
+        FormInputs.AddVerticalSpace();
 
         switch (_aiBrowserFilter)
         {
             case AiModelBrowserFilter.All:
-                foreach (var family in AiModelCatalog.VisibleFamilies)
+                foreach (AiModelFamily family in Enum.GetValues<AiModelFamily>())
                 {
                     DrawFamilyGroup(family);
                 }
                 break;
 
-            // Explicit mapping: the browser filter and the family enum have different bases.
-            case AiModelBrowserFilter.DepthAnything:
-                DrawFamilyGroup(AiModelFamily.DepthAnything);
-                break;
-
-            case AiModelBrowserFilter.StreamDiffusion:
-                DrawFamilyGroup(AiModelFamily.StreamDiffusion);
+            default:
+                DrawFamilyGroup((AiModelFamily)_aiBrowserFilter);
                 break;
         }
-
-        PanelLayout.EndSection();
     }
 
     private static void DrawFamilyGroup(AiModelFamily family)
     {
-        var entries = AiModelCatalog.ForFamily(family);
+        var entries = AiModelCatalog.ForFamily(family).ToList();
         if (entries.Count == 0)
             return;
 
@@ -334,18 +330,19 @@ internal sealed partial class SettingsWindow
         ImGui.TextUnformatted(family.Title());
         ImGui.PopFont();
         CustomComponents.TooltipForLastItem(family.Title(), family.Description());
-        PanelLayout.Space(PanelLayout.SpaceS);
+        FormInputs.AddVerticalSpace(4);
 
         foreach (var entry in entries)
         {
             DrawCatalogEntry(entry);
         }
 
-        PanelLayout.Space(PanelLayout.SpaceS);
+        FormInputs.AddVerticalSpace(8);
     }
 
     private static void DrawCatalogEntry(ModelCatalogEntry entry)
     {
+        FormInputs.ApplyIndent();
         ImGui.PushID(entry.Id);
 
         var rowStartX = ImGui.GetCursorPosX();
@@ -368,8 +365,7 @@ internal sealed partial class SettingsWindow
         CustomComponents.TooltipForLastItem(entry.DisplayName, entry.Description);
 
         // Right-aligned action on the name line, pinned to the row's right edge
-        const float actionWidth = 104;
-        var actionSize = new Vector2(actionWidth * T3Ui.UiScaleFactor, 0);
+        const float actionWidth = 96;
         var buttonX = Math.Max(ImGui.GetCursorPosX() + 8 * T3Ui.UiScaleFactor,
                                rowStartX + rowAvailX - actionWidth * T3Ui.UiScaleFactor);
         ImGui.SameLine(buttonX);
@@ -383,22 +379,20 @@ internal sealed partial class SettingsWindow
         }
         else if (running)
         {
-            if (ImGui.Button("Cancel", actionSize))
-                AiModelDownloadService.Cancel(entry);
-
-            CustomComponents.TooltipForLastItem("Stop the download.",
-                                                "Partial files are removed; already completed files of this model stay and a retry only fetches the rest.");
+            ImGui.PushFont(Fonts.FontSmall);
+            ImGui.TextColored(UiColors.TextMuted, status.CurrentFile.Length > 0 ? "downloading…" : "starting…");
+            ImGui.PopFont();
         }
         else if (status.State == AiModelDownloadService.States.Failed)
         {
-            if (ImGui.Button("Retry##failed", actionSize))
+            if (ImGui.SmallButton("Retry##failed"))
                 AiModelDownloadService.Start(entry);
 
             CustomComponents.TooltipForLastItem("Download failed", status.Error);
         }
         else if (installed)
         {
-            if (PanelLayout.DestructiveButton("Remove", actionWidth))
+            if (ImGui.SmallButton("Remove"))
                 AiModelDownloadService.Remove(entry);
 
             CustomComponents.TooltipForLastItem("Delete the installed model from the store.", entry.StoreDirectory);
@@ -406,7 +400,7 @@ internal sealed partial class SettingsWindow
         else
         {
             var downloadLabel = bundled ? "Copy to store" : "Download";
-            if (ImGui.Button(downloadLabel, actionSize))
+            if (ImGui.SmallButton(downloadLabel))
                 AiModelDownloadService.Start(entry);
 
             if (bundled)
@@ -448,7 +442,7 @@ internal sealed partial class SettingsWindow
             ImGui.PopFont();
         }
 
-        PanelLayout.Space(PanelLayout.SpaceM);
+        FormInputs.AddVerticalSpace(6);
         ImGui.PopID();
     }
 
