@@ -46,12 +46,26 @@ internal static class CollabBackendWire
         private int _channelAttached;
         private int _channelOpenNotified;
 
+        // Optional outgoing video: the host publishes a feed (a webcam, an NDI input, ...) as an
+        // H.264 track alongside the data channel.
+        private readonly bool _sendVideo;
+        private IRtcTrack? _videoTrack;
+        private readonly object _videoSendLock = new();
+        private readonly System.Diagnostics.Stopwatch _videoClock = System.Diagnostics.Stopwatch.StartNew();
+        private readonly uint _videoSsrc = (uint)Random.Shared.Next(1, int.MaxValue);
+        private int _keyFrameRequested;
+
+        /// <summary>RTP packets of the host's shared video track (guest side).</summary>
+        public event Action<byte[]>? VideoRtpReceived;
+
         public BackendRtcLink(bool isOfferer,
                               Action<byte[]> sendSignal,
                               Action<IRtcDataChannel> onChannelOpen,
-                              Action<string> onFailed)
+                              Action<string> onFailed,
+                              bool sendVideo = false)
         {
             _isOfferer = isOfferer;
+            _sendVideo = sendVideo;
             _sendSignal = sendSignal;
             _onChannelOpen = onChannelOpen;
             _onFailed = onFailed;
@@ -64,17 +78,26 @@ internal static class CollabBackendWire
 
             _connection = connection;
             _connection.OnDataChannel += (_, channel) => AttachChannel(channel);
+            _connection.OnTrack += (_, track) =>
+                                   {
+                                       // The binding delivers RTP packets; the receiver depacketizes.
+                                       track.OnBinaryReceivedSafe += (_, message) => VideoRtpReceived?.Invoke(message.Data.ToArray());
+                                   };
             _connection.OnLocalDescriptionSafe += OnLocalDescription;
             _connection.OnCandidateSafe += OnLocalCandidate;
             _connection.OnConnectionStateChange += OnStateChanged;
         }
 
-        /// <summary>Offerer: creates the data channel and starts gathering; the offer lands in the
-        /// sendSignal callback once the local description is ready.</summary>
+        /// <summary>Offerer: creates the video track (when sharing a feed) and the data channel, then
+        /// starts gathering; the offer lands in the sendSignal callback once it is ready.</summary>
         public void Start()
         {
             if (_isOfferer)
             {
+                // The track must exist before the offer so both travel in one negotiation.
+                if (_sendVideo)
+                    CreateVideoTrack();
+
                 var channel = _connection.CreateDataChannel(new RtcCreateDataChannelArgs
                                                                 {
                                                                     Label = DataChannelLabel,
@@ -82,6 +105,72 @@ internal static class CollabBackendWire
                                                                 });
                 AttachChannel(channel);
                 _connection.SetLocalDescription(RtcDescriptionType.Offer);
+            }
+        }
+
+        /// <summary>True while the outgoing video track is open (host side).</summary>
+        public bool HasVideoTrack => _videoTrack is { IsOpen: true };
+
+        /// <summary>Writes one Annex-B access unit to the outgoing video track.</summary>
+        public void SendVideo(byte[] annexB)
+        {
+            var track = _videoTrack;
+            if (track == null || !track.IsOpen)
+                return;
+
+            try
+            {
+                lock (_videoSendLock)
+                {
+                    track.Timestamp = (uint)(_videoClock.Elapsed.TotalSeconds * 90_000);
+                    track.Write(annexB);
+                }
+            }
+            catch (Exception e)
+            {
+                Log.Debug($"Collab: video write failed: {e.Message}");
+            }
+        }
+
+        /// <summary>A viewer asked for a fresh IDR (it joined or its stream broke).</summary>
+        public void RequestKeyFrame() => Interlocked.Exchange(ref _keyFrameRequested, 1);
+
+        public bool ConsumeKeyFrameRequest() => Interlocked.Exchange(ref _keyFrameRequested, 0) != 0;
+
+        private void CreateVideoTrack()
+        {
+            try
+            {
+                _videoTrack = _connection.CreateTrack(new RtcCreateTrackArgs
+                                                          {
+                                                              Direction = rtcDirection.RTC_DIRECTION_SENDONLY,
+                                                              Codec = rtcCodec.RTC_CODEC_H264,
+                                                              PayloadType = 96,
+                                                              Ssrc = _videoSsrc,
+                                                              Mid = CollabWebRtc.VideoTrackMid,
+                                                              Name = CollabWebRtc.VideoTrackMid,
+                                                              Msid = "tixl",
+                                                              TrackId = CollabWebRtc.VideoTrackMid,
+                                                          });
+
+                _videoTrack.AddH264Packetizer(new RtcPacketizerInitArgs
+                                                  {
+                                                      Ssrc = (int)_videoSsrc,
+                                                      Cname = $"tixl-{Guid.NewGuid():N}"[..16],
+                                                      PayloadType = 96,
+                                                      Clockrate = 90_000,
+                                                      MaxFragmentSize = 1200,
+                                                      NalUnitSeparator = rtcNalUnitSeparator.RTC_NAL_SEPARATOR_LONG_START_SEQUENCE,
+                                                  });
+
+                _videoTrack.SetPliHandler(RequestKeyFrame);
+                _videoTrack.OnOpen += _ => RequestKeyFrame();
+            }
+            catch (Exception e)
+            {
+                // The party still works without the shared feed; only this feature is lost.
+                Log.Warning($"Collab: could not create the video track: {e.Message}");
+                _videoTrack = null;
             }
         }
 
@@ -251,8 +340,43 @@ internal static class CollabBackendWire
     // and runs the session (authentication included) on the data channels.
     // ---------------------------------------------------------------------------------------
 
-    internal sealed class CollabBackendHostTransport : CollabTransport
+    internal sealed class CollabBackendHostTransport : CollabTransport, ICollabVideoSink
     {
+        /// <summary>Peers currently watching the shared feed.</summary>
+        public int ViewerCount
+        {
+            get
+            {
+                lock (_gate)
+                    return _entries.Count(e => !e.Dead && e.Link is { HasVideoTrack: true });
+            }
+        }
+
+        /// <summary>One encoded access unit, fanned out to every open video track.</summary>
+        public void SendVideo(byte[] annexB)
+        {
+            List<BackendRtcLink> links;
+            lock (_gate)
+                links = _entries.Where(e => !e.Dead).Select(e => e.Link).OfType<BackendRtcLink>().ToList();
+
+            foreach (var link in links)
+                link.SendVideo(annexB);
+        }
+
+        /// <summary>True when any viewer needs a fresh IDR.</summary>
+        public bool ConsumeKeyFrameRequest()
+        {
+            var requested = false;
+            List<BackendRtcLink> links;
+            lock (_gate)
+                links = _entries.Where(e => !e.Dead).Select(e => e.Link).OfType<BackendRtcLink>().ToList();
+
+            foreach (var link in links)
+                requested |= link.ConsumeKeyFrameRequest();
+
+            return requested;
+        }
+
         /// <summary>Raised on a pool thread when a visitor asks to join; the host approves in the UI.</summary>
         public event Action<string, string>? JoinRequested;
 
@@ -261,6 +385,9 @@ internal static class CollabBackendWire
 
         private readonly string _room;
         private readonly string _key;
+        /// <summary>Remote management: the one claim this session auto-approves. Empty = every
+        /// request needs the host's confirmation.</summary>
+        private readonly string _autoApproveClaim;
         private readonly CancellationTokenSource _cancellation = new();
         private readonly object _gate = new();
         private readonly List<HostPeerEntry> _entries = [];
@@ -282,10 +409,11 @@ internal static class CollabBackendWire
 
         public override IReadOnlyList<CollabPeerConnection> Peers => _peerSnapshot;
 
-        public CollabBackendHostTransport(string room, string key)
+        public CollabBackendHostTransport(string room, string key, string autoApproveClaim = "")
         {
             _room = room;
             _key = key;
+            _autoApproveClaim = autoApproveClaim ?? "";
             _ = Task.Run(() => PollLoopAsync(_cancellation.Token));
             Log.Info($"Collab: hosting via the backend, waiting for join tickets (room {_room})");
         }
@@ -379,8 +507,20 @@ internal static class CollabBackendWire
                         }
                         else if (ticket.State == "pending")
                         {
-                            Log.Debug($"Collab backend host: join request from {ticket.Name}");
-                            JoinRequested?.Invoke(ticket.Name, ticket.Id);
+                            // A remote-management session accepts exactly the ticket that carries
+                            // its claim; everyone else still needs the host's confirmation.
+                            if (_autoApproveClaim.Length > 0 && ticket.Claim == _autoApproveClaim)
+                            {
+                                Log.Info($"Collab backend host: auto-approving the paired controller ({ticket.Name})");
+                                entry.State = "approved";
+                                _ = CollabWebLobby.SetTicketStateAsync(_room, _key, ticket.Id, "approved", cancellation);
+                                StartLink(entry);
+                            }
+                            else
+                            {
+                                Log.Debug($"Collab backend host: join request from {ticket.Name}");
+                                JoinRequested?.Invoke(ticket.Name, ticket.Id);
+                            }
                         }
                     }
                 }
@@ -486,7 +626,8 @@ internal static class CollabBackendWire
                 entry.Link = new BackendRtcLink(isOfferer: true,
                                                 sendSignal: payload => _ = PostSignalLoggedAsync(ticketId, payload),
                                                 onChannelOpen: channel => OnChannelOpen(entry, channel, slot),
-                                                onFailed: reason => OnLinkFailed(entry, reason));
+                                                onFailed: reason => OnLinkFailed(entry, reason),
+                                                sendVideo: UserSettings.Config.CollabSharePreview);
                 entry.Link.Start();
                 OnStatus($"Join ticket from {entry.GuestName} - negotiating the peer connection...");
             }
@@ -559,11 +700,17 @@ internal static class CollabBackendWire
     // Client transport: one join ticket, one WebRTC link, the session rides the data channel.
     // ---------------------------------------------------------------------------------------
 
-    internal sealed class CollabBackendClientTransport : CollabTransport
+    internal sealed class CollabBackendClientTransport : CollabTransport, ICollabVideoSource
     {
+        /// <summary>Encoded access units of the host's shared feed, raised on a libdatachannel thread.</summary>
+        public event Action<byte[]>? VideoRtpReceived;
+
         private readonly string _room;
         private readonly string _name;
         private readonly string _lang;
+        /// <summary>Remote management: the claim this guest presents in its join ticket so the
+        /// managed installation auto-approves it. Empty = a normal request.</summary>
+        private readonly string _claim;
         private readonly CancellationTokenSource _cancellation = new();
         private string _ticket = "";
         private long _since;
@@ -577,18 +724,23 @@ internal static class CollabBackendWire
 
         public bool IsConnected => _connected;
 
-        public CollabBackendClientTransport(string room, string name, string lang)
+        /// <summary>The join ticket this connection was approved through (used for the project download).</summary>
+        public string TicketId => _ticket;
+
+        public CollabBackendClientTransport(string room, string name, string lang, string claim = "")
         {
             _room = room;
             _name = name;
             _lang = lang;
+            _claim = claim ?? "";
         }
 
-        /// <summary>Opens the ticket, waits for the host's approval, negotiates the WebRTC link and
-        /// returns once the data channel is open. Throws with a readable message when anything fails.</summary>
-        public async Task ConnectAsync(CancellationToken cancellation)
+        /// <summary>Opens the ticket, waits for the host's approval, runs <paramref name="prepare"/>
+        /// (the project handoff), negotiates the WebRTC link and returns once the data channel is
+        /// open. Throws with a readable message when anything fails.</summary>
+        public async Task ConnectAsync(CancellationToken cancellation, Func<string, CancellationToken, Task>? prepare = null)
         {
-            _ticket = await CollabWebLobby.JoinRequestAsync(_room, _name, _lang, cancellation);
+            _ticket = await CollabWebLobby.JoinRequestAsync(_room, _name, _lang, _claim, cancellation);
 
             // The host confirms the request in a popup first; the negotiation waits for it.
             var approvalDeadline = Environment.TickCount64 + 90_000;
@@ -611,11 +763,18 @@ internal static class CollabBackendWire
             }
 
             Log.Info("Collab: the host approved the join request - connecting...");
+
+            // The project handoff runs before the negotiation: both sides must be on the same
+            // snapshot, and the data channel carries the hello immediately after it opens.
+            if (prepare != null)
+                await prepare(_ticket, cancellation);
+
             var ticket = _ticket;
             _link = new BackendRtcLink(isOfferer: false,
                                        sendSignal: payload => _ = PostSignalLoggedAsync(ticket, payload),
                                        onChannelOpen: OnChannelOpen,
                                        onFailed: reason => OnFailed(reason));
+            _link.VideoRtpReceived += rtp => VideoRtpReceived?.Invoke(rtp);
 
             _ = Task.Run(() => PollLoopAsync(cancellation));
 

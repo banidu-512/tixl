@@ -252,6 +252,35 @@ internal sealed class CollabWindow : Window
             var canEdit = collab.ParticipantsCanEdit;
             if (ImGui.Checkbox("Participants can edit (off = spectators)", ref canEdit))
                 collab.SetParticipantsCanEdit(canEdit);
+
+            // The shared feed is the SELECTED operator's video (webcam / NDI / Spout / file) - never
+            // an output window; everyone renders their own output locally.
+            var shareFeed = UserSettings.Config.CollabSharePreview;
+            if (ImGui.Checkbox("Share a video feed with the party", ref shareFeed))
+            {
+                UserSettings.Config.CollabSharePreview = shareFeed;
+                UserSettings.Save();
+                if (!shareFeed)
+                    collab.StopSharingFeed();
+            }
+
+            CustomComponents.TooltipForLastItem("""
+                                                Select a webcam, NDI, Spout or video operator in the graph,
+                                                then press Share: its picture is sent to every participant as
+                                                a live video track. Nothing is sent without a chosen operator.
+                                                """);
+
+            if (ImGui.SmallButton("Share selected operator"))
+                collab.ShareSelectedOperatorAsFeed();
+
+            if (collab.SharedFeedName.Length > 0)
+            {
+                ImGui.SameLine();
+                ImGui.TextDisabled($"sharing {collab.SharedFeedName}  ·  {collab.VideoStreamer?.ViewerCount ?? 0} watching");
+                ImGui.SameLine();
+                if (ImGui.SmallButton("Stop##feed"))
+                    collab.StopSharingFeed();
+            }
         }
         else if (collab.ReadOnlyForParticipants)
         {

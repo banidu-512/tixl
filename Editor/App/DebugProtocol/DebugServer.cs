@@ -976,6 +976,27 @@ internal static class DebugServer
                 collab.SetParticipantsCanEdit(!(request["value"]?.Value<bool>() ?? true));
                 break;
 
+            case "feed":
+            {
+                var childIdText = request["childId"]?.Value<string>() ?? "";
+                if (childIdText.Length == 0)
+                {
+                    if (!collab.ShareSelectedOperatorAsFeed())
+                        context.SendError("INVALID_PARAM", "select an operator with a Texture2D output first");
+                }
+                else if (Guid.TryParse(childIdText, out var childId))
+                {
+                    if (!collab.ShareOperatorAsFeed(childId))
+                        context.SendError("INVALID_PARAM", $"'{childIdText}' is not a texture operator in the composition");
+                }
+                else
+                {
+                    context.SendError("INVALID_PARAM", "childId must be a Guid");
+                }
+
+                break;
+            }
+
             case "join-relay":
             {
                 Show.ShowControlMode.Activate(Show.ShowControlMode.Collab);
@@ -1063,6 +1084,9 @@ internal static class DebugServer
                                ["room"] = collab.RoomCode,
                                ["peers"] = collab.Peers.Count,
                                ["chatLines"] = collab.ChatLog.Count,
+                               ["videoEncoded"] = collab.VideoStreamer?.EncodedFrames ?? 0,
+                               ["videoViewers"] = collab.VideoStreamer?.ViewerCount ?? 0,
+                               ["videoDecoded"] = collab.VideoReceiver?.DecodedFrames ?? 0,
                                ["participantsCanEdit"] = collab.ParticipantsCanEdit,
                                ["readOnly"] = collab.ReadOnlyForParticipants,
                                ["pendingJoins"] = collab.PendingJoinRequests.Count,

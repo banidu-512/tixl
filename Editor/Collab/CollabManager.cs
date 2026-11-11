@@ -581,7 +581,7 @@ internal sealed class CollabManager
         }
 
         if (transport is CollabWebRtcHostTransport rtcHost)
-            _videoStreamer = new CollabVideoHostStreamer(rtcHost);
+            _videoStreamer = new CollabVideoHostStreamer(rtcHost, SharedFeedTexture);
 
         State = SessionState.Hosting;
         StatusText = $"Hosting via relay, room {RoomCode}";
@@ -827,6 +827,12 @@ internal sealed class CollabManager
             State = SessionState.Hosting;
             ParticipantsCanEdit = UserSettings.Config.CollabPartyControllable;
             IsRemoteManagedSession = autoApproveClaim.Length > 0;
+
+            // Share the selected input operator's texture (a webcam, an NDI or Spout feed) with the
+            // party when the preview sharing is on; without a selected texture the streamer falls
+            // back to the main output.
+            if (transport is ICollabVideoSink sink && UserSettings.Config.CollabSharePreview)
+                _videoStreamer = new CollabVideoHostStreamer(sink, SharedFeedTexture);
             _pendingJoinRequests.Clear();
             _readOnlyNoticeShownFor.Clear();
             StatusText = IsRemoteManagedSession
@@ -1074,6 +1080,112 @@ internal sealed class CollabManager
     }
 
     /// <summary>
+    /// The operator whose video the party streams (a webcam, NDI or Spout input). Chosen
+    /// explicitly - the graph selection is transient - and resolved by child id each frame.
+    /// </summary>
+    public string SharedFeedName { get; private set; } = "";
+
+    private Guid _sharedFeedChildId;
+
+    /// <summary>Host: shares the currently selected operator's texture output with the party.</summary>
+    public bool ShareSelectedOperatorAsFeed()
+    {
+        var view = FindFocusedOrAnyView();
+        var childId = view?.NodeSelection?.GetSelectionSymbolChildId();
+        if (view?.CompositionInstance == null || childId == null)
+            return false;
+
+        if (!view.CompositionInstance.Children.TryGetChildInstance(childId.Value, out var instance) || instance == null)
+            return false;
+
+        _sharedFeedChildId = childId.Value;
+        SharedFeedName = instance.Symbol.Name;
+        UserSettings.Config.CollabSharePreview = true;
+        UserSettings.Save();
+        AppendChat(null, $"Sharing {SharedFeedName} as the party video feed");
+        Log.Info($"Collab: sharing '{SharedFeedName}' ({childId}) as the video feed");
+        return true;
+    }
+
+    /// <summary>Host: shares one operator by child id (used by the debug bridge).</summary>
+    public bool ShareOperatorAsFeed(Guid childId)
+    {
+        var view = FindFocusedOrAnyView();
+        if (view?.CompositionInstance == null)
+            return false;
+
+        if (!view.CompositionInstance.Children.TryGetChildInstance(childId, out var instance) || instance == null)
+            return false;
+
+        _sharedFeedChildId = childId;
+        SharedFeedName = instance.Symbol.Name;
+        UserSettings.Config.CollabSharePreview = true;
+        UserSettings.Save();
+        AppendChat(null, $"Sharing {SharedFeedName} as the party video feed");
+        return true;
+    }
+
+    public void StopSharingFeed()
+    {
+        _sharedFeedChildId = Guid.Empty;
+        SharedFeedName = "";
+        AppendChat(null, "The party video feed is stopped");
+    }
+
+    private static ProjectView? FindFocusedOrAnyView()
+    {
+        var view = ProjectView.Focused;
+        if (view?.CompositionInstance != null)
+            return view;
+
+        return WindowManager.GetAllWindows()
+                            .OfType<T3.Editor.Gui.Window.GraphWindow>()
+                            .Select(w => w.ProjectView)
+                            .FirstOrDefault(v => v?.CompositionInstance != null);
+    }
+
+    /// <summary>The texture the party streams: the chosen operator's first Texture2D output.</summary>
+    private T3.Core.DataTypes.Texture2D? SharedFeedTexture()
+    {
+        if (_sharedFeedChildId == Guid.Empty)
+            return null;
+
+        var view = FindFocusedOrAnyView();
+        if (view?.CompositionInstance == null)
+            return null;
+
+        if (!view.CompositionInstance.Children.TryGetChildInstance(_sharedFeedChildId, out var instance) || instance == null)
+        {
+            DiagFeed($"child {_sharedFeedChildId} not in the focused instance");
+            return null;
+        }
+
+        foreach (var slot in instance.Outputs)
+        {
+            if (slot is T3.Core.Operator.Slots.Slot<T3.Core.DataTypes.Texture2D> textureSlot)
+            {
+                if (textureSlot.Value == null)
+                    DiagFeed($"{instance.Symbol.Name} texture output is null");
+                return textureSlot.Value;
+            }
+        }
+
+        DiagFeed($"{instance.Symbol.Name} outputs: {string.Join(",", instance.Outputs.Select(o => o.ValueType.Name))}");
+        return null;
+    }
+
+    private static long _lastFeedDiagTicks;
+
+    private static void DiagFeed(string message)
+    {
+        if (Environment.TickCount64 - _lastFeedDiagTicks < 3000)
+            return;
+
+        _lastFeedDiagTicks = Environment.TickCount64;
+        Log.Debug($"Collab feed: {message}");
+    }
+
+    /// <summary>
     /// Downloads the party's project snapshot (when the host shared one), extracts it into the
     /// projects folder and loads it, so this machine runs the host's exact project. Runs on a pool
     /// thread; the load step hops to the UI thread and is awaited.
@@ -1183,6 +1295,9 @@ internal sealed class CollabManager
         // The data channel is open: the hello goes out now and authentication runs on it.
         // The state must stay Connecting until authOk (HandleClientAuthOk flips it to Connected);
         // jumping ahead here made the guest drop its own authOk and stay unauthenticated.
+        if (transport is ICollabVideoSource videoSource)
+            _videoReceiver = new CollabVideoReceiver(videoSource);
+
         transport.SendJson(transport.HostLink!, BuildHello());
         State = SessionState.Connecting;
         StatusText = "Connected, authenticating...";
