@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
+using T3.Core.Logging;
 using T3.Editor.Gui.UiHelpers;
 using T3.Editor.UiModel.ProjectHandling;
 
@@ -75,8 +76,8 @@ internal static class CollabRemote
         var project = ProjectView.Focused?.OpenedProject.Package.DisplayName ?? "";
         var state = manager.State switch
                         {
-                            CollabManager.SessionState.Hosting => "hosting",
-                            CollabManager.SessionState.Connecting => "hosting",
+                            CollabManager.SessionState.Hosting => "busy",
+                            CollabManager.SessionState.Connecting => "busy",
                             _ => "idle",
                         };
         var room = manager.State is CollabManager.SessionState.Hosting or CollabManager.SessionState.Connecting
@@ -96,6 +97,7 @@ internal static class CollabRemote
         }
 
         InstallationStatus = $"Managed by {result.Owner}";
+        Log.Debug($"Collab remote heartbeat: state={state}, command='{result.CommandType}', ack={_pendingAck.Length > 0}");
 
         if (result.CommandType.Length == 0)
             return;
@@ -111,7 +113,9 @@ internal static class CollabRemote
                 {
                     InstallationStatus = "The owner asked to connect - starting a party...";
                     _pendingConnectAt = DateTime.UtcNow;
-                    manager.StartHostViaBackend();
+                    // Hosting with the claim lets the owner's controller join without an
+                    // approval round-trip.
+                    manager.StartHostViaBackend(result.Claim);
                     actedOnConnect = true;
                 }
 
