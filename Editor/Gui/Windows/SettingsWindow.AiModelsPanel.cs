@@ -379,9 +379,11 @@ internal sealed partial class SettingsWindow
         }
         else if (running)
         {
-            ImGui.PushFont(Fonts.FontSmall);
-            ImGui.TextColored(UiColors.TextMuted, status.CurrentFile.Length > 0 ? "downloading…" : "starting…");
-            ImGui.PopFont();
+            if (ImGui.SmallButton("Cancel"))
+                AiModelDownloadService.Cancel(entry);
+
+            CustomComponents.TooltipForLastItem("Stop the download.",
+                                                "Partial files are removed; already completed files of this model stay and a retry only fetches the rest.");
         }
         else if (status.State == AiModelDownloadService.States.Failed)
         {
