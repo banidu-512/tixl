@@ -807,7 +807,9 @@ internal sealed class CollabWindow : Window
                                      _remoteUiActions.Enqueue(() =>
                                                               {
                                                                   _remoteClaim = "";
-                                                                  CollabManager.Instance.JoinViaBackend(room);
+                                                                  // The claim lets the managed host auto-approve
+                                                                  // this join without an approval popup.
+                                                                  CollabManager.Instance.JoinViaBackend(room, claim);
                                                               });
                                      await CollabRemoteApi.AttachAsync(token, deviceId, claim, CancellationToken.None);
                                      return;
