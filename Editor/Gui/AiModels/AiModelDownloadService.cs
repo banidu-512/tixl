@@ -3,6 +3,7 @@ using System;
 using System.Collections.Concurrent;
 using System.IO;
 using System.Net.Http;
+using System.Threading;
 using System.Threading.Tasks;
 using T3.Core.Logging;
 using T3.Core.Settings;
@@ -17,7 +18,7 @@ namespace T3.Editor.Gui.AiModels;
 /// </summary>
 internal static class AiModelDownloadService
 {
-    internal enum States { NotStarted, Downloading, Completed, Failed }
+    internal enum States { NotStarted, Downloading, Completed, Failed, Cancelled }
 
     internal sealed class DownloadStatus
     {
@@ -30,6 +31,7 @@ internal static class AiModelDownloadService
     private static readonly object StartLock = new();
     private static readonly ConcurrentDictionary<string, DownloadStatus> StatusByEntryId = new();
     private static readonly ConcurrentDictionary<string, Task> RunningTasks = new();
+    private static readonly ConcurrentDictionary<string, CancellationTokenSource> CancellationByEntryId = new();
 
     private static readonly DownloadStatus NotStarted = new();
 
@@ -65,6 +67,16 @@ internal static class AiModelDownloadService
         }
     }
 
+    /// <summary>
+    /// Stops the entry's running download. Takes effect at the next stream chunk (well under a second);
+    /// partial files are removed, already completed files stay. A cancelled download can be started again.
+    /// </summary>
+    public static void Cancel(ModelCatalogEntry entry)
+    {
+        if (CancellationByEntryId.TryGetValue(entry.Id, out var cancellation))
+            cancellation.Cancel();
+    }
+
     private static Task StartLocked(ModelCatalogEntry entry)
     {
         var status = StatusByEntryId.GetOrAdd(entry.Id, _ => new DownloadStatus());
@@ -73,15 +85,21 @@ internal static class AiModelDownloadService
         status.Progress = 0;
         status.CurrentFile = "";
 
+        var cancellation = new CancellationTokenSource();
+        CancellationByEntryId[entry.Id] = cancellation;
+
         Task task = null!;
         task = Task.Run(() =>
         {
             try
             {
-                DownloadEntry(entry, status);
+                DownloadEntry(entry, status, cancellation.Token);
             }
             finally
             {
+                cancellation.Dispose();
+                CancellationByEntryId.TryRemove(entry.Id, out _);
+
                 // Only remove our own registration; a newer download of the same entry may have started
                 if (RunningTasks.TryGetValue(entry.Id, out var current) && current == task)
                     RunningTasks.TryRemove(entry.Id, out _);
@@ -132,10 +150,12 @@ internal static class AiModelDownloadService
         }
     }
 
-    private static void DownloadEntry(ModelCatalogEntry entry, DownloadStatus status)
+    private static void DownloadEntry(ModelCatalogEntry entry, DownloadStatus status, CancellationToken cancellation)
     {
         try
         {
+            cancellation.ThrowIfCancellationRequested();
+
             if (!AiModelSettings.EnsureFamilyDirectory(entry.Family.StoreFolder(), out var familyDirectory, out var createError))
                 throw new IOException(createError);
 
@@ -146,6 +166,8 @@ internal static class AiModelDownloadService
             var completedBytes = 0L;
             foreach (var file in entry.Files)
             {
+                cancellation.ThrowIfCancellationRequested();
+
                 var targetPath = entry.TargetPath(file.TargetFileName);
                 var existingSize = File.Exists(targetPath) ? new FileInfo(targetPath).Length : -1;
                 if (existingSize >= 0 && IsPlausibleSize(existingSize, file))
@@ -156,7 +178,7 @@ internal static class AiModelDownloadService
                 }
 
                 totalBytes += file.ExpectedSizeBytes;
-                var downloaded = DownloadFile(file, targetPath, status, completedBytes, totalBytes);
+                var downloaded = DownloadFile(file, targetPath, status, completedBytes, totalBytes, cancellation);
                 completedBytes += downloaded;
                 status.Progress = totalBytes > 0 ? Math.Clamp(completedBytes / (float)totalBytes, 0f, 1f) : 0;
                 status.CurrentFile = file.TargetFileName;
@@ -166,6 +188,13 @@ internal static class AiModelDownloadService
             status.CurrentFile = "";
             Log.Info($"[AI Models] Installed '{entry.DisplayName}' into the model store");
         }
+        catch (OperationCanceledException)
+        {
+            DeletePartialFiles(entry);
+            status.State = States.Cancelled;
+            status.CurrentFile = "";
+            Log.Info($"[AI Models] Download of '{entry.DisplayName}' cancelled");
+        }
         catch (Exception e)
         {
             status.State = States.Failed;
@@ -174,17 +203,34 @@ internal static class AiModelDownloadService
         }
     }
 
+    /** Removes the .part staging files after a cancelled download; finished files stay. */
+    private static void DeletePartialFiles(ModelCatalogEntry entry)
+    {
+        foreach (var file in entry.Files)
+            TryDeleteFile(entry.TargetPath(file.TargetFileName) + ".part");
+    }
+
     /** Streams one file into a .part staging file, then moves it into place with its final name. */
     private static long DownloadFile(CatalogFile file, string targetPath,
-                                     DownloadStatus status, long completedBytes, long totalBytes)
+                                     DownloadStatus status, long completedBytes, long totalBytes,
+                                     CancellationToken cancellation)
     {
         var partPath = targetPath + ".part";
         TryDeleteFile(partPath);
 
-        using var response = Http.GetAsync(file.Url, HttpCompletionOption.ResponseHeadersRead).Result;
+        HttpResponseMessage response;
+        try
+        {
+            response = Http.GetAsync(file.Url, HttpCompletionOption.ResponseHeadersRead, cancellation).Result;
+        }
+        catch (AggregateException a) when (a.InnerException is OperationCanceledException)
+        {
+            throw new OperationCanceledException();
+        }
+
         response.EnsureSuccessStatusCode();
 
-        using var stream = response.Content.ReadAsStream();
+        using var stream = response.Content.ReadAsStream(cancellation);
         var downloaded = 0L;
 
         using (var output = new FileStream(partPath, FileMode.Create, FileAccess.Write, FileShare.None, 65536, useAsync: true))
@@ -193,6 +239,8 @@ internal static class AiModelDownloadService
             int read;
             while ((read = stream.Read(buffer, 0, buffer.Length)) > 0)
             {
+                cancellation.ThrowIfCancellationRequested();
+
                 output.Write(buffer, 0, read);
                 downloaded += read;
 
