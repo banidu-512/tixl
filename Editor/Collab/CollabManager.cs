@@ -1936,13 +1936,16 @@ internal sealed class CollabManager
         ProcessPendingKicks();
         ProcessPendingDisconnects();
 
+        // The installation heartbeat runs in every state: an idle machine must still receive
+        // connect commands from its owner.
+        CollabRemote.Tick();
+
         // A disconnect handled above can end the session (host loss, relay link death), and
         // Leave() disposes the transport — nothing below may run against it.
         if (State == SessionState.Off)
             return;
 
         _videoStreamer?.Update();
-        CollabRemote.Tick();
         _videoReceiver?.Update();
 
         DrainInboundQueue();
