@@ -8,6 +8,7 @@ using T3.Editor.Gui.Input;
 using T3.Editor.Gui.Interaction;
 using T3.Editor.Gui.Styling;
 using T3.Editor.Gui.UiHelpers;
+using T3.Editor.Gui.Windows.Layouts;
 using T3.Editor.UiModel.InputsAndTypes;
 using T3.Editor.UiModel.ProjectHandling;
 
@@ -98,32 +99,46 @@ internal sealed partial class SettingsWindow
 
         FormInputs.AddVerticalSpace();
 
+        // Session running/finding happens in the Collab window now (Party / Session / Chat tabs);
+        // this panel only configures.
+        FormInputs.AddSectionSubHeader("Session");
+        FormInputs.AddVerticalSpace();
         if (manager.IsSessionActive)
         {
-            DrawActiveSession(manager);
+            ImGui.TextWrapped(manager.StatusText);
+            if (!string.IsNullOrEmpty(manager.ErrorText))
+            {
+                ImGui.PushStyleColor(ImGuiCol.Text, UiColors.StatusWarning.Rgba);
+                ImGui.TextWrapped(manager.ErrorText);
+                ImGui.PopStyleColor();
+            }
+
+            FormInputs.AddVerticalSpace(4);
+            if (ImGui.Button("Open the Collab window"))
+                WindowManager.CollabWindow.Config.Visible = true;
+
+            CustomComponents.TooltipForLastItem("Participants, whispers, listing and chat live there now.");
         }
         else
         {
             if (manager.IsReconnecting)
             {
-                // The link dropped; the session is being found again (or taken over).
                 FormInputs.DrawInputLabel("Status");
                 CustomComponents.StylizedText(manager.StatusText, Fonts.FontNormal, UiColors.StatusWarning);
-                FormInputs.SetCursorToParameterEdit();
                 if (ImGui.SmallButton("Stop Reconnecting"))
                     manager.Leave(manual: true);
             }
-
-            FormInputs.AddVerticalSpace();
-            CustomComponents.HelpText("""
-                                      No session is running. Use the menu bar at the top:
-                                      Collab ▸ Host session starts one and gives you a session ID;
-                                      Collab ▸ Join session connects with the ID the host shared.
-                                      Or pick a listed session below.
-                                      """);
-
-            if (!manager.IsReconnecting)
-                DrawSessionBrowser(manager);
+            else
+            {
+                CustomComponents.HelpText("""
+                                          No session is running. Host or join from the Collab window
+                                          (menu: Windows > Collab) - its Party tab has the session
+                                          browser and the hosting controls.
+                                          """);
+                FormInputs.AddVerticalSpace(4);
+                if (ImGui.Button("Open the Collab window"))
+                    WindowManager.CollabWindow.Config.Visible = true;
+            }
         }
 
         if (!string.IsNullOrEmpty(manager.ErrorText))
@@ -1021,8 +1036,9 @@ internal sealed partial class SettingsWindow
     }
 
     /// <summary>
-    /// Joins a room from either listing source: the relay list is joined on the relay the browser
-    /// read it from; a backend row carries the host's relay address in the row itself.
+    /// Joins a room from either listing source: a backend row with a relay address joins on that
+    /// relay; a row without one is a relay-free backend session and joins over WebRTC; the relay
+    /// list joins on the relay the browser read it from.
     /// </summary>
     private static void JoinListedRoom(CollabManager manager, LobbyRoom room)
     {
@@ -1030,6 +1046,12 @@ internal sealed partial class SettingsWindow
         {
             ParseJoinAddress(room.Relay, CollabProtocol.DefaultRelayPort, out var joinHost, out var joinPort);
             manager.JoinViaRelay(joinHost, joinPort, room.Code, UserSettings.Config.CollabPassword ?? "");
+            return;
+        }
+
+        if (room.Relay.Length == 0 && CollabWebLobby.IsConfigured)
+        {
+            manager.JoinViaBackend(room.Code);
             return;
         }
 
