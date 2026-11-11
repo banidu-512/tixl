@@ -19,12 +19,24 @@
       "DefaultValue": null
     },
     {
+      "Id": "142c8ba1-4d45-4410-a4cf-bdf08b256717"/*ContactSpeed*/,
+      "DefaultValue": 1.0
+    },
+    {
       "Id": "1dd023b9-76b2-4455-86c2-fced2726528e"/*ContactStiffness*/,
       "DefaultValue": 30.0
     },
     {
+      "Id": "47787d21-9ddc-45ab-97f6-a573a717675c"/*MaxContacts*/,
+      "DefaultValue": 64
+    },
+    {
       "Id": "4e9535a7-d7ed-4917-aa4e-df566c6b7328"/*TimeScale*/,
       "DefaultValue": 1.0
+    },
+    {
+      "Id": "508e2ee0-fe78-48e1-9e78-7b2a4c937cc4"/*Forces*/,
+      "DefaultValue": null
     },
     {
       "Id": "54247fde-224c-4764-97e1-01d1e725acdc"/*Substeps*/,

@@ -3,10 +3,14 @@ using T3.Core.Utils;
 namespace Lib.physics;
 
 /// <summary>
-/// Describes one rigid body for <see cref="PhysicsWorld"/>. This operator owns no simulation
-/// state: it only publishes a description that the world turns into a Bepu body. The body id
+/// Describes rigid bodies for <see cref="PhysicsWorld"/>. This operator owns no simulation
+/// state: it only publishes a description that the world turns into Bepu bodies. The body id
 /// is fixed for the lifetime of this operator instance, which is how the world recognises the
 /// same body across evaluations.
+///
+/// On its own the description is one primitive body. With <see cref="Points"/> it is one body per
+/// point, and with <see cref="Geometry"/> the bodies take their collision shape from the geometry:
+/// one convex piece per geometry part, or the geometry as a whole at every point.
 /// </summary>
 [Guid("efa358f6-8f07-448f-ad9e-d911c41a2098")]
 internal sealed class RigidBody : Instance<RigidBody>
@@ -22,8 +26,24 @@ internal sealed class RigidBody : Instance<RigidBody>
 
     private void Update(EvaluationContext context)
     {
-        _descriptor.Shape = (PhysicsShapeType)Shape.GetValue(context);
-        _descriptor.Kind = (PhysicsBodyKind)Kind.GetValue(context);
+        var shape = (PhysicsShapeType)Shape.GetValue(context);
+        var kind = (PhysicsBodyKind)Kind.GetValue(context);
+        var points = Points.GetValue(context) as StructuredList<Point>;
+        var hasPoints = points != null && points.NumElements > 0;
+        var geometry = Geometry.GetValue(context);
+        var hasGeometry = geometry != null && geometry.FaceCount > 0;
+
+        // Connecting geometry is the request to collide as that geometry. A primitive shape setting then
+        // picks the form that fits the body: a hull for something that moves, the exact triangles otherwise.
+        if (hasGeometry && shape != PhysicsShapeType.ConvexHull && shape != PhysicsShapeType.Mesh)
+            shape = kind == PhysicsBodyKind.Dynamic ? PhysicsShapeType.ConvexHull : PhysicsShapeType.Mesh;
+
+        UpdateCollisionData(hasGeometry ? geometry : null, shape, kind, hasPoints);
+        UpdateInstances(hasPoints ? points : null, shape);
+
+        _descriptor.Shape = shape;
+        _descriptor.Kind = kind;
+        _descriptor.CollisionGroup = CollisionGroup.GetValue(context);
         _descriptor.Position = Position.GetValue(context);
 
         var rotation = Rotation.GetValue(context);
@@ -48,8 +68,115 @@ internal sealed class RigidBody : Instance<RigidBody>
         OutBody.DirtyFlag.Invalidate();
     }
 
+    /// <summary>
+    /// Rebuilds hulls and triangles only when the geometry's content or the way it is used changed. The arrays are
+    /// replaced, never edited, because the world recognises a changed shape by the array it was built from.
+    /// </summary>
+    private void UpdateCollisionData(MeshGeometry geometry, PhysicsShapeType shape, PhysicsBodyKind kind, bool mergeParts)
+    {
+        if (geometry == null)
+        {
+            _descriptor.Hulls = null;
+            _descriptor.MeshTriangles = null;
+            _hulls = null;
+            _triangles = null;
+            _geometryStamp = 0;
+            return;
+        }
+
+        // A dynamic body cannot be a triangle mesh; the world simulates it as a hull, so that is what it needs.
+        var needsHulls = shape == PhysicsShapeType.ConvexHull || kind == PhysicsBodyKind.Dynamic;
+        var stamp = HashCode.Combine(PhysicsGeometry.Stamp(geometry), needsHulls, mergeParts);
+        if (stamp != _geometryStamp || (_hulls == null && _triangles == null))
+        {
+            _geometryStamp = stamp;
+            _hulls = needsHulls ? PhysicsGeometry.BuildHulls(geometry, mergeParts) : null;
+            _triangles = needsHulls ? null : PhysicsGeometry.BuildTriangles(geometry);
+        }
+
+        _descriptor.Hulls = _hulls;
+        _descriptor.MeshTriangles = _triangles;
+    }
+
+    private void UpdateInstances(StructuredList<Point> points, PhysicsShapeType shape)
+    {
+        if (points != null)
+        {
+            // One body per point; with geometry every point carries the same merged piece.
+            var source = points.TypedElements;
+            var count = 0;
+            for (var index = 0; index < source.Length; index++)
+            {
+                if (!Point.IsSeparator(source[index]))
+                    count++;
+            }
+
+            EnsureInstanceCapacity(count);
+            var write = 0;
+            for (var index = 0; index < source.Length; index++)
+            {
+                ref readonly var point = ref source[index];
+                if (Point.IsSeparator(point))
+                    continue;
+
+                _instances[write++] = new PhysicsBodyInstance
+                                          {
+                                              Position = point.Position,
+                                              Orientation = point.Orientation,
+                                              Scale = point.Scale,
+                                              Color = point.Color,
+                                              HullIndex = 0,
+                                          };
+            }
+
+            _descriptor.Instances = _instances;
+            _descriptor.InstanceCount = count;
+            return;
+        }
+
+        var hulls = _descriptor.Hulls;
+        if (hulls != null && hulls.Length > 1 && (shape == PhysicsShapeType.ConvexHull || shape == PhysicsShapeType.Mesh))
+        {
+            // One body per geometry part, each staying where the geometry has it.
+            EnsureInstanceCapacity(hulls.Length);
+            for (var index = 0; index < hulls.Length; index++)
+            {
+                _instances[index] = new PhysicsBodyInstance
+                                        {
+                                            Orientation = Quaternion.Identity,
+                                            Scale = Vector3.One,
+                                            Color = Vector4.One,
+                                            HullIndex = index,
+                                        };
+            }
+
+            _descriptor.Instances = _instances;
+            _descriptor.InstanceCount = hulls.Length;
+            return;
+        }
+
+        _descriptor.Instances = null;
+        _descriptor.InstanceCount = 0;
+    }
+
+    private void EnsureInstanceCapacity(int count)
+    {
+        if (_instances.Length < count)
+            _instances = new PhysicsBodyInstance[Math.Max(count, _instances.Length * 2)];
+    }
+
     private readonly Guid _id = Guid.NewGuid();
     private readonly PhysicsBody _descriptor = new();
+    private PhysicsBodyInstance[] _instances = [];
+    private PhysicsHull[] _hulls;
+    private Vector3[] _triangles;
+    private int _geometryStamp;
+
+    [Input(Guid = "c37e0055-1f11-4b35-8d1f-0a3eb0c64a57")]
+    public readonly InputSlot<StructuredList> Points = new();
+
+    [Input(Guid = "7c155391-9271-4678-95b2-052795115586")]
+    public readonly InputSlot<MeshGeometry> Geometry = new();
 
     [Input(Guid = "5f6cc54b-9221-42b9-87d7-a0f9669c64b2", MappedType = typeof(PhysicsShapeType))]
     public readonly InputSlot<int> Shape = new(0);
@@ -95,6 +222,9 @@ internal sealed class RigidBody : Instance<RigidBody>
 
     [Input(Guid = "1b9b7bbd-aba7-4a23-8f78-c1366f260f75")]
     public readonly InputSlot<float> GravityScale = new(1f);
+
+    [Input(Guid = "38f46166-46ad-4f6c-94e8-5b1b4b1c7445")]
+    public readonly InputSlot<int> CollisionGroup = new(0);
 
     [Input(Guid = "09fe2b00-ad21-4103-84fd-bf970c329bb2")]
     public readonly InputSlot<bool> Enabled = new(true);

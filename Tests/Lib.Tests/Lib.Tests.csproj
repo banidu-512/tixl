@@ -27,6 +27,7 @@
     <ItemGroup>
         <!-- Operators are compiled in rather than referenced: the operator package is only loadable by the editor. -->
         <Compile Include="..\..\Operators\Lib\Utils\PhysicsSimulation.cs" Link="Utils\PhysicsSimulation.cs" />
+        <Compile Include="..\..\Operators\Lib\Utils\PhysicsGeometry.cs" Link="Utils\PhysicsGeometry.cs" />
     </ItemGroup>
 
     <ItemGroup>

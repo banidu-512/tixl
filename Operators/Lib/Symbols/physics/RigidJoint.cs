@@ -4,7 +4,13 @@ namespace Lib.physics;
 /// Describes one constraint between two bodies. Like <see cref="RigidBody"/> this is pure data:
 /// <see cref="PhysicsWorld"/> creates, updates and removes the actual Bepu constraint. Both
 /// bodies must be Dynamic or Kinematic; a static ground cannot be a constraint anchor, so use
-/// a Kinematic body when you need a fixed hinge point.
+/// a Kinematic body when you need a fixed hinge point, or the World mode.
+///
+/// <see cref="Mode"/> decides what is linked when body A stands for many bodies: Pair links A to B
+/// instance by instance, Chain links consecutive instances of A, Nearby links instances of A that
+/// start close together, and World holds every instance of A where it starts.
+/// <see cref="InstanceIndex"/> narrows Pair and World to a single instance, which is how a rope is
+/// hung by its first link.
 /// </summary>
 [Guid("f3ce9edf-04d2-4169-b2fe-1d850d3650b5")]
 internal sealed class RigidJoint : Instance<RigidJoint>
@@ -23,6 +29,12 @@ internal sealed class RigidJoint : Instance<RigidJoint>
         _descriptor.BodyA = BodyA.GetValue(context);
         _descriptor.BodyB = BodyB.GetValue(context);
         _descriptor.Type = (PhysicsJointType)JointType.GetValue(context);
+        _descriptor.Mode = (PhysicsJointMode)Mode.GetValue(context);
+        _descriptor.LinkDistance = LinkDistance.GetValue(context);
+        _descriptor.InstanceIndex = InstanceIndex.GetValue(context);
+        _descriptor.MotorSpeed = MotorSpeed.GetValue(context);
+        _descriptor.SwingLimit = SwingLimit.GetValue(context);
+        _descriptor.AutoAnchor = AutoAnchor.GetValue(context);
         _descriptor.LocalOffsetA = LocalOffsetA.GetValue(context);
         _descriptor.LocalOffsetB = LocalOffsetB.GetValue(context);
         _descriptor.HingeAxisA = HingeAxisA.GetValue(context);
@@ -47,6 +59,24 @@ internal sealed class RigidJoint : Instance<RigidJoint>
 
     [Input(Guid = "da042534-228c-44e5-8f92-37626fb97964", MappedType = typeof(PhysicsJointType))]
     public readonly InputSlot<int> JointType = new(0);
+
+    [Input(Guid = "2148cccb-f1d5-41a3-99e1-057d79d29622", MappedType = typeof(PhysicsJointMode))]
+    public readonly InputSlot<int> Mode = new(0);
+
+    [Input(Guid = "943e0e36-52d5-4721-aea1-c66e221d71ed")]
+    public readonly InputSlot<float> LinkDistance = new(1f);
+
+    [Input(Guid = "e262b93c-a458-48df-a256-9e508f71b7b9")]
+    public readonly InputSlot<int> InstanceIndex = new(-1);
+
+    [Input(Guid = "15ea23f0-7b4b-43a5-a245-98cac83fa0b6")]
+    public readonly InputSlot<float> MotorSpeed = new();
+
+    [Input(Guid = "f58660f1-23e3-4116-97ca-5fffa4edc6e0")]
+    public readonly InputSlot<float> SwingLimit = new();
+
+    [Input(Guid = "1856cda6-3ee5-4fb5-80af-0d4a23ac47f2")]
+    public readonly InputSlot<bool> AutoAnchor = new();
 
     [Input(Guid = "4e0ce046-5f3b-4f57-8ca2-cbea40152c62")]
     public readonly InputSlot<Vector3> LocalOffsetA = new();

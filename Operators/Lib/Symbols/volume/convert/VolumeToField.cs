@@ -10,16 +10,20 @@ using T3.Core.Logging;
 namespace Lib.volume.convert;
 
 /// Wraps a volume in a CPU scalar field that samples it trilinearly in world space. The field plugs into everything that consumes ScalarFields: [DisplaceGeometry], [ScatterPointsInVolume] density, field SDF combinations.
+/// The vector output carries the volume's vector grid (a cached velocity, say), or the gradient of its float grid when it has none, for consumers such as [RigidForce].
 [Guid("30a13904-cff8-55af-bc36-16e7ea41d608")]
 internal sealed class VolumeToField : Instance<VolumeToField>
 {
     [Output(Guid = "bbb5490e-0f5d-5dfb-bb67-b3ac9c0109ec")]
     public readonly Slot<ScalarField> Field = new();
 
+    [Output(Guid = "fae7c157-3915-47c0-9bb3-912ed4c17d5a")]
+    public readonly Slot<VectorField> Vectors = new();
 
     public VolumeToField()
     {
         Field.UpdateAction = Update;
+        Vectors.UpdateAction = Update;
     }
 
     private void Update(EvaluationContext context)
@@ -30,9 +34,11 @@ internal sealed class VolumeToField : Instance<VolumeToField>
         var outsideValue = OutsideValue.GetValue(context);
 
         var grid = volume?.GetFloatGrid();
-        if (grid == null)
+        var vectorGrid = volume?.GetVectorGrid();
+        if (grid == null && vectorGrid == null)
         {
             Field.Value = null;
+            Vectors.Value = null;
             _last = default;
             return;
         }
@@ -43,17 +49,39 @@ internal sealed class VolumeToField : Instance<VolumeToField>
 
         try
         {
-            var sampler = new VdbSampler(grid);
-            var worldBBox = grid.ActiveWorldBBox();
-            Field.Value = new ScalarField((in FieldSample sample) =>
-                                              {
-                                                  var p = sample.Position;
-                                                  if (p.X < worldBBox.Min.X || p.X > worldBBox.Max.X
-                                                      || p.Y < worldBBox.Min.Y || p.Y > worldBBox.Max.Y
-                                                      || p.Z < worldBBox.Min.Z || p.Z > worldBBox.Max.Z)
-                                                      return outsideValue;
-                                                  return sampler.SampleWorld(p) * scale + offset;
-                                              });
+            if (grid != null)
+            {
+                var sampler = new VdbSampler(grid);
+                var worldBBox = grid.ActiveWorldBBox();
+                Field.Value = new ScalarField((in FieldSample sample) =>
+                                                  {
+                                                      var p = sample.Position;
+                                                      if (p.X < worldBBox.Min.X || p.X > worldBBox.Max.X
+                                                          || p.Y < worldBBox.Min.Y || p.Y > worldBBox.Max.Y
+                                                          || p.Z < worldBBox.Min.Z || p.Z > worldBBox.Max.Z)
+                                                          return outsideValue;
+
+                                                      return sampler.SampleWorld(p) * scale + offset;
+                                                  });
+            }
+            else
+            {
+                Field.Value = null;
+            }
+
+            // A stored vector grid is the data itself; without one the float grid's slope is the best vector it has.
+            var vectorSampler = vectorGrid != null ? new VdbVectorSampler(vectorGrid) : new VdbVectorSampler(grid);
+            var vectorBBox = vectorGrid != null ? vectorGrid.ActiveWorldBBox() : grid.ActiveWorldBBox();
+            Vectors.Value = new VectorField((in FieldSample sample) =>
+                                                {
+                                                    var p = sample.Position;
+                                                    if (p.X < vectorBBox.Min.X || p.X > vectorBBox.Max.X
+                                                        || p.Y < vectorBBox.Min.Y || p.Y > vectorBBox.Max.Y
+                                                        || p.Z < vectorBBox.Min.Z || p.Z > vectorBBox.Max.Z)
+                                                        return Vector3.Zero;
+
+                                                    return vectorSampler.SampleWorld(p) * scale;
+                                                });
             _last = key;
             _lastError = null;
         }
@@ -61,6 +89,7 @@ internal sealed class VolumeToField : Instance<VolumeToField>
         {
             // An exception escaping an update is fatal to the editor; degrade to an empty output.
             Field.Value = null;
+            Vectors.Value = null;
             _last = default;
             if (_lastError != e.Message)
                 Log.Warning($"VolumeToField failed: {e.Message}", this);

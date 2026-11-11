@@ -28,6 +28,24 @@ internal struct PhysicsWorldSettings
     public bool Interpolate;
     public bool Paused;
     public bool Reset;
+
+    /// <summary>Closing speed in m/s from which an impact is reported as a contact. 0 or less uses the default of 1.</summary>
+    public float ContactSpeedThreshold;
+}
+
+/// <summary>One impact reported by the last <see cref="PhysicsSimulation.Update"/>.</summary>
+internal struct PhysicsContact
+{
+    public Vector3 Position;
+
+    /// <summary>Points from the first body of the pair towards the second.</summary>
+    public Vector3 Normal;
+
+    /// <summary>Closing speed along the normal in m/s.</summary>
+    public float Speed;
+
+    /// <summary>The two collidables, so an impact that spans several steps is reported once.</summary>
+    internal ulong PairKey;
 }
 
 /// <summary>
@@ -58,6 +76,26 @@ internal sealed class PhysicsSimulation : IDisposable
 
     public int RenderCount(bool includeStatics) => includeStatics ? _renderOrder.Count : _dynamicRenderCount;
 
+    /// <summary>
+    /// Tells every description of the last update where its bodies are in <paramref name="allPoints"/>, which must
+    /// have been filled by <see cref="WritePoints"/> with statics included.
+    /// </summary>
+    public void PublishBodyRanges(Point[] allPoints)
+    {
+        foreach (var (descriptor, start, count) in _bodyRanges)
+        {
+            descriptor.PublishedPoints = allPoints;
+            descriptor.PublishedStart = start;
+            descriptor.PublishedCount = allPoints == null ? 0 : Math.Max(0, Math.Min(count, allPoints.Length - start));
+        }
+    }
+
+    /// <summary>Impacts of the steps run by the last <see cref="Update"/>, in a deterministic order. Empty on frames that ran no step.</summary>
+    public IReadOnlyList<PhysicsContact> Contacts => _contacts;
+
+    /// <summary>Number of live Bepu shapes, which stays below the body count when instances share a hull or mesh.</summary>
+    public int SharedShapeCount => _sharedShapes.Count;
+
     /// <summary>Simulated position of a body at the latest fixed step, without render interpolation.</summary>
     public bool TryGetBodyPosition(Guid bodyId, out Vector3 position)
     {
@@ -71,10 +109,12 @@ internal sealed class PhysicsSimulation : IDisposable
         return false;
     }
 
-    public void Update(in PhysicsWorldSettings settings, double nowSeconds, List<PhysicsBody> bodies, List<PhysicsJoint> joints)
+    public void Update(in PhysicsWorldSettings settings, double nowSeconds, List<PhysicsBody> bodies, List<PhysicsJoint> joints,
+                       List<PhysicsForce> forces = null)
     {
         _frameBodies = bodies;
         _frameJoints = joints;
+        _frameForces = forces;
 
         var contactStiffness = Math.Clamp(FiniteOr(settings.ContactStiffness, 30f), 5f, 120f);
         var rate = Math.Clamp(FiniteOr(settings.FixedRate, 60f), 10f, 240f);
@@ -92,6 +132,9 @@ internal sealed class PhysicsSimulation : IDisposable
             _settings.Gravity = settings.Gravity;
 
         _settings.ContactFrequency = contactStiffness;
+        _settings.ContactSpeedThreshold = float.IsFinite(settings.ContactSpeedThreshold) && settings.ContactSpeedThreshold > 0f
+                                              ? settings.ContactSpeedThreshold
+                                              : 1f;
 
         var configChanged = rate != _fixedRate
                             || substeps != _substeps
@@ -102,6 +145,11 @@ internal sealed class PhysicsSimulation : IDisposable
         var delta = double.IsNaN(_lastTimeSeconds) ? 0 : nowSeconds - _lastTimeSeconds;
         var timeJumped = delta < -0.001 || delta > MaxTimeJump;
         _lastTimeSeconds = nowSeconds;
+
+        // Contacts belong to the frame they happened in. The world evaluates once per pulled output, so a second
+        // update at the same time must leave them for whoever reads the contact buffer after the pose buffer.
+        if (delta != 0)
+            _contacts.Clear();
 
         if (resetTriggered || _simulation == null || configChanged || timeJumped)
         {
@@ -119,6 +167,8 @@ internal sealed class PhysicsSimulation : IDisposable
             if (!settings.Paused)
                 _accumulator += Math.Clamp(delta, 0, MaxFrameDelta) * timeScale;
         }
+
+        PrepareForces(settings.Paused);
 
         var dt = 1.0 / _fixedRate;
         var maxSteps = Math.Max(1, (int)MathF.Ceiling(MaxFrameDelta / (float)dt));
@@ -157,13 +207,58 @@ internal sealed class PhysicsSimulation : IDisposable
             var pose = InterpolatePose(entry.PreviousPose, entry.CurrentPose, _interpolationAlpha);
             points[writeIndex++] = new Point
                                        {
-                                           Position = pose.Position,
+                                           // A hull body is simulated around its centre of mass but published at its pivot,
+                                           // so the piece it stands for is drawn where the source geometry had it.
+                                           Position = pose.Position - Vector3.Transform(entry.LocalCenter, pose.Orientation),
                                            Orientation = pose.Orientation,
                                            Scale = entry.RenderScale,
+                                           Color = entry.Color,
+                                           F2 = entry.Speed,
                                        };
         }
 
         return writeIndex;
+    }
+
+    /// <summary>
+    /// Writes the impacts of the last update, strongest first when there are more than fit. Unused points get a zero
+    /// scale and F1 = 0, so a fixed-size buffer draws and emits nothing for them. Returns the number of real contacts written.
+    /// </summary>
+    public int WriteContacts(Point[] points)
+    {
+        var count = Math.Min(_contacts.Count, points.Length);
+        if (_contacts.Count > points.Length)
+        {
+            _contactOrder.Clear();
+            _contactOrder.AddRange(_contacts);
+            _contactOrder.Sort(static (a, b) => b.Speed.CompareTo(a.Speed));
+        }
+
+        var source = _contacts.Count > points.Length ? _contactOrder : _contacts;
+        for (var index = 0; index < count; index++)
+        {
+            var contact = source[index];
+            points[index] = new Point
+                                {
+                                    Position = contact.Position,
+                                    Orientation = OrientationAlong(contact.Normal),
+                                    Scale = Vector3.One,
+                                    F1 = contact.Speed,
+                                    F2 = 1f,
+                                };
+        }
+
+        for (var index = count; index < points.Length; index++)
+        {
+            points[index] = new Point
+                                {
+                                    Scale = Vector3.Zero,
+                                    F1 = 0f,
+                                    F2 = 0f,
+                                };
+        }
+
+        return count;
     }
 
     /// <summary>Drops the Bepu simulation and every body; the next <see cref="Update"/> builds a fresh one.</summary>
@@ -204,11 +299,21 @@ internal sealed class PhysicsSimulation : IDisposable
 
         // Bepu reports worker indices below the dispatcher's thread count, or 0 without a dispatcher.
         _bounceRequests = new List<BounceRequest>[multithreaded ? _dispatcher.ThreadCount : 1];
+        _contactRequests = new List<PhysicsContact>[_bounceRequests.Length];
         for (var index = 0; index < _bounceRequests.Length; index++)
+        {
             _bounceRequests[index] = new List<BounceRequest>();
+            _contactRequests[index] = new List<PhysicsContact>();
+        }
 
         _simulation = Simulation.Create(_pool,
-                                       new NarrowPhaseCallbacks { Materials = _materials, Settings = _settings, BounceRequests = _bounceRequests },
+                                       new NarrowPhaseCallbacks
+                                           {
+                                               Materials = _materials,
+                                               Settings = _settings,
+                                               BounceRequests = _bounceRequests,
+                                               ContactRequests = _contactRequests,
+                                           },
                                        new PoseIntegratorCallbacks { Settings = _settings },
                                        new SolveDescription(_solverIterations, _substeps),
                                        new DefaultTimestepper());
@@ -228,64 +333,63 @@ internal sealed class PhysicsSimulation : IDisposable
         _renderOrder.Clear();
         _dynamicRenderCount = 0;
         _materials.Clear();
+        _sharedShapes.Clear();
+        _nearbyLinks.Clear();
+        _contacts.Clear();
+        _previousContactPairs.Clear();
     }
 
     private void ReconcileBodies()
     {
         _seenBodies.Clear();
         _renderOrder.Clear();
+        _bodyRanges.Clear();
         _dynamicRenderCount = 0;
 
         foreach (var descriptor in _frameBodies)
         {
+            // Whatever this description adds to the render order is its range, however many bodies that is.
+            if (_bodyRanges.Count > 0)
+                CloseBodyRange();
+
+            _bodyRanges.Add((descriptor, _renderOrder.Count, 0));
+
             var id = ResolveId(descriptor);
-            _seenBodies.Add(id);
-
-            if (!_bodies.TryGetValue(id, out var entry))
+            var isInstanced = descriptor.IsInstanced;
+            if (!isInstanced && HullFor(descriptor, -1) == null)
             {
-                if (!descriptor.Enabled)
-                    continue;
-
-                entry = CreateBody(descriptor, id);
-                if (entry == null)
-                    continue;
-
-                _bodies.Add(id, entry);
-            }
-            else
-            {
-                if (!descriptor.Enabled)
-                {
-                    RemoveBody(entry);
-                    _bodies.Remove(id);
-                    continue;
-                }
-
-                entry = UpdateBody(entry, descriptor, id);
-                if (entry == null)
-                {
-                    _bodies.Remove(id);
-                    continue;
-                }
-
-                _bodies[id] = entry;
+                ReconcileBody(descriptor, id, new InstanceInfo(Vector3.One, Vector4.One, null));
+                continue;
             }
 
-            entry.Friction = descriptor.Friction;
-            entry.Bounciness = descriptor.Bounciness;
-            entry.LinearDamping = Math.Max(0f, descriptor.LinearDamping);
-            entry.AngularDamping = Math.Max(0f, descriptor.AngularDamping);
-            entry.GravityScale = descriptor.GravityScale;
+            // An instanced description is expanded into one plain description per instance, so every
+            // body goes through the same create / update / remove path as a hand-placed one. A single
+            // hull body takes the same route as one identity instance, which places it at its pivot.
+            var instances = isInstanced ? descriptor.Instances : SingleInstance;
+            var count = isInstanced ? Math.Min(descriptor.InstanceCount, instances.Length) : 1;
+            var baseOrientation = NormalizeOrientation(descriptor.Orientation);
+            for (var index = 0; index < count; index++)
+            {
+                ref readonly var instance = ref instances[index];
+                var scale = SanitizeScale(instance.Scale);
+                var hull = HullFor(descriptor, instance.HullIndex);
 
-            if (entry.IsStatic)
-                _materials.SetStatic(entry.StaticHandle.Value, entry.Friction, entry.Bounciness);
-            else
-                _materials.SetBody(entry.Handle.Value, entry.Friction, entry.Bounciness);
+                _instanceBody.CopyFrom(descriptor);
+                _instanceBody.Orientation = baseOrientation * NormalizeOrientation(instance.Orientation);
+                _instanceBody.Position = descriptor.Position + Vector3.Transform(instance.Position, baseOrientation);
+                if (hull != null)
+                    _instanceBody.Position += Vector3.Transform(hull.Pivot * scale, _instanceBody.Orientation);
 
-            _renderOrder.Add(entry);
-            if (!entry.IsStatic)
-                _dynamicRenderCount++;
+                _instanceBody.Size = descriptor.Size * scale;
+                _instanceBody.Radius = descriptor.Radius * MathF.Max(scale.X, scale.Z);
+                _instanceBody.Length = descriptor.Length * scale.Y;
+
+                ReconcileBody(_instanceBody, isInstanced ? DeriveId(id, index) : id, new InstanceInfo(scale, instance.Color, hull));
+            }
         }
+
+        if (_bodyRanges.Count > 0)
+            CloseBodyRange();
 
         _removeBodies.Clear();
         foreach (var pair in _bodies)
@@ -301,14 +405,121 @@ internal sealed class PhysicsSimulation : IDisposable
         }
     }
 
-    private BodyEntry UpdateBody(BodyEntry entry, PhysicsBody descriptor, Guid id)
+    private void CloseBodyRange()
     {
-        var shapeKey = ShapeKey.From(descriptor);
+        var (descriptor, start, _) = _bodyRanges[^1];
+        _bodyRanges[^1] = (descriptor, start, _renderOrder.Count - start);
+    }
+
+    private void ReconcileBody(PhysicsBody descriptor, Guid id, in InstanceInfo info)
+    {
+        _seenBodies.Add(id);
+
+        if (!_bodies.TryGetValue(id, out var entry))
+        {
+            if (!descriptor.Enabled)
+                return;
+
+            entry = CreateBody(descriptor, id, info);
+            if (entry == null)
+                return;
+
+            _bodies.Add(id, entry);
+        }
+        else
+        {
+            if (!descriptor.Enabled)
+            {
+                RemoveBody(entry);
+                _bodies.Remove(id);
+                return;
+            }
+
+            entry = UpdateBody(entry, descriptor, id, info);
+            if (entry == null)
+            {
+                _bodies.Remove(id);
+                return;
+            }
+
+            _bodies[id] = entry;
+        }
+
+        entry.Friction = descriptor.Friction;
+        entry.Bounciness = descriptor.Bounciness;
+        entry.LinearDamping = Math.Max(0f, descriptor.LinearDamping);
+        entry.AngularDamping = Math.Max(0f, descriptor.AngularDamping);
+        entry.GravityScale = descriptor.GravityScale;
+        entry.Group = descriptor.CollisionGroup;
+        entry.Color = info.Color;
+
+        if (entry.IsStatic)
+            _materials.SetStatic(entry.StaticHandle.Value, entry.Friction, entry.Bounciness, entry.Group);
+        else
+            _materials.SetBody(entry.Handle.Value, entry.Friction, entry.Bounciness, entry.Group);
+
+        _renderOrder.Add(entry);
+        if (!entry.IsStatic)
+            _dynamicRenderCount++;
+    }
+
+    /// <summary>The convex piece an instance uses, or null when the body is a primitive or a mesh.</summary>
+    private static PhysicsHull HullFor(PhysicsBody descriptor, int hullIndex)
+    {
+        if (EffectiveShape(descriptor) != PhysicsShapeType.ConvexHull)
+            return null;
+
+        var hulls = descriptor.Hulls;
+        if (hulls == null || hulls.Length == 0)
+            return null;
+
+        return hulls[(uint)hullIndex < (uint)hulls.Length ? hullIndex : 0];
+    }
+
+    /// <summary>A triangle mesh has no volume to give a dynamic body mass, so a dynamic Mesh body is simulated as a hull.</summary>
+    private static PhysicsShapeType EffectiveShape(PhysicsBody descriptor)
+    {
+        return descriptor.Shape == PhysicsShapeType.Mesh && descriptor.Kind == PhysicsBodyKind.Dynamic
+                   ? PhysicsShapeType.ConvexHull
+                   : descriptor.Shape;
+    }
+
+    private static Vector3 SanitizeScale(Vector3 scale)
+    {
+        return new Vector3(SanitizeScale(scale.X), SanitizeScale(scale.Y), SanitizeScale(scale.Z));
+    }
+
+    /// <summary>A zero or NaN scale would build a degenerate shape; the sign is dropped because Bepu shapes cannot mirror.</summary>
+    private static float SanitizeScale(float value)
+    {
+        return float.IsFinite(value) && MathF.Abs(value) > 0.0001f ? MathF.Abs(value) : 1f;
+    }
+
+    /// <summary>Stable id of one instance of an instanced description: the same index maps to the same body every frame.</summary>
+    private static Guid DeriveId(Guid id, int index)
+    {
+        Span<byte> bytes = stackalloc byte[16];
+        id.TryWriteBytes(bytes);
+        var mixed = (uint)index * 2654435761u + 0x9E3779B9u;
+        bytes[0] ^= (byte)mixed;
+        bytes[1] ^= (byte)(mixed >> 8);
+        bytes[2] ^= (byte)(mixed >> 16);
+        bytes[3] ^= (byte)(mixed >> 24);
+        bytes[12] ^= (byte)index;
+        bytes[13] ^= (byte)(index >> 8);
+        bytes[14] ^= (byte)(index >> 16);
+        bytes[15] ^= (byte)(index >> 24);
+        return new Guid(bytes);
+    }
+
+    private BodyEntry UpdateBody(BodyEntry entry, PhysicsBody descriptor, Guid id, in InstanceInfo info)
+    {
+        var shapeKey = ShapeKey.From(descriptor, info);
         if (!entry.ShapeKey.Equals(shapeKey))
         {
             // Shape or mass changed: Bepu can't morph a collidable, so replace the body.
             RemoveBody(entry);
-            return CreateBody(descriptor, id);
+            return CreateBody(descriptor, id, info);
         }
 
         var orientation = NormalizeOrientation(descriptor.Orientation);
@@ -316,7 +527,7 @@ internal sealed class PhysicsSimulation : IDisposable
 
         if (descriptorPosition != entry.LastInputPosition || orientation != entry.LastInputOrientation)
         {
-            var pose = new RigidPose(descriptorPosition, orientation);
+            var pose = new RigidPose(descriptorPosition + Vector3.Transform(entry.LocalCenter, orientation), orientation);
             ApplyPose(entry, pose);
             entry.LastInputPosition = descriptorPosition;
             entry.LastInputOrientation = orientation;
@@ -344,7 +555,7 @@ internal sealed class PhysicsSimulation : IDisposable
         return entry;
     }
 
-    private BodyEntry CreateBody(PhysicsBody descriptor, Guid id)
+    private BodyEntry CreateBody(PhysicsBody descriptor, Guid id, in InstanceInfo info)
     {
         var orientation = NormalizeOrientation(descriptor.Orientation);
         var pose = new RigidPose(descriptor.Position, orientation);
@@ -353,7 +564,7 @@ internal sealed class PhysicsSimulation : IDisposable
                             Id = id,
                             Kind = descriptor.Kind,
                             IsStatic = descriptor.Kind == PhysicsBodyKind.Static,
-                            ShapeKey = ShapeKey.From(descriptor),
+                            ShapeKey = ShapeKey.From(descriptor, info),
                             PreviousPose = pose,
                             CurrentPose = pose,
                             LastInputPosition = descriptor.Position,
@@ -363,8 +574,23 @@ internal sealed class PhysicsSimulation : IDisposable
                             RenderScale = RenderScaleFor(descriptor),
                         };
 
-        switch (descriptor.Shape)
+        switch (EffectiveShape(descriptor))
         {
+            case PhysicsShapeType.ConvexHull:
+                if (TryCreateHullBody(entry, descriptor, pose, info))
+                    break;
+
+                // No usable geometry (none connected, or too flat to enclose a volume): keep the body alive as a box.
+                CreateBodyWithShape(entry, descriptor, pose, FallbackBox(descriptor, info));
+                break;
+
+            case PhysicsShapeType.Mesh:
+                if (TryCreateMeshBody(entry, descriptor, pose, info))
+                    break;
+
+                CreateBodyWithShape(entry, descriptor, pose, FallbackBox(descriptor, info));
+                break;
+
             case PhysicsShapeType.Sphere:
                 CreateBodyWithShape(entry, descriptor, pose, new Sphere(MathF.Max(0.001f, descriptor.Radius)));
                 break;
@@ -410,45 +636,301 @@ internal sealed class PhysicsSimulation : IDisposable
         entry.ShapeIndex = description.Collidable.Shape;
     }
 
+    private static Box FallbackBox(PhysicsBody descriptor, in InstanceInfo info)
+    {
+        var size = descriptor.Size;
+        return new Box(MathF.Max(0.001f, size.X), MathF.Max(0.001f, size.Y), MathF.Max(0.001f, size.Z));
+    }
+
+    /// <summary>
+    /// Builds, or reuses, the convex hull of a piece and adds the body at the hull's centre of mass.
+    /// Instances that use the same piece at the same scale share one Bepu shape.
+    /// </summary>
+    private bool TryCreateHullBody(BodyEntry entry, PhysicsBody descriptor, RigidPose pivotPose, in InstanceInfo info)
+    {
+        var points = info.Hull?.Points;
+        object source = info.Hull;
+        if (points == null && descriptor.MeshTriangles != null)
+        {
+            // A dynamic Mesh body arrives here without pieces: wrap the whole triangle soup.
+            points = descriptor.MeshTriangles;
+            source = descriptor.MeshTriangles;
+        }
+
+        if (points == null || points.Length < 4)
+            return false;
+
+        var key = new SharedShapeKey(source, info.Scale, false);
+        if (!_sharedShapes.TryGetValue(key, out var shared))
+        {
+            var scaled = new Vector3[points.Length];
+            for (var index = 0; index < points.Length; index++)
+            {
+                var point = points[index] * info.Scale;
+                if (!IsFinite(point))
+                    return false;
+
+                scaled[index] = point;
+            }
+
+            if (!EnclosesVolume(scaled))
+                return false;
+
+            ConvexHull hull;
+            Vector3 center;
+            try
+            {
+                hull = new ConvexHull(scaled, _pool, out center);
+            }
+            catch (Exception)
+            {
+                // Bepu's hull builder rejects some degenerate inputs by throwing; the caller falls back to a box.
+                return false;
+            }
+
+            shared = new SharedShape
+                         {
+                             Index = _simulation.Shapes.Add(hull),
+                             Center = center,
+                             UnitInertia = hull.ComputeInertia(1f),
+                             Activity = BodyDescription.GetDefaultActivity(hull),
+                         };
+            _sharedShapes.Add(key, shared);
+        }
+
+        shared.ReferenceCount++;
+        entry.SharedShape = key;
+        entry.ShapeIndex = shared.Index;
+        entry.LocalCenter = shared.Center;
+        entry.RenderScale = info.Scale;
+
+        var pose = new RigidPose(pivotPose.Position + Vector3.Transform(shared.Center, pivotPose.Orientation), pivotPose.Orientation);
+        entry.PreviousPose = pose;
+        entry.CurrentPose = pose;
+
+        if (descriptor.Kind == PhysicsBodyKind.Static)
+        {
+            entry.StaticHandle = _simulation.Statics.Add(new StaticDescription(pose, shared.Index));
+            entry.StaticPose = pose;
+            return true;
+        }
+
+        var velocity = new BodyVelocity(descriptor.LinearVelocity, descriptor.AngularVelocity);
+        var collidable = new CollidableDescription(shared.Index);
+        if (descriptor.Kind == PhysicsBodyKind.Kinematic)
+        {
+            entry.Handle = _simulation.Bodies.Add(BodyDescription.CreateKinematic(pose, velocity, collidable, shared.Activity));
+            return true;
+        }
+
+        // Inertia scales linearly with mass, so the shared shape stores it for a mass of one.
+        var mass = MathF.Max(0.0001f, descriptor.Mass);
+        var inertia = shared.UnitInertia;
+        inertia.InverseMass /= mass;
+        inertia.InverseInertiaTensor.XX /= mass;
+        inertia.InverseInertiaTensor.YX /= mass;
+        inertia.InverseInertiaTensor.YY /= mass;
+        inertia.InverseInertiaTensor.ZX /= mass;
+        inertia.InverseInertiaTensor.ZY /= mass;
+        inertia.InverseInertiaTensor.ZZ /= mass;
+        entry.Handle = _simulation.Bodies.Add(BodyDescription.CreateDynamic(pose, velocity, inertia, collidable, shared.Activity));
+        return true;
+    }
+
+    /// <summary>Adds a static or kinematic triangle-mesh collider. Triangles are added with both windings so either side collides.</summary>
+    private bool TryCreateMeshBody(BodyEntry entry, PhysicsBody descriptor, RigidPose pose, in InstanceInfo info)
+    {
+        var triangles = descriptor.MeshTriangles;
+        if (triangles == null || triangles.Length < 3)
+            return false;
+
+        var key = new SharedShapeKey(triangles, info.Scale, true);
+        if (!_sharedShapes.TryGetValue(key, out var shared))
+        {
+            var triangleCount = triangles.Length / 3;
+            var valid = 0;
+            for (var index = 0; index < triangleCount; index++)
+            {
+                if (IsUsableTriangle(triangles[index * 3], triangles[index * 3 + 1], triangles[index * 3 + 2]))
+                    valid++;
+            }
+
+            if (valid == 0)
+                return false;
+
+            _pool.Take<Triangle>(valid * 2, out var buffer);
+            var write = 0;
+            for (var index = 0; index < triangleCount; index++)
+            {
+                var a = triangles[index * 3];
+                var b = triangles[index * 3 + 1];
+                var c = triangles[index * 3 + 2];
+                if (!IsUsableTriangle(a, b, c))
+                    continue;
+
+                buffer[write++] = new Triangle(a, b, c);
+                buffer[write++] = new Triangle(a, c, b);
+            }
+
+            var mesh = new Mesh(buffer, info.Scale, _pool);
+            shared = new SharedShape { Index = _simulation.Shapes.Add(mesh), Activity = new BodyActivityDescription(0.01f) };
+            _sharedShapes.Add(key, shared);
+        }
+
+        shared.ReferenceCount++;
+        entry.SharedShape = key;
+        entry.ShapeIndex = shared.Index;
+        entry.RenderScale = info.Scale;
+
+        if (descriptor.Kind == PhysicsBodyKind.Static)
+        {
+            entry.StaticHandle = _simulation.Statics.Add(new StaticDescription(pose, shared.Index));
+            entry.StaticPose = pose;
+            return true;
+        }
+
+        var velocity = new BodyVelocity(descriptor.LinearVelocity, descriptor.AngularVelocity);
+        entry.Handle = _simulation.Bodies.Add(BodyDescription.CreateKinematic(pose, velocity, new CollidableDescription(shared.Index), shared.Activity));
+        return true;
+    }
+
+    private static bool IsUsableTriangle(Vector3 a, Vector3 b, Vector3 c)
+    {
+        return IsFinite(a) && IsFinite(b) && IsFinite(c) && Vector3.Cross(b - a, c - a).LengthSquared() > 1e-12f;
+    }
+
+    /// <summary>True when the points span all three axes; a line or a flat sheet has no hull Bepu can build.</summary>
+    private static bool EnclosesVolume(Vector3[] points)
+    {
+        var origin = points[0];
+        var farthest = origin;
+        var bestDistance = 0f;
+        foreach (var point in points)
+        {
+            var distance = Vector3.DistanceSquared(point, origin);
+            if (distance > bestDistance)
+            {
+                bestDistance = distance;
+                farthest = point;
+            }
+        }
+
+        if (bestDistance < 1e-10f)
+            return false;
+
+        var axis = Vector3.Normalize(farthest - origin);
+        var offLine = Vector3.Zero;
+        var bestOffLine = 0f;
+        foreach (var point in points)
+        {
+            var toPoint = point - origin;
+            var rejected = toPoint - axis * Vector3.Dot(toPoint, axis);
+            var distance = rejected.LengthSquared();
+            if (distance > bestOffLine)
+            {
+                bestOffLine = distance;
+                offLine = rejected;
+            }
+        }
+
+        if (bestOffLine < 1e-10f)
+            return false;
+
+        var normal = Vector3.Normalize(Vector3.Cross(axis, offLine));
+        var extent = MathF.Sqrt(bestDistance);
+        foreach (var point in points)
+        {
+            if (MathF.Abs(Vector3.Dot(point - origin, normal)) > extent * 1e-4f)
+                return true;
+        }
+
+        return false;
+    }
+
     private void ReconcileJoints()
     {
         _seenJoints.Clear();
 
         foreach (var descriptor in _frameJoints)
         {
-            if (!descriptor.Enabled || descriptor.BodyA == null || descriptor.BodyB == null)
+            if (!descriptor.Enabled || descriptor.BodyA == null)
                 continue;
-
-            if (!_bodies.TryGetValue(ResolveId(descriptor.BodyA), out var bodyA)
-                || !_bodies.TryGetValue(ResolveId(descriptor.BodyB), out var bodyB))
-                continue;
-
-            if (bodyA.IsStatic || bodyB.IsStatic)
-            {
-                if (!_hasLoggedStaticJointWarning)
-                {
-                    Log.Warning("PhysicsWorld: joints to static bodies are ignored. Use a Kinematic body as the anchor.", _logSource);
-                    _hasLoggedStaticJointWarning = true;
-                }
-
-                continue;
-            }
 
             var id = ResolveId(descriptor);
-            _seenJoints.Add(id);
-            var hash = JointHash(descriptor, bodyA.Handle, bodyB.Handle);
+            var countA = InstanceCountOf(descriptor.BodyA);
 
-            if (_joints.TryGetValue(id, out var existing))
+            switch (descriptor.Mode)
             {
-                if (existing.Hash == hash)
-                    continue;
+                case PhysicsJointMode.Chain:
+                    for (var index = 0; index + 1 < countA; index++)
+                    {
+                        if (TryGetInstance(descriptor.BodyA, index, out var first) && TryGetInstance(descriptor.BodyA, index + 1, out var second))
+                            ReconcileJoint(descriptor, DeriveId(id, index), first, second, JointAnchoring.Midpoint);
+                    }
 
-                _simulation.Solver.Remove(existing.Handle);
-                _joints.Remove(id);
+                    break;
+
+                case PhysicsJointMode.Nearby:
+                {
+                    var links = NearbyLinksFor(descriptor, id, countA);
+                    for (var index = 0; index < links.Count; index++)
+                    {
+                        var (indexA, indexB) = links[index];
+                        if (TryGetInstance(descriptor.BodyA, indexA, out var first) && TryGetInstance(descriptor.BodyA, indexB, out var second))
+                            ReconcileJoint(descriptor, DeriveId(DeriveId(id, indexA), indexB), first, second, JointAnchoring.Midpoint);
+                    }
+
+                    break;
+                }
+
+                case PhysicsJointMode.World:
+                    if (descriptor.InstanceIndex >= 0)
+                    {
+                        var only = Math.Min(descriptor.InstanceIndex, countA - 1);
+                        if (TryGetInstance(descriptor.BodyA, only, out var pinned))
+                            ReconcileWorldJoint(descriptor, DeriveId(id, only), pinned);
+
+                        break;
+                    }
+
+                    for (var index = 0; index < countA; index++)
+                    {
+                        if (TryGetInstance(descriptor.BodyA, index, out var body))
+                            ReconcileWorldJoint(descriptor, DeriveId(id, index), body);
+                    }
+
+                    break;
+
+                default:
+                {
+                    if (descriptor.BodyB == null)
+                        continue;
+
+                    // A single body on one side is shared by every instance of the other: many pendulums on one anchor.
+                    var countB = InstanceCountOf(descriptor.BodyB);
+                    var count = countA == 1 || countB == 1 ? Math.Max(countA, countB) : Math.Min(countA, countB);
+                    var isInstanced = descriptor.BodyA.IsInstanced || descriptor.BodyB.IsInstanced;
+                    var pairAnchoring = descriptor.AutoAnchor ? JointAnchoring.AtBodyB : JointAnchoring.Explicit;
+                    if (descriptor.InstanceIndex >= 0)
+                    {
+                        // One joint only: each instanced side contributes the chosen instance, or its last one.
+                        if (TryGetInstance(descriptor.BodyA, Math.Min(descriptor.InstanceIndex, countA - 1), out var onlyA)
+                            && TryGetInstance(descriptor.BodyB, Math.Min(descriptor.InstanceIndex, countB - 1), out var onlyB))
+                            ReconcileJoint(descriptor, isInstanced ? DeriveId(id, descriptor.InstanceIndex) : id, onlyA, onlyB, pairAnchoring);
+
+                        break;
+                    }
+
+                    for (var index = 0; index < count; index++)
+                    {
+                        if (TryGetInstance(descriptor.BodyA, countA == 1 ? 0 : index, out var first)
+                            && TryGetInstance(descriptor.BodyB, countB == 1 ? 0 : index, out var second))
+                            ReconcileJoint(descriptor, isInstanced ? DeriveId(id, index) : id, first, second, pairAnchoring);
+                    }
+
+                    break;
+                }
             }
-
-            var handle = AddConstraint(descriptor, bodyA.Handle, bodyB.Handle);
-            _joints.Add(id, new JointEntry { Handle = handle, Hash = hash });
         }
 
         _removeJoints.Clear();
@@ -460,15 +942,357 @@ internal sealed class PhysicsSimulation : IDisposable
 
         foreach (var id in _removeJoints)
         {
-            _simulation.Solver.Remove(_joints[id].Handle);
+            RemoveJoint(_joints[id]);
             _joints.Remove(id);
         }
+
+        _removeJoints.Clear();
+        foreach (var pair in _nearbyLinks)
+        {
+            if (!pair.Value.Seen)
+                _removeJoints.Add(pair.Key);
+
+            pair.Value.Seen = false;
+        }
+
+        foreach (var id in _removeJoints)
+            _nearbyLinks.Remove(id);
+    }
+
+    private static int InstanceCountOf(PhysicsBody body)
+    {
+        return body.IsInstanced ? Math.Min(body.InstanceCount, body.Instances.Length) : 1;
+    }
+
+    private bool TryGetInstance(PhysicsBody body, int index, out BodyEntry entry)
+    {
+        var id = ResolveId(body);
+        return _bodies.TryGetValue(body.IsInstanced ? DeriveId(id, index) : id, out entry);
+    }
+
+    /// <summary>The pose a body was given by the graph, which stays put while the simulation moves the body away from it.</summary>
+    private static RigidPose InputPose(BodyEntry entry)
+    {
+        return new RigidPose(entry.LastInputPosition + Vector3.Transform(entry.LocalCenter, entry.LastInputOrientation), entry.LastInputOrientation);
+    }
+
+    private void RemoveJoint(JointEntry joint)
+    {
+        _simulation.Solver.Remove(joint.Handle);
+        if (joint.HasSecondHandle)
+            _simulation.Solver.Remove(joint.SecondHandle);
+    }
+
+    private bool IsStaticJointPartner(BodyEntry body)
+    {
+        if (!body.IsStatic)
+            return false;
+
+        if (!_hasLoggedStaticJointWarning)
+        {
+            Log.Warning("PhysicsWorld: joints to static bodies are ignored. Use a Kinematic body as the anchor, or the joint's World mode.", _logSource);
+            _hasLoggedStaticJointWarning = true;
+        }
+
+        return true;
+    }
+
+    /// <summary>Where a joint's anchors and axes come from.</summary>
+    private enum JointAnchoring
+    {
+        /// <summary>The local offsets and axes of the description, as given.</summary>
+        Explicit,
+
+        /// <summary>Halfway between where the two bodies start, so a chain or a net holds its initial shape
+        /// instead of pulling every pair of centres together. The axis is A's.</summary>
+        Midpoint,
+
+        /// <summary>At B's starting position, with B's axis: one description fits every B around a shared A.</summary>
+        AtBodyB,
+    }
+
+    private void ReconcileJoint(PhysicsJoint descriptor, Guid id, BodyEntry bodyA, BodyEntry bodyB, JointAnchoring anchoring)
+    {
+        if (ReferenceEquals(bodyA, bodyB) || IsStaticJointPartner(bodyA) || IsStaticJointPartner(bodyB))
+            return;
+
+        _seenJoints.Add(id);
+        var hash = JointHash(descriptor, bodyA.Handle, bodyB.Handle);
+        if (anchoring != JointAnchoring.Explicit)
+            hash = HashCode.Combine(hash, InputPose(bodyA), InputPose(bodyB), anchoring);
+
+        if (_joints.TryGetValue(id, out var existing))
+        {
+            if (existing.Hash == hash)
+                return;
+
+            RemoveJoint(existing);
+            _joints.Remove(id);
+        }
+
+        var handle = anchoring != JointAnchoring.Explicit
+                         ? AddAnchoredConstraint(descriptor, bodyA, bodyB, anchoring)
+                         : AddConstraint(descriptor, bodyA.Handle, bodyB.Handle);
+        var entry = new JointEntry { Handle = handle, Hash = hash };
+        AddMotorOrLimit(descriptor, bodyA, bodyB, anchoring, entry);
+        _joints.Add(id, entry);
+    }
+
+    /// <summary>
+    /// A motor or a swing limit is a second Bepu constraint on the same pair, around the same axes as the joint itself.
+    /// </summary>
+    /// <summary>The joint axis in each body's local space, for the chosen anchoring.</summary>
+    private static void JointAxes(PhysicsJoint descriptor, BodyEntry bodyA, BodyEntry bodyB, JointAnchoring anchoring,
+                                  out Vector3 axisA, out Vector3 axisB)
+    {
+        axisA = NormalizeAxis(descriptor.HingeAxisA);
+        axisB = NormalizeAxis(descriptor.HingeAxisB);
+        if (anchoring == JointAnchoring.Explicit)
+            return;
+
+        // One body's axis is taken as given and carried over to the other through the starting poses,
+        // so the pair starts unstressed.
+        var inverseA = Quaternion.Conjugate(InputPose(bodyA).Orientation);
+        var inverseB = Quaternion.Conjugate(InputPose(bodyB).Orientation);
+        if (anchoring == JointAnchoring.AtBodyB)
+            axisA = NormalizeAxis(Vector3.Transform(Vector3.Transform(axisB, InputPose(bodyB).Orientation), inverseA));
+        else
+            axisB = NormalizeAxis(Vector3.Transform(Vector3.Transform(axisA, InputPose(bodyA).Orientation), inverseB));
+    }
+
+    private void AddMotorOrLimit(PhysicsJoint descriptor, BodyEntry bodyA, BodyEntry bodyB, JointAnchoring anchoring, JointEntry entry)
+    {
+        JointAxes(descriptor, bodyA, bodyB, anchoring, out var axisA, out var axisB);
+        var motorSpeed = FiniteOr(descriptor.MotorSpeed, 0f);
+        if (descriptor.Type == PhysicsJointType.Hinge && motorSpeed != 0f)
+        {
+            entry.SecondHandle = _simulation.Solver.Add(bodyA.Handle, bodyB.Handle, new AngularAxisMotor
+                                                                                        {
+                                                                                            LocalAxisA = axisA,
+                                                                                            TargetVelocity = motorSpeed,
+                                                                                            Settings = new MotorSettings(float.MaxValue, MotorSoftness),
+                                                                                        });
+            entry.HasSecondHandle = true;
+            return;
+        }
+
+        var swingLimit = FiniteOr(descriptor.SwingLimit, 0f);
+        if (descriptor.Type == PhysicsJointType.BallSocket && swingLimit > 0f)
+        {
+            entry.SecondHandle = _simulation.Solver.Add(bodyA.Handle, bodyB.Handle, new SwingLimit
+                                                                                        {
+                                                                                            AxisLocalA = axisA,
+                                                                                            AxisLocalB = axisB,
+                                                                                            MaximumSwingAngle = Math.Clamp(swingLimit, 0.5f, 179f) * (MathF.PI / 180f),
+                                                                                            SpringSettings = SpringFor(descriptor),
+                                                                                        });
+            entry.HasSecondHandle = true;
+        }
+    }
+
+    private void ReconcileWorldJoint(PhysicsJoint descriptor, Guid id, BodyEntry body)
+    {
+        if (IsStaticJointPartner(body))
+            return;
+
+        _seenJoints.Add(id);
+        var pose = InputPose(body);
+        var hash = HashCode.Combine(JointHash(descriptor, body.Handle, body.Handle), pose, 0x57_4F_52);
+
+        if (_joints.TryGetValue(id, out var existing))
+        {
+            if (existing.Hash == hash)
+                return;
+
+            RemoveJoint(existing);
+            _joints.Remove(id);
+        }
+
+        var spring = SpringFor(descriptor);
+        var entry = new JointEntry
+                        {
+                            Hash = hash,
+                            Handle = _simulation.Solver.Add(body.Handle, new OneBodyLinearServo
+                                                                             {
+                                                                                 LocalOffset = descriptor.LocalOffsetA,
+                                                                                 Target = pose.Position + Vector3.Transform(descriptor.LocalOffsetA, pose.Orientation),
+                                                                                 SpringSettings = spring,
+                                                                                 ServoSettings = ServoSettings.Default,
+                                                                             }),
+                        };
+
+        // Holding the anchor point leaves the body free to swing; a weld also pins its orientation.
+        if (descriptor.Type == PhysicsJointType.Weld)
+        {
+            entry.SecondHandle = _simulation.Solver.Add(body.Handle, new OneBodyAngularServo
+                                                                         {
+                                                                             TargetOrientation = pose.Orientation,
+                                                                             SpringSettings = spring,
+                                                                             ServoSettings = ServoSettings.Default,
+                                                                         });
+            entry.HasSecondHandle = true;
+        }
+
+        _joints.Add(id, entry);
+    }
+
+    private ConstraintHandle AddAnchoredConstraint(PhysicsJoint descriptor, BodyEntry bodyA, BodyEntry bodyB, JointAnchoring anchoring)
+    {
+        var spring = SpringFor(descriptor);
+        var poseA = InputPose(bodyA);
+        var poseB = InputPose(bodyB);
+        var inverseA = Quaternion.Conjugate(poseA.Orientation);
+        var inverseB = Quaternion.Conjugate(poseB.Orientation);
+        var anchor = anchoring == JointAnchoring.AtBodyB
+                         ? poseB.Position + Vector3.Transform(descriptor.LocalOffsetB, poseB.Orientation)
+                         : (poseA.Position + poseB.Position) * 0.5f;
+        var localAnchorA = Vector3.Transform(anchor - poseA.Position, inverseA);
+        var localAnchorB = Vector3.Transform(anchor - poseB.Position, inverseB);
+
+        switch (descriptor.Type)
+        {
+            case PhysicsJointType.Hinge:
+            {
+                JointAxes(descriptor, bodyA, bodyB, anchoring, out var localAxisA, out var localAxisB);
+                return _simulation.Solver.Add(bodyA.Handle, bodyB.Handle, new Hinge
+                                                                              {
+                                                                                  LocalOffsetA = localAnchorA,
+                                                                                  LocalHingeAxisA = localAxisA,
+                                                                                  LocalOffsetB = localAnchorB,
+                                                                                  LocalHingeAxisB = localAxisB,
+                                                                                  SpringSettings = spring,
+                                                                              });
+            }
+
+            case PhysicsJointType.Weld:
+                return _simulation.Solver.Add(bodyA.Handle, bodyB.Handle, new Weld
+                                                                              {
+                                                                                  LocalOffset = Vector3.Transform(poseB.Position - poseA.Position, inverseA),
+                                                                                  LocalOrientation = Quaternion.Normalize(inverseA * poseB.Orientation),
+                                                                                  SpringSettings = spring,
+                                                                              });
+
+            case PhysicsJointType.DistanceServo:
+            {
+                var distance = descriptor.TargetDistance > 0f ? descriptor.TargetDistance : Vector3.Distance(poseA.Position, poseB.Position);
+                return _simulation.Solver.Add(bodyA.Handle, bodyB.Handle, new DistanceServo(Vector3.Zero, Vector3.Zero, distance, spring));
+            }
+
+            default:
+                return _simulation.Solver.Add(bodyA.Handle, bodyB.Handle, new BallSocket
+                                                                              {
+                                                                                  LocalOffsetA = localAnchorA,
+                                                                                  LocalOffsetB = localAnchorB,
+                                                                                  SpringSettings = spring,
+                                                                              });
+        }
+    }
+
+    /// <summary>
+    /// Pairs of instances that start closer than the link distance. Found with a uniform grid and cached until the
+    /// instances or the distance change, because the search is the only part of a joint that is not O(joints).
+    /// </summary>
+    private List<(int, int)> NearbyLinksFor(PhysicsJoint descriptor, Guid id, int count)
+    {
+        var distance = float.IsFinite(descriptor.LinkDistance) ? MathF.Max(0f, descriptor.LinkDistance) : 0f;
+        var hash = new HashCode();
+        hash.Add(ResolveId(descriptor.BodyA));
+        hash.Add(count);
+        hash.Add(distance);
+        for (var index = 0; index < count; index++)
+        {
+            if (TryGetInstance(descriptor.BodyA, index, out var entry))
+                hash.Add(InputPose(entry).Position);
+        }
+
+        var hashCode = hash.ToHashCode();
+        if (!_nearbyLinks.TryGetValue(id, out var cache))
+        {
+            cache = new NearbyLinks();
+            _nearbyLinks.Add(id, cache);
+        }
+
+        cache.Seen = true;
+        if (cache.Hash == hashCode && cache.IsValid)
+            return cache.Pairs;
+
+        cache.Hash = hashCode;
+        cache.IsValid = true;
+        cache.Pairs.Clear();
+        if (distance <= 0f || count < 2)
+            return cache.Pairs;
+
+        _linkPositions.Clear();
+        _linkCells.Clear();
+        for (var index = 0; index < count; index++)
+        {
+            var hasBody = TryGetInstance(descriptor.BodyA, index, out var entry);
+            var position = hasBody ? InputPose(entry).Position : new Vector3(float.NaN);
+            _linkPositions.Add(position);
+            if (!hasBody || !IsFinite(position))
+                continue;
+
+            var cell = CellOf(position, distance);
+            if (!_linkCells.TryGetValue(cell, out var members))
+            {
+                members = new List<int>();
+                _linkCells.Add(cell, members);
+            }
+
+            members.Add(index);
+        }
+
+        var distanceSquared = distance * distance;
+        for (var index = 0; index < count && cache.Pairs.Count < MaxNearbyLinks; index++)
+        {
+            var position = _linkPositions[index];
+            if (!IsFinite(position))
+                continue;
+
+            var (cellX, cellY, cellZ) = CellOf(position, distance);
+            for (var x = -1; x <= 1; x++)
+            for (var y = -1; y <= 1; y++)
+            for (var z = -1; z <= 1; z++)
+            {
+                if (!_linkCells.TryGetValue((cellX + x, cellY + y, cellZ + z), out var members))
+                    continue;
+
+                foreach (var other in members)
+                {
+                    // Each pair once, in index order, so the result does not depend on dictionary order.
+                    if (other <= index || Vector3.DistanceSquared(position, _linkPositions[other]) > distanceSquared)
+                        continue;
+
+                    if (cache.Pairs.Count < MaxNearbyLinks)
+                        cache.Pairs.Add((index, other));
+                }
+            }
+        }
+
+        if (cache.Pairs.Count >= MaxNearbyLinks && !_hasLoggedLinkLimitWarning)
+        {
+            Log.Warning($"PhysicsWorld: a Nearby joint found more than {MaxNearbyLinks} links; the rest are dropped. Lower LinkDistance.", _logSource);
+            _hasLoggedLinkLimitWarning = true;
+        }
+
+        cache.Pairs.Sort();
+        return cache.Pairs;
+    }
+
+    private static (int, int, int) CellOf(Vector3 position, float cellSize)
+    {
+        return ((int)MathF.Floor(position.X / cellSize), (int)MathF.Floor(position.Y / cellSize), (int)MathF.Floor(position.Z / cellSize));
+    }
+
+    private static SpringSettings SpringFor(PhysicsJoint descriptor)
+    {
+        return new SpringSettings(Math.Clamp(FiniteOr(descriptor.Frequency, 30f), 0.1f, 120f),
+                                  Math.Clamp(FiniteOr(descriptor.DampingRatio, 1f), 0.01f, 2f));
     }
 
     private ConstraintHandle AddConstraint(PhysicsJoint descriptor, BodyHandle bodyA, BodyHandle bodyB)
     {
-        var spring = new SpringSettings(Math.Clamp(descriptor.Frequency, 0.1f, 120f),
-                                        Math.Clamp(descriptor.DampingRatio, 0.01f, 2f));
+        var spring = SpringFor(descriptor);
 
         switch (descriptor.Type)
         {
@@ -511,13 +1335,188 @@ internal sealed class PhysicsSimulation : IDisposable
             entry.PreviousPose = entry.CurrentPose;
 
         ApplyDampingAndGravityScale(dt);
+        ApplyForces(dt);
         _simulation.Timestep(dt, _multithreaded ? _dispatcher : null);
         ApplyBounce();
+        CollectContacts();
 
         foreach (var entry in _bodies.Values)
             ReadPose(entry);
 
         _simTime += dt;
+    }
+
+    /// <summary>Moves the impacts recorded by the worker threads during the last step into the frame's contact list.</summary>
+    private void CollectContacts()
+    {
+        var start = _contacts.Count;
+        _currentContactPairs.Clear();
+        foreach (var requests in _contactRequests)
+        {
+            foreach (var contact in requests)
+            {
+                // A fast pair can still be closing in the step after it was first seen. It stays in the
+                // set for as long as it keeps closing, so one impact - or one long push - is one contact.
+                _currentContactPairs.Add(contact.PairKey);
+                if (_previousContactPairs.Contains(contact.PairKey))
+                    continue;
+
+                if (_contacts.Count < MaxContactsPerUpdate)
+                    _contacts.Add(contact);
+            }
+
+            requests.Clear();
+        }
+
+        (_previousContactPairs, _currentContactPairs) = (_currentContactPairs, _previousContactPairs);
+
+        // Workers finish in any order; sorting the step's slice keeps the output stable between runs.
+        if (_contacts.Count - start > 1)
+            _contacts.Sort(start, _contacts.Count - start, ContactComparer.Instance);
+    }
+
+    /// <summary>
+    /// Splits the frame's forces into continuous ones, applied every step, and impulses, applied once right here.
+    /// An impulse fires when its trigger count differs from the one seen last frame; the first sighting only records it,
+    /// so loading a graph or rebuilding the world never fires by itself.
+    /// </summary>
+    private void PrepareForces(bool paused)
+    {
+        _continuousForces.Clear();
+        if (_frameForces == null || _simulation == null)
+            return;
+
+        foreach (var force in _frameForces)
+        {
+            if (force == null)
+                continue;
+
+            if (!force.IsImpulse)
+            {
+                if (force.Enabled)
+                    _continuousForces.Add(force);
+
+                continue;
+            }
+
+            var id = ResolveId(force);
+            var hasFired = _impulseCounts.TryGetValue(id, out var lastCount) && lastCount != force.TriggerCount;
+            if (_impulseCounts.Count > 4096)
+                _impulseCounts.Clear();
+
+            _impulseCounts[id] = force.TriggerCount;
+            if (hasFired && force.Enabled && !paused)
+                ApplyForce(force, 1f);
+        }
+    }
+
+    private void ApplyForces(float dt)
+    {
+        foreach (var force in _continuousForces)
+            ApplyForce(force, dt);
+    }
+
+    /// <summary>Adds the velocity change of one force to every dynamic body it reaches. <paramref name="dt"/> is 1 for an impulse.</summary>
+    private void ApplyForce(PhysicsForce force, float dt)
+    {
+        var strength = FiniteOr(force.Strength, 0f);
+        if (strength == 0f || (force.Type == PhysicsForceType.Field && force.Field == null))
+            return;
+
+        var radius = FiniteOr(force.Radius, 0f);
+        var falloff = Math.Clamp(FiniteOr(force.Falloff, 1f), 0f, 1f);
+        var axis = NormalizeAxis(IsFinite(force.Direction) ? force.Direction : Vector3.UnitY);
+        var origin = IsFinite(force.Position) ? force.Position : Vector3.Zero;
+
+        foreach (var entry in _bodies.Values)
+        {
+            if (entry.IsStatic || entry.Kind != PhysicsBodyKind.Dynamic)
+                continue;
+
+            if (force.CollisionGroup != 0 && entry.Group != force.CollisionGroup)
+                continue;
+
+            var reference = _simulation.Bodies[entry.Handle];
+            var position = reference.Pose.Position;
+            Vector3 acceleration;
+
+            switch (force.Type)
+            {
+                case PhysicsForceType.Radial:
+                {
+                    var toCenter = origin - position;
+                    var distance = toCenter.Length();
+                    if (distance < 1e-5f)
+                        continue;
+
+                    acceleration = toCenter / distance * (strength * Reach(distance, radius, falloff));
+                    break;
+                }
+
+                case PhysicsForceType.Vortex:
+                {
+                    var fromAxis = position - origin;
+                    fromAxis -= axis * Vector3.Dot(fromAxis, axis);
+                    var distance = fromAxis.Length();
+                    if (distance < 1e-5f)
+                        continue;
+
+                    acceleration = Vector3.Cross(axis, fromAxis / distance) * (strength * Reach(distance, radius, falloff));
+                    break;
+                }
+
+                case PhysicsForceType.Field:
+                    try
+                    {
+                        acceleration = force.Field.Sample(position) * strength;
+                    }
+                    catch (Exception e)
+                    {
+                        // A field is graph code; letting it throw here would tear down the whole world.
+                        if (!_hasLoggedFieldForceError)
+                        {
+                            Log.Warning($"PhysicsWorld: a field force failed and is skipped: {e.Message}", _logSource);
+                            _hasLoggedFieldForceError = true;
+                        }
+
+                        return;
+                    }
+
+                    break;
+
+                default:
+                    acceleration = axis * strength;
+                    break;
+            }
+
+            if (force.ScaleByMass)
+                acceleration *= reference.LocalInertia.InverseMass;
+
+            var change = acceleration * dt;
+            if (!IsFinite(change) || change.LengthSquared() < 1e-12f)
+                continue;
+
+            // A resting body ignores velocity changes until something wakes it; only a push that could
+            // actually move it does, so a faint breeze does not keep the whole pile awake.
+            if (!reference.Awake)
+            {
+                if (acceleration.LengthSquared() < MinWakeAcceleration * MinWakeAcceleration && dt < 1f)
+                    continue;
+
+                reference.Awake = true;
+            }
+
+            reference.Velocity.Linear += change;
+        }
+    }
+
+    /// <summary>Strength multiplier at a distance from the force: 1 inside, fading by <paramref name="falloff"/> towards the radius, 0 beyond it.</summary>
+    private static float Reach(float distance, float radius, float falloff)
+    {
+        if (radius <= 0f)
+            return 1f;
+
+        return distance >= radius ? 0f : 1f - falloff * distance / radius;
     }
 
     /// <summary>
@@ -635,7 +1634,15 @@ internal sealed class PhysicsSimulation : IDisposable
 
     private void ReadPose(BodyEntry entry)
     {
-        entry.CurrentPose = entry.IsStatic ? entry.StaticPose : _simulation.Bodies[entry.Handle].Pose;
+        if (entry.IsStatic)
+        {
+            entry.CurrentPose = entry.StaticPose;
+            return;
+        }
+
+        var reference = _simulation.Bodies[entry.Handle];
+        entry.CurrentPose = reference.Pose;
+        entry.Speed = reference.Velocity.Linear.Length();
     }
 
     private void ApplyPose(BodyEntry entry, RigidPose pose)
@@ -667,7 +1674,7 @@ internal sealed class PhysicsSimulation : IDisposable
         // every constraint explicitly first; removing ones attached to this body is a no-op
         // because Bepu would have done the same during Bodies.Remove.
         foreach (var joint in _joints.Values)
-            _simulation.Solver.Remove(joint.Handle);
+            RemoveJoint(joint);
         _joints.Clear();
 
         if (entry.IsStatic)
@@ -681,8 +1688,40 @@ internal sealed class PhysicsSimulation : IDisposable
             _simulation.Bodies.Remove(entry.Handle);
         }
 
+        if (entry.SharedShape.HasValue)
+        {
+            // Hulls and meshes are shared between instances; the shape goes with its last user.
+            var key = entry.SharedShape.Value;
+            if (_sharedShapes.TryGetValue(key, out var shared) && --shared.ReferenceCount <= 0)
+            {
+                _simulation.Shapes.RemoveAndDispose(shared.Index, _pool);
+                _sharedShapes.Remove(key);
+            }
+
+            return;
+        }
+
         if (entry.ShapeIndex.Exists)
             _simulation.Shapes.RemoveAndDispose(entry.ShapeIndex, _pool);
+    }
+
+    /// <summary>Rotation that turns +Z onto the given direction, so a mesh drawn at a contact points along its normal.</summary>
+    private static Quaternion OrientationAlong(Vector3 direction)
+    {
+        var lengthSquared = direction.LengthSquared();
+        if (lengthSquared < 1e-8f || !IsFinite(direction))
+            return Quaternion.Identity;
+
+        direction /= MathF.Sqrt(lengthSquared);
+        var dot = Vector3.Dot(Vector3.UnitZ, direction);
+        if (dot > 0.9999f)
+            return Quaternion.Identity;
+
+        if (dot < -0.9999f)
+            return Quaternion.CreateFromAxisAngle(Vector3.UnitY, MathF.PI);
+
+        var axis = Vector3.Normalize(Vector3.Cross(Vector3.UnitZ, direction));
+        return Quaternion.CreateFromAxisAngle(axis, MathF.Acos(Math.Clamp(dot, -1f, 1f)));
     }
 
     private static RigidPose InterpolatePose(in RigidPose from, in RigidPose to, float t)
@@ -725,6 +1764,7 @@ internal sealed class PhysicsSimulation : IDisposable
             case PhysicsShapeType.Cylinder:
                 return new Vector3(descriptor.Radius * 2f, descriptor.Length, descriptor.Radius * 2f);
             default:
+                // Also the hull and mesh fallback: without usable geometry the body is the box it is drawn as.
                 return descriptor.Size;
         }
     }
@@ -742,6 +1782,10 @@ internal sealed class PhysicsSimulation : IDisposable
         hash.Add(descriptor.Frequency);
         hash.Add(descriptor.DampingRatio);
         hash.Add(descriptor.TargetDistance);
+        hash.Add(descriptor.Mode);
+        hash.Add(descriptor.MotorSpeed);
+        hash.Add(descriptor.SwingLimit);
+        hash.Add(descriptor.AutoAnchor);
         return hash.ToHashCode();
     }
 
@@ -765,6 +1809,72 @@ internal sealed class PhysicsSimulation : IDisposable
         return _implicitJointIds.GetValue(descriptor, static _ => new IdBox { Id = Guid.NewGuid() }).Id;
     }
 
+    private Guid ResolveId(PhysicsForce descriptor)
+    {
+        if (descriptor.Id != Guid.Empty)
+            return descriptor.Id;
+
+        return _implicitForceIds.GetValue(descriptor, static _ => new IdBox { Id = Guid.NewGuid() }).Id;
+    }
+
+    /// <summary>What turns a shared description into one particular body.</summary>
+    private readonly struct InstanceInfo(Vector3 scale, Vector4 color, PhysicsHull hull)
+    {
+        public readonly Vector3 Scale = scale;
+        public readonly Vector4 Color = color;
+        public readonly PhysicsHull Hull = hull;
+    }
+
+    /// <summary>Identifies a hull or mesh shape: the source data by reference (producers replace it, never mutate it) and the scale baked into it.</summary>
+    private readonly struct SharedShapeKey(object source, Vector3 scale, bool isMesh) : IEquatable<SharedShapeKey>
+    {
+        private readonly object _source = source;
+        private readonly Vector3 _scale = scale;
+        private readonly bool _isMesh = isMesh;
+
+        public bool Equals(SharedShapeKey other) => ReferenceEquals(_source, other._source) && _scale == other._scale && _isMesh == other._isMesh;
+
+        public override bool Equals(object obj) => obj is SharedShapeKey other && Equals(other);
+
+        public override int GetHashCode() => HashCode.Combine(RuntimeHelpers.GetHashCode(_source), _scale, _isMesh);
+    }
+
+    private sealed class SharedShape
+    {
+        public TypedIndex Index;
+        public Vector3 Center;
+        public BodyInertia UnitInertia;
+        public BodyActivityDescription Activity;
+        public int ReferenceCount;
+    }
+
+    private sealed class NearbyLinks
+    {
+        public readonly List<(int, int)> Pairs = new();
+        public int Hash;
+        public bool IsValid;
+        public bool Seen;
+    }
+
+    private sealed class ContactComparer : IComparer<PhysicsContact>
+    {
+        public static readonly ContactComparer Instance = new();
+
+        public int Compare(PhysicsContact a, PhysicsContact b)
+        {
+            var result = a.Position.X.CompareTo(b.Position.X);
+            if (result != 0)
+                return result;
+
+            result = a.Position.Y.CompareTo(b.Position.Y);
+            if (result != 0)
+                return result;
+
+            result = a.Position.Z.CompareTo(b.Position.Z);
+            return result != 0 ? result : a.Speed.CompareTo(b.Speed);
+        }
+    }
+
     private sealed class IdBox
     {
         public Guid Id;
@@ -779,7 +1889,11 @@ internal sealed class PhysicsSimulation : IDisposable
         private readonly float _length;
         private readonly float _mass;
 
-        private ShapeKey(PhysicsBody descriptor)
+        // Hull and mesh bodies: the geometry they were built from and the scale baked into the shape.
+        private readonly object _geometry;
+        private readonly Vector3 _scale;
+
+        private ShapeKey(PhysicsBody descriptor, in InstanceInfo info)
         {
             _shape = descriptor.Shape;
             _kind = descriptor.Kind;
@@ -787,9 +1901,27 @@ internal sealed class PhysicsSimulation : IDisposable
             _radius = descriptor.Radius;
             _length = descriptor.Length;
             _mass = descriptor.Kind == PhysicsBodyKind.Dynamic ? descriptor.Mass : 0f;
+
+            switch (EffectiveShape(descriptor))
+            {
+                case PhysicsShapeType.ConvexHull:
+                    _geometry = info.Hull ?? (object)descriptor.MeshTriangles;
+                    _scale = info.Scale;
+                    break;
+
+                case PhysicsShapeType.Mesh:
+                    _geometry = descriptor.MeshTriangles;
+                    _scale = info.Scale;
+                    break;
+
+                default:
+                    _geometry = null;
+                    _scale = default;
+                    break;
+            }
         }
 
-        public static ShapeKey From(PhysicsBody descriptor) => new(descriptor);
+        public static ShapeKey From(PhysicsBody descriptor, in InstanceInfo info) => new(descriptor, info);
 
         public bool Equals(ShapeKey other)
         {
@@ -798,12 +1930,14 @@ internal sealed class PhysicsSimulation : IDisposable
                    && _size == other._size
                    && _radius.Equals(other._radius)
                    && _length.Equals(other._length)
-                   && _mass.Equals(other._mass);
+                   && _mass.Equals(other._mass)
+                   && ReferenceEquals(_geometry, other._geometry)
+                   && _scale == other._scale;
         }
 
         public override bool Equals(object obj) => obj is ShapeKey other && Equals(other);
 
-        public override int GetHashCode() => HashCode.Combine((int)_shape, (int)_kind, _size, _radius, _length, _mass);
+        public override int GetHashCode() => HashCode.Combine((int)_shape, (int)_kind, _size, _radius, _length, _mass, _scale);
     }
 
     private sealed class BodyEntry
@@ -831,11 +1965,27 @@ internal sealed class PhysicsSimulation : IDisposable
         public float LinearDamping;
         public float AngularDamping;
         public float GravityScale = 1f;
+        public int Group;
+        public Vector4 Color = Vector4.One;
+
+        /// <summary>Linear speed at the latest fixed step, published in the point's F2.</summary>
+        public float Speed;
+
+        /// <summary>Centre of mass relative to the pivot the body is published at. Zero for primitives and meshes.</summary>
+        public Vector3 LocalCenter;
+
+        /// <summary>Set when the shape is shared with other bodies and must be released through the shared table.</summary>
+        public SharedShapeKey? SharedShape;
     }
 
     private sealed class JointEntry
     {
         public ConstraintHandle Handle;
+
+        /// <summary>A world weld is two Bepu constraints: one holds the position, one the orientation.</summary>
+        public ConstraintHandle SecondHandle;
+
+        public bool HasSecondHandle;
         public int Hash;
     }
 
@@ -844,10 +1994,14 @@ internal sealed class PhysicsSimulation : IDisposable
         public readonly float Friction;
         public readonly float Bounciness;
 
-        public PhysicsMaterial(float friction, float bounciness)
+        /// <summary>Collision group; two collidables with the same non-zero group pass through each other.</summary>
+        public readonly int Group;
+
+        public PhysicsMaterial(float friction, float bounciness, int group = 0)
         {
             Friction = Math.Clamp(friction, 0f, 4f);
             Bounciness = Math.Clamp(bounciness, 0f, 1f);
+            Group = group;
         }
     }
 
@@ -867,16 +2021,16 @@ internal sealed class PhysicsSimulation : IDisposable
             Array.Clear(_statics);
         }
 
-        public void SetBody(int handle, float friction, float bounciness)
+        public void SetBody(int handle, float friction, float bounciness, int group = 0)
         {
             EnsureCapacity(ref _bodies, handle);
-            _bodies[handle] = new PhysicsMaterial(friction, bounciness);
+            _bodies[handle] = new PhysicsMaterial(friction, bounciness, group);
         }
 
-        public void SetStatic(int handle, float friction, float bounciness)
+        public void SetStatic(int handle, float friction, float bounciness, int group = 0)
         {
             EnsureCapacity(ref _statics, handle);
-            _statics[handle] = new PhysicsMaterial(friction, bounciness);
+            _statics[handle] = new PhysicsMaterial(friction, bounciness, group);
         }
 
         public PhysicsMaterial Get(CollidableReference reference)
@@ -899,6 +2053,7 @@ internal sealed class PhysicsSimulation : IDisposable
     {
         public Vector3 Gravity = new(0f, -9.81f, 0f);
         public float ContactFrequency = 30f;
+        public float ContactSpeedThreshold = 1f;
     }
 
     private struct NarrowPhaseCallbacks : INarrowPhaseCallbacks
@@ -909,6 +2064,9 @@ internal sealed class PhysicsSimulation : IDisposable
         /** One list per worker thread, so recording an impact needs no synchronization. */
         public List<BounceRequest>[] BounceRequests;
 
+        /** Impacts to publish, recorded the same way. */
+        public List<PhysicsContact>[] ContactRequests;
+
         public void Initialize(Simulation simulation)
         {
             _simulation = simulation;
@@ -916,7 +2074,8 @@ internal sealed class PhysicsSimulation : IDisposable
 
         public bool AllowContactGeneration(int workerIndex, CollidableReference a, CollidableReference b, ref float speculativeMargin)
         {
-            return true;
+            var group = Materials.Get(a).Group;
+            return group == 0 || group != Materials.Get(b).Group;
         }
 
         public bool AllowContactGeneration(int workerIndex, CollidablePair pair, int childIndexA, int childIndexB)
@@ -938,8 +2097,8 @@ internal sealed class PhysicsSimulation : IDisposable
             // rebound. Bounce is added after the step from the impacts recorded here.
             pairMaterial = new PairMaterialProperties(friction, 2f, new SpringSettings(Settings.ContactFrequency, 1f));
 
-            if (bounciness > 0f && manifold.Count > 0)
-                RecordImpact(workerIndex, pair, manifold.GetNormal(0), bounciness);
+            if (manifold.Count > 0)
+                RecordImpact(workerIndex, pair, manifold.GetNormal(0), manifold.GetOffset(0), manifold.GetDepth(0), bounciness);
 
             return true;
         }
@@ -954,7 +2113,7 @@ internal sealed class PhysicsSimulation : IDisposable
         {
         }
 
-        private void RecordImpact(int workerIndex, CollidablePair pair, Vector3 normal, float bounciness)
+        private void RecordImpact(int workerIndex, CollidablePair pair, Vector3 normal, Vector3 offset, float depth, float bounciness)
         {
             var bodyA = ReadMotion(pair.A, out var velocityA, out var inverseMassA);
             var bodyB = ReadMotion(pair.B, out var velocityB, out var inverseMassB);
@@ -962,7 +2121,22 @@ internal sealed class PhysicsSimulation : IDisposable
             // Bepu's manifold normal points from B to A; flipped, a positive value means the pair is closing.
             normal = -normal;
             var approachSpeed = Vector3.Dot(velocityA - velocityB, normal);
-            if (approachSpeed < MinBounceSpeed)
+
+            // A speculative contact exists before the surfaces meet. Reporting it only once the pair reaches
+            // touching distance within this step keeps a fall from being reported on every frame of its approach.
+            if (approachSpeed >= Settings.ContactSpeedThreshold && depth > -approachSpeed * SpeculativeContactWindow)
+            {
+                ContactRequests[workerIndex].Add(new PhysicsContact
+                                                     {
+                                                         // Contact offsets are relative to the first collidable of the pair.
+                                                         Position = ReadPosition(pair.A) + offset,
+                                                         Normal = normal,
+                                                         Speed = approachSpeed,
+                                                         PairKey = ((ulong)pair.A.Packed << 32) | pair.B.Packed,
+                                                     });
+            }
+
+            if (bounciness <= 0f || approachSpeed < MinBounceSpeed)
                 return;
 
             BounceRequests[workerIndex].Add(new BounceRequest
@@ -988,6 +2162,13 @@ internal sealed class PhysicsSimulation : IDisposable
             velocity = body.Velocity.Linear;
             inverseMass = body.LocalInertia.InverseMass;
             return reference.BodyHandle.Value;
+        }
+
+        private Vector3 ReadPosition(CollidableReference reference)
+        {
+            return reference.Mobility == CollidableMobility.Static
+                       ? _simulation.Statics[reference.StaticHandle].Pose.Position
+                       : _simulation.Bodies[reference.BodyHandle].Pose.Position;
         }
 
         private Simulation _simulation;
@@ -1042,6 +2223,20 @@ internal sealed class PhysicsSimulation : IDisposable
 
     private const int NoBody = -1;
 
+    /** Seconds of approach within which a not-yet-touching pair counts as an impact; one 60 Hz step. */
+    private const float SpeculativeContactWindow = 1f / 60f;
+
+    /** Contacts kept per update. A pile settling can produce thousands; past this they add cost, not information. */
+    private const int MaxContactsPerUpdate = 4096;
+
+    /** Acceleration in m/s² a continuous force needs to wake a sleeping body. */
+    private const float MinWakeAcceleration = 0.05f;
+
+    private const int MaxNearbyLinks = 50000;
+
+    /** Softness of a hinge motor: how readily it gives way under load instead of forcing its speed. */
+    private const float MotorSoftness = 0.0001f;
+
     private readonly object _logSource;
     private Simulation _simulation;
     private BufferPool _pool;
@@ -1061,6 +2256,30 @@ internal sealed class PhysicsSimulation : IDisposable
     private readonly List<Guid> _removeJoints = new();
     private List<PhysicsBody> _frameBodies;
     private List<PhysicsJoint> _frameJoints;
+    private List<PhysicsForce> _frameForces;
+
+    private List<PhysicsContact>[] _contactRequests = [];
+    private readonly List<PhysicsContact> _contacts = new();
+    private readonly List<PhysicsContact> _contactOrder = new();
+    private readonly List<PhysicsForce> _continuousForces = new();
+    private readonly Dictionary<Guid, int> _impulseCounts = new();
+    private readonly ConditionalWeakTable<PhysicsForce, IdBox> _implicitForceIds = new();
+    private readonly Dictionary<SharedShapeKey, SharedShape> _sharedShapes = new();
+    private readonly Dictionary<Guid, NearbyLinks> _nearbyLinks = new();
+    private readonly List<Vector3> _linkPositions = new();
+    private readonly Dictionary<(int, int, int), List<int>> _linkCells = new();
+
+    /** Reused description for one instance of an instanced body; only valid inside ReconcileBodies. */
+    private readonly PhysicsBody _instanceBody = new();
+    private readonly List<(PhysicsBody Descriptor, int Start, int Count)> _bodyRanges = new();
+
+    private static readonly PhysicsBodyInstance[] SingleInstance =
+        [new() { Orientation = Quaternion.Identity, Scale = Vector3.One, Color = Vector4.One, HullIndex = -1 }];
+
+    private HashSet<ulong> _previousContactPairs = new();
+    private HashSet<ulong> _currentContactPairs = new();
+    private bool _hasLoggedFieldForceError;
+    private bool _hasLoggedLinkLimitWarning;
 
     private float _fixedRate = 60f;
     private int _substeps = 2;
