@@ -1,0 +1,161 @@
+{
+  "FormatVersion": 3,
+  "Id": "0f11509d-c28e-57c5-92c7-239dd2839283",
+  "Description": "A net of 196 knots, linked to their neighbours, falls over a sphere.\n\nThe knots are one [RigidBody] on a flat [GridPoints] grid. A [RigidJoint] in Nearby mode links every two knots that start within LinkDistance, which on this grid is each knot's four neighbours.\n\nAKA: cloth, net, fabric, mesh, drape\n\nTips\n- LinkDistance just above the grid spacing links neighbours only; above 1.42 times the spacing it adds the diagonals and the net gets stiffer.\n- CollisionGroup 1 lets the knots pass through each other while they still collide with the sphere.",
+  "InputUis": [],
+  "SymbolChildUis": [
+    {
+      "ChildId": "b1bf7cb5-1a6c-5732-8d5e-82e7c1ff28a1",
+      "SymbolName": "Lib.point.generate.GridPoints",
+      "Position": {
+        "X": 0.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "bf41e7fc-4dd2-5d0c-a23d-909c7a6f5c52",
+      "SymbolName": "Lib.point.helper.ReadPointsFromGpu",
+      "Position": {
+        "X": 300.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "c26ae8ed-be1d-5db6-9411-925309333cfc",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 600.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "5e4ca567-f1fb-5944-9240-0100746487fd",
+      "SymbolName": "Lib.physics.RigidJoint",
+      "Position": {
+        "X": 600.0,
+        "Y": 150.0
+      }
+    },
+    {
+      "ChildId": "634c326e-b2a5-53bb-b16a-ae0e50befab6",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 600.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "9c762610-2523-5b60-a4a6-f6953020c06c",
+      "SymbolName": "Lib.physics.PhysicsWorld",
+      "Position": {
+        "X": 900.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "70acbda2-49a3-521f-afe9-d41e5e945b76",
+      "SymbolName": "Lib.mesh.generate.SphereMesh",
+      "Position": {
+        "X": 1200.0,
+        "Y": 150.0
+      }
+    },
+    {
+      "ChildId": "7710a91f-6940-5a14-b84c-5b4d3f23caa4",
+      "SymbolName": "Lib.mesh.modify.TransformMesh",
+      "Position": {
+        "X": 1500.0,
+        "Y": 150.0
+      }
+    },
+    {
+      "ChildId": "6e3ee00e-daba-5af8-981a-60be7f57a606",
+      "SymbolName": "Lib.mesh.draw.DrawMeshUnlit",
+      "Position": {
+        "X": 1800.0,
+        "Y": 150.0
+      }
+    },
+    {
+      "ChildId": "296be3dc-cdf2-59f1-9166-c2b2a089f81c",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 600.0,
+        "Y": 450.0
+      }
+    },
+    {
+      "ChildId": "6a5a991c-3aa8-551e-a26c-0c8a51eb9a7a",
+      "SymbolName": "Lib.mesh.generate.CubeMesh",
+      "Position": {
+        "X": 1200.0,
+        "Y": 600.0
+      }
+    },
+    {
+      "ChildId": "b9359a80-8085-5211-9df3-3050f33c4efe",
+      "SymbolName": "Lib.mesh.modify.TransformMesh",
+      "Position": {
+        "X": 1500.0,
+        "Y": 600.0
+      }
+    },
+    {
+      "ChildId": "fdb180c4-b9eb-558e-bb94-2c09dfda27c0",
+      "SymbolName": "Lib.mesh.draw.DrawMeshUnlit",
+      "Position": {
+        "X": 1800.0,
+        "Y": 600.0
+      }
+    },
+    {
+      "ChildId": "cbd1adc9-bdc9-5a2c-af59-dd5aef3d4bfc",
+      "SymbolName": "Lib.mesh.generate.SphereMesh",
+      "Position": {
+        "X": 1200.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "ec413c08-38d1-5496-a75d-0a277cb52959",
+      "SymbolName": "Lib.mesh.draw.DrawMeshAtPoints",
+      "Position": {
+        "X": 1800.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "5f697d81-8878-540a-8b48-0ad6b515fb33",
+      "SymbolName": "Lib.render.transform.Group",
+      "Position": {
+        "X": 2100.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "f1d23af4-f963-5752-b16d-ad46ac76fbdc",
+      "SymbolName": "Lib.render.camera.Camera",
+      "Position": {
+        "X": 2400.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "62c84094-9742-5e0f-8080-dd6e1509832e",
+      "SymbolName": "Lib.image.generate.basic.RenderTarget",
+      "Position": {
+        "X": 2700.0,
+        "Y": 0.0
+      }
+    }
+  ],
+  "OutputUis": [
+    {
+      "OutputId": "a317d219-6efd-593b-939f-e483889ea7bf",
+      "Position": {
+        "X": 3000.0,
+        "Y": 0.0
+      }
+    }
+  ]
+}

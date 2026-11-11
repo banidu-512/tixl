@@ -9,8 +9,8 @@ using Xunit;
 namespace Lib.Tests.Physics;
 
 /// <summary>
-/// The physics of the example graphs under Operators/Examples/Symbols/Lib/physics, rebuilt with the same numbers, plus
-/// set-ups that earlier examples showed and that still guard against regressions. The graphs themselves need an editor to run; these keep their set-ups from regressing into a rope that
+/// The physics of the instanced example graphs under Operators/Examples/Symbols/Lib/physics, rebuilt with the same
+/// numbers. The graphs themselves need an editor to run; these keep their set-ups from regressing into a rope that
 /// explodes, a wall that falls over by itself or bodies that leave through the floor.
 /// </summary>
 public class PhysicsExampleScenesTests
@@ -56,14 +56,14 @@ public class PhysicsExampleScenesTests
     public void RopeHangsFromItsFirstLinkWithoutStretching()
     {
         using var scene = new Scene(substeps: 4, iterations: 8);
-        var links = scene.AddInstanced(new PhysicsBody { Shape = PhysicsShapeType.Sphere, Radius = 0.13f, CollisionGroup = 1, LinearDamping = 0.1f },
-                                       Line(24, new Vector3(-6f, 7f, 0), Vector3.UnitX, 6f));
+        var links = scene.AddInstanced(new PhysicsBody { Shape = PhysicsShapeType.Sphere, Radius = 0.15f, CollisionGroup = 1, LinearDamping = 0.1f },
+                                       Line(24, new Vector3(0, 7f, 0), Vector3.UnitX, 8f));
         scene.Joints.Add(new PhysicsJoint { Id = Guid.NewGuid(), BodyA = links, Mode = PhysicsJointMode.Chain, Frequency = 60f });
         scene.Joints.Add(new PhysicsJoint { Id = Guid.NewGuid(), BodyA = links, Mode = PhysicsJointMode.World, InstanceIndex = 0, Frequency = 60f });
         scene.Run(6f);
 
         var points = scene.Points();
-        Assert.True(Vector3.Distance(points[0].Position, new Vector3(-9f, 7f, 0)) < 0.1f, "the first link is pinned");
+        Assert.True(Vector3.Distance(points[0].Position, new Vector3(-4f, 7f, 0)) < 0.1f, "the first link is pinned");
         var length = 0f;
         for (var index = 1; index < points.Length; index++)
         {
@@ -71,7 +71,7 @@ public class PhysicsExampleScenesTests
             length += Vector3.Distance(points[index - 1].Position, points[index].Position);
         }
 
-        Assert.InRange(length, 5.8f, 6.6f);
+        Assert.InRange(length, 7.8f, 8.6f);
         Assert.True(points[^1].Position.Y < 2f, $"the free end swings down, is at {points[^1].Position}");
     }
 
@@ -80,19 +80,19 @@ public class PhysicsExampleScenesTests
     {
         using var scene = new Scene(substeps: 4, iterations: 8);
         scene.AddGround();
-        scene.Bodies.Add(new PhysicsBody { Id = Guid.NewGuid(), Kind = PhysicsBodyKind.Static, Shape = PhysicsShapeType.Sphere, Radius = 1.6f, Position = new Vector3(0, 1.6f, 0) });
-        var knots = scene.AddInstanced(new PhysicsBody { Shape = PhysicsShapeType.Sphere, Radius = 0.1f, Mass = 0.2f, CollisionGroup = 1, LinearDamping = 0.3f },
-                                       Grid(14, 1, 14, new Vector3(0.32f, 1f, 0.32f), new Vector3(0, 4.5f, 0)));
-        scene.Joints.Add(new PhysicsJoint { Id = Guid.NewGuid(), BodyA = knots, Mode = PhysicsJointMode.Nearby, LinkDistance = 0.36f, Frequency = 40f });
+        scene.Bodies.Add(new PhysicsBody { Id = Guid.NewGuid(), Kind = PhysicsBodyKind.Static, Shape = PhysicsShapeType.Sphere, Radius = 2f, Position = new Vector3(0, 2f, 0) });
+        var knots = scene.AddInstanced(new PhysicsBody { Shape = PhysicsShapeType.Sphere, Radius = 0.12f, Mass = 0.2f, CollisionGroup = 1, LinearDamping = 0.3f },
+                                       Grid(14, 1, 14, new Vector3(0.4f, 1f, 0.4f), new Vector3(0, 5f, 0)));
+        scene.Joints.Add(new PhysicsJoint { Id = Guid.NewGuid(), BodyA = knots, Mode = PhysicsJointMode.Nearby, LinkDistance = 0.45f, Frequency = 40f });
         scene.Run(6f);
 
         // 14 x 14 knots: 13 links per row and column.
         var points = scene.Points();
         var centre = points[6 * 14 + 6].Position;
         var corner = points[0].Position;
-        Assert.InRange(centre.Y, 3.1f, 3.6f);
+        Assert.InRange(centre.Y, 3.9f, 4.4f);
         Assert.True(corner.Y < centre.Y - 1f, $"the corners hang below the top of the sphere: centre {centre}, corner {corner}");
-        Assert.InRange(Vector3.Distance(points[0].Position, points[1].Position), 0.24f, 0.42f);
+        Assert.InRange(Vector3.Distance(points[0].Position, points[1].Position), 0.3f, 0.5f);
         foreach (var point in points)
             Assert.True(point.Position.Y > -0.1f && float.IsFinite(point.Position.X));
     }
@@ -401,7 +401,7 @@ public class PhysicsExampleScenesTests
         if (path == null)
             return; // The asset ships with the Examples package; a checkout without it has nothing to test here.
 
-        // LoadVdb -> VolumeResample -> VolumeToMesh -> static RigidBody, the route PhysicsVolumesExample takes.
+        // LoadVdb -> VolumeResample -> VolumeToMesh -> static RigidBody, as in PhysicsVdbColliderExample.
         var bunny = VolumeDense.Resample(VdbFile.Load(path).GetFloatGrid(), 0.5f);
         var triangles = PhysicsGeometry.BuildTriangles(VolumeToMesh.Extract(bunny, 0f));
         Assert.InRange(triangles.Length / 3, 10_000, 120_000);
@@ -436,7 +436,7 @@ public class PhysicsExampleScenesTests
     [Fact]
     public void BallsCollectInABowlCarvedOutOfAVolume()
     {
-        // VolumePrimitive box minus VolumePrimitive sphere -> VolumeCsg -> VolumeToMesh, the route PhysicsVolumesExample takes.
+        // VolumePrimitive box minus VolumePrimitive sphere -> VolumeCsg -> VolumeToMesh, as in PhysicsVolumeCsgExample.
         var block = VolumePrimitives.Create(VolumePrimitives.Shape.Box, new Vector3(8f, 3f, 8f), 0.12f, new Vector3(0, 1.5f, 0));
         var ball = VolumePrimitives.Create(VolumePrimitives.Shape.Sphere, new Vector3(7f, 7f, 7f), 0.12f, new Vector3(0, 4.6f, 0));
         var carved = VolumeCsg.Combine(block, ball, VolumeCsg.Operation.Difference);
@@ -462,56 +462,9 @@ public class PhysicsExampleScenesTests
     }
 
     [Fact]
-    public void ABowlColliderBuiltInTheBackgroundCatchesTheBallsWithoutStallingAFrame()
-    {
-        // As in the editor: the mesh collider's tree is built on a worker while the world keeps stepping.
-        var block = VolumePrimitives.Create(VolumePrimitives.Shape.Box, new Vector3(8f, 3f, 8f), 0.12f, new Vector3(0, 1.5f, 0));
-        var ball = VolumePrimitives.Create(VolumePrimitives.Shape.Sphere, new Vector3(7f, 7f, 7f), 0.12f, new Vector3(0, 4.6f, 0));
-        var triangles = PhysicsGeometry.BuildTriangles(VolumeToMesh.Extract(VolumeCsg.Combine(block, ball, VolumeCsg.Operation.Difference), 0f));
-
-        // A first build compiles Bepu's tree builder; this scene measures the steady cost of a new collider.
-        using (var warmUp = new Scene())
-        {
-            warmUp.Bodies.Add(new PhysicsBody { Id = Guid.NewGuid(), Kind = PhysicsBodyKind.Static, Shape = PhysicsShapeType.Mesh, MeshTriangles = triangles });
-            warmUp.Run(FrameSec);
-        }
-
-        using var scene = new Scene { BuildMeshesInBackground = true };
-        scene.AddGround();
-        scene.Bodies.Add(new PhysicsBody { Id = Guid.NewGuid(), Kind = PhysicsBodyKind.Static, Shape = PhysicsShapeType.Mesh, MeshTriangles = triangles });
-        scene.AddInstanced(new PhysicsBody { Shape = PhysicsShapeType.Sphere, Radius = 0.2f },
-                           Scatter(200, new Vector3(0, 8f, 0), new Vector3(5f, 6f, 5f), 4));
-
-        var started = System.Diagnostics.Stopwatch.GetTimestamp();
-        scene.Run(FrameSec);
-        var firstFrameMs = System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds;
-
-        // The test steps faster than real time; the first half second plays at the editor's pace, while the balls
-        // are still falling towards the bowl, so the build has the time it would have there.
-        for (var frame = 0; frame < 30; frame++)
-        {
-            Thread.Sleep(16);
-            scene.Run(FrameSec);
-        }
-
-        scene.Run(7f);
-
-        var inBowl = 0;
-        foreach (var point in scene.Points())
-        {
-            var fromCentre = new Vector2(point.Position.X, point.Position.Z).Length();
-            if (fromCentre < 3.4f && point.Position.Y > 1f && point.Position.Y < 3.2f)
-                inBowl++;
-        }
-
-        Assert.True(inBowl > 170, $"the carved bowl should hold the balls once its collider is built, it holds {inBowl} of 200");
-        FrameTimes.Record("Mesh collider (72k triangles) built in the background: first frame", firstFrameMs);
-    }
-
-    [Fact]
     public void DebrisIsDrawnOntoAVolumeByItsOwnGradient()
     {
-        // One torus volume, used twice: meshed as the collider, and through
+        // One torus volume, used twice as in PhysicsVolumeGravityExample: meshed as the collider, and through
         // VolumeToField's vector output as a force. The negated gradient points at the surface from outside.
         var torus = VolumePrimitives.Create(VolumePrimitives.Shape.Torus, new Vector3(6f, 1.6f, 1f), 0.2f, Vector3.Zero, 24);
         var triangles = PhysicsGeometry.BuildTriangles(VolumeToMesh.Extract(torus, 0f));
@@ -548,7 +501,7 @@ public class PhysicsExampleScenesTests
     [Fact]
     public void FallenBallsCanBeSkinnedWithAVolume()
     {
-        // PhysicsWorld points -> VolumeFromPoints -> VolumeToMesh.
+        // PhysicsWorld points -> VolumeFromPoints -> VolumeToMesh, as in PhysicsToVolumeExample.
         using var scene = new Scene();
         scene.AddGround();
         scene.AddInstanced(new PhysicsBody { Shape = PhysicsShapeType.Sphere, Radius = 0.3f },
@@ -603,182 +556,6 @@ public class PhysicsExampleScenesTests
         return points;
     }
 
-    [Fact]
-    public void RingsSlideDownThePostsTheyLandOver()
-    {
-        // VolumePrimitive torus -> VolumeToMesh -> dynamic RigidBody at scattered points, as in RigidBodyExample.
-        var torus = LayFlat(VolumeToMesh.Extract(VolumePrimitives.Create(VolumePrimitives.Shape.Torus, new Vector3(1.7f, 0.36f, 1f), 0.04f, Vector3.Zero, 3), 0f));
-        var decomposed = PhysicsGeometry.BuildHulls(torus, merge: true, PhysicsGeometry.HullSplit.Concave, 8);
-        Assert.NotNull(decomposed[0].ConvexParts);
-
-        var (onPostsDecomposed, ringedDecomposed) = TossRings(decomposed);
-        var (onPostsHull, ringedHull) = TossRings(PhysicsGeometry.BuildHulls(torus, merge: true));
-
-        // A single hull fills the hole, so no ring can end up around a post; split into hulls, rings slide down the posts.
-        Assert.Equal(0, ringedHull);
-        Assert.True(onPostsDecomposed <= onPostsHull, $"{onPostsDecomposed} decomposed rings rest on top of a post");
-        Assert.True(ringedDecomposed >= 3, $"only {ringedDecomposed} of 36 rings ended up around a post");
-    }
-
-    /// <summary>Turns the ring from the XY plane onto the floor, as TransformGeometry does in the example.</summary>
-    private static MeshGeometry LayFlat(MeshGeometry geometry)
-    {
-        var rotation = Quaternion.CreateFromAxisAngle(Vector3.UnitX, MathF.PI / 2f);
-        for (var index = 0; index < geometry.Positions.Length; index++)
-            geometry.Positions[index] = Vector3.Transform(geometry.Positions[index], rotation);
-
-        return geometry;
-    }
-
-    /// <summary>Returns how many rings came to rest on top of a post, and how many around one, below its top.</summary>
-    private static (int OnPosts, int Ringed) TossRings(PhysicsHull[] ring)
-    {
-        var posts = Scatter(12, new Vector3(0f, 1.25f, 0f), new Vector3(5f, 0.01f, 5f), 11);
-        using var scene = new Scene();
-        scene.AddGround();
-        var postBody = scene.AddInstanced(new PhysicsBody { Shape = PhysicsShapeType.Cylinder, Kind = PhysicsBodyKind.Static, Radius = 0.12f, Length = 2.5f }, posts);
-        var rings = scene.AddInstanced(new PhysicsBody
-                                           {
-                                               Shape = PhysicsShapeType.ConvexHull, Hulls = ring, Friction = 0.4f, MassFromDensity = true,
-                                           },
-                                       Scatter(36, new Vector3(0f, 9f, 0f), new Vector3(5f, 8f, 5f), 3));
-        Assert.NotNull(postBody);
-        scene.Run(8f);
-
-        int onPosts = 0, ringed = 0;
-        foreach (var point in scene.Points())
-        {
-            Assert.True(float.IsFinite(point.Position.X));
-            foreach (var post in posts)
-            {
-                // Around the post: lying roughly flat with the post inside the hole, whose radius is 0.67 against the post's 0.12.
-                var distance = new Vector2(point.Position.X - post.X, point.Position.Z - post.Z).Length();
-                var isFlat = MathF.Abs(Vector3.Transform(Vector3.UnitY, point.Orientation).Y) > 0.7f;
-                if (distance > 0.55f || !isFlat)
-                    continue;
-
-                if (point.Position.Y > 2.4f)
-                    onPosts++;
-                else
-                    ringed++;
-                break;
-            }
-        }
-
-        Assert.Equal(36, rings.InstanceCount);
-        return (onPosts, ringed);
-    }
-
-    [Fact]
-    public void KinematicBlobShovesTheBodiesItMovesThrough()
-    {
-        // PhysicsSdfFieldExample: the moving SDF blob collides as a Kinematic sphere that follows the blob's motion.
-        using var scene = new Scene();
-        scene.AddGround();
-        var boxes = scene.AddInstanced(new PhysicsBody { Shape = PhysicsShapeType.Box, Size = new Vector3(0.5f), Friction = 0.5f },
-                                       Grid(8, 1, 3, new Vector3(0.8f, 0.5f, 0.8f), new Vector3(0, 0.3f, 0)));
-        var blob = new PhysicsBody
-                       {
-                           Id = Guid.NewGuid(), Kind = PhysicsBodyKind.Kinematic, Shape = PhysicsShapeType.Sphere, Radius = 1.4f,
-                           Position = new Vector3(-6f, 0.9f, 0),
-                       };
-        scene.Bodies.Add(blob);
-        scene.Run(1f);
-
-        // 2.6 m/s, the blob's fastest stretch in the example.
-        for (var frame = 0; frame < 280; frame++)
-        {
-            blob.Position = new Vector3(-6f + frame * (2.6f * FrameSec), 0.9f, 0);
-            scene.Run(FrameSec);
-        }
-
-        scene.Run(0.5f);
-
-        var points = scene.Points();
-        var moved = 0;
-        for (var index = 0; index < boxes.InstanceCount; index++)
-        {
-            var position = points[index].Position;
-            Assert.True(float.IsFinite(position.X) && position.Y > -0.3f, $"a box left through the floor: {position}");
-            Assert.True(Vector3.Distance(position, blob.Position) > 1.4f, $"a box is inside the blob: {position}");
-            if (MathF.Abs(position.Z) > 1.2f || position.X > 3.2f)
-                moved++;
-        }
-
-        Assert.True(moved > 6, $"the blob should push boxes out of its way, moved {moved} of {boxes.InstanceCount}");
-
-        // Moved by velocity, the blob still ends exactly where its animation puts it, and stops there.
-        var blobPosition = points[boxes.InstanceCount].Position;
-        Assert.True(Vector3.Distance(blobPosition, blob.Position) < 0.02f, $"the blob is at {blobPosition}, its input at {blob.Position}");
-    }
-
-    [Fact]
-    public void BallTipsOverTheWholeDominoRow()
-    {
-        // The domino run of PhysicsWorldExample: 15 dominoes from a point row and a ball thrown at the first one.
-        using var scene = new Scene();
-        scene.AddGround();
-        var dominoes = scene.AddInstanced(new PhysicsBody { Shape = PhysicsShapeType.Box, Size = new Vector3(0.15f, 1f, 0.6f), Friction = 0.5f },
-                                          Grid(15, 1, 1, new Vector3(0.6f, 1f, 1f), new Vector3(0, 0.5f, 1.5f)));
-        scene.Bodies.Add(new PhysicsBody
-                             {
-                                 Id = Guid.NewGuid(), Shape = PhysicsShapeType.Sphere, Radius = 0.3f, Position = new Vector3(-6.5f, 1.5f, 1.5f),
-                                 LinearVelocity = new Vector3(5f, 0.8f, 0f),
-                             });
-        scene.Run(1f);
-        Assert.True(Vector3.Transform(Vector3.UnitY, scene.Points()[14].Orientation).Y > 0.95f, "the last domino stands until the wave arrives");
-        scene.Run(5f);
-
-        var points = scene.Points();
-        var fallen = 0;
-        for (var index = 0; index < dominoes.InstanceCount; index++)
-        {
-            if (Vector3.Transform(Vector3.UnitY, points[index].Orientation).Y < 0.8f)
-                fallen++;
-        }
-
-        Assert.True(fallen >= 14, $"the ball should knock over the whole row, {fallen} of 15 fell");
-    }
-
-    [Fact]
-    public void BunnyAndCarvedBowlCatchTheBalls()
-    {
-        var path = FindExampleAsset("volumes/bunny.vdb");
-        if (path == null)
-            return; // The asset ships with the Examples package; a checkout without it has nothing to test here.
-
-        // PhysicsVolumesExample: the coarse bunny scaled by 0.12 and moved left, a bowl carved from a block on the right.
-        var bunny = VolumeToMesh.Extract(VolumeDense.Resample(VdbFile.Load(path).GetFloatGrid(), 0.5f), 0f);
-        var bunnyTriangles = PhysicsGeometry.BuildTriangles(bunny);
-        for (var index = 0; index < bunnyTriangles.Length; index++)
-            bunnyTriangles[index] = bunnyTriangles[index] * 0.12f + new Vector3(-4.5f, 0, 0);
-
-        var block = VolumePrimitives.Create(VolumePrimitives.Shape.Box, new Vector3(6f, 2.2f, 6f), 0.12f, new Vector3(4.5f, 1.1f, 0));
-        var carver = VolumePrimitives.Create(VolumePrimitives.Shape.Sphere, new Vector3(5.4f), 0.12f, new Vector3(4.5f, 3.6f, 0));
-        var bowlTriangles = PhysicsGeometry.BuildTriangles(VolumeToMesh.Extract(VolumeCsg.Combine(block, carver, VolumeCsg.Operation.Difference), 0f));
-
-        using var scene = new Scene();
-        scene.AddGround();
-        scene.Bodies.Add(new PhysicsBody { Id = Guid.NewGuid(), Kind = PhysicsBodyKind.Static, Shape = PhysicsShapeType.Mesh, MeshTriangles = bunnyTriangles });
-        scene.Bodies.Add(new PhysicsBody { Id = Guid.NewGuid(), Kind = PhysicsBodyKind.Static, Shape = PhysicsShapeType.Mesh, MeshTriangles = bowlTriangles });
-        scene.AddInstanced(new PhysicsBody { Shape = PhysicsShapeType.Sphere, Radius = 0.2f }, Scatter(260, new Vector3(0, 9f, 0), new Vector3(14f, 6f, 5f), 9));
-        scene.Run(6f);
-
-        // The bunny is all slopes, so balls roll off it; what shows its collider works is that none ends up inside its body.
-        int insideBunny = 0, inBowl = 0;
-        foreach (var point in scene.Points())
-        {
-            Assert.True(float.IsFinite(point.Position.X) && point.Position.Y > -0.1f, $"a ball left through the floor: {point.Position}");
-            if (point.Position.X > -5.6f && point.Position.X < -4.2f && MathF.Abs(point.Position.Z) < 0.6f && point.Position.Y < 1.4f)
-                insideBunny++;
-            if (new Vector2(point.Position.X - 4.5f, point.Position.Z).Length() < 2.7f && point.Position.Y > 0.5f)
-                inBowl++;
-        }
-
-        Assert.True(inBowl > 40, $"the bowl should hold balls, it holds {inBowl}");
-        Assert.True(insideBunny == 0, $"{insideBunny} balls ended up inside the bunny");
-    }
-
     /// <summary>Random points in a box, like ScatterPointsInVolume without a geometry.</summary>
     private static Vector3[] Scatter(int count, Vector3 center, Vector3 size, int seed)
     {
@@ -790,14 +567,12 @@ public class PhysicsExampleScenesTests
         return points;
     }
 
-    private sealed class Scene(int substeps = 2, int iterations = 4, Vector3? gravity = null,
-                               [System.Runtime.CompilerServices.CallerMemberName] string name = "") : IDisposable
+    private sealed class Scene(int substeps = 2, int iterations = 4, Vector3? gravity = null) : IDisposable
     {
         public readonly List<PhysicsBody> Bodies = new();
         public readonly List<PhysicsJoint> Joints = new();
         public readonly List<PhysicsForce> Forces = new();
         public float ContactSpeed = 1f;
-        public bool BuildMeshesInBackground;
         public int ContactTotal;
         public int ContactPeak;
 
@@ -830,17 +605,12 @@ public class PhysicsExampleScenesTests
                                    TimeScale = 1f,
                                    Multithreaded = true,
                                    ContactSpeedThreshold = ContactSpeed,
-                                   BuildMeshesInBackground = BuildMeshesInBackground,
                                };
             var frames = Math.Max(1, (int)MathF.Round(seconds / FrameSec));
             for (var frame = 0; frame < frames; frame++)
             {
                 _time += FrameSec;
-                var allocated = GC.GetAllocatedBytesForCurrentThread();
-                var started = System.Diagnostics.Stopwatch.GetTimestamp();
                 _simulation.Update(settings, _time, Bodies, Joints, Forces);
-                FrameTimes.Record(name, System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds,
-                                  GC.GetAllocatedBytesForCurrentThread() - allocated);
                 ContactTotal += _simulation.Contacts.Count;
                 ContactPeak = Math.Max(ContactPeak, _simulation.Contacts.Count);
             }

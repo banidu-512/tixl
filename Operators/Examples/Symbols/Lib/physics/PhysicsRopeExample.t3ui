@@ -1,0 +1,105 @@
+{
+  "FormatVersion": 3,
+  "Id": "c1815df0-b2e8-578b-b0ef-c5dc3cbfaca1",
+  "Description": "A rope of 24 links from a line of points, hung by its first link.\n\nOne [RigidBody] makes a link per point of [LinePoints]. A [RigidJoint] in Chain mode joins each link to the next, and a second one in World mode with InstanceIndex 0 pins the first link where it starts.\n\nAKA: rope, chain, pendulum, string, cable\n\nTips\n- CollisionGroup 1 on the links keeps neighbours from pushing each other apart.\n- Raise Substeps on [PhysicsWorld] if a long rope stretches.\n- Set InstanceIndex to a large number to pin the last link instead, or add a third joint to pin both ends.",
+  "InputUis": [],
+  "SymbolChildUis": [
+    {
+      "ChildId": "ed359c46-4fdf-5b26-aa9e-097e0973d048",
+      "SymbolName": "Lib.point.generate.LinePoints",
+      "Position": {
+        "X": 0.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "01ef7cab-864c-5e1d-900e-5d7d7708b830",
+      "SymbolName": "Lib.point.helper.ReadPointsFromGpu",
+      "Position": {
+        "X": 300.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "8134623f-8e57-5b7e-943e-48c53e13c639",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 600.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "07773136-fadb-55e4-86ef-a1f099584b2b",
+      "SymbolName": "Lib.physics.RigidJoint",
+      "Position": {
+        "X": 600.0,
+        "Y": 150.0
+      }
+    },
+    {
+      "ChildId": "eb588579-54ed-5a5d-90a2-c40ed75fda75",
+      "SymbolName": "Lib.physics.RigidJoint",
+      "Position": {
+        "X": 600.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "bb7db32b-68db-55a2-b03b-5ca9ff3d1627",
+      "SymbolName": "Lib.physics.PhysicsWorld",
+      "Position": {
+        "X": 900.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "4a9b7718-0c1f-548f-88af-3aae84729bc9",
+      "SymbolName": "Lib.mesh.generate.SphereMesh",
+      "Position": {
+        "X": 1200.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "e8319146-f1ff-57f1-99a8-e636548e6489",
+      "SymbolName": "Lib.mesh.draw.DrawMeshAtPoints",
+      "Position": {
+        "X": 1800.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "634bfa59-16cc-57a4-bc04-8a9a9b957e9d",
+      "SymbolName": "Lib.render.transform.Group",
+      "Position": {
+        "X": 2100.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "b4af01af-880b-55ce-b9a5-a131e097e233",
+      "SymbolName": "Lib.render.camera.Camera",
+      "Position": {
+        "X": 2400.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "777ab5b3-3c27-50d7-a275-185458ed905a",
+      "SymbolName": "Lib.image.generate.basic.RenderTarget",
+      "Position": {
+        "X": 2700.0,
+        "Y": 0.0
+      }
+    }
+  ],
+  "OutputUis": [
+    {
+      "OutputId": "da4d72a3-28ee-55a1-823d-7f2acac9fa10",
+      "Position": {
+        "X": 3000.0,
+        "Y": 0.0
+      }
+    }
+  ]
+}

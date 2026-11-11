@@ -1,0 +1,121 @@
+{
+  "FormatVersion": 3,
+  "Id": "d73c1700-6d8b-5e84-93e3-e4d60c17518d",
+  "Description": "Bouncing balls; every impact flashes at the point where it happens.\n\nThe Contacts output of [PhysicsWorld] holds one point per impact of the current frame, with the impact speed in F1. Here a second [DrawMeshAtPoints] draws a bright sphere at each of them, so an impact shows as a one-frame flash.\n\nAKA: collision events, impacts, hits, sparks, contact points\n\nTips\n- Contacts last one frame: feed them to a particle emitter for sparks or dust that linger.\n- Raise ContactSpeed on [PhysicsWorld] to report hard hits only.\n- Unused points of the buffer have zero scale, so they draw nothing.",
+  "InputUis": [],
+  "SymbolChildUis": [
+    {
+      "ChildId": "fc9fc5d9-9519-52f9-963f-87816b4f365f",
+      "SymbolName": "Lib.geometry.ScatterPointsInVolume",
+      "Position": {
+        "X": 0.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "85a3e0a1-7f14-518f-a9c3-c60eaf93ab53",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 600.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "1b66d1ec-8aaa-5db6-948a-8c9f33db4917",
+      "SymbolName": "Lib.physics.PhysicsWorld",
+      "Position": {
+        "X": 900.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "53ea9cfa-5ff2-53ab-bc77-16bf38334d94",
+      "SymbolName": "Lib.mesh.draw.DrawMeshAtPoints",
+      "Position": {
+        "X": 1800.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "1c3f7d0c-5629-5835-9a15-332a6e3c9b89",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 600.0,
+        "Y": 450.0
+      }
+    },
+    {
+      "ChildId": "fe451128-2d9d-597f-90f0-2777ce446c41",
+      "SymbolName": "Lib.mesh.generate.CubeMesh",
+      "Position": {
+        "X": 1200.0,
+        "Y": 600.0
+      }
+    },
+    {
+      "ChildId": "eb2935f7-cac6-52a6-99a4-59fb62c1cd2f",
+      "SymbolName": "Lib.mesh.modify.TransformMesh",
+      "Position": {
+        "X": 1500.0,
+        "Y": 600.0
+      }
+    },
+    {
+      "ChildId": "ccd82b14-14fb-5d9a-85e5-eac11a1b0fdc",
+      "SymbolName": "Lib.mesh.draw.DrawMeshUnlit",
+      "Position": {
+        "X": 1800.0,
+        "Y": 600.0
+      }
+    },
+    {
+      "ChildId": "706adcc1-33f3-5db4-be49-b600fbb593dd",
+      "SymbolName": "Lib.mesh.generate.SphereMesh",
+      "Position": {
+        "X": 1200.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "eff760ac-9854-5bdb-a5c3-0f8dd29ce105",
+      "SymbolName": "Lib.mesh.draw.DrawMeshAtPoints",
+      "Position": {
+        "X": 1800.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "117aae16-d42f-52f8-9a19-35ec3a048774",
+      "SymbolName": "Lib.render.transform.Group",
+      "Position": {
+        "X": 2100.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "cfa881c6-9907-5aef-bbd0-fb53ed953a00",
+      "SymbolName": "Lib.render.camera.Camera",
+      "Position": {
+        "X": 2400.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "ae850031-f6a9-5f20-a126-74509aaea2d5",
+      "SymbolName": "Lib.image.generate.basic.RenderTarget",
+      "Position": {
+        "X": 2700.0,
+        "Y": 0.0
+      }
+    }
+  ],
+  "OutputUis": [
+    {
+      "OutputId": "9f7f71f8-7201-5bba-b182-901f6cd2e20a",
+      "Position": {
+        "X": 3000.0,
+        "Y": 0.0
+      }
+    }
+  ]
+}

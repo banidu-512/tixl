@@ -1,0 +1,153 @@
+{
+  "FormatVersion": 3,
+  "Id": "2a931f95-a85a-5412-a205-3c750bebb02e",
+  "Description": "Balls rain on a torus that comes from a volume.\n\n[VolumePrimitive] builds a level set and [VolumeToMesh] turns it into geometry. Connected to the Geometry input of a static [RigidBody], that geometry is the collider, triangle for triangle. Any volume works the same way, including one loaded with [LoadVdb].\n\nAKA: voxel collider, vdb, level set, mesh collider, static mesh\n\nTips\n- A static body with Geometry collides as the exact mesh; a dynamic one is wrapped in a convex hull.\n- A coarser VoxelSize gives fewer triangles and a cheaper collider.\n- A volume that changes rebuilds the collider, so animate it sparingly.",
+  "InputUis": [],
+  "SymbolChildUis": [
+    {
+      "ChildId": "7bbede36-a16c-5ec6-a286-eb3e6c5104e4",
+      "SymbolName": "Lib.volume.generate.VolumePrimitive",
+      "Position": {
+        "X": 0.0,
+        "Y": 150.0
+      }
+    },
+    {
+      "ChildId": "2c8d4788-08ff-5c8d-8465-2147842a22b5",
+      "SymbolName": "Lib.volume.convert.VolumeToMesh",
+      "Position": {
+        "X": 300.0,
+        "Y": 150.0
+      }
+    },
+    {
+      "ChildId": "26d752e9-6ec2-5c36-b994-baf8d10afabf",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 600.0,
+        "Y": 150.0
+      }
+    },
+    {
+      "ChildId": "e4f90a4c-2f6d-5bee-8172-0ecee56c0a82",
+      "SymbolName": "Lib.geometry.ScatterPointsInVolume",
+      "Position": {
+        "X": 0.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "bafe5607-9610-59b7-8a8c-6c4d05775141",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 600.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "05438264-3f5c-55e2-8963-0c0f7034488d",
+      "SymbolName": "Lib.physics.PhysicsWorld",
+      "Position": {
+        "X": 900.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "475bea63-c5ff-5e18-8b28-d6762b37267b",
+      "SymbolName": "Lib.geometry.GeometryToMesh",
+      "Position": {
+        "X": 1200.0,
+        "Y": 150.0
+      }
+    },
+    {
+      "ChildId": "55fe716f-eac5-5eb5-9f8a-219207d25f1c",
+      "SymbolName": "Lib.mesh.draw.DrawMeshUnlit",
+      "Position": {
+        "X": 1800.0,
+        "Y": 150.0
+      }
+    },
+    {
+      "ChildId": "c409a43f-bb3e-544d-a300-5cd0b76684fc",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 600.0,
+        "Y": 450.0
+      }
+    },
+    {
+      "ChildId": "d3a7c314-4131-52be-92b1-bf224c431017",
+      "SymbolName": "Lib.mesh.generate.CubeMesh",
+      "Position": {
+        "X": 1200.0,
+        "Y": 600.0
+      }
+    },
+    {
+      "ChildId": "b2af2228-adca-590b-b623-639241533a2a",
+      "SymbolName": "Lib.mesh.modify.TransformMesh",
+      "Position": {
+        "X": 1500.0,
+        "Y": 600.0
+      }
+    },
+    {
+      "ChildId": "20457741-f91c-528f-aaed-40206e937ec8",
+      "SymbolName": "Lib.mesh.draw.DrawMeshUnlit",
+      "Position": {
+        "X": 1800.0,
+        "Y": 600.0
+      }
+    },
+    {
+      "ChildId": "441b965b-649e-557d-b395-276fa2a5e6ab",
+      "SymbolName": "Lib.mesh.generate.SphereMesh",
+      "Position": {
+        "X": 1200.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "c502a92b-1021-513e-a484-4d9f08101221",
+      "SymbolName": "Lib.mesh.draw.DrawMeshAtPoints",
+      "Position": {
+        "X": 1800.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "088e8fb2-3ed9-5adb-afee-820684ac1b65",
+      "SymbolName": "Lib.render.transform.Group",
+      "Position": {
+        "X": 2100.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "f188b43e-32d1-57ff-9b11-e4e6b9955f69",
+      "SymbolName": "Lib.render.camera.Camera",
+      "Position": {
+        "X": 2400.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "0dbbed79-3be8-5b2c-b49f-b9e40c302151",
+      "SymbolName": "Lib.image.generate.basic.RenderTarget",
+      "Position": {
+        "X": 2700.0,
+        "Y": 0.0
+      }
+    }
+  ],
+  "OutputUis": [
+    {
+      "OutputId": "a3696592-b293-50d8-a1d9-39c85768a977",
+      "Position": {
+        "X": 3000.0,
+        "Y": 0.0
+      }
+    }
+  ]
+}

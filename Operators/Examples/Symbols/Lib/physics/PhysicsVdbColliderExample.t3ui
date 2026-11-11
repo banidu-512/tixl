@@ -1,0 +1,161 @@
+{
+  "FormatVersion": 3,
+  "Id": "ecc715a2-4339-56c5-9d11-1fad0ce39817",
+  "Description": "300 balls rain on the bunny loaded from a .vdb file.\n\n[LoadVdb] reads the level set, [VolumeResample] makes it coarse enough to collide with, and [VolumeToMesh] turns it into geometry. That geometry goes to a static [RigidBody] as the collider and to [GeometryToMesh] to be drawn, so what the balls hit is what you see.\n\nAKA: openvdb, vdb collider, level set, houdini, bunny, mesh collider\n\nTips\n- VoxelSize on [VolumeResample] sets the cost: at the file's own 0.05 the bunny is 2.7 million triangles, at 0.5 about 45 thousand.\n- The volume is meshed once, when it loads. A volume that changes every frame would rebuild the collider every frame.\n- The bunny is about 30 units tall, which is why the balls and the camera distance are large.",
+  "InputUis": [],
+  "SymbolChildUis": [
+    {
+      "ChildId": "e9ef4f0d-b313-5da6-a2a3-26c4802b7e6c",
+      "SymbolName": "Lib.volume.io.LoadVdb",
+      "Position": {
+        "X": 0.0,
+        "Y": 150.0
+      }
+    },
+    {
+      "ChildId": "83b80ffb-0c34-570a-b3df-56d75094548c",
+      "SymbolName": "Lib.volume.modify.VolumeResample",
+      "Position": {
+        "X": 0.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "7d6a5f85-7f33-5a9f-b28e-97ca0fea2c8f",
+      "SymbolName": "Lib.geometry.ScatterPointsInVolume",
+      "Position": {
+        "X": 0.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "8e4830a5-3c0c-53bb-8f5c-4899c318e6b2",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 600.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "ce835bad-fb2a-5c11-8c6d-faea88474453",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 600.0,
+        "Y": 450.0
+      }
+    },
+    {
+      "ChildId": "88144648-2e04-50df-81e4-be1925a2d81e",
+      "SymbolName": "Lib.physics.PhysicsWorld",
+      "Position": {
+        "X": 900.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "c749e794-b1ea-5e49-b221-f862dfa5ecaf",
+      "SymbolName": "Lib.mesh.generate.CubeMesh",
+      "Position": {
+        "X": 1200.0,
+        "Y": 450.0
+      }
+    },
+    {
+      "ChildId": "1897a132-3c92-546c-b92a-4928ed9dde86",
+      "SymbolName": "Lib.mesh.modify.TransformMesh",
+      "Position": {
+        "X": 1500.0,
+        "Y": 450.0
+      }
+    },
+    {
+      "ChildId": "84a0b1ed-bcfb-5f93-81b4-07a868c6d20a",
+      "SymbolName": "Lib.mesh.draw.DrawMeshUnlit",
+      "Position": {
+        "X": 1800.0,
+        "Y": 450.0
+      }
+    },
+    {
+      "ChildId": "d5d02aa3-59a1-5faf-8814-f465d93c1d57",
+      "SymbolName": "Lib.volume.convert.VolumeToMesh",
+      "Position": {
+        "X": 300.0,
+        "Y": 150.0
+      }
+    },
+    {
+      "ChildId": "689442d4-4ce6-50a7-857a-3d0b24e1da63",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 600.0,
+        "Y": 150.0
+      }
+    },
+    {
+      "ChildId": "340d1302-b316-58ae-871f-6fe5a03c1deb",
+      "SymbolName": "Lib.geometry.GeometryToMesh",
+      "Position": {
+        "X": 1200.0,
+        "Y": 150.0
+      }
+    },
+    {
+      "ChildId": "d2e1839c-3720-5827-a3c8-841287083241",
+      "SymbolName": "Lib.mesh.draw.DrawMeshUnlit",
+      "Position": {
+        "X": 1800.0,
+        "Y": 150.0
+      }
+    },
+    {
+      "ChildId": "f942865d-9638-5f37-81cb-646d96c14913",
+      "SymbolName": "Lib.mesh.generate.SphereMesh",
+      "Position": {
+        "X": 1200.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "ad18109e-7ab7-50e9-b4bf-562938a54838",
+      "SymbolName": "Lib.mesh.draw.DrawMeshAtPoints",
+      "Position": {
+        "X": 1800.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "2e34392f-fcbb-5f1d-ac5e-09d483628221",
+      "SymbolName": "Lib.render.transform.Group",
+      "Position": {
+        "X": 2100.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "a6bfe2b7-80f8-5790-b2c3-c35f803e14c2",
+      "SymbolName": "Lib.render.camera.Camera",
+      "Position": {
+        "X": 2400.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "eb17b607-8a13-5eb1-80bf-715b02ed624a",
+      "SymbolName": "Lib.image.generate.basic.RenderTarget",
+      "Position": {
+        "X": 2700.0,
+        "Y": 0.0
+      }
+    }
+  ],
+  "OutputUis": [
+    {
+      "OutputId": "5c1cd322-bc7d-597f-9d16-ca205b401cb8",
+      "Position": {
+        "X": 3000.0,
+        "Y": 0.0
+      }
+    }
+  ]
+}

@@ -1,0 +1,137 @@
+{
+  "FormatVersion": 3,
+  "Id": "a1bb63ab-c77e-5a2d-8ae4-8bb88982e506",
+  "Description": "Three forces turn 300 boxes into a whirlwind.\n\nEach [RigidForce] is one ingredient: a Vortex spins the boxes around the vertical axis, a Radial force pulls them back to the centre, and a Directional force lifts them against gravity. All three go into the Forces input of [PhysicsWorld].\n\nAKA: tornado, wind, swirl, forces, field\n\nTips\n- Switch a force to Field and connect a vector field, for example the Vectors output of [VolumeToField].\n- Turn on IsImpulse and pulse Trigger to kick the boxes once instead of pushing them all the time.",
+  "InputUis": [],
+  "SymbolChildUis": [
+    {
+      "ChildId": "edac4ca3-83f7-56f6-8c38-853403a5365e",
+      "SymbolName": "Lib.geometry.ScatterPointsInVolume",
+      "Position": {
+        "X": 0.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "772d070d-c6b3-5ee0-b809-f6f5a0f43b6f",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 600.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "23dac319-e654-540a-9ee1-a406ffb563ec",
+      "SymbolName": "Lib.physics.RigidForce",
+      "Position": {
+        "X": 600.0,
+        "Y": 150.0
+      }
+    },
+    {
+      "ChildId": "5865ee9e-9a18-5483-91e6-7ddadb89ad04",
+      "SymbolName": "Lib.physics.RigidForce",
+      "Position": {
+        "X": 600.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "39985798-3fab-5ee7-9088-1534ae0460eb",
+      "SymbolName": "Lib.physics.RigidForce",
+      "Position": {
+        "X": 600.0,
+        "Y": 450.0
+      }
+    },
+    {
+      "ChildId": "7db1c85b-ac09-598f-95e4-052a1b65ff3f",
+      "SymbolName": "Lib.physics.PhysicsWorld",
+      "Position": {
+        "X": 900.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "e48fe26f-1dd4-58a1-9bd3-dc755c9cc080",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 600.0,
+        "Y": 600.0
+      }
+    },
+    {
+      "ChildId": "f18455a9-21c5-5848-a602-bcd4f9b0a048",
+      "SymbolName": "Lib.mesh.generate.CubeMesh",
+      "Position": {
+        "X": 1200.0,
+        "Y": 750.0
+      }
+    },
+    {
+      "ChildId": "64cd3074-fa23-5786-bbcb-22ff5a64bc37",
+      "SymbolName": "Lib.mesh.modify.TransformMesh",
+      "Position": {
+        "X": 1500.0,
+        "Y": 750.0
+      }
+    },
+    {
+      "ChildId": "2c9a7ffd-1fc8-5a2f-8b21-36ab5a28a988",
+      "SymbolName": "Lib.mesh.draw.DrawMeshUnlit",
+      "Position": {
+        "X": 1800.0,
+        "Y": 750.0
+      }
+    },
+    {
+      "ChildId": "5b529e4f-75be-5a7c-9234-e08509de3a9f",
+      "SymbolName": "Lib.mesh.generate.CubeMesh",
+      "Position": {
+        "X": 1200.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "7f81fdb0-243a-5ff3-8455-81d2f2160456",
+      "SymbolName": "Lib.mesh.draw.DrawMeshAtPoints",
+      "Position": {
+        "X": 1800.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "7b21558b-fbb8-5ee1-8f1d-36c49c3df922",
+      "SymbolName": "Lib.render.transform.Group",
+      "Position": {
+        "X": 2100.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "7299c4d4-c5a1-5d17-a1a3-fb0903ba59d5",
+      "SymbolName": "Lib.render.camera.Camera",
+      "Position": {
+        "X": 2400.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "9b5f622c-6596-5138-8a72-1d7a538cdd55",
+      "SymbolName": "Lib.image.generate.basic.RenderTarget",
+      "Position": {
+        "X": 2700.0,
+        "Y": 0.0
+      }
+    }
+  ],
+  "OutputUis": [
+    {
+      "OutputId": "711a0abd-d6a7-5739-a068-4e227afd58ae",
+      "Position": {
+        "X": 3000.0,
+        "Y": 0.0
+      }
+    }
+  ]
+}
