@@ -846,38 +846,74 @@ internal sealed class CollabWindow : Window
     private static void DrawBoygroupTab(CollabManager collab)
     {
         var boygroup = BoygroupManager.Instance;
+        var config = UserSettings.Config;
         SectionHeader("Boygrouping");
 
         var state = boygroup.State;
         if (state == BoygroupManager.BoygroupState.Off)
         {
             ImGui.TextDisabled("Boygrouping is not running on this machine.");
+
+            // The intended shape, summarized from the settings so the tab is worth a glance.
+            FormInputs.AddVerticalSpace(8);
+            FormInputs.DrawInputLabel("Role");
+            ImGui.TextUnformatted(config.BoygroupIsMaster ? "Master (server)" : "Render node (slave)");
+
+            FormInputs.DrawInputLabel("Port");
+            ImGui.TextDisabled($"{config.BoygroupPort}");
+
+            FormInputs.DrawInputLabel("Groups");
+            ImGui.TextDisabled(string.Join(", ", config.BoygroupGroups));
+
+            FormInputs.AddVerticalSpace(6);
             CustomComponents.HelpText("""
                                       Boygrouping distributes a show from this master to the render
-                                      nodes of the installation. Configure the role and the node
-                                      discovery in the settings.
+                                      nodes of the installation. Node name, password, groups and
+                                      discovery are configured in the settings.
                                       """);
+
+            FormInputs.AddVerticalSpace(4);
+            if (ImGui.Button("Open Boygroup settings"))
+            {
+                var settings = WindowManager.SettingsWindow;
+                settings.Config.Visible = true;
+                settings.TrySelectCategory("Boygroup");
+            }
         }
         else
         {
+            var isMaster = state == BoygroupManager.BoygroupState.Server;
+
             FormInputs.DrawInputLabel("Role");
-            ImGui.TextColored(UiColors.StatusActivated, state == BoygroupManager.BoygroupState.Server ? "Master" : "Render node");
+            ImGui.PushStyleColor(ImGuiCol.Text, isMaster ? UiColors.StatusActivated.Rgba : UiColors.Text.Rgba);
+            ImGui.TextUnformatted(isMaster ? "Master" : "Render node");
+            ImGui.PopStyleColor();
 
-            var summary = boygroup.InputRelaySummary;
-            if (!string.IsNullOrEmpty(summary))
-                ImGui.TextDisabled(summary);
-        }
+            FormInputs.DrawInputLabel("State");
+            ImGui.TextDisabled(boygroup.StatusText);
 
-        FormInputs.AddVerticalSpace(8);
-        if (ImGui.Button("Boygroup settings"))
-        {
-            var settings = WindowManager.SettingsWindow;
-            settings.Config.Visible = true;
-            settings.TrySelectCategory("Boygroup");
-        }
+            if (!string.IsNullOrEmpty(boygroup.InputRelaySummary))
+            {
+                FormInputs.DrawInputLabel("Inputs");
+                ImGui.TextDisabled(boygroup.InputRelaySummary);
+            }
 
-        if (state != BoygroupManager.BoygroupState.Off)
-        {
+            if (isMaster)
+            {
+                FormInputs.DrawInputLabel("Clients");
+                ImGui.TextDisabled(boygroup.Clients.Count == 0
+                                       ? "none yet — start TiXL on the render nodes and join"
+                                       : string.Join(", ", boygroup.Clients.Select(c => c.Name)));
+            }
+
+            FormInputs.AddVerticalSpace(8);
+            if (ImGui.Button("Boygroup settings"))
+            {
+                var settings = WindowManager.SettingsWindow;
+                settings.Config.Visible = true;
+                settings.TrySelectCategory("Boygroup");
+            }
+
             ImGui.SameLine();
             if (ImGui.Button("Stop boygrouping"))
                 boygroup.Leave(manual: true);

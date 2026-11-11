@@ -57,14 +57,14 @@ internal sealed partial class SettingsWindow
         FormInputs.AddVerticalSpace();
 
         // -------------------------------------------------------------------------------------
-        // Enable switch and role
+        // Session: role, then either the start/join controls or the live session
         // -------------------------------------------------------------------------------------
         FormInputs.AddSectionSubHeader("Session");
         FormInputs.AddVerticalSpace();
 
-        ImGui.TextUnformatted("Role");
+        FormInputs.DrawInputLabel("Role");
         CustomComponents.TooltipForLastItem("A master hosts the show and deploys to render nodes; a slave renders what the master sends.");
-        ImGui.Indent();
+        FormInputs.SetCursorToParameterEdit();
         var roleChanged = false;
         if (ImGui.RadioButton("Master (server)", config.BoygroupIsMaster))
         {
@@ -73,13 +73,14 @@ internal sealed partial class SettingsWindow
         }
 
         ImGui.SameLine();
+        ImGui.TextDisabled("·");
+        ImGui.SameLine();
         if (ImGui.RadioButton("Slave (render node)", !config.BoygroupIsMaster))
         {
             config.BoygroupIsMaster = false;
             roleChanged = true;
         }
 
-        ImGui.Unindent();
         if (roleChanged && config.BoygroupEnabled)
         {
             UserSettings.Save();
@@ -94,33 +95,52 @@ internal sealed partial class SettingsWindow
         if (manager.State == BoygroupManager.BoygroupState.Off)
         {
             _boygroupGroup ??= UserSettings.Config.BoygroupGroups.FirstOrDefault() ?? "Main";
+            _boygroupServerAddress ??= "127.0.0.1";
 
+            // The master's one-click path
+            FormInputs.DrawInputLabel("Master");
+            FormInputs.SetCursorToParameterEdit();
             if (CustomComponents.DrawCtaButton("Start Server", Icon.None, UiColors.ForegroundFull, UiColors.StatusActivated, Color.Transparent))
             {
                 ShowControlMode.Activate(ShowControlMode.Boygroup);
                 manager.StartServer(config.BoygroupPort, config.CollabPassword, _boygroupGroup);
             }
 
-            CustomComponents.TooltipForLastItem("This machine becomes the boygroup server: it deploys files and live state to clients and drives playback.");
+            CustomComponents.TooltipForLastItem("This machine becomes the boygroup server: it deploys files and live state to clients and drives playback. Uses the group entered below.");
 
             FormInputs.AddVerticalSpace();
-            ImGui.TextUnformatted("Join a group:");
+
+            // The client's path: address + group, then join
+            changed |= FormInputs.AddStringInput("Server address",
+                                                 ref _boygroupServerAddress,
+                                                 null,
+                                                 null,
+                                                 "IP or host name of the boygroup master. Servers on this network are discovered automatically below.");
+
+            var joinGroup = _boygroupGroup ?? "Main";
+            FormInputs.DrawInputLabel("Group");
+            FormInputs.SetCursorToParameterEdit();
+            ImGui.SetNextItemWidth(FormInputs.GetAvailableInputSize(null, false, true).X);
             ImGui.PushID("##boygroupgroup");
-            if (ImGui.InputText("Group", ref _boygroupGroup, 64, ImGuiInputTextFlags.EnterReturnsTrue))
+            if (ImGui.InputText("##group", ref joinGroup, 64, ImGuiInputTextFlags.EnterReturnsTrue))
             {
+                _boygroupGroup = joinGroup;
                 ShowControlMode.Activate(ShowControlMode.Boygroup);
-                manager.JoinServer("127.0.0.1", config.BoygroupPort, _boygroupGroup, config.CollabPassword);
+                manager.JoinServer(_boygroupServerAddress, config.BoygroupPort, joinGroup, config.CollabPassword);
             }
 
             ImGui.PopID();
-            ImGui.SameLine();
-            if (ImGui.Button("Join"))
+            _boygroupGroup = joinGroup;
+
+            FormInputs.AddVerticalSpace(4);
+            FormInputs.SetCursorToParameterEdit();
+            if (ImGui.Button("Join server"))
             {
                 ShowControlMode.Activate(ShowControlMode.Boygroup);
-                manager.JoinServer(_boygroupServerAddress ?? "127.0.0.1", config.BoygroupPort, _boygroupGroup, config.CollabPassword);
+                manager.JoinServer(_boygroupServerAddress, config.BoygroupPort, _boygroupGroup ?? "Main", config.CollabPassword);
             }
 
-            CustomComponents.TooltipForLastItem("Address of the boygroup server. Clients on the same network also appear below via discovery.");
+            CustomComponents.TooltipForLastItem("Joins the master at the address above as a render node.");
 
             DrawDiscoveredServers(manager, config.BoygroupPort, ref changed);
         }
@@ -235,14 +255,16 @@ internal sealed partial class SettingsWindow
 
     private static void DrawBoygroupSession(BoygroupManager manager)
     {
-        ImGui.PushStyleColor(ImGuiCol.Text, UiColors.StatusActivated.Rgba);
-        ImGui.TextUnformatted(manager.StatusText);
-        ImGui.PopStyleColor();
+        FormInputs.DrawInputLabel("State");
+        FormInputs.SetCursorToParameterEdit();
+        CustomComponents.StylizedText(manager.StatusText, Fonts.FontNormal, UiColors.StatusActivated);
 
         FormInputs.AddVerticalSpace();
 
         if (manager.State == BoygroupManager.BoygroupState.Server)
         {
+            FormInputs.AddVerticalSpace();
+            FormInputs.DrawFieldSetHeader("Connected clients");
             DrawBoygroupClients(manager);
 
             FormInputs.AddVerticalSpace();
@@ -267,12 +289,17 @@ internal sealed partial class SettingsWindow
         }
         else
         {
-            ImGui.Bullet();
-            ImGui.TextUnformatted($"Group: {manager.GroupName}");
-            ImGui.Bullet();
-            ImGui.TextUnformatted(manager.TimeFollowSummary);
-            ImGui.Bullet();
-            ImGui.TextUnformatted(manager.DeploySummary);
+            FormInputs.DrawInputLabel("Group");
+            FormInputs.SetCursorToParameterEdit();
+            ImGui.TextUnformatted(manager.GroupName);
+
+            FormInputs.DrawInputLabel("Clock");
+            FormInputs.SetCursorToParameterEdit();
+            ImGui.TextDisabled(manager.TimeFollowSummary);
+
+            FormInputs.DrawInputLabel("Deploy");
+            FormInputs.SetCursorToParameterEdit();
+            ImGui.TextDisabled(manager.DeploySummary);
         }
 
         FormInputs.AddVerticalSpace();
@@ -301,15 +328,13 @@ internal sealed partial class SettingsWindow
             return;
         }
 
-        ImGui.TextUnformatted("Clients:");
         foreach (var client in clients)
         {
             var statusColor = client.IsDeployed ? UiColors.StatusActivated : UiColors.StatusWarning;
-            ImGui.PushStyleColor(ImGuiCol.Text, UiColors.Text.Rgba);
             ImGui.Bullet();
-            ImGui.TextUnformatted($"{client.Name}  ({client.Address})  group: {client.Group}");
-            ImGui.PopStyleColor();
-
+            ImGui.TextUnformatted($"{client.Name}  ·  {client.Group}");
+            ImGui.SameLine();
+            ImGui.TextDisabled($"({client.Address})");
             ImGui.SameLine();
             ImGui.PushStyleColor(ImGuiCol.Text, statusColor.Rgba);
             ImGui.TextUnformatted(client.StatusText);
@@ -324,7 +349,7 @@ internal sealed partial class SettingsWindow
     private static void DrawDiscoveredServers(BoygroupManager manager, int discoveryPort, ref bool changed)
     {
         FormInputs.AddVerticalSpace();
-        ImGui.TextUnformatted("Servers on this network:");
+        FormInputs.DrawFieldSetHeader("Servers on this network");
         ImGui.SameLine();
 
         if (!_boygroupDiscoveryActive)
@@ -353,9 +378,12 @@ internal sealed partial class SettingsWindow
         foreach (var server in manager.DiscoveredServers)
         {
             ImGui.Bullet();
-            ImGui.TextUnformatted($"{server.ServerName}  ({server.Address}:{server.Port})  groups: {string.Join(", ", server.Groups)}");
-
+            ImGui.TextUnformatted(server.ServerName);
             ImGui.SameLine();
+            ImGui.TextDisabled($"({server.Address}:{server.Port}) · {string.Join(", ", server.Groups)}");
+
+            ImGui.SameLine(ImGui.GetCursorPosX() + ImGui.GetContentRegionAvail().X
+                           - ImGui.CalcTextSize("Join").X - ImGui.GetStyle().FramePadding.X * 4);
             ImGui.PushID(server.Address + server.Port);
             if (ImGui.SmallButton("Join"))
             {

@@ -20,6 +20,44 @@ internal sealed partial class SettingsWindow
 
         // Failover is switched through the menu-bar mode selector; this panel configures the pair.
 
+        // -------------------------------------------------------------------------------------
+        // Status first: this is what the user came to check
+        // -------------------------------------------------------------------------------------
+        FormInputs.AddSectionSubHeader("Status");
+        FormInputs.AddVerticalSpace();
+
+        var roleColor = FailoverArbiter.RoleText.StartsWith("ACTIVE")
+                            ? UiColors.StatusActivated
+                            : FailoverArbiter.RoleText is "Standby" or "Handover"
+                                ? UiColors.StatusWarning
+                                : UiColors.TextMuted;
+
+        ImGui.PushStyleColor(ImGuiCol.Text, roleColor.Rgba);
+        ImGui.PushFont(Fonts.FontBold);
+        ImGui.TextUnformatted(FailoverArbiter.RoleText);
+        ImGui.PopFont();
+        ImGui.PopStyleColor();
+
+        ImGui.TextDisabled(FailoverArbiter.PeerSummary);
+        ImGui.TextDisabled($"Takeovers performed: {FailoverArbiter.TakeoverCount}");
+
+        if (!string.IsNullOrEmpty(FailoverArbiter.LastEvent))
+        {
+            FormInputs.AddVerticalSpace(4);
+            foreach (var failoverEvent in FailoverArbiter.RecentEvents)
+            {
+                ImGui.TextDisabled($"· {failoverEvent}");
+            }
+        }
+
+        FormInputs.AddVerticalSpace();
+
+        // -------------------------------------------------------------------------------------
+        // Pairing: what makes two machines a pair
+        // -------------------------------------------------------------------------------------
+        FormInputs.AddSectionSubHeader("Pairing");
+        FormInputs.AddVerticalSpace();
+
         changed |= FormInputs.AddStringInput("Show Id",
                                              ref config.FailoverShowId,
                                              null,
@@ -32,7 +70,15 @@ internal sealed partial class SettingsWindow
                                      "Higher priority wins. Give your preferred master a higher value (e.g. 100 vs 50). Ties break by lower IP / lower node id.",
                                      100);
 
-        changed |= FormInputs.AddInt("Heartbeat interval (ms)",
+        FormInputs.AddVerticalSpace();
+
+        // -------------------------------------------------------------------------------------
+        // Timing: how fast a takeover happens
+        // -------------------------------------------------------------------------------------
+        FormInputs.AddSectionSubHeader("Timing");
+        FormInputs.AddVerticalSpace();
+
+        changed |= FormInputs.AddInt("Heartbeat (ms)",
                                      ref config.FailoverHeartbeatMs,
                                      100, 5000, 10,
                                      "How often failover partners announce each other. Shorter = faster takeover detection, slightly more LAN traffic.",
@@ -54,37 +100,14 @@ internal sealed partial class SettingsWindow
                                           true);
 
         FormInputs.AddVerticalSpace();
-        FormInputs.AddSectionSubHeader("Status");
-        FormInputs.AddVerticalSpace();
 
-        var roleColor = FailoverArbiter.RoleText.StartsWith("ACTIVE")
-                            ? UiColors.StatusActivated
-                            : FailoverArbiter.RoleText is "Standby" or "Handover"
-                                ? UiColors.StatusWarning
-                                : UiColors.Text;
-
-        ImGui.PushStyleColor(ImGuiCol.Text, roleColor.Rgba);
-        ImGui.Bullet();
-        ImGui.TextUnformatted($"This machine: {FailoverArbiter.RoleText}");
-        ImGui.PopStyleColor();
-
-        ImGui.Bullet();
-        ImGui.TextUnformatted(FailoverArbiter.PeerSummary);
-
-        ImGui.Bullet();
-        ImGui.TextUnformatted($"Takeovers performed: {FailoverArbiter.TakeoverCount}");
-
-        if (!string.IsNullOrEmpty(FailoverArbiter.LastEvent))
-        {
-            FormInputs.AddVerticalSpace();
-            ImGui.TextDisabled("Recent events:");
-            foreach (var failoverEvent in FailoverArbiter.RecentEvents)
-            {
-                ImGui.TextDisabled($"  {failoverEvent}");
-            }
-        }
+        // -------------------------------------------------------------------------------------
+        // Network (DrawNetworkInterface draws its own section header)
+        // -------------------------------------------------------------------------------------
+        DrawNetworkInterface(ref changed);
 
         FormInputs.AddVerticalSpace();
+
         CustomComponents.HelpText("""
                                   How to set up a redundant pair:
                                   1. Run the same project and composition on both machines (boygrouping or manual copies).
@@ -94,7 +117,5 @@ internal sealed partial class SettingsWindow
                                   ACTIVE machine stops answering. Heartbeats use multicast so both machines can also be
                                   rehearsed on a single PC.
                                   """);
-
-        DrawNetworkInterface(ref changed);
     }
 }
