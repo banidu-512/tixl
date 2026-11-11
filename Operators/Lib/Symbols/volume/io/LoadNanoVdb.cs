@@ -81,7 +81,21 @@ internal sealed class LoadNanoVdb : Instance<LoadNanoVdb>
             // Remembered before loading so a broken file schedules once instead of on every evaluation.
             _lastPath = path;
             _lastWriteTime = lastWrite;
-            StartLoad(path);
+
+            // The first load for a path publishes inline: TiXL's dirty tracking is pull-based and a
+            // consumer that cached the empty value during the first evaluation never re-pulls, so a
+            // grid that arrived from the worker would never reach it. Inline keeps the one-time
+            // cost on the frame that changed the input (like [VolumeToNanoVdb]); large caches and
+            // animated sequences still go through the worker below.
+            var fileSize = new FileInfo(path).Length;
+            if (fileSize <= InlineLoadMaxBytes)
+            {
+                PublishResult(LoadFileChecked(path));
+            }
+            else
+            {
+                StartLoad(path);
+            }
         }
 
         PrefetchFollowingFrames(address, frame, PreloadFrames.GetValue(context));
@@ -163,42 +177,7 @@ internal sealed class LoadNanoVdb : Instance<LoadNanoVdb>
 
         _loadTask = Task.Run(() =>
                                  {
-                                     LoadResult result;
-                                     try
-                                     {
-                                         // A frame the preloader already read is used as-is; only a miss
-                                         // touches the disk, and then without the extra copy LoadBytes makes.
-                                         if (FrameCache.TryTake(path, out var cached))
-                                         {
-                                             var cachedGrid = NanoVdbBuffer.LoadBytes(cached!);
-                                             result = cachedGrid.TryValidate(out var cachedInvalid)
-                                                          ? new LoadResult { Grid = cachedGrid, Path = path }
-                                                          : new LoadResult { Path = path, Error = cachedInvalid };
-                                         }
-                                         else
-                                         {
-                                             var length = new FileInfo(path).Length;
-                                             if (length > MaxFileBytes)
-                                             {
-                                                 result = new LoadResult
-                                                              {
-                                                                  Path = path,
-                                                                  Error = $"file is {length / 1024 / 1024} MB, above the {MaxFileBytes / 1024 / 1024} MB limit for the GPU path",
-                                                              };
-                                             }
-                                             else
-                                             {
-                                                 var grid = NanoVdbBuffer.LoadFile(path);
-                                                 result = grid.TryValidate(out var invalid)
-                                                              ? new LoadResult { Grid = grid, Path = path }
-                                                              : new LoadResult { Path = path, Error = invalid };
-                                             }
-                                         }
-                                     }
-                                     catch (Exception e)
-                                     {
-                                         result = new LoadResult { Path = path, Error = e.Message };
-                                     }
+                                     var result = LoadFileChecked(path);
 
                                      // Wake the graph: the slot itself is clean, so without this the
                                      // finished grid would only be published if something else
@@ -210,6 +189,42 @@ internal sealed class LoadNanoVdb : Instance<LoadNanoVdb>
                                  });
     }
 
+    /// <summary>Reads and validates one file. Runs on the worker for large files, inline for small ones.</summary>
+    private LoadResult LoadFileChecked(string path)
+    {
+        try
+        {
+            // A frame the preloader already read is used as-is; only a miss touches the disk, and
+            // then without the extra copy LoadBytes makes.
+            if (FrameCache.TryTake(path, out var cached))
+            {
+                var cachedGrid = NanoVdbBuffer.LoadBytes(cached!);
+                return cachedGrid.TryValidate(out var cachedInvalid)
+                           ? new LoadResult { Grid = cachedGrid, Path = path }
+                           : new LoadResult { Path = path, Error = cachedInvalid };
+            }
+
+            var length = new FileInfo(path).Length;
+            if (length > MaxFileBytes)
+            {
+                return new LoadResult
+                           {
+                               Path = path,
+                               Error = $"file is {length / 1024 / 1024} MB, above the {MaxFileBytes / 1024 / 1024} MB limit for the GPU path",
+                           };
+            }
+
+            var grid = NanoVdbBuffer.LoadFile(path);
+            return grid.TryValidate(out var invalid)
+                       ? new LoadResult { Grid = grid, Path = path }
+                       : new LoadResult { Path = path, Error = invalid };
+        }
+        catch (Exception e)
+        {
+            return new LoadResult { Path = path, Error = e.Message };
+        }
+    }
+
     private void PublishCompletedLoad()
     {
         if (_loadTask is not { IsCompleted: true })
@@ -218,7 +233,12 @@ internal sealed class LoadNanoVdb : Instance<LoadNanoVdb>
         var task = _loadTask;
         _loadTask = null;
 
-        var result = task.Result;
+        PublishResult(task.Result);
+    }
+
+    /// <summary>Uploads a finished load on the evaluation thread, where GPU resources are safe to create.</summary>
+    private void PublishResult(LoadResult result)
+    {
         if (result.Error != null)
         {
             Log.Warning($"LoadNanoVdb failed for {result.Path}: {result.Error}", this);
@@ -304,6 +324,10 @@ internal sealed class LoadNanoVdb : Instance<LoadNanoVdb>
         => path.Length >= 2 && char.IsLetter(path[0]) && path[1] == ':';
 
     private const long MaxFileBytes = 1L << 30;
+
+    /// <summary>Files up to this size load inline on the evaluation thread instead of through the
+    /// worker: a one-frame hitch is preferable to a late publish that a settled graph never sees.</summary>
+    private const long InlineLoadMaxBytes = 24L << 20;
 
     /// <summary>
     /// Shared by every LoadNanoVdb in the process, so two nodes reading density and velocity from

@@ -1,0 +1,217 @@
+{
+  "FormatVersion": 3,
+  "Id": "c36347c1-27db-5ec8-9145-066227b856d2",
+  "Inputs": [],
+  "Children": [
+    {
+      "Id": "505968a7-16e6-5f71-9720-47fdb5c87f4a",
+      "SymbolId": "b3e267ad-4c71-45e9-9a05-e9e1d3f6c882",
+      "SymbolName": "Lib.geometry.NoiseField",
+      "Name": "Noise",
+      "InputValues": [
+        {
+          "Id": "c5f19a44-8b0e-4d63-a7d8-2f6b3e9c0a51",
+          "Type": "System.Single",
+          "Value": 3.0
+        },
+        {
+          "Id": "e8a2d1b7-3c94-4f28-b6e0-9d5c7a41f382",
+          "Type": "System.Int32",
+          "Value": 3
+        },
+        {
+          "Id": "1b6e4f92-a8d3-45c7-9e21-c4b8d0f7a635",
+          "Type": "System.Single",
+          "Value": 1.0
+        },
+        {
+          "Id": "4d91b7c3-6f28-4e5a-8c07-b3f9e6a1d258",
+          "Type": "System.Int32",
+          "Value": 4
+        }
+      ],
+      "Outputs": []
+    },
+    {
+      "Id": "c45e83be-6c53-5e84-b4f3-227858dbb2c9",
+      "SymbolId": "34203fa5-2ff2-548b-98ee-fc427923ebb1",
+      "SymbolName": "Lib.volume.generate.FieldToVolume",
+      "Name": "ToVolume",
+      "InputValues": [
+        {
+          "Id": "07e12791-cb1a-57db-94ac-eeb2d8011cff",
+          "Type": "System.Numerics.Vector3",
+          "Value": {
+            "X": 0.0,
+            "Y": 0.0,
+            "Z": 0.0
+          }
+        },
+        {
+          "Id": "5ca91e75-52a4-542a-b317-fe1e35dd6a3e",
+          "Type": "System.Numerics.Vector3",
+          "Value": {
+            "X": 1.8,
+            "Y": 1.8,
+            "Z": 1.8
+          }
+        },
+        {
+          "Id": "cf9b56dc-27cd-58e9-96ff-29a4770f6277",
+          "Type": "System.Single",
+          "Value": 0.03
+        },
+        {
+          "Id": "56318452-ae77-53d2-b4b1-55d93eaffcd7",
+          "Type": "System.Int32",
+          "Value": 1
+        }
+      ],
+      "Outputs": []
+    },
+    {
+      "Id": "2430b5c1-fe96-5340-b153-35597496edc2",
+      "SymbolId": "5bc7d656-8a0f-5834-88da-14c3048d760c",
+      "SymbolName": "Lib.volume.convert.VolumeToMesh",
+      "Name": "ToMesh",
+      "InputValues": [
+        {
+          "Id": "345f946b-8c36-5548-a569-4123e0544b8f",
+          "Type": "System.Single",
+          "Value": 0.25
+        }
+      ],
+      "Outputs": []
+    },
+    {
+      "Id": "a83ea9bc-d0a7-58ab-bf19-19cd8ca8e21a",
+      "SymbolId": "4fea8c0e-cb7f-41fe-a410-df1d3886bf98",
+      "SymbolName": "Lib.geometry.GeometryToMesh",
+      "Name": "Geometry",
+      "InputValues": [],
+      "Outputs": []
+    },
+    {
+      "Id": "e4d2b377-2766-5b87-9256-231ce7866a71",
+      "SymbolId": "4499dcb1-c936-49ed-861b-2ad8ae58cb28",
+      "SymbolName": "Lib.mesh.draw.DrawMeshUnlit",
+      "Name": "Draw",
+      "InputValues": [
+        {
+          "Id": "5100a9db-ee56-4023-9fb0-36cbfb439734",
+          "Type": "System.Numerics.Vector4",
+          "Value": {
+            "X": 0.75,
+            "Y": 0.75,
+            "Z": 0.9,
+            "W": 1.0
+          }
+        }
+      ],
+      "Outputs": []
+    },
+    {
+      "Id": "9567402e-c217-54f7-97ba-eb264abffe91",
+      "SymbolId": "6415ed0e-3692-45e2-8e70-fe0cf4d29ebc",
+      "SymbolName": "Lib.render.camera.OrbitCamera",
+      "Name": "Camera",
+      "InputValues": [
+        {
+          "Id": "21f595ad-0808-48f1-bdd8-118d1527944c",
+          "Type": "System.Single",
+          "Value": 45.0
+        },
+        {
+          "Id": "DD92FB0A-4B3E-4492-BF59-437D914A1AD3",
+          "Type": "System.Single",
+          "Value": 4.0
+        },
+        {
+          "Id": "DF65E717-E2FD-4E4F-9E41-D6BCD3FE67F1",
+          "Type": "System.Single",
+          "Value": 0.08
+        },
+        {
+          "Id": "353e2f08-a55f-48ce-ae65-53d5d081b6f0",
+          "Type": "T3.Core.DataTypes.Vector.Int2",
+          "Value": {
+            "X": 0.1,
+            "Y": 200.0
+          }
+        }
+      ],
+      "Outputs": []
+    },
+    {
+      "Id": "8485bcaf-ba98-58b2-935e-8309f84f3860",
+      "SymbolId": "f9fe78c5-43a6-48ae-8e8c-6cdbbc330dd1",
+      "SymbolName": "Lib.image.generate.basic.RenderTarget",
+      "Name": "Target",
+      "InputValues": [
+        {
+          "Id": "03749b41-cc3c-4f38-aea6-d7cea19fc073",
+          "Type": "T3.Core.DataTypes.Vector.Int2",
+          "Value": {
+            "X": 960,
+            "Y": 540
+          }
+        },
+        {
+          "Id": "8bb4a4e5-0c88-4d99-a5b2-2c9e22bd301f",
+          "Type": "System.Numerics.Vector4",
+          "Value": {
+            "X": 0.02,
+            "Y": 0.025,
+            "Z": 0.035,
+            "W": 1.0
+          }
+        }
+      ],
+      "Outputs": []
+    }
+  ],
+  "Connections": [
+    {
+      "SourceParentOrChildId": "505968a7-16e6-5f71-9720-47fdb5c87f4a",
+      "SourceSlotId": "7d7af99a-05cc-4e5d-9b12-3e2b8f6a1c47",
+      "TargetParentOrChildId": "c45e83be-6c53-5e84-b4f3-227858dbb2c9",
+      "TargetSlotId": "623c40fb-5337-5a30-98c8-a0542cc6ee09"
+    },
+    {
+      "SourceParentOrChildId": "c45e83be-6c53-5e84-b4f3-227858dbb2c9",
+      "SourceSlotId": "a34b2f67-46e3-58ab-9cd0-c6c137869fa1",
+      "TargetParentOrChildId": "2430b5c1-fe96-5340-b153-35597496edc2",
+      "TargetSlotId": "19c6ca3f-d7ff-507f-8d28-2490f0edb66e"
+    },
+    {
+      "SourceParentOrChildId": "2430b5c1-fe96-5340-b153-35597496edc2",
+      "SourceSlotId": "362c33b2-88c6-537e-ad87-035c85afd29d",
+      "TargetParentOrChildId": "a83ea9bc-d0a7-58ab-bf19-19cd8ca8e21a",
+      "TargetSlotId": "57469ea6-f0c5-4e8d-a53c-40e8ac495bc3"
+    },
+    {
+      "SourceParentOrChildId": "a83ea9bc-d0a7-58ab-bf19-19cd8ca8e21a",
+      "SourceSlotId": "4bf00eb5-a39c-4567-a81e-46c2276d1418",
+      "TargetParentOrChildId": "e4d2b377-2766-5b87-9256-231ce7866a71",
+      "TargetSlotId": "be057b0a-1302-4076-bde1-6ae453815642"
+    },
+    {
+      "SourceParentOrChildId": "e4d2b377-2766-5b87-9256-231ce7866a71",
+      "SourceSlotId": "0e5c4ba6-278c-4c3c-96d8-00b706c5605b",
+      "TargetParentOrChildId": "9567402e-c217-54f7-97ba-eb264abffe91",
+      "TargetSlotId": "33752356-8348-4938-8f73-6257e6bb1c1f"
+    },
+    {
+      "SourceParentOrChildId": "9567402e-c217-54f7-97ba-eb264abffe91",
+      "SourceSlotId": "14a63b62-5fbb-4f82-8cf3-d0faf279eff8",
+      "TargetParentOrChildId": "8485bcaf-ba98-58b2-935e-8309f84f3860",
+      "TargetSlotId": "4da253b7-4953-439a-b03f-1d515a78bddf"
+    },
+    {
+      "SourceParentOrChildId": "8485bcaf-ba98-58b2-935e-8309f84f3860",
+      "SourceSlotId": "7A4C4FEB-BE2F-463E-96C6-CD9A6BAD77A2",
+      "TargetParentOrChildId": "00000000-0000-0000-0000-000000000000",
+      "TargetSlotId": "d102fcf3-1b31-5881-88fa-ba72245080ec"
+    }
+  ]
+}
