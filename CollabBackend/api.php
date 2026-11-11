@@ -82,7 +82,14 @@ function db(): PDO
         return $pdo;
     }
 
-    $dir = __DIR__ . '/data';
+    // The database lives OUTSIDE the web root (a sibling of www/), because dotfile-based
+    // protection is not honoured on this host: anything under the web root is downloadable.
+    // Falls back to ./data when the parent is not writable (local development).
+    $dir = dirname(dirname(__DIR__)) . '/tixl-data';
+    if (!is_dir($dir) && !@mkdir($dir, 0775, true) && !is_dir($dir)) {
+        $dir = __DIR__ . '/data';
+    }
+
     if (!is_dir($dir) && !@mkdir($dir, 0775, true) && !is_dir($dir)) {
         throw new RuntimeException('cannot create the data folder (permissions?)');
     }
@@ -449,14 +456,17 @@ function op_whispers(array $input): void
 
 function append_whisper(string $room, array $entry): void
 {
-    $whispers = decode_list((string)load_room($room)['whispers'], MAX_WHISPERS_PER_ROOM);
-    $whispers[] = $entry;
-    if (count($whispers) > MAX_WHISPERS_PER_ROOM) {
-        $whispers = array_slice($whispers, -MAX_WHISPERS_PER_ROOM);
-    }
+    with_room_lock(function () use ($room, $entry) {
+        $fresh = load_room($room);
+        $whispers = decode_list((string)($fresh['whispers'] ?? '[]'), MAX_WHISPERS_PER_ROOM);
+        $whispers[] = $entry;
+        if (count($whispers) > MAX_WHISPERS_PER_ROOM) {
+            $whispers = array_slice($whispers, -MAX_WHISPERS_PER_ROOM);
+        }
 
-    db()->prepare('UPDATE rooms SET whispers = ? WHERE room = ?')
-        ->execute([json_encode($whispers, JSON_UNESCAPED_UNICODE), $room]);
+        db()->prepare('UPDATE rooms SET whispers = ? WHERE room = ?')
+            ->execute([json_encode($whispers, JSON_UNESCAPED_UNICODE), $room]);
+    });
 }
 
 // --- relay-free WebRTC signaling -------------------------------------------------------------
@@ -560,19 +570,24 @@ function op_join_request(array $input): void
         respond_error('name required');
     }
 
-    $tickets = decode_list((string)$found['tickets'], MAX_TICKETS_PER_ROOM);
-    $tickets[] = ['id' => bin2hex(random_bytes(8)),
-                  'name' => $name,
-                  'lang' => text_field($input, 'lang', MAX_LANG),
-                  'state' => 'pending',
-                  'at' => time(),
-                  'msgs' => []];
-    if (count($tickets) > MAX_TICKETS_PER_ROOM) {
-        $tickets = array_slice($tickets, -MAX_TICKETS_PER_ROOM);
-    }
+    $ticketId = bin2hex(random_bytes(8));
+    with_room_lock(function () use ($room, $name, $input, $ticketId) {
+        $fresh = load_room($room);
+        $tickets = decode_list((string)($fresh['tickets'] ?? '[]'), MAX_TICKETS_PER_ROOM);
+        $tickets[] = ['id' => $ticketId,
+                      'name' => $name,
+                      'lang' => text_field($input, 'lang', MAX_LANG),
+                      'state' => 'pending',
+                      'at' => time(),
+                      'msgs' => []];
+        if (count($tickets) > MAX_TICKETS_PER_ROOM) {
+            $tickets = array_slice($tickets, -MAX_TICKETS_PER_ROOM);
+        }
 
-    save_tickets($room, $tickets);
-    respond_ok(['ticket' => end($tickets)['id']]);
+        save_tickets($room, $tickets);
+    });
+
+    respond_ok(['ticket' => $ticketId]);
 }
 
 /** Host: sets a join ticket's state (approved lets the negotiation start; rejected ends it). */
@@ -596,9 +611,19 @@ function op_ticket_state(array $input): void
     $tickets = decode_list((string)$found['tickets'], MAX_TICKETS_PER_ROOM);
     foreach ($tickets as $index => $ticket) {
         if ($ticket['id'] === $ticketId) {
-            $tickets[$index]['state'] = $state;
-            $tickets[$index]['answered'] = time();
-            save_tickets($room, $tickets);
+            with_room_lock(function () use ($room, $ticketId, $state) {
+                $fresh = load_room($room);
+                $current = decode_list((string)($fresh['tickets'] ?? '[]'), MAX_TICKETS_PER_ROOM);
+                foreach ($current as $i => $t) {
+                    if ($t['id'] === $ticketId) {
+                        $current[$i]['state'] = $state;
+                        $current[$i]['answered'] = time();
+                        save_tickets($room, $current);
+                        return;
+                    }
+                }
+            });
+
             respond_ok();
         }
     }
@@ -664,29 +689,41 @@ function op_signal_put(array $input): void
     // The host signs its messages with the room key; a guest signs with its ticket id.
     $isHost = key_matches($found, (string)($input['key'] ?? ''));
 
-    $tickets = decode_list((string)$found['tickets'], MAX_TICKETS_PER_ROOM);
-    foreach ($tickets as $index => $ticket) {
-        if ($ticket['id'] !== $ticketId) {
-            continue;
-        }
+    $foundTicket = false;
+    $sawCount = 0;
+    with_room_lock(function () use ($room, $ticketId, $isHost, $message, $type, &$foundTicket, &$sawCount) {
+        // Re-read inside the write lock: a parallel post may have appended since the load above.
+        $fresh = load_room($room);
+        $tickets = decode_list((string)($fresh['tickets'] ?? '[]'), MAX_TICKETS_PER_ROOM);
+        foreach ($tickets as $index => $ticket) {
+            if ($ticket['id'] !== $ticketId) {
+                continue;
+            }
 
-        $msgs = $ticket['msgs'] ?? [];
-        $msgs[] = ['from' => $isHost ? 'host' : 'guest',
-                   't' => $type,
-                   'sdp' => $message['sdp'] ?? '',
-                   'candidate' => $message['candidate'] ?? '',
-                   'mid' => $message['mid'] ?? '',
-                   'at' => time()];
-        if (count($msgs) > MAX_MSGS_PER_TICKET) {
-            $msgs = array_slice($msgs, -MAX_MSGS_PER_TICKET);
-        }
+            $msgs = $ticket['msgs'] ?? [];
+            $sawCount = count($msgs);
+            $msgs[] = ['from' => $isHost ? 'host' : 'guest',
+                       't' => $type,
+                       'sdp' => $message['sdp'] ?? '',
+                       'candidate' => $message['candidate'] ?? '',
+                       'mid' => $message['mid'] ?? '',
+                       'at' => time()];
+            if (count($msgs) > MAX_MSGS_PER_TICKET) {
+                $msgs = array_slice($msgs, -MAX_MSGS_PER_TICKET);
+            }
 
-        $tickets[$index]['msgs'] = $msgs;
-        save_tickets($room, $tickets);
-        respond_ok(['from' => $isHost ? 'host' : 'guest']);
+            $tickets[$index]['msgs'] = $msgs;
+            save_tickets($room, $tickets);
+            $foundTicket = true;
+            return;
+        }
+    });
+
+    if (!$foundTicket) {
+        respond_error('ticket not found');
     }
 
-    respond_error('ticket not found');
+    respond_ok(['from' => $isHost ? 'host' : 'guest', 'saw' => $sawCount]);
 }
 
 function op_ticket_get(array $input): void
@@ -716,6 +753,27 @@ function save_tickets(string $room, array $tickets): void
 {
     db()->prepare('UPDATE rooms SET tickets = ?, updated = ? WHERE room = ?')
         ->execute([json_encode($tickets, JSON_UNESCAPED_UNICODE), time(), $room]);
+}
+
+/**
+ * Serialises a read-modify-write on one room's JSON columns. A host posts offer and ICE
+ * candidates in parallel; without the write lock each request read the ticket before the
+ * others appended and the last writer silently dropped the rest (the offer vanished).
+ */
+function with_room_lock(callable $mutate): void
+{
+    $pdo = db();
+    $pdo->exec('BEGIN IMMEDIATE');
+    try
+    {
+        $mutate();
+        $pdo->exec('COMMIT');
+    }
+    catch (Throwable $e)
+    {
+        $pdo->exec('ROLLBACK');
+        throw $e;
+    }
 }
 
 // --- Discord identity (the account layer) ----------------------------------------------------

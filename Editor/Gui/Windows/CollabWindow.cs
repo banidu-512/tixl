@@ -236,7 +236,9 @@ internal sealed class CollabWindow : Window
 
         FormInputs.AddSectionHeader("Join requests");
         FormInputs.AddVerticalSpace(4);
-        foreach (var request in requests)
+
+        // The button handlers remove from the list while this loop is iterating it.
+        foreach (var request in requests.ToArray())
         {
             ImGui.PushID(request.TicketId);
             ImGui.TextUnformatted(request.Name);

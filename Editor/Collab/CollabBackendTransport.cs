@@ -44,6 +44,7 @@ internal static class CollabBackendWire
         private int _failed;
         private int _active;
         private int _channelAttached;
+        private int _channelOpenNotified;
 
         public BackendRtcLink(bool isOfferer,
                               Action<byte[]> sendSignal,
@@ -159,9 +160,21 @@ internal static class CollabBackendWire
             return;
 
         _channel = channel;
-        channel.OnOpen += _ => Interlocked.Exchange(ref _active, 1);
+        channel.OnOpen += _ => OnChannelOpen();
         if (channel.IsOpen)
-            Interlocked.Exchange(ref _active, 1);
+            OnChannelOpen();
+    }
+
+    /// <summary>The data channel opened: hand it to the transport exactly once. Without this the
+    /// peer connection reaches CONNECTED but no session stream is ever created.</summary>
+    private void OnChannelOpen()
+    {
+        Interlocked.Exchange(ref _active, 1);
+        if (Interlocked.Exchange(ref _channelOpenNotified, 1) != 0 || _channel == null)
+            return;
+
+        Log.Debug("Collab backend link: data channel open");
+        _onChannelOpen(_channel);
     }
 
     private void OnLocalDescription(IRtcPeerConnection _, RtcDescription description)
@@ -205,7 +218,18 @@ internal static class CollabBackendWire
         return Encoding.UTF8.GetBytes(json.ToString(Newtonsoft.Json.Formatting.None));
     }
 
-    private void SendJsonSignal(byte[] payload) => _sendSignal(payload);
+    private void SendJsonSignal(byte[] payload) 
+    {
+        Log.Debug($"Collab backend link: sending signal ({payload.Length} bytes)");
+        try
+        {
+            _sendSignal(payload);
+        }
+        catch (Exception e)
+        {
+            Log.Warning($"Collab backend link: signal send threw: {e}");
+        }
+    }
 
     private void Fail(string reason)
     {
@@ -396,22 +420,23 @@ internal static class CollabBackendWire
                     continue;
                 }
 
-                var signals = msgs.Where(m => m.From == "guest").ToList();
-                foreach (var message in signals)
-                {
-                    entry.Since = await ApplyMessageAsync(entry, message, cancellation);
-                }
+                // `since` is an offset into the ticket's message array, so it advances by the whole
+                // slice - not by the guest-filtered count, which re-read the same lines forever.
+                foreach (var message in msgs.Where(m => m.From == "guest"))
+                    await ApplyMessageAsync(entry, message, cancellation);
+
+                entry.Since += msgs.Count;
             }
         }
 
-        private async Task<long> ApplyMessageAsync(HostPeerEntry entry, CollabWebLobby.TicketMessage message, CancellationToken cancellation)
+        private Task ApplyMessageAsync(HostPeerEntry entry, CollabWebLobby.TicketMessage message, CancellationToken cancellation)
         {
             var bytes = Encoding.UTF8.GetBytes(message.Sdp.Length > 0
                                                    ? $"{{\"t\":\"{message.Type}\",\"sdp\":{Newtonsoft.Json.JsonConvert.SerializeObject(message.Sdp)}}}"
                                                    : $"{{\"t\":\"{message.Type}\",\"candidate\":{Newtonsoft.Json.JsonConvert.SerializeObject(message.Candidate)},\"mid\":{Newtonsoft.Json.JsonConvert.SerializeObject(message.Mid)}}}");
-            Log.Debug($"Collab backend host: applying {message.Type} from {message.From} (sdp {message.Sdp.Length} chars, {message.Sdp.AsSpan(0, Math.Min(60, message.Sdp.Length)).ToString().Replace("\n", "|")})");
+            Log.Debug($"Collab backend host: applying {message.Type} from {message.From} (sdp {message.Sdp.Length} chars)");
             entry.Link?.HandleSignal(bytes);
-            return entry.Since + 1;
+            return Task.CompletedTask;
         }
 
         /// <summary>Host: approves a join request; the WebRTC negotiation starts on the next poll.</summary>
@@ -474,9 +499,13 @@ internal static class CollabBackendWire
 
         private async Task PostSignalLoggedAsync(string ticketId, byte[] payload)
         {
+            string type = "?";
+            try { type = JObject.Parse(Encoding.UTF8.GetString(payload))["t"]?.Value<string>() ?? "?"; } catch { }
             var error = await CollabWebLobby.PostTicketMessageAsync(_room, _key, ticketId, payload, CancellationToken.None);
             if (error != null)
-                Log.Debug($"Collab backend host: signal post failed: {error}");
+                Log.Warning($"Collab backend host: signal post ({type}) failed: {error}");
+            else
+                Log.Debug($"Collab backend host: signal post ({type}) ok, {payload.Length} bytes");
         }
 
         private void OnChannelOpen(HostPeerEntry entry, IRtcDataChannel channel, int slot)
@@ -618,12 +647,14 @@ internal static class CollabBackendWire
                         foreach (var message in messages.Where(m => m.From == "host"))
                         {
                             Log.Debug($"Collab backend client: got {message.Type} from host");
-                            Interlocked.Increment(ref _since);
                             var bytes = Encoding.UTF8.GetBytes(message.Sdp.Length > 0
                                                                    ? $"{{\"t\":\"{message.Type}\",\"sdp\":{Newtonsoft.Json.JsonConvert.SerializeObject(message.Sdp)}}}"
                                                                    : $"{{\"t\":\"{message.Type}\",\"candidate\":{Newtonsoft.Json.JsonConvert.SerializeObject(message.Candidate)},\"mid\":{Newtonsoft.Json.JsonConvert.SerializeObject(message.Mid)}}}");
                             _link?.HandleSignal(bytes);
                         }
+
+                        // Offset semantics: advance past the whole slice, own lines included.
+                        Interlocked.Add(ref _since, messages.Count);
                     }
                     else
                     {

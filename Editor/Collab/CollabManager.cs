@@ -925,10 +925,12 @@ internal sealed class CollabManager
         _roomKey = "";
 
         // The data channel is open: the hello goes out now and authentication runs on it.
+        // The state must stay Connecting until authOk (HandleClientAuthOk flips it to Connected);
+        // jumping ahead here made the guest drop its own authOk and stay unauthenticated.
         transport.SendJson(transport.HostLink!, BuildHello());
-        State = SessionState.Connected;
-        StatusText = $"Connected as {LocalIdentity.DisplayName}";
-        Log.Info($"Collab: joined backend room {room}");
+        State = SessionState.Connecting;
+        StatusText = "Connected, authenticating...";
+        Log.Info($"Collab: joined backend room {room} - authenticating");
     }
 
     /// <summary>

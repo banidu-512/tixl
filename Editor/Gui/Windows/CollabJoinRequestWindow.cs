@@ -37,7 +37,9 @@ internal sealed class CollabJoinRequestWindow : Window
         FormInputs.AddSectionHeader("Wants to join your party");
         FormInputs.AddVerticalSpace(4);
 
-        foreach (var request in requests)
+        // Approve/Decline mutate the list while we are inside its loop (the button handlers run
+        // mid-iteration), so iterate a snapshot.
+        foreach (var request in requests.ToArray())
         {
             ImGui.PushID(request.TicketId);
             ImGui.TextUnformatted(request.Name);

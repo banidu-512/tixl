@@ -972,6 +972,10 @@ internal static class DebugServer
                 break;
             }
 
+            case "read-only":
+                collab.SetParticipantsCanEdit(!(request["value"]?.Value<bool>() ?? true));
+                break;
+
             case "join-relay":
             {
                 Show.ShowControlMode.Activate(Show.ShowControlMode.Collab);
@@ -1047,7 +1051,7 @@ internal static class DebugServer
                 break;
 
             default:
-                context.SendError("INVALID_PARAM", "collab requires op = host | host-relay | join | join-relay | leave | chat | lobby-whisper | update-listing | status");
+                context.SendError("INVALID_PARAM", "collab requires op = host | host-relay | host-backend | join | join-relay | join-backend | join-respond | read-only | leave | chat | lobby-whisper | update-listing | status");
                 return;
         }
 
@@ -1059,6 +1063,9 @@ internal static class DebugServer
                                ["room"] = collab.RoomCode,
                                ["peers"] = collab.Peers.Count,
                                ["chatLines"] = collab.ChatLog.Count,
+                               ["participantsCanEdit"] = collab.ParticipantsCanEdit,
+                               ["readOnly"] = collab.ReadOnlyForParticipants,
+                               ["pendingJoins"] = collab.PendingJoinRequests.Count,
                                ["identity"] = collab.LocalIdentity.DisplayName,
                                ["loginState"] = CollabDiscordAuth.State.ToString(),
                                ["loginStatus"] = CollabDiscordAuth.StatusText,
