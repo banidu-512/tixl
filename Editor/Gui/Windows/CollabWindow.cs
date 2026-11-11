@@ -177,10 +177,11 @@ internal sealed class CollabWindow : Window
         var margin = 6f;
         var gap = Math.Max(4, (ImGui.GetWindowSize().X - margin * 2 - buttonsTotal) / (count - 1));
 
+        var rowY = ImGui.GetCursorPosY();
         var x = margin;
         for (var i = 0; i < count; i++)
         {
-            ImGui.SetCursorPosX(x);
+            ImGui.SetCursorPos(new Vector2(x, rowY));
             var isActive = _selectedTab == tabs[i];
             if (isActive)
                 ImGui.PushStyleColor(ImGuiCol.Button, UiColors.StatusActivated.Rgba);
@@ -193,6 +194,10 @@ internal sealed class CollabWindow : Window
 
             x += widths[i] + gap;
         }
+
+        // Park the cursor below the tab row for the content that follows.
+        ImGui.SetCursorPos(new Vector2(margin, rowY + ImGui.GetFrameHeight() + 4));
+        ImGui.Dummy(Vector2.Zero);
     }
 
     // ---------------------------------------------------------------------------------------
