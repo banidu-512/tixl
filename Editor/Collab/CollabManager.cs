@@ -871,6 +871,7 @@ internal sealed class CollabManager
         catch (Exception e)
         {
             ErrorText = $"Backend hosting failed: {e.Message}";
+            CollabRemote.ReportFailure(e.Message);
             StatusText = "Failed to host";
             _transport?.Dispose();
             _transport = null;
@@ -2162,6 +2163,7 @@ internal sealed class CollabManager
             return;
 
         _videoStreamer?.Update();
+        CollabRemote.Tick();
         _videoReceiver?.Update();
 
         DrainInboundQueue();
