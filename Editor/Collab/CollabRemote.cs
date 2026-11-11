@@ -75,8 +75,8 @@ internal static class CollabRemote
         var project = ProjectView.Focused?.OpenedProject.Package.DisplayName ?? "";
         var state = manager.State switch
                         {
-                            CollabManager.SessionState.Hosting => "busy",
-                            CollabManager.SessionState.Connecting => "busy",
+                            CollabManager.SessionState.Hosting => "hosting",
+                            CollabManager.SessionState.Connecting => "hosting",
                             _ => "idle",
                         };
         var room = manager.State is CollabManager.SessionState.Hosting or CollabManager.SessionState.Connecting
@@ -111,9 +111,7 @@ internal static class CollabRemote
                 {
                     InstallationStatus = "The owner asked to connect - starting a party...";
                     _pendingConnectAt = DateTime.UtcNow;
-                    // Hosting with the claim lets the owner's controller join without an
-                    // approval round-trip.
-                    manager.StartHostViaBackend(result.Claim);
+                    manager.StartHostViaBackend();
                     actedOnConnect = true;
                 }
 
