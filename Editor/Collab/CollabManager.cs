@@ -431,6 +431,8 @@ internal sealed class CollabManager
                                                  interfaceName: UserSettings.Config.NetworkInterface);
             _transport.PeerDisconnected += OnPeerDisconnectedTransport;
             State = SessionState.Hosting;
+            ParticipantsCanEdit = UserSettings.Config.CollabPartyControllable;
+            _readOnlyNoticeShownFor.Clear();
             StatusText = $"Hosting on port {tcpPort}";
             Log.Info($"Collab: session started (host, port {tcpPort}, {(string.IsNullOrEmpty(_password) ? "open" : "password protected")})");
         }
@@ -823,7 +825,7 @@ internal sealed class CollabManager
             RelayEndpoint = CollabWebLobby.BackendUrl;
             _currentTarget = new SessionTarget(Hosting: true, Relay: false, CollabWebLobby.BackendUrl, 0, room, _password, key);
             State = SessionState.Hosting;
-            ParticipantsCanEdit = true;
+            ParticipantsCanEdit = UserSettings.Config.CollabPartyControllable;
             IsRemoteManagedSession = autoApproveClaim.Length > 0;
             _pendingJoinRequests.Clear();
             _readOnlyNoticeShownFor.Clear();
@@ -4114,6 +4116,10 @@ internal sealed class CollabManager
         _transport?.BroadcastJson(Peers, new { t = "canEdit", value });
         AppendChat(null, value ? "Participants can edit again" : "Participants are spectators now (read-only)");
         Log.Info($"Collab: participants can edit = {value}");
+
+        // Remember the choice so the next party starts in the same mode.
+        UserSettings.Config.CollabPartyControllable = value;
+        UserSettings.Save();
 
         // The matching list's "type" column follows immediately, not on the next heartbeat.
         if (State == SessionState.Hosting && RoomCode.Length > 0 && _roomKey.Length > 0 && CollabWebLobby.IsConfigured)

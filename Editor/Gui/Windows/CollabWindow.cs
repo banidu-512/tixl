@@ -138,49 +138,90 @@ internal sealed class CollabWindow : Window
             UserSettings.Save();
         }
 
-        FormInputs.AddVerticalSpace(4);
-        var canEdit = collab.ParticipantsCanEdit;
-        if (ImGui.Checkbox("Participants can edit (off = spectators)", ref canEdit))
-            collab.SetParticipantsCanEdit(canEdit);
+        // -- Type: Controllable (everyone edits) or Spectating (the host drops their changes).
+        FormInputs.AddVerticalSpace(6);
+        ImGui.TextDisabled("Type");
+        var isHosting = collab.State == CollabManager.SessionState.Hosting;
+        var controllable = isHosting ? collab.ParticipantsCanEdit : UserSettings.Config.CollabPartyControllable;
+
+        if (ImGui.RadioButton("Controllable", controllable) && !controllable)
+        {
+            UserSettings.Config.CollabPartyControllable = true;
+            UserSettings.Save();
+            if (isHosting)
+                collab.SetParticipantsCanEdit(true);
+        }
+
+        ImGui.SameLine();
+        if (ImGui.RadioButton("Spectating", !controllable) && controllable)
+        {
+            UserSettings.Config.CollabPartyControllable = false;
+            UserSettings.Save();
+            if (isHosting)
+                collab.SetParticipantsCanEdit(false);
+        }
 
         CustomComponents.TooltipForLastItem("""
-                                            On: everyone can change the shared project. Off: participants are
-                                            spectators - they see your cursors, presence and chat, but the host
-                                            drops their graph changes.
+                                            Controllable: everyone can change the shared project.
+                                            Spectating: participants see your cursors, presence and chat, but
+                                            the host drops their graph changes.
                                             """);
 
-        FormInputs.AddVerticalSpace(4);
+        // -- Reach: Local (LAN) or Online (through the backend party server).
+        FormInputs.AddVerticalSpace(6);
+        ImGui.TextDisabled("Reach");
+        var online = UserSettings.Config.CollabPartyOnline;
+        var local = !online;
+
+        if (ImGui.Checkbox("Local (same network)", ref local) && local)
+        {
+            UserSettings.Config.CollabPartyOnline = false;
+            UserSettings.Save();
+        }
+
+        ImGui.SameLine();
+        if (ImGui.Checkbox("Online (through the server)", ref online) && online)
+        {
+            UserSettings.Config.CollabPartyOnline = true;
+            UserSettings.Save();
+        }
+
+        CustomComponents.TooltipForLastItem("""
+                                            Local: people on the same network join directly (no internet).
+                                            Online: the party is listed on the backend server and joiners
+                                            connect over WebRTC from anywhere.
+                                            """);
+
+        // -- Form the party.
+        FormInputs.AddVerticalSpace(6);
+        var wantOnline = UserSettings.Config.CollabPartyOnline;
+        var canForm = !wantOnline || CollabWebLobby.IsConfigured;
         var projectName = ProjectView.Focused?.OpenedProject.Package.DisplayName ?? "";
-        if (ImGui.Button("Form Party (via backend)", new Vector2(190, 0)))
+
+        ImGui.BeginDisabled(!canForm);
+        if (ImGui.Button("Form Party", new Vector2(140, 0)))
         {
-            collab.StartHostViaBackend();
+            ShowControlMode.Activate(ShowControlMode.Collab);
+            if (wantOnline)
+            {
+                collab.StartHostViaBackend();
+            }
+            else
+            {
+                collab.StartHost(UserSettings.Config.CollabPort,
+                                 UserSettings.Config.CollabPassword ?? "",
+                                 UserSettings.Config.CollabLanDiscovery,
+                                 projectName.Length > 0 ? projectName : null);
+            }
+
             _selectedTab = Tab.Session;
         }
 
-        CustomComponents.TooltipForLastItem("""
-                                            Hosts a relay-free session: joiners ask first, you confirm in the
-                                            popup, and the session runs over WebRTC. Needs the backend URL in
-                                            Settings.
-                                            """);
-
-        ImGui.SameLine();
-        if (ImGui.Button("Form Party (relay)", new Vector2(150, 0)))
+        ImGui.EndDisabled();
+        if (!canForm)
         {
-            ShowControlMode.Activate(ShowControlMode.Collab);
-            ParseRelayAddress(UserSettings.Config.CollabRelayAddress, out var relayHost, out var relayPort);
-            collab.StartHostViaRelay(relayHost, relayPort);
-            _selectedTab = Tab.Session;
-        }
-
-        ImGui.SameLine();
-        if (ImGui.Button("Form Party (LAN)", new Vector2(130, 0)))
-        {
-            ShowControlMode.Activate(ShowControlMode.Collab);
-            collab.StartHost(UserSettings.Config.CollabPort,
-                             UserSettings.Config.CollabPassword ?? "",
-                             UserSettings.Config.CollabLanDiscovery,
-                             projectName.Length > 0 ? projectName : null);
-            _selectedTab = Tab.Session;
+            ImGui.SameLine();
+            ImGui.TextDisabled("Set the Backend URL in Settings first");
         }
 
         // The project context note: parties are formed for the open project and outlive browsing.

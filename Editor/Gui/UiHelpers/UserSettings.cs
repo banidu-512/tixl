@@ -370,6 +370,31 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         /// <summary>Base URL of a self-hosted collab backend (CollabBackend/api.php): the session browser, whispers and WebRTC signaling.</summary>
         public string CollabBackendUrl = "";
 
+        /// <summary>Party form: Online (through the backend server) when true, Local (LAN) when false.</summary>
+        public bool CollabPartyOnline = true;
+
+        /// <summary>Party form: Controllable (participants may edit) when true, Spectating when false.</summary>
+        public bool CollabPartyControllable = true;
+
+        // Remote management (the Collab window's Remote tab). The installation keeps a device id
+        // and secret issued when the owner's 6-digit code was redeemed, so it needs no Discord
+        // login; the owner sees its computers through the backend instead of this file.
+        /// <summary>Name shown to the owner for this computer. Empty = the machine name.</summary>
+        public string CollabRemoteName = "";
+
+        /// <summary>Id of this installation in the remote registry (set by pairing).</summary>
+        public string CollabRemoteDeviceId = "";
+
+        /// <summary>Long-lived secret that authenticates this installation's heartbeats and reports.</summary>
+        public string CollabRemoteDeviceKey = "";
+
+        /// <summary>Display name of the Discord account this installation is paired with.</summary>
+        public string CollabRemoteOwner = "";
+
+        /// <summary>Local consent switch: the installation only heartbeats and accepts a managed
+        /// session while this is on. Pairing turns it on; it can be turned off at any time.</summary>
+        public bool CollabRemoteAllow = false;
+
         // Boygrouping (show distribution to render nodes)
         /// <summary>Master switch: this machine participates in boygrouping. When set, the role
         /// below starts automatically shortly after launch — a show machine comes up in its role
