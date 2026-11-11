@@ -48,6 +48,21 @@ internal sealed class VolumeField : Instance<VolumeField>, IGraphNodeOp
 
     void IGraphNodeOp.AddDefinitions(CodeAssembleContext c)
     {
+        // The texture is only declared in AppendShaderResources, and only once a bake has produced
+        // one. Before that the sampling body would reference an undeclared identifier and fail the
+        // whole shader compile, so report "outside everywhere" until the texture appears - the same
+        // guard [VdbDensityField] uses for its buffer.
+        if (_srv == null)
+        {
+            c.Globals[$"volumeSample{ShaderNode}"] = $$"""
+                                                      float volumeSample{{ShaderNode}}(float3 p, float3 boundsMin, float3 boundsMax, float valueScale, float valueOffset, float outsideValue)
+                                                      {
+                                                          return outsideValue;
+                                                      }
+                                                      """;
+            return;
+        }
+
         c.Globals[$"volumeSample{ShaderNode}"] = $$"""
                                                   float volumeSample{{ShaderNode}}(float3 p, float3 boundsMin, float3 boundsMax, float valueScale, float valueOffset, float outsideValue)
                                                   {

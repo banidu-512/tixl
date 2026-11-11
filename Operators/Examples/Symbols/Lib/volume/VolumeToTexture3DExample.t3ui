@@ -1,0 +1,56 @@
+{
+  "FormatVersion": 3,
+  "Id": "6f4c9f44-e6f0-5832-945c-61a43a9b2458",
+  "Description": "The field path: [VolumeToTexture3D] bakes the sparse grid into a dense 3D texture, and [VolumeField] exposes it as a shader node that [RaymarchField] renders. Use this when you want the volume in TiXL's existing raymarching pipeline instead of the NanoVDB buffer.",
+  "InputUis": [],
+  "SymbolChildUis": [
+    {
+      "ChildId": "dd4bd378-8ad8-5613-bd2a-4eae2156bc43",
+      "SymbolName": "Lib.volume.generate.VolumePrimitive",
+      "Position": {
+        "X": 0.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "9f5b4761-0dcc-5e07-9e26-dce6b4a2537a",
+      "SymbolName": "Lib.volume.convert.VolumeToTexture3D",
+      "Position": {
+        "X": 300.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "4215f79a-be56-5c8e-84ad-8b54ed75ab93",
+      "SymbolName": "Lib.volume.render.VolumeField",
+      "Position": {
+        "X": 600.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "63ee4cae-afe6-51ba-b571-ba5633ddca45",
+      "SymbolName": "Lib.field.render.RaymarchField",
+      "Position": {
+        "X": 900.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "fc6eb52b-c9da-5998-82aa-fa6e1881a647",
+      "SymbolName": "Lib.render.camera.OrbitCamera",
+      "Position": {
+        "X": 1200.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "af911d28-912b-5ce2-b6cf-a78bf09c5187",
+      "SymbolName": "Lib.image.generate.basic.RenderTarget",
+      "Position": {
+        "X": 1500.0,
+        "Y": 0.0
+      }
+    }
+  ]
+}

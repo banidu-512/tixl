@@ -130,11 +130,17 @@ Current state: 99 tests, all passing on Windows. The full Release solution build
 
 ## Examples
 
-Fourteen graphs under `Operators/Examples/Symbols/Lib/volume/`:
+Twenty-five graphs under `Operators/Examples/Symbols/Lib/volume/`, one or more per operator:
 
-`VolumeCsgExample`, `VolumeFilterExample`, `VolumeFireSmokeExample`, `VolumeMeshRoundtripExample`, `VolumeMorphologyExample`, `VolumeNoiseDisplaceExample`, `VolumeShakingWaterExample`, `VolumeVdbFilesExample`, `VolumeNanoVdbBoxExample`, `VolumeNanoVdbCsgExample`, `VolumeNanoVdbFireExample`, `VolumeNanoVdbLiquidExample`, `VolumeNanoVdbSaveExample`, `VolumeNanoVdbSmokeExample`.
+`VolumeCsgExample`, `VolumeFilterExample`, `VolumeFireSmokeExample`, `VolumeMeshRoundtripExample`, `VolumeMorphologyExample`, `VolumeNoiseDisplaceExample`, `VolumeShakingWaterExample`, `VolumeVdbFilesExample`, `VolumeNanoVdbBoxExample`, `VolumeNanoVdbCsgExample`, `VolumeNanoVdbFieldExample`, `VolumeNanoVdbFireExample`, `VolumeNanoVdbLiquidExample`, `VolumeNanoVdbSaveExample`, `VolumeNanoVdbSmokeExample`, plus one example each for `VolumeMath`, `VolumeResample`, `VolumeToPoints` + `VolumeFromPoints`, `VolumeToTexture3D`, `VolumeToField`, `FieldToVolume`, `LoadNanoVdb`, `NanoVdbToPoints`, `DrawVdbBounds` and `VdbDensityField`.
 
-They load `Examples:volumes/bunny.vdb` and `Examples:volumes/smoke.vdb`, which are the only binary assets the feature adds (about 18 MB).
+They load `Examples:volumes/bunny.vdb`, `Examples:volumes/smoke.vdb` and the pre-converted `Examples:volumes/sphere.nvdb`, which are the only binary assets the feature adds (about 21 MB).
+
+Every example opens with its render target pinned to the example's own output, and each was verified by driving the built editor over the debug protocol: the pinned output texture is captured and checked for content, with zero shader compile errors.
+
+### Late publishes and static graphs
+
+`LoadNanoVdb` and `VolumeToTexture3D` do their work off the evaluation thread for large inputs. TiXL's dirty tracking is pull-based, so a consumer that cached the empty value during the first evaluation never re-pulls: a grid that arrived from the worker would silently never reach it. Both operators therefore publish the first result for a new input inline on the evaluation thread (small files and small bake resolutions), and only hand larger work to the worker, whose completion still cannot wake a settled graph.
 
 ## Related change
 

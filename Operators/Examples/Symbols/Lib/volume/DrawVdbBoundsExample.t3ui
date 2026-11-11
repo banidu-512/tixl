@@ -1,0 +1,64 @@
+{
+  "FormatVersion": 3,
+  "Id": "cdbf03ee-cc7d-51c6-a8a1-96862d858225",
+  "Description": "The debug view for NanoVDB: draws one wireframe box per node of the chosen tree level. If the boxes line up with the volume, the tree, bounds and transform were read correctly.",
+  "InputUis": [],
+  "SymbolChildUis": [
+    {
+      "ChildId": "9c7f6056-7416-50e5-b043-cc7fe5c2b0be",
+      "SymbolName": "Lib.volume.generate.VolumePrimitive",
+      "Position": {
+        "X": 0.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "8596ceb3-2129-5ec5-b434-52cc2eaadf44",
+      "SymbolName": "Lib.volume.gpu.VolumeToNanoVdb",
+      "Position": {
+        "X": 300.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "a468bfe3-658e-5433-9993-f3f15bd1d4bc",
+      "SymbolName": "Types.Gfx.ComputeShader",
+      "Position": {
+        "X": 300.0,
+        "Y": 260.0
+      }
+    },
+    {
+      "ChildId": "4b896639-4e55-5a21-b7ab-385aa24ad4e3",
+      "SymbolName": "Lib.volume.convert.DrawVdbBounds",
+      "Position": {
+        "X": 600.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "ef85ccde-9235-54f2-bfa2-979d872be85f",
+      "SymbolName": "Lib.point.draw.DrawLines",
+      "Position": {
+        "X": 900.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "ca7ac24d-4f55-57b6-89dd-46625b44c74f",
+      "SymbolName": "Lib.render.camera.OrbitCamera",
+      "Position": {
+        "X": 1200.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "e99b12f2-404d-50fe-a8b6-beb46cc7e5df",
+      "SymbolName": "Lib.image.generate.basic.RenderTarget",
+      "Position": {
+        "X": 1500.0,
+        "Y": 0.0
+      }
+    }
+  ]
+}

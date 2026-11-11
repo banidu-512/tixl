@@ -1,0 +1,72 @@
+{
+  "FormatVersion": 3,
+  "Id": "c7bf565f-3eaf-5e17-a50a-9ffd5bbecc34",
+  "Description": "Arithmetic between two volumes: a sphere with a box subtracted, then meshed. UseConstant switches B for a single number; Min and Max behave as union and intersection on level sets.",
+  "InputUis": [],
+  "SymbolChildUis": [
+    {
+      "ChildId": "2d69c304-120c-5f2e-9c7b-c991213a7e6c",
+      "SymbolName": "Lib.volume.generate.VolumePrimitive",
+      "Position": {
+        "X": 0.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "e18af0ef-7b32-5abe-92c3-ec2987ee5678",
+      "SymbolName": "Lib.volume.generate.VolumePrimitive",
+      "Position": {
+        "X": 0.0,
+        "Y": 260.0
+      }
+    },
+    {
+      "ChildId": "b7136568-c1b3-5da4-bb0c-1c17a65e9f1e",
+      "SymbolName": "Lib.volume.modify.VolumeMath",
+      "Position": {
+        "X": 300.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "db12aecf-f4b0-5552-94a7-d42b94546c83",
+      "SymbolName": "Lib.volume.convert.VolumeToMesh",
+      "Position": {
+        "X": 900.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "e1839eac-e21a-5500-bc22-d41126496c8e",
+      "SymbolName": "Lib.geometry.GeometryToMesh",
+      "Position": {
+        "X": 1200.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "a2f5ccda-46cf-5c14-b469-01f735607af4",
+      "SymbolName": "Lib.mesh.draw.DrawMeshUnlit",
+      "Position": {
+        "X": 1500.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "54c93f6b-6fa9-5184-b945-7899b9266770",
+      "SymbolName": "Lib.render.camera.OrbitCamera",
+      "Position": {
+        "X": 1800.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "d0e3b67e-c79d-5504-b5c3-4abbc57a6b28",
+      "SymbolName": "Lib.image.generate.basic.RenderTarget",
+      "Position": {
+        "X": 2100.0,
+        "Y": 0.0
+      }
+    }
+  ]
+}

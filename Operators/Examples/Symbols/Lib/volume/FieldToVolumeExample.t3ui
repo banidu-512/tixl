@@ -1,0 +1,64 @@
+{
+  "FormatVersion": 3,
+  "Id": "c36347c1-27db-5ec8-9145-066227b856d2",
+  "Description": "Samples a scalar field into a sparse volume. A noise field becomes a fog volume here, and [VolumeToMesh] extracts a blobby surface at the chosen density. Any field operator can be the source.",
+  "InputUis": [],
+  "SymbolChildUis": [
+    {
+      "ChildId": "505968a7-16e6-5f71-9720-47fdb5c87f4a",
+      "SymbolName": "Lib.geometry.NoiseField",
+      "Position": {
+        "X": 0.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "c45e83be-6c53-5e84-b4f3-227858dbb2c9",
+      "SymbolName": "Lib.volume.generate.FieldToVolume",
+      "Position": {
+        "X": 300.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "2430b5c1-fe96-5340-b153-35597496edc2",
+      "SymbolName": "Lib.volume.convert.VolumeToMesh",
+      "Position": {
+        "X": 600.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "a83ea9bc-d0a7-58ab-bf19-19cd8ca8e21a",
+      "SymbolName": "Lib.geometry.GeometryToMesh",
+      "Position": {
+        "X": 900.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "e4d2b377-2766-5b87-9256-231ce7866a71",
+      "SymbolName": "Lib.mesh.draw.DrawMeshUnlit",
+      "Position": {
+        "X": 1200.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "9567402e-c217-54f7-97ba-eb264abffe91",
+      "SymbolName": "Lib.render.camera.OrbitCamera",
+      "Position": {
+        "X": 1500.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "8485bcaf-ba98-58b2-935e-8309f84f3860",
+      "SymbolName": "Lib.image.generate.basic.RenderTarget",
+      "Position": {
+        "X": 1800.0,
+        "Y": 0.0
+      }
+    }
+  ]
+}

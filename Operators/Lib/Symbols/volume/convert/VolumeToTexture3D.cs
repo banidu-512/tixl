@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using System.Numerics;
 using T3.Core.DataTypes;
 using T3.Core.DataTypes.Volume;
@@ -127,10 +128,39 @@ internal sealed class VolumeToTexture3D : Instance<VolumeToTexture3D>
         if (key == _failedKey)
             return;
 
+        // A first bake for a key publishes inline when the dense box is small: TiXL's dirty tracking
+        // is pull-based and a consumer that cached the empty texture during the first evaluation
+        // never re-pulls, so a bake that arrived from the worker would never reach it. Inline keeps
+        // the one-time cost on the frame that changed the input (like [VolumeToNanoVdb]); larger
+        // resolutions still go through the worker below.
+        if (maxResolution <= InlineBakeMaxResolution)
+        {
+            var denseInline = VolumeDense.ExtractDense(grid, maxResolution);
+            if (!TryUpload(denseInline, grid))
+                _failedKey = key;
+            else
+                _last = key;
+            return;
+        }
+
         _pendingKey = key;
         _pendingGrid = grid;
-        _extractTask = Task.Run(() => VolumeDense.ExtractDense(grid, maxResolution));
+        _extractTask = Task.Run(() =>
+        {
+            var dense = VolumeDense.ExtractDense(grid, maxResolution);
+
+            // Wake the graph from the worker: the output slots are clean, so without this a static
+            // volume never re-pulls and the finished bake is never harvested or uploaded. Same
+            // wake-up the async loaders use; the eval thread owns the flag's other state, which is
+            // why this bumps the version atomically instead of calling Invalidate().
+            Interlocked.Increment(ref Texture.DirtyFlag.SourceVersion);
+            return dense;
+        });
     }
+
+    /// <summary>Bakes up to this resolution inline on the evaluation thread instead of through the
+    /// worker: a one-frame hitch is preferable to a late publish a settled graph never sees.</summary>
+    private const int InlineBakeMaxResolution = 128;
 
     private bool TryUpload(DenseVolume dense, VdbGrid<float> grid)
     {
