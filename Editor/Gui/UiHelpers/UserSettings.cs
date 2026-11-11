@@ -376,6 +376,10 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         /// <summary>Party form: Controllable (participants may edit) when true, Spectating when false.</summary>
         public bool CollabPartyControllable = true;
 
+        /// <summary>The backend party room this editor last joined, so a restart (e.g. after receiving
+        /// the host's project) rejoins the same party automatically.</summary>
+        public string CollabLastBackendRoom = "";
+
         // Remote management (the Collab window's Remote tab). The installation keeps a device id
         // and secret issued when the owner's 6-digit code was redeemed, so it needs no Discord
         // login; the owner sees its computers through the backend instead of this file.

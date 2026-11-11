@@ -55,11 +55,6 @@ const MAX_LANG = 12;
 const MAX_ROOM_CODE = 12;
 const MAX_KEY = 64;
 
-// Project handoff: the host's project archive that joiners download.
-const MAX_PROJECT_BYTES = 104857600;   // 100 MB per party project
-const MAX_PROJECT_CHUNK = 2097152;     // 2 MB per request
-const PROJECT_TTL_SECONDS = 86400;     // a leftover archive is swept after a day
-
 
 // Remote management: a logged-in owner pairs unattended TiXL machines once, then reconnects
 // to them whenever they are online. The pairing code is short because a human types it on the
@@ -81,19 +76,6 @@ const AUTH_CACHE_SECONDS = 43200;     // a verified Discord token is trusted for
 
 $op = $_GET['op'] ?? '';
 
-// The project upload streams raw bytes, so it is handled before the JSON body is parsed.
-if ($op === 'project-chunk') {
-    try {
-        op_project_chunk();
-    } catch (Throwable $e) {
-        http_response_code(500);
-        echo json_encode(['ok' => false, 'error' => 'backend error',
-                          'detail' => isset($_GET['debug']) ? $e->getMessage() : '']);
-        error_log('tixl-api: ' . $e->getMessage());
-    }
-    exit;
-}
-
 $input = array_merge($_GET, read_json_body());
 
 try {
@@ -112,10 +94,6 @@ try {
         'ticket-state' => op_ticket_state($input),
         'ticket-put' => op_signal_put($input),
         'ticket-get' => op_ticket_get($input),
-        'project-init' => op_project_init($input),
-        'project-finish' => op_project_finish($input),
-        'project-info' => op_project_info($input),
-        'project-get' => op_project_get($input),
         'verify' => op_verify($input),
         'remote-pair-start' => op_remote_pair_start($input),
         'remote-pair-status' => op_remote_pair_status($input),
@@ -937,234 +915,6 @@ function with_room_lock(callable $mutate): void
     {
         $pdo->exec('ROLLBACK');
         throw $e;
-    }
-}
-
-// --- project handoff: the host's project, temporarily stored for the party -------------------
-
-// When a party is formed the host zips its project and uploads it here; joiners download
-// that exact snapshot and open it, so everyone starts from byte-identical symbol GUIDs.
-// The archive is deleted when the host unregisters and swept when it goes stale.
-
-/** The data root shared by the database and the project archives (outside the web root). */
-function data_root(): string
-{
-    $dir = dirname(dirname(__DIR__)) . '/tixl-data';
-    if (!is_dir($dir) && !@mkdir($dir, 0775, true) && !is_dir($dir)) {
-        $dir = __DIR__ . '/data';
-    }
-
-    if (!is_dir($dir) && !@mkdir($dir, 0775, true) && !is_dir($dir)) {
-        throw new RuntimeException('cannot create the data folder (permissions?)');
-    }
-
-    return $dir;
-}
-
-function projects_dir(): string
-{
-    $dir = data_root() . '/projects';
-    if (!is_dir($dir) && !@mkdir($dir, 0775, true) && !is_dir($dir)) {
-        throw new RuntimeException('cannot create the projects folder (permissions?)');
-    }
-
-    return $dir;
-}
-
-function project_part_path(string $room): string { return projects_dir() . '/' . $room . '.part'; }
-function project_zip_path(string $room): string { return projects_dir() . '/' . $room . '.zip'; }
-function project_meta_path(string $room): string { return projects_dir() . '/' . $room . '.meta.json'; }
-
-function project_meta(string $room): ?array
-{
-    $path = project_meta_path($room);
-    if (!is_file($path)) {
-        return null;
-    }
-
-    $decoded = json_decode((string)file_get_contents($path), true);
-    return is_array($decoded) ? $decoded : null;
-}
-
-function write_project_meta(string $room, array $meta): void
-{
-    file_put_contents(project_meta_path($room), json_encode($meta, JSON_UNESCAPED_UNICODE));
-}
-
-/** Host: starts (or restarts) a project upload for the room. */
-function op_project_init(array $input): void
-{
-    $room = room_code($input);
-    $found = load_room($room);
-    if ($found === null) {
-        respond_error('room not found');
-    }
-    if (!key_matches($found, (string)($input['key'] ?? ''))) {
-        respond_error('not the host');
-    }
-
-    @unlink(project_part_path($room));
-    @unlink(project_zip_path($room));
-
-    // An empty part file so the first chunk has something to append to.
-    file_put_contents(project_part_path($room), '');
-    write_project_meta($room, [
-        'name' => text_field($input, 'name', MAX_PROJECT),
-        'size' => 0,
-        'ready' => false,
-        'started' => time(),
-    ]);
-
-    respond_ok(['chunk' => MAX_PROJECT_CHUNK]);
-}
-
-/** Host: appends one raw chunk (the request body) to the upload. */
-function op_project_chunk(): void
-{
-    $room = room_code(['room' => $_GET['room'] ?? '']);
-    $found = load_room($room);
-    if ($found === null) {
-        respond_error('room not found');
-    }
-    if (!key_matches($found, (string)($_GET['key'] ?? ''))) {
-        respond_error('not the host');
-    }
-
-    $meta = project_meta($room);
-    if ($meta === null) {
-        respond_error('no upload in progress');
-    }
-
-    $body = file_get_contents('php://input');
-    $length = $body === false ? 0 : strlen($body);
-    if ($length === 0) {
-        respond_error('empty chunk');
-    }
-    if ($length > MAX_PROJECT_CHUNK) {
-        respond_error('chunk too large');
-    }
-
-    $size = (int)($meta['size'] ?? 0) + $length;
-    if ($size > MAX_PROJECT_BYTES) {
-        respond_error('project exceeds the size limit');
-    }
-
-    $written = file_put_contents(project_part_path($room), $body, FILE_APPEND | LOCK_EX);
-    if ($written !== $length) {
-        respond_error('write failed');
-    }
-
-    $meta['size'] = $size;
-    write_project_meta($room, $meta);
-    respond_ok(['size' => $size]);
-}
-
-/** Host: completes the upload; the part file becomes the served archive. */
-function op_project_finish(array $input): void
-{
-    $room = room_code($input);
-    $found = load_room($room);
-    if ($found === null) {
-        respond_error('room not found');
-    }
-    if (!key_matches($found, (string)($input['key'] ?? ''))) {
-        respond_error('not the host');
-    }
-
-    $part = project_part_path($room);
-    if (!is_file($part)) {
-        respond_error('no upload in progress');
-    }
-
-    $size = (int)filesize($part);
-    $hash = (string)hash_file('sha256', $part);
-    if (!@rename($part, project_zip_path($room))) {
-        respond_error('could not complete the upload');
-    }
-
-    $meta = project_meta($room) ?? ['name' => text_field($input, 'name', MAX_PROJECT)];
-    $meta['size'] = $size;
-    $meta['hash'] = $hash;
-    $meta['ready'] = true;
-    $meta['finished'] = time();
-    write_project_meta($room, $meta);
-
-    respond_ok(['size' => $size, 'hash' => $hash]);
-}
-
-/** Anyone: does this party have a project snapshot, and is it ready? */
-function op_project_info(array $input): void
-{
-    $room = room_code($input);
-    if (load_room($room) === null) {
-        respond_error('room not found');
-    }
-
-    $meta = project_meta($room);
-    if ($meta === null) {
-        respond_ok(['state' => 'none']);
-    }
-
-    respond_ok([
-        'state' => !empty($meta['ready']) ? 'ready' : 'uploading',
-        'name' => $meta['name'] ?? '',
-        'size' => (int)($meta['size'] ?? 0),
-        'hash' => $meta['hash'] ?? '',
-    ]);
-}
-
-/** Guest with an approved ticket (or the host with its key): streams the project archive. */
-function op_project_get(array $input): void
-{
-    $room = room_code($input);
-    $found = load_room($room);
-    if ($found === null) {
-        respond_error('room not found');
-    }
-
-    $authorized = key_matches($found, (string)($input['key'] ?? ''));
-    if (!$authorized) {
-        $ticketId = substr(preg_replace('/[^a-f0-9]/', '', (string)($input['ticket'] ?? '')) ?? '', 0, 16);
-        foreach (decode_list((string)($found['tickets'] ?? '[]'), MAX_TICKETS_PER_ROOM) as $ticket) {
-            if ($ticket['id'] === $ticketId && ($ticket['state'] ?? '') === 'approved') {
-                $authorized = true;
-                break;
-            }
-        }
-    }
-
-    if (!$authorized) {
-        respond_error('only approved participants can download the project');
-    }
-
-    $path = project_zip_path($room);
-    if (!is_file($path)) {
-        respond_error('no project archive for this party');
-    }
-
-    header('Content-Type: application/zip');
-    header('Content-Length: ' . filesize($path));
-    header('Content-Disposition: attachment; filename="project.zip"');
-    readfile($path);
-    exit;
-}
-
-/** Deletes a party's project archive (host leaving, or a stale sweep). */
-function delete_project_archive(string $room): void
-{
-    @unlink(project_part_path($room));
-    @unlink(project_zip_path($room));
-    @unlink(project_meta_path($room));
-}
-
-/** Sweeps archives whose party never cleaned up. */
-function sweep_project_archives(): void
-{
-    $cutoff = time() - PROJECT_TTL_SECONDS;
-    foreach (glob(projects_dir() . '/*') ?: [] as $path) {
-        if (@filemtime($path) < $cutoff) {
-            @unlink($path);
-        }
     }
 }
 
