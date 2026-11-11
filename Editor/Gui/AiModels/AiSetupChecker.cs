@@ -175,11 +175,14 @@ internal static class AiSetupChecker
                 }
                 else if (available.Count > 0 || HasAnyDepthModelInStore() || HasShippedDepthModel())
                 {
+                    // Operators already work through the bundled V2 fallback, but the one-click
+                    // setup still installs the latest model - V2 is the compatibility fallback.
                     items.Add(new AiSetupCheckItem
                                   {
                                       Title = "Depth models",
-                                      Result = AiCheckResult.Info,
-                                      Detail = "A bundled V2 model is used. The DA3 models are faster and more accurate - download one below.",
+                                      Result = AiCheckResult.Fixable,
+                                      Detail = "Operators fall back to the bundled V2 model. The DA3 models are faster and more accurate; " +
+                                               "the default DA3 Small (about 96 MB) is installed by Download defaults.",
                                       EntryToInstall = defaultEntry,
                                   });
                 }
