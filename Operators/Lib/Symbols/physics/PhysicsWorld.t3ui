@@ -28,6 +28,14 @@
       "Description": "Body operators to simulate. Connect RigidBody outputs here."
     },
     {
+      "InputId": "142c8ba1-4d45-4410-a4cf-bdf08b256717"/*ContactSpeed*/,
+      "Position": {
+        "X": 0.0,
+        "Y": 720.0
+      },
+      "Description": "Closing speed in units per second from which an impact is reported in Contacts. Raise it to keep only hard hits."
+    },
+    {
       "InputId": "1dd023b9-76b2-4455-86c2-fced2726528e"/*ContactStiffness*/,
       "Position": {
         "X": 0.0,
@@ -36,12 +44,28 @@
       "Description": "Spring frequency of contacts in Hz. Higher is harder and less forgiving."
     },
     {
+      "InputId": "47787d21-9ddc-45ab-97f6-a573a717675c"/*MaxContacts*/,
+      "Position": {
+        "X": 0.0,
+        "Y": 675.0
+      },
+      "Description": "Length of the Contacts buffer. When more impacts happen in one frame the strongest are kept. 0 turns the output off."
+    },
+    {
       "InputId": "4e9535a7-d7ed-4917-aa4e-df566c6b7328"/*TimeScale*/,
       "Position": {
         "X": 0.0,
         "Y": 585.0
       },
       "Description": "Multiplier on the timeline delta. 0 freezes, 2 runs at double speed."
+    },
+    {
+      "InputId": "508e2ee0-fe78-48e1-9e78-7b2a4c937cc4"/*Forces*/,
+      "Position": {
+        "X": 0.0,
+        "Y": 630.0
+      },
+      "Description": "Force operators acting on the dynamic bodies. Connect RigidForce outputs here."
     },
     {
       "InputId": "54247fde-224c-4764-97e1-01d1e725acdc"/*Substeps*/,
@@ -137,6 +161,20 @@
       "Position": {
         "X": 300.0,
         "Y": 90.0
+      }
+    },
+    {
+      "OutputId": "ae24bbd8-298c-47b1-99ad-30b2878623ac"/*Contacts*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 135.0
+      }
+    },
+    {
+      "OutputId": "a38d9319-fcf9-4399-aaeb-7a0b430e6ddb"/*ContactCount*/,
+      "Position": {
+        "X": 300.0,
+        "Y": 180.0
       }
     }
   ]
