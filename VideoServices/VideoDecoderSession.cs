@@ -133,7 +133,9 @@ public sealed class VideoDecoderSession : IDisposable
             if (lowLatency)
             {
                 // Live capture: skip the demuxer's probe/frame buffering and hand decoded frames straight
-                // through. fflags are comma/plus-composed — merge with any caller-provided value.
+                // through. Callers may pass no demuxer options (local capture devices) — create the
+                // dictionary here. fflags are comma/plus-composed — merge with any caller-provided value.
+                options ??= new MediaDictionary();
                 var fflags = options.ContainsKey("fflags") ? options["fflags"] + "+nobuffer" : "nobuffer";
                 options["fflags"] = fflags;
                 options["avioflags"] = "direct";
@@ -203,7 +205,7 @@ public sealed class VideoDecoderSession : IDisposable
         }
         catch (Exception e)
         {
-            error = "Failed to open video: " + e.Message;
+            error = "Failed to open video: " + e;
             formatContext?.Dispose();
             return null;
         }
