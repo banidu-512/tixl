@@ -1340,8 +1340,15 @@ function op_remote_connect(array $input): void
         respond_ok(['claim' => $command['claim'], 'command' => $device['pending_id'], 'room' => $device['room']]);
     }
 
-    if ($device['session_claim'] !== '' && $device['room'] !== '') {
+    // A remembered room is only reusable while it actually exists: a registration that
+    // failed (e.g. rate limited) would otherwise be handed out forever.
+    if ($device['session_claim'] !== '' && $device['room'] !== '' && load_room($device['room']) !== null) {
         respond_ok(['claim' => $device['session_claim'], 'room' => $device['room']]);
+    }
+
+    if ($device['session_claim'] !== '' || $device['room'] !== '') {
+        db()->prepare('UPDATE remote_devices SET session_claim = "", room = "", state = "idle" WHERE id = ?')
+            ->execute([$device['id']]);
     }
 
     $claim = bin2hex(random_bytes(8));
