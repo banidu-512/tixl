@@ -75,39 +75,39 @@ internal sealed class CollabWindow : Window
     }
 
 
-    /// <summary>The window's three areas, matching the party/remote/boygroup split.</summary>
+    /// <summary>The window's areas: chat, party matching, party management, remote and boygroup.</summary>
     private enum Tab
     {
-        Party,
+        Chat,
+        PartyMatching,
+        PartyManagement,
         Remote,
         Boygroup,
     }
 
-    /// <summary>The Party tab's sub-tabs: the session view and the chat.</summary>
-    private enum PartyTab
-    {
-        Info,
-        Chat,
-    }
+    private static Tab _selectedTab = Tab.PartyMatching;
 
-    private static Tab _selectedTab = Tab.Party;
-    private static PartyTab _partyTab = PartyTab.Info;
-
-    /// <summary>Selects a tab by name (Party, Remote, Boygroup, or the Party sub-tabs Session/Chat);
-    /// used by the debug bridge.</summary>
+    /// <summary>Selects a tab by name (Chat, PartyMatching, PartyManagement, Remote, Boygroup, or
+    /// the aliases Session/Search); used by the debug bridge.</summary>
     internal bool TrySelectTab(string name)
     {
         if (string.Equals(name, "Chat", StringComparison.OrdinalIgnoreCase))
         {
-            _selectedTab = Tab.Party;
-            _partyTab = PartyTab.Chat;
+            _selectedTab = Tab.Chat;
             return true;
         }
 
-        if (string.Equals(name, "Session", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(name, "Session", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(name, "Management", StringComparison.OrdinalIgnoreCase))
         {
-            _selectedTab = Tab.Party;
-            _partyTab = PartyTab.Info;
+            _selectedTab = Tab.PartyManagement;
+            return true;
+        }
+
+        if (string.Equals(name, "Search", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(name, "Matching", StringComparison.OrdinalIgnoreCase))
+        {
+            _selectedTab = Tab.PartyMatching;
             return true;
         }
 
@@ -130,19 +130,21 @@ internal sealed class CollabWindow : Window
             return;
         }
 
-        DrawTabButtons();
-        FormInputs.AddVerticalSpace(4);
-        DrawSubTabButtons(collab);
+        DrawTabLine();
         FormInputs.AddVerticalSpace(2);
 
         switch (_selectedTab)
         {
-            case Tab.Party:
-                if (_partyTab == PartyTab.Chat)
-                    DrawChatTab(collab);
-                else
-                    DrawPartyTab(collab);
+            case Tab.Chat:
+                DrawChatTab(collab);
+                break;
 
+            case Tab.PartyMatching:
+                DrawPartyTab(collab);
+                break;
+
+            case Tab.PartyManagement:
+                DrawManagementTab(collab);
                 break;
 
             case Tab.Remote:
@@ -155,60 +157,30 @@ internal sealed class CollabWindow : Window
         }
     }
 
-    /// <summary>The active tab's sub-tabs, drawn as a small breadcrumb row under the main tabs.</summary>
-    private static void DrawSubTabButtons(CollabManager collab)
+    /// <summary>Five separate tabs in one line, spread evenly across the window width. The active
+    /// one is highlighted; a click switches the tab. SetCursorPosX takes window-LOCAL coordinates -
+    /// screen-space math here placed the row off-window.</summary>
+    private static void DrawTabLine()
     {
-        switch (_selectedTab)
-        {
-            case Tab.Party:
-            {
-                var infoLabel = collab.State == CollabManager.SessionState.Off ? "Party search" : "Party infos";
-                SubTab(ref _partyTab, PartyTab.Chat, "Chat");
-                ImGui.SameLine(0, 4);
-                SubTab(ref _partyTab, PartyTab.Info, infoLabel);
-                break;
-            }
+        var labels = new[] { "Chat", "Party matching", "Party management", "Remote", "Boygroup" };
+        var tabs = new[] { Tab.Chat, Tab.PartyMatching, Tab.PartyManagement, Tab.Remote, Tab.Boygroup };
+        var count = tabs.Length;
 
-            case Tab.Remote:
-            case Tab.Boygroup:
-                ImGui.TextDisabled("Management");
-                break;
-        }
-    }
-
-    private static void SubTab(ref PartyTab current, PartyTab value, string label)
-    {
-        var active = current == value;
-        if (active)
+        var widths = new float[count];
+        var buttonsTotal = 0f;
+        for (var i = 0; i < count; i++)
         {
-            ImGui.PushStyleColor(ImGuiCol.Button, UiColors.StatusActivated.Rgba);
-            ImGui.PushStyleColor(ImGuiCol.ButtonHovered, UiColors.StatusActivated.Rgba);
+            widths[i] = ImGui.CalcTextSize(labels[i]).X + ImGui.GetStyle().FramePadding.X * 2;
+            buttonsTotal += widths[i];
         }
 
-        if (ImGui.Button(label))
-            current = value;
+        var margin = 6f;
+        var gap = Math.Max(4, (ImGui.GetWindowSize().X - margin * 2 - buttonsTotal) / (count - 1));
 
-        if (active)
-            ImGui.PopStyleColor(2);
-    }
-
-    /// <summary>Three small toggle buttons in the top-right corner, like the party-matching
-    /// reference. The active one is highlighted; a click switches the tab. SetCursorPosX takes
-    /// window-LOCAL coordinates - screen-space math here placed the row off-window.</summary>
-    private static void DrawTabButtons()
-    {
-        var labels = new[] { "Party", "Remote", "Boygroup" };
-        var tabs = new[] { Tab.Party, Tab.Remote, Tab.Boygroup };
-
-        var widthTotal = 0f;
-        foreach (var label in labels)
-            widthTotal += ImGui.CalcTextSize(label).X + ImGui.GetStyle().FramePadding.X * 2 + 6;
-
-        // Window-local coordinates; TiXL's zero padding makes the window rect the content rect.
-        ImGui.SetCursorPosX(ImGui.GetWindowSize().X - 12 - widthTotal);
-
-        for (var i = 0; i < tabs.Length; i++)
+        var x = margin;
+        for (var i = 0; i < count; i++)
         {
+            ImGui.SetCursorPosX(x);
             var isActive = _selectedTab == tabs[i];
             if (isActive)
                 ImGui.PushStyleColor(ImGuiCol.Button, UiColors.StatusActivated.Rgba);
@@ -219,29 +191,41 @@ internal sealed class CollabWindow : Window
             if (isActive)
                 ImGui.PopStyleColor();
 
-            if (i < tabs.Length - 1)
-                ImGui.SameLine(0, 0);
+            x += widths[i] + gap;
         }
     }
 
     // ---------------------------------------------------------------------------------------
-    // Party tab: the session browser plus the hosting controls
+    // Party matching tab: the session browser plus the hosting controls
     // ---------------------------------------------------------------------------------------
 
     private static void DrawPartyTab(CollabManager collab)
     {
+        if (collab.State != CollabManager.SessionState.Off)
+        {
+            ImGui.TextWrapped(collab.StatusText);
+            FormInputs.AddVerticalSpace(4);
+            ImGui.TextDisabled("Leave the current session to browse and join another one.");
+            return;
+        }
+
+        DrawHostControls(collab);
+        FormInputs.AddVerticalSpace(8);
+        DrawSessionBrowser(collab);
+    }
+
+    /// <summary>The connected session's management view: status, the party roster with every
+    /// member, their ping and the per-row actions, join requests, whispers, leave.</summary>
+    private static void DrawManagementTab(CollabManager collab)
+    {
         if (collab.State == CollabManager.SessionState.Off)
         {
-            DrawHostControls(collab);
-            FormInputs.AddVerticalSpace(8);
-            DrawSessionBrowser(collab);
+            ImGui.TextDisabled("No session is running. Host one on Party search");
+            ImGui.TextDisabled("or join a listed session there.");
+            return;
         }
-        else
-        {
-            // In a session the Party infos tab is the party information panel: the roster with
-            // every member, their ping and their per-row actions.
-            DrawSessionTab(collab);
-        }
+
+        DrawSessionTab(collab);
     }
 
     private static void DrawHostControls(CollabManager collab)
@@ -331,8 +315,7 @@ internal sealed class CollabWindow : Window
                                  projectName.Length > 0 ? projectName : null);
             }
 
-            _selectedTab = Tab.Party;
-            _partyTab = PartyTab.Info;
+            _selectedTab = Tab.PartyManagement;
         }
 
         ImGui.EndDisabled();
@@ -568,6 +551,32 @@ internal sealed class CollabWindow : Window
             ConnectTo(device);
             return;
         }
+
+        // Not cached yet (e.g. a fresh editor): fetch the list, then connect when it arrives.
+        _ = Task.Run(async () =>
+                         {
+                             try
+                             {
+                                 await CollabRemote.RefreshDevicesAsync(CancellationToken.None);
+                                 _remoteUiActions.Enqueue(() =>
+                                                              {
+                                                                  foreach (var device in CollabRemote.Devices)
+                                                                  {
+                                                                      if (device.Id != deviceId)
+                                                                          continue;
+
+                                                                      ConnectTo(device);
+                                                                      return;
+                                                                  }
+
+                                                                  _pairError = $"No paired computer '{deviceId}' in the device list";
+                                                              });
+                             }
+                             catch (Exception e)
+                             {
+                                 _remoteUiActions.Enqueue(() => _pairError = e.Message);
+                             }
+                         });
     }
 
     private static string _renameDeviceId = "";
@@ -1588,8 +1597,7 @@ internal sealed class CollabWindow : Window
                 ShowControlMode.Activate(ShowControlMode.Collab);
                 CollabLobbyWhisper.Reset();
                 JoinListedRoom(collab, selected);
-                _selectedTab = Tab.Party;
-            _partyTab = PartyTab.Info;
+                _selectedTab = Tab.PartyManagement;
             }
         }
 
