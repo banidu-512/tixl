@@ -568,6 +568,32 @@ internal sealed class CollabWindow : Window
             ConnectTo(device);
             return;
         }
+
+        // Not cached yet (e.g. a fresh editor): fetch the list, then connect when it arrives.
+        _ = Task.Run(async () =>
+                         {
+                             try
+                             {
+                                 await CollabRemote.RefreshDevicesAsync(CancellationToken.None);
+                                 _remoteUiActions.Enqueue(() =>
+                                                              {
+                                                                  foreach (var device in CollabRemote.Devices)
+                                                                  {
+                                                                      if (device.Id != deviceId)
+                                                                          continue;
+
+                                                                      ConnectTo(device);
+                                                                      return;
+                                                                  }
+
+                                                                  _pairError = $"No paired computer '{deviceId}' in the device list";
+                                                              });
+                             }
+                             catch (Exception e)
+                             {
+                                 _remoteUiActions.Enqueue(() => _pairError = e.Message);
+                             }
+                         });
     }
 
     private static string _renameDeviceId = "";

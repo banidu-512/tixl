@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
+using T3.Core.Logging;
 using T3.Editor.Gui.UiHelpers;
 using T3.Editor.UiModel.ProjectHandling;
 
@@ -96,6 +97,7 @@ internal static class CollabRemote
         }
 
         InstallationStatus = $"Managed by {result.Owner}";
+        Log.Debug($"Collab remote heartbeat: state={state}, command='{result.CommandType}', ack={_pendingAck.Length > 0}");
 
         if (result.CommandType.Length == 0)
             return;

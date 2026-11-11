@@ -1124,6 +1124,7 @@ internal static class DebugServer
                                ["remoteCode"] = CollabWindow.RemotePairingCode,
                                ["remoteDevices"] = CollabRemote.Devices.Count,
                                ["remoteError"] = CollabRemote.ListError,
+                               ["remoteStatus"] = CollabRemote.InstallationStatus,
                                ["participantsCanEdit"] = collab.ParticipantsCanEdit,
                                ["readOnly"] = collab.ReadOnlyForParticipants,
                                ["pendingJoins"] = collab.PendingJoinRequests.Count,
