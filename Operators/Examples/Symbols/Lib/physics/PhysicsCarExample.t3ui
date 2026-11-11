@@ -1,0 +1,209 @@
+{
+  "FormatVersion": 3,
+  "Id": "6c7e14dd-d79e-5655-b36a-79947562024e",
+  "Description": "A chassis on four motorised wheels drives into a stack of boxes.\n\nThe four wheels are one [RigidBody] with a point per wheel. One [RigidJoint] of type Hinge with AutoAnchor puts a hinge at every wheel, and MotorSpeed turns it. [RigidBodyPoints] splits the world's poses up again, so the chassis, the wheels and the boxes are each drawn with their own mesh.\n\nAKA: vehicle, wheels, motor, hinge, drive\n\nTips\n- MotorSpeed is in radians per second; its sign sets the direction.\n- The chassis and wheels share CollisionGroup 1 so the wheels can sit inside the wheel arches.\n- Friction on the wheels is what turns their spin into motion.",
+  "InputUis": [],
+  "SymbolChildUis": [
+    {
+      "ChildId": "a12da39a-989c-5726-9040-2953206bf855",
+      "SymbolName": "Lib.point.generate.GridPoints",
+      "Position": {
+        "X": 0.0,
+        "Y": 150.0
+      }
+    },
+    {
+      "ChildId": "e8ebf805-2d87-5668-bdea-e5311e591261",
+      "SymbolName": "Lib.point.helper.ReadPointsFromGpu",
+      "Position": {
+        "X": 300.0,
+        "Y": 150.0
+      }
+    },
+    {
+      "ChildId": "3c7b694e-79c8-5980-b218-50bdf4357506",
+      "SymbolName": "Lib.point.generate.GridPoints",
+      "Position": {
+        "X": 0.0,
+        "Y": 450.0
+      }
+    },
+    {
+      "ChildId": "300d85be-4df3-5459-9ff0-e5bfbd5b6b1a",
+      "SymbolName": "Lib.point.helper.ReadPointsFromGpu",
+      "Position": {
+        "X": 300.0,
+        "Y": 450.0
+      }
+    },
+    {
+      "ChildId": "6ed251a5-8c7f-553c-8255-18cfa0e97ecc",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 600.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "b3d9b15e-409e-5f54-bf1a-ec2426cd3624",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 600.0,
+        "Y": 150.0
+      }
+    },
+    {
+      "ChildId": "59cf3d5b-2d40-5a35-99fe-4c4b859037a6",
+      "SymbolName": "Lib.physics.RigidJoint",
+      "Position": {
+        "X": 600.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "bfdb6941-1e76-554f-bdb8-1fc652afd146",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 600.0,
+        "Y": 450.0
+      }
+    },
+    {
+      "ChildId": "5105248d-1569-55da-bfe9-95bad214fb1c",
+      "SymbolName": "Lib.physics.PhysicsWorld",
+      "Position": {
+        "X": 900.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "edf144d1-2ad2-522b-8ec8-9badcea5057b",
+      "SymbolName": "Lib.mesh.generate.CubeMesh",
+      "Position": {
+        "X": 1200.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "405fb4a4-76b2-5ab7-8135-926e7d6388f8",
+      "SymbolName": "Lib.mesh.generate.CylinderMesh",
+      "Position": {
+        "X": 1200.0,
+        "Y": 150.0
+      }
+    },
+    {
+      "ChildId": "85f5e8b5-e20e-5568-bd7e-99721bb707ab",
+      "SymbolName": "Lib.physics.RigidBodyPoints",
+      "Position": {
+        "X": 1500.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "b603e73e-1269-5019-bf14-0620f2975ced",
+      "SymbolName": "Lib.physics.RigidBodyPoints",
+      "Position": {
+        "X": 1500.0,
+        "Y": 150.0
+      }
+    },
+    {
+      "ChildId": "b84305f6-53b6-5e44-a927-a7af15024ccc",
+      "SymbolName": "Lib.physics.RigidBodyPoints",
+      "Position": {
+        "X": 1500.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "57d92923-6ba1-5a6b-a928-1fd2093fe20e",
+      "SymbolName": "Lib.mesh.draw.DrawMeshAtPoints",
+      "Position": {
+        "X": 1800.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "048db229-c91c-51f0-8faf-20329288352c",
+      "SymbolName": "Lib.mesh.draw.DrawMeshAtPoints",
+      "Position": {
+        "X": 1800.0,
+        "Y": 150.0
+      }
+    },
+    {
+      "ChildId": "4a6e6282-165a-5dba-91ec-5ea12b2be9ec",
+      "SymbolName": "Lib.mesh.draw.DrawMeshAtPoints",
+      "Position": {
+        "X": 1800.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "8b743ddf-a36a-5f8b-b1e6-11ba7535421f",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 600.0,
+        "Y": 750.0
+      }
+    },
+    {
+      "ChildId": "a2a00e4d-169f-5953-814a-ffb0e194ebd5",
+      "SymbolName": "Lib.mesh.generate.CubeMesh",
+      "Position": {
+        "X": 1200.0,
+        "Y": 900.0
+      }
+    },
+    {
+      "ChildId": "8ee83756-1e0a-57ac-a112-8bb223d4561e",
+      "SymbolName": "Lib.mesh.modify.TransformMesh",
+      "Position": {
+        "X": 1500.0,
+        "Y": 900.0
+      }
+    },
+    {
+      "ChildId": "ed145fd9-a34e-5417-b9a9-5a8320730371",
+      "SymbolName": "Lib.mesh.draw.DrawMeshUnlit",
+      "Position": {
+        "X": 1800.0,
+        "Y": 900.0
+      }
+    },
+    {
+      "ChildId": "290a819f-99ff-5b9a-a508-2cf28420c065",
+      "SymbolName": "Lib.render.transform.Group",
+      "Position": {
+        "X": 2100.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "141afe07-ce5e-53e8-92ea-2e6165927c9f",
+      "SymbolName": "Lib.render.camera.Camera",
+      "Position": {
+        "X": 2400.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "7c603e11-56ed-57a9-9585-2b4085264e6f",
+      "SymbolName": "Lib.image.generate.basic.RenderTarget",
+      "Position": {
+        "X": 2700.0,
+        "Y": 0.0
+      }
+    }
+  ],
+  "OutputUis": [
+    {
+      "OutputId": "616deba8-41c3-5637-a850-8ff113d14aff",
+      "Position": {
+        "X": 3000.0,
+        "Y": 0.0
+      }
+    }
+  ]
+}
