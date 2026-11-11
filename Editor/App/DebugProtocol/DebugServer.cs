@@ -1008,6 +1008,25 @@ internal static class DebugServer
                 collab.SetParticipantsCanEdit(!(request["value"]?.Value<bool>() ?? true));
                 break;
 
+            case "pin-peer":
+            {
+                var peer = request["peer"]?.Value<int>() ?? -1;
+                if (peer < 0)
+                {
+                    context.SendError("INVALID_PARAM", "pin-peer requires peer = <id>");
+                    return;
+                }
+
+                if (!collab.PinPeerWork(peer))
+                {
+                    context.SendError("NOT_PINNED", "their work is not synced here yet (no composition/selection to pin)");
+                    return;
+                }
+
+                context.SendOk(new JObject { ["pinned"] = peer });
+                break;
+            }
+
             case "feed":
             {
                 var childIdText = request["childId"]?.Value<string>() ?? "";
