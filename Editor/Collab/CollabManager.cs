@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using System.Net.Sockets;
 using Newtonsoft.Json.Linq;
 using T3.Core.Model;
+using T3.Editor.Compilation;
 using T3.Editor.Gui.UiHelpers;
 using T3.Editor.Gui.Window;
 using T3.Editor.Gui.Windows.Layouts;
@@ -778,7 +779,7 @@ internal sealed class CollabManager
     /// Hosts a relay-free session: the web backend lists the room and carries the WebRTC
     /// signaling, the session itself rides data channels. Requires a configured backend.
     /// </summary>
-    public void StartHostViaBackend()
+    public void StartHostViaBackend(string autoApproveClaim = "", bool listInBrowser = true)
     {
         if (!_reconnectAttemptInFlight)
             CancelReconnect();
@@ -812,7 +813,7 @@ internal sealed class CollabManager
 
         try
         {
-            var transport = new CollabBackendWire.CollabBackendHostTransport(room, key);
+            var transport = new CollabBackendWire.CollabBackendHostTransport(room, key, autoApproveClaim);
             transport.JoinRequested += OnJoinRequested;
             _transport = transport;
             _transport.PeerDisconnected += OnPeerDisconnectedTransport;
@@ -822,10 +823,13 @@ internal sealed class CollabManager
             _currentTarget = new SessionTarget(Hosting: true, Relay: false, CollabWebLobby.BackendUrl, 0, room, _password, key);
             State = SessionState.Hosting;
             ParticipantsCanEdit = true;
+            IsRemoteManagedSession = autoApproveClaim.Length > 0;
             _pendingJoinRequests.Clear();
             _readOnlyNoticeShownFor.Clear();
-            StatusText = $"Hosting via the backend, room {room}";
-            Log.Info($"Collab: backend session started (room {room})");
+            StatusText = IsRemoteManagedSession
+                             ? $"Hosting a managed session, room {room}"
+                             : $"Hosting via the backend, room {room}";
+            Log.Info($"Collab: backend session started (room {room}{(IsRemoteManagedSession ? ", remote-managed" : "")})");
 
             var config = UserSettings.Config;
             CollabWebLobby.Register(room, key, "",
@@ -836,7 +840,67 @@ internal sealed class CollabManager
                                     _sessionProjectName,
                                     LocalIdentity.DisplayName, LocalIdentity.Lang,
                                     !string.IsNullOrEmpty(_password),
-                                    config.CollabListSession);
+                                    listInBrowser && config.CollabListSession);
+
+            // Share the project itself so joiners start from the same snapshot and never have to
+            // match files by hand. Runs in the background; the party is usable while it uploads.
+            var packageForSharing = FindAnyOpenedProject();
+            var projectFolder = packageForSharing?.Folder;
+            var projectNameForSharing = packageForSharing?.DisplayName ?? _sessionProjectName;
+
+            if (string.IsNullOrEmpty(projectFolder))
+            {
+                AppendChat(null, "No project is open, so the party has no project to share");
+                Log.Info("Collab: hosting without a project snapshot (no project open)");
+            }
+            else
+            {
+                var uploadRoom = room;
+                var uploadKey = key;
+                var projectName = projectNameForSharing;
+                _ = Task.Run(async () =>
+                                 {
+                                     try
+                                     {
+                                         _uiThreadActions.Enqueue(() => StatusText = "Preparing the project for the party...");
+                                         var zipPath = CollabProjectTransfer.ZipProject(projectFolder, null, CancellationToken.None);
+                                         try
+                                         {
+                                             var error = await CollabProjectTransfer.UploadAsync(
+                                                 uploadRoom, uploadKey, projectName, zipPath,
+                                                 percent => _uiThreadActions.Enqueue(
+                                                     () => StatusText = $"Uploading the project for joiners... {percent}%"),
+                                                 CancellationToken.None);
+
+                                             _uiThreadActions.Enqueue(() =>
+                                                                      {
+                                                                          StatusText = error == null
+                                                                                           ? $"Hosting via the backend, room {uploadRoom} - project shared"
+                                                                                           : $"Hosting via the backend, room {uploadRoom}";
+                                                                          AppendChat(null, error == null
+                                                                                               ? "The project is ready for joiners to download"
+                                                                                               : $"Sharing the project failed: {error}");
+                                                                      });
+                                         }
+                                         finally
+                                         {
+                                             try
+                                             {
+                                                 File.Delete(zipPath);
+                                             }
+                                             catch (IOException)
+                                             {
+                                                 // Temp file; the OS cleans it up eventually.
+                                             }
+                                         }
+                                     }
+                                     catch (Exception e)
+                                     {
+                                         Log.Warning($"Collab: preparing the project failed: {e.Message}");
+                                         _uiThreadActions.Enqueue(() => AppendChat(null, $"Sharing the project failed: {e.Message}"));
+                                     }
+                                 });
+            }
         }
         catch (Exception e)
         {
@@ -850,7 +914,7 @@ internal sealed class CollabManager
 
     /// <summary>Joins a backend-hosted room: a join ticket, a WebRTC handshake through the
     /// backend, then the session runs on the data channel. Async; state Connecting meanwhile.</summary>
-    public void JoinViaBackend(string room)
+    public void JoinViaBackend(string room, string claim = "")
     {
         if (!_reconnectAttemptInFlight)
             CancelReconnect();
@@ -879,6 +943,7 @@ internal sealed class CollabManager
         StatusText = $"Joining room {room} via the backend...";
 
         _password = UserSettings.Config.CollabPassword ?? "";
+        _joinClaim = claim ?? "";
         _sessionLog.Clear();
         _currentTarget = new SessionTarget(Hosting: false, Relay: false, CollabWebLobby.BackendUrl, 0, room, _password, "");
 
@@ -886,8 +951,9 @@ internal sealed class CollabManager
                          {
                              try
                              {
-                                 var transport = new CollabBackendWire.CollabBackendClientTransport(room, TruncateName(LocalIdentity.DisplayName), LocalIdentity.Lang);
-                                 await transport.ConnectAsync(CancellationToken.None);
+                                 var transport = new CollabBackendWire.CollabBackendClientTransport(room, TruncateName(LocalIdentity.DisplayName), LocalIdentity.Lang, _joinClaim);
+                                 await transport.ConnectAsync(CancellationToken.None,
+                                                              (ticket, ct) => ReceivePartyProjectAsync(room, ticket, ct));
                                  _uiThreadActions.Enqueue(() => CompleteBackendJoin(transport, generation, room));
                              }
                              catch (Exception e)
@@ -908,6 +974,92 @@ internal sealed class CollabManager
                          });
     }
 
+    /// <summary>
+    /// The project a party should share. The focused view is unreliable right after a programmatic
+    /// open, so this also looks at opened projects and, last, every graph window.
+    /// </summary>
+    private static SymbolPackage? FindAnyOpenedProject()
+    {
+        if (ProjectView.Focused?.OpenedProject?.Package is { } focused)
+            return focused;
+
+        if (OpenedProject.OpenedProjects.Values.FirstOrDefault()?.Package is { } opened)
+            return opened;
+
+        return WindowManager.GetAllWindows()
+                            .OfType<T3.Editor.Gui.Window.GraphWindow>()
+                            .Select(w => w.ProjectView?.OpenedProject?.Package)
+                            .FirstOrDefault(p => p != null);
+    }
+
+    /// <summary>
+    /// Downloads the party's project snapshot (when the host shared one), extracts it into the
+    /// projects folder and loads it, so this machine runs the host's exact project. Runs on a pool
+    /// thread; the load step hops to the UI thread and is awaited.
+    /// </summary>
+    private async Task ReceivePartyProjectAsync(string room, string ticket, CancellationToken cancellation)
+    {
+        var (state, name, _, infoError) = await CollabProjectTransfer.FetchInfoAsync(room, cancellation);
+        if (infoError.Length > 0)
+        {
+            Log.Debug($"Collab: project info failed: {infoError}");
+            return;
+        }
+
+        if (state != "ready")
+        {
+            Log.Info($"Collab: the party has no project snapshot ({state}) - joining with the local project");
+            return;
+        }
+
+        var (zipPath, downloadError) = await CollabProjectTransfer.DownloadAsync(
+            room, ticket,
+            percent => _uiThreadActions.Enqueue(() => StatusText = $"Downloading the party project... {percent}%"),
+            cancellation);
+
+        if (zipPath == null)
+        {
+            Log.Warning($"Collab: project download failed: {downloadError}");
+            _uiThreadActions.Enqueue(() => AppendChat(null, $"Could not download the party project: {downloadError}"));
+            return;
+        }
+
+        var completed = new TaskCompletionSource<bool>();
+        _uiThreadActions.Enqueue(() =>
+                                {
+                                    try
+                                    {
+                                        var folder = CollabProjectTransfer.ExtractToProjects(zipPath, name);
+                                        if (!ProjectSetup.TryLoadProjectFromFolder(folder, out var loadError))
+                                        {
+                                            AppendChat(null, $"Could not load the party project: {loadError}");
+                                        }
+                                        else
+                                        {
+                                            AppendChat(null, $"The host's project was downloaded and loaded: {Path.GetFileName(folder)}");
+                                        }
+                                    }
+                                    catch (Exception e)
+                                    {
+                                        AppendChat(null, $"Could not prepare the party project: {e.Message}");
+                                    }
+                                    finally
+                                    {
+                                        completed.TrySetResult(true);
+                                    }
+                                });
+
+        await completed.Task;
+        try
+        {
+            File.Delete(zipPath);
+        }
+        catch (IOException)
+        {
+            // Temp file.
+        }
+    }
+
     private void CompleteBackendJoin(CollabBackendWire.CollabBackendClientTransport transport, int generation, string room)
     {
         // The user may have left or started another session while the handshake ran.
@@ -923,6 +1075,7 @@ internal sealed class CollabManager
         RoomCode = room;
         RelayEndpoint = CollabWebLobby.BackendUrl;
         _roomKey = "";
+        IsRemoteManagedSession = _joinClaim.Length > 0;
 
         // The data channel is open: the hello goes out now and authentication runs on it.
         // The state must stay Connecting until authOk (HandleClientAuthOk flips it to Connected);
@@ -941,6 +1094,8 @@ internal sealed class CollabManager
     public void Leave(bool manual = false)
     {
         LeftManually = manual;
+        IsRemoteManagedSession = false;
+        _joinClaim = "";
 
         // Every leave except the one a dropped link causes ends the wish to be in the session.
         if (!_keepReconnectOnLeave)
@@ -2620,6 +2775,9 @@ internal sealed class CollabManager
     /// <summary>host:port of the session this client dialed into (persisted for auto-rejoin).</summary>
     private string _joinedHost = "";
 
+    /// <summary>Remote management: the claim this client presented when joining, empty otherwise.</summary>
+    private string _joinClaim = "";
+
     private string _sessionProjectName = "";
     private string _hostProjectName = "";
 
@@ -3791,6 +3949,10 @@ internal sealed class CollabManager
     /// <summary>Host toggle: when off, the host drops every graph op from participants (spectators
     /// can watch and chat but not change anything). Broadcast as canEdit so guests can show it.</summary>
     public bool ParticipantsCanEdit { get; private set; } = true;
+
+    /// <summary>True while this session was opened for remote management (either role): its room
+    /// is unlisted, the paired controller auto-approves, and the Remote tab shows it as active.</summary>
+    public bool IsRemoteManagedSession { get; private set; }
 
     /// <summary>Guest view: the host runs the session in spectator mode.</summary>
     public bool ReadOnlyForParticipants { get; private set; }
