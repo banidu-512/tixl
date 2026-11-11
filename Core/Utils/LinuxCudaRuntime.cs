@@ -75,6 +75,19 @@ public static class LinuxCudaRuntime
 
     public static bool TryPrepareTensorRt(out string reason) => TryPrepareTensorRt(out reason, out _);
 
+    /// <summary>Clears the cached probe results so the next TryPrepare re-detects with the current settings.</summary>
+    public static void ResetProbes()
+    {
+        lock (Lock)
+        {
+            _probed = false;
+            _failure = null;
+            _tensorRtProbed = false;
+            _tensorRtFailure = null;
+            _tensorRtDirectory = null;
+        }
+    }
+
     private static string? Probe()
     {
         var searchDirs = CollectSearchDirs();
@@ -143,6 +156,14 @@ public static class LinuxCudaRuntime
                 dirs.Add(dir);
         }
 
+        var configuredTensorRtDir = T3.Core.Settings.AiModelSettings.Config.TensorRtDirectory;
+        if (!string.IsNullOrEmpty(configuredTensorRtDir))
+        {
+            Add(configuredTensorRtDir);
+            Add(Path.Combine(configuredTensorRtDir, "lib"));
+            Add(Path.Combine(configuredTensorRtDir, "lib64"));
+        }
+
         foreach (var variable in new[] { "TENSORRT_ROOT", "TENSORRT_PATH", "TRT_PATH", "TENSORRT_HOME" })
         {
             var root = Environment.GetEnvironmentVariable(variable);
@@ -204,6 +225,7 @@ public static class LinuxCudaRuntime
         }
 
         var assemblyDir = Path.GetDirectoryName(typeof(LinuxCudaRuntime).Assembly.Location);
+        Add(T3.Core.Settings.AiModelSettings.Config.CudaRuntimeDirectory); // the user's choice wins over everything else
         Add(Path.Combine(AppContext.BaseDirectory, "CudaRuntime"));
         if (!string.IsNullOrEmpty(assemblyDir))
             Add(Path.Combine(assemblyDir, "CudaRuntime"));

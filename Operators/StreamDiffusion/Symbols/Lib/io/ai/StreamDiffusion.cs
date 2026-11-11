@@ -137,6 +137,15 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
     [Input(Guid = "F3A4B5C6-D7E8-9012-3456-789012345678")]
     public readonly InputSlot<float> PreserveDetails = new(0.0f);
 
+    /// <summary>
+    /// Temporal feedback (like ossia's "Feed prev. output"): blends the newly generated frame with the
+    /// previously published one. 0 keeps the pipeline output untouched; values up to 1 smooth out the
+    /// frame-to-frame flicker of continuous restyle (trails decay exponentially). Ignored on the
+    /// GPU-latent fast path (TIXL_SD_GPU_LATENTS=1), which publishes GPU-resident frames directly.
+    /// </summary>
+    [Input(Guid = "C9D0E1F2-A3B4-5678-9ABC-DEF012345678")]
+    public readonly InputSlot<float> Feedback = new(0.0f);
+
     [Input(Guid = "D2E3F4A5-B6C7-8901-2345-678901234567")]
     public readonly InputSlot<bool> Debug = new(false);
 
@@ -264,10 +273,27 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
             var modelType = ModelType.GetValue(context);
             var deviceId = CudaDevice.GetValue(context);
             var provider = ExecutionProviderParam.GetValue(context);
+
+            // The AI settings' DirectML preference flips the default provider on Windows,
+            // e.g. for AMD/Intel machines without a usable CUDA stack. An explicit
+            // non-default choice is never overridden.
+            if (provider == (int)t3.streamdiffusion.Onnx.ExecutionProvider.Cuda
+                && T3.Core.Settings.AiModelSettings.Config.PreferDirectMlForOnnx
+                && OperatingSystem.IsWindows())
+            {
+                provider = (int)t3.streamdiffusion.Onnx.ExecutionProvider.DirectMl;
+            }
+
             var triggerGenerate = TriggerGenerate.GetValue(context);
             var autoGenerate = AutoGenerate.GetValue(context);
             var debug = Debug.GetValue(context);
             var fastDecode = FastDecode.GetValue(context);
+            var feedback = Math.Clamp(Feedback.GetValue(context), 0f, 1f);
+
+            // No EnginePath: fall back to a model folder from the AI model store that matches the
+            // selected model type, so a model installed through the settings window just works.
+            if (string.IsNullOrWhiteSpace(modelPath))
+                modelPath = FindManagedModelFolder(modelType);
 
             _debugLogging = debug;
             _updateFrameCounter++;
@@ -320,6 +346,7 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
                         _outputTexture = null;
                         _lastOutputSize = Int2.Zero;
                         _lastGenerationTime = 0f;
+                        _prevRgba = null;
                     }
                     Output.Value = null;
                     OutputSize.Value = Int2.Zero;
@@ -496,7 +523,8 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
             {
                 if (newest.Data != null)
                 {
-                    UploadRgbaTexture(newest.Data, newest.Width, newest.Height);
+                    UploadRgbaTexture(ApplyFeedback(newest.Data, newest.Width, newest.Height, feedback),
+                                      newest.Width, newest.Height);
                     _lastOutputSize = new Int2(newest.Width, newest.Height);
                     _lastGenerationTime = newest.Time;
                     _lastStatusMessage = null;
@@ -591,6 +619,94 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
     }
 
     #region Pipeline worker lifecycle (DepthAnything port)
+
+    /** Previous published frame for the Feedback blend (evaluation thread only, guarded by _updating). */
+    private byte[]? _prevRgba;
+    private int _prevWidth;
+    private int _prevHeight;
+
+    /** Temporal feedback ("Feed prev. output"): blends the new frame with the last published one.
+     *  The stored previous frame is the BLENDED one, so trails decay exponentially. f=0 is a no-op
+     *  and never allocates. */
+    private byte[] ApplyFeedback(byte[] data, int width, int height, float feedback)
+    {
+        var length = width * height * 4;
+        if (feedback <= 0f || data.Length != length)
+        {
+            _prevRgba = null;
+            return data;
+        }
+
+        var blended = new byte[length];
+        if (_prevRgba is byte[] prev && _prevWidth == width && _prevHeight == height)
+        {
+            for (var i = 0; i < length; i++)
+            {
+                blended[i] = (byte)(data[i] * (1f - feedback) + prev[i] * feedback + 0.5f);
+            }
+        }
+        else
+        {
+            data.CopyTo(blended, 0);
+        }
+
+        _prevRgba = blended;
+        _prevWidth = width;
+        _prevHeight = height;
+        return blended;
+    }
+
+    /** Model store scan results per model type, cached briefly so an empty EnginePath
+     *  does not rescan (and re-log) the store on every frame. */
+    private static readonly ConcurrentDictionary<int, (string? Folder, long ScannedAtTicks)> ManagedFolderCache = new();
+    private const double ManagedModelScanIntervalMs = 5000;
+    private static string? _lastLoggedManagedFolder;
+
+    /** The first folder in the model store that validates for the selected model type, or null. */
+    private static string? FindManagedModelFolder(int modelType)
+    {
+        var nowTicks = Environment.TickCount64;
+        if (ManagedFolderCache.TryGetValue(modelType, out var cached)
+            && nowTicks - cached.ScannedAtTicks < ManagedModelScanIntervalMs)
+        {
+            return cached.Folder;
+        }
+
+        var found = ScanManagedModelFolders(modelType);
+        ManagedFolderCache[modelType] = (found, nowTicks);
+        return found;
+    }
+
+    private static string? ScanManagedModelFolders(int modelType)
+    {
+        var familyDirectory = T3.Core.Settings.AiModelSettings.FamilyDirectory(T3.Core.Settings.AiModelSettings.StreamDiffusionFamilyFolder);
+        if (!Directory.Exists(familyDirectory))
+            return null;
+
+        try
+        {
+            foreach (var directory in Directory.GetDirectories(familyDirectory).OrderBy(d => d, StringComparer.OrdinalIgnoreCase))
+            {
+                var error = modelType == (int)ModelTypeOptions.StreamDiffusionV2
+                                ? StreamDiffusionV2Pipeline.ValidateModelDirectory(directory)
+                                : StableDiffusionPipeline.ValidateModelDirectory(directory);
+                if (error.Length == 0)
+                {
+                    if (Interlocked.CompareExchange(ref _lastLoggedManagedFolder, directory, null) != directory)
+                    {
+                        Log.Debug($"[StreamDiffusion] No engine path set - using managed model folder '{directory}'");
+                    }
+                    return directory;
+                }
+            }
+        }
+        catch
+        {
+            // An unreadable store folder is not worth failing the update over
+        }
+
+        return null;
+    }
 
     private void InitializePipelineWorker(string? modelPath, int deviceId, int modelType, int provider)
     {

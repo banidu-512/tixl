@@ -257,7 +257,7 @@ public class PoseLandmarkDetection : Instance<PoseLandmarkDetection>
         // Resolving the asset is a registry lookup. Creating the native landmarker (model load, GPU
         // delegate init) takes hundreds of milliseconds to seconds, so it runs on the worker: the eval
         // thread must never wait for a native model load.
-        var modelFound = AssetRegistry.TryResolveAddress("Mediapipe:pose_landmarker.task", this, out var fullPath, out _, logWarnings: true);
+        var modelFound = MediaPipeModelResolver.TryResolve("pose_landmarker.task", this, out var fullPath);
         if (!modelFound)
         {
             // Not Debug-gated: a missing asset is the one failure a user has to act on, and the retry
