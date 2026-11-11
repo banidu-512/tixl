@@ -1325,6 +1325,7 @@ internal sealed class CollabWindow : Window
 
         ImGui.SetCursorScreenPos(rowMin + new Vector2(0, rowHeight + 6 * uiScale));
         ImGui.Dummy(Vector2.Zero);
+        ImGui.PopID();
     }
 
     private static void DrawKickConfirmation(CollabManager collab)
