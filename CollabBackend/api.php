@@ -192,6 +192,18 @@ function db(): PDO
         $pdo->exec('ALTER TABLE rooms ADD COLUMN tickets TEXT NOT NULL DEFAULT "[]"');
     }
 
+    // Party-table columns: the host's platform, the account's region, and whether participants
+    // may edit (the party's type in the matching list).
+    if (!in_array('os', $columns, true)) {
+        $pdo->exec('ALTER TABLE rooms ADD COLUMN os TEXT NOT NULL DEFAULT ""');
+    }
+    if (!in_array('region', $columns, true)) {
+        $pdo->exec('ALTER TABLE rooms ADD COLUMN region TEXT NOT NULL DEFAULT ""');
+    }
+    if (!in_array('editable', $columns, true)) {
+        $pdo->exec('ALTER TABLE rooms ADD COLUMN editable INTEGER NOT NULL DEFAULT 1');
+    }
+
     // Remote management: paired installations (owner side), one-shot pairing codes, and a short
     // cache of Discord token checks so polling the remote list does not hammer Discord.
     $pdo->exec('CREATE TABLE IF NOT EXISTS remote_devices (
@@ -382,6 +394,9 @@ function op_register(array $input): void
                              project = CASE WHEN ? = "" THEN project ELSE ? END,
                              host = CASE WHEN ? = "" THEN host ELSE ? END,
                              lang = CASE WHEN ? = "" THEN lang ELSE ? END,
+                             os = CASE WHEN ? = "" THEN os ELSE ? END,
+                             region = CASE WHEN ? = "" THEN region ELSE ? END,
+                             editable = COALESCE(?, editable),
                              pwd = COALESCE(?, pwd),
                              listed = COALESCE(?, listed),
                              members = COALESCE(?, members),
@@ -396,6 +411,9 @@ function op_register(array $input): void
                 text_field($input, 'project', MAX_PROJECT), text_field($input, 'project', MAX_PROJECT),
                 text_field($input, 'host', MAX_NAME), text_field($input, 'host', MAX_NAME),
                 text_field($input, 'lang', MAX_LANG), text_field($input, 'lang', MAX_LANG),
+                text_field($input, 'os', 12), text_field($input, 'os', 12),
+                text_field($input, 'region', 8), text_field($input, 'region', 8),
+                isset($input['editable']) ? (!empty($input['editable']) ? 1 : 0) : null,
                 $pwd, $listed, $members, $maxMembers,
                 time(),
                 $room,
@@ -403,8 +421,8 @@ function op_register(array $input): void
             respond_ok(['room' => $room]);
         }
 
-        $stmt = db()->prepare('INSERT INTO rooms (room, key_hash, relay, title, purpose, project, host, lang, pwd, listed, members, max_members, updated)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+        $stmt = db()->prepare('INSERT INTO rooms (room, key_hash, relay, title, purpose, project, host, lang, os, region, editable, pwd, listed, members, max_members, updated)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
     $stmt->execute([
         $room,
         key_hash($key),
@@ -414,6 +432,9 @@ function op_register(array $input): void
         text_field($input, 'project', MAX_PROJECT),
         text_field($input, 'host', MAX_NAME),
         text_field($input, 'lang', MAX_LANG),
+        text_field($input, 'os', 12),
+        text_field($input, 'region', 8),
+        !empty($input['editable']) ? 1 : 0,
         $pwd ?? 0,
         $listed ?? 0,
         $members ?? 1,
@@ -435,8 +456,16 @@ function op_heartbeat(array $input): void
         respond_error('not the host');
     }
 
-    db()->prepare('UPDATE rooms SET updated = ?, members = ? WHERE room = ?')
-        ->execute([time(), max(1, (int)($input['members'] ?? 1)), $room]);
+    // The host also reports spectator-mode changes with its heartbeat, so the matching list
+    // reflects "controllable" vs "spectating" without a separate call.
+    if (isset($input['editable'])) {
+        db()->prepare('UPDATE rooms SET updated = ?, members = ?, editable = ? WHERE room = ?')
+            ->execute([time(), max(1, (int)($input['members'] ?? 1)), !empty($input['editable']) ? 1 : 0, $room]);
+    } else {
+        db()->prepare('UPDATE rooms SET updated = ?, members = ? WHERE room = ?')
+            ->execute([time(), max(1, (int)($input['members'] ?? 1)), $room]);
+    }
+
     respond_ok();
 }
 
@@ -454,13 +483,16 @@ function op_update(array $input): void
     $title = text_field($input, 'title', MAX_TITLE);
     $purpose = text_field($input, 'purpose', MAX_PURPOSE);
     $project = text_field($input, 'project', MAX_PROJECT);
+    $editable = isset($input['editable']) ? (!empty($input['editable']) ? 1 : 0) : null;
     $stmt = db()->prepare('UPDATE rooms SET title = CASE WHEN ? = "" THEN title ELSE ? END,
                                               purpose = CASE WHEN ? = "" THEN purpose ELSE ? END,
                                               project = CASE WHEN ? = "" THEN project ELSE ? END,
+                                              editable = COALESCE(?, editable),
                                               listed = ?,
                                               updated = ?
                            WHERE room = ?');
     $stmt->execute([$title, $title, $purpose, $purpose, $project, $project,
+                    $editable,
                     !empty($input['listed']) ? 1 : 0, time(), $room]);
     respond_ok();
 }
@@ -486,7 +518,7 @@ function op_unregister(array $input): void
 function list_rooms(): array
 {
     delete_stale_rooms();
-    $rows = db()->query('SELECT room, relay, title, purpose, project, host, lang, pwd, members, max_members, updated
+    $rows = db()->query('SELECT room, relay, title, purpose, project, host, lang, os, region, editable, pwd, members, max_members, updated
                          FROM rooms WHERE listed = 1 ORDER BY updated DESC LIMIT 200')->fetchAll(PDO::FETCH_ASSOC);
     $rooms = [];
     foreach ($rows as $row) {
@@ -498,6 +530,9 @@ function list_rooms(): array
             'project' => $row['project'],
             'host' => $row['host'],
             'lang' => $row['lang'],
+            'os' => $row['os'],
+            'region' => $row['region'],
+            'editable' => (bool)$row['editable'],
             'pwd' => (bool)$row['pwd'],
             'members' => (int)$row['members'],
             'max' => (int)$row['max_members'],

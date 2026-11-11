@@ -683,16 +683,15 @@ internal sealed class CollabWindow : Window
         if (ImGui.BeginTable("##collabLobby", 7, tableFlags, new Vector2(0, tableHeight)))
         {
             ImGui.TableSetupScrollFreeze(0, 1);
-            ImGui.TableSetupColumn("#", ImGuiTableColumnFlags.WidthFixed, fontSize * 2f);
-            ImGui.TableSetupColumn("Lang", ImGuiTableColumnFlags.WidthFixed, fontSize * 3.5f);
-            ImGui.TableSetupColumn("Host", ImGuiTableColumnFlags.WidthStretch, 0.24f);
-            ImGui.TableSetupColumn("Title", ImGuiTableColumnFlags.WidthStretch, 0.42f);
-            ImGui.TableSetupColumn("Purpose", ImGuiTableColumnFlags.WidthStretch, 0.16f);
+            ImGui.TableSetupColumn("Party ID", ImGuiTableColumnFlags.WidthFixed, fontSize * 4.5f);
+            ImGui.TableSetupColumn("Type", ImGuiTableColumnFlags.WidthFixed, fontSize * 6f);
+            ImGui.TableSetupColumn("Race", ImGuiTableColumnFlags.WidthFixed, fontSize * 3.2f);
+            ImGui.TableSetupColumn("Location", ImGuiTableColumnFlags.WidthFixed, fontSize * 4.2f);
+            ImGui.TableSetupColumn("Name", ImGuiTableColumnFlags.WidthStretch, 0.28f);
+            ImGui.TableSetupColumn("Title", ImGuiTableColumnFlags.WidthStretch, 0.46f);
             ImGui.TableSetupColumn("Members", ImGuiTableColumnFlags.WidthFixed, fontSize * 4.5f);
-            ImGui.TableSetupColumn("Access", ImGuiTableColumnFlags.WidthFixed, fontSize * 5f);
             ImGui.TableHeadersRow();
 
-            var rowNumber = 0;
             foreach (var room in rooms)
             {
                 if (_lobbyPurposeFilter != "All" && !string.Equals(room.Purpose, _lobbyPurposeFilter, StringComparison.OrdinalIgnoreCase))
@@ -704,14 +703,14 @@ internal sealed class CollabWindow : Window
                     && !room.Project.Contains(_lobbyFilter, StringComparison.OrdinalIgnoreCase))
                     continue;
 
-                rowNumber++;
                 var isSelected = room.Code == _lobbySelectedCode;
                 ImGui.TableNextRow();
                 ImGui.TableNextColumn();
-                ImGui.TextUnformatted(rowNumber.ToString());
-                ImGui.TableNextColumn();
+
+                // The party id doubles as the row selector (spanning all cells), like picking a
+                // line in the matching list.
                 ImGui.PushID(room.Code);
-                if (ImGui.Selectable(CollabUserIdentity.FormatLang(room.Lang), isSelected,
+                if (ImGui.Selectable(room.Code, isSelected,
                                      ImGuiSelectableFlags.SpanAllColumns | ImGuiSelectableFlags.AllowDoubleClick))
                 {
                     _lobbySelectedCode = room.Code;
@@ -723,6 +722,22 @@ internal sealed class CollabWindow : Window
                 if (isSelected)
                     selected = room;
 
+                // Type: whether participants can edit (the host's spectator toggle).
+                ImGui.TableNextColumn();
+                ImGui.TextColored(room.Editable ? UiColors.StatusActivated : UiColors.StatusWarning,
+                                  room.Editable ? "Controllable" : "Spectating");
+
+                // Race: the host's platform.
+                ImGui.TableNextColumn();
+                var platform = room.Platform.Length > 0 ? room.Platform : "--";
+                ImGui.TextUnformatted(platform);
+
+                // Location: the account's region.
+                ImGui.TableNextColumn();
+                var region = room.Region.Length > 0 ? room.Region : "--";
+                ImGui.TextUnformatted(region);
+
+                // Name: the host, with the unverified marker.
                 ImGui.TableNextColumn();
                 ImGui.TextUnformatted(string.IsNullOrEmpty(room.HostName) ? "unnamed" : room.HostName);
                 if (!room.HostVerified)
@@ -732,19 +747,15 @@ internal sealed class CollabWindow : Window
                     CustomComponents.TooltipForLastItem("This name is not confirmed by a Discord login.");
                 }
 
+                // Title, with a password marker and the project as a tooltip.
                 ImGui.TableNextColumn();
-                ImGui.TextUnformatted(room.Title);
+                ImGui.TextUnformatted(room.PasswordProtected ? $"{room.Title}  (password)" : room.Title);
                 if (!string.IsNullOrEmpty(room.Project))
                     CustomComponents.TooltipForLastItem($"Project: {room.Project}");
 
-                ImGui.TableNextColumn();
-                ImGui.TextUnformatted(room.Purpose);
-
+                // Members: joined / capacity.
                 ImGui.TableNextColumn();
                 ImGui.TextUnformatted($"{room.Members}/{room.MaxMembers}");
-
-                ImGui.TableNextColumn();
-                ImGui.TextDisabled(room.PasswordProtected ? "password" : "open");
             }
 
             ImGui.EndTable();

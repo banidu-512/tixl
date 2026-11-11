@@ -534,7 +534,8 @@ internal sealed class CollabManager
                                     ProjectView.Focused?.OpenedProject.Package.DisplayName ?? "",
                                     LocalIdentity.DisplayName, LocalIdentity.Lang,
                                     !string.IsNullOrEmpty(password),
-                                    config.CollabListSession);
+                                    config.CollabListSession,
+                                    ParticipantsCanEdit);
         }
 
         if (_reconnectTarget is { Hosting: true } reopened)
@@ -840,7 +841,8 @@ internal sealed class CollabManager
                                     _sessionProjectName,
                                     LocalIdentity.DisplayName, LocalIdentity.Lang,
                                     !string.IsNullOrEmpty(_password),
-                                    listInBrowser && config.CollabListSession);
+                                    listInBrowser && config.CollabListSession,
+                                    ParticipantsCanEdit);
 
             // Share the project itself so joiners start from the same snapshot and never have to
             // match files by hand. Runs in the background; the party is usable while it uploads.
@@ -1978,7 +1980,7 @@ internal sealed class CollabManager
         if (now >= _nextBackendHeartbeatTicks)
         {
             _nextBackendHeartbeatTicks = now + BackendHeartbeatIntervalMs;
-            CollabWebLobby.Heartbeat(RoomCode, _roomKey, Peers.Count + 1);
+            CollabWebLobby.Heartbeat(RoomCode, _roomKey, Peers.Count + 1, ParticipantsCanEdit);
         }
 
         if (now >= _nextWhisperPollTicks)
@@ -4009,6 +4011,16 @@ internal sealed class CollabManager
         _transport?.BroadcastJson(Peers, new { t = "canEdit", value });
         AppendChat(null, value ? "Participants can edit again" : "Participants are spectators now (read-only)");
         Log.Info($"Collab: participants can edit = {value}");
+
+        // The matching list's "type" column follows immediately, not on the next heartbeat.
+        if (State == SessionState.Hosting && RoomCode.Length > 0 && _roomKey.Length > 0 && CollabWebLobby.IsConfigured)
+        {
+            var config = UserSettings.Config;
+            CollabWebLobby.Update(RoomCode, _roomKey,
+                                  config.CollabSessionTitle, config.CollabSessionPurpose,
+                                  ProjectView.Focused?.OpenedProject.Package.DisplayName ?? "",
+                                  config.CollabListSession, value);
+        }
     }
 
     private void OnJoinRequested(string name, string ticketId)

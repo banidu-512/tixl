@@ -17,7 +17,10 @@ internal sealed record LobbyRoom(string Code,
                                  int Members,
                                  int MaxMembers,
                                  bool PasswordProtected,
-                                 string Relay = "");
+                                 string Relay = "",
+                                 string Platform = "",
+                                 string Region = "",
+                                 bool Editable = true);
 
 /// <summary>
 /// The session browser's data: asks a relay which sessions its hosts chose to list. Only hosts
