@@ -43,7 +43,7 @@ internal static partial class WindowManager
             ToggleWindowTypeVisibility<ConsoleLogWindow>();
         }
 
-        if (UserActions.OpenSettingsWindow.Triggered())
+        if (UserActions.OpenSettings.Triggered())
         {
             // Opens rather than toggles: a settings window that is already docked behind another tab
             // comes to the front instead of disappearing.
@@ -61,6 +61,8 @@ internal static partial class WindowManager
         // Draw SNiXL window separately (easter egg - not in main windows list)
         SnixlWindow.Draw();
 
+        CameraSettingsDialog.Draw();
+
         if (DemoWindowVisible)
             ImGui.ShowDemoWindow(ref DemoWindowVisible);
 
@@ -74,6 +76,8 @@ internal static partial class WindowManager
     internal static readonly UtilitiesWindow UtilitiesWindow = new();
     internal static readonly SnixlWindow SnixlWindow = new();
     internal static readonly GuidedFeatureTestsWindow GuidedFeatureTestsWindow = new();
+    internal static readonly CollabWindow CollabWindow = new();
+    internal static readonly CollabJoinRequestWindow CollabJoinRequestWindow = new();
 
     /// <summary>The version-welcome window matching the running build — only the "alpha" suffix gets the import/testing variant.</summary>
     internal static readonly WelcomeWindowBase WelcomeWindow = RuntimeAssemblies.IsAlpha
@@ -111,6 +115,8 @@ internal static partial class WindowManager
                 SettingsWindow, // item shown in TiXL menu
                 ProjectSettingsWindow, // item shown in TiXL menu
                 WelcomeWindow, // opened from Help → Welcome / the version-welcome trigger
+                CollabWindow, // item shown in Window menu
+                CollabJoinRequestWindow, // popup only; not in the menus
             ];
 
 

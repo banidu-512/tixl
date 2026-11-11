@@ -32,6 +32,8 @@ const MAX_ROOMS = 200;
 const MAX_WHISPERS_PER_ROOM = 40;
 const MAX_NAME = 48;
 const MAX_TEXT = 256;
+const MAX_TICKETS_PER_ROOM = 16;
+const MAX_MSGS_PER_TICKET = 32;
 const MAX_TITLE = 64;
 const MAX_PURPOSE = 24;
 const MAX_PROJECT = 64;
@@ -55,6 +57,11 @@ try {
         'whispers' => op_whispers($input),
         'signal-put' => op_signal($input),
         'signal-get' => op_signal_get($input),
+        'join-request' => op_join_request($input),
+        'tickets' => op_tickets($input),
+        'ticket-state' => op_ticket_state($input),
+        'ticket-put' => op_signal_put($input),
+        'ticket-get' => op_ticket_get($input),
         'verify' => op_verify($input),
         default => respond_error('unknown op'),
     };
@@ -108,6 +115,9 @@ function db(): PDO
     if (!in_array('relay', $columns, true)) {
         $pdo->exec('ALTER TABLE rooms ADD COLUMN relay TEXT NOT NULL DEFAULT ""');
     }
+    if (!in_array('tickets', $columns, true)) {
+        $pdo->exec('ALTER TABLE rooms ADD COLUMN tickets TEXT NOT NULL DEFAULT "[]"');
+    }
 
     return $pdo;
 }
@@ -130,6 +140,14 @@ function room_code(array $input): string
 {
     $code = strtoupper(preg_replace('/[^A-Za-z0-9]/', '', (string)($input['room'] ?? '')) ?? '');
     return substr($code, 0, MAX_ROOM_CODE);
+}
+
+/** SDP needs its line breaks; strips everything else that is not printable or a newline. */
+function sdp_clean(string $value): string
+{
+    $value = str_replace("\r\n", "\n", $value);
+    $value = preg_replace('/[\x00-\x09\x0B-\x1F\x7F]/', '', $value) ?? '';
+    return trim($value);
 }
 
 function key_hash(string $key): string
@@ -520,6 +538,184 @@ function op_signal_get(array $input): void
     }
 
     respond_error('signal not found');
+}
+
+// --- join tickets: the relay-free session rendezvous ------------------------------------------
+
+// A ticket is a two-party signal mailbox: the guest creates it with join-request, the host
+// fills it with offer/candidates, the guest answers into it, and both sides poll until the
+// WebRTC data channel takes over. Messages are the editor's own signal JSON
+// ({t:"offer"|"answer"|"candidate", ...}) passed through unmodified.
+
+function op_join_request(array $input): void
+{
+    $room = room_code($input);
+    $found = load_room($room);
+    if ($found === null) {
+        respond_error('room not found');
+    }
+
+    $name = text_field($input, 'name', MAX_NAME);
+    if ($name === '') {
+        respond_error('name required');
+    }
+
+    $tickets = decode_list((string)$found['tickets'], MAX_TICKETS_PER_ROOM);
+    $tickets[] = ['id' => bin2hex(random_bytes(8)),
+                  'name' => $name,
+                  'lang' => text_field($input, 'lang', MAX_LANG),
+                  'state' => 'pending',
+                  'at' => time(),
+                  'msgs' => []];
+    if (count($tickets) > MAX_TICKETS_PER_ROOM) {
+        $tickets = array_slice($tickets, -MAX_TICKETS_PER_ROOM);
+    }
+
+    save_tickets($room, $tickets);
+    respond_ok(['ticket' => end($tickets)['id']]);
+}
+
+/** Host: sets a join ticket's state (approved lets the negotiation start; rejected ends it). */
+function op_ticket_state(array $input): void
+{
+    $room = room_code($input);
+    $found = load_room($room);
+    if ($found === null) {
+        respond_error('room not found');
+    }
+    if (!key_matches($found, (string)($input['key'] ?? ''))) {
+        respond_error('not the host');
+    }
+
+    $ticketId = substr(preg_replace('/[^a-f0-9]/', '', (string)($input['ticket'] ?? '')) ?? '', 0, 16);
+    $state = (string)($input['state'] ?? '');
+    if (!in_array($state, ['approved', 'rejected'], true)) {
+        respond_error('state must be approved or rejected');
+    }
+
+    $tickets = decode_list((string)$found['tickets'], MAX_TICKETS_PER_ROOM);
+    foreach ($tickets as $index => $ticket) {
+        if ($ticket['id'] === $ticketId) {
+            $tickets[$index]['state'] = $state;
+            $tickets[$index]['answered'] = time();
+            save_tickets($room, $tickets);
+            respond_ok();
+        }
+    }
+
+    respond_error('ticket not found');
+}
+
+function op_tickets(array $input): void
+{
+    $room = room_code($input);
+    $found = load_room($room);
+    if ($found === null) {
+        respond_error('room not found');
+    }
+    if (!key_matches($found, (string)($input['key'] ?? ''))) {
+        respond_error('not the host');
+    }
+
+    $tickets = decode_list((string)$found['tickets'], MAX_TICKETS_PER_ROOM);
+    $out = [];
+    foreach ($tickets as $ticket) {
+        $out[] = ['id' => $ticket['id'],
+                  'name' => $ticket['name'],
+                  'lang' => $ticket['lang'] ?? '',
+                  'state' => $ticket['state'] ?? 'pending',
+                  'at' => $ticket['at'],
+                  'msgs' => count($ticket['msgs'] ?? [])];
+    }
+
+    respond_ok(['tickets' => $out]);
+}
+
+function op_signal_put(array $input): void
+{
+    $room = room_code($input);
+    $found = load_room($room);
+    if ($found === null) {
+        respond_error('room not found');
+    }
+
+    $ticketId = substr(preg_replace('/[^a-f0-9]/', '', (string)($input['ticket'] ?? '')) ?? '', 0, 16);
+    if ($ticketId === '') {
+        respond_error('ticket required');
+    }
+
+    $message = $input['message'] ?? null;
+    if (!is_array($message)) {
+        respond_error('message required');
+    }
+
+    $type = (string)($message['t'] ?? '');
+    if (!in_array($type, ['offer', 'answer', 'ice'], true)) {
+        respond_error('t must be offer, answer or ice');
+    }
+
+    // Offer and answer carry SDP (line breaks preserved); candidates carry candidate/mid.
+    foreach (['sdp' => 16384, 'candidate' => 512, 'mid' => 16] as $field => $max) {
+        if (isset($message[$field])) {
+            $message[$field] = $field === 'sdp' ? sdp_clean((string)$message[$field]) : clean((string)$message[$field], $max);
+        }
+    }
+
+    // The host signs its messages with the room key; a guest signs with its ticket id.
+    $isHost = key_matches($found, (string)($input['key'] ?? ''));
+
+    $tickets = decode_list((string)$found['tickets'], MAX_TICKETS_PER_ROOM);
+    foreach ($tickets as $index => $ticket) {
+        if ($ticket['id'] !== $ticketId) {
+            continue;
+        }
+
+        $msgs = $ticket['msgs'] ?? [];
+        $msgs[] = ['from' => $isHost ? 'host' : 'guest',
+                   't' => $type,
+                   'sdp' => $message['sdp'] ?? '',
+                   'candidate' => $message['candidate'] ?? '',
+                   'mid' => $message['mid'] ?? '',
+                   'at' => time()];
+        if (count($msgs) > MAX_MSGS_PER_TICKET) {
+            $msgs = array_slice($msgs, -MAX_MSGS_PER_TICKET);
+        }
+
+        $tickets[$index]['msgs'] = $msgs;
+        save_tickets($room, $tickets);
+        respond_ok(['from' => $isHost ? 'host' : 'guest']);
+    }
+
+    respond_error('ticket not found');
+}
+
+function op_ticket_get(array $input): void
+{
+    $room = room_code($input);
+    $found = load_room($room);
+    if ($found === null) {
+        respond_error('room not found');
+    }
+
+    $ticketId = substr(preg_replace('/[^a-f0-9]/', '', (string)($input['ticket'] ?? '')) ?? '', 0, 16);
+    $since = (int)($input['since'] ?? 0);
+    $tickets = decode_list((string)$found['tickets'], MAX_TICKETS_PER_ROOM);
+    foreach ($tickets as $ticket) {
+        if ($ticket['id'] !== $ticketId) {
+            continue;
+        }
+
+        $msgs = array_slice($ticket['msgs'] ?? [], $since);
+        respond_ok(['msgs' => $msgs, 'state' => $ticket['state'] ?? 'pending']);
+    }
+
+    respond_error('ticket not found');
+}
+
+function save_tickets(string $room, array $tickets): void
+{
+    db()->prepare('UPDATE rooms SET tickets = ?, updated = ? WHERE room = ?')
+        ->execute([json_encode($tickets, JSON_UNESCAPED_UNICODE), time(), $room]);
 }
 
 // --- Discord identity (the account layer) ----------------------------------------------------
