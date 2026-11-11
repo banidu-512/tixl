@@ -238,9 +238,9 @@ internal sealed class CollabWindow : Window
         }
         else
         {
-            ImGui.TextWrapped(collab.StatusText);
-            FormInputs.AddVerticalSpace(4);
-            ImGui.TextDisabled("Leave the current session to browse and join another one.");
+            // In a session the Party infos tab is the party information panel: the roster with
+            // every member, their ping and their per-row actions.
+            DrawSessionTab(collab);
         }
     }
 
