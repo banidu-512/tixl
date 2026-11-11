@@ -1077,6 +1077,10 @@ internal sealed class CollabManager
         State = SessionState.Connecting;
         StatusText = "Connected, authenticating...";
         Log.Info($"Collab: joined backend room {room} - authenticating");
+
+        // Remember the room so a restart (e.g. after a project download) rejoins it.
+        UserSettings.Config.CollabLastBackendRoom = room;
+        UserSettings.Save();
     }
 
     /// <summary>
@@ -2635,7 +2639,9 @@ internal sealed class CollabManager
                                roomKey = _roomKey,
                                peers = peersPayload,
                                logCount = _sessionLog.Count,
-                               project = _sessionProjectName,
+                               // Live: the host may open or switch the project after hosting
+                               // started, and joiners that came earlier than that still need it.
+                               project = FindAnyOpenedProject()?.DisplayName ?? _sessionProjectName,
                            });
 
         // The handshake runs on the relay first; only a fully authenticated peer may switch paths.
@@ -2814,6 +2820,9 @@ internal sealed class CollabManager
     /// <summary>Opens a local project by display name (short form accepted) into the visible graph window.</summary>
     internal static bool TryOpenProjectByName(string name)
     {
+        if (string.IsNullOrEmpty(name))
+            return false;
+
         // Shared with failover and boygrouping: every mode follows the active machine's project the
         // same way (in place, without a restart, when the project is installed).
         if (T3.Editor.Show.ProjectFollower.TrySwitchToName(name))
