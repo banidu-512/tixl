@@ -102,8 +102,8 @@ internal static class CollabRemote
 
         // A command is acknowledged with the next heartbeat, so a dropped reply just repeats it.
         _pendingAck = result.CommandId;
-        _pendingClaim = result.Claim;
 
+        var actedOnConnect = false;
         switch (result.CommandType)
         {
             case "connect":
@@ -112,6 +112,7 @@ internal static class CollabRemote
                     InstallationStatus = "The owner asked to connect - starting a party...";
                     _pendingConnectAt = DateTime.UtcNow;
                     manager.StartHostViaBackend();
+                    actedOnConnect = true;
                 }
 
                 break;
@@ -121,9 +122,13 @@ internal static class CollabRemote
                 if (manager.State != CollabManager.SessionState.Off)
                     manager.Leave(manual: true);
 
-                _pendingClaim = "";
                 break;
         }
+
+        // Only a connect command that was actually acted on may report its room: reporting the
+        // room of a session the owner did not start through this command would send the
+        // controller into a stale party.
+        _pendingClaim = actedOnConnect ? result.Claim : "";
 
         await Task.Delay(800, cancellation);
         if (manager.State is CollabManager.SessionState.Hosting or CollabManager.SessionState.Connecting
