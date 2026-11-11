@@ -32,6 +32,8 @@ const MAX_ROOMS = 200;
 const MAX_WHISPERS_PER_ROOM = 40;
 const MAX_NAME = 48;
 const MAX_TEXT = 256;
+const MAX_TICKETS_PER_ROOM = 16;
+const MAX_MSGS_PER_TICKET = 32;
 const MAX_TITLE = 64;
 const MAX_PURPOSE = 24;
 const MAX_PROJECT = 64;
@@ -55,12 +57,19 @@ try {
         'whispers' => op_whispers($input),
         'signal-put' => op_signal($input),
         'signal-get' => op_signal_get($input),
+        'join-request' => op_join_request($input),
+        'tickets' => op_tickets($input),
+        'ticket-state' => op_ticket_state($input),
+        'ticket-put' => op_signal_put($input),
+        'ticket-get' => op_ticket_get($input),
         'verify' => op_verify($input),
         default => respond_error('unknown op'),
     };
 } catch (Throwable $e) {
     http_response_code(500);
-    echo json_encode(['ok' => false, 'error' => 'backend error']);
+    // Temporary diagnosis aid: ?debug=1 reveals the underlying reason; remove once stable.
+    $detail = isset($_GET['debug']) ? $e->getMessage() . ' @ ' . basename($e->getFile()) . ':' . $e->getLine() : '';
+    echo json_encode(['ok' => false, 'error' => 'backend error', 'detail' => $detail]);
     error_log('tixl-api: ' . $e->getMessage());
 }
 
@@ -73,9 +82,16 @@ function db(): PDO
         return $pdo;
     }
 
-    $dir = __DIR__ . '/data';
-    if (!is_dir($dir)) {
-        mkdir($dir, 0700, true);
+    // The database lives OUTSIDE the web root (a sibling of www/), because dotfile-based
+    // protection is not honoured on this host: anything under the web root is downloadable.
+    // Falls back to ./data when the parent is not writable (local development).
+    $dir = dirname(dirname(__DIR__)) . '/tixl-data';
+    if (!is_dir($dir) && !@mkdir($dir, 0775, true) && !is_dir($dir)) {
+        $dir = __DIR__ . '/data';
+    }
+
+    if (!is_dir($dir) && !@mkdir($dir, 0775, true) && !is_dir($dir)) {
+        throw new RuntimeException('cannot create the data folder (permissions?)');
     }
 
     $pdo = new PDO('sqlite:' . $dir . '/collab.sqlite', null, null, [
@@ -86,6 +102,7 @@ function db(): PDO
     $pdo->exec('CREATE TABLE IF NOT EXISTS rooms (
         room TEXT PRIMARY KEY,
         key_hash TEXT NOT NULL,
+        relay TEXT NOT NULL DEFAULT "",
         title TEXT NOT NULL DEFAULT "",
         purpose TEXT NOT NULL DEFAULT "",
         project TEXT NOT NULL DEFAULT "",
@@ -99,6 +116,16 @@ function db(): PDO
         signals TEXT NOT NULL DEFAULT "[]",
         updated INTEGER NOT NULL DEFAULT 0
     )');
+
+    // A database created by an older version may lack newer columns; add them in place.
+    $columns = $pdo->query('PRAGMA table_info(rooms)')->fetchAll(PDO::FETCH_COLUMN, 1);
+    if (!in_array('relay', $columns, true)) {
+        $pdo->exec('ALTER TABLE rooms ADD COLUMN relay TEXT NOT NULL DEFAULT ""');
+    }
+    if (!in_array('tickets', $columns, true)) {
+        $pdo->exec('ALTER TABLE rooms ADD COLUMN tickets TEXT NOT NULL DEFAULT "[]"');
+    }
+
     return $pdo;
 }
 
@@ -120,6 +147,14 @@ function room_code(array $input): string
 {
     $code = strtoupper(preg_replace('/[^A-Za-z0-9]/', '', (string)($input['room'] ?? '')) ?? '');
     return substr($code, 0, MAX_ROOM_CODE);
+}
+
+/** SDP needs its line breaks; strips everything else that is not printable or a newline. */
+function sdp_clean(string $value): string
+{
+    $value = str_replace("\r\n", "\n", $value);
+    $value = preg_replace('/[\x00-\x09\x0B-\x1F\x7F]/', '', $value) ?? '';
+    return trim($value);
 }
 
 function key_hash(string $key): string
@@ -209,21 +244,43 @@ function op_register(array $input): void
             respond_error('relay must be host:port');
         }
 
+        // Fields the caller leaves out must not wipe what the room already has (a reconnecting
+        // host sends a partial hello): the update merges, the insert fills defaults.
+        $pwd = isset($input['pwd']) ? (!empty($input['pwd']) ? 1 : 0) : null;
+        $listed = isset($input['listed']) ? (!empty($input['listed']) ? 1 : 0) : null;
+        $members = isset($input['members']) ? max(1, (int)$input['members']) : null;
+        $maxMembers = isset($input['max']) ? max(2, (int)$input['max']) : null;
+
+        if ($existing !== null) {
+            $stmt = db()->prepare('UPDATE rooms SET key_hash = ?, relay = CASE WHEN ? = "" THEN relay ELSE ? END,
+                             title = CASE WHEN ? = "" THEN title ELSE ? END,
+                             purpose = CASE WHEN ? = "" THEN purpose ELSE ? END,
+                             project = CASE WHEN ? = "" THEN project ELSE ? END,
+                             host = CASE WHEN ? = "" THEN host ELSE ? END,
+                             lang = CASE WHEN ? = "" THEN lang ELSE ? END,
+                             pwd = COALESCE(?, pwd),
+                             listed = COALESCE(?, listed),
+                             members = COALESCE(?, members),
+                             max_members = COALESCE(?, max_members),
+                             updated = ?
+                           WHERE room = ?');
+            $stmt->execute([
+                key_hash($key),
+                $relay, $relay,
+                text_field($input, 'title', MAX_TITLE), text_field($input, 'title', MAX_TITLE),
+                text_field($input, 'purpose', MAX_PURPOSE), text_field($input, 'purpose', MAX_PURPOSE),
+                text_field($input, 'project', MAX_PROJECT), text_field($input, 'project', MAX_PROJECT),
+                text_field($input, 'host', MAX_NAME), text_field($input, 'host', MAX_NAME),
+                text_field($input, 'lang', MAX_LANG), text_field($input, 'lang', MAX_LANG),
+                $pwd, $listed, $members, $maxMembers,
+                time(),
+                $room,
+            ]);
+            respond_ok(['room' => $room]);
+        }
+
         $stmt = db()->prepare('INSERT INTO rooms (room, key_hash, relay, title, purpose, project, host, lang, pwd, listed, members, max_members, updated)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                           ON CONFLICT(room) DO UPDATE SET
-                             key_hash = excluded.key_hash,
-                             relay = excluded.relay,
-                             title = excluded.title,
-                             purpose = excluded.purpose,
-                             project = excluded.project,
-                             host = excluded.host,
-                             lang = excluded.lang,
-                             pwd = excluded.pwd,
-                             listed = excluded.listed,
-                             members = excluded.members,
-                             max_members = excluded.max_members,
-                             updated = excluded.updated');
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
     $stmt->execute([
         $room,
         key_hash($key),
@@ -233,10 +290,10 @@ function op_register(array $input): void
         text_field($input, 'project', MAX_PROJECT),
         text_field($input, 'host', MAX_NAME),
         text_field($input, 'lang', MAX_LANG),
-        !empty($input['pwd']) ? 1 : 0,
-        !empty($input['listed']) ? 1 : 0,
-        max(1, (int)($input['members'] ?? 1)),
-        max(2, (int)($input['max'] ?? 18)),
+        $pwd ?? 0,
+        $listed ?? 0,
+        $members ?? 1,
+        $maxMembers ?? 18,
         time(),
     ]);
 
@@ -332,14 +389,15 @@ function op_whisper(array $input): void
     }
 
     $key = (string)($input['key'] ?? '');
-    $from = text_field($input, 'name', MAX_NAME);
     $text = text_field($input, 'text', MAX_TEXT);
-    if ($from === '' || $text === '') {
-        respond_error('name and text required');
+    if ($text === '') {
+        respond_error('text required');
     }
 
     // With the room key this is the host replying; the reply is visible to the visitor it names.
+    // Without it this is a visitor whispering, which carries the visitor's name.
     $isHostReply = false;
+    $from = '';
     $to = '';
     if ($key !== '') {
         if (!key_matches($found, $key)) {
@@ -349,6 +407,11 @@ function op_whisper(array $input): void
         $to = text_field($input, 'to', MAX_NAME);
         if ($to === '') {
             respond_error('to required');
+        }
+    } else {
+        $from = text_field($input, 'name', MAX_NAME);
+        if ($from === '') {
+            respond_error('name required');
         }
     }
 
@@ -393,14 +456,17 @@ function op_whispers(array $input): void
 
 function append_whisper(string $room, array $entry): void
 {
-    $whispers = decode_list((string)load_room($room)['whispers'], MAX_WHISPERS_PER_ROOM);
-    $whispers[] = $entry;
-    if (count($whispers) > MAX_WHISPERS_PER_ROOM) {
-        $whispers = array_slice($whispers, -MAX_WHISPERS_PER_ROOM);
-    }
+    with_room_lock(function () use ($room, $entry) {
+        $fresh = load_room($room);
+        $whispers = decode_list((string)($fresh['whispers'] ?? '[]'), MAX_WHISPERS_PER_ROOM);
+        $whispers[] = $entry;
+        if (count($whispers) > MAX_WHISPERS_PER_ROOM) {
+            $whispers = array_slice($whispers, -MAX_WHISPERS_PER_ROOM);
+        }
 
-    db()->prepare('UPDATE rooms SET whispers = ? WHERE room = ?')
-        ->execute([json_encode($whispers, JSON_UNESCAPED_UNICODE), $room]);
+        db()->prepare('UPDATE rooms SET whispers = ? WHERE room = ?')
+            ->execute([json_encode($whispers, JSON_UNESCAPED_UNICODE), $room]);
+    });
 }
 
 // --- relay-free WebRTC signaling -------------------------------------------------------------
@@ -442,10 +508,11 @@ function op_signal(array $input): void
     }
 
     $signals = decode_list((string)$found['signals'], 16);
-    foreach ($signals as $signal) {
+    foreach ($signals as $index => $signal) {
         if ($signal['kind'] === 'offer' && $signal['nonce'] === $nonce) {
-            $signal['answer'] = $sdp;
-            $signal['answered'] = time();
+            // Write through the index: a foreach copy would silently drop the answer.
+            $signals[$index]['answer'] = $sdp;
+            $signals[$index]['answered'] = time();
             save_signals($room, $signals);
             respond_ok();
         }
@@ -481,6 +548,232 @@ function op_signal_get(array $input): void
     }
 
     respond_error('signal not found');
+}
+
+// --- join tickets: the relay-free session rendezvous ------------------------------------------
+
+// A ticket is a two-party signal mailbox: the guest creates it with join-request, the host
+// fills it with offer/candidates, the guest answers into it, and both sides poll until the
+// WebRTC data channel takes over. Messages are the editor's own signal JSON
+// ({t:"offer"|"answer"|"candidate", ...}) passed through unmodified.
+
+function op_join_request(array $input): void
+{
+    $room = room_code($input);
+    $found = load_room($room);
+    if ($found === null) {
+        respond_error('room not found');
+    }
+
+    $name = text_field($input, 'name', MAX_NAME);
+    if ($name === '') {
+        respond_error('name required');
+    }
+
+    $ticketId = bin2hex(random_bytes(8));
+    with_room_lock(function () use ($room, $name, $input, $ticketId) {
+        $fresh = load_room($room);
+        $tickets = decode_list((string)($fresh['tickets'] ?? '[]'), MAX_TICKETS_PER_ROOM);
+        $tickets[] = ['id' => $ticketId,
+                      'name' => $name,
+                      'lang' => text_field($input, 'lang', MAX_LANG),
+                      'state' => 'pending',
+                      'at' => time(),
+                      'msgs' => []];
+        if (count($tickets) > MAX_TICKETS_PER_ROOM) {
+            $tickets = array_slice($tickets, -MAX_TICKETS_PER_ROOM);
+        }
+
+        save_tickets($room, $tickets);
+    });
+
+    respond_ok(['ticket' => $ticketId]);
+}
+
+/** Host: sets a join ticket's state (approved lets the negotiation start; rejected ends it). */
+function op_ticket_state(array $input): void
+{
+    $room = room_code($input);
+    $found = load_room($room);
+    if ($found === null) {
+        respond_error('room not found');
+    }
+    if (!key_matches($found, (string)($input['key'] ?? ''))) {
+        respond_error('not the host');
+    }
+
+    $ticketId = substr(preg_replace('/[^a-f0-9]/', '', (string)($input['ticket'] ?? '')) ?? '', 0, 16);
+    $state = (string)($input['state'] ?? '');
+    if (!in_array($state, ['approved', 'rejected'], true)) {
+        respond_error('state must be approved or rejected');
+    }
+
+    $tickets = decode_list((string)$found['tickets'], MAX_TICKETS_PER_ROOM);
+    foreach ($tickets as $index => $ticket) {
+        if ($ticket['id'] === $ticketId) {
+            with_room_lock(function () use ($room, $ticketId, $state) {
+                $fresh = load_room($room);
+                $current = decode_list((string)($fresh['tickets'] ?? '[]'), MAX_TICKETS_PER_ROOM);
+                foreach ($current as $i => $t) {
+                    if ($t['id'] === $ticketId) {
+                        $current[$i]['state'] = $state;
+                        $current[$i]['answered'] = time();
+                        save_tickets($room, $current);
+                        return;
+                    }
+                }
+            });
+
+            respond_ok();
+        }
+    }
+
+    respond_error('ticket not found');
+}
+
+function op_tickets(array $input): void
+{
+    $room = room_code($input);
+    $found = load_room($room);
+    if ($found === null) {
+        respond_error('room not found');
+    }
+    if (!key_matches($found, (string)($input['key'] ?? ''))) {
+        respond_error('not the host');
+    }
+
+    $tickets = decode_list((string)$found['tickets'], MAX_TICKETS_PER_ROOM);
+    $out = [];
+    foreach ($tickets as $ticket) {
+        $out[] = ['id' => $ticket['id'],
+                  'name' => $ticket['name'],
+                  'lang' => $ticket['lang'] ?? '',
+                  'state' => $ticket['state'] ?? 'pending',
+                  'at' => $ticket['at'],
+                  'msgs' => count($ticket['msgs'] ?? [])];
+    }
+
+    respond_ok(['tickets' => $out]);
+}
+
+function op_signal_put(array $input): void
+{
+    $room = room_code($input);
+    $found = load_room($room);
+    if ($found === null) {
+        respond_error('room not found');
+    }
+
+    $ticketId = substr(preg_replace('/[^a-f0-9]/', '', (string)($input['ticket'] ?? '')) ?? '', 0, 16);
+    if ($ticketId === '') {
+        respond_error('ticket required');
+    }
+
+    $message = $input['message'] ?? null;
+    if (!is_array($message)) {
+        respond_error('message required');
+    }
+
+    $type = (string)($message['t'] ?? '');
+    if (!in_array($type, ['offer', 'answer', 'ice'], true)) {
+        respond_error('t must be offer, answer or ice');
+    }
+
+    // Offer and answer carry SDP (line breaks preserved); candidates carry candidate/mid.
+    foreach (['sdp' => 16384, 'candidate' => 512, 'mid' => 16] as $field => $max) {
+        if (isset($message[$field])) {
+            $message[$field] = $field === 'sdp' ? sdp_clean((string)$message[$field]) : clean((string)$message[$field], $max);
+        }
+    }
+
+    // The host signs its messages with the room key; a guest signs with its ticket id.
+    $isHost = key_matches($found, (string)($input['key'] ?? ''));
+
+    $foundTicket = false;
+    $sawCount = 0;
+    with_room_lock(function () use ($room, $ticketId, $isHost, $message, $type, &$foundTicket, &$sawCount) {
+        // Re-read inside the write lock: a parallel post may have appended since the load above.
+        $fresh = load_room($room);
+        $tickets = decode_list((string)($fresh['tickets'] ?? '[]'), MAX_TICKETS_PER_ROOM);
+        foreach ($tickets as $index => $ticket) {
+            if ($ticket['id'] !== $ticketId) {
+                continue;
+            }
+
+            $msgs = $ticket['msgs'] ?? [];
+            $sawCount = count($msgs);
+            $msgs[] = ['from' => $isHost ? 'host' : 'guest',
+                       't' => $type,
+                       'sdp' => $message['sdp'] ?? '',
+                       'candidate' => $message['candidate'] ?? '',
+                       'mid' => $message['mid'] ?? '',
+                       'at' => time()];
+            if (count($msgs) > MAX_MSGS_PER_TICKET) {
+                $msgs = array_slice($msgs, -MAX_MSGS_PER_TICKET);
+            }
+
+            $tickets[$index]['msgs'] = $msgs;
+            save_tickets($room, $tickets);
+            $foundTicket = true;
+            return;
+        }
+    });
+
+    if (!$foundTicket) {
+        respond_error('ticket not found');
+    }
+
+    respond_ok(['from' => $isHost ? 'host' : 'guest', 'saw' => $sawCount]);
+}
+
+function op_ticket_get(array $input): void
+{
+    $room = room_code($input);
+    $found = load_room($room);
+    if ($found === null) {
+        respond_error('room not found');
+    }
+
+    $ticketId = substr(preg_replace('/[^a-f0-9]/', '', (string)($input['ticket'] ?? '')) ?? '', 0, 16);
+    $since = (int)($input['since'] ?? 0);
+    $tickets = decode_list((string)$found['tickets'], MAX_TICKETS_PER_ROOM);
+    foreach ($tickets as $ticket) {
+        if ($ticket['id'] !== $ticketId) {
+            continue;
+        }
+
+        $msgs = array_slice($ticket['msgs'] ?? [], $since);
+        respond_ok(['msgs' => $msgs, 'state' => $ticket['state'] ?? 'pending']);
+    }
+
+    respond_error('ticket not found');
+}
+
+function save_tickets(string $room, array $tickets): void
+{
+    db()->prepare('UPDATE rooms SET tickets = ?, updated = ? WHERE room = ?')
+        ->execute([json_encode($tickets, JSON_UNESCAPED_UNICODE), time(), $room]);
+}
+
+/**
+ * Serialises a read-modify-write on one room's JSON columns. A host posts offer and ICE
+ * candidates in parallel; without the write lock each request read the ticket before the
+ * others appended and the last writer silently dropped the rest (the offer vanished).
+ */
+function with_room_lock(callable $mutate): void
+{
+    $pdo = db();
+    $pdo->exec('BEGIN IMMEDIATE');
+    try
+    {
+        $mutate();
+        $pdo->exec('COMMIT');
+    }
+    catch (Throwable $e)
+    {
+        $pdo->exec('ROLLBACK');
+        throw $e;
+    }
 }
 
 // --- Discord identity (the account layer) ----------------------------------------------------
