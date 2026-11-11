@@ -66,16 +66,16 @@ internal sealed partial class SettingsWindow
         FormInputs.AddVerticalSpace();
 
         // -------------------------------------------------------------------------------------
-        // Session
+        // Hosting defaults: what sessions you host look like before one actually runs. While a
+        // session runs, the "Session browser entry" section in DrawActiveSession owns the listing
+        // (live Change entry); the pre-host controls here would only duplicate it.
         // -------------------------------------------------------------------------------------
-        FormInputs.AddSectionSubHeader("Session");
+        FormInputs.AddSectionSubHeader("Hosting defaults");
         FormInputs.AddVerticalSpace();
 
         changed |= DrawSecretInput("Session password", ref config.CollabPassword,
                                    "Empty = anyone with the session ID can join. Recommended when the ID is shared widely.");
 
-        // While a session runs, the "Session browser entry" section in DrawActiveSession owns the
-        // listing (live Change entry); the pre-host controls here would only duplicate it.
         if (!manager.IsSessionActive)
         {
             changed |= FormInputs.AddCheckBox("List in session browser",
@@ -99,15 +99,19 @@ internal sealed partial class SettingsWindow
 
         FormInputs.AddVerticalSpace();
 
-        // Session running/finding happens in the Collab window now (Party / Session / Chat tabs);
-        // this panel only configures.
-        FormInputs.AddSectionSubHeader("Session");
+        // -------------------------------------------------------------------------------------
+        // Current session: sessions run from the Collab window (Party / management / Chat tabs);
+        // this panel only points there and reflects the state.
+        // -------------------------------------------------------------------------------------
+        FormInputs.AddSectionSubHeader("Current session");
         FormInputs.AddVerticalSpace();
         if (manager.IsSessionActive)
         {
-            ImGui.TextWrapped(manager.StatusText);
+            FormInputs.DrawInputLabel("State");
+            CustomComponents.StylizedText(manager.StatusText, Fonts.FontNormal, UiColors.StatusActivated);
             if (!string.IsNullOrEmpty(manager.ErrorText))
             {
+                FormInputs.AddVerticalSpace(2);
                 ImGui.PushStyleColor(ImGuiCol.Text, UiColors.StatusWarning.Rgba);
                 ImGui.TextWrapped(manager.ErrorText);
                 ImGui.PopStyleColor();
@@ -123,7 +127,7 @@ internal sealed partial class SettingsWindow
         {
             if (manager.IsReconnecting)
             {
-                FormInputs.DrawInputLabel("Status");
+                FormInputs.DrawInputLabel("State");
                 CustomComponents.StylizedText(manager.StatusText, Fonts.FontNormal, UiColors.StatusWarning);
                 if (ImGui.SmallButton("Stop Reconnecting"))
                     manager.Leave(manual: true);
@@ -132,21 +136,14 @@ internal sealed partial class SettingsWindow
             {
                 CustomComponents.HelpText("""
                                           No session is running. Host or join from the Collab window
-                                          (menu: Windows > Collab) - its Party tab has the session
+                                          (menu: Windows > Collab) - its Party matching tab has the session
                                           browser and the hosting controls.
                                           """);
-                FormInputs.AddVerticalSpace(4);
-                if (ImGui.Button("Open the Collab window"))
-                    WindowManager.CollabWindow.Config.Visible = true;
             }
-        }
 
-        if (!string.IsNullOrEmpty(manager.ErrorText))
-        {
-            FormInputs.AddVerticalSpace();
-            ImGui.PushStyleColor(ImGuiCol.Text, UiColors.StatusWarning.Rgba);
-            ImGui.TextWrapped(manager.ErrorText);
-            ImGui.PopStyleColor();
+            FormInputs.AddVerticalSpace(4);
+            if (ImGui.Button("Open the Collab window"))
+                WindowManager.CollabWindow.Config.Visible = true;
         }
 
         FormInputs.AddVerticalSpace();
@@ -728,6 +725,21 @@ internal sealed partial class SettingsWindow
             ImGui.PushStyleColor(ImGuiCol.Text, UiColors.StatusWarning.Rgba);
             ImGui.TextWrapped(CollabDiscordAuth.StatusText);
             ImGui.PopStyleColor();
+
+            // Some desktops (notably Linux ones) swallow the browser-open request; always leave
+            // a way in by hand. Clicking copies the link to the clipboard.
+            var authorizeUrl = CollabDiscordAuth.LastAuthorizeUrl;
+            if (!string.IsNullOrEmpty(authorizeUrl))
+            {
+                FormInputs.SetCursorToParameterEdit();
+                ImGui.TextDisabled("If no browser opened, open this link yourself (click to copy):");
+                ImGui.PushFont(Fonts.FontSmall);
+                if (ImGui.Selectable(authorizeUrl))
+                    ImGui.SetClipboardText(authorizeUrl);
+
+                ImGui.PopFont();
+                CustomComponents.TooltipForLastItem("Copies the Discord login link to the clipboard");
+            }
         }
         else if (!string.IsNullOrEmpty(UserSettings.Config.CollabDiscordUserId))
         {
