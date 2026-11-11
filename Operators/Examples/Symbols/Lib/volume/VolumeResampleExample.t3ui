@@ -1,0 +1,64 @@
+{
+  "FormatVersion": 3,
+  "Id": "d402b885-e2e4-5370-b14f-10302c54f7b2",
+  "Description": "Changes a volume's voxel size with trilinear resampling. A coarse torus is resampled from 6 cm to 2 cm voxels before meshing, which costs memory but sharpens the extracted surface.",
+  "InputUis": [],
+  "SymbolChildUis": [
+    {
+      "ChildId": "88b1f184-4bab-53e7-b6fb-f740937db8f8",
+      "SymbolName": "Lib.volume.generate.VolumePrimitive",
+      "Position": {
+        "X": 0.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "946cbb32-db48-5f2c-acea-bcf11ac712f5",
+      "SymbolName": "Lib.volume.modify.VolumeResample",
+      "Position": {
+        "X": 300.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "3c68b38f-01d7-54bf-a55b-78a54eec5484",
+      "SymbolName": "Lib.volume.convert.VolumeToMesh",
+      "Position": {
+        "X": 900.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "f94ea529-cce4-5be1-99c9-1507e613ae4d",
+      "SymbolName": "Lib.geometry.GeometryToMesh",
+      "Position": {
+        "X": 1200.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "f3a5dc57-e59f-536e-98dc-5a23d73a5e96",
+      "SymbolName": "Lib.mesh.draw.DrawMeshUnlit",
+      "Position": {
+        "X": 1500.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "cf37b915-02da-5f94-96c4-3daee77167c8",
+      "SymbolName": "Lib.render.camera.OrbitCamera",
+      "Position": {
+        "X": 1800.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "8d724e6b-f2f7-55b0-9e75-c27a8ba327ea",
+      "SymbolName": "Lib.image.generate.basic.RenderTarget",
+      "Position": {
+        "X": 2100.0,
+        "Y": 0.0
+      }
+    }
+  ]
+}

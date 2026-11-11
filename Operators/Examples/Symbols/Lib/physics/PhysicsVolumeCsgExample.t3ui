@@ -1,0 +1,169 @@
+{
+  "FormatVersion": 3,
+  "Id": "4d81d2fc-2dda-5528-8e9a-8417c8b0ca79",
+  "Description": "A bowl is carved out of a block with volume CSG, and the balls collect in it.\n\n[VolumeCsg] subtracts a sphere from a box, both made by [VolumePrimitive]. The result is meshed by [VolumeToMesh] and used as a static collider, so editing the volumes edits what the balls collide with.\n\nAKA: csg, boolean, carve, crater, destruction, level set collider\n\nTips\n- Move the sphere's Center to carve a different crater; the collider follows when the volume changes.\n- Operation on [VolumeCsg]: Union adds the sphere as a dome, Intersection keeps only the overlap.\n- For rendering alone, the same shape is cheaper as an SDF field with [CombineSDF]; the volume is needed here because physics runs on the CPU.",
+  "InputUis": [],
+  "SymbolChildUis": [
+    {
+      "ChildId": "863f9a16-8a91-560f-92b2-28c9e0c87ded",
+      "SymbolName": "Lib.volume.generate.VolumePrimitive",
+      "Position": {
+        "X": 0.0,
+        "Y": 150.0
+      }
+    },
+    {
+      "ChildId": "6007ca0d-591c-5b2e-a260-cfed59a539f6",
+      "SymbolName": "Lib.volume.generate.VolumePrimitive",
+      "Position": {
+        "X": 0.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "bcb36558-78ba-513e-a0cd-1b95efaa35d0",
+      "SymbolName": "Lib.volume.modify.VolumeCsg",
+      "Position": {
+        "X": 0.0,
+        "Y": 450.0
+      }
+    },
+    {
+      "ChildId": "3b0a3e27-1191-556b-a31c-73d850fe7704",
+      "SymbolName": "Lib.geometry.ScatterPointsInVolume",
+      "Position": {
+        "X": 0.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "f9d0062a-2658-5d66-bb0c-eebccd18de10",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 600.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "9104c037-ee77-5448-8b17-d4480b3d443c",
+      "SymbolName": "Lib.physics.PhysicsWorld",
+      "Position": {
+        "X": 900.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "d42ed4a8-b1e6-5968-88de-5c202d92defd",
+      "SymbolName": "Lib.volume.convert.VolumeToMesh",
+      "Position": {
+        "X": 300.0,
+        "Y": 150.0
+      }
+    },
+    {
+      "ChildId": "d0fc2c61-3c76-54cb-b597-231af55ca345",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 600.0,
+        "Y": 150.0
+      }
+    },
+    {
+      "ChildId": "9d3499e8-ce45-5d62-aaea-31e23412ecb6",
+      "SymbolName": "Lib.geometry.GeometryToMesh",
+      "Position": {
+        "X": 1200.0,
+        "Y": 150.0
+      }
+    },
+    {
+      "ChildId": "df6fd215-1357-5d60-a612-4abcbae54a3f",
+      "SymbolName": "Lib.mesh.draw.DrawMeshUnlit",
+      "Position": {
+        "X": 1800.0,
+        "Y": 150.0
+      }
+    },
+    {
+      "ChildId": "6b986a38-91b0-5856-b438-c9c13bfc44b7",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 600.0,
+        "Y": 600.0
+      }
+    },
+    {
+      "ChildId": "24cc453f-dd02-5dd9-90d7-9e27ad8821ac",
+      "SymbolName": "Lib.mesh.generate.CubeMesh",
+      "Position": {
+        "X": 1200.0,
+        "Y": 750.0
+      }
+    },
+    {
+      "ChildId": "c30c54cc-89b1-516e-a10e-82b291afe636",
+      "SymbolName": "Lib.mesh.modify.TransformMesh",
+      "Position": {
+        "X": 1500.0,
+        "Y": 750.0
+      }
+    },
+    {
+      "ChildId": "20ea567c-7636-5d94-9ac3-3270021ba1de",
+      "SymbolName": "Lib.mesh.draw.DrawMeshUnlit",
+      "Position": {
+        "X": 1800.0,
+        "Y": 750.0
+      }
+    },
+    {
+      "ChildId": "71ca94d8-be38-5950-9867-16a64c5ee2bd",
+      "SymbolName": "Lib.mesh.generate.SphereMesh",
+      "Position": {
+        "X": 1200.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "81042d12-f805-5a3c-bd87-fe0cbeb2a047",
+      "SymbolName": "Lib.mesh.draw.DrawMeshAtPoints",
+      "Position": {
+        "X": 1800.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "3dab3e7b-7670-5937-b15b-bb370d4428ba",
+      "SymbolName": "Lib.render.transform.Group",
+      "Position": {
+        "X": 2100.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "033082dc-0066-51ea-8b83-f5f149335695",
+      "SymbolName": "Lib.render.camera.Camera",
+      "Position": {
+        "X": 2400.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "7b60ffc1-644d-5b0f-8fab-6fc9f29dd357",
+      "SymbolName": "Lib.image.generate.basic.RenderTarget",
+      "Position": {
+        "X": 2700.0,
+        "Y": 0.0
+      }
+    }
+  ],
+  "OutputUis": [
+    {
+      "OutputId": "c46e59a8-52dc-598b-a9fd-7b049e0c07ce",
+      "Position": {
+        "X": 3000.0,
+        "Y": 0.0
+      }
+    }
+  ]
+}

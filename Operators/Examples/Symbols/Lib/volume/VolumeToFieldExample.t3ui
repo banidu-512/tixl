@@ -1,0 +1,72 @@
+{
+  "FormatVersion": 3,
+  "Id": "0d3845e3-f9db-5ae4-88a6-b829e1ada0db",
+  "Description": "Wraps a volume as a CPU scalar field and samples it back into a volume with [FieldToVolume]. The roundtrip is the bridge that lets field operators and volume operators see the same data.",
+  "InputUis": [],
+  "SymbolChildUis": [
+    {
+      "ChildId": "0fe2260e-2067-56e9-a559-d33840c9cd9f",
+      "SymbolName": "Lib.volume.generate.VolumePrimitive",
+      "Position": {
+        "X": 0.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "a5a48c39-51c5-5cce-8de9-8fe50958eb2f",
+      "SymbolName": "Lib.volume.convert.VolumeToField",
+      "Position": {
+        "X": 300.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "34915e15-8b4b-5dfc-861f-644e4104aaef",
+      "SymbolName": "Lib.volume.generate.FieldToVolume",
+      "Position": {
+        "X": 600.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "b7623645-f912-5e1c-8122-912ae1c80182",
+      "SymbolName": "Lib.volume.convert.VolumeToMesh",
+      "Position": {
+        "X": 900.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "4e8d3866-926f-5e8f-8210-76135d195495",
+      "SymbolName": "Lib.geometry.GeometryToMesh",
+      "Position": {
+        "X": 1200.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "b46c0ac2-35fa-5e2c-8c23-90321ec89f69",
+      "SymbolName": "Lib.mesh.draw.DrawMeshUnlit",
+      "Position": {
+        "X": 1500.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "0b89bf56-ca39-57ca-8f9a-db6e501e6e41",
+      "SymbolName": "Lib.render.camera.OrbitCamera",
+      "Position": {
+        "X": 1800.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "fb66b932-525c-503d-acf6-c334eeb0db76",
+      "SymbolName": "Lib.image.generate.basic.RenderTarget",
+      "Position": {
+        "X": 2100.0,
+        "Y": 0.0
+      }
+    }
+  ]
+}

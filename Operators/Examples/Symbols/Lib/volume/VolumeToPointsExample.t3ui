@@ -1,0 +1,80 @@
+{
+  "FormatVersion": 3,
+  "Id": "91bb0f8b-593c-557c-9da6-15005722b733",
+  "Description": "Both directions between volumes and points: [VolumeToPoints] samples the active voxels as a point cloud (drawn with [DrawPoints]), and [VolumeFromPoints] splats those points back into a density volume that [VolumeToMesh] turns into a surface.",
+  "InputUis": [],
+  "SymbolChildUis": [
+    {
+      "ChildId": "31945c49-28ef-539c-b487-439ce61917a7",
+      "SymbolName": "Lib.volume.generate.VolumePrimitive",
+      "Position": {
+        "X": 0.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "176ddf56-8a31-5de1-af55-b550f6896b57",
+      "SymbolName": "Lib.volume.convert.VolumeToPoints",
+      "Position": {
+        "X": 300.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "fb5f8057-ddb0-5df0-bdda-0c209044c8cf",
+      "SymbolName": "Lib.point.draw.DrawPoints",
+      "Position": {
+        "X": 600.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "81986289-29d5-59c7-91ed-91b55c6ee8b9",
+      "SymbolName": "Lib.volume.generate.VolumeFromPoints",
+      "Position": {
+        "X": 600.0,
+        "Y": 260.0
+      }
+    },
+    {
+      "ChildId": "4468be1d-83c8-512b-ae70-16740a466cb1",
+      "SymbolName": "Lib.volume.convert.VolumeToMesh",
+      "Position": {
+        "X": 900.0,
+        "Y": 260.0
+      }
+    },
+    {
+      "ChildId": "35d73497-ae67-5a8c-9e77-665d95844010",
+      "SymbolName": "Lib.geometry.GeometryToMesh",
+      "Position": {
+        "X": 1200.0,
+        "Y": 260.0
+      }
+    },
+    {
+      "ChildId": "6197f048-3c14-5449-be1c-372b94455cc3",
+      "SymbolName": "Lib.mesh.draw.DrawMeshUnlit",
+      "Position": {
+        "X": 1500.0,
+        "Y": 260.0
+      }
+    },
+    {
+      "ChildId": "23a4d4e3-346a-5cca-9e4f-163e55999943",
+      "SymbolName": "Lib.render.camera.OrbitCamera",
+      "Position": {
+        "X": 1800.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "65b5d916-3a27-53a4-8b27-868cae6afdf7",
+      "SymbolName": "Lib.image.generate.basic.RenderTarget",
+      "Position": {
+        "X": 2100.0,
+        "Y": 0.0
+      }
+    }
+  ]
+}

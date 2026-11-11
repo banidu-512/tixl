@@ -45,6 +45,10 @@ internal static class CollabDiscordAuth
     public static LoginState State { get; private set; } = LoginState.Idle;
     public static string StatusText { get; private set; } = "";
 
+    /// <summary>The authorize link of the most recent login attempt. The UI offers it for manual
+    /// opening because some desktops (notably Linux ones) swallow the browser-open request.</summary>
+    public static string LastAuthorizeUrl { get; private set; } = "";
+
     /// <summary>The invite of the community server; membership there is what "logged in" means.</summary>
     public const string InviteCode = "YmSyQdeH3S";
 
@@ -54,6 +58,74 @@ internal static class CollabDiscordAuth
     private static string GuildName { get; set; } = "";
 
     private static string _cachedGuildId = "";
+
+    /// <summary>Access token of this run's login. Sent to the relay so it can confirm the account to
+    /// the other participants; kept in memory unless the user chose to stay logged in.</summary>
+    private static string _accessToken = "";
+
+    private static DateTime _accessTokenExpiresUtc = DateTime.MinValue;
+
+    /// <summary>
+    /// A token that is still valid, or empty. Without one the relay cannot confirm the account, and
+    /// other participants see this user as unverified until the next login.
+    /// </summary>
+    public static string GetValidAccessToken()
+    {
+        var now = DateTime.UtcNow.AddMinutes(1);
+        if (_accessToken.Length > 0 && _accessTokenExpiresUtc > now)
+            return _accessToken;
+
+        var config = UserSettings.Config;
+        if (config.CollabDiscordStayLoggedIn
+            && !string.IsNullOrEmpty(config.CollabDiscordAccessToken)
+            && DateTime.TryParse(config.CollabDiscordTokenExpiresUtc, System.Globalization.CultureInfo.InvariantCulture,
+                                 System.Globalization.DateTimeStyles.RoundtripKind, out var expires)
+            && expires > now)
+        {
+            return config.CollabDiscordAccessToken;
+        }
+
+        return "";
+    }
+
+    /// <summary>True when other participants will see this user's Discord account as confirmed.</summary>
+    public static bool HasValidToken => GetValidAccessToken().Length > 0;
+
+    /// <summary>Applies the "stay logged in" choice to the stored token: writes the current one, or removes it.</summary>
+    public static void ApplyStayLoggedIn()
+    {
+        var config = UserSettings.Config;
+        if (config.CollabDiscordStayLoggedIn && _accessToken.Length > 0)
+        {
+            config.CollabDiscordAccessToken = _accessToken;
+            config.CollabDiscordTokenExpiresUtc = _accessTokenExpiresUtc.ToString("o", System.Globalization.CultureInfo.InvariantCulture);
+        }
+        else if (!config.CollabDiscordStayLoggedIn)
+        {
+            config.CollabDiscordAccessToken = "";
+            config.CollabDiscordTokenExpiresUtc = "";
+        }
+
+        UserSettings.Save();
+    }
+
+    /// <summary>Forgets the Discord account on this machine.</summary>
+    public static void LogOut()
+    {
+        _accessToken = "";
+        _accessTokenExpiresUtc = DateTime.MinValue;
+        var config = UserSettings.Config;
+        config.CollabDiscordUserId = "";
+        config.CollabDiscordUserName = "";
+        config.CollabDiscordUserAvatar = "";
+        config.CollabDiscordLocale = "";
+        config.CollabDiscordAccessToken = "";
+        config.CollabDiscordTokenExpiresUtc = "";
+        UserSettings.Save();
+        State = LoginState.Idle;
+        StatusText = "";
+        CollabManager.Instance.RefreshLocalIdentity();
+    }
 
     public static void StartLogin()
     {
@@ -108,6 +180,7 @@ internal static class CollabDiscordAuth
                                $"&code_challenge={codeChallenge}" +
                                "&code_challenge_method=S256";
 
+            LastAuthorizeUrl = authorizeUrl;
             CoreUi.Instance.OpenWithDefaultApplication(authorizeUrl);
             StatusText = "Waiting for the Discord login in your browser...";
 
@@ -176,11 +249,15 @@ internal static class CollabDiscordAuth
             config.CollabDiscordUserId = profile.UserId;
             config.CollabDiscordUserName = profile.UserName;
             config.CollabDiscordUserAvatar = profile.AvatarHash;
-            UserSettings.Save();
+            config.CollabDiscordLocale = profile.Locale;
+            _accessToken = profile.AccessToken;
+            _accessTokenExpiresUtc = DateTime.UtcNow.AddSeconds(Math.Max(profile.ExpiresInSeconds, 0));
+            ApplyStayLoggedIn();
 
             CollabManager.Instance.RefreshLocalIdentity();
 
             State = LoginState.Done;
+            LastAuthorizeUrl = "";
             StatusText = $"Logged in as {profile.UserName} · {guild.Name}";
             Log.Info($"Collab: Discord login successful ({profile.UserName}, guild '{guild.Name}')");
         }
@@ -204,7 +281,7 @@ internal static class CollabDiscordAuth
         }
     }
 
-    private static async Task<(string UserId, string UserName, string AvatarHash, string AccessToken)> ExchangeCodeAndFetchUserAsync(
+    private static async Task<(string UserId, string UserName, string AvatarHash, string AccessToken, string Locale, int ExpiresInSeconds)> ExchangeCodeAndFetchUserAsync(
         string clientId, string clientSecret, string code, string redirectUri, string codeVerifier)
     {
         using var client = new HttpClient();
@@ -229,9 +306,13 @@ internal static class CollabDiscordAuth
         if (!tokenResponse.IsSuccessStatusCode)
             throw new Exception($"token exchange failed ({(int)tokenResponse.StatusCode}): {tokenBody.Trim()}");
 
-        var accessToken = JObject.Parse(tokenBody)["access_token"]?.Value<string>();
+        var tokenJson = JObject.Parse(tokenBody);
+        var accessToken = tokenJson["access_token"]?.Value<string>();
         if (string.IsNullOrEmpty(accessToken))
             throw new Exception("no access token in response");
+
+        // Discord tokens last a week by default; fall back to an hour when the field is missing.
+        var expiresInSeconds = tokenJson["expires_in"]?.Type == JTokenType.Integer ? tokenJson["expires_in"]!.Value<int>() : 3600;
 
         using var request = new HttpRequestMessage(HttpMethod.Get, "https://discord.com/api/users/@me");
         request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken);
@@ -244,7 +325,9 @@ internal static class CollabDiscordAuth
         return (user["id"]?.Value<string>() ?? "",
                 user["global_name"]?.Value<string>() ?? user["username"]?.Value<string>() ?? "discord user",
                 user["avatar"]?.Value<string>() ?? "",
-                accessToken);
+                accessToken,
+                user["locale"]?.Value<string>() ?? "",
+                expiresInSeconds);
     }
 
     /// <summary>

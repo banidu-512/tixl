@@ -22,6 +22,7 @@ public class SlotTypeRegistrationTests
     [Theory]
     [InlineData(typeof(PhysicsBody))]
     [InlineData(typeof(PhysicsJoint))]
+    [InlineData(typeof(PhysicsForce))]
     public void PhysicsDescriptorTypeIsRegistered(Type type)
     {
         EnsureRegistered();

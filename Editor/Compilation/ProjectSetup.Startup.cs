@@ -379,6 +379,57 @@ internal static partial class ProjectSetup
 
 
     /// <summary>
+    /// Loads one project folder that appeared after startup (a project received from a collab
+    /// party): reads the csproj, compiles it if the build output is missing, and registers the
+    /// package. The caller then opens it like any other project.
+    /// </summary>
+    internal static bool TryLoadProjectFromFolder(string folder, [NotNullWhen(false)] out string? error)
+    {
+        error = null;
+        var csProjFile = Directory.Exists(folder)
+                             ? Directory.EnumerateFiles(folder, "*.csproj", SearchOption.TopDirectoryOnly).FirstOrDefault()
+                             : null;
+
+        if (csProjFile == null)
+        {
+            error = $"no .csproj in '{folder}'";
+            return false;
+        }
+
+        if (!CsProjectFile.TryLoad(new FileInfo(csProjFile), out var loadInfo))
+        {
+            error = loadInfo.Error ?? "the project file could not be read";
+            return false;
+        }
+
+        var project = loadInfo.CsProjectFile!;
+        Migrations.ProjectFormatMigration.MigrateIfNeeded(project);
+
+        if (!Directory.Exists(project.GetBuildTargetDirectory()) && !project.TryRecompile(true, out var failureLog))
+        {
+            error = failureLog;
+            return false;
+        }
+
+        try
+        {
+            var package = new EditableSymbolProject(project);
+            AddToLoadedPackages(package);
+
+            // Registering the package is not enough: symbols and their UIs are loaded by the
+            // update pass, exactly as a project compiled during a normal session does.
+            UpdateSymbolPackages(package);
+        }
+        catch (InvalidOperationException e)
+        {
+            // Already loaded (the same party project joined twice); the existing package is fine.
+            Log.Debug($"Collab: project already loaded: {e.Message}");
+        }
+
+        return true;
+    }
+
+    /// <summary>
     /// Source folder of the operator packages shipped with TiXL. Release builds load these as read-only
     /// packages; debug builds compile them as regular projects, so this is the only way to tell them apart.
     /// </summary>

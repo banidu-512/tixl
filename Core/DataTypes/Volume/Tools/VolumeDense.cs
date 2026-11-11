@@ -52,6 +52,56 @@ public sealed class VdbSampler
 }
 
 /// <summary>
+/// Vectors from a volume in world space, for <c>VectorField</c> consumers such as forces. A vector grid
+/// (velocity) is sampled trilinearly; a float grid gives its gradient instead, which for a level set is the
+/// direction away from the surface.
+/// </summary>
+public sealed class VdbVectorSampler
+{
+    private readonly VdbGrid<Vector3>? _vectors;
+    private readonly VdbSampler? _scalars;
+    private readonly float _step;
+
+    public VdbVectorSampler(VdbGrid<Vector3> grid) => _vectors = grid;
+
+    public VdbVectorSampler(VdbGrid<float> grid)
+    {
+        _scalars = new VdbSampler(grid);
+
+        // Half a voxel either side: the finest difference the trilinear samples can resolve.
+        _step = grid.Transform.VoxelSize * 0.5f;
+    }
+
+    public Vector3 SampleWorld(Vector3 world)
+    {
+        if (_vectors != null)
+            return SampleIndex(_vectors, _vectors.Transform.WorldToIndexf(world));
+
+        var scalars = _scalars!;
+        var dx = scalars.SampleWorld(world + new Vector3(_step, 0, 0)) - scalars.SampleWorld(world - new Vector3(_step, 0, 0));
+        var dy = scalars.SampleWorld(world + new Vector3(0, _step, 0)) - scalars.SampleWorld(world - new Vector3(0, _step, 0));
+        var dz = scalars.SampleWorld(world + new Vector3(0, 0, _step)) - scalars.SampleWorld(world - new Vector3(0, 0, _step));
+        return new Vector3(dx, dy, dz) / (2f * _step);
+    }
+
+    private static Vector3 SampleIndex(VdbGrid<Vector3> grid, Vector3 index)
+    {
+        var x0 = (int)MathF.Floor(index.X);
+        var y0 = (int)MathF.Floor(index.Y);
+        var z0 = (int)MathF.Floor(index.Z);
+        var tx = index.X - x0;
+        var ty = index.Y - y0;
+        var tz = index.Z - z0;
+
+        var c00 = Vector3.Lerp(grid.Tree.GetValue(new VdbCoord(x0, y0, z0)), grid.Tree.GetValue(new VdbCoord(x0 + 1, y0, z0)), tx);
+        var c10 = Vector3.Lerp(grid.Tree.GetValue(new VdbCoord(x0, y0 + 1, z0)), grid.Tree.GetValue(new VdbCoord(x0 + 1, y0 + 1, z0)), tx);
+        var c01 = Vector3.Lerp(grid.Tree.GetValue(new VdbCoord(x0, y0, z0 + 1)), grid.Tree.GetValue(new VdbCoord(x0 + 1, y0, z0 + 1)), tx);
+        var c11 = Vector3.Lerp(grid.Tree.GetValue(new VdbCoord(x0, y0 + 1, z0 + 1)), grid.Tree.GetValue(new VdbCoord(x0 + 1, y0 + 1, z0 + 1)), tx);
+        return Vector3.Lerp(Vector3.Lerp(c00, c10, ty), Vector3.Lerp(c01, c11, ty), tz);
+    }
+}
+
+/// <summary>
 /// Dense extraction and resampling. <see cref="ExtractDense"/> fills an RGBA-normalized
 /// [x + y*sizeX + z*sizeX*sizeY] float buffer for Texture3D upload; <see cref="Resample"/>
 /// changes voxel size via trilinear sampling.

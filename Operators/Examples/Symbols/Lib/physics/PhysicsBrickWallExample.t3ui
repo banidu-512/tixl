@@ -1,0 +1,129 @@
+{
+  "FormatVersion": 3,
+  "Id": "ee164a1a-32c0-5adf-b341-fe20e94f7608",
+  "Description": "A wall of 80 bricks from one RigidBody, knocked down by a heavy block.\n\n[GridPoints] lays out the wall and [ReadPointsFromGpu] hands the points to the Points input of a single [RigidBody], which becomes one body per point. A second, heavy [RigidBody] is thrown at it with LinearVelocity.\n\nAKA: pyramid, colosseum, stack, instances, bodies from points\n\nTips\n- Change the counts on [GridPoints] to build a bigger wall; no other node changes.\n- Set Reset on [PhysicsWorld] to rebuild the wall.\n- All bodies of a world share one point buffer, so they are drawn with one mesh: the projectile is a box too.",
+  "InputUis": [],
+  "SymbolChildUis": [
+    {
+      "ChildId": "c276b216-a9fe-567a-a6e9-15589988693b",
+      "SymbolName": "Lib.point.generate.GridPoints",
+      "Position": {
+        "X": 0.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "490b5b07-4bb9-5f5e-b79d-c22742630514",
+      "SymbolName": "Lib.point.helper.ReadPointsFromGpu",
+      "Position": {
+        "X": 300.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "9c1e36b8-54cc-53ba-b94b-1db6ca1d657e",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 600.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "0ba1d669-bec6-5291-911d-bfa4b31e59ef",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 600.0,
+        "Y": 150.0
+      }
+    },
+    {
+      "ChildId": "434e228f-4eb8-5c09-8e7b-43bf06bab437",
+      "SymbolName": "Lib.physics.PhysicsWorld",
+      "Position": {
+        "X": 900.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "d4e7f1f7-9116-58e2-9c03-3daa300f086e",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 600.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "e6a074d1-dfe5-54fd-9c34-aa50f2f83ae9",
+      "SymbolName": "Lib.mesh.generate.CubeMesh",
+      "Position": {
+        "X": 1200.0,
+        "Y": 450.0
+      }
+    },
+    {
+      "ChildId": "00083fa4-5a8d-5b6a-87bc-d1e15224cb76",
+      "SymbolName": "Lib.mesh.modify.TransformMesh",
+      "Position": {
+        "X": 1500.0,
+        "Y": 450.0
+      }
+    },
+    {
+      "ChildId": "faf3c568-bb29-5765-a79c-d5908e97f93b",
+      "SymbolName": "Lib.mesh.draw.DrawMeshUnlit",
+      "Position": {
+        "X": 1800.0,
+        "Y": 450.0
+      }
+    },
+    {
+      "ChildId": "901f7286-fbf9-583b-9a0b-c88a0ebdd5f0",
+      "SymbolName": "Lib.mesh.generate.CubeMesh",
+      "Position": {
+        "X": 1200.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "b1f481a1-0c77-5e6c-aead-1a88972c5256",
+      "SymbolName": "Lib.mesh.draw.DrawMeshAtPoints",
+      "Position": {
+        "X": 1800.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "15fbffa0-9d4e-5496-af25-16bcb413c566",
+      "SymbolName": "Lib.render.transform.Group",
+      "Position": {
+        "X": 2100.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "2b4c52ac-75b3-5e70-a1c3-4c048fa3cc94",
+      "SymbolName": "Lib.render.camera.Camera",
+      "Position": {
+        "X": 2400.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "8e34a5c0-7d9f-501d-ba5c-c4ff1a663611",
+      "SymbolName": "Lib.image.generate.basic.RenderTarget",
+      "Position": {
+        "X": 2700.0,
+        "Y": 0.0
+      }
+    }
+  ],
+  "OutputUis": [
+    {
+      "OutputId": "02355177-737b-509e-a63d-84ce4908245e",
+      "Position": {
+        "X": 3000.0,
+        "Y": 0.0
+      }
+    }
+  ]
+}

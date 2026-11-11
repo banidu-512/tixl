@@ -1,0 +1,81 @@
+{
+  "FormatVersion": 3,
+  "Id": "a2ff6e7a-3dd4-561a-9a64-4390ee26576d",
+  "Description": "A volume and a procedural sphere merged as SDF fields and raymarched as one shape.\n\n[VolumeToNanoVdb] puts the level set on the GPU and [VdbToSdfField] wraps it as a signed-distance field. From there it is a field like any other: [CombineSDF] blends it smoothly with a [SphereSDF], and [RaymarchField] draws the result. No volume CSG is involved; the union happens per pixel in the shader.\n\nAKA: nanovdb, sdf, field, raymarch, smooth union, blend\n\nTips\n- Prefer this route for anything you only look at: field operators cost nothing to change and need no rebuild.\n- CombineMethod on [CombineSDF] also has cut-out and intersection modes; K is the width of the blend.\n- Any loaded .vdb level set takes the torus's place: connect [LoadVdb] to [VolumeToNanoVdb].",
+  "InputUis": [],
+  "SymbolChildUis": [
+    {
+      "ChildId": "c7529ff0-30f4-5aeb-a56b-15e446f0207d",
+      "SymbolName": "Lib.volume.generate.VolumePrimitive",
+      "Position": {
+        "X": 0.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "e407d2b5-ca8d-5dea-8761-98488dae0385",
+      "SymbolName": "Lib.volume.gpu.VolumeToNanoVdb",
+      "Position": {
+        "X": 300.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "00933682-ec55-5cb9-b87d-367455b188a3",
+      "SymbolName": "Lib.volume.fields.VdbToSdfField",
+      "Position": {
+        "X": 600.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "e692b463-fd07-52e4-885b-d587de61603b",
+      "SymbolName": "Lib.field.generate.sdf.SphereSDF",
+      "Position": {
+        "X": 600.0,
+        "Y": 150.0
+      }
+    },
+    {
+      "ChildId": "88c4e1da-a365-5a97-be75-5c3c674f037c",
+      "SymbolName": "Lib.field.combine.CombineSDF",
+      "Position": {
+        "X": 900.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "e7d442de-cf65-54e2-b40a-65959784b679",
+      "SymbolName": "Lib.field.render.RaymarchField",
+      "Position": {
+        "X": 1200.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "650d9d33-0355-5bbc-86c5-7901a9bd9c6a",
+      "SymbolName": "Lib.render.camera.Camera",
+      "Position": {
+        "X": 1500.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "f8195a8e-f4c0-5589-802f-3f18d04cd40a",
+      "SymbolName": "Lib.image.generate.basic.RenderTarget",
+      "Position": {
+        "X": 1800.0,
+        "Y": 0.0
+      }
+    }
+  ],
+  "OutputUis": [
+    {
+      "OutputId": "2bc0530e-9a39-5f0d-833a-3d5ab997049f",
+      "Position": {
+        "X": 3000.0,
+        "Y": 0.0
+      }
+    }
+  ]
+}

@@ -16,14 +16,24 @@
 // Trust model: the relay operator can observe traffic, like the operator of any game server.
 // Run your own relay (this builds into a single self-contained executable) for sensitive sessions.
 //
-// Usage: dotnet run --project CollabRelay [-- <port>]   (default port 44710)
+// Since protocol 2 the relay also:
+// - keeps a directory of rooms whose host asked to be listed ({"role":"list"} returns it),
+// - verifies a Discord access token a peer sends along and tells the room who that peer is
+//   (name, language, Discord id), so participants cannot pick someone else's name,
+// - lets a participant who knows the room key re-open the room of a host that went silent
+//   (host handover), and closes the members of a room whose host left so they notice at once.
+// The token is used for one request to Discord's /users/@me and is not stored or logged.
+//
+// Usage: dotnet run --project CollabRelay [-- <port>] [--require-discord]   (default port 44710)
 
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
 using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 
 namespace T3.CollabRelay;
 
@@ -33,6 +43,26 @@ internal static class Program
     private const int MaxMembersPerRoom = 16;
     private const int MaxFrameSize = 4 * 1024 * 1024;
     private const int HandshakeTimeoutMs = 10_000;
+    private const int HandshakeLineLimit = 4096;
+
+    /// <summary>A host that sent nothing for this long may be replaced by a peer holding the room key.
+    /// A host with members sends heartbeats twice a second, an idle one a keep-alive every 15 s —
+    /// so this only ever evicts a host that is gone.</summary>
+    private const int OwnerStaleMs = 20_000;
+
+    /// <summary>Error text the editor matches on: the room it tried to take over still has its host.</summary>
+    private const string RoomHasLiveHostError = "room has a live host";
+
+    private const int MaxListedRooms = 200;
+    private const int DiscordCacheMinutes = 10;
+
+    /// <summary>With --require-discord, peers without a valid Discord token are turned away.</summary>
+    private static bool _requireDiscord;
+
+    private static readonly HttpClient DiscordHttp = CreateDiscordClient();
+
+    /// <summary>Verified identities by token hash, so a reconnecting peer does not cost a Discord request each time.</summary>
+    private static readonly ConcurrentDictionary<string, (Identity Identity, long ExpiresTicks)> DiscordCache = new();
     private const int IdleTimeoutMs = 90_000;
     private const int WriteTimeoutMs = 10_000;
     private const byte BroadcastSlot = 0xFF;
@@ -52,6 +82,10 @@ internal static class Program
         var port = DefaultPort;
         if (args.Length > 0 && int.TryParse(args[0], out var parsed))
             port = parsed;
+
+        _requireDiscord = args.Contains("--require-discord");
+        if (_requireDiscord)
+            Console.WriteLine("Discord login is required to host or join on this relay.");
 
         var listener = new TcpListener(IPAddress.Any, port);
         listener.Start();
@@ -100,8 +134,35 @@ internal static class Program
                 return;
             }
 
-            role = request.Value.role;
-            var roomCode = request.Value.room;
+            role = request.Role;
+            var roomCode = request.Room;
+
+            if (role == "list")
+            {
+                await WriteLineAsync(client, BuildRoomList());
+                client.Close();
+                return;
+            }
+
+            if (role == "update")
+            {
+                await HandleUpdateAsync(client, request);
+                return;
+            }
+
+            if (role == "whisper")
+            {
+                await HandleWhisperAsync(client, request);
+                return;
+            }
+
+            var identity = role is "host" or "join" ? await ResolveIdentityAsync(request) : Identity.Unknown;
+            if (_requireDiscord && !identity.Verified && role is "host" or "join")
+            {
+                await WriteLineAsync(client, "{\"ok\":false,\"error\":\"this relay requires a Discord login\"}");
+                client.Close();
+                return;
+            }
 
             if (role == "host")
             {
@@ -111,15 +172,30 @@ internal static class Program
                 await gate.WaitAsync();
                 try
                 {
-                    room = CreateRoom(roomCode, client);
-                    await WriteRawLineAsync(client, $"{{\"ok\":true,\"room\":\"{room.Code}\"}}");
+                    room = CreateRoom(request, client, identity, out var refusal);
+                    if (room == null)
+                    {
+                        await WriteRawLineAsync(client, $"{{\"ok\":false,\"error\":\"{refusal}\"}}");
+                        client.Close();
+                        return;
+                    }
+
+                    var hostRoom = room;
+                    await WriteRawLineAsync(client, request.Extended
+                                                        ? Json(w =>
+                                                               {
+                                                                   w.WriteBoolean("ok", true);
+                                                                   w.WriteString("room", hostRoom.Code);
+                                                                   WriteIdentity(w, "you", identity);
+                                                               })
+                                                        : $"{{\"ok\":true,\"room\":\"{room.Code}\"}}");
                 }
                 finally
                 {
                     gate.Release();
                 }
 
-                Console.WriteLine($"room {room.Code} registered");
+                Console.WriteLine($"room {room.Code} registered{(room.Public ? " (listed)" : "")}");
             }
             else if (role == "join")
             {
@@ -129,7 +205,7 @@ internal static class Program
                 await gate.WaitAsync();
                 try
                 {
-                    var joined = TryJoinRoom(roomCode, client, out room, out slot);
+                    var joined = TryJoinRoom(roomCode, client, identity, out room, out slot);
                     if (!joined)
                     {
                         var reason = room == null ? "room not found" : "room full";
@@ -139,19 +215,46 @@ internal static class Program
                         return;
                     }
 
-                    await WriteRawLineAsync(client, $"{{\"ok\":true,\"room\":\"{room!.Code}\",\"slot\":{slot}}}");
+                    var joinedRoom = room!;
+                    var joinedSlot = slot;
+                    await WriteRawLineAsync(client, request.Extended
+                                                        ? Json(w =>
+                                                               {
+                                                                   w.WriteBoolean("ok", true);
+                                                                   w.WriteString("room", joinedRoom.Code);
+                                                                   w.WriteNumber("slot", joinedSlot);
+                                                                   WriteIdentity(w, "you", identity);
+                                                                   WriteIdentity(w, "host", joinedRoom.Host);
+                                                               })
+                                                        : $"{{\"ok\":true,\"room\":\"{room!.Code}\",\"slot\":{slot}}}");
                 }
                 finally
                 {
                     gate.Release();
                 }
 
-                // Tell the host about the new member before any of its frames arrive.
-                var owner = room.Owner;
+                // Tell the host about the new member before any of its frames arrive. A host that
+                // registered the old way gets the short line it can parse.
+                var announcedRoom = room!;
+                var owner = announcedRoom.Owner;
                 if (owner != null)
-                    await WriteLineAsync(owner, $"{{\"t\":\"member\",\"slot\":{slot}}}");
+                {
+                    var memberSlot = slot;
+                    await WriteLineAsync(owner, announcedRoom.Extended
+                                                    ? Json(w =>
+                                                           {
+                                                               w.WriteString("t", "member");
+                                                               w.WriteNumber("slot", memberSlot);
+                                                               w.WriteString("name", identity.Name);
+                                                               w.WriteString("lang", identity.Lang);
+                                                               w.WriteBoolean("verified", identity.Verified);
+                                                               w.WriteString("did", identity.DiscordId);
+                                                               w.WriteString("avatar", identity.Avatar);
+                                                           })
+                                                    : $"{{\"t\":\"member\",\"slot\":{slot}}}");
+                }
 
-                Console.WriteLine($"member {slot} joined {room.Code} ({room.MemberCount}/{MaxMembersPerRoom})");
+                Console.WriteLine($"member {slot} joined {announcedRoom.Code} ({announcedRoom.MemberCount}/{MaxMembersPerRoom})");
             }
             else
             {
@@ -161,7 +264,7 @@ internal static class Program
             }
 
             TouchActivity();
-            await RouteFramesAsync(client, room, slot, role == "host");
+            await RouteFramesAsync(client, room!, slot, role == "host");
         }
         catch (Exception e) when (e is IOException or SocketException or ObjectDisposedException or OperationCanceledException)
         {
@@ -207,22 +310,290 @@ internal static class Program
         }
     }
 
-    private static Room CreateRoom(string requestedCode, TcpClient owner)
+    // ---------------------------------------------------------------------------------------
+    // Lobby services: live listing updates (Change/Delete entry) and whispers to a session's
+    // host. Both are one-shot request/reply connections; a whisperer can stay listening for
+    // the host's reply as {"t":"whisper"} control lines.
+    // ---------------------------------------------------------------------------------------
+
+    private const int MaxWhisperListenersPerRoom = 16;
+    private const int MaxWhispersPerListenerPerSecond = 3;
+
+    /// <summary>A host updates its listing while the session runs (Change entry / Delete entry).
+    /// The room key authenticates the request; only the host instance knows it.</summary>
+    private static async Task HandleUpdateAsync(TcpClient client, Request request)
     {
-        var code = SanitizeCode(requestedCode);
+        if (!Rooms.TryGetValue(SanitizeCode(request.Room), out var room) || room.Key.Length == 0)
+        {
+            await WriteLineAsync(client, "{\"ok\":false,\"error\":\"room not found\"}");
+            client.Close();
+            return;
+        }
+
+        var updated = false;
+        lock (room.Gate)
+        {
+            if (CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(room.Key),
+                                                        Encoding.UTF8.GetBytes(request.Key)))
+            {
+                if (request.Title.Length > 0)
+                    room.Title = request.Title;
+                if (request.Purpose.Length > 0)
+                    room.Purpose = request.Purpose;
+                if (request.Project.Length > 0)
+                    room.Project = request.Project;
+                room.Public = request.Public;
+                updated = true;
+            }
+        }
+
+        await WriteLineAsync(client, updated ? "{\"ok\":true}" : "{\"ok\":false,\"error\":\"not the host\"}");
+        client.Close();
+    }
+
+    /// <summary>
+    /// A whisper to a session's host. A guest sends name + text; the relay delivers it on the
+    /// host's control link as {"t":"whisper","from":...,"text":...}. With "listen" the connection
+    /// stays open and receives the host's replies ("to" the whisperer's name) as control lines.
+    /// The host replies with a key-authenticated whisper carrying "to".
+    /// </summary>
+    private static async Task HandleWhisperAsync(TcpClient client, Request request)
+    {
+        if (!Rooms.TryGetValue(SanitizeCode(request.Room), out var room)
+            || room.Owner is not { Connected: true })
+        {
+            await WriteLineAsync(client, "{\"ok\":false,\"error\":\"room not found\"}");
+            client.Close();
+            return;
+        }
+
+        // The host's reply path: key-authenticated, routed to the whisperer by name.
+        if (request.Key.Length > 0)
+        {
+            var allowed = false;
+            var from = "";
+            lock (room.Gate)
+            {
+                if (room.Key.Length > 0
+                    && CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(room.Key),
+                                                               Encoding.UTF8.GetBytes(request.Key)))
+                {
+                    allowed = true;
+                    from = room.Host.Name;
+                }
+            }
+
+            if (!allowed || request.To.Length == 0 || request.Text.Length == 0)
+            {
+                await WriteLineAsync(client, "{\"ok\":false,\"error\":\"not the host\"}");
+                client.Close();
+                return;
+            }
+
+            var delivered = 0;
+            var reply = Json(w =>
+                             {
+                                 w.WriteString("t", "whisper");
+                                 w.WriteString("from", from);
+                                 w.WriteString("text", request.Text);
+                             });
+            List<TcpClient>? dead = null;
+            lock (room.Gate)
+            {
+                foreach (var listener in room.WhisperListeners)
+                {
+                    if (!string.Equals(listener.Name, request.To, StringComparison.OrdinalIgnoreCase)
+                        || !listener.Client.Connected)
+                    {
+                        if (!listener.Client.Connected)
+                            (dead ??= new List<TcpClient>()).Add(listener.Client);
+                        continue;
+                    }
+
+                    _ = DeliverWhisperAsync(listener.Client, reply);
+                    delivered++;
+                }
+
+                if (dead != null)
+                {
+                    foreach (var deadClient in dead)
+                        room.WhisperListeners.RemoveAll(l => l.Client == deadClient);
+                }
+            }
+
+            await WriteLineAsync(client, delivered > 0
+                                             ? "{\"ok\":true,\"delivered\":" + delivered + "}"
+                                             : "{\"ok\":false,\"error\":\"whisperer gone\"}");
+            client.Close();
+            return;
+        }
+
+        // A guest's whisper: forward to the host and, when asked, keep listening for replies.
+        if (request.Text.Length == 0 || request.Name.Length == 0)
+        {
+            await WriteLineAsync(client, "{\"ok\":false,\"error\":\"name and text required\"}");
+            client.Close();
+            return;
+        }
+
+        var owner = room.Owner;
+        var forwarded = Json(w =>
+                             {
+                                 w.WriteString("t", "whisper");
+                                 w.WriteString("from", request.Name);
+                                 w.WriteString("lang", request.Lang);
+                                 w.WriteString("text", request.Text);
+                             });
+        if (owner != null)
+            await WriteLineAsync(owner, forwarded);
+
+        if (!request.Listen)
+        {
+            await WriteLineAsync(client, "{\"ok\":true}");
+            client.Close();
+            return;
+        }
+
+        if (!client.Connected)
+            return;
+
+        // Register as a listener; the connection then reads (and discards) anything the client
+        // sends so a closed socket is noticed and the listener is dropped.
+        lock (room.Gate)
+        {
+            if (room.WhisperListeners.Count >= MaxWhisperListenersPerRoom)
+            {
+                // Full: still tell the client ok so it does not retry a storm; replies just won't arrive.
+                WriteLineAsync(client, "{\"ok\":true,\"listening\":false}").Wait(1000);
+                client.Close();
+                return;
+            }
+
+            room.WhisperListeners.Add(new WhisperListener(client, request.Name));
+        }
+
+        Console.WriteLine($"whisper listener '{request.Name}' on {room.Code}");
+        await WriteLineAsync(client, "{\"ok\":true,\"listening\":true}");
+        await ReadUntilClosedAsync(client, room);
+    }
+
+    private static async Task DeliverWhisperAsync(TcpClient listenerClient, string line)
+    {
+        try
+        {
+            await WriteLineAsync(listenerClient, line);
+        }
+        catch (Exception e) when (e is IOException or SocketException or ObjectDisposedException or OperationCanceledException)
+        {
+            // The listener's read loop notices the failure and unregisters it.
+        }
+    }
+
+    /// <summary>Keeps a whisper listener connection until it closes, then unregisters it.</summary>
+    private static async Task ReadUntilClosedAsync(TcpClient client, Room room)
+    {
+        try
+        {
+            var buffer = new byte[1024];
+            var stream = client.GetStream();
+            while (true)
+            {
+                var read = await stream.ReadAsync(buffer, CancellationToken.None);
+                if (read == 0)
+                    break;
+            }
+        }
+        catch (Exception e) when (e is IOException or SocketException or ObjectDisposedException or OperationCanceledException)
+        {
+            // Normal close path.
+        }
+
+        lock (room.Gate)
+        {
+            room.WhisperListeners.RemoveAll(l => l.Client == client);
+        }
+
+        client.Close();
+    }
+
+    internal sealed record WhisperListener(TcpClient Client, string Name);
+
+    /// <summary>
+    /// Registers a room for a host. A requested code that is free is granted. A code that is taken
+    /// yields a fresh one — unless the request carries that room's key: then this is the session
+    /// itself coming back (its host after a network drop, or a participant taking over), and the
+    /// room is handed over when its host has gone silent, or refused while the host is alive.
+    /// </summary>
+    private static Room? CreateRoom(Request request, TcpClient owner, Identity identity, out string refusal)
+    {
+        refusal = "";
+        var code = SanitizeCode(request.Room);
         while (true)
         {
             var room = Rooms.GetOrAdd(code, _ => new Room(code));
+            TcpClient? evictedOwner = null;
+            List<TcpClient>? evictedMembers = null;
+            var claimed = false;
 
             // Claimed under the room's gate: two hosts asking for the same code must not both own it,
             // and a room whose host just left (and was removed) must not be revived.
             lock (room.Gate)
             {
-                if (room.Owner == null && Rooms.TryGetValue(code, out var current) && current == room)
+                var isCurrent = Rooms.TryGetValue(code, out var current) && current == room;
+                if (isCurrent && room.Owner == null)
+                {
+                    claimed = true;
+                }
+                else if (isCurrent && room.Owner != null && request.Key.Length > 0
+                         && CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(room.Key), Encoding.UTF8.GetBytes(request.Key)))
+                {
+                    // The same editor instance asking again is the host itself, back after its link
+                    // dropped: whatever still holds the room is its own dead connection.
+                    var sameHost = request.Instance.Length > 0 && room.OwnerInstance == request.Instance;
+                    var currentOwner = room.Owner;
+                    var silentForMs = Environment.TickCount64 - Interlocked.Read(ref room.LastOwnerActivityTicks);
+                    if (!sameHost && currentOwner.Connected && silentForMs < OwnerStaleMs)
+                    {
+                        refusal = RoomHasLiveHostError;
+                        return null;
+                    }
+
+                    // The old host and whoever is still attached to it are cut loose; they find
+                    // the room again under the same code.
+                    evictedOwner = currentOwner;
+                    evictedMembers = room.Members.Values.ToList();
+                    room.Members.Clear();
+                    room.MemberIdentities.Clear();
+                    claimed = true;
+                }
+
+                if (claimed)
                 {
                     room.Owner = owner;
-                    return room;
+                    room.Key = request.Key;
+                    room.OwnerInstance = request.Instance;
+                    room.Extended = request.Extended;
+                    room.Host = identity;
+                    room.Title = request.Title;
+                    room.Purpose = request.Purpose;
+                    room.Project = request.Project;
+                    room.Public = request.Public;
+                    room.PasswordProtected = request.PasswordProtected;
+                    Interlocked.Exchange(ref room.LastOwnerActivityTicks, Environment.TickCount64);
                 }
+            }
+
+            if (claimed)
+            {
+                if (evictedOwner != null)
+                {
+                    Console.WriteLine($"room {room.Code}: silent host replaced");
+                    evictedOwner.Close();
+                    foreach (var member in evictedMembers!)
+                        member.Close();
+                }
+
+                return room;
             }
 
             // Code collision with a live room — mint a fresh one for the new host.
@@ -230,7 +601,7 @@ internal static class Program
         }
     }
 
-    private static bool TryJoinRoom(string roomCode, TcpClient client, out Room? room, out byte slot)
+    private static bool TryJoinRoom(string roomCode, TcpClient client, Identity identity, out Room? room, out byte slot)
     {
         room = null;
         slot = 0;
@@ -245,6 +616,7 @@ internal static class Program
             room = found;
             slot = found.AllocateSlot();
             found.Members.Add(slot, client);
+            found.MemberIdentities[slot] = identity;
         }
 
         return true;
@@ -277,12 +649,30 @@ internal static class Program
                     room.Owner = null;
                     Console.WriteLine($"room {room.Code} closed (host left)");
                     Rooms.TryRemove(room.Code, out _);
+
+                    // Without a host nothing these connections send goes anywhere. Closing them
+                    // tells the members now, instead of after their silence timeout, so they can
+                    // start finding the session again.
+                    foreach (var orphan in room.Members.Values)
+                        orphan.Close();
+
+                    room.Members.Clear();
+                    room.MemberIdentities.Clear();
+
+                    // Whisper listeners have nowhere to deliver to either.
+                    foreach (var listener in room.WhisperListeners)
+                        listener.Client.Close();
+                    room.WhisperListeners.Clear();
                 }
 
                 return false;
             }
 
-            return room.Members.TryGetValue(slot, out var member) && member == client && room.Members.Remove(slot);
+            if (!room.Members.TryGetValue(slot, out var member) || member != client)
+                return false;
+
+            room.MemberIdentities.Remove(slot);
+            return room.Members.Remove(slot);
         }
     }
 
@@ -341,6 +731,12 @@ internal static class Program
 
             if (isHost)
             {
+                // A replaced host must not reach the members of its successor.
+                if (room.Owner != client)
+                    return;
+
+                Interlocked.Exchange(ref room.LastOwnerActivityTicks, Environment.TickCount64);
+
                 // Host -> member: [slot][type][payload]. Route or broadcast.
                 if (length < 2)
                     continue;
@@ -485,18 +881,18 @@ internal static class Program
 
     private static async Task<string> ReadLineAsync(NetworkStream stream, CancellationToken cancellation)
     {
-        var sb = new StringBuilder(64);
+        var line = new List<byte>(128);
         var buffer = new byte[1];
-        while (sb.Length < 256)
+        while (line.Count < HandshakeLineLimit)
         {
             var read = await stream.ReadAsync(buffer, cancellation);
             if (read == 0)
                 throw new IOException("closed before handshake");
 
             if (buffer[0] == '\n')
-                return sb.ToString().TrimEnd('\r');
+                return Encoding.UTF8.GetString(line.ToArray()).TrimEnd('\r');
 
-            sb.Append((char)buffer[0]);
+            line.Add(buffer[0]);
         }
 
         throw new IOException("handshake line too long");
@@ -540,36 +936,221 @@ internal static class Program
         await client.GetStream().WriteAsync(bytes, cancellation);
     }
 
-    private static (string role, string room)? ParseRequest(string line)
+    /// <summary>What a peer says about itself and, for a host, about its room.</summary>
+    private sealed record Request(string Role,
+                                  string Room,
+                                  bool Extended,
+                                  string Token,
+                                  string Name,
+                                  string Lang,
+                                  string Key,
+                                  string Instance,
+                                  string Title,
+                                  string Purpose,
+                                  string Project,
+                                  string Text,
+                                  string To,
+                                  bool Listen,
+                                  bool Public,
+                                  bool PasswordProtected);
+
+    /// <summary>Who a peer is. Verified means Discord confirmed it for the token the peer sent;
+    /// otherwise name and language are just what the peer claims.</summary>
+    internal sealed record Identity(string Name, string Lang, bool Verified, string DiscordId, string Avatar)
     {
-        // Minimal parse for {"role":"host|join","room":"..."} without pulling in JSON deps.
+        public static readonly Identity Unknown = new("", "", false, "", "");
+    }
+
+    private static Request? ParseRequest(string line)
+    {
         if (string.IsNullOrEmpty(line))
             return null;
 
-        string? Extract(string key)
+        try
         {
-            var needle = $"\"{key}\"";
-            var keyIndex = line.IndexOf(needle, StringComparison.OrdinalIgnoreCase);
-            if (keyIndex < 0)
+            using var document = JsonDocument.Parse(line);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
                 return null;
 
-            var colonIndex = line.IndexOf(':', keyIndex + needle.Length);
-            if (colonIndex < 0)
+            string Text(string name, int maxLength)
+            {
+                if (!root.TryGetProperty(name, out var value) || value.ValueKind != JsonValueKind.String)
+                    return "";
+
+                return Clean(value.GetString() ?? "", maxLength);
+            }
+
+            bool Flag(string name) => root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.True;
+
+            var role = Text("role", 16);
+            if (role.Length == 0)
                 return null;
 
-            var quoteStart = line.IndexOf('"', colonIndex + 1);
-            if (quoteStart < 0)
-                return null;
+            // "v":2 marks an editor that reads the longer replies; older ones get the short lines.
+            var extended = root.TryGetProperty("v", out var version) && version.ValueKind == JsonValueKind.Number && version.GetInt32() >= 2;
+            return new Request(role,
+                               Text("room", 32),
+                               extended,
+                               Text("token", 512),
+                               Text("name", 48),
+                               Text("lang", 12),
+                               Text("key", 64),
+                               Text("inst", 64),
+                               Text("title", 64),
+                               Text("purpose", 24),
+                               Text("project", 64),
+                               Text("text", 256),
+                               Text("to", 48),
+                               Flag("listen"),
+                               Flag("public"),
+                               Flag("pwd"));
+        }
+        catch (Exception e) when (e is JsonException or InvalidOperationException or FormatException)
+        {
+            return null;
+        }
+    }
 
-            var quoteEnd = line.IndexOf('"', quoteStart + 1);
-            return quoteEnd < 0 ? null : line[(quoteStart + 1)..quoteEnd];
+    /// <summary>Trims, cuts to length and drops control characters; these strings end up in other people's UI.</summary>
+    private static string Clean(string value, int maxLength)
+    {
+        var cleaned = new string(value.Where(c => !char.IsControl(c)).ToArray()).Trim();
+        return cleaned.Length <= maxLength ? cleaned : cleaned[..maxLength];
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Identity
+    // ---------------------------------------------------------------------------------------
+
+    private static HttpClient CreateDiscordClient()
+    {
+        var client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+        client.DefaultRequestHeaders.Add("User-Agent", "TiXLCollabRelay");
+        return client;
+    }
+
+    private static async Task<Identity> ResolveIdentityAsync(Request request)
+    {
+        if (request.Token.Length > 0)
+        {
+            var verified = await VerifyDiscordAsync(request.Token);
+            if (verified != null)
+                return verified;
         }
 
-        var role = Extract("role");
-        if (role == null)
-            return null;
+        return new Identity(request.Name, request.Lang, false, "", "");
+    }
 
-        return (role, Extract("room") ?? "");
+    /// <summary>Asks Discord whose token this is. Null when Discord does not accept it or cannot be reached.</summary>
+    private static async Task<Identity?> VerifyDiscordAsync(string token)
+    {
+        var cacheKey = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(token)));
+        var now = Environment.TickCount64;
+        if (DiscordCache.TryGetValue(cacheKey, out var cached) && cached.ExpiresTicks > now)
+            return cached.Identity;
+
+        try
+        {
+            using var message = new HttpRequestMessage(HttpMethod.Get, "https://discord.com/api/users/@me");
+            message.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+            using var response = await DiscordHttp.SendAsync(message);
+            if (!response.IsSuccessStatusCode)
+                return null;
+
+            using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            var user = document.RootElement;
+
+            string Field(string name) => user.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
+                                             ? value.GetString() ?? ""
+                                             : "";
+
+            var id = Field("id");
+            if (id.Length == 0)
+                return null;
+
+            var name = Field("global_name");
+            if (name.Length == 0)
+                name = Field("username");
+
+            var identity = new Identity(Clean(name, 48), Clean(Field("locale"), 12), true, Clean(id, 32), Clean(Field("avatar"), 64));
+            if (DiscordCache.Count > 5000)
+                DiscordCache.Clear();
+
+            DiscordCache[cacheKey] = (identity, now + DiscordCacheMinutes * 60_000L);
+            return identity;
+        }
+        catch (Exception e) when (e is HttpRequestException or TaskCanceledException or JsonException)
+        {
+            Console.WriteLine($"Discord check failed: {e.GetType().Name}");
+            return null;
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Replies. Built with a JSON writer that escapes everything outside ASCII, so a line is
+    // plain ASCII whatever a name or title contains.
+    // ---------------------------------------------------------------------------------------
+
+    private static string Json(Action<Utf8JsonWriter> write)
+    {
+        using var buffer = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartObject();
+            write(writer);
+            writer.WriteEndObject();
+        }
+
+        return Encoding.ASCII.GetString(buffer.ToArray());
+    }
+
+    private static void WriteIdentity(Utf8JsonWriter writer, string property, Identity identity)
+    {
+        writer.WriteStartObject(property);
+        writer.WriteString("name", identity.Name);
+        writer.WriteString("lang", identity.Lang);
+        writer.WriteBoolean("verified", identity.Verified);
+        writer.WriteString("did", identity.DiscordId);
+        writer.WriteString("avatar", identity.Avatar);
+        writer.WriteEndObject();
+    }
+
+    /// <summary>The rooms whose hosts asked to be listed and are still answering.</summary>
+    private static string BuildRoomList()
+    {
+        var now = Environment.TickCount64;
+        return Json(writer =>
+                    {
+                        writer.WriteBoolean("ok", true);
+                        writer.WriteStartArray("rooms");
+                        var listed = 0;
+                        foreach (var room in Rooms.Values)
+                        {
+                            if (listed >= MaxListedRooms)
+                                break;
+
+                            if (!room.Public || room.Owner is not { Connected: true }
+                                || now - Interlocked.Read(ref room.LastOwnerActivityTicks) > 60_000)
+                                continue;
+
+                            listed++;
+                            writer.WriteStartObject();
+                            writer.WriteString("code", room.Code);
+                            writer.WriteString("title", room.Title);
+                            writer.WriteString("purpose", room.Purpose);
+                            writer.WriteString("project", room.Project);
+                            writer.WriteString("host", room.Host.Name);
+                            writer.WriteString("lang", room.Host.Lang);
+                            writer.WriteBoolean("verified", room.Host.Verified);
+                            writer.WriteNumber("members", room.MemberCount + 1);
+                            writer.WriteNumber("max", MaxMembersPerRoom + 1);
+                            writer.WriteBoolean("pwd", room.PasswordProtected);
+                            writer.WriteEndObject();
+                        }
+
+                        writer.WriteEndArray();
+                    });
     }
 
     private static string GenerateRoomCode()
@@ -589,7 +1170,28 @@ internal static class Program
         public readonly string Code = code;
         public readonly object Gate = new();
         public readonly Dictionary<byte, TcpClient> Members = [];
+        public readonly Dictionary<byte, Identity> MemberIdentities = [];
         public TcpClient? Owner;
+
+        /// <summary>Secret the host chose; whoever presents it may re-open the room once the host is silent.</summary>
+        public string Key = "";
+
+        /// <summary>Which editor instance hosts the room; lets the host reclaim it from its own dead connection.</summary>
+        public string OwnerInstance = "";
+
+        /// <summary>The host's editor reads the longer control lines.</summary>
+        public bool Extended;
+
+        public Identity Host = Identity.Unknown;
+        public string Title = "";
+        public string Purpose = "";
+        public string Project = "";
+        public bool Public;
+        public bool PasswordProtected;
+        public readonly List<WhisperListener> WhisperListeners = [];
+
+        /// <summary>TickCount64 of the last frame from the host.</summary>
+        public long LastOwnerActivityTicks = Environment.TickCount64;
         private byte _nextSlot = 1;
 
         public int MemberCount => Members.Count;
