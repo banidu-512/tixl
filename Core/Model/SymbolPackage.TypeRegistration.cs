@@ -450,6 +450,9 @@ public partial class SymbolPackage
         RegisterType(typeof(PhysicsJoint), "PhysicsJoint",
                      () => new InputValue<PhysicsJoint>(null));
 
+        RegisterType(typeof(PhysicsForce), "PhysicsForce",
+                     () => new InputValue<PhysicsForce>(null));
+
         RegisterType(typeof(T3.Core.Operator.GizmoVisibility), "GizmoVisibility",
                      InputDefaultValueCreator<T3.Core.Operator.GizmoVisibility>,
                      (writer, obj) => writer.WriteValue(obj.ToString()),

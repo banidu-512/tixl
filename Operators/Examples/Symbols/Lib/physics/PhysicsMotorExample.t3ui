@@ -1,0 +1,169 @@
+{
+  "FormatVersion": 3,
+  "Id": "c3c534be-fb7c-503f-a4fe-b929b5b859e1",
+  "Description": "A motorised paddle on a fixed hub sweeps 80 balls off its circle.\n\nThe hub is a Kinematic [RigidBody], which makes it a fixed point a joint can attach to. A Hinge [RigidJoint] with MotorSpeed turns the paddle around it. The paddle is heavy, so the balls cannot stop it.\n\nAKA: motor, spinner, turnstile, hinge, kinematic anchor\n\nTips\n- Animate MotorSpeed to speed the paddle up, stop it or reverse it.\n- LinearDamping on the balls stands in for rolling resistance and keeps them on the floor.\n- The hub and paddle share a CollisionGroup, or their overlap would push them apart.",
+  "InputUis": [],
+  "SymbolChildUis": [
+    {
+      "ChildId": "38c45a01-990a-5112-aeeb-28d6bad02446",
+      "SymbolName": "Lib.geometry.ScatterPointsInVolume",
+      "Position": {
+        "X": 0.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "4618901b-878b-5686-8e20-05f58f76e1be",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 600.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "50108dba-c8ac-5eda-9167-c61eb7407053",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 600.0,
+        "Y": 150.0
+      }
+    },
+    {
+      "ChildId": "d037b4ff-f38d-5165-a611-52e35c7d338b",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 600.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "e5cc7638-e0de-50d6-b1dd-5ad59cadb6d3",
+      "SymbolName": "Lib.physics.RigidJoint",
+      "Position": {
+        "X": 600.0,
+        "Y": 450.0
+      }
+    },
+    {
+      "ChildId": "a5cf46b7-200b-535e-828d-728aa65e4d9a",
+      "SymbolName": "Lib.physics.PhysicsWorld",
+      "Position": {
+        "X": 900.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "f549c74a-9dec-5e0c-ba64-51461155e4b8",
+      "SymbolName": "Lib.mesh.generate.CubeMesh",
+      "Position": {
+        "X": 1200.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "587c5f7a-8bdb-5082-968e-858faf73e369",
+      "SymbolName": "Lib.mesh.generate.SphereMesh",
+      "Position": {
+        "X": 1200.0,
+        "Y": 150.0
+      }
+    },
+    {
+      "ChildId": "7325db4b-4a87-5bb6-8aa5-59641fc35ebf",
+      "SymbolName": "Lib.physics.RigidBodyPoints",
+      "Position": {
+        "X": 1500.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "f3da6df0-c0ba-5f13-8e63-60e1809a6aa5",
+      "SymbolName": "Lib.physics.RigidBodyPoints",
+      "Position": {
+        "X": 1500.0,
+        "Y": 150.0
+      }
+    },
+    {
+      "ChildId": "08b60e5b-c4b9-557d-824e-8493f15314ae",
+      "SymbolName": "Lib.mesh.draw.DrawMeshAtPoints",
+      "Position": {
+        "X": 1800.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "f4acc79b-5cb4-5495-a9cb-0810676eaaaa",
+      "SymbolName": "Lib.mesh.draw.DrawMeshAtPoints",
+      "Position": {
+        "X": 1800.0,
+        "Y": 150.0
+      }
+    },
+    {
+      "ChildId": "7a63c440-e98f-5201-858d-bf693acbe006",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 600.0,
+        "Y": 750.0
+      }
+    },
+    {
+      "ChildId": "e6b14687-a69a-5e7d-98ec-9bc906462202",
+      "SymbolName": "Lib.mesh.generate.CubeMesh",
+      "Position": {
+        "X": 1200.0,
+        "Y": 900.0
+      }
+    },
+    {
+      "ChildId": "7d9b7c54-e8ba-58ec-9870-49be5df3e0e5",
+      "SymbolName": "Lib.mesh.modify.TransformMesh",
+      "Position": {
+        "X": 1500.0,
+        "Y": 900.0
+      }
+    },
+    {
+      "ChildId": "3d1c7c35-20dc-55dc-bac1-39c596ed5883",
+      "SymbolName": "Lib.mesh.draw.DrawMeshUnlit",
+      "Position": {
+        "X": 1800.0,
+        "Y": 900.0
+      }
+    },
+    {
+      "ChildId": "5e167e67-87ef-5e36-b006-f1ae8fbbca06",
+      "SymbolName": "Lib.render.transform.Group",
+      "Position": {
+        "X": 2100.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "ffe6b188-815e-5f62-aa0b-6fd4e12c888e",
+      "SymbolName": "Lib.render.camera.Camera",
+      "Position": {
+        "X": 2400.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "57b53434-de33-576e-b9b7-35c9f22f9fc5",
+      "SymbolName": "Lib.image.generate.basic.RenderTarget",
+      "Position": {
+        "X": 2700.0,
+        "Y": 0.0
+      }
+    }
+  ],
+  "OutputUis": [
+    {
+      "OutputId": "565a5c7d-d574-5c7b-8a00-344f66bef7d6",
+      "Position": {
+        "X": 3000.0,
+        "Y": 0.0
+      }
+    }
+  ]
+}

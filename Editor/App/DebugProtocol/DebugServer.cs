@@ -937,6 +937,117 @@ internal static class DebugServer
                 break;
             }
 
+            case "host-backend":
+            {
+                Show.ShowControlMode.Activate(Show.ShowControlMode.Collab);
+                collab.StartHostViaBackend();
+                break;
+            }
+
+            case "join-backend":
+            {
+                Show.ShowControlMode.Activate(Show.ShowControlMode.Collab);
+                var room = request["room"]?.Value<string>() ?? "";
+                collab.JoinViaBackend(room);
+                break;
+            }
+
+            case "join-respond":
+            {
+                var requests = collab.PendingJoinRequests;
+                var index = request["index"]?.Value<int>() ?? 0;
+                var approve = request["approve"]?.Value<bool>() ?? true;
+                if (requests.Count == 0)
+                {
+                    context.SendError("INVALID_PARAM", "no pending join requests");
+                    return;
+                }
+
+                var target = requests[Math.Min(index, requests.Count - 1)];
+                if (approve)
+                    collab.ApproveJoin(target.TicketId);
+                else
+                    collab.RejectJoin(target.TicketId, block: request["block"]?.Value<bool>() ?? false);
+
+                break;
+            }
+
+            case "remote-pair":
+                CollabWindow.StartRemotePairing();
+                break;
+
+            case "remote-redeem":
+            {
+                var code = request["code"]?.Value<string>() ?? "";
+                _ = CollabRemote.PairInstallationAsync(code, CancellationToken.None);
+                break;
+            }
+
+            case "remote-list":
+                _ = CollabRemote.RefreshDevicesAsync(CancellationToken.None);
+                break;
+
+            case "remote-connect":
+            {
+                var device = request["device"]?.Value<string>() ?? "";
+                if (device.Length == 0)
+                {
+                    context.SendError("INVALID_PARAM", "remote-connect requires device = <id>");
+                    return;
+                }
+
+                CollabWindow.ConnectRemoteDevice(device);
+                break;
+            }
+
+            case "remote-forget":
+                CollabRemote.ForgetInstallation();
+                break;
+
+            case "read-only":
+                collab.SetParticipantsCanEdit(!(request["value"]?.Value<bool>() ?? true));
+                break;
+
+            case "pin-peer":
+            {
+                var peer = request["peer"]?.Value<int>() ?? -1;
+                if (peer < 0)
+                {
+                    context.SendError("INVALID_PARAM", "pin-peer requires peer = <id>");
+                    return;
+                }
+
+                if (!collab.PinPeerWork(peer))
+                {
+                    context.SendError("NOT_PINNED", "their work is not synced here yet (no composition/selection to pin)");
+                    return;
+                }
+
+                context.SendOk(new JObject { ["pinned"] = peer });
+                break;
+            }
+
+            case "feed":
+            {
+                var childIdText = request["childId"]?.Value<string>() ?? "";
+                if (childIdText.Length == 0)
+                {
+                    if (!collab.ShareSelectedOperatorAsFeed())
+                        context.SendError("INVALID_PARAM", "select an operator with a Texture2D output first");
+                }
+                else if (Guid.TryParse(childIdText, out var childId))
+                {
+                    if (!collab.ShareOperatorAsFeed(childId))
+                        context.SendError("INVALID_PARAM", $"'{childIdText}' is not a texture operator in the composition");
+                }
+                else
+                {
+                    context.SendError("INVALID_PARAM", "childId must be a Guid");
+                }
+
+                break;
+            }
+
             case "join-relay":
             {
                 Show.ShowControlMode.Activate(Show.ShowControlMode.Collab);
@@ -987,11 +1098,32 @@ internal static class DebugServer
                 collab.SendChat(request["text"]?.Value<string>() ?? "");
                 break;
 
+            case "lobby-whisper":
+            {
+                ParseRelayParam(request, out var relayHost, out var relayPort);
+                var room = request["room"]?.Value<string>() ?? "";
+                var text = request["text"]?.Value<string>() ?? "";
+                CollabLobbyWhisper.Send($"{relayHost}:{relayPort}", room,
+                                        collab.LocalIdentity.DisplayName, collab.LocalIdentity.Lang, text);
+                break;
+            }
+
+            case "update-listing":
+            {
+                var title = request["title"]?.Value<string>() ?? "";
+                var purpose = request["purpose"]?.Value<string>() ?? "";
+                var listed = request["listed"]?.Value<bool>() ?? false;
+                collab.UpdateSessionListing(title, purpose,
+                                            ProjectView.Focused?.OpenedProject.Package.DisplayName ?? "",
+                                            listed);
+                break;
+            }
+
             case "status":
                 break;
 
             default:
-                context.SendError("INVALID_PARAM", "collab requires op = host | host-relay | join | join-relay | leave | chat | status");
+                context.SendError("INVALID_PARAM", "collab requires op = host | host-relay | host-backend | join | join-relay | join-backend | join-respond | read-only | leave | chat | lobby-whisper | update-listing | status");
                 return;
         }
 
@@ -1003,6 +1135,18 @@ internal static class DebugServer
                                ["room"] = collab.RoomCode,
                                ["peers"] = collab.Peers.Count,
                                ["chatLines"] = collab.ChatLog.Count,
+                               ["videoEncoded"] = collab.VideoStreamer?.EncodedFrames ?? 0,
+                               ["videoViewers"] = collab.VideoStreamer?.ViewerCount ?? 0,
+                               ["videoDecoded"] = collab.VideoReceiver?.DecodedFrames ?? 0,
+                               ["remotePaired"] = CollabRemote.IsPaired,
+                               ["remoteOwner"] = CollabRemote.PairedOwner,
+                               ["remoteCode"] = CollabWindow.RemotePairingCode,
+                               ["remoteDevices"] = CollabRemote.Devices.Count,
+                               ["remoteError"] = CollabRemote.ListError,
+                               ["remoteStatus"] = CollabRemote.InstallationStatus,
+                               ["participantsCanEdit"] = collab.ParticipantsCanEdit,
+                               ["readOnly"] = collab.ReadOnlyForParticipants,
+                               ["pendingJoins"] = collab.PendingJoinRequests.Count,
                                ["identity"] = collab.LocalIdentity.DisplayName,
                                ["loginState"] = CollabDiscordAuth.State.ToString(),
                                ["loginStatus"] = CollabDiscordAuth.StatusText,
@@ -1909,6 +2053,12 @@ internal static class DebugServer
             if (window is SettingsWindow settingsWindow && !string.IsNullOrEmpty(section) && !settingsWindow.TrySelectCategory(section))
             {
                 context.SendError("INVALID_PARAM", $"Unknown settings section '{section}'");
+                return;
+            }
+
+            if (window is CollabWindow collabWindow && !string.IsNullOrEmpty(section) && !collabWindow.TrySelectTab(section))
+            {
+                context.SendError("INVALID_PARAM", $"Unknown collab tab '{section}' (Party, Session, Chat)");
                 return;
             }
 

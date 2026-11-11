@@ -22,12 +22,21 @@ internal sealed class PhysicsWorld : Instance<PhysicsWorld>
     [Output(Guid = "e10cf7f7-d78d-4a5f-9afb-36e18b44e513", DirtyFlagTrigger = DirtyFlagTrigger.Animated)]
     public readonly Slot<float> SimTime = new();
 
+    /// <summary>The impacts of this frame as points. Always <see cref="MaxContacts"/> long; unused points have zero scale.</summary>
+    [Output(Guid = "ae24bbd8-298c-47b1-99ad-30b2878623ac", DirtyFlagTrigger = DirtyFlagTrigger.Animated)]
+    public readonly Slot<BufferWithViews> Contacts = new();
+
+    [Output(Guid = "a38d9319-fcf9-4399-aaeb-7a0b430e6ddb", DirtyFlagTrigger = DirtyFlagTrigger.Animated)]
+    public readonly Slot<int> ContactCount = new();
+
     public PhysicsWorld()
     {
         _simulation = new PhysicsSimulation(this);
         OutBuffer.UpdateAction += Update;
         BodyCount.UpdateAction += Update;
         SimTime.UpdateAction += Update;
+        Contacts.UpdateAction += Update;
+        ContactCount.UpdateAction += Update;
     }
 
     private void Update(EvaluationContext context)
@@ -63,6 +72,10 @@ internal sealed class PhysicsWorld : Instance<PhysicsWorld>
             BodyCount.DirtyFlag.Invalidate();
             SimTime.Value = 0;
             SimTime.DirtyFlag.Invalidate();
+            Contacts.Value = null;
+            Contacts.DirtyFlag.Invalidate();
+            ContactCount.Value = 0;
+            ContactCount.DirtyFlag.Invalidate();
         }
     }
 
@@ -83,12 +96,15 @@ internal sealed class PhysicsWorld : Instance<PhysicsWorld>
                                Interpolate = Interpolate.GetValue(context),
                                Paused = Paused.GetValue(context),
                                Reset = Reset.GetValue(context),
+                               ContactSpeedThreshold = ContactSpeed.GetValue(context),
                            };
         var includeStatics = IncludeStatics.GetValue(context);
 
         var now = context.Playback.SecondsFromBars(context.Playback.FxTimeInBars);
-        _simulation.Update(settings, now, _frameBodies, _frameJoints);
+        _simulation.Update(settings, now, _frameBodies, _frameJoints, _frameForces);
         WritePoints(includeStatics);
+        PublishBodyRanges();
+        WriteContacts(MaxContacts.GetValue(context));
 
         BodyCount.Value = _simulation.RenderCount(includeStatics);
         BodyCount.DirtyFlag.Invalidate();
@@ -121,6 +137,91 @@ internal sealed class PhysicsWorld : Instance<PhysicsWorld>
                     _frameJoints.Add(joint);
             }
         }
+
+        _frameForces.Clear();
+        var forceInputs = Forces.GetCollectedTypedInputs();
+        if (forceInputs != null)
+        {
+            for (var i = 0; i < forceInputs.Count; i++)
+            {
+                var force = forceInputs[i].GetValue(context);
+                if (force != null)
+                    _frameForces.Add(force);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Hands every body description its slice of this frame's poses, statics included, so [RigidBodyPoints] can
+    /// draw one description's bodies with a mesh of their own.
+    /// </summary>
+    private void PublishBodyRanges()
+    {
+        var count = _simulation.RenderCount(true);
+        if (_allPoints == null || _allPoints.Length != count)
+            _allPoints = new Point[count];
+
+        _simulation.WritePoints(_allPoints, true);
+        _simulation.PublishBodyRanges(_allPoints);
+    }
+
+    /// <summary>
+    /// The contact buffer keeps a fixed length, because consumers read the point count from the buffer size and a
+    /// buffer that changed size with every impact would be reallocated most frames.
+    /// </summary>
+    private void WriteContacts(int maxContacts)
+    {
+        maxContacts = Math.Clamp(maxContacts, 0, 4096);
+        if (maxContacts == 0 || ResourceManager.Device == null || !EnsureContactBuffer(maxContacts))
+        {
+            Contacts.Value = null;
+            Contacts.DirtyFlag.Invalidate();
+            ContactCount.Value = 0;
+            ContactCount.DirtyFlag.Invalidate();
+            return;
+        }
+
+        ContactCount.Value = _simulation.WriteContacts(_contactPoints);
+        ContactCount.DirtyFlag.Invalidate();
+        ResourceManager.Device.ImmediateContext.UpdateSubresource(_contactPoints, _contactBuffer);
+        Contacts.Value = _contactBufferWithViews;
+        Contacts.DirtyFlag.Invalidate();
+    }
+
+    private bool EnsureContactBuffer(int count)
+    {
+        var totalBytes = count * Point.Stride;
+        if (_contactBuffer != null && _contactBuffer.Description.SizeInBytes == totalBytes)
+            return true;
+
+        ReleaseContactBuffer();
+        ResourceManager.SetupStructuredBuffer(totalBytes, Point.Stride, ref _contactBuffer);
+        if (_contactBuffer == null)
+            return WarnBufferFailure($"PhysicsWorld: structured buffer creation failed for {totalBytes} bytes of contacts");
+
+        ResourceManager.CreateStructuredBufferSrv(_contactBuffer, ref _contactBufferWithViews.Srv);
+        ResourceManager.CreateStructuredBufferUav(_contactBuffer, UnorderedAccessViewBufferFlags.None, ref _contactBufferWithViews.Uav);
+        if (_contactBufferWithViews.Srv == null || _contactBufferWithViews.Uav == null)
+        {
+            ReleaseContactBuffer();
+            return WarnBufferFailure("PhysicsWorld: contact buffer views failed");
+        }
+
+        _contactBufferWithViews.Buffer = _contactBuffer;
+        _contactPoints = new Point[count];
+        return true;
+    }
+
+    private void ReleaseContactBuffer()
+    {
+        _contactBufferWithViews.Srv?.Dispose();
+        _contactBufferWithViews.Uav?.Dispose();
+        _contactBufferWithViews.Srv = null;
+        _contactBufferWithViews.Uav = null;
+        _contactBufferWithViews.Buffer = null;
+        _contactBuffer?.Dispose();
+        _contactBuffer = null;
+        _contactPoints = null;
     }
 
     private void WritePoints(bool includeStatics)
@@ -205,6 +306,7 @@ internal sealed class PhysicsWorld : Instance<PhysicsWorld>
         {
             _simulation.Dispose();
             ReleasePointBuffer();
+            ReleaseContactBuffer();
         }
 
         base.Dispose(disposing);
@@ -213,6 +315,11 @@ internal sealed class PhysicsWorld : Instance<PhysicsWorld>
     private readonly PhysicsSimulation _simulation;
     private readonly List<PhysicsBody> _frameBodies = new();
     private readonly List<PhysicsJoint> _frameJoints = new();
+    private readonly List<PhysicsForce> _frameForces = new();
+    private Point[] _allPoints;
+    private Point[] _contactPoints;
+    private BufferWithViews _contactBufferWithViews = new();
+    private Buffer _contactBuffer;
     private bool _hasLoggedError;
     private bool _hasLoggedBufferWarning;
 
@@ -225,6 +332,9 @@ internal sealed class PhysicsWorld : Instance<PhysicsWorld>
 
     [Input(Guid = "d674cf34-39bf-4fab-884a-879eb4a27e26")]
     public readonly MultiInputSlot<PhysicsJoint> Joints = new();
+
+    [Input(Guid = "508e2ee0-fe78-48e1-9e78-7b2a4c937cc4")]
+    public readonly MultiInputSlot<PhysicsForce> Forces = new();
 
     [Input(Guid = "098ac911-44f7-45e4-99e4-80b18b7058ba")]
     public readonly InputSlot<Vector3> Gravity = new(new Vector3(0f, -9.81f, 0f));
@@ -261,4 +371,10 @@ internal sealed class PhysicsWorld : Instance<PhysicsWorld>
 
     [Input(Guid = "a8d603b9-64ce-40ea-8593-ba4b4d67af19")]
     public readonly InputSlot<bool> Paused = new();
+
+    [Input(Guid = "47787d21-9ddc-45ab-97f6-a573a717675c")]
+    public readonly InputSlot<int> MaxContacts = new(64);
+
+    [Input(Guid = "142c8ba1-4d45-4410-a4cf-bdf08b256717")]
+    public readonly InputSlot<float> ContactSpeed = new(1f);
 }

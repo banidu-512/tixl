@@ -484,3 +484,22 @@ so you can drive warnings or clamps from them.
 
 ![VolumeInfo node](shots/VolumeInfo-graph.png)
 *The diagnostics branch of the test graph.*
+
+## Volumes with physics and with SDF fields
+
+Five example graphs show how volumes meet the rest of the library:
+
+| Example | Shows |
+| --- | --- |
+| `VolumeSdfCombineExample` | A volume wrapped by `VdbToSdfField` and blended with a `SphereSDF` through `CombineSDF` — a volume is one more SDF field |
+| `PhysicsVdbColliderExample` | `bunny.vdb` as a static collider: `LoadVdb` → `VolumeResample` → `VolumeToMesh` → `RigidBody` |
+| `PhysicsVolumeCsgExample` | A `VolumeCsg` result as a collider |
+| `PhysicsVolumeGravityExample` | The `Vectors` output of `VolumeToField` as a force on rigid bodies |
+| `PhysicsToVolumeExample` | Rigid-body poses turned into a volume with `VolumeFromPoints` |
+
+`VolumeToField` has a second output, `Vectors`: the volume's vector grid when it has one, otherwise the
+gradient of its float grid. It is a CPU `VectorField`, which is what `RigidForce` takes.
+
+For anything that is only rendered, edit the shape with field operators after `VdbToSdfField` instead of
+with the volume operators: it needs no rebuild. The volume operators are for results that must exist as
+data — a saved file, a mesh, or a physics collider.

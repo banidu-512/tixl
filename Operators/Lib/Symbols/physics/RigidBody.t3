@@ -23,6 +23,10 @@
       "DefaultValue": 0.5
     },
     {
+      "Id": "38f46166-46ad-4f6c-94e8-5b1b4b1c7445"/*CollisionGroup*/,
+      "DefaultValue": 0
+    },
+    {
       "Id": "3d837671-9883-43b0-a889-764ae0fbb6e6"/*AngularVelocity*/,
       "DefaultValue": {
         "X": 0.0,
@@ -47,6 +51,10 @@
       "DefaultValue": 0
     },
     {
+      "Id": "7c155391-9271-4678-95b2-052795115586"/*Geometry*/,
+      "DefaultValue": null
+    },
+    {
       "Id": "847babc8-53b1-457d-ab45-f85b8eff80c9"/*Bounciness*/,
       "DefaultValue": 0.0
     },
@@ -69,6 +77,10 @@
     {
       "Id": "acd5e765-3086-4489-bbab-aab68881a2c0"/*AngularDamping*/,
       "DefaultValue": 0.0
+    },
+    {
+      "Id": "c37e0055-1f11-4b35-8d1f-0a3eb0c64a57"/*Points*/,
+      "DefaultValue": null
     },
     {
       "Id": "c63d5ebe-108d-4afd-ba39-2cbda0d62011"/*Radius*/,

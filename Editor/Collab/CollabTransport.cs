@@ -78,6 +78,20 @@ internal sealed class CollabPeerConnection
 
     public Guid UserId { get; set; }
     public string Name { get; set; } = "";
+
+    /// <summary>True when the relay confirmed this peer's Discord account. Name, language and
+    /// account id then come from Discord, not from what the peer says about itself.</summary>
+    public bool IsVerified { get; set; }
+
+    public string VerifiedName { get; set; } = "";
+    public string DiscordId { get; set; } = "";
+
+    /// <summary>Language tag of the peer (Discord locale, e.g. "hu" or "en-US"); empty when unknown.</summary>
+    public string Lang { get; set; } = "";
+
+    /// <summary>Port this peer would host a direct session on; used when it takes over as host.</summary>
+    public int ListenPort { get; set; }
+
     public byte PresencePeerId => (byte)AssignedId;
 
     /// <summary>Latest presence. Swapped atomically by reference; never mutated in place.</summary>
@@ -194,6 +208,10 @@ internal abstract class CollabTransport : IDisposable
     /// <summary>Raised on a network thread when a peer disconnected. The manager removes it on the UI thread.</summary>
     public event Action<CollabPeerConnection>? PeerDisconnected;
 
+    /// <summary>Raised on a network thread when a lobby whisper for the host arrives on a relay
+    /// control link. The manager queues it for the UI thread.</summary>
+    public event Action<string, string>? LobbyWhisperReceived;
+
     public event Action<string>? StatusMessage;
 
     /// <summary>Connected peers. Client transports expose only their host link so heartbeat and
@@ -244,6 +262,8 @@ internal abstract class CollabTransport : IDisposable
     protected void OnPeerDisconnected(CollabPeerConnection peer) => PeerDisconnected?.Invoke(peer);
 
     protected void OnStatus(string message) => StatusMessage?.Invoke(message);
+
+    protected void OnLobbyWhisper(string from, string text) => LobbyWhisperReceived?.Invoke(from, text);
 
     public abstract void Dispose();
 

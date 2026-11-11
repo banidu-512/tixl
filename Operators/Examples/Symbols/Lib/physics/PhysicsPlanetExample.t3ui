@@ -1,0 +1,113 @@
+{
+  "FormatVersion": 3,
+  "Id": "11d21b6c-fe50-5d04-8a57-b888f5b276e1",
+  "Description": "World gravity is off; a radial force pulls 200 moons onto a planet.\n\n[RigidForce] in Radial mode replaces gravity with a pull towards one point. The moons are one [RigidBody] with a point per body from [ScatterPointsInVolume], and a shared LinearVelocity gives them a sideways drift.\n\nAKA: gravity, attractor, orbit, radial force, planet\n\nTips\n- A negative Strength pushes the moons away instead.\n- Radius and Falloff limit how far the pull reaches.",
+  "InputUis": [],
+  "SymbolChildUis": [
+    {
+      "ChildId": "77ff39ad-3bc3-55d4-9e26-3f752df6b1d3",
+      "SymbolName": "Lib.geometry.ScatterPointsInVolume",
+      "Position": {
+        "X": 0.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "81da48bd-bfb1-513b-a617-d8dc19fbb989",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 600.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "2329182e-dc39-5d39-81b9-81588bdb3f82",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 600.0,
+        "Y": 150.0
+      }
+    },
+    {
+      "ChildId": "1c8d2342-c495-5b75-ae1a-410a559d3923",
+      "SymbolName": "Lib.physics.RigidForce",
+      "Position": {
+        "X": 600.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "fdc9a7c6-a06e-549d-8e3f-09c02f86283a",
+      "SymbolName": "Lib.physics.PhysicsWorld",
+      "Position": {
+        "X": 900.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "a43bd75f-963f-57d3-9588-45a7f56e7c63",
+      "SymbolName": "Lib.mesh.generate.SphereMesh",
+      "Position": {
+        "X": 1200.0,
+        "Y": 150.0
+      }
+    },
+    {
+      "ChildId": "c1529422-c7eb-55f7-a287-a3e2023bd37a",
+      "SymbolName": "Lib.mesh.draw.DrawMeshUnlit",
+      "Position": {
+        "X": 1800.0,
+        "Y": 150.0
+      }
+    },
+    {
+      "ChildId": "0b9b79d9-e1ae-50f8-aead-a69ffef209dc",
+      "SymbolName": "Lib.mesh.generate.SphereMesh",
+      "Position": {
+        "X": 1200.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "31afe7b1-ed62-5b02-bdb1-e3f5be2fc8fc",
+      "SymbolName": "Lib.mesh.draw.DrawMeshAtPoints",
+      "Position": {
+        "X": 1800.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "b9a5e64f-4152-52dd-874b-2db4a04a4139",
+      "SymbolName": "Lib.render.transform.Group",
+      "Position": {
+        "X": 2100.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "f2f48ab9-bbce-5cc3-8d3c-362d8e138bd9",
+      "SymbolName": "Lib.render.camera.Camera",
+      "Position": {
+        "X": 2400.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "2455134f-31f4-5d06-b81d-f468ae5736c4",
+      "SymbolName": "Lib.image.generate.basic.RenderTarget",
+      "Position": {
+        "X": 2700.0,
+        "Y": 0.0
+      }
+    }
+  ],
+  "OutputUis": [
+    {
+      "OutputId": "1873fe99-98a8-593f-ae1d-d07e401ae71c",
+      "Position": {
+        "X": 3000.0,
+        "Y": 0.0
+      }
+    }
+  ]
+}
