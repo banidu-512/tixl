@@ -78,6 +78,21 @@ public static class OnnxNativeSelector
         return HasNative(assemblyDir, build);
     }
 
+    /// <summary>
+    /// True when an operator package already bound a native build in this session. Switching between
+    /// the CUDA and DirectML builds then needs a restart; before the first use it takes effect immediately.
+    /// </summary>
+    public static bool IsAnyNativeBound
+    {
+        get
+        {
+            lock (Lock)
+            {
+                return Selected.Count > 0;
+            }
+        }
+    }
+
     public static string Describe(Build build) => build == Build.Gpu ? "CUDA" : "DirectML";
 
     private static bool HasNative(string assemblyDir, Build build)
@@ -88,8 +103,11 @@ public static class OnnxNativeSelector
         if (!libraryName.StartsWith("onnxruntime", StringComparison.OrdinalIgnoreCase))
             return IntPtr.Zero;
 
-        // The DirectML runtime beside the build is preferred over a (possibly older) system DirectML.dll
-        var directMl = Path.Combine(folder, "DirectML.dll");
+        // A user-configured DirectML.dll (AI settings) wins over the one beside the build,
+        // which is itself preferred over a (possibly older) system DirectML.dll
+        var configured = T3.Core.Settings.AiModelSettings.Config.DirectMlDirectory;
+        var directMl = !string.IsNullOrEmpty(configured) ? Path.Combine(configured, "DirectML.dll")
+                                                         : Path.Combine(folder, "DirectML.dll");
         if (File.Exists(directMl))
             NativeLibrary.TryLoad(directMl, out _);
 

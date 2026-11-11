@@ -264,10 +264,26 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
             var modelType = ModelType.GetValue(context);
             var deviceId = CudaDevice.GetValue(context);
             var provider = ExecutionProviderParam.GetValue(context);
+
+            // The AI settings' DirectML preference flips the default provider on Windows,
+            // e.g. for AMD/Intel machines without a usable CUDA stack. An explicit
+            // non-default choice is never overridden.
+            if (provider == (int)t3.streamdiffusion.Onnx.ExecutionProvider.Cuda
+                && T3.Core.Settings.AiModelSettings.Config.PreferDirectMlForOnnx
+                && OperatingSystem.IsWindows())
+            {
+                provider = (int)t3.streamdiffusion.Onnx.ExecutionProvider.DirectMl;
+            }
+
             var triggerGenerate = TriggerGenerate.GetValue(context);
             var autoGenerate = AutoGenerate.GetValue(context);
             var debug = Debug.GetValue(context);
             var fastDecode = FastDecode.GetValue(context);
+
+            // No EnginePath: fall back to a model folder from the AI model store that matches the
+            // selected model type, so a model installed through the settings window just works.
+            if (string.IsNullOrWhiteSpace(modelPath))
+                modelPath = FindManagedModelFolder(modelType);
 
             _debugLogging = debug;
             _updateFrameCounter++;
@@ -591,6 +607,58 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
     }
 
     #region Pipeline worker lifecycle (DepthAnything port)
+
+    /** Model store scan results per model type, cached briefly so an empty EnginePath
+     *  does not rescan (and re-log) the store on every frame. */
+    private static readonly ConcurrentDictionary<int, (string? Folder, long ScannedAtTicks)> ManagedFolderCache = new();
+    private const double ManagedModelScanIntervalMs = 5000;
+    private static string? _lastLoggedManagedFolder;
+
+    /** The first folder in the model store that validates for the selected model type, or null. */
+    private static string? FindManagedModelFolder(int modelType)
+    {
+        var nowTicks = Environment.TickCount64;
+        if (ManagedFolderCache.TryGetValue(modelType, out var cached)
+            && nowTicks - cached.ScannedAtTicks < ManagedModelScanIntervalMs)
+        {
+            return cached.Folder;
+        }
+
+        var found = ScanManagedModelFolders(modelType);
+        ManagedFolderCache[modelType] = (found, nowTicks);
+        return found;
+    }
+
+    private static string? ScanManagedModelFolders(int modelType)
+    {
+        var familyDirectory = T3.Core.Settings.AiModelSettings.FamilyDirectory(T3.Core.Settings.AiModelSettings.StreamDiffusionFamilyFolder);
+        if (!Directory.Exists(familyDirectory))
+            return null;
+
+        try
+        {
+            foreach (var directory in Directory.GetDirectories(familyDirectory).OrderBy(d => d, StringComparer.OrdinalIgnoreCase))
+            {
+                var error = modelType == (int)ModelTypeOptions.StreamDiffusionV2
+                                ? StreamDiffusionV2Pipeline.ValidateModelDirectory(directory)
+                                : StableDiffusionPipeline.ValidateModelDirectory(directory);
+                if (error.Length == 0)
+                {
+                    if (Interlocked.CompareExchange(ref _lastLoggedManagedFolder, directory, null) != directory)
+                    {
+                        Log.Debug($"[StreamDiffusion] No engine path set - using managed model folder '{directory}'");
+                    }
+                    return directory;
+                }
+            }
+        }
+        catch
+        {
+            // An unreadable store folder is not worth failing the update over
+        }
+
+        return null;
+    }
 
     private void InitializePipelineWorker(string? modelPath, int deviceId, int modelType, int provider)
     {

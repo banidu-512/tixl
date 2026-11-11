@@ -247,7 +247,7 @@ namespace Lib.io.video.mediapipe
             _activeMinTrackingConfidence = minTrackingConfidence;
 
             // Registry lookup only - the native landmarker creation runs on the worker below.
-            var modelFound = AssetRegistry.TryResolveAddress("Mediapipe:face_landmarker.task", this, out var fullPath, out _, logWarnings: true);
+            var modelFound = MediaPipeModelResolver.TryResolve("face_landmarker.task", this, out var fullPath);
             if (!modelFound)
             {
                 // Not Debug-gated: a missing asset is the one failure a user has to act on, and the retry

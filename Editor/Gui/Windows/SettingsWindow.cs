@@ -25,8 +25,9 @@ internal sealed partial class SettingsWindow : Window
         Config.Title = "Settings";
 
         // The sidebar plus the 560px content column; tall enough that the Collaboration
-        // participant table (and its per-row actions) is visible without manual resizing.
-        WindowSizeOverride = new Vector2(700, 700);
+        // participant table (and its per-row actions) and the AI model browser are
+        // visible without manual resizing.
+        WindowSizeOverride = new Vector2(700, 1000);
     }
 
     private enum Categories
@@ -35,6 +36,7 @@ internal sealed partial class SettingsWindow : Window
         Theme,
         Projects,
         Startup,
+        AiModels,
         Boygroup,
         Collaboration,
         Failover,
@@ -100,7 +102,9 @@ internal sealed partial class SettingsWindow : Window
             {
                 var name = category == Categories.Midi
                                ? "Midi & OSC"
-                               : CustomComponents.HumanReadablePascalCase(Enum.GetName(category));
+                               : category == Categories.AiModels
+                                   ? "AI Models"
+                                   : CustomComponents.HumanReadablePascalCase(Enum.GetName(category));
                 if (NavigationSidebar.Item(name, _activeCategory == category))
                     SelectCategory(category);
             }
@@ -382,6 +386,10 @@ internal sealed partial class SettingsWindow : Window
                 case Categories.Startup:
                     FormInputs.AddVerticalSpace();
                     DrawStartupPanel(ref changed);
+                    break;
+
+                case Categories.AiModels:
+                    DrawAiModelsPanel(ref changed);
                     break;
 
                 case Categories.Boygroup:
@@ -919,6 +927,7 @@ internal sealed partial class SettingsWindow : Window
                                                                         Categories.Theme      => "Color Theme",
                                                                         Categories.Projects   => "Project specific settings",
                                                                         Categories.Startup    => "Startup and Recovery",
+                                                                        Categories.AiModels   => "AI Models",
                                                                         Categories.Boygroup   => "Boygrouping",
                                                                         Categories.Collaboration => "Collaboration",
                                                                         Categories.Failover   => "Show Failover",

@@ -76,6 +76,22 @@ public static class WindowsCudaRuntime
 
     public static bool TryPrepareTensorRt(out string reason) => TryPrepareTensorRt(out reason, out _);
 
+    /// <summary>
+    /// Clears the cached probe results, so the next <see cref="TryPrepare"/>/<see cref="TryPrepareTensorRt"/>
+    /// re-detects the runtimes. Called when the user changes the CUDA/TensorRT folders in the AI settings.
+    /// </summary>
+    public static void ResetProbes()
+    {
+        lock (Lock)
+        {
+            _probed = false;
+            _failure = null;
+            _tensorRtProbed = false;
+            _tensorRtFailure = null;
+            _tensorRtDirectory = null;
+        }
+    }
+
     private static string Probe()
     {
         var searchDirs = CollectSearchDirs();
@@ -183,6 +199,7 @@ public static class WindowsCudaRuntime
         }
 
         var assemblyDir = Path.GetDirectoryName(typeof(WindowsCudaRuntime).Assembly.Location);
+        Add(T3.Core.Settings.AiModelSettings.Config.CudaRuntimeDirectory); // the user's choice wins over everything else
         Add(Path.Combine(AppContext.BaseDirectory, "CudaRuntime"));
         if (!string.IsNullOrEmpty(assemblyDir))
             Add(Path.Combine(assemblyDir, "CudaRuntime"));
@@ -229,6 +246,13 @@ public static class WindowsCudaRuntime
         {
             if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir) && !dirs.Contains(dir))
                 dirs.Add(dir);
+        }
+
+        var configuredTensorRtDir = T3.Core.Settings.AiModelSettings.Config.TensorRtDirectory;
+        if (!string.IsNullOrEmpty(configuredTensorRtDir))
+        {
+            Add(configuredTensorRtDir);
+            Add(Path.Combine(configuredTensorRtDir, "bin"));
         }
 
         foreach (var variable in new[] { "TENSORRT_ROOT", "TENSORRT_PATH", "TRT_PATH", "TENSORRT_HOME" })
