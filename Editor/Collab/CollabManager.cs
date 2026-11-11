@@ -887,6 +887,8 @@ internal sealed class CollabManager
     private DateTime _lastProjectUploadUtc = DateTime.MinValue;
     private string _sharedRoom = "";
     private string _sharedRoomKey = "";
+    private int _projectUploadFailures;
+    private DateTime _nextProjectUploadUtc = DateTime.MinValue;
 
     /// <summary>
     /// Zips and uploads the party project. Runs in the background; a second call while one is in
@@ -894,8 +896,15 @@ internal sealed class CollabManager
     /// </summary>
     private void UploadPartyProject(string folder, string name, string room, string key, bool announce)
     {
+        // Shared hosting rate-limits rapid requests; a failed upload waits before retrying.
         if (Interlocked.Exchange(ref _projectUploadRunning, 1) != 0)
             return;
+
+        if (DateTime.UtcNow < _nextProjectUploadUtc)
+        {
+            Interlocked.Exchange(ref _projectUploadRunning, 0);
+            return;
+        }
 
         _sharedProjectFolder = folder;
         _sharedProjectName = name;
@@ -932,7 +941,19 @@ internal sealed class CollabManager
                                          CancellationToken.None);
 
                                      if (error == null)
+                                     {
                                          _lastProjectUploadUtc = DateTime.UtcNow;
+                                         Interlocked.Exchange(ref _projectUploadFailures, 0);
+                                     }
+                                     else
+                                     {
+                                         // The server (or its protection) refused us: back off instead of
+                                         // hammering it into a longer block.
+                                         var failures = Interlocked.Increment(ref _projectUploadFailures);
+                                         var delay = Math.Min(300.0, 30.0 * Math.Pow(2, Math.Min(4, failures)));
+                                         _nextProjectUploadUtc = DateTime.UtcNow.AddSeconds(delay);
+                                         error = $"the server refused the upload ({error}) - retrying in {delay:0}s";
+                                     }
 
                                      _uiThreadActions.Enqueue(() =>
                                                               {
@@ -966,14 +987,27 @@ internal sealed class CollabManager
                              {
                                  Interlocked.Exchange(ref _projectUploadRunning, 0);
 
-                                 // Anything written while the zip ran is only in the next upload.
-                                 if (newestAtStart > _lastProjectUploadUtc)
+                                 // Files written while the zip ran are only in the next upload - but
+                                 // never hammer: a failed upload waits out its backoff first.
+                                 var failed = Volatile.Read(ref _projectUploadFailures) > 0;
+                                 if (!failed && newestAtStart > _lastProjectUploadUtc)
                                  {
                                      _uiThreadActions.Enqueue(() =>
                                                               {
                                                                   Log.Debug("Collab: project files changed during the upload - refreshing the snapshot");
                                                                   UploadPartyProject(_sharedProjectFolder, _sharedProjectName, _sharedRoom, _sharedRoomKey, announce: false);
                                                               });
+                                 }
+                                 else if (failed)
+                                 {
+                                     var waitUntil = _nextProjectUploadUtc;
+                                     _ = Task.Run(async () =>
+                                                     {
+                                                         var delay = waitUntil - DateTime.UtcNow;
+                                                         if (delay > TimeSpan.Zero)
+                                                             await Task.Delay(delay);
+                                                         UploadPartyProject(_sharedProjectFolder, _sharedProjectName, _sharedRoom, _sharedRoomKey, announce: false);
+                                                     });
                                  }
                              }
                          });
