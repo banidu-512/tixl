@@ -75,8 +75,8 @@ internal static class CollabRemote
         var project = ProjectView.Focused?.OpenedProject.Package.DisplayName ?? "";
         var state = manager.State switch
                         {
-                            CollabManager.SessionState.Hosting => "hosting",
-                            CollabManager.SessionState.Connecting => "hosting",
+                            CollabManager.SessionState.Hosting => "busy",
+                            CollabManager.SessionState.Connecting => "busy",
                             _ => "idle",
                         };
         var room = manager.State is CollabManager.SessionState.Hosting or CollabManager.SessionState.Connecting
