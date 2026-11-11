@@ -16,7 +16,10 @@ namespace T3.Editor.Collab;
 /// </summary>
 internal static class CollabProjectTransfer
 {
-    private const int ChunkSize = 1024 * 1024;
+    private const int ChunkSize = 512 * 1024;
+
+    /// <summary>The size cap the backend enforces for a project archive.</summary>
+    public const int MaxProjectBytes = 100 * 1024 * 1024;
     private static readonly string[] ExcludedFolders = ["bin", "obj", ".git", ".vs", ".temp", "node_modules"];
 
     private static readonly HttpClient _http = CreateClient();
@@ -123,12 +126,31 @@ internal static class CollabProjectTransfer
                                       Content = content,
                                   };
 
-            var (ok, error, _) = await SendAsync(request, cancellation);
-            if (!ok)
-                return error ?? "the project upload was refused";
+            // Shared hosting rate-limits bursts: pace the chunks and retry the same one a few
+            // times when the server pushes back.
+            string? error = null;
+            for (var attempt = 0; attempt < 4; attempt++)
+            {
+                var (attemptOk, attemptError, _) = await SendAsync(request, cancellation);
+                if (attemptOk)
+                {
+                    error = null;
+                    break;
+                }
+
+                error = attemptError;
+                await Task.Delay(1500 * (attempt + 1), cancellation);
+                request = new HttpRequestMessage(HttpMethod.Post, request.RequestUri) { Content = content };
+            }
+
+            if (error != null)
+                return error;
 
             sent += read;
             progress?.Invoke((int)(100 * sent / Math.Max(1, length)));
+
+            // Keep the pace below the host's rate limiting.
+            await Task.Delay(400, cancellation);
         }
 
         var (finishOk, finishError) = await PostJsonAsync("project-finish", new JObject
