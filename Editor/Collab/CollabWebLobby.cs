@@ -102,6 +102,7 @@ internal static class CollabWebLobby
             CollabProtocol.TryGetBool(entry, "pwd", out var passwordProtected);
             CollabProtocol.TryGetInt(entry, "members", out var members);
             CollabProtocol.TryGetInt(entry, "max", out var maxMembers);
+            CollabProtocol.TryGetBool(entry, "editable", out var editable);
             rooms.Add(new LobbyRoom(code,
                                     CollabProtocol.GetString(entry, "title"),
                                     CollabProtocol.GetString(entry, "purpose"),
@@ -112,7 +113,10 @@ internal static class CollabWebLobby
                                     members,
                                     maxMembers,
                                     passwordProtected,
-                                    CollabProtocol.GetString(entry, "relay")));
+                                    CollabProtocol.GetString(entry, "relay"),
+                                    CollabProtocol.GetString(entry, "os"),
+                                    CollabProtocol.GetString(entry, "region"),
+                                    editable));
         }
 
         return (rooms.ToArray(), null);
@@ -160,7 +164,7 @@ internal static class CollabWebLobby
 
     /// <summary>Registers the hosted session in the backend's list. Fire-and-forget.</summary>
     public static void Register(string room, string key, string relayEndpoint, string title, string purpose, string project,
-                                string hostName, string lang, bool passwordProtected, bool listed)
+                                string hostName, string lang, bool passwordProtected, bool listed, bool editable = true)
     {
         if (!IsConfigured)
             return;
@@ -172,6 +176,11 @@ internal static class CollabWebLobby
         payload["project"] = project;
         payload["host"] = hostName;
         payload["lang"] = lang;
+        payload["os"] = HostPlatform();
+        payload["region"] = RegionFromLocale(string.IsNullOrWhiteSpace(lang)
+                                                ? System.Globalization.CultureInfo.CurrentCulture.Name
+                                                : lang);
+        payload["editable"] = editable;
         payload["pwd"] = passwordProtected;
         payload["listed"] = listed;
         payload["members"] = 1;
@@ -185,14 +194,40 @@ internal static class CollabWebLobby
                          });
     }
 
-    /// <summary>Keeps the listing alive; the backend expires entries without heartbeats in 90 s.</summary>
-    public static void Heartbeat(string room, string key, int members)
+    /// <summary>The platform this editor runs on, as the party table's "race" column shows it.</summary>
+    public static string HostPlatform()
+    {
+        if (OperatingSystem.IsWindows())
+            return "Win";
+        if (OperatingSystem.IsMacOS())
+            return "Mac";
+        if (OperatingSystem.IsLinux())
+            return "Linux";
+        return "?";
+    }
+
+    /// <summary>The account's region for the "location" column: the locale's country part when it
+    /// has one (hu-HU -> HU), else the language code itself (hu -> HU).</summary>
+    public static string RegionFromLocale(string locale)
+    {
+        var text = (locale ?? "").Trim();
+        if (text.Length == 0)
+            return "";
+
+        var parts = text.Replace('_', '-').Split('-', StringSplitOptions.RemoveEmptyEntries);
+        return (parts.Length > 1 ? parts[1] : parts[0]).ToUpperInvariant();
+    }
+
+    /// <summary>Keeps the listing alive; the backend expires entries without heartbeats in 90 s.
+    /// Also carries the spectator-mode flag so the table's "type" column stays current.</summary>
+    public static void Heartbeat(string room, string key, int members, bool editable)
     {
         if (!IsConfigured)
             return;
 
         var payload = RoomPayload(room, key);
         payload["members"] = members;
+        payload["editable"] = editable;
         _ = Task.Run(async () =>
                          {
                              var (_, error) = await PostAsync("heartbeat", payload, CancellationToken.None);
@@ -202,7 +237,7 @@ internal static class CollabWebLobby
     }
 
     /// <summary>Change entry: title/purpose/visibility of the running session.</summary>
-    public static void Update(string room, string key, string title, string purpose, string project, bool listed)
+    public static void Update(string room, string key, string title, string purpose, string project, bool listed, bool? editable = null)
     {
         if (!IsConfigured)
             return;
@@ -212,6 +247,8 @@ internal static class CollabWebLobby
         payload["purpose"] = purpose;
         payload["project"] = project;
         payload["listed"] = listed;
+        if (editable.HasValue)
+            payload["editable"] = editable.Value;
         _ = Task.Run(async () =>
                          {
                              var (_, error) = await PostAsync("update", payload, CancellationToken.None);
@@ -331,8 +368,9 @@ internal static class CollabWebLobby
     /// <summary>One signal message in a ticket: the editor's own signal JSON fields.</summary>
     public sealed record TicketMessage(string From, string Type, string Sdp, string Candidate, string Mid);
 
-    /// <summary>One open join ticket as the host sees it.</summary>
-    public sealed record JoinTicket(string Id, string Name, string Lang, string State, long At, int Messages);
+    /// <summary>One open join ticket as the host sees it. Claim is an optional host-side token
+    /// (used by auto-approval) and stays empty when the backend does not send one.</summary>
+    public sealed record JoinTicket(string Id, string Name, string Lang, string State, long At, int Messages, string Claim = "");
 
     private static async Task<(JToken? Body, string? Error)> GetAsync(string op, string query, CancellationToken cancellation)
     {
@@ -358,8 +396,10 @@ internal static class CollabWebLobby
         }
     }
 
-    /// <summary>Guest: asks the backend for a join ticket (the rendezvous for one WebRTC handshake).</summary>
-    public static async Task<string> JoinRequestAsync(string room, string myName, string lang, CancellationToken cancellation)
+    /// <summary>Guest: asks the backend for a join ticket (the rendezvous for one WebRTC handshake).
+    /// <paramref name="claim"/> is the one-shot token of a remote-management connect request; a
+    /// managed installation auto-approves only the ticket carrying the claim it was given.</summary>
+    public static async Task<string> JoinRequestAsync(string room, string myName, string lang, string claim, CancellationToken cancellation)
     {
         var payload = new JObject
                           {
@@ -367,6 +407,10 @@ internal static class CollabWebLobby
                               ["name"] = myName,
                               ["lang"] = lang ?? "",
                           };
+
+        if (!string.IsNullOrEmpty(claim))
+            payload["claim"] = claim;
+
         var (body, error) = await PostAsync("join-request", payload, cancellation);
         if (error != null)
             throw new Exception(error);
@@ -394,7 +438,8 @@ internal static class CollabWebLobby
                                        CollabProtocol.GetString(entry, "lang"),
                                        CollabProtocol.GetString(entry, "state", "pending"),
                                        CollabProtocol.TryGetInt(entry, "at", out var at) ? at : 0,
-                                       msgs));
+                                       msgs,
+                                       CollabProtocol.GetString(entry, "claim")));
         }
 
         return (tickets, null);
