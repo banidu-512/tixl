@@ -157,23 +157,30 @@ internal sealed class CollabWindow : Window
         }
     }
 
-    /// <summary>Five separate tabs in one line, right-aligned like the party-matching reference.
-    /// The active one is highlighted; a click switches the tab. SetCursorPosX takes window-LOCAL
-    /// coordinates - screen-space math here placed the row off-window.</summary>
+    /// <summary>Five separate tabs in one line, spread evenly across the window width. The active
+    /// one is highlighted; a click switches the tab. SetCursorPosX takes window-LOCAL coordinates -
+    /// screen-space math here placed the row off-window.</summary>
     private static void DrawTabLine()
     {
         var labels = new[] { "Chat", "Party matching", "Party management", "Remote", "Boygroup" };
         var tabs = new[] { Tab.Chat, Tab.PartyMatching, Tab.PartyManagement, Tab.Remote, Tab.Boygroup };
+        var count = tabs.Length;
 
-        var widthTotal = 0f;
-        foreach (var label in labels)
-            widthTotal += ImGui.CalcTextSize(label).X + ImGui.GetStyle().FramePadding.X * 2 + 6;
-
-        // Window-local coordinates; TiXL's zero padding makes the window rect the content rect.
-        ImGui.SetCursorPosX(ImGui.GetWindowSize().X - 12 - widthTotal);
-
-        for (var i = 0; i < tabs.Length; i++)
+        var widths = new float[count];
+        var buttonsTotal = 0f;
+        for (var i = 0; i < count; i++)
         {
+            widths[i] = ImGui.CalcTextSize(labels[i]).X + ImGui.GetStyle().FramePadding.X * 2;
+            buttonsTotal += widths[i];
+        }
+
+        var margin = 6;
+        var gap = Math.Max(4, (ImGui.GetWindowSize().X - margin * 2 - buttonsTotal) / (count - 1));
+
+        var x = margin;
+        for (var i = 0; i < count; i++)
+        {
+            ImGui.SetCursorPosX(x);
             var isActive = _selectedTab == tabs[i];
             if (isActive)
                 ImGui.PushStyleColor(ImGuiCol.Button, UiColors.StatusActivated.Rgba);
@@ -184,8 +191,7 @@ internal sealed class CollabWindow : Window
             if (isActive)
                 ImGui.PopStyleColor();
 
-            if (i < tabs.Length - 1)
-                ImGui.SameLine(0, 0);
+            x += widths[i] + gap;
         }
     }
 
