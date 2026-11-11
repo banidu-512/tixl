@@ -1199,17 +1199,33 @@ function op_remote_heartbeat(array $input): void
         $command = null;
     }
 
-    db()->prepare('UPDATE remote_devices SET project = ?, version = ?, last_seen = ?, state = ?,
-                     pending = ?, pending_id = ? WHERE id = ?')
-        ->execute([
-                      $project,
-                      $version !== '' ? $version : $device['version'],
-                      $now,
-                      $state,
-                      $command === null ? '' : json_encode($command, JSON_UNESCAPED_UNICODE),
-                      $command === null ? '' : $device['pending_id'],
-                      $device['id'],
-                  ]);
+    // An idle installation has no session: a room remembered from an earlier one (e.g. the
+    // installation restarted) would send its owner's controller into a dead party.
+    if ($state === 'idle') {
+        db()->prepare('UPDATE remote_devices SET project = ?, version = ?, last_seen = ?, state = ?,
+                         pending = ?, pending_id = ?, room = "", session_claim = "" WHERE id = ?')
+            ->execute([
+                          $project,
+                          $version !== '' ? $version : $device['version'],
+                          $now,
+                          $state,
+                          $command === null ? '' : json_encode($command, JSON_UNESCAPED_UNICODE),
+                          $command === null ? '' : $device['pending_id'],
+                          $device['id'],
+                      ]);
+    } else {
+        db()->prepare('UPDATE remote_devices SET project = ?, version = ?, last_seen = ?, state = ?,
+                         pending = ?, pending_id = ? WHERE id = ?')
+            ->execute([
+                          $project,
+                          $version !== '' ? $version : $device['version'],
+                          $now,
+                          $state,
+                          $command === null ? '' : json_encode($command, JSON_UNESCAPED_UNICODE),
+                          $command === null ? '' : $device['pending_id'],
+                          $device['id'],
+                      ]);
+    }
 
     respond_ok(['enabled' => (bool)$device['enabled'],
                 'owner' => $device['owner_name'],
