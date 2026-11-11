@@ -1782,10 +1782,16 @@ internal sealed class CollabManager
     public bool PinPeerWork(int peerId)
     {
         if (GetPresence(peerId) is not { } presence || presence.CompositionId == Guid.Empty)
+        {
+            Log.Debug($"Collab pin: peer {peerId} has no presence with a composition");
             return false;
+        }
 
         if (!TryFindCompositionInstance(presence.CompositionId, out var compositionInstance, out var view))
+        {
+            Log.Debug($"Collab pin: composition {presence.CompositionId} not found in the local project");
             return false;
+        }
 
         var pinned = compositionInstance;
         foreach (var selectedChildId in presence.SelectedChildIds)
@@ -1798,9 +1804,13 @@ internal sealed class CollabManager
         }
 
         if (!T3.Editor.Gui.Windows.Output.OutputWindow.TryGetPrimaryOutputWindow(out var outputWindow))
+        {
+            Log.Debug("Collab pin: no output window is open to pin into");
             return false;
+        }
 
         outputWindow.Pinning.PinInstance(pinned, view);
+        Log.Debug($"Collab pin: pinned {pinned.Symbol.Name} for peer {peerId}");
         return true;
     }
 
