@@ -2871,7 +2871,18 @@ internal sealed class CollabManager
         {
             _roster[hostId] = CollabProtocol.GetString(json, "hostName", "host");
             if (CollabProtocol.TryGetGuid(json, "hostUserId", out var hostUserId))
+            {
                 _rosterUserIds[hostId] = hostUserId;
+
+                // The backend client's only transport peer IS the host: without its identity
+                // GetPresence treats the host as unknown and pinning has nothing to resolve.
+                var hostPeer = Peers.FirstOrDefault(p => p.AssignedId == hostId);
+                if (hostPeer != null)
+                {
+                    hostPeer.UserId = hostUserId;
+                    hostPeer.Name = _roster[hostId];
+                }
+            }
 
             // In a relay session the relay says who the host is; that cannot be made up by the
             // host. Otherwise the host's own word is all there is, and it counts as unverified.
