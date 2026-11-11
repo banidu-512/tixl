@@ -937,6 +937,21 @@ internal static class DebugServer
                 break;
             }
 
+            case "host-backend":
+            {
+                Show.ShowControlMode.Activate(Show.ShowControlMode.Collab);
+                collab.StartHostViaBackend();
+                break;
+            }
+
+            case "join-backend":
+            {
+                Show.ShowControlMode.Activate(Show.ShowControlMode.Collab);
+                var room = request["room"]?.Value<string>() ?? "";
+                collab.JoinViaBackend(room);
+                break;
+            }
+
             case "join-relay":
             {
                 Show.ShowControlMode.Activate(Show.ShowControlMode.Collab);
@@ -1930,6 +1945,12 @@ internal static class DebugServer
             if (window is SettingsWindow settingsWindow && !string.IsNullOrEmpty(section) && !settingsWindow.TrySelectCategory(section))
             {
                 context.SendError("INVALID_PARAM", $"Unknown settings section '{section}'");
+                return;
+            }
+
+            if (window is CollabWindow collabWindow && !string.IsNullOrEmpty(section) && !collabWindow.TrySelectTab(section))
+            {
+                context.SendError("INVALID_PARAM", $"Unknown collab tab '{section}' (Party, Session, Chat)");
                 return;
             }
 

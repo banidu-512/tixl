@@ -1,17 +1,21 @@
 #nullable enable
+using System.Collections.Generic;
+using System;
 using ImGuiNET;
 using T3.Core.DataTypes.Vector;
 using T3.Editor.Collab;
 using T3.Editor.Gui.Input;
 using T3.Editor.Gui.Styling;
 using T3.Editor.Gui.UiHelpers;
+using T3.Editor.Show;
+using T3.Editor.UiModel.ProjectHandling;
 
 namespace T3.Editor.Gui.Windows;
 
 /// <summary>
-/// Session home while collaborating: state and controls (host/join/leave), the participant
-/// roster, and the session chat. Joining usually starts from the hub's "Online projects"
-/// list; this window is where an active session is managed.
+/// The collab home, in three tabs like a party-matching screen: <b>Party</b> (the session
+/// browser and hosting controls), <b>Session</b> (participants, listing, whispers, leave) and
+/// <b>Chat</b>. Configuration (identity, password, backend) stays in the Settings window.
 /// </summary>
 [HelpUiID("CollabWindow")]
 internal sealed class CollabWindow : Window
@@ -20,14 +24,29 @@ internal sealed class CollabWindow : Window
     {
         Config.Title = "Collab";
         Config.Visible = false;
-        WindowSizeOverride = new Vector2(380, 480);
+        WindowSizeOverride = new Vector2(640, 660);
     }
 
     internal override IReadOnlyList<Window> GetInstances() => [this];
 
-    private string _chatInput = "";
-    private int _lastChatCount;
-    private bool _scrollToBottom = true;
+    private enum Tab
+    {
+        Party,
+        Session,
+        Chat,
+    }
+
+    private static Tab _selectedTab = Tab.Party;
+
+    /// <summary>Selects a tab by name (Party, Session, Chat); used by the debug bridge.</summary>
+    internal bool TrySelectTab(string name)
+    {
+        if (!Enum.TryParse<Tab>(name, true, out var tab))
+            return false;
+
+        _selectedTab = tab;
+        return true;
+    }
 
     protected override void DrawContent()
     {
@@ -39,22 +58,324 @@ internal sealed class CollabWindow : Window
             return;
         }
 
+        DrawTabButtons();
+        FormInputs.AddVerticalSpace(6);
+
+        switch (_selectedTab)
+        {
+            case Tab.Party:
+                DrawPartyTab(collab);
+                break;
+            case Tab.Session:
+                DrawSessionTab(collab);
+                break;
+            case Tab.Chat:
+                DrawChatTab(collab);
+                break;
+        }
+    }
+
+    /// <summary>Three small toggle buttons in the top-right corner, like the party-matching
+    /// reference. The active one is highlighted; a click switches the tab. SetCursorPosX takes
+    /// window-LOCAL coordinates - screen-space math here placed the row off-window.</summary>
+    private static void DrawTabButtons()
+    {
+        var labels = new[] { "Party", "Session", "Chat" };
+        var tabs = new[] { Tab.Party, Tab.Session, Tab.Chat };
+
+        var widthTotal = 0f;
+        foreach (var label in labels)
+            widthTotal += ImGui.CalcTextSize(label).X + ImGui.GetStyle().FramePadding.X * 2 + 6;
+
+        // Window-local coordinates; TiXL's zero padding makes the window rect the content rect.
+        ImGui.SetCursorPosX(ImGui.GetWindowSize().X - 12 - widthTotal);
+
+        for (var i = 0; i < tabs.Length; i++)
+        {
+            var isActive = _selectedTab == tabs[i];
+            if (isActive)
+                ImGui.PushStyleColor(ImGuiCol.Button, UiColors.StatusActivated.Rgba);
+
+            if (ImGui.Button(labels[i]))
+                _selectedTab = tabs[i];
+
+            if (isActive)
+                ImGui.PopStyleColor();
+
+            if (i < tabs.Length - 1)
+                ImGui.SameLine(0, 0);
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Party tab: the session browser plus the hosting controls
+    // ---------------------------------------------------------------------------------------
+
+    private static void DrawPartyTab(CollabManager collab)
+    {
+        if (collab.State == CollabManager.SessionState.Off)
+        {
+            DrawHostControls(collab);
+            FormInputs.AddVerticalSpace(8);
+            DrawSessionBrowser(collab);
+        }
+        else
+        {
+            ImGui.TextWrapped(collab.StatusText);
+            FormInputs.AddVerticalSpace(4);
+            ImGui.TextDisabled("Leave the current session to browse and join another one.");
+        }
+    }
+
+    private static void DrawHostControls(CollabManager collab)
+    {
+        var password = UserSettings.Config.CollabPassword ?? "";
+        ImGui.SetNextItemWidth(-1);
+        ImGui.InputTextWithHint("##collab-pwd", "Session password (optional)", ref password, 64);
+        if (ImGui.IsItemDeactivatedAfterEdit())
+        {
+            UserSettings.Config.CollabPassword = password;
+            UserSettings.Save();
+        }
+
+        FormInputs.AddVerticalSpace(4);
+        var projectName = ProjectView.Focused?.OpenedProject.Package.DisplayName ?? "";
+        if (ImGui.Button("Form Party (via backend)", new Vector2(190, 0)))
+        {
+            collab.StartHostViaBackend();
+            _selectedTab = Tab.Session;
+        }
+
+        CustomComponents.TooltipForLastItem("""
+                                            Hosts a relay-free session: it is listed in the party browser
+                                            and joins run over WebRTC. Needs the backend URL in Settings.
+                                            """);
+
+        ImGui.SameLine();
+        if (ImGui.Button("Form Party (relay)", new Vector2(150, 0)))
+        {
+            ShowControlMode.Activate(ShowControlMode.Collab);
+            ParseRelayAddress(UserSettings.Config.CollabRelayAddress, out var relayHost, out var relayPort);
+            collab.StartHostViaRelay(relayHost, relayPort);
+            _selectedTab = Tab.Session;
+        }
+
+        ImGui.SameLine();
+        if (ImGui.Button("Form Party (LAN)", new Vector2(130, 0)))
+        {
+            ShowControlMode.Activate(ShowControlMode.Collab);
+            collab.StartHost(UserSettings.Config.CollabPort,
+                             UserSettings.Config.CollabPassword ?? "",
+                             UserSettings.Config.CollabLanDiscovery,
+                             projectName.Length > 0 ? projectName : null);
+            _selectedTab = Tab.Session;
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Session tab: status, participants, listing, whispers, leave
+    // ---------------------------------------------------------------------------------------
+
+    private static void DrawSessionTab(CollabManager collab)
+    {
         DrawSessionHeader(collab);
         DrawDivider();
 
         if (collab.State == CollabManager.SessionState.Off)
         {
-            ImGui.TextDisabled("Not in a session. Host one below or join from the");
-            ImGui.TextDisabled("hub's 'Online projects' list.");
-            FormInputs.AddVerticalSpace(8);
-            DrawHostControls(collab);
+            ImGui.TextDisabled("No session is running. Host one on the Party tab");
+            ImGui.TextDisabled("or join a listed session there.");
             return;
         }
 
         DrawHostPreview(collab);
         DrawRoster(collab);
         DrawDivider();
+        DrawListingControls(collab);
+        DrawWhispers(collab);
+        DrawDivider();
+        DrawLeaveButton(collab);
+    }
+
+    private static void DrawLeaveButton(CollabManager collab)
+    {
+        if (ImGui.Button("Leave Session"))
+            collab.Leave(manual: true);
+    }
+
+    private static void DrawListingControls(CollabManager collab)
+    {
+        // Host + relay or backend: the listing is editable while the session runs.
+        var isBackend = collab.RelayEndpoint == CollabWebLobby.BackendUrl && CollabWebLobby.IsConfigured;
+        if (collab.State != CollabManager.SessionState.Hosting
+            || (collab.RelayEndpoint.Length == 0 && !isBackend))
+            return;
+
+        var config = UserSettings.Config;
+        FormInputs.AddSectionHeader("Session browser entry");
+        FormInputs.AddVerticalSpace(4);
+        FormInputs.AddCheckBox("Listed in session browser", ref config.CollabListSession,
+                               """
+                               On: the session shows up in other people's session browser with the
+                               title and purpose below. Off: only people with the session ID can
+                               find it. Applies right away; the session keeps running either way.
+                               """,
+                               false);
+        FormInputs.AddStringInput("Title", ref config.CollabSessionTitle,
+                                  $"{collab.LocalIdentity.DisplayName}'s session",
+                                  null, "What the session browser shows.");
+        DrawPurposePicker(ref config.CollabSessionPurpose);
+        if (ImGui.SmallButton("Update entry"))
+        {
+            collab.UpdateSessionListing(config.CollabSessionTitle, config.CollabSessionPurpose,
+                                        ProjectView.Focused?.OpenedProject.Package.DisplayName ?? "",
+                                        config.CollabListSession);
+        }
+
+        CustomComponents.TooltipForLastItem("Sends the title, purpose and visibility above to the backend or relay so other people's browsers see them.");
+    }
+
+    /// <summary>The purpose combo, standalone (moved from the settings panel's shared form).</summary>
+    private static void DrawPurposePicker(ref string purpose)
+    {
+        ImGui.SetNextItemWidth(-1);
+        if (ImGui.BeginCombo("##partyPurpose", purpose))
+        {
+            foreach (var option in SessionPurposes)
+            {
+                if (ImGui.Selectable(option, option == purpose))
+                    purpose = option;
+            }
+
+            ImGui.EndCombo();
+        }
+    }
+
+    private static void DrawWhispers(CollabManager collab)
+    {
+        if (collab.State != CollabManager.SessionState.Hosting)
+            return;
+
+        FormInputs.AddSectionHeader("Whispers");
+        FormInputs.AddVerticalSpace(4);
+        var whispers = collab.LobbyWhispers;
+        if (whispers.Count == 0)
+        {
+            ImGui.TextDisabled("People can whisper you from the Party tab before they join.");
+        }
+        else
+        {
+            foreach (var whisper in whispers)
+            {
+                if (whisper.FromHost)
+                    ImGui.TextColored(_whisperOwnColor, "You");
+                else
+                    ImGui.TextUnformatted(whisper.From);
+
+                ImGui.SameLine();
+                ImGui.TextWrapped(whisper.Text);
+            }
+
+            _replyToName = whispers.Last(w => !w.FromHost).From;
+            FormInputs.AddVerticalSpace(4);
+            ImGui.SetNextItemWidth(-72);
+            ImGui.InputTextWithHint("##whisperReply", $"Reply to {_replyToName}...", ref _whisperReplyInput, 256);
+            ImGui.SameLine();
+            ImGui.BeginDisabled(_whisperReplyInput.Length == 0);
+            if (ImGui.Button("Send##whisper"))
+            {
+                collab.ReplyToLobbyWhisper(_replyToName, _whisperReplyInput);
+                _whisperReplyInput = "";
+            }
+
+            ImGui.EndDisabled();
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Chat tab
+    // ---------------------------------------------------------------------------------------
+
+    private string _chatInput = "";
+    private int _lastChatCount;
+    private bool _scrollToBottom = true;
+
+    private void DrawChatTab(CollabManager collab)
+    {
+        if (collab.State == CollabManager.SessionState.Off)
+        {
+            ImGui.TextDisabled("Chat needs a session. Host or join one first.");
+            return;
+        }
+
         DrawChat(collab);
+    }
+
+    private void DrawChat(CollabManager collab)
+    {
+        var log = collab.ChatLog;
+        var uiScale = T3Ui.UiScaleFactor;
+        var height = Math.Max(80 * uiScale, ImGui.GetContentRegionAvail().Y - 30 * uiScale);
+        if (ImGui.BeginChild("##collabwindowchat", new Vector2(0, height), ImGuiChildFlags.Borders))
+        {
+            if (_scrollToBottom || log.Count != _lastChatCount)
+            {
+                ImGui.SetScrollHereY(1f);
+                _lastChatCount = log.Count;
+            }
+
+            foreach (var entry in log)
+            {
+                if (entry.Name == null)
+                {
+                    ImGui.TextColored(UiColors.TextMuted, $"  {entry.Text}");
+                }
+                else
+                {
+                    ImGui.TextColored(UiColors.StatusActivated, entry.Name);
+                    ImGui.SameLine();
+                    ImGui.TextWrapped(entry.Text);
+                }
+            }
+        }
+        ImGui.EndChild();
+
+        ImGui.SetNextItemWidth(-70 * uiScale);
+        var send = ImGui.InputTextWithHint("##chat", "Message...", ref _chatInput, 256,
+                                           ImGuiInputTextFlags.EnterReturnsTrue);
+        ImGui.SameLine();
+        if (ImGui.Button("Send") || send)
+        {
+            collab.SendChat(_chatInput);
+            _chatInput = "";
+            _scrollToBottom = true;
+            ImGui.SetKeyboardFocusHere(-1);
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Shared session pieces (header, preview, roster)
+    // ---------------------------------------------------------------------------------------
+
+    private static void DrawDivider()
+    {
+        FormInputs.AddVerticalSpace(6);
+        ImGui.Separator();
+        FormInputs.AddVerticalSpace(6);
+    }
+
+    private static void DrawSessionHeader(CollabManager collab)
+    {
+        FormInputs.AddSectionHeader(collab.State == CollabManager.SessionState.Hosting ? "Hosting" : "Session");
+        ImGui.TextWrapped(collab.StatusText);
+
+        if (collab.State != CollabManager.SessionState.Off)
+        {
+            if (collab.IsStreamingPreview)
+                ImGui.TextDisabled($"Preview: {collab.PreviewEncoderName}");
+            if (!string.IsNullOrEmpty(collab.ErrorText))
+                ImGui.TextColored(UiColors.StatusWarning, collab.ErrorText);
+        }
     }
 
     /// <summary>The host's rendered output, once the video track has delivered a frame.</summary>
@@ -76,52 +397,6 @@ internal sealed class CollabWindow : Window
 
         ImGui.Image((IntPtr)view.ImGuiTextureId, new Vector2(width * scale, height * scale));
         FormInputs.AddVerticalSpace(4);
-    }
-
-    private static void DrawDivider()
-    {
-        FormInputs.AddVerticalSpace(6);
-        ImGui.Separator();
-        FormInputs.AddVerticalSpace(6);
-    }
-
-    private static void DrawSessionHeader(CollabManager collab)
-    {
-        FormInputs.AddSectionHeader(collab.State == CollabManager.SessionState.Hosting ? "Hosting" : "Session");
-
-        ImGui.TextWrapped(collab.StatusText);
-
-        if (collab.State != CollabManager.SessionState.Off)
-        {
-            if (collab.IsStreamingPreview)
-                ImGui.TextDisabled($"Preview: {collab.PreviewEncoderName}");
-            if (!string.IsNullOrEmpty(collab.ErrorText))
-                ImGui.TextColored(UiColors.StatusWarning, collab.ErrorText);
-
-            FormInputs.AddVerticalSpace(4);
-            if (ImGui.Button("Leave Session"))
-                collab.Leave(manual: true);
-        }
-    }
-
-    private static void DrawHostControls(CollabManager collab)
-    {
-        var password = UserSettings.Config.CollabPassword ?? "";
-        ImGui.SetNextItemWidth(-1);
-        ImGui.InputTextWithHint("##collab-pwd", "Session password (optional)", ref password, 64);
-        if (ImGui.IsItemDeactivatedAfterEdit())
-        {
-            UserSettings.Config.CollabPassword = password;
-            UserSettings.Save();
-        }
-
-        FormInputs.AddVerticalSpace(4);
-        if (ImGui.Button("Host Session on This Machine"))
-        {
-            collab.StartHost(UserSettings.Config.CollabPort,
-                             UserSettings.Config.CollabPassword ?? "",
-                             UserSettings.Config.CollabLanDiscovery);
-        }
     }
 
     private static void DrawRoster(CollabManager collab)
@@ -189,15 +464,39 @@ internal sealed class CollabWindow : Window
             CollabSpectator.Start(_menuPeerId);
         }
 
-        // Only the host can remove someone; the confirmation follows below the chips.
         if (CollabManager.Instance.State == CollabManager.SessionState.Hosting && CustomComponents.DrawMenuItem(3, "Kick"))
             _pendingKickPeerId = _menuPeerId;
+
+        if (CollabManager.Instance.State == CollabManager.SessionState.Hosting && CustomComponents.DrawMenuItem(4, "Make Host"))
+            _pendingHostTransferPeerId = _menuPeerId;
+    }
+
+    private static void DrawHostTransferConfirmation(CollabManager collab)
+    {
+        if (_pendingHostTransferPeerId < 0)
+            return;
+
+        var name = collab.Roster.TryGetValue(_pendingHostTransferPeerId, out var found) ? found : $"#{_pendingHostTransferPeerId}";
+        FormInputs.AddVerticalSpace(4);
+        ImGui.TextWrapped($"Make {name} the host? The session continues on their machine and you stay in it as a participant.");
+
+        if (ImGui.Button("Make Host"))
+        {
+            collab.TransferHostTo(_pendingHostTransferPeerId);
+            _pendingHostTransferPeerId = -1;
+        }
+
+        ImGui.SameLine();
+        if (ImGui.Button("Cancel"))
+            _pendingHostTransferPeerId = -1;
     }
 
     private static int _pendingKickPeerId = -1;
-
-    /** The participant whose chip opened the context menu, read by the menu's static draw callback. */
+    private static int _pendingHostTransferPeerId = -1;
     private static int _menuPeerId;
+    private static string _whisperReplyInput = "";
+    private static string _replyToName = "";
+    private static readonly System.Numerics.Vector4 _whisperOwnColor = new(0.55f, 0.8f, 0.55f, 1f);
 
     /// <summary>Draws a chip after the previous one, wrapping to a new line when the row is full.</summary>
     private static void DrawNameChip(ImDrawListPtr dl, string label, Color color, bool isFirst)
@@ -217,47 +516,320 @@ internal sealed class CollabWindow : Window
         ImGui.Dummy(size);
     }
 
-    private void DrawChat(CollabManager collab)
-    {
-        FormInputs.AddSectionHeader("Chat");
+    // ---------------------------------------------------------------------------------------
+    // Party browser (moved from the settings panel: the party-matching table)
+    // ---------------------------------------------------------------------------------------
 
-        var log = collab.ChatLog;
-        var uiScale = T3Ui.UiScaleFactor;
-        var height = Math.Max(80 * uiScale, ImGui.GetContentRegionAvail().Y - 30 * uiScale);
-        if (ImGui.BeginChild("##chatlog", new Vector2(0, height), ImGuiChildFlags.Borders))
+    private static string _lobbyFilter = "";
+    private static string _lobbyPurposeFilter = "All";
+    private static string _lobbySelectedCode = "";
+    private static bool _lobbyLoadedOnce;
+    private static string _lobbyWhisperInput = "";
+
+    internal static readonly string[] SessionPurposes = ["Jam", "Show", "Teaching", "Help"];
+
+    private static void DrawSessionBrowser(CollabManager collab)
+    {
+        FormInputs.AddSectionHeader("Open sessions");
+        FormInputs.AddVerticalSpace(4);
+
+        ParseRelayAddress(UserSettings.Config.CollabRelayAddress, out var relayHost, out var relayPort);
+        var useBackend = CollabWebLobby.IsConfigured;
+        if (useBackend)
         {
-            if (_scrollToBottom || log.Count != _lastChatCount)
+            if (!_lobbyLoadedOnce)
             {
-                ImGui.SetScrollHereY(1f);
-                _lastChatCount = log.Count;
+                _lobbyLoadedOnce = true;
+                CollabWebLobby.Refresh();
+            }
+            else if (!CollabWebLobby.IsRefreshing && DateTime.UtcNow - CollabWebLobby.LastRefreshUtc > TimeSpan.FromSeconds(15))
+            {
+                CollabWebLobby.Refresh();
+            }
+        }
+        else if (!_lobbyLoadedOnce)
+        {
+            _lobbyLoadedOnce = true;
+            CollabLobby.Refresh(relayHost, relayPort);
+        }
+        else if (!CollabLobby.IsRefreshing && DateTime.UtcNow - CollabLobby.LastRefreshUtc > TimeSpan.FromSeconds(15))
+        {
+            CollabLobby.Refresh(relayHost, relayPort);
+        }
+
+        var rooms = useBackend ? CollabWebLobby.Rooms : CollabLobby.Rooms;
+
+        var fontSize = ImGui.GetFontSize();
+        FormInputs.SetIndentToLeft();
+        ImGui.SetNextItemWidth(fontSize * 11);
+        ImGui.InputTextWithHint("##lobbyFilter", "Name or title", ref _lobbyFilter, 64);
+
+        ImGui.SameLine();
+        ImGui.SetNextItemWidth(fontSize * 7);
+        if (ImGui.BeginCombo("##lobbyPurpose", _lobbyPurposeFilter))
+        {
+            if (ImGui.Selectable("All", _lobbyPurposeFilter == "All"))
+                _lobbyPurposeFilter = "All";
+
+            foreach (var option in SessionPurposes)
+            {
+                if (ImGui.Selectable(option, option == _lobbyPurposeFilter))
+                    _lobbyPurposeFilter = option;
             }
 
-            foreach (var entry in log)
+            ImGui.EndCombo();
+        }
+
+        ImGui.SameLine();
+        ImGui.BeginDisabled(useBackend ? CollabWebLobby.IsRefreshing : CollabLobby.IsRefreshing);
+        if (ImGui.Button("Refresh"))
+        {
+            if (useBackend)
+                CollabWebLobby.Refresh();
+            else
+                CollabLobby.Refresh(relayHost, relayPort);
+        }
+
+        ImGui.EndDisabled();
+
+        var autoMatch = FindAutoMatch(rooms);
+        ImGui.SameLine();
+        ImGui.BeginDisabled(autoMatch == null);
+        if (ImGui.Button("Auto match") && autoMatch != null)
+        {
+            ShowControlMode.Activate(ShowControlMode.Collab);
+            CollabLobbyWhisper.Reset();
+            JoinListedRoom(collab, autoMatch);
+        }
+
+        ImGui.EndDisabled();
+
+        if (useBackend ? CollabWebLobby.IsRefreshing : CollabLobby.IsRefreshing)
+        {
+            ImGui.SameLine();
+            ImGui.TextDisabled("loading...");
+        }
+
+        if (!string.IsNullOrEmpty(useBackend ? CollabWebLobby.ErrorText : CollabLobby.ErrorText))
+        {
+            ImGui.PushStyleColor(ImGuiCol.Text, UiColors.StatusWarning.Rgba);
+            ImGui.TextWrapped(useBackend ? CollabWebLobby.ErrorText : CollabLobby.ErrorText);
+            ImGui.PopStyleColor();
+        }
+
+        LobbyRoom? selected = null;
+        var joinNow = false;
+        const ImGuiTableFlags tableFlags = ImGuiTableFlags.BordersInnerH | ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY;
+        var tableHeight = ImGui.GetFrameHeightWithSpacing() * 9;
+        if (ImGui.BeginTable("##collabLobby", 7, tableFlags, new Vector2(0, tableHeight)))
+        {
+            ImGui.TableSetupScrollFreeze(0, 1);
+            ImGui.TableSetupColumn("#", ImGuiTableColumnFlags.WidthFixed, fontSize * 2f);
+            ImGui.TableSetupColumn("Lang", ImGuiTableColumnFlags.WidthFixed, fontSize * 3.5f);
+            ImGui.TableSetupColumn("Host", ImGuiTableColumnFlags.WidthStretch, 0.24f);
+            ImGui.TableSetupColumn("Title", ImGuiTableColumnFlags.WidthStretch, 0.42f);
+            ImGui.TableSetupColumn("Purpose", ImGuiTableColumnFlags.WidthStretch, 0.16f);
+            ImGui.TableSetupColumn("Members", ImGuiTableColumnFlags.WidthFixed, fontSize * 4.5f);
+            ImGui.TableSetupColumn("Access", ImGuiTableColumnFlags.WidthFixed, fontSize * 5f);
+            ImGui.TableHeadersRow();
+
+            var rowNumber = 0;
+            foreach (var room in rooms)
             {
-                if (entry.Name == null)
+                if (_lobbyPurposeFilter != "All" && !string.Equals(room.Purpose, _lobbyPurposeFilter, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                if (_lobbyFilter.Length > 0
+                    && !room.HostName.Contains(_lobbyFilter, StringComparison.OrdinalIgnoreCase)
+                    && !room.Title.Contains(_lobbyFilter, StringComparison.OrdinalIgnoreCase)
+                    && !room.Project.Contains(_lobbyFilter, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                rowNumber++;
+                var isSelected = room.Code == _lobbySelectedCode;
+                ImGui.TableNextRow();
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted(rowNumber.ToString());
+                ImGui.TableNextColumn();
+                ImGui.PushID(room.Code);
+                if (ImGui.Selectable(CollabUserIdentity.FormatLang(room.Lang), isSelected,
+                                     ImGuiSelectableFlags.SpanAllColumns | ImGuiSelectableFlags.AllowDoubleClick))
                 {
-                    ImGui.TextColored(UiColors.TextMuted, $"  {entry.Text}");
+                    _lobbySelectedCode = room.Code;
+                    isSelected = true;
+                    joinNow = ImGui.IsMouseDoubleClicked(ImGuiMouseButton.Left);
+                }
+
+                ImGui.PopID();
+                if (isSelected)
+                    selected = room;
+
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted(string.IsNullOrEmpty(room.HostName) ? "unnamed" : room.HostName);
+                if (!room.HostVerified)
+                {
+                    ImGui.SameLine();
+                    ImGui.TextDisabled("?");
+                    CustomComponents.TooltipForLastItem("This name is not confirmed by a Discord login.");
+                }
+
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted(room.Title);
+                if (!string.IsNullOrEmpty(room.Project))
+                    CustomComponents.TooltipForLastItem($"Project: {room.Project}");
+
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted(room.Purpose);
+
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted($"{room.Members}/{room.MaxMembers}");
+
+                ImGui.TableNextColumn();
+                ImGui.TextDisabled(room.PasswordProtected ? "password" : "open");
+            }
+
+            ImGui.EndTable();
+        }
+
+        if (rooms.Count == 0 && !(useBackend ? CollabWebLobby.IsRefreshing : CollabLobby.IsRefreshing)
+            && string.IsNullOrEmpty(useBackend ? CollabWebLobby.ErrorText : CollabLobby.ErrorText))
+            ImGui.TextDisabled(useBackend ? "No listed sessions on the backend right now." : "No listed sessions on this relay right now.");
+
+        ImGui.BeginDisabled(selected == null);
+        if (ImGui.Button("Join Session") || (joinNow && selected != null))
+        {
+            if (selected != null)
+            {
+                ShowControlMode.Activate(ShowControlMode.Collab);
+                CollabLobbyWhisper.Reset();
+                JoinListedRoom(collab, selected);
+                _selectedTab = Tab.Session;
+            }
+        }
+
+        ImGui.EndDisabled();
+        if (selected is { PasswordProtected: true })
+        {
+            ImGui.SameLine();
+            ImGui.TextDisabled("uses the session password from Settings");
+        }
+
+        // Whisper the host of the picked session before joining.
+        if (selected != null)
+        {
+            FormInputs.AddVerticalSpace(4);
+            if (useBackend)
+                CollabLobbyWhisper.PollBackend(selected.Code, collab.LocalIdentity.DisplayName);
+
+            var whispers = CollabLobbyWhisper.Messages;
+            if (whispers.Count > 0)
+            {
+                foreach (var whisper in whispers)
+                {
+                    if (whisper.Mine)
+                        ImGui.TextColored(_whisperOwnColor, "You");
+                    else if (whisper.From.Length > 0)
+                        ImGui.TextUnformatted(selected.HostName);
+                    else
+                        ImGui.TextColored(UiColors.StatusWarning.Rgba, "!");
+
+                    ImGui.SameLine();
+                    ImGui.TextWrapped(whisper.Text);
+                }
+            }
+
+            ImGui.SetNextItemWidth(-150);
+            ImGui.InputTextWithHint("##lobbyWhisper", $"Whisper {selected.HostName}...", ref _lobbyWhisperInput, 256);
+            ImGui.SameLine();
+            ImGui.BeginDisabled(_lobbyWhisperInput.Length == 0);
+            if (ImGui.Button("Whisper") && selected != null)
+            {
+                if (useBackend)
+                {
+                    CollabLobbyWhisper.SendViaBackend(selected.Code, collab.LocalIdentity.DisplayName, _lobbyWhisperInput);
                 }
                 else
                 {
-                    ImGui.TextColored(UiColors.StatusActivated, entry.Name);
-                    ImGui.SameLine();
-                    ImGui.TextWrapped(entry.Text);
+                    CollabLobbyWhisper.Send(CollabLobby.RelayEndpoint, selected.Code,
+                                            collab.LocalIdentity.DisplayName, collab.LocalIdentity.Lang,
+                                            _lobbyWhisperInput);
                 }
-            }
-        }
-        ImGui.EndChild();
 
-        ImGui.SetNextItemWidth(-70 * uiScale);
-        var send = ImGui.InputTextWithHint("##chat", "Message...", ref _chatInput, 256,
-                                           ImGuiInputTextFlags.EnterReturnsTrue);
-        ImGui.SameLine();
-        if (ImGui.Button("Send") || send)
+                _lobbyWhisperInput = "";
+            }
+
+            ImGui.EndDisabled();
+            ImGui.TextDisabled("Asks the host something before you join. They can answer on the Session tab.");
+        }
+
+        FormInputs.SetIndentToParameters();
+    }
+
+    /// <summary>The first listed session that passes the current filters; null when none does.</summary>
+    private static LobbyRoom? FindAutoMatch(IReadOnlyList<LobbyRoom> rooms)
+    {
+        foreach (var room in rooms)
         {
-            collab.SendChat(_chatInput);
-            _chatInput = "";
-            _scrollToBottom = true;
-            ImGui.SetKeyboardFocusHere(-1);
+            if (_lobbyPurposeFilter != "All" && !string.Equals(room.Purpose, _lobbyPurposeFilter, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            if (_lobbyFilter.Length > 0
+                && !room.HostName.Contains(_lobbyFilter, StringComparison.OrdinalIgnoreCase)
+                && !room.Title.Contains(_lobbyFilter, StringComparison.OrdinalIgnoreCase)
+                && !room.Project.Contains(_lobbyFilter, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            return room;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Joins a room from either listing source: a backend row with a relay address joins on that
+    /// relay; a row without one is a relay-free backend session and joins over WebRTC; the relay
+    /// list joins on the relay the browser read it from.
+    /// </summary>
+    private static void JoinListedRoom(CollabManager manager, LobbyRoom room)
+    {
+        if (room.Relay.Length > 0)
+        {
+            ParseJoinAddress(room.Relay, CollabProtocol.DefaultRelayPort, out var joinHost, out var joinPort);
+            manager.JoinViaRelay(joinHost, joinPort, room.Code, UserSettings.Config.CollabPassword ?? "");
+            return;
+        }
+
+        if (room.Relay.Length == 0 && CollabWebLobby.IsConfigured)
+        {
+            manager.JoinViaBackend(room.Code);
+            return;
+        }
+
+        ParseRelayAddress(CollabLobby.RelayEndpoint, out var relayHost, out var relayPort);
+        manager.JoinViaRelay(relayHost, relayPort, room.Code, UserSettings.Config.CollabPassword ?? "");
+    }
+
+    private static void ParseRelayAddress(string text, out string host, out int port)
+    {
+        host = string.IsNullOrWhiteSpace(text) ? CollabProtocol.DefaultRelayHost : text.Trim();
+        port = CollabProtocol.DefaultRelayPort;
+        var separator = host.LastIndexOf(':');
+        if (separator > 0 && int.TryParse(host[(separator + 1)..], out var parsed))
+        {
+            port = parsed;
+            host = host[..separator];
+        }
+    }
+
+    private static void ParseJoinAddress(string text, int defaultPort, out string host, out int port)
+    {
+        host = text?.Trim() ?? "";
+        port = defaultPort;
+        var separator = host.LastIndexOf(':');
+        if (separator > 0 && int.TryParse(host[(separator + 1)..], out var parsed))
+        {
+            port = parsed;
+            host = host[..separator];
         }
     }
 }
