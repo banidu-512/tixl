@@ -111,7 +111,9 @@ internal static class CollabRemote
                 {
                     InstallationStatus = "The owner asked to connect - starting a party...";
                     _pendingConnectAt = DateTime.UtcNow;
-                    manager.StartHostViaBackend();
+                    // Hosting with the claim lets the owner's controller join without an
+                    // approval round-trip.
+                    manager.StartHostViaBackend(result.Claim);
                     actedOnConnect = true;
                 }
 
