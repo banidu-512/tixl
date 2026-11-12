@@ -329,16 +329,20 @@ internal static class CollabWebLobby
         if (!IsConfigured)
             return [];
 
-        var url = $"{BackendUrl}?op=whispers&room={Uri.EscapeDataString(room)}&since={since}";
+        // The key (and name) ride in the JSON body, not the URL: the backend merges body
+        // into its input, and the host credential must not land in server access logs.
+        var payload = new JObject
+                          {
+                              ["room"] = room,
+                              ["since"] = since,
+                          };
         if (key.Length > 0)
-            url += "&key=" + Uri.EscapeDataString(key);
+            payload["key"] = key;
         else if (visitorName.Length > 0)
-            url += "&name=" + Uri.EscapeDataString(visitorName);
+            payload["name"] = visitorName;
 
-        using var response = await _http.GetAsync(url, cancellation);
-        var text = await response.Content.ReadAsStringAsync(cancellation);
-        var json = JObject.Parse(text);
-        if (!(json["ok"]?.Value<bool>() ?? false))
+        var (body, error) = await PostAsync("whispers", payload, cancellation);
+        if (error != null || body is not JObject json)
             return [];
 
         var result = new List<(string, string, bool, long)>();
@@ -422,7 +426,12 @@ internal static class CollabWebLobby
     public static async Task<(IReadOnlyList<JoinTicket> Tickets, string? Error)> FetchTicketsAsync(
         string room, string key, CancellationToken cancellation)
     {
-        var (body, error) = await GetAsync("tickets", $"&room={Uri.EscapeDataString(room)}&key={Uri.EscapeDataString(key)}", cancellation);
+        // The key rides in the JSON body, not the URL (see PollWhispersAsync).
+        var (body, error) = await PostAsync("tickets", new JObject
+                                                           {
+                                                               ["room"] = room,
+                                                               ["key"] = key,
+                                                           }, cancellation);
         if (error != null)
             return ([], error);
 
@@ -476,11 +485,17 @@ internal static class CollabWebLobby
     public static async Task<(IReadOnlyList<TicketMessage> Messages, string State, string? Error)> FetchTicketMessagesAsync(
         string room, string key, string ticket, long since, CancellationToken cancellation)
     {
-        var query = $"&room={Uri.EscapeDataString(room)}&ticket={Uri.EscapeDataString(ticket)}&since={since}";
+        // The key rides in the JSON body, not the URL (see PollWhispersAsync).
+        var payload = new JObject
+                          {
+                              ["room"] = room,
+                              ["ticket"] = ticket,
+                              ["since"] = since,
+                          };
         if (key.Length > 0)
-            query += "&key=" + Uri.EscapeDataString(key);
+            payload["key"] = key;
 
-        var (body, error) = await GetAsync("ticket-get", query, cancellation);
+        var (body, error) = await PostAsync("ticket-get", payload, cancellation);
         if (error != null)
             return ([], "pending", error);
 

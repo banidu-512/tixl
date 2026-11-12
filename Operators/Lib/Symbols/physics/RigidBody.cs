@@ -40,6 +40,8 @@ internal sealed class RigidBody : Instance<RigidBody>
 
         UpdateCollisionData(hasGeometry ? geometry : null, shape, kind, hasPoints);
         UpdateInstances(hasPoints ? points : null, shape);
+        _descriptor.SourceGeometry = hasGeometry ? geometry : null;
+        _descriptor.SourcePerPart = hasGeometry && !hasPoints && _descriptor.Hulls != null && geometry.Parts.Length > 0;
 
         _descriptor.Shape = shape;
         _descriptor.Kind = kind;

@@ -5,14 +5,6 @@
   "InputUis": [],
   "SymbolChildUis": [
     {
-      "ChildId": "156ed505-3f17-551e-a348-d1f2e7adf328",
-      "SymbolName": "Lib.mesh.draw.DrawMeshAtPoints",
-      "Position": {
-        "X": 1500.0,
-        "Y": -150.0
-      }
-    },
-    {
       "ChildId": "1cf3ddc8-fd5d-5638-86f2-ae45bdfb9ef4",
       "SymbolName": "Lib.physics.RigidBody",
       "Position": {
@@ -61,22 +53,6 @@
       }
     },
     {
-      "ChildId": "66e020dd-9af0-5d81-a431-6278add53553",
-      "SymbolName": "Lib.mesh.generate.CylinderMesh",
-      "Position": {
-        "X": 1200.0,
-        "Y": -300.0
-      }
-    },
-    {
-      "ChildId": "67539e14-c673-57b8-8ef2-f38853a28a6e",
-      "SymbolName": "Lib.mesh.modify.TransformMesh",
-      "Position": {
-        "X": 1500.0,
-        "Y": 300.0
-      }
-    },
-    {
       "ChildId": "7c2a8af5-56e7-5257-9ec8-ae5e7d147fb4",
       "SymbolName": "Lib.physics.RigidBody",
       "Position": {
@@ -117,10 +93,42 @@
       }
     },
     {
-      "ChildId": "f053de85-7fa9-56d8-8331-19f058f78ea6",
-      "SymbolName": "Lib.mesh.generate.CubeMesh",
+      "ChildId": "350af1c6-2f8b-5032-9e21-1e5c31e0856d",
+      "SymbolName": "Lib.mesh.draw.DrawMeshUnlit",
+      "Position": {
+        "X": 1500.0,
+        "Y": -150.0
+      }
+    },
+    {
+      "ChildId": "acdb3ca2-5e07-5f0c-a426-4fb5f923ea9d",
+      "SymbolName": "Lib.physics.RigidBodyGeometry",
       "Position": {
         "X": 1200.0,
+        "Y": -300.0
+      }
+    },
+    {
+      "ChildId": "161d3eeb-9ef2-53fc-ad7f-3ffda446a9d8",
+      "SymbolName": "Lib.geometry.GeometryToMesh",
+      "Position": {
+        "X": 1350.0,
+        "Y": -225.0
+      }
+    },
+    {
+      "ChildId": "eb95b061-d91c-5d24-8e0e-4dfff16134fd",
+      "SymbolName": "Lib.physics.RigidBodyGeometry",
+      "Position": {
+        "X": 1200.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "da00be14-c94d-53d1-abb0-b6bf801bf091",
+      "SymbolName": "Lib.geometry.GeometryToMesh",
+      "Position": {
+        "X": 1500.0,
         "Y": 300.0
       }
     }

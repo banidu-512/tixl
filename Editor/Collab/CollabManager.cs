@@ -1664,11 +1664,17 @@ internal sealed class CollabManager
         try
         {
             if (target.Hosting)
+            {
                 StartHostViaRelay(target.Host, target.Port, target.RoomCode, target.Password, target.RoomKey);
+            }
             else if (target.Relay)
+            {
                 JoinViaRelay(target.Host, target.Port, target.RoomCode, target.Password);
+            }
             else
+            {
                 JoinDirect(target.Host, target.Port, target.Password);
+            }
         }
         finally
         {
@@ -2783,7 +2789,9 @@ internal sealed class CollabManager
                                hostUserId = _localIdentity.UserId,
                                hostLang = _localIdentity.Lang,
                                hostVerified = _localVerified,
-                               roomKey = _roomKey,
+                               // The key is only for re-opening a relay room after the host
+                               // disappears; backend and LAN participants must not receive it.
+                               roomKey = _currentTarget is { Relay: true } ? _roomKey : null,
                                peers = peersPayload,
                                logCount = _sessionLog.Count,
                                // Live: the host may open or switch the project after hosting

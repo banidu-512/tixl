@@ -1,0 +1,209 @@
+{
+  "FormatVersion": 3,
+  "Id": "ae28dc10-527b-5b7e-8f97-099aacc5aa79",
+  "Description": "Balls fall onto a shape that exists only as an SDF field.\n\nA [BoxSDF] with a [SphereSDF] cut out of it is a field: a formula on the GPU, with no mesh. [GridPoints] lays a 3D grid of points over it, [SampleFieldPoints] writes the field's distance into every point and [ReadPointsFromGpu] brings them to the CPU. [SdfPointsToGeometry] extracts the surface, and that geometry is the Geometry of a static [RigidBody]. Any field takes the same route, including a volume through [VdbToSdfField].\n\nAKA: sdf collider, field collider, raymarch, implicit surface, signed distance\n\nTips\n- The point grid sets the detail of the collider. Its counts times Size must cover the shape with a little room to spare.\n- The field is sampled once. For a field that changes, turn on UpdateContinuously on [ReadPointsFromGpu]; the collider is rebuilt whenever its surface changes.\n- What you see is the collider's geometry. Add a [RaymarchField] on the same field to see the field itself.",
+  "InputUis": [],
+  "SymbolChildUis": [
+    {
+      "ChildId": "74abc3dc-ef42-5f66-8ffe-f3f8bb90a404",
+      "SymbolName": "Lib.field.generate.sdf.BoxSDF",
+      "Position": {
+        "X": 0.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "49fc16fd-1f8b-5c54-bb4a-df08125f05e4",
+      "SymbolName": "Lib.field.generate.sdf.SphereSDF",
+      "Position": {
+        "X": 0.0,
+        "Y": 450.0
+      }
+    },
+    {
+      "ChildId": "d7257d69-9fa4-5ee7-bca0-57bb11a596e6",
+      "SymbolName": "Lib.field.combine.CombineSDF",
+      "Position": {
+        "X": 300.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "efdb1c6e-4572-5d3e-935f-80e2a36ec604",
+      "SymbolName": "Lib.point.generate.GridPoints",
+      "Position": {
+        "X": 0.0,
+        "Y": 150.0
+      }
+    },
+    {
+      "ChildId": "78e1ab29-7a69-5fe8-8d70-ccb0e0e2a347",
+      "SymbolName": "Lib.field.render.SampleFieldPoints",
+      "Position": {
+        "X": 300.0,
+        "Y": 150.0
+      }
+    },
+    {
+      "ChildId": "34998b91-7726-518f-bb34-3d8bfdc0df07",
+      "SymbolName": "Lib.point.helper.ReadPointsFromGpu",
+      "Position": {
+        "X": 600.0,
+        "Y": 150.0
+      }
+    },
+    {
+      "ChildId": "acb7c5d1-b23d-513d-9286-93bcb29f033e",
+      "SymbolName": "Lib.geometry.SdfPointsToGeometry",
+      "Position": {
+        "X": 600.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "56834158-3024-50b7-be9a-5061b3108864",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 600.0,
+        "Y": 450.0
+      }
+    },
+    {
+      "ChildId": "f52a2f46-fd63-50d3-916b-788711b9fbfb",
+      "SymbolName": "Lib.geometry.ScatterPointsInVolume",
+      "Position": {
+        "X": 0.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "416126ce-e99e-5c74-aae7-7f9de396b9db",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 600.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "af08a8e6-09a7-593d-84f0-c6ed88755e5d",
+      "SymbolName": "Lib.physics.PhysicsWorld",
+      "Position": {
+        "X": 900.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "a1c3333c-89f4-542b-a551-a70dc3ff93c5",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 600.0,
+        "Y": 750.0
+      }
+    },
+    {
+      "ChildId": "ea105056-9dcd-5362-ad26-d566c6f75986",
+      "SymbolName": "Lib.physics.RigidBodyGeometry",
+      "Position": {
+        "X": 1200.0,
+        "Y": 900.0
+      }
+    },
+    {
+      "ChildId": "856992fd-5330-510f-a27e-9c6a5fb7452a",
+      "SymbolName": "Lib.geometry.GeometryToMesh",
+      "Position": {
+        "X": 1500.0,
+        "Y": 900.0
+      }
+    },
+    {
+      "ChildId": "cd695665-e9c3-54f0-af24-b8c44d79a2d2",
+      "SymbolName": "Lib.mesh.draw.DrawMeshUnlit",
+      "Position": {
+        "X": 1800.0,
+        "Y": 900.0
+      }
+    },
+    {
+      "ChildId": "5b8d9adf-b238-5d76-8b25-e01b931783e2",
+      "SymbolName": "Lib.physics.RigidBodyGeometry",
+      "Position": {
+        "X": 1200.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "e91f00c3-2021-56c7-b530-b7fb9d7881ab",
+      "SymbolName": "Lib.geometry.GeometryToMesh",
+      "Position": {
+        "X": 1500.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "d7b998f8-2b43-50fe-8c2d-aea9088d0ef6",
+      "SymbolName": "Lib.mesh.draw.DrawMeshUnlit",
+      "Position": {
+        "X": 1800.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "3535475e-3606-575b-bc4c-07e3e6147aaf",
+      "SymbolName": "Lib.physics.RigidBodyGeometry",
+      "Position": {
+        "X": 1200.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "ed86bd49-34d8-5148-8840-596c5a74dcd4",
+      "SymbolName": "Lib.geometry.GeometryToMesh",
+      "Position": {
+        "X": 1500.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "d59d33c3-0422-5e3e-ad12-55f433a8ae40",
+      "SymbolName": "Lib.mesh.draw.DrawMeshUnlit",
+      "Position": {
+        "X": 1800.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "62d73be0-323f-5a50-a396-c0c68d1fe965",
+      "SymbolName": "Lib.render.transform.Group",
+      "Position": {
+        "X": 2100.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "77cc63bd-a118-5411-8b04-9c8589be773f",
+      "SymbolName": "Lib.render.camera.Camera",
+      "Position": {
+        "X": 2400.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "57efad06-2da4-5c4f-8257-e2ada7be0c4c",
+      "SymbolName": "Lib.image.generate.basic.RenderTarget",
+      "Position": {
+        "X": 2700.0,
+        "Y": 0.0
+      }
+    }
+  ],
+  "OutputUis": [
+    {
+      "OutputId": "91f35899-6116-5702-b61b-d310de0bce90",
+      "Position": {
+        "X": 3000.0,
+        "Y": 0.0
+      }
+    }
+  ]
+}

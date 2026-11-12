@@ -1,7 +1,7 @@
 {
   "FormatVersion": 3,
   "Id": "e9035c72-0fb4-52af-890e-d4096fcec9da",
-  "Description": "A cube is cut into Voronoi cells and dropped: every cell is its own convex body.\n\n[VoronoiFracture] splits the [CubeGeometry] into parts. Connected to the Geometry input of [RigidBody], each part becomes a body with a convex hull of its own. The same geometry goes through [GeometryToMeshChunks], and [DrawMeshChunksAtPoints] draws chunk i at the pose of piece i.\n\nAKA: shatter, destruction, break, debris, voronoi, convex hull\n\nTips\n- [RigidBodyPoints] picks the poses of the pieces out of the world, so the chunks stay matched however many other bodies there are.\n- More points in [ScatterPointsInVolume] give more, smaller pieces.\n- Position and Rotation on the [RigidBody] move the whole object before it is released.",
+  "Description": "A cube is cut into Voronoi cells and dropped: every cell is its own convex body.\n\n[VoronoiFracture] splits the [CubeGeometry] into parts. Connected to the Geometry input of [RigidBody], each part becomes a body with a convex hull of its own. [RigidBodyGeometry] returns the same geometry with every part moved by its body, and [GeometryToMesh] compiles it for drawing.\n\nAKA: shatter, destruction, break, debris, voronoi, convex hull, geometry\n\nTips\n- The result of [RigidBodyGeometry] is ordinary geometry: put [BevelGeometry], [ExplodeGeometry] or any other geometry operator after it.\n- More points in [ScatterPointsInVolume] give more, smaller pieces.\n- Position and Rotation on the [RigidBody] move the whole object before it is released.",
   "InputUis": [],
   "SymbolChildUis": [
     {
@@ -45,30 +45,6 @@
       }
     },
     {
-      "ChildId": "ef9a7c56-ae27-5219-b416-850fa7fcac15",
-      "SymbolName": "Lib.geometry.GeometryToMeshChunks",
-      "Position": {
-        "X": 1200.0,
-        "Y": 0.0
-      }
-    },
-    {
-      "ChildId": "da864a43-ed9d-5e3d-ab16-012a8e9d5705",
-      "SymbolName": "Lib.mesh.draw.DrawMeshChunksAtPoints",
-      "Position": {
-        "X": 1800.0,
-        "Y": 0.0
-      }
-    },
-    {
-      "ChildId": "11378de5-36f8-509f-b78d-b5f16d0eef7a",
-      "SymbolName": "Lib.physics.RigidBodyPoints",
-      "Position": {
-        "X": 1500.0,
-        "Y": 0.0
-      }
-    },
-    {
       "ChildId": "d7feba6e-92e3-5d57-8f95-548155dd0d3f",
       "SymbolName": "Lib.physics.RigidBody",
       "Position": {
@@ -77,16 +53,16 @@
       }
     },
     {
-      "ChildId": "a49f8344-2f72-5136-9e65-4a6c6b8a48e1",
-      "SymbolName": "Lib.mesh.generate.CubeMesh",
+      "ChildId": "d92a468a-9eba-53df-bed0-2dbf00ead3a4",
+      "SymbolName": "Lib.physics.RigidBodyGeometry",
       "Position": {
         "X": 1200.0,
         "Y": 450.0
       }
     },
     {
-      "ChildId": "052d317b-7a85-5282-bfe2-99a550306acb",
-      "SymbolName": "Lib.mesh.modify.TransformMesh",
+      "ChildId": "6b2e41f0-03b8-539d-874c-dced4e533bc6",
+      "SymbolName": "Lib.geometry.GeometryToMesh",
       "Position": {
         "X": 1500.0,
         "Y": 450.0
@@ -98,6 +74,30 @@
       "Position": {
         "X": 1800.0,
         "Y": 450.0
+      }
+    },
+    {
+      "ChildId": "0f8c5d75-0fda-5169-8c8c-8a0b31ad9207",
+      "SymbolName": "Lib.physics.RigidBodyGeometry",
+      "Position": {
+        "X": 1200.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "0af5e1ca-8f30-5c38-a8e7-dd9ed98cdb31",
+      "SymbolName": "Lib.geometry.GeometryToMesh",
+      "Position": {
+        "X": 1500.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "da864a43-ed9d-5e3d-ab16-012a8e9d5705",
+      "SymbolName": "Lib.mesh.draw.DrawMeshUnlit",
+      "Position": {
+        "X": 1800.0,
+        "Y": 0.0
       }
     },
     {

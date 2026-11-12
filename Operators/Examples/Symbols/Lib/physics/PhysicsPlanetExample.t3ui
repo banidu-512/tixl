@@ -45,10 +45,18 @@
       }
     },
     {
-      "ChildId": "a43bd75f-963f-57d3-9588-45a7f56e7c63",
-      "SymbolName": "Lib.mesh.generate.SphereMesh",
+      "ChildId": "7be40ab1-fa20-502a-9edf-b40014ba92cf",
+      "SymbolName": "Lib.physics.RigidBodyGeometry",
       "Position": {
         "X": 1200.0,
+        "Y": 150.0
+      }
+    },
+    {
+      "ChildId": "a43bd75f-963f-57d3-9588-45a7f56e7c63",
+      "SymbolName": "Lib.geometry.GeometryToMesh",
+      "Position": {
+        "X": 1500.0,
         "Y": 150.0
       }
     },
@@ -61,16 +69,24 @@
       }
     },
     {
-      "ChildId": "0b9b79d9-e1ae-50f8-aead-a69ffef209dc",
-      "SymbolName": "Lib.mesh.generate.SphereMesh",
+      "ChildId": "130d3a2d-5044-5c8f-9885-bf2df3d5a499",
+      "SymbolName": "Lib.physics.RigidBodyGeometry",
       "Position": {
         "X": 1200.0,
         "Y": 0.0
       }
     },
     {
+      "ChildId": "ec3ca33e-9c95-52bc-9901-49e308929ee8",
+      "SymbolName": "Lib.geometry.GeometryToMesh",
+      "Position": {
+        "X": 1500.0,
+        "Y": 0.0
+      }
+    },
+    {
       "ChildId": "31afe7b1-ed62-5b02-bdb1-e3f5be2fc8fc",
-      "SymbolName": "Lib.mesh.draw.DrawMeshAtPoints",
+      "SymbolName": "Lib.mesh.draw.DrawMeshUnlit",
       "Position": {
         "X": 1800.0,
         "Y": 0.0

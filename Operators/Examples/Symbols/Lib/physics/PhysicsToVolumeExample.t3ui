@@ -77,16 +77,16 @@
       }
     },
     {
-      "ChildId": "f7c85c40-2455-5235-b85e-20e68f33d13d",
-      "SymbolName": "Lib.mesh.generate.CubeMesh",
+      "ChildId": "d8d35570-56b5-547c-bf43-4b696ba7ad59",
+      "SymbolName": "Lib.physics.RigidBodyGeometry",
       "Position": {
         "X": 1200.0,
         "Y": 750.0
       }
     },
     {
-      "ChildId": "11a223a0-4f86-5b40-a548-5273507444d9",
-      "SymbolName": "Lib.mesh.modify.TransformMesh",
+      "ChildId": "42920fb8-b161-5439-a0bf-f25f0e583a29",
+      "SymbolName": "Lib.geometry.GeometryToMesh",
       "Position": {
         "X": 1500.0,
         "Y": 750.0

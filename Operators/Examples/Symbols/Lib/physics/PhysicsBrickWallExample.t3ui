@@ -1,7 +1,7 @@
 {
   "FormatVersion": 3,
   "Id": "ee164a1a-32c0-5adf-b341-fe20e94f7608",
-  "Description": "A wall of 80 bricks from one RigidBody, knocked down by a heavy block.\n\n[GridPoints] lays out the wall and [ReadPointsFromGpu] hands the points to the Points input of a single [RigidBody], which becomes one body per point. A second, heavy [RigidBody] is thrown at it with LinearVelocity.\n\nAKA: pyramid, colosseum, stack, instances, bodies from points\n\nTips\n- Change the counts on [GridPoints] to build a bigger wall; no other node changes.\n- Set Reset on [PhysicsWorld] to rebuild the wall.\n- All bodies of a world share one point buffer, so they are drawn with one mesh: the projectile is a box too.",
+  "Description": "A wall of 80 bricks from one brick geometry, knocked down by a heavy block.\n\nOne [CubeGeometry] is the brick: connected to the Geometry input of [RigidBody] it is the collider, and [GridPoints] through the Points input makes one body per point. [RigidBodyGeometry] returns the simulated bricks as geometry, which [GeometryToMesh] compiles for drawing. The brick is described once. The projectile is a primitive [RigidBody] with no geometry at all; [RigidBodyGeometry] gives it a box of its own size.\n\nAKA: pyramid, colosseum, stack, instances, bodies from points, geometry\n\nTips\n- Change Size on the [CubeGeometry] and both the collider and the drawing follow.\n- Change the counts on [GridPoints] to build a bigger wall; no other node changes.\n- Set Reset on [PhysicsWorld] to rebuild the wall.",
   "InputUis": [],
   "SymbolChildUis": [
     {
@@ -18,6 +18,14 @@
       "Position": {
         "X": 300.0,
         "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "d7c27171-90c6-5c00-a86f-4af4f31ffb1f",
+      "SymbolName": "Lib.geometry.CubeGeometry",
+      "Position": {
+        "X": 300.0,
+        "Y": 150.0
       }
     },
     {
@@ -49,23 +57,23 @@
       "SymbolName": "Lib.physics.RigidBody",
       "Position": {
         "X": 600.0,
-        "Y": 300.0
+        "Y": 450.0
       }
     },
     {
-      "ChildId": "e6a074d1-dfe5-54fd-9c34-aa50f2f83ae9",
-      "SymbolName": "Lib.mesh.generate.CubeMesh",
+      "ChildId": "8e2a4083-780a-5bed-808c-58c2f75bf07f",
+      "SymbolName": "Lib.physics.RigidBodyGeometry",
       "Position": {
         "X": 1200.0,
-        "Y": 450.0
+        "Y": 600.0
       }
     },
     {
-      "ChildId": "00083fa4-5a8d-5b6a-87bc-d1e15224cb76",
-      "SymbolName": "Lib.mesh.modify.TransformMesh",
+      "ChildId": "4fb5d2c9-ffc6-5a52-bebe-6b74ec4d58cb",
+      "SymbolName": "Lib.geometry.GeometryToMesh",
       "Position": {
         "X": 1500.0,
-        "Y": 450.0
+        "Y": 600.0
       }
     },
     {
@@ -73,23 +81,55 @@
       "SymbolName": "Lib.mesh.draw.DrawMeshUnlit",
       "Position": {
         "X": 1800.0,
-        "Y": 450.0
+        "Y": 600.0
       }
     },
     {
-      "ChildId": "901f7286-fbf9-583b-9a0b-c88a0ebdd5f0",
-      "SymbolName": "Lib.mesh.generate.CubeMesh",
+      "ChildId": "c0dd9e20-6a5d-550d-a02c-0248311cd7cb",
+      "SymbolName": "Lib.physics.RigidBodyGeometry",
       "Position": {
         "X": 1200.0,
         "Y": 0.0
       }
     },
     {
-      "ChildId": "b1f481a1-0c77-5e6c-aead-1a88972c5256",
-      "SymbolName": "Lib.mesh.draw.DrawMeshAtPoints",
+      "ChildId": "0de4c21c-5e6b-5f5e-96cd-78e3a2d496de",
+      "SymbolName": "Lib.geometry.GeometryToMesh",
+      "Position": {
+        "X": 1500.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "9fc970bd-b6ca-5935-a3fd-47ea96b1c6b6",
+      "SymbolName": "Lib.mesh.draw.DrawMeshUnlit",
       "Position": {
         "X": 1800.0,
         "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "b6147dd5-7428-568e-8b9e-ebbfce67d884",
+      "SymbolName": "Lib.physics.RigidBodyGeometry",
+      "Position": {
+        "X": 1200.0,
+        "Y": 150.0
+      }
+    },
+    {
+      "ChildId": "930eb169-211c-5a58-b158-787d76228603",
+      "SymbolName": "Lib.geometry.GeometryToMesh",
+      "Position": {
+        "X": 1500.0,
+        "Y": 150.0
+      }
+    },
+    {
+      "ChildId": "29b98131-250b-5c4d-bdfb-0bca86cabdf1",
+      "SymbolName": "Lib.mesh.draw.DrawMeshUnlit",
+      "Position": {
+        "X": 1800.0,
+        "Y": 150.0
       }
     },
     {

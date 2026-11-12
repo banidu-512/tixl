@@ -627,7 +627,8 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
 
     /** Temporal feedback ("Feed prev. output"): blends the new frame with the last published one.
      *  The stored previous frame is the BLENDED one, so trails decay exponentially. f=0 is a no-op
-     *  and never allocates. */
+     *  and never allocates; with f>0 the blend happens in place in the cached previous-frame
+     *  buffer (it is both history and published frame), so the steady state allocates nothing. */
     private byte[] ApplyFeedback(byte[] data, int width, int height, float feedback)
     {
         var length = width * height * 4;
@@ -637,23 +638,22 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
             return data;
         }
 
-        var blended = new byte[length];
-        if (_prevRgba is byte[] prev && _prevWidth == width && _prevHeight == height)
+        if (_prevRgba is not byte[] prev || _prevWidth != width || _prevHeight != height)
         {
-            for (var i = 0; i < length; i++)
-            {
-                blended[i] = (byte)(data[i] * (1f - feedback) + prev[i] * feedback + 0.5f);
-            }
+            prev = (byte[])data.Clone();   // first frame / resolution change only
         }
         else
         {
-            data.CopyTo(blended, 0);
+            for (var i = 0; i < length; i++)
+            {
+                prev[i] = (byte)(data[i] * (1f - feedback) + prev[i] * feedback + 0.5f);
+            }
         }
 
-        _prevRgba = blended;
+        _prevRgba = prev;
         _prevWidth = width;
         _prevHeight = height;
-        return blended;
+        return prev;
     }
 
     /** Model store scan results per model type, cached briefly so an empty EnginePath

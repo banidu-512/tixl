@@ -1,7 +1,7 @@
 {
   "FormatVersion": 3,
   "Id": "6010f3f0-c2cf-5f9e-a0ee-90c30aa2a0ff",
-  "Description": "Six ragdolls fall onto a sphere. Each is ten bodies held by nine limited ball sockets.\n\nEvery body part is one [RigidBody] with a point per ragdoll, so ten nodes describe all six figures. Each [RigidJoint] then links part to part, figure by figure. SwingLimit keeps heads, elbows and knees from folding back.\n\nAKA: ragdoll, character, limbs, joint limits, swing limit\n\nTips\n- Change Count on [ScatterPointsInVolume] for more or fewer ragdolls; nothing else changes.\n- The parts are drawn as boxes scaled to each collider, straight from the world's buffer.\n- All parts share CollisionGroup 1, so limbs pass through each other and through other ragdolls.",
+  "Description": "Six ragdolls fall onto a sphere. Each is ten bodies held by nine limited ball sockets.\n\nEvery body part is one [RigidBody] with a point per ragdoll, so ten nodes describe all six figures. Each [RigidJoint] then links part to part, figure by figure. SwingLimit keeps heads, elbows and knees from folding back.\n\nAKA: ragdoll, character, limbs, joint limits, swing limit\n\nTips\n- Change Count on [ScatterPointsInVolume] for more or fewer ragdolls; nothing else changes.\n- One [RigidBodyGeometry] takes all ten parts and returns them as a single geometry of their colliders: capsule limbs, a sphere head, a box torso.\n- All parts share CollisionGroup 1, so limbs pass through each other and through other ragdolls.",
   "InputUis": [],
   "SymbolChildUis": [
     {
@@ -181,16 +181,40 @@
       }
     },
     {
-      "ChildId": "08ccd7c4-9271-532c-8ddf-25f4a2644b56",
-      "SymbolName": "Lib.mesh.generate.SphereMesh",
+      "ChildId": "12351067-fe0f-5108-9884-ceedaf424ea3",
+      "SymbolName": "Lib.physics.RigidBodyGeometry",
+      "Position": {
+        "X": 1200.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "03ee5ddb-6a53-537f-b4e1-3e3bb4eae313",
+      "SymbolName": "Lib.geometry.GeometryToMesh",
+      "Position": {
+        "X": 1500.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "95c0c7c2-28ec-5573-ac59-c4ac7493f58f",
+      "SymbolName": "Lib.mesh.draw.DrawMeshUnlit",
+      "Position": {
+        "X": 1800.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "2cf802d8-625e-52ef-b496-e7506476def9",
+      "SymbolName": "Lib.physics.RigidBodyGeometry",
       "Position": {
         "X": 1200.0,
         "Y": 150.0
       }
     },
     {
-      "ChildId": "6aba18b7-75aa-57e4-8d88-5a160a6202ab",
-      "SymbolName": "Lib.mesh.modify.TransformMesh",
+      "ChildId": "08ccd7c4-9271-532c-8ddf-25f4a2644b56",
+      "SymbolName": "Lib.geometry.GeometryToMesh",
       "Position": {
         "X": 1500.0,
         "Y": 150.0
@@ -209,23 +233,23 @@
       "SymbolName": "Lib.physics.RigidBody",
       "Position": {
         "X": 600.0,
-        "Y": 1650.0
+        "Y": 1800.0
       }
     },
     {
-      "ChildId": "0d18597c-e602-5440-9970-bdc1099924d4",
-      "SymbolName": "Lib.mesh.generate.CubeMesh",
+      "ChildId": "c2b3b2e9-9fd1-56be-9811-b3c58fcd958d",
+      "SymbolName": "Lib.physics.RigidBodyGeometry",
       "Position": {
         "X": 1200.0,
-        "Y": 1800.0
+        "Y": 1950.0
       }
     },
     {
-      "ChildId": "cf080767-ec7f-53b6-b621-2ba53f039018",
-      "SymbolName": "Lib.mesh.modify.TransformMesh",
+      "ChildId": "b543f5a6-ca0e-58a6-9b99-9013e533390b",
+      "SymbolName": "Lib.geometry.GeometryToMesh",
       "Position": {
         "X": 1500.0,
-        "Y": 1800.0
+        "Y": 1950.0
       }
     },
     {
@@ -233,23 +257,7 @@
       "SymbolName": "Lib.mesh.draw.DrawMeshUnlit",
       "Position": {
         "X": 1800.0,
-        "Y": 1800.0
-      }
-    },
-    {
-      "ChildId": "1784601c-28f8-5f8e-a09f-82d2df5f0a5d",
-      "SymbolName": "Lib.mesh.generate.CubeMesh",
-      "Position": {
-        "X": 1200.0,
-        "Y": 0.0
-      }
-    },
-    {
-      "ChildId": "95c0c7c2-28ec-5573-ac59-c4ac7493f58f",
-      "SymbolName": "Lib.mesh.draw.DrawMeshAtPoints",
-      "Position": {
-        "X": 1800.0,
-        "Y": 0.0
+        "Y": 1950.0
       }
     },
     {

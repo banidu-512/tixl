@@ -104,6 +104,15 @@ public sealed class PhysicsBody
     public bool IsInstanced => Instances != null;
 
     /// <summary>
+    /// The geometry the collision data was taken from, so the simulated bodies can be handed back as geometry.
+    /// Null for a primitive body.
+    /// </summary>
+    public MeshGeometry SourceGeometry;
+
+    /// <summary>True when every body is one part of <see cref="SourceGeometry"/>; false when every body is the whole of it.</summary>
+    public bool SourcePerPart;
+
+    /// <summary>
     /// Written by the world after each update: where this description's bodies are in the world's pose points
     /// (statics included). Lets an operator draw one description's bodies with their own mesh.
     /// </summary>

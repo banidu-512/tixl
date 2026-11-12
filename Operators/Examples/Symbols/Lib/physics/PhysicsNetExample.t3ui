@@ -53,16 +53,16 @@
       }
     },
     {
-      "ChildId": "70acbda2-49a3-521f-afe9-d41e5e945b76",
-      "SymbolName": "Lib.mesh.generate.SphereMesh",
+      "ChildId": "5214dcce-c982-5672-bb89-43508f543ea2",
+      "SymbolName": "Lib.physics.RigidBodyGeometry",
       "Position": {
         "X": 1200.0,
         "Y": 150.0
       }
     },
     {
-      "ChildId": "7710a91f-6940-5a14-b84c-5b4d3f23caa4",
-      "SymbolName": "Lib.mesh.modify.TransformMesh",
+      "ChildId": "70acbda2-49a3-521f-afe9-d41e5e945b76",
+      "SymbolName": "Lib.geometry.GeometryToMesh",
       "Position": {
         "X": 1500.0,
         "Y": 150.0
@@ -85,16 +85,16 @@
       }
     },
     {
-      "ChildId": "6a5a991c-3aa8-551e-a26c-0c8a51eb9a7a",
-      "SymbolName": "Lib.mesh.generate.CubeMesh",
+      "ChildId": "a4a65ab4-69cb-5a24-a0a9-15acf9f2d7e9",
+      "SymbolName": "Lib.physics.RigidBodyGeometry",
       "Position": {
         "X": 1200.0,
         "Y": 600.0
       }
     },
     {
-      "ChildId": "b9359a80-8085-5211-9df3-3050f33c4efe",
-      "SymbolName": "Lib.mesh.modify.TransformMesh",
+      "ChildId": "a2bc6d14-13b6-50c1-8bd2-fa9b8000480b",
+      "SymbolName": "Lib.geometry.GeometryToMesh",
       "Position": {
         "X": 1500.0,
         "Y": 600.0
@@ -109,16 +109,24 @@
       }
     },
     {
-      "ChildId": "cbd1adc9-bdc9-5a2c-af59-dd5aef3d4bfc",
-      "SymbolName": "Lib.mesh.generate.SphereMesh",
+      "ChildId": "869f340e-61e6-5178-a267-a78c50d152e8",
+      "SymbolName": "Lib.physics.RigidBodyGeometry",
       "Position": {
         "X": 1200.0,
         "Y": 0.0
       }
     },
     {
+      "ChildId": "3dd99e19-e09c-5cf7-b90a-34b3e6aca6b2",
+      "SymbolName": "Lib.geometry.GeometryToMesh",
+      "Position": {
+        "X": 1500.0,
+        "Y": 0.0
+      }
+    },
+    {
       "ChildId": "ec413c08-38d1-5496-a75d-0a277cb52959",
-      "SymbolName": "Lib.mesh.draw.DrawMeshAtPoints",
+      "SymbolName": "Lib.mesh.draw.DrawMeshUnlit",
       "Position": {
         "X": 1800.0,
         "Y": 0.0

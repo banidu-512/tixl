@@ -29,14 +29,6 @@
       }
     },
     {
-      "ChildId": "285d339f-93c3-52e2-89be-a7859fa039a2",
-      "SymbolName": "Lib.mesh.draw.DrawMeshUnlit",
-      "Position": {
-        "X": 1800.0,
-        "Y": 300.0
-      }
-    },
-    {
       "ChildId": "2cf87c20-083a-5b09-af4a-cf415723b770",
       "SymbolName": "Lib.physics.RigidJoint",
       "Position": {
@@ -49,22 +41,6 @@
       "SymbolName": "Lib.physics.RigidJoint",
       "Position": {
         "X": 600.0,
-        "Y": 300.0
-      }
-    },
-    {
-      "ChildId": "3f1d5960-28ca-56f3-984e-57a9c612a4b8",
-      "SymbolName": "Lib.mesh.generate.CubeMesh",
-      "Position": {
-        "X": 1200.0,
-        "Y": 300.0
-      }
-    },
-    {
-      "ChildId": "4a387212-baec-517c-b9c3-34a2bab2cc62",
-      "SymbolName": "Lib.mesh.modify.TransformMesh",
-      "Position": {
-        "X": 1500.0,
         "Y": 300.0
       }
     },
@@ -109,14 +85,6 @@
       }
     },
     {
-      "ChildId": "abc3f8fe-5378-53cc-be14-f922947c35c8",
-      "SymbolName": "Lib.mesh.generate.SphereMesh",
-      "Position": {
-        "X": 1200.0,
-        "Y": -300.0
-      }
-    },
-    {
       "ChildId": "ae673dbf-fa7c-531b-917b-7ddc0dcb6db8",
       "SymbolName": "Lib.physics.RigidBody",
       "Position": {
@@ -146,14 +114,6 @@
       "Position": {
         "X": 600.0,
         "Y": 1200.0
-      }
-    },
-    {
-      "ChildId": "c9df8423-a2d7-53cb-8b76-aef0cb0e785e",
-      "SymbolName": "Lib.mesh.draw.DrawMeshAtPoints",
-      "Position": {
-        "X": 1500.0,
-        "Y": -150.0
       }
     },
     {
@@ -195,6 +155,30 @@
         "X": 2700.0,
         "Y": 0.0
       }
+    },
+    {
+      "ChildId": "05c56c15-c6d7-5c87-890a-e9ada85ebd8c",
+      "SymbolName": "Lib.mesh.draw.DrawMeshUnlit",
+      "Position": {
+        "X": 1500.0,
+        "Y": -150.0
+      }
+    },
+    {
+      "ChildId": "fd63fc6a-e13b-5c9f-890c-5c91a175d6b0",
+      "SymbolName": "Lib.physics.RigidBodyGeometry",
+      "Position": {
+        "X": 1200.0,
+        "Y": -300.0
+      }
+    },
+    {
+      "ChildId": "c9979743-dd15-5c75-8ac9-e6b91b96205f",
+      "SymbolName": "Lib.geometry.GeometryToMesh",
+      "Position": {
+        "X": 1350.0,
+        "Y": -225.0
+      }
     }
   ],
   "OutputUis": [
@@ -209,39 +193,39 @@
   "Settings": {
     "OutputWindows": [
       {
-  "ShowGizmos": "On",
-  "TransformGizmoMode": "Move",
-  "BackgroundColor": [
-    0.1,
-    0.1,
-    0.1,
-    1.0
-  ],
-  "CameraControlMode": "AutoUseFirstCam",
-  "CameraPosition": [
-    0.0,
-    0.0,
-    2.4142134
-  ],
-  "CameraTarget": [
-    0.0,
-    0.0,
-    0.0
-  ],
-  "CameraRoll": 0.0,
-  "CameraSpeed": 1.0,
-  "ResolutionTitle": "Fill",
-  "ResolutionWidth": 0,
-  "ResolutionHeight": 0,
-  "ResolutionUseAsAspectRatio": true,
-  "IsPinned": true,
-  "PinnedInstancePath": [
-    "2ff53617-5755-81aa-9ca5-147a3c81896d"
-  ],
-  "PinnedOutputId": "00000000-0000-0000-0000-000000000000",
-  "PinnedEntityKind": "None",
-  "PinnedEntityId": "00000000-0000-0000-0000-000000000000"
-}
+        "ShowGizmos": "On",
+        "TransformGizmoMode": "Move",
+        "BackgroundColor": [
+          0.1,
+          0.1,
+          0.1,
+          1.0
+        ],
+        "CameraControlMode": "AutoUseFirstCam",
+        "CameraPosition": [
+          0.0,
+          0.0,
+          2.4142134
+        ],
+        "CameraTarget": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "CameraRoll": 0.0,
+        "CameraSpeed": 1.0,
+        "ResolutionTitle": "Fill",
+        "ResolutionWidth": 0,
+        "ResolutionHeight": 0,
+        "ResolutionUseAsAspectRatio": true,
+        "IsPinned": true,
+        "PinnedInstancePath": [
+          "2ff53617-5755-81aa-9ca5-147a3c81896d"
+        ],
+        "PinnedOutputId": "00000000-0000-0000-0000-000000000000",
+        "PinnedEntityKind": "None",
+        "PinnedEntityId": "00000000-0000-0000-0000-000000000000"
+      }
     ]
   }
 }

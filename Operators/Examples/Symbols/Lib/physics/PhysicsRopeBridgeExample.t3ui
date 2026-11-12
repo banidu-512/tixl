@@ -13,14 +13,6 @@
       }
     },
     {
-      "ChildId": "04566978-3e2c-54d3-b080-fab4323b4835",
-      "SymbolName": "Lib.mesh.generate.CubeMesh",
-      "Position": {
-        "X": 1200.0,
-        "Y": -300.0
-      }
-    },
-    {
       "ChildId": "07ae06d9-8853-5215-ac27-f3a76d602236",
       "SymbolName": "Lib.physics.RigidJoint",
       "Position": {
@@ -66,14 +58,6 @@
       "Position": {
         "X": 300.0,
         "Y": 1840.0
-      }
-    },
-    {
-      "ChildId": "2f16fcd5-0c6c-57c6-a2fd-ff60129f7f68",
-      "SymbolName": "Lib.mesh.draw.DrawMeshAtPoints",
-      "Position": {
-        "X": 1500.0,
-        "Y": -150.0
       }
     },
     {
@@ -149,14 +133,6 @@
       }
     },
     {
-      "ChildId": "8c75a726-eae6-5833-ab39-f2a006d5e3ce",
-      "SymbolName": "Lib.mesh.generate.CubeMesh",
-      "Position": {
-        "X": 1200.0,
-        "Y": 300.0
-      }
-    },
-    {
       "ChildId": "8e6bec8f-cdb8-524e-b4b4-3327d4daae4d",
       "SymbolName": "Lib.physics.RigidBody",
       "Position": {
@@ -186,14 +162,6 @@
       "Position": {
         "X": 300.0,
         "Y": 520.0
-      }
-    },
-    {
-      "ChildId": "b3595834-55c0-5d01-a423-e588dda9a6f5",
-      "SymbolName": "Lib.mesh.modify.TransformMesh",
-      "Position": {
-        "X": 1500.0,
-        "Y": 300.0
       }
     },
     {
@@ -259,6 +227,46 @@
         "X": 700.0,
         "Y": 520.0
       }
+    },
+    {
+      "ChildId": "650c2399-1805-5494-82b5-961a8231ea84",
+      "SymbolName": "Lib.mesh.draw.DrawMeshUnlit",
+      "Position": {
+        "X": 1500.0,
+        "Y": -150.0
+      }
+    },
+    {
+      "ChildId": "3f283918-660a-5d4e-9fd5-494749ac3c7f",
+      "SymbolName": "Lib.physics.RigidBodyGeometry",
+      "Position": {
+        "X": 1200.0,
+        "Y": -300.0
+      }
+    },
+    {
+      "ChildId": "2827e00a-6d62-5f2d-a2a0-205b5946e1a1",
+      "SymbolName": "Lib.geometry.GeometryToMesh",
+      "Position": {
+        "X": 1350.0,
+        "Y": -225.0
+      }
+    },
+    {
+      "ChildId": "2d931a5e-6b75-5c5e-9998-89b94542c680",
+      "SymbolName": "Lib.physics.RigidBodyGeometry",
+      "Position": {
+        "X": 1200.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "9dfba627-a44e-5b6d-a2cc-f5e34087ebaf",
+      "SymbolName": "Lib.geometry.GeometryToMesh",
+      "Position": {
+        "X": 1500.0,
+        "Y": 300.0
+      }
     }
   ],
   "OutputUis": [
@@ -273,39 +281,39 @@
   "Settings": {
     "OutputWindows": [
       {
-  "ShowGizmos": "On",
-  "TransformGizmoMode": "Move",
-  "BackgroundColor": [
-    0.1,
-    0.1,
-    0.1,
-    1.0
-  ],
-  "CameraControlMode": "AutoUseFirstCam",
-  "CameraPosition": [
-    0.0,
-    0.0,
-    2.4142134
-  ],
-  "CameraTarget": [
-    0.0,
-    0.0,
-    0.0
-  ],
-  "CameraRoll": 0.0,
-  "CameraSpeed": 1.0,
-  "ResolutionTitle": "Fill",
-  "ResolutionWidth": 0,
-  "ResolutionHeight": 0,
-  "ResolutionUseAsAspectRatio": true,
-  "IsPinned": true,
-  "PinnedInstancePath": [
-    "5697b652-21f8-4b1f-343d-1be886ca13d0"
-  ],
-  "PinnedOutputId": "00000000-0000-0000-0000-000000000000",
-  "PinnedEntityKind": "None",
-  "PinnedEntityId": "00000000-0000-0000-0000-000000000000"
-}
+        "ShowGizmos": "On",
+        "TransformGizmoMode": "Move",
+        "BackgroundColor": [
+          0.1,
+          0.1,
+          0.1,
+          1.0
+        ],
+        "CameraControlMode": "AutoUseFirstCam",
+        "CameraPosition": [
+          0.0,
+          0.0,
+          2.4142134
+        ],
+        "CameraTarget": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "CameraRoll": 0.0,
+        "CameraSpeed": 1.0,
+        "ResolutionTitle": "Fill",
+        "ResolutionWidth": 0,
+        "ResolutionHeight": 0,
+        "ResolutionUseAsAspectRatio": true,
+        "IsPinned": true,
+        "PinnedInstancePath": [
+          "5697b652-21f8-4b1f-343d-1be886ca13d0"
+        ],
+        "PinnedOutputId": "00000000-0000-0000-0000-000000000000",
+        "PinnedEntityKind": "None",
+        "PinnedEntityId": "00000000-0000-0000-0000-000000000000"
+      }
     ]
   }
 }

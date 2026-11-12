@@ -319,6 +319,11 @@ internal static class Program
     private const int MaxWhisperListenersPerRoom = 16;
     private const int MaxWhispersPerListenerPerSecond = 3;
 
+    /// <summary>Aggregate flood guard: at most this many guest whispers reach the host's control
+    /// link per second. Each connection sends at most one whisper, so the limit is per room —
+    /// the per-listener const above only sizes it.</summary>
+    private const int MaxWhispersPerRoomPerSecond = MaxWhisperListenersPerRoom * MaxWhispersPerListenerPerSecond;
+
     /// <summary>A host updates its listing while the session runs (Change entry / Delete entry).
     /// The room key authenticates the request; only the host instance knows it.</summary>
     private static async Task HandleUpdateAsync(TcpClient client, Request request)
@@ -432,6 +437,28 @@ internal static class Program
         if (request.Text.Length == 0 || request.Name.Length == 0)
         {
             await WriteLineAsync(client, "{\"ok\":false,\"error\":\"name and text required\"}");
+            client.Close();
+            return;
+        }
+
+        // Flood guard: this path needs no credentials, so cap the whole room's guest-whisper
+        // rate instead of trusting every short-lived connection to behave.
+        bool floodLimitExceeded;
+        lock (room.Gate)
+        {
+            var now = Environment.TickCount64;
+            if (now - room.WhisperWindowStartTicks >= 1000)
+            {
+                room.WhisperWindowStartTicks = now;
+                room.WhisperWindowCount = 0;
+            }
+
+            floodLimitExceeded = ++room.WhisperWindowCount > MaxWhispersPerRoomPerSecond;
+        }
+
+        if (floodLimitExceeded)
+        {
+            await WriteLineAsync(client, "{\"ok\":false,\"error\":\"too many whispers\"}");
             client.Close();
             return;
         }
@@ -1189,6 +1216,10 @@ internal static class Program
         public bool Public;
         public bool PasswordProtected;
         public readonly List<WhisperListener> WhisperListeners = [];
+
+        /// <summary>Rolling one-second window for the unauthenticated guest-whisper flood guard.</summary>
+        public long WhisperWindowStartTicks;
+        public int WhisperWindowCount;
 
         /// <summary>TickCount64 of the last frame from the host.</summary>
         public long LastOwnerActivityTicks = Environment.TickCount64;

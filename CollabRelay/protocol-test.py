@@ -2,7 +2,7 @@
 Protocol test for TiXLCollabRelay. Start a relay, then run this against it:
 
     dotnet run --project CollabRelay -- 45990
-    python .tests-manual/collab-relay-protocol-test.py 45990
+    python CollabRelay/protocol-test.py 45990
 
 Covers the short replies old editors expect, the session list, identity fields, room keys
 (a silent host can be replaced, a live one cannot, the same host instance reclaims its room),

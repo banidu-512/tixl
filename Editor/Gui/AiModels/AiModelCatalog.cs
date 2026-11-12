@@ -468,14 +468,29 @@ internal static class AiModelCatalog
         },
     ];
 
-    public static IEnumerable<ModelCatalogEntry> ForFamily(AiModelFamily family)
+    public static readonly AiModelFamily[] Families = (AiModelFamily[])Enum.GetValues<AiModelFamily>();
+
+    /** Per-family index built once: the settings panel draws it every frame, so it must not iterate. */
+    private static readonly Dictionary<AiModelFamily, IReadOnlyList<ModelCatalogEntry>> _entriesByFamily = BuildFamilyIndex();
+
+    private static Dictionary<AiModelFamily, IReadOnlyList<ModelCatalogEntry>> BuildFamilyIndex()
     {
-        foreach (var entry in Entries)
+        var index = new Dictionary<AiModelFamily, IReadOnlyList<ModelCatalogEntry>>();
+        foreach (var family in Families)
         {
-            if (entry.Family == family)
-                yield return entry;
+            var list = new List<ModelCatalogEntry>();
+            foreach (var entry in Entries)
+            {
+                if (entry.Family == family)
+                    list.Add(entry);
+            }
+            index[family] = list;
         }
+        return index;
     }
+
+    public static IReadOnlyList<ModelCatalogEntry> ForFamily(AiModelFamily family)
+        => _entriesByFamily.TryGetValue(family, out var list) ? list : [];
 
     /** The entries the one-click setup downloads when missing: the fastest working model per family. */
     public static IEnumerable<ModelCatalogEntry> Defaults

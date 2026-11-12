@@ -308,21 +308,30 @@ internal sealed partial class SettingsWindow
         switch (_aiBrowserFilter)
         {
             case AiModelBrowserFilter.All:
-                foreach (AiModelFamily family in Enum.GetValues<AiModelFamily>())
+                foreach (var family in AiModelCatalog.Families)
                 {
                     DrawFamilyGroup(family);
                 }
                 break;
 
-            default:
-                DrawFamilyGroup((AiModelFamily)_aiBrowserFilter);
+            // Explicit mapping: the browser filter and the family enum have different bases.
+            case AiModelBrowserFilter.DepthAnything:
+                DrawFamilyGroup(AiModelFamily.DepthAnything);
+                break;
+
+            case AiModelBrowserFilter.StreamDiffusion:
+                DrawFamilyGroup(AiModelFamily.StreamDiffusion);
+                break;
+
+            case AiModelBrowserFilter.MediaPipe:
+                DrawFamilyGroup(AiModelFamily.MediaPipe);
                 break;
         }
     }
 
     private static void DrawFamilyGroup(AiModelFamily family)
     {
-        var entries = AiModelCatalog.ForFamily(family).ToList();
+        var entries = AiModelCatalog.ForFamily(family);
         if (entries.Count == 0)
             return;
 

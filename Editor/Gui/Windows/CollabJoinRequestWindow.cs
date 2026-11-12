@@ -52,7 +52,7 @@ internal sealed class CollabJoinRequestWindow : Window
             ImGui.TextDisabled($"asked {request.At:HH:mm:ss}");
             FormInputs.AddVerticalSpace(4);
 
-            var buttonWidth = 96;
+            var buttonWidth = 96f * T3Ui.UiScaleFactor;
             if (ImGui.Button("Confirm", new Vector2(buttonWidth, 0)))
                 manager.ApproveJoin(request.TicketId);
 

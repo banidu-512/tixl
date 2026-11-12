@@ -53,16 +53,24 @@
       }
     },
     {
-      "ChildId": "4a9b7718-0c1f-548f-88af-3aae84729bc9",
-      "SymbolName": "Lib.mesh.generate.SphereMesh",
+      "ChildId": "36a83ebe-cfff-5d4e-8e12-7ffc0ac98cca",
+      "SymbolName": "Lib.physics.RigidBodyGeometry",
       "Position": {
         "X": 1200.0,
         "Y": 0.0
       }
     },
     {
+      "ChildId": "014c8a77-21a4-51e6-b745-906714a2939b",
+      "SymbolName": "Lib.geometry.GeometryToMesh",
+      "Position": {
+        "X": 1500.0,
+        "Y": 0.0
+      }
+    },
+    {
       "ChildId": "e8319146-f1ff-57f1-99a8-e636548e6489",
-      "SymbolName": "Lib.mesh.draw.DrawMeshAtPoints",
+      "SymbolName": "Lib.mesh.draw.DrawMeshUnlit",
       "Position": {
         "X": 1800.0,
         "Y": 0.0

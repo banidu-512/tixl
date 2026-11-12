@@ -229,7 +229,6 @@ internal sealed partial class SettingsWindow
     private static string _whisperReplyInput = "";
     private static string _replyToName = "";
     private static string _lobbyWhisperInput = "";
-    private static readonly System.Numerics.Vector4 _whisperOwnColor = new(0.55f, 0.8f, 0.55f, 1f);
 
     private static void DrainDiscoveryResults()
     {
@@ -338,7 +337,7 @@ internal sealed partial class SettingsWindow
                                       $"{manager.LocalIdentity.DisplayName}'s session",
                                       null, "What the session browser shows.");
             DrawPurposeInput(ref config.CollabSessionPurpose);
-            if (ImGui.SmallButton("Update entry"))
+            if (ImGui.SmallButton("Update Entry"))
             {
                 manager.UpdateSessionListing(config.CollabSessionTitle, config.CollabSessionPurpose,
                                              ProjectView.Focused?.OpenedProject.Package.DisplayName ?? "",
@@ -450,7 +449,7 @@ internal sealed partial class SettingsWindow
                 {
                     if (whisper.FromHost)
                     {
-                        ImGui.TextColored(_whisperOwnColor, "You");
+                        ImGui.TextColored(UiColors.WhisperOwn.Rgba, "You");
                     }
                     else
                     {
@@ -461,9 +460,19 @@ internal sealed partial class SettingsWindow
                     ImGui.TextWrapped(whisper.Text);
                 }
 
-                _replyToName = whispers.Last(w => !w.FromHost).From;
+                // Reply to the most recent whisper that is not ours; when every entry is ours,
+                // keep the previous name.
+                for (var i = whispers.Count - 1; i >= 0; i--)
+                {
+                    if (!whispers[i].FromHost)
+                    {
+                        _replyToName = whispers[i].From;
+                        break;
+                    }
+                }
+
                 FormInputs.AddVerticalSpace(4);
-                ImGui.SetNextItemWidth(-72);
+                ImGui.SetNextItemWidth(-72 * T3Ui.UiScaleFactor);
                 ImGui.InputTextWithHint("##whisperReply", $"Reply to {_replyToName}...", ref _whisperReplyInput, 256);
                 ImGui.SameLine();
                 ImGui.BeginDisabled(_whisperReplyInput.Length == 0);
@@ -872,7 +881,7 @@ internal sealed partial class SettingsWindow
         var autoMatch = FindAutoMatch(rooms);
         ImGui.SameLine();
         ImGui.BeginDisabled(autoMatch == null);
-        if (ImGui.Button("Auto match") && autoMatch != null)
+        if (ImGui.Button("Auto Match") && autoMatch != null)
         {
             ShowControlMode.Activate(ShowControlMode.Collab);
             CollabLobbyWhisper.Reset();
@@ -1009,7 +1018,7 @@ internal sealed partial class SettingsWindow
                 foreach (var whisper in whispers)
                 {
                     if (whisper.Mine)
-                        ImGui.TextColored(_whisperOwnColor, "You");
+                        ImGui.TextColored(UiColors.WhisperOwn.Rgba, "You");
                     else if (whisper.From.Length > 0)
                         ImGui.TextUnformatted(selected.HostName);
                     else
@@ -1020,7 +1029,7 @@ internal sealed partial class SettingsWindow
                 }
             }
 
-            ImGui.SetNextItemWidth(-150);
+            ImGui.SetNextItemWidth(-150 * T3Ui.UiScaleFactor);
             ImGui.InputTextWithHint("##lobbyWhisper", $"Whisper {selected.HostName}...", ref _lobbyWhisperInput, 256);
             ImGui.SameLine();
             ImGui.BeginDisabled(_lobbyWhisperInput.Length == 0);

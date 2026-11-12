@@ -1038,9 +1038,6 @@ internal sealed class PhysicsSimulation : IDisposable
         _joints.Add(id, entry);
     }
 
-    /// <summary>
-    /// A motor or a swing limit is a second Bepu constraint on the same pair, around the same axes as the joint itself.
-    /// </summary>
     /// <summary>The joint axis in each body's local space, for the chosen anchoring.</summary>
     private static void JointAxes(PhysicsJoint descriptor, BodyEntry bodyA, BodyEntry bodyB, JointAnchoring anchoring,
                                   out Vector3 axisA, out Vector3 axisB)
@@ -1060,6 +1057,7 @@ internal sealed class PhysicsSimulation : IDisposable
             axisB = NormalizeAxis(Vector3.Transform(Vector3.Transform(axisA, InputPose(bodyA).Orientation), inverseB));
     }
 
+    /// <summary>A motor or a swing limit is a second Bepu constraint on the same pair, around the same axes as the joint itself.</summary>
     private void AddMotorOrLimit(PhysicsJoint descriptor, BodyEntry bodyA, BodyEntry bodyB, JointAnchoring anchoring, JointEntry entry)
     {
         JointAxes(descriptor, bodyA, bodyB, anchoring, out var axisA, out var axisB);

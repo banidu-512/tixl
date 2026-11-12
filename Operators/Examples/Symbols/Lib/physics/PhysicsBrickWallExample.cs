@@ -1,7 +1,7 @@
 namespace Examples.Lib.physics;
 
 /// <summary>
-/// A wall of 80 bricks from one RigidBody, knocked down by a heavy block.
+/// A wall of 80 bricks from one brick geometry, knocked down by a heavy block.
 /// </summary>
 [Guid("ee164a1a-32c0-5adf-b341-fe20e94f7608")]
 internal sealed class PhysicsBrickWallExample : Instance<PhysicsBrickWallExample>

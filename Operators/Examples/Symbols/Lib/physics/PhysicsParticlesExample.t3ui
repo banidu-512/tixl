@@ -101,14 +101,6 @@
       }
     },
     {
-      "ChildId": "26cbd99a-0e06-8073-cef5-9f1d81c9258e",
-      "SymbolName": "Lib.mesh.generate.CubeMesh",
-      "Position": {
-        "X": 2300.0,
-        "Y": -200.0
-      }
-    },
-    {
       "ChildId": "2ddddd39-0b74-ffb1-c137-a5771b0a19c5",
       "SymbolName": "Lib.physics.RigidBody",
       "Position": {
@@ -349,14 +341,6 @@
       }
     },
     {
-      "ChildId": "939a7817-6e41-a43f-21da-c2f5c1b432f6",
-      "SymbolName": "Lib.mesh.modify.TransformMesh",
-      "Position": {
-        "X": 2550.0,
-        "Y": -200.0
-      }
-    },
-    {
       "ChildId": "9945f5e0-f86c-ca32-cece-d1a1d1ab1d75",
       "SymbolName": "Lib.physics.RigidBody",
       "Position": {
@@ -482,14 +466,6 @@
       "Position": {
         "X": 1600.0,
         "Y": 474.0
-      }
-    },
-    {
-      "ChildId": "cda20ca3-8263-6e66-54dc-52120152f1de",
-      "SymbolName": "Lib.mesh.draw.DrawMeshAtPoints",
-      "Position": {
-        "X": 2600.0,
-        "Y": 300.0
       }
     },
     {
@@ -621,14 +597,6 @@
       }
     },
     {
-      "ChildId": "e614836d-34e4-765e-13a3-a98d1ef49f93",
-      "SymbolName": "Lib.mesh.generate.SphereMesh",
-      "Position": {
-        "X": 2300.0,
-        "Y": 300.0
-      }
-    },
-    {
       "ChildId": "ea83ca20-da2c-3678-0769-7595a8ca3091",
       "SymbolName": "Lib.physics.RigidBody",
       "Position": {
@@ -690,6 +658,46 @@
       "Position": {
         "X": 1600.0,
         "Y": 1696.0
+      }
+    },
+    {
+      "ChildId": "0fcda572-0c92-5101-a8c7-2148a2883125",
+      "SymbolName": "Lib.mesh.draw.DrawMeshUnlit",
+      "Position": {
+        "X": 2600.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "56d01c2c-fa90-5490-8c47-3dd6ca546e54",
+      "SymbolName": "Lib.physics.RigidBodyGeometry",
+      "Position": {
+        "X": 2300.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "b060a98d-82cc-5b7b-b297-bbf7b35e65a8",
+      "SymbolName": "Lib.geometry.GeometryToMesh",
+      "Position": {
+        "X": 2450.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "c82dfcc3-35ad-5a2d-a7ce-db2831f3d482",
+      "SymbolName": "Lib.physics.RigidBodyGeometry",
+      "Position": {
+        "X": 2300.0,
+        "Y": -200.0
+      }
+    },
+    {
+      "ChildId": "0c8d8f5f-c521-56d5-bd2c-0a6028b96a30",
+      "SymbolName": "Lib.geometry.GeometryToMesh",
+      "Position": {
+        "X": 2550.0,
+        "Y": -200.0
       }
     }
   ],
