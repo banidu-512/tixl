@@ -36,8 +36,6 @@ internal sealed class CollabWindow : Window
     // Small drawing helpers: a consistent, quieter look across all three tabs
     // ---------------------------------------------------------------------------------------
 
-    private static readonly System.Numerics.Vector4 _accentColor = new(0.62f, 0.42f, 0.85f, 1f);
-
     /// <summary>A section title with an accent bar to its left and breathing room above it.</summary>
     private static void SectionHeader(string title)
     {
@@ -157,46 +155,48 @@ internal sealed class CollabWindow : Window
         }
     }
 
+    private static readonly string[] _tabLabels = ["Chat", "Party matching", "Party management", "Remote", "Boygroup"];
+    private static readonly Tab[] _tabs = [Tab.Chat, Tab.PartyMatching, Tab.PartyManagement, Tab.Remote, Tab.Boygroup];
+    private static readonly float[] _tabWidthBuffer = new float[8];
+
     /// <summary>Five separate tabs in one line, spread evenly across the window width. The active
     /// one is highlighted; a click switches the tab. SetCursorPosX takes window-LOCAL coordinates -
     /// screen-space math here placed the row off-window.</summary>
     private static void DrawTabLine()
     {
-        var labels = new[] { "Chat", "Party matching", "Party management", "Remote", "Boygroup" };
-        var tabs = new[] { Tab.Chat, Tab.PartyMatching, Tab.PartyManagement, Tab.Remote, Tab.Boygroup };
-        var count = tabs.Length;
+        var count = _tabs.Length;
 
-        var widths = new float[count];
         var buttonsTotal = 0f;
         for (var i = 0; i < count; i++)
         {
-            widths[i] = ImGui.CalcTextSize(labels[i]).X + ImGui.GetStyle().FramePadding.X * 2;
-            buttonsTotal += widths[i];
+            _tabWidthBuffer[i] = ImGui.CalcTextSize(_tabLabels[i]).X + ImGui.GetStyle().FramePadding.X * 2;
+            buttonsTotal += _tabWidthBuffer[i];
         }
 
-        var margin = 6f;
-        var gap = Math.Max(4, (ImGui.GetWindowSize().X - margin * 2 - buttonsTotal) / (count - 1));
+        var uiScale = T3Ui.UiScaleFactor;
+        var margin = 6f * uiScale;
+        var gap = Math.Max(4f * uiScale, (ImGui.GetWindowSize().X - margin * 2 - buttonsTotal) / (count - 1));
 
         var rowY = ImGui.GetCursorPosY();
         var x = margin;
         for (var i = 0; i < count; i++)
         {
             ImGui.SetCursorPos(new Vector2(x, rowY));
-            var isActive = _selectedTab == tabs[i];
+            var isActive = _selectedTab == _tabs[i];
             if (isActive)
                 ImGui.PushStyleColor(ImGuiCol.Button, UiColors.StatusActivated.Rgba);
 
-            if (ImGui.Button(labels[i]))
-                _selectedTab = tabs[i];
+            if (ImGui.Button(_tabLabels[i]))
+                _selectedTab = _tabs[i];
 
             if (isActive)
                 ImGui.PopStyleColor();
 
-            x += widths[i] + gap;
+            x += _tabWidthBuffer[i] + gap;
         }
 
         // Park the cursor below the tab row for the content that follows.
-        ImGui.SetCursorPos(new Vector2(margin, rowY + ImGui.GetFrameHeight() + 4));
+        ImGui.SetCursorPos(new Vector2(margin, rowY + ImGui.GetFrameHeight() + 4 * uiScale));
         ImGui.Dummy(Vector2.Zero);
     }
 
@@ -235,6 +235,7 @@ internal sealed class CollabWindow : Window
 
     private static void DrawHostControls(CollabManager collab)
     {
+        var uiScale = T3Ui.UiScaleFactor;
         var password = UserSettings.Config.CollabPassword ?? "";
         ImGui.SetNextItemWidth(-1);
         ImGui.InputTextWithHint("##collab-pwd", "Session password (optional)", ref password, 64);
@@ -305,7 +306,7 @@ internal sealed class CollabWindow : Window
         var projectName = ProjectView.Focused?.OpenedProject.Package.DisplayName ?? "";
 
         ImGui.BeginDisabled(!canForm);
-        if (ImGui.Button("Form Party", new Vector2(140, 0)))
+        if (ImGui.Button("Form Party", new Vector2(140 * uiScale, 0)))
         {
             ShowControlMode.Activate(ShowControlMode.Collab);
             if (wantOnline)
@@ -364,6 +365,7 @@ internal sealed class CollabWindow : Window
     /// <summary>Installation side: pairing, consent and the name the owner sees.</summary>
     private static void DrawThisComputer()
     {
+        var uiScale = T3Ui.UiScaleFactor;
         SectionHeader("This computer");
 
         if (CollabRemote.IsPaired)
@@ -386,7 +388,7 @@ internal sealed class CollabWindow : Window
                                                 """);
 
             var name = UserSettings.Config.CollabRemoteName;
-            ImGui.SetNextItemWidth(-110);
+            ImGui.SetNextItemWidth(-110 * uiScale);
             if (ImGui.InputTextWithHint("##remoteName", CollabRemote.DeviceName, ref name, 48))
             {
                 UserSettings.Config.CollabRemoteName = name;
@@ -394,7 +396,7 @@ internal sealed class CollabWindow : Window
             }
 
             ImGui.SameLine();
-            if (ImGui.Button("Forget pairing"))
+            if (ImGui.Button("Forget Pairing"))
                 CollabRemote.ForgetInstallation();
 
             if (CollabRemote.InstallationStatus.Length > 0)
@@ -409,11 +411,11 @@ internal sealed class CollabWindow : Window
                                   "Add remote TiXL". Then type the 6-digit code it shows here.
                                   """);
 
-        ImGui.SetNextItemWidth(96);
+        ImGui.SetNextItemWidth(96 * uiScale);
         ImGui.InputTextWithHint("##pairCode", "6-digit code", ref _pairCodeInput, 6);
         ImGui.SameLine();
         ImGui.BeginDisabled(_pairCodeInput.Trim().Length < 6);
-        if (ImGui.Button("Pair this computer"))
+        if (ImGui.Button("Pair This Computer"))
         {
             var code = _pairCodeInput.Trim();
             _pairError = "";
@@ -438,6 +440,7 @@ internal sealed class CollabWindow : Window
     /// <summary>Controller side: the owner's installations with connect controls.</summary>
     private static void DrawMyComputers(CollabManager collab)
     {
+        var uiScale = T3Ui.UiScaleFactor;
         SectionHeader("My computers");
 
         if (!CollabDiscordAuth.HasValidToken)
@@ -479,10 +482,10 @@ internal sealed class CollabWindow : Window
         if (!ImGui.BeginTable("##remoteDevices", 4, flags))
             return;
 
-        ImGui.TableSetupColumn("", ImGuiTableColumnFlags.WidthFixed, 14);
+        ImGui.TableSetupColumn("", ImGuiTableColumnFlags.WidthFixed, 14 * uiScale);
         ImGui.TableSetupColumn("Computer", ImGuiTableColumnFlags.WidthStretch, 0.42f);
         ImGui.TableSetupColumn("Project", ImGuiTableColumnFlags.WidthStretch, 0.38f);
-        ImGui.TableSetupColumn("", ImGuiTableColumnFlags.WidthFixed, 220);
+        ImGui.TableSetupColumn("", ImGuiTableColumnFlags.WidthFixed, 220 * uiScale);
         ImGui.TableHeadersRow();
 
         foreach (var device in devices)
@@ -506,7 +509,7 @@ internal sealed class CollabWindow : Window
             ImGui.PushID(device.Id);
             if (device.Room.Length > 0)
             {
-                if (ImGui.SmallButton("Join session"))
+                if (ImGui.SmallButton("Join Session"))
                     collab.JoinViaBackend(device.Room);
 
                 ImGui.SameLine();
@@ -599,7 +602,8 @@ internal sealed class CollabWindow : Window
         if (!ImGui.BeginPopup("Rename computer"))
             return;
 
-        ImGui.SetNextItemWidth(220);
+        var uiScale = T3Ui.UiScaleFactor;
+        ImGui.SetNextItemWidth(220 * uiScale);
         ImGui.InputText("##rename", ref _renameInput, 48);
         if (ImGui.Button("Save"))
         {
@@ -680,7 +684,7 @@ internal sealed class CollabWindow : Window
         ImGui.TextDisabled("code");
         ImGui.SameLine();
         ImGui.PushFont(Fonts.FontBold);
-        ImGui.TextColored(_accentColor, _pairingCode);
+        ImGui.TextColored(UiColors.CollabAccent.Rgba, _pairingCode);
         ImGui.PopFont();
         ImGui.SameLine();
         ImGui.TextDisabled($"{(int)remaining.TotalMinutes:00}:{remaining.Seconds:00} left  ·  {_pairingStatus}");
@@ -843,6 +847,8 @@ internal sealed class CollabWindow : Window
     // Boygroup tab: the show distribution's state, with a shortcut to its settings
     // ---------------------------------------------------------------------------------------
 
+    private static readonly System.Text.StringBuilder _sharedNameList = new();
+
     private static void DrawBoygroupTab(CollabManager collab)
     {
         var boygroup = BoygroupManager.Instance;
@@ -873,7 +879,7 @@ internal sealed class CollabWindow : Window
                                       """);
 
             FormInputs.AddVerticalSpace(4);
-            if (ImGui.Button("Open Boygroup settings"))
+            if (ImGui.Button("Open Boygroup Settings"))
             {
                 var settings = WindowManager.SettingsWindow;
                 settings.Config.Visible = true;
@@ -901,13 +907,25 @@ internal sealed class CollabWindow : Window
             if (isMaster)
             {
                 FormInputs.DrawInputLabel("Clients");
-                ImGui.TextDisabled(boygroup.Clients.Count == 0
-                                       ? "none yet — start TiXL on the render nodes and join"
-                                       : string.Join(", ", boygroup.Clients.Select(c => c.Name)));
+                if (boygroup.Clients.Count == 0)
+                    ImGui.TextDisabled("none yet — start TiXL on the render nodes and join");
+                else
+                {
+                    _sharedNameList.Clear();
+                    foreach (var client in boygroup.Clients)
+                    {
+                        if (_sharedNameList.Length > 0)
+                            _sharedNameList.Append(", ");
+
+                        _sharedNameList.Append(client.Name);
+                    }
+
+                    ImGui.TextDisabled(_sharedNameList.ToString());
+                }
             }
 
             FormInputs.AddVerticalSpace(8);
-            if (ImGui.Button("Boygroup settings"))
+            if (ImGui.Button("Boygroup Settings"))
             {
                 var settings = WindowManager.SettingsWindow;
                 settings.Config.Visible = true;
@@ -915,7 +933,7 @@ internal sealed class CollabWindow : Window
             }
 
             ImGui.SameLine();
-            if (ImGui.Button("Stop boygrouping"))
+            if (ImGui.Button("Stop Boygrouping"))
                 boygroup.Leave(manual: true);
         }
     }
@@ -1044,7 +1062,7 @@ internal sealed class CollabWindow : Window
                                   $"{collab.LocalIdentity.DisplayName}'s session",
                                   null, "What the session browser shows.");
         DrawPurposePicker(ref config.CollabSessionPurpose);
-        if (ImGui.SmallButton("Update entry"))
+        if (ImGui.SmallButton("Update Entry"))
         {
             collab.UpdateSessionListing(config.CollabSessionTitle, config.CollabSessionPurpose,
                                         ProjectView.Focused?.OpenedProject.Package.DisplayName ?? "",
@@ -1087,7 +1105,7 @@ internal sealed class CollabWindow : Window
             foreach (var whisper in whispers)
             {
                 if (whisper.FromHost)
-                    ImGui.TextColored(_whisperOwnColor, "You");
+                    ImGui.TextColored(UiColors.WhisperOwn.Rgba, "You");
                 else
                     ImGui.TextUnformatted(whisper.From);
 
@@ -1095,9 +1113,20 @@ internal sealed class CollabWindow : Window
                 ImGui.TextWrapped(whisper.Text);
             }
 
-            _replyToName = whispers.Last(w => !w.FromHost).From;
+            // Reply to the most recent whisper that is not ours; when every entry is ours,
+            // keep the previous name.
+            for (var i = whispers.Count - 1; i >= 0; i--)
+            {
+                if (!whispers[i].FromHost)
+                {
+                    _replyToName = whispers[i].From;
+                    break;
+                }
+            }
+
             FormInputs.AddVerticalSpace(4);
-            ImGui.SetNextItemWidth(-72);
+            var uiScale = T3Ui.UiScaleFactor;
+            ImGui.SetNextItemWidth(-72 * uiScale);
             ImGui.InputTextWithHint("##whisperReply", $"Reply to {_replyToName}...", ref _whisperReplyInput, 256);
             ImGui.SameLine();
             ImGui.BeginDisabled(_whisperReplyInput.Length == 0);
@@ -1297,7 +1326,11 @@ internal sealed class CollabWindow : Window
                      : isSpectated ? "adding operator"
                      : "";
         var location = isSelf ? CollabUserIdentity.FormatLang(collab.LocalIdentity.Lang) : CollabUserIdentity.FormatLang(collab.GetPeerLang(peerId.Value));
-        var secondLine = string.Join("  ·  ", new[] { roleNote, location }.Where(s => !string.IsNullOrEmpty(s)));
+        string secondLine;
+        if (roleNote.Length > 0 && location.Length > 0)
+            secondLine = $"{roleNote}  ·  {location}";
+        else
+            secondLine = roleNote.Length > 0 ? roleNote : location;
         if (secondLine.Length > 0)
         {
             ImGui.PushFont(Fonts.FontSmall);
@@ -1420,7 +1453,6 @@ internal sealed class CollabWindow : Window
     private static int _menuPeerId;
     private static string _whisperReplyInput = "";
     private static string _replyToName = "";
-    private static readonly System.Numerics.Vector4 _whisperOwnColor = new(0.55f, 0.8f, 0.55f, 1f);
 
     /// <summary>Draws a chip after the previous one, wrapping to a new line when the row is full.</summary>
     private static void DrawNameChip(ImDrawListPtr dl, string label, Color color, bool isFirst)
@@ -1484,6 +1516,7 @@ internal sealed class CollabWindow : Window
         var rooms = useBackend ? CollabWebLobby.Rooms : CollabLobby.Rooms;
 
         var fontSize = ImGui.GetFontSize();
+        var uiScale = T3Ui.UiScaleFactor;
         FormInputs.SetIndentToLeft();
         ImGui.SetNextItemWidth(fontSize * 11);
         ImGui.InputTextWithHint("##lobbyFilter", "Name or title", ref _lobbyFilter, 64);
@@ -1519,7 +1552,7 @@ internal sealed class CollabWindow : Window
         var autoMatch = FindAutoMatch(rooms);
         ImGui.SameLine();
         ImGui.BeginDisabled(autoMatch == null);
-        if (ImGui.Button("Auto match") && autoMatch != null)
+        if (ImGui.Button("Auto Match") && autoMatch != null)
         {
             ShowControlMode.Activate(ShowControlMode.Collab);
             CollabLobbyWhisper.Reset();
@@ -1662,7 +1695,7 @@ internal sealed class CollabWindow : Window
                 foreach (var whisper in whispers)
                 {
                     if (whisper.Mine)
-                        ImGui.TextColored(_whisperOwnColor, "You");
+                        ImGui.TextColored(UiColors.WhisperOwn.Rgba, "You");
                     else if (whisper.From.Length > 0)
                         ImGui.TextUnformatted(selected.HostName);
                     else
@@ -1673,7 +1706,7 @@ internal sealed class CollabWindow : Window
                 }
             }
 
-            ImGui.SetNextItemWidth(-150);
+            ImGui.SetNextItemWidth(-150 * uiScale);
             ImGui.InputTextWithHint("##lobbyWhisper", $"Whisper {selected.HostName}...", ref _lobbyWhisperInput, 256);
             ImGui.SameLine();
             ImGui.BeginDisabled(_lobbyWhisperInput.Length == 0);

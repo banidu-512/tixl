@@ -270,9 +270,13 @@ internal static class CollabBackendWire
     {
         Log.Debug($"Collab backend link: local description {description.Type} (offerer={_isOfferer})");
         if (_isOfferer && description.Type == RtcDescriptionType.Offer)
+        {
             SendJsonSignal(Signal("offer", description.Sdp));
+        }
         else if (!_isOfferer && description.Type == RtcDescriptionType.Answer)
+        {
             SendJsonSignal(Signal("answer", description.Sdp));
+        }
     }
 
     private void OnLocalCandidate(IRtcPeerConnection _, RtcCandidate candidate)
@@ -348,16 +352,35 @@ internal static class CollabBackendWire
             get
             {
                 lock (_gate)
-                    return _entries.Count(e => !e.Dead && e.Link is { HasVideoTrack: true });
+                {
+                    // Called once per render frame; keep it allocation-free like the sibling transport.
+                    var count = 0;
+                    foreach (var entry in _entries)
+                    {
+                        if (!entry.Dead && entry.Link is { HasVideoTrack: true })
+                            count++;
+                    }
+                    return count;
+                }
             }
         }
 
         /// <summary>One encoded access unit, fanned out to every open video track.</summary>
         public void SendVideo(byte[] annexB)
         {
+            // Called once per encoded access unit on the encode thread; the scratch list
+            // is reused so the fan-out does not allocate per frame.
             List<BackendRtcLink> links;
             lock (_gate)
-                links = _entries.Where(e => !e.Dead).Select(e => e.Link).OfType<BackendRtcLink>().ToList();
+            {
+                links = _sendScratch;
+                links.Clear();
+                foreach (var entry in _entries)
+                {
+                    if (!entry.Dead && entry.Link is BackendRtcLink link)
+                        links.Add(link);
+                }
+            }
 
             foreach (var link in links)
                 link.SendVideo(annexB);
@@ -367,12 +390,17 @@ internal static class CollabBackendWire
         public bool ConsumeKeyFrameRequest()
         {
             var requested = false;
-            List<BackendRtcLink> links;
             lock (_gate)
-                links = _entries.Where(e => !e.Dead).Select(e => e.Link).OfType<BackendRtcLink>().ToList();
-
-            foreach (var link in links)
-                requested |= link.ConsumeKeyFrameRequest();
+            {
+                // Just a flag flip per link; consuming under the gate avoids the snapshot list.
+                foreach (var entry in _entries)
+                {
+                    if (entry.Dead)
+                        continue;
+                    if (entry.Link is BackendRtcLink link)
+                        requested |= link.ConsumeKeyFrameRequest();
+                }
+            }
 
             return requested;
         }
@@ -391,6 +419,7 @@ internal static class CollabBackendWire
         private readonly CancellationTokenSource _cancellation = new();
         private readonly object _gate = new();
         private readonly List<HostPeerEntry> _entries = [];
+        private readonly List<BackendRtcLink> _sendScratch = [];
         private readonly HashSet<string> _blockedNames = new(StringComparer.OrdinalIgnoreCase);
         private volatile CollabPeerConnection[] _peerSnapshot = [];
         private int _nextPeerId = 1;
@@ -718,9 +747,10 @@ internal static class CollabBackendWire
         private int _pollFailures;
         private BackendRtcLink? _link;
         private CollabPeerConnection? _hostPeer;
+        private CollabPeerConnection[] _peerList = [];
         private volatile bool _connected;
 
-        public override IReadOnlyList<CollabPeerConnection> Peers => _hostPeer == null ? [] : [_hostPeer];
+        public override IReadOnlyList<CollabPeerConnection> Peers => _peerList;
 
         public override CollabPeerConnection? HostLink => _hostPeer;
 
@@ -850,6 +880,7 @@ internal static class CollabBackendWire
             var stream = new CollabDataChannelStream(channel, CollabWebRtc.DataChannelChunkSize,
                                                      () => OnFailed("overflow"));
             _hostPeer = new CollabPeerConnection(stream, 0, null);
+            _peerList = [_hostPeer];
             _connected = true;
             _ = Task.Run(() =>
                              {

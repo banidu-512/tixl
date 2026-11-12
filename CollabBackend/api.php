@@ -111,10 +111,8 @@ try {
     };
 } catch (Throwable $e) {
     http_response_code(500);
-    // Temporary diagnosis aid: ?debug=1 reveals the underlying reason; remove once stable.
-    $detail = isset($_GET['debug']) ? $e->getMessage() . ' @ ' . basename($e->getFile()) . ':' . $e->getLine() : '';
-    echo json_encode(['ok' => false, 'error' => 'backend error', 'detail' => $detail]);
-    error_log('tixl-api: ' . $e->getMessage());
+    echo json_encode(['ok' => false, 'error' => 'backend error']);
+    error_log('tixl-api: ' . $e->getMessage() . ' @ ' . basename($e->getFile()) . ':' . $e->getLine());
 }
 
 // --- storage ---------------------------------------------------------------------------------
@@ -318,11 +316,6 @@ function delete_stale_rooms(): void
 {
     db()->prepare('DELETE FROM rooms WHERE updated < ?')
         ->execute([time() - ROOM_TTL_SECONDS]);
-
-    // Sweep leftover project archives once in a while; the glob is cheap.
-    if (random_int(1, 20) === 1) {
-        sweep_project_archives();
-    }
 }
 
 function decode_list(string $json, int $maxEntries): array
@@ -487,9 +480,6 @@ function op_unregister(array $input): void
     }
 
     db()->prepare('DELETE FROM rooms WHERE room = ?')->execute([$room]);
-
-    // The party is over: its project snapshot has no use any more.
-    delete_project_archive($room);
     respond_ok();
 }
 
@@ -625,7 +615,7 @@ function op_signal(array $input): void
         respond_error('kind must be offer or answer');
     }
 
-    $sdp = clean((string)($input['sdp'] ?? ''), 16384);
+    $sdp = mb_substr(sdp_clean((string)($input['sdp'] ?? '')), 0, 16384);
     if ($sdp === '') {
         respond_error('sdp required');
     }
@@ -635,9 +625,14 @@ function op_signal(array $input): void
             respond_error('not the host');
         }
         $nonce = bin2hex(random_bytes(8));
-        $signals = decode_list((string)$found['signals'], 16);
-        $signals[] = ['kind' => 'offer', 'sdp' => $sdp, 'nonce' => $nonce, 'at' => time()];
-        save_signals($room, $signals);
+        // Append inside the write lock: a parallel offer must not be lost.
+        with_room_lock(function () use ($room, $sdp, $nonce) {
+            // Re-read inside the write lock: a parallel post may have appended since the load above.
+            $fresh = load_room($room);
+            $signals = decode_list((string)$fresh['signals'], 16);
+            $signals[] = ['kind' => 'offer', 'sdp' => $sdp, 'nonce' => $nonce, 'at' => time()];
+            save_signals($room, $signals);
+        });
         respond_ok(['nonce' => $nonce]);
     }
 
@@ -647,18 +642,27 @@ function op_signal(array $input): void
         respond_error('nonce required');
     }
 
-    $signals = decode_list((string)$found['signals'], 16);
-    foreach ($signals as $index => $signal) {
-        if ($signal['kind'] === 'offer' && $signal['nonce'] === $nonce) {
-            // Write through the index: a foreach copy would silently drop the answer.
-            $signals[$index]['answer'] = $sdp;
-            $signals[$index]['answered'] = time();
-            save_signals($room, $signals);
-            respond_ok();
+    $answered = false;
+    with_room_lock(function () use ($room, $nonce, $sdp, &$answered) {
+        // Re-read inside the write lock: a parallel answer may have written since the load above.
+        $fresh = load_room($room);
+        $signals = decode_list((string)$fresh['signals'], 16);
+        foreach ($signals as $index => $signal) {
+            if ($signal['kind'] === 'offer' && $signal['nonce'] === $nonce) {
+                // Write through the index: a foreach copy would silently drop the answer.
+                $signals[$index]['answer'] = $sdp;
+                $signals[$index]['answered'] = time();
+                save_signals($room, $signals);
+                $answered = true;
+                return;
+            }
         }
-    }
+    });
 
-    respond_error('offer not found');
+    if (!$answered) {
+        respond_error('offer not found');
+    }
+    respond_ok();
 }
 
 function save_signals(string $room, array $signals): void

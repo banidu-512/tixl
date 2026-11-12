@@ -17,7 +17,7 @@ namespace T3.Editor.Collab;
 /// </summary>
 internal static class CollabAvatars
 {
-    private static readonly Dictionary<string, ShaderResourceView> Textures = new();
+    private static readonly Dictionary<string, ShaderResourceView> _textures = new();
     private static readonly HashSet<string> _failed = new();
     private static readonly HashSet<string> _loading = new();
     private static readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(15) };
@@ -30,7 +30,12 @@ internal static class CollabAvatars
         if (string.IsNullOrWhiteSpace(url))
             return null;
 
-        if (Textures.TryGetValue(url, out var texture))
+        // The URL arrives from other participants over the wire: only the legit Discord-CDN
+        // prefix may be fetched, anything else (or any non-https URL) is ignored.
+        if (!url.StartsWith("https://cdn.discordapp.com/", StringComparison.Ordinal))
+            return null;
+
+        if (_textures.TryGetValue(url, out var texture))
             return texture;
 
         if (_failed.Contains(url) || !_loading.Add(url))
@@ -57,7 +62,7 @@ internal static class CollabAvatars
 
                                  var srv = SrvManager.GetSrvForTexture(compat);
                                  if (srv != null)
-                                     Textures[url] = srv;
+                                     _textures[url] = srv;
                                  else
                                      _failed.Add(url);
                              }

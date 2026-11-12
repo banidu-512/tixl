@@ -134,7 +134,7 @@ internal sealed partial class SettingsWindow
 
             FormInputs.AddVerticalSpace(4);
             FormInputs.SetCursorToParameterEdit();
-            if (ImGui.Button("Join server"))
+            if (ImGui.Button("Join Server"))
             {
                 ShowControlMode.Activate(ShowControlMode.Boygroup);
                 manager.JoinServer(_boygroupServerAddress, config.BoygroupPort, _boygroupGroup ?? "Main", config.CollabPassword);
