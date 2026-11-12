@@ -908,7 +908,9 @@ internal sealed class CollabWindow : Window
             {
                 FormInputs.DrawInputLabel("Clients");
                 if (boygroup.Clients.Count == 0)
+                {
                     ImGui.TextDisabled("none yet — start TiXL on the render nodes and join");
+                }
                 else
                 {
                     _sharedNameList.Clear();
@@ -1265,6 +1267,7 @@ internal sealed class CollabWindow : Window
         }
 
         DrawKickConfirmation(collab);
+        DrawHostTransferConfirmation(collab);
     }
 
     private static void DrawPartyRow(CollabManager collab, int? peerId, bool isHost)
@@ -1287,7 +1290,14 @@ internal sealed class CollabWindow : Window
         dl.AddRectFilled(rowMin, rowMin + new Vector2(rowWidth, rowHeight),
                          (isFollowing ? UiColors.StatusAutomated : UiColors.ForegroundFull).Fade(0.12f), 4 * uiScale);
         ImGui.Dummy(new Vector2(rowWidth, rowHeight));
-        CustomComponents.ContextMenuForItem(DrawPeerMenu, name, "##peerMenu");
+
+        // The context menu closes over _menuPeerId; only attach it for actual peers - the self row
+        // has no peer id, and Follow/Kick/Make Host make no sense against yourself.
+        if (peerId.HasValue)
+        {
+            _menuPeerId = peerId.Value;
+            CustomComponents.ContextMenuForItem(DrawPeerMenu, name, "##peerMenu");
+        }
 
         var cursor = rowMin + new Vector2(4 * uiScale, 4 * uiScale);
 
@@ -1328,9 +1338,13 @@ internal sealed class CollabWindow : Window
         var location = isSelf ? CollabUserIdentity.FormatLang(collab.LocalIdentity.Lang) : CollabUserIdentity.FormatLang(collab.GetPeerLang(peerId.Value));
         string secondLine;
         if (roleNote.Length > 0 && location.Length > 0)
+        {
             secondLine = $"{roleNote}  ·  {location}";
+        }
         else
+        {
             secondLine = roleNote.Length > 0 ? roleNote : location;
+        }
         if (secondLine.Length > 0)
         {
             ImGui.PushFont(Fonts.FontSmall);
