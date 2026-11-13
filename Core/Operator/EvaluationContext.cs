@@ -4,6 +4,7 @@ using T3.Core.Animation;
 using T3.Core.DataTypes;
 using T3.Core.DataTypes.Vector;
 using T3.Core.Operator.Interfaces;
+using T3.Core.Output.Rendering;
 using T3.Core.Rendering;
 using T3.Core.Rendering.Material;
 using T3.Core.Utils;
@@ -55,7 +56,6 @@ public sealed class EvaluationContext
         StringVariables.Clear();
             
         PbrContextSettings.SetDefaultToContext(this);
-        GeometryCapture = null;
     }
 
     /// <summary>
@@ -132,7 +132,7 @@ public sealed class EvaluationContext
     /// cache their outputs and re-evaluate only after this, so whoever sets a resolution reports it through
     /// <see cref="NotifyPullResolution"/> or <see cref="NotifyResolutionWrite"/>.
     /// </summary>
-    public static event Action RequestedResolutionChanged;
+    public static event Action? RequestedResolutionChanged;
 
     /// <summary>
     /// Call before invalidating a graph that this context pulls from outside (an output window, a preview).
@@ -171,17 +171,9 @@ public sealed class EvaluationContext
     /// For an op that sets the resolution for its subgraph. Restoring the outer resolution afterwards is not
     /// reported, only a size that differs from what this op set last time. On a change it returns true, and the
     /// caller invalidates its subgraph again before pulling it, because this frame's invalidation pass already ran.
-    /// Each writer reports at most once per frame: an instance pulled at several sizes within one frame (previews,
-    /// test warm-ups) would otherwise invalidate its whole subgraph and every resolution reader on every pull.
-    /// Resizes only need to be noticed once per frame.
     /// </summary>
-    public static bool NotifyResolutionWrite(ref Int2 lastWritten, ref int lastWriteFrame, Int2 resolution)
+    public static bool NotifyResolutionWrite(ref Int2 lastWritten, Int2 resolution)
     {
-        var frame = OutputFrame.Index;
-        if (frame == lastWriteFrame)
-            return false;
-
-        lastWriteFrame = frame;
         if (resolution == lastWritten)
             return false;
 
@@ -320,10 +312,4 @@ public sealed class EvaluationContext
 
     public LegacyParticleSystem LegacyParticleSystem;
     public ParticleSystem ParticleSystem;
-
-    /// <summary>
-    /// Set while a consumer (e.g. the laser camera) captures the geometry drawn inside its subtree.
-    /// Null when no capture pass is active, so draw ops can register through it with a cheap null check.
-    /// </summary>
-    public GeometryCapture GeometryCapture;
 }

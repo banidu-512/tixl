@@ -50,7 +50,7 @@ internal sealed class SendToOutput : Instance<SendToOutput>, IContentSupplier, I
         }
 
         context.RequestedResolution = requested;
-        if (EvaluationContext.NotifyResolutionWrite(ref _lastWrittenResolution, ref _lastResolutionWriteFrame, requested))
+        if (EvaluationContext.NotifyResolutionWrite(ref _lastWrittenResolution, requested))
         {
             DirtyFlag.GlobalInvalidationTick++;
             Texture.InvalidateGraph();
@@ -184,5 +184,4 @@ internal sealed class SendToOutput : Instance<SendToOutput>, IContentSupplier, I
     public readonly InputSlot<bool> ExposeToParents = new();
 
     private Int2 _lastWrittenResolution;
-    private int _lastResolutionWriteFrame = -1;
 }
