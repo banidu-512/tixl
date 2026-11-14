@@ -98,9 +98,11 @@ internal sealed class ImageOutputCanvas : ScalableCanvas
         var sizeOnScreen = Current.TransformDirection(size);
 
         // Depth-stencil textures (and failed creations) have no SRV, so only the caption is drawn.
+        // The cursor only moves when the image follows: ImGui asserts on a cursor move without a submitted item.
         var srv = SrvManager.GetSrvForTexture(texture);
         if (srv != null)
         {
+            ImGui.SetCursorScreenPos(topLeftOnScreen);
             var drawList = ImGui.GetWindowDrawList();
             WindowsUiContentDrawer.BeginPixelSampling(drawList);
             ImGui.Image((IntPtr)srv.ImGuiTextureId, sizeOnScreen);
