@@ -1,3 +1,5 @@
+#include "shared/velocity-functions.hlsl"
+
 cbuffer ParamConstants : register(b0)
 {
     float BlendFactor;        // History weight in steady state (0..1, ~0.9).
@@ -50,6 +52,7 @@ struct vsOutput
 Texture2D<float4> Image : register(t0);
 Texture2D<float4> DepthMap : register(t1);
 Texture2D<float4> History : register(t2);
+Texture2D<float4> VelocityMap : register(t3);
 sampler texSampler : register(s0);
 
 // YCoCg is the standard space for TAA neighborhood clamping: chroma separates from luma
@@ -90,7 +93,11 @@ float4 psMain(vsOutput psInput) : SV_TARGET
     float4 worldPos = mul(float4(ndc, depth, 1.0), ClipSpaceToWorld);
     worldPos /= worldPos.w;
 
-    // Project that world point through the previous camera to find where it was on screen.
+    // Where this surface was on screen last frame. Draws that write velocity know it (moving objects);
+    // elsewhere project the world point through the previous camera, which is right for static geometry.
+    float2 objectVelocity;
+    bool hasObjectMotion = TryDecodeVelocity(VelocityMap.SampleLevel(texSampler, uv, 0), depth, objectVelocity);
+
     float4 prevClip = mul(worldPos, PrevWorldToClipSpace);
     prevClip /= prevClip.w;
     float2 prevUv = float2(prevClip.x * 0.5 + 0.5, 0.5 - prevClip.y * 0.5);
@@ -107,6 +114,13 @@ float4 psMain(vsOutput psInput) : SV_TARGET
     // blends in as sub-pixel supersamples. (Correcting with only one frame's jitter shifts the
     // fetch by the other frame's jitter every frame — the whole image vibrates.)
     prevUv += previousJitterUv - currentJitterUv;
+
+    // Stored velocity has no jitter, so it already lands on that stable alignment.
+    if (hasObjectMotion)
+    {
+        prevUv = uv - objectVelocity;
+        prevClip.xy = float2(prevUv.x * 2.0 - 1.0, 1.0 - prevUv.y * 2.0);
+    }
 
     float2 velocity = uv - prevUv;
     //return float4((velocity * 1000) + 0.5,0,1);
@@ -163,6 +177,13 @@ float4 psMain(vsOutput psInput) : SV_TARGET
     float4 prevWorld = mul(float4(prevClip.xy, historySample.a, 1.0), PrevClipSpaceToWorld);
     prevWorld /= prevWorld.w;
     float surfaceGap = distance(worldPos.xyz, prevWorld.xyz);
+    if (hasObjectMotion)
+    {
+        // A moving surface is elsewhere in the world; it is expected at about the same distance from the camera.
+        float4 currentInCamera = mul(float4(ndc, depth, 1.0), ClipSpaceToCamera);
+        float4 previousInCamera = mul(float4(prevClip.xy, historySample.a, 1.0), PrevClipSpaceToCamera);
+        surfaceGap = abs(currentInCamera.z / currentInCamera.w - previousInCamera.z / previousInCamera.w);
+    }
     confidence *= 1.0 - saturate(surfaceGap / max(DepthRejection, 1e-5));
 
     if (Reset > 0.5)
