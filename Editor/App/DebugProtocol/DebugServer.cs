@@ -441,7 +441,20 @@ internal static class DebugServer
                 }
 
                 var bypassed = request["bypassed"]?.Value<bool>() ?? true;
-                UndoRedoStack.AddAndExecute(new ChangeInstanceBypassedCommand(bypassChild, bypassed));
+                if (bypassChild.IsBypassed != bypassed)
+                {
+                    var bypassCommand = new ChangeInstanceBypassedCommand(bypassChild, bypassed);
+                    bypassCommand.Do();
+
+                    if (bypassChild.IsBypassed != bypassed)
+                    {
+                        context.SendError("BYPASS_NOT_APPLIED", $"Could not change bypass for [{bypassChild.Symbol.Name}].");
+                        break;
+                    }
+
+                    UndoRedoStack.Add(bypassCommand);
+                }
+
                 context.SendOk(new JObject { ["bypassed"] = bypassChild.IsBypassed });
                 break;
             }
