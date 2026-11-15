@@ -95,14 +95,14 @@ internal sealed class ImageOutputCanvas : ScalableCanvas
 
         var topLeft = Vector2.Zero;
         var topLeftOnScreen = Current.TransformPosition(topLeft);
-        ImGui.SetCursorScreenPos(topLeftOnScreen);
-
         var sizeOnScreen = Current.TransformDirection(size);
 
         // Depth-stencil textures (and failed creations) have no SRV, so only the caption is drawn.
+        // The cursor only moves when the image follows: ImGui asserts on a cursor move without a submitted item.
         var srv = SrvManager.GetSrvForTexture(texture);
         if (srv != null)
         {
+            ImGui.SetCursorScreenPos(topLeftOnScreen);
             var drawList = ImGui.GetWindowDrawList();
             WindowsUiContentDrawer.BeginPixelSampling(drawList);
             ImGui.Image((IntPtr)srv.ImGuiTextureId, sizeOnScreen);
@@ -115,9 +115,12 @@ internal sealed class ImageOutputCanvas : ScalableCanvas
         {
             var format = srv == null || srv.IsDisposed ? "null?" : GetFormatLabel(srv.Description.Format);
             var zoom = Math.Abs(Scale.X) < 0.001f ? "" : $" ×{Scale.X:G2}";
+
+            // A rendered scene carries depth, normals and velocity along with the color: "+DNV".
+            var bundle = texture.Bundle?.Label ?? "";
             DrawCaption(SourceLabel == null
-                            ? $"{size.X}x{size.Y}  {format} {zoom}"
-                            : $"via {SourceLabel}  {size.X}x{size.Y}  {format} {zoom}");
+                            ? $"{size.X}x{size.Y}  {format}{bundle} {zoom}"
+                            : $"via {SourceLabel}  {size.X}x{size.Y}  {format}{bundle} {zoom}");
         }
     }
 
