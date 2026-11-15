@@ -21,8 +21,7 @@ internal sealed class RepeatFrame : Instance<RepeatFrame>
 
     private void Update(EvaluationContext context)
     {
-        var passCountOverride = context.RenderPass.SubframeCountOverride;
-        var passCount = (passCountOverride > 0 ? passCountOverride : Passes.GetValue(context)).Clamp(1, MaxPasses);
+        var passCount = Passes.GetValue(context).Clamp(1, MaxPasses);
 
         // Limited to one frame: state from before the previous frame is gone, so damped values couldn't follow further.
         var shutter = Shutter.GetValue(context).Clamp(0f, 1f);
@@ -45,7 +44,6 @@ internal sealed class RepeatFrame : Instance<RepeatFrame>
             // The first subframe covers the time since the previous frame up to the window; the steps add up to one frame.
             context.RenderPass.RepeatPass = keepRenderPass.RepeatPass + passIndex;
             context.RenderPass.IsSubframe = true;
-            context.RenderPass.SubframeCount = passCount;
             context.RenderPass.SubframeStepSec = passCount == 1
                                                      ? frameSec
                                                      : passIndex == 0
