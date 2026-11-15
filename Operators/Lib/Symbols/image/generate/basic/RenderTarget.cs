@@ -1,4 +1,5 @@
 using T3.Graphics.Compat;
+using T3.Core.Rendering;
 using T3.Core.Operator.Interfaces;
 using T3.Core.Utils;
 using T3.Graphics;
@@ -239,7 +240,7 @@ internal sealed class RenderTarget : Instance<RenderTarget>, IRenderStatsProvide
             // Set default values for new sub tree
             context.RequestedResolution = size;
             context.SetDefaultCamera();
-            if (EvaluationContext.NotifyResolutionWrite(ref _lastWrittenResolution, size))
+            if (EvaluationContext.NotifyResolutionWrite(ref _lastWrittenResolution, ref _lastResolutionWriteFrame, size))
             {
                 DirtyFlag.GlobalInvalidationTick++;
                 Command.InvalidateGraph();
@@ -252,8 +253,13 @@ internal sealed class RenderTarget : Instance<RenderTarget>, IRenderStatsProvide
                 reference.NormalTexture = _normalTarget.Texture;
             }
 
-            // Render
+            // Render; draws keep velocity history only when this target can take it.
+            var keepRenderPass = context.RenderPass;
+            context.RenderPass.VelocityRequested = withVelocityBuffer;
+            context.RenderPass.RenderedCamera = null;
             Command.GetValue(context);
+            _bundle.Camera = context.RenderPass.RenderedCamera;
+            context.RenderPass = keepRenderPass;
 
             // Restore context
             context.BypassCameras = keepCameraBypass;
@@ -304,6 +310,16 @@ internal sealed class RenderTarget : Instance<RenderTarget>, IRenderStatsProvide
 
         }
             
+        // The color image carries the other buffers, so one connection hands a post effect the whole render.
+        // Off by default: image effects render through internal targets whose depth means nothing to their consumers.
+        if (AttachBundle.GetValue(context) && ColorTexture != null)
+        {
+            _bundle.Depth = withDepthBuffer ? DepthTexture : null;
+            _bundle.Normal = _normalTarget.Texture;
+            _bundle.Velocity = _velocityTarget.Texture;
+            ColorTexture.Bundle = _bundle;
+        }
+
         ColorBuffer.Value = ColorTexture;
         ColorBuffer.DirtyFlag.Clear();
         DepthBuffer.Value = DepthTexture;
@@ -674,12 +690,14 @@ internal sealed class RenderTarget : Instance<RenderTarget>, IRenderStatsProvide
     private Texture2D _resolvedDepthBuffer;
     private UnorderedAccessView _resolvedDepthBufferUav;
 
+    private readonly RenderBundle _bundle = new();
     private readonly ColorAttachment _normalTarget = new("normal");
     private readonly ColorAttachment _velocityTarget = new("velocity");
  
     private bool _wasClearedOnce;
     private bool _isRebuildable;
     private Int2 _lastWrittenResolution;
+    private int _lastResolutionWriteFrame = -1;
 
     private Texture2D ColorTexture => _sampleCount > 1 ? _resolvedColorBuffer : _multiSampledColorBuffer ;
     private Texture2D DepthTexture => _sampleCount > 1 ? _resolvedDepthBuffer : _multiSampledDepthBuffer;
@@ -715,6 +733,9 @@ internal sealed class RenderTarget : Instance<RenderTarget>, IRenderStatsProvide
 
     [Input(Guid = "db4ac4e3-2dd9-4f88-982b-a2e71dcb29f6")]
     public readonly InputSlot<bool> WithVelocityBuffer = new();
+
+    [Input(Guid = "269ab682-769a-4c9e-acf5-5791ea4735f3")]
+    public readonly InputSlot<bool> AttachBundle = new();
 
     [Input(Guid = "f0cf3325-4967-4419-9beb-036cd6dbfd6a")]
     public readonly InputSlot<bool> GenerateMips = new();
