@@ -1,5 +1,6 @@
 using ImGuiNET;
 using System.Diagnostics;
+using T3.Core.Operator;
 using T3.Editor.Gui.MagGraph.Interaction;
 using T3.Editor.Gui.Interaction;
 using T3.Editor.Gui.Interaction.Keyboard;
@@ -89,6 +90,35 @@ namespace T3.Editor.Gui.MagGraph.States
             }
 
             context.Placeholder.OpenForItemInput(context, item, mainInputLine.Id, direction);
+        }
+
+        /// <summary>
+        /// The selection wins, so closing and reopening an operator works wherever the mouse rests: closing selects
+        /// the operator just left. Without a single selected operator, the one under the mouse opens.
+        /// </summary>
+        private static void OpenSelectedOrHoveredOperator(GraphUiContext context)
+        {
+            var instance = context.Selector.GetSelectedInstanceWithoutComposition();
+            if (instance == null)
+            {
+                var hoveredItem = context.ActiveItem ?? context.HoveredItem;
+                if (hoveredItem is { Variant: MagGraphItem.Variants.Operator })
+                    instance = hoveredItem.Instance;
+            }
+
+            if (instance == null || !CanOpen(instance))
+                return;
+
+            context.ProjectView.TrySetCompositionOpToChild(instance.SymbolChildId);
+        }
+
+        /// <summary>
+        /// Empty ops of editable packages can be entered so content can be added to them.
+        /// Empty read-only ops (most Lib ops) have nothing to show and nothing can be added.
+        /// </summary>
+        private static bool CanOpen(Instance instance)
+        {
+            return instance.Children.Count > 0 || !instance.Symbol.SymbolPackage.IsReadOnly;
         }
 
         private static bool IsHorizontallySnapped(MagGraphConnection connection)
@@ -237,7 +267,7 @@ namespace T3.Editor.Gui.MagGraph.States
                                           // MagGraph scope to the legacy graph, so it's correctly saved for the Symbol in the user settings...
                                           //ProjectView.Focused?.GraphCanvas?.SetTargetScope(context.Canvas.GetTargetScope());
 
-                                          if (context.ActiveItem.Instance.Children.Count > 0)
+                                          if (CanOpen(context.ActiveItem.Instance))
                                           {
                                               ProjectView.Focused.TrySetCompositionOpToChild(context.ActiveItem.Instance.SymbolChildId);
                                           }
