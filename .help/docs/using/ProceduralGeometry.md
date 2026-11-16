@@ -52,8 +52,6 @@ Animating **Width** is cheap on simple shapes — the geometry rebuilds in real 
 
 [LoadObjGeometry] loads a Wavefront `.obj` file as geometry. Quads and other N-gons are kept, so imported models can be beveled. OBJ objects and groups become parts, and the file reloads automatically when it changes on disk. For glTF files and character animation, use [LoadGltfScene] instead — see [Character animation](CharacterAnimation.md).
 
-[AssimpImport] reads FBX, glTF, Collada, STL, PLY, 3DS, Blend and many more formats. Its **Geometry** output keeps N-gons like [LoadObjGeometry]; every mesh of the file becomes one part, with the file's node transforms applied. Positions that only differ in their UVs or normals are welded, so edges at UV seams stay connected for beveling. [AssimpExport] writes geometry (one object per part), meshes or points back to these formats.
-
 ## Deforming and coloring with fields
 
 Fields describe a value that varies through space. Build one, optionally reshape it, then let an operator sample it:
@@ -81,10 +79,11 @@ The curve operators turn fonts into 3D text:
 [TextToCurves] -> [CurvesToGeometry] -> [GeometryToMesh] -> [DrawMesh]
 ```
 
-- [TextToCurves] lays out text with a TrueType or OpenType font and outputs each glyph as a curve part. Variable fonts respond to **Weight** and one additional axis.
+- [TextToCurves] lays out text with a TrueType or OpenType font and outputs each glyph as a curve part. Variable fonts respond to **Weight** and one additional axis. **LetterSpacing** adds tracking relative to the size, and **Position** (with a move gizmo) places the text block.
 - [CurvesToGeometry] fills the outlines. With **Depth** above 0 it extrudes them into solid letters; **Bevel** and **BevelSegments** round or chamfer the edges. Keep the bevel below half the thinnest stroke, otherwise the surface folds over itself.
 - [SubdivideCurves] splits long segments into shorter ones without changing the shape — useful before deforming outlines.
-- [CurvesToPoints] flattens curves into a point list for [DrawLines] and the other point operators.
+- [OffsetCurves] grows or shrinks outlines by a distance. Sharp corners stay closed with a miter, round or bevel join, and holes shrink while outlines grow.
+- [CurvesToPoints] flattens curves into a point list for [DrawLines] and the other point operators. Each point's Z axis faces away from the filled area, so oriented sprites, ribbons and instances follow the outline.
 
 ## Parts, fracture and chunks
 
