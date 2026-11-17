@@ -19,6 +19,9 @@
         <RuntimeIdentifiers>win-x64;linux-x64;osx-arm64</RuntimeIdentifiers>
         <EnableUnsafeBinaryFormatterSerialization>true</EnableUnsafeBinaryFormatterSerialization>
         <Deterministic>true</Deterministic>
+        <!-- Startup reads and parses thousands of small symbol files, which is allocation heavy; server GC
+             parallelizes collection across cores instead of stalling the load on single-threaded GC. -->
+        <ServerGarbageCollection>true</ServerGarbageCollection>
         <Configurations>Debug;Release</Configurations>
         <Platforms>AnyCPU</Platforms>
         <AssemblyName>TiXL</AssemblyName>
@@ -114,9 +117,8 @@
         </Content>
     </ItemGroup>
 
-    <!-- BASS ships one native per platform under the same managed name, so the Linux and macOS libraries live
-         in their own folders and are copied only there - the flat copy above would otherwise drop them into a
-         Windows build as dead weight. BASSWASAPI is Windows-only; audio input is gated on it at runtime. -->
+    <!-- Linux and macOS natives live in their own folders and are copied only there - the flat copy above
+         would otherwise drop them into a Windows build as dead weight. -->
     <ItemGroup Condition="$([MSBuild]::IsOSPlatform('Linux'))">
         <Content Include="../Dependencies/linux-x64/*.so" Visible="false">
             <Link>%(Filename)%(Extension)</Link>
@@ -132,12 +134,16 @@
 
     <!-- macOS: libmediapipe_c.dylib resolves its OpenCL imports by dynamic lookup and Apple Silicon
          ships no OpenCL, so a no-op stub must be in the process before the first P/Invoke
-         (MediapipeNativeLibrary loads it from the app directory). Build it for dev builds too -
-         previously only the packaged DMG and the test host produced one, so a plain `dotnet run`
-         of the editor failed with "symbol not found in flat namespace". Needs clang. -->
+         (MediapipeNativeLibrary loads it from the app directory). Built for dev builds too - the
+         packaged DMG and the test host produce their own, so a plain `dotnet run` of the editor
+         otherwise fails with "symbol not found in flat namespace". Needs clang; when it is missing
+         the build continues and only the MediaPipe operators are unavailable. -->
     <Target Name="BuildMediapipeOpenClStub" BeforeTargets="BeforeBuild" Condition="$([MSBuild]::IsOSPlatform('OSX'))">
         <MakeDir Directories="$(OutputPath)" />
-        <Exec Command="clang -arch x86_64 -arch arm64 -shared -o &quot;$(OutputPath)libmediapipe_opencl_stub.dylib&quot; &quot;$(MSBuildThisFileDirectory)../Dependencies/osx/mediapipe-opencl-stub.c&quot;" />
+        <Exec Command="clang -arch x86_64 -arch arm64 -shared -o &quot;$(OutputPath)libmediapipe_opencl_stub.dylib&quot; &quot;$(MSBuildThisFileDirectory)../Dependencies/osx/mediapipe-opencl-stub.c&quot;"
+              ContinueOnError="true" />
+        <Warning Condition="!Exists('$(OutputPath)libmediapipe_opencl_stub.dylib')"
+                 Text="libmediapipe_opencl_stub.dylib was not built (clang missing?); the MediaPipe operators will be unavailable in this build." />
     </Target>
     <!-- =================================//===================================== -->
 
@@ -231,7 +237,6 @@
         <PackageNames Include="Mediapipe">
             <Name>t3.mediapipe</Name>
         </PackageNames>
-        <PackageNames Include="DepthAnything" />
         <!-- Add more as needed -->
     </ItemGroup>
     <PropertyGroup>
@@ -295,7 +300,7 @@
     <!-- Release-only: read-only packages and exports are loaded from bin, so Release output must be exactly
          what the build produces. Debug reads symbols from source and profits from incremental builds;
          cleaning it also gutted the output folder of a running editor. -->
-    <Target Name="ClearBuildOutput" BeforeTargets="BeforeBuild" Condition="'$(Configuration)' == 'Release'">
+    <Target Name="ClearBuildOutput" BeforeTargets="BeforeBuild" Condition="'$(Configuration)' == 'Release' And '$(ClearBuildOutput)' != 'false'">
         <RemoveDir Directories="bin/$(Configuration)" />
     </Target>
 
