@@ -72,6 +72,35 @@ cleanup before thresholding or normal generation.
 ![Filtered depth](shots/DepthFilter-output.png)
 *The filtered float depth (shown in the red channel, as float textures are).*
 
+## DepthToPosition
+
+Unprojects a depth map into camera-space positions on the GPU: red, green and blue hold x, y and
+the distance in front of the camera, alpha marks usable pixels. `FieldOfView` is the vertical angle
+(`DepthAnything.VerticalFov` provides the model's estimate), `DepthScale` sets the size of the
+reconstruction and `DepthIsDisparity` handles V2 output.
+
+**Output:** `PositionTexture` (RGBA32F).
+
+![DepthToPosition selected in the depth chain](shots/DepthToPosition-ui.png)
+*The unprojection parameters next to the position texture.*
+
+![Position texture](shots/DepthToPosition-output.png)
+*Camera-space positions; the blue channel grows with distance.*
+
+## DepthParallax
+
+Shifts an image by its depth as if the camera moved sideways, for 2.5D camera moves on stills or live
+video. `Offset` is the move, `FocalPlane` the depth that stays put, `MinDepth` and `MaxDepth` the depth
+range (wire them from `DepthAnything`) and `Steps` the search quality at depth edges.
+
+**Output:** `ResultTexture` (RGBA16F).
+
+![DepthParallax selected in the depth chain](shots/DepthParallax-ui.png)
+*The parallax inputs wired from DepthAnything, with a small horizontal offset.*
+
+![Parallax result](shots/DepthParallax-output.png)
+*The frog shifted against its background; the gather keeps depth edges from opening holes.*
+
 ## DepthThreshold
 
 Turns a depth range into a binary mask. With `UseNormalized` on, the thresholds refer to the frame's
