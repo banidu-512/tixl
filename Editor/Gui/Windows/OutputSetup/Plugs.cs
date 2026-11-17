@@ -312,6 +312,7 @@ internal static class Plugs
                             Address = kind == LaserPlug.Kinds.Ponk ? "239.255.10.24" : string.Empty,
                             Port = kind == LaserPlug.Kinds.Ponk ? 5583
                                : kind == LaserPlug.Kinds.EtherDream ? 7765
+                               : kind == LaserPlug.Kinds.ShowNet ? 41855
                                : 0,
                             // The basic interface: the first usable NIC. Editable per plug; empty
                             // on machines without one ("any interface").
@@ -362,7 +363,9 @@ internal static class Plugs
 
     private static string FreeLaserName(MachineConfig machineConfig, string kind)
     {
-        var baseName = kind == LaserPlug.Kinds.Ponk ? "PONK" : "Laser";
+        var baseName = kind == LaserPlug.Kinds.Ponk ? "PONK"
+                     : kind == LaserPlug.Kinds.ShowNet ? "showNET"
+                     : "Laser";
         var name = baseName;
         for (var i = 2; i < 100 && HasLaserNamed(machineConfig, name); i++)
             name = $"{baseName} {i}";

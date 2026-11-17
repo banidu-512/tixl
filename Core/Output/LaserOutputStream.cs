@@ -50,6 +50,7 @@ public sealed class LaserOutputStream : IDisposable
                            LaserPlug.Kinds.EtherDream => new LaserOutputStream(new EtherDreamStream(plug)),
                            LaserPlug.Kinds.Ponk => new LaserOutputStream(new PonkStream(plug)),
                            LaserPlug.Kinds.Citp => new LaserOutputStream(new CitpStream(plug)),
+                           LaserPlug.Kinds.ShowNet => new LaserOutputStream(new ShowNetStream(plug)),
                            _ => null,
                        };
         }
@@ -2052,6 +2053,553 @@ private void HandleConnectionStateChanged(bool isConnected)
         /** The remembered frame already has its colors zeroed, so repeats need no new blanked copy. */
         private bool _lastFrameBlanked;
     }
+    #endregion
+
+    #region ShowNet transport
+    /// <summary>
+    /// Streams to a showNET laser over UDP with the protocol's request/response handshake. The
+    /// session: direct sends to ip:41855 from an ephemeral local port — handshake (command 0x04,
+    /// full obfuscation, reply awaited), configure (0x12, reply ignored), then frames (0x1A) and
+    /// NOPs. UDP is best-effort: frames are dropped, never queued up; the watchdog plus blanked
+    /// repeats keep the beam honest while the device loops its frame memory.
+    /// </summary>
+    private sealed class ShowNetStream : IStream
+    {
+        public ShowNetStream(LaserPlug plug)
+        {
+            _plug = plug;
+            var device = plug.ShowNetSettings;
+            _scanRate = NormalizeScanRate(device.ScanRate);
+            _plugAddress = plug.Address ?? string.Empty;
+            _localAddress = plug.LocalAddress ?? string.Empty;
+            _maxBrightness = Math.Clamp(device.MaxBrightness, 0f, 1f);
+            _swapColorChannels = device.SwapColorChannels;
+
+            // The plug picker lists lasers while a stream runs — start the shared probe listener
+            // together with the stream.
+            LaserPlugDiscovery.EnsureShowNetDiscovery();
+
+            StartConnection();
+        }
+
+        private readonly LaserPlug _plug;
+        private readonly string _plugAddress;
+        private readonly string _localAddress;
+
+        // Read per frame by the send loop, so a settings edit applies without a reconnect.
+        private volatile int _scanRate;
+        private volatile float _maxBrightness;
+        private volatile bool _swapColorChannels;
+
+        private Socket? _socket;
+        private CancellationTokenSource? _connectionCts;
+        private readonly ConcurrentQueue<LaserPoint[]> _pointQueue = new();
+        private volatile LaserPoint[]? _lastFrame;
+        private readonly ShowNetSessionInfo _session = new();
+        private byte[] _bitstream = Array.Empty<byte>();
+
+        // Per-session counters, the reference's semantics.
+        private int _sequenceId = 1000;
+        private int _frameId;
+        private int _packetId;
+
+        private int _disposed;
+        private volatile bool _isConnected;
+        private long _lastEnqueueTimestamp;
+        private volatile bool _watchdogBlanked;
+        private volatile string? _lastConnectIp;
+        private volatile string? _autoSelectedIp;
+
+        private volatile StatusInfo _status = new("Disconnected", IStatusProvider.StatusLevel.Notice);
+
+        private const int HandshakeTimeoutMs = 700;
+        private const int HandshakeAttempts = 5;
+        private const int ConnectRetryDelayMs = 2000;
+        private const int MaxConsecutiveSendErrors = 20;
+        private const int MaxQueuedFrames = 2;
+        private const int RepeatIntervalMs = 33;
+        private const int NopIntervalMs = 500;
+        private const int DiscoverPollDelayMs = 500;
+        private const int FrameMemorySize = 0x8000;
+
+        public bool IsConnected => _isConnected;
+        public IStatusProvider.StatusLevel StatusLevel => _status.Level;
+        public string StatusMessage => _status.Message;
+
+        /// <summary>Only the endpoint (device address or the local interface bind) needs a new
+        /// session; scan rate, brightness ceiling and channel order are read per frame.</summary>
+        public void ApplyLiveSettings(LaserPlug plug)
+        {
+            var device = plug.ShowNetSettings;
+            _scanRate = NormalizeScanRate(device.ScanRate);
+            _maxBrightness = Math.Clamp(device.MaxBrightness, 0f, 1f);
+            _swapColorChannels = device.SwapColorChannels;
+        }
+
+        /// <summary>A plug left at the default 0 streams at 30 kpps — the rule all transports share.</summary>
+        private static int NormalizeScanRate(int scanRate)
+        {
+            var clamped = Math.Clamp(scanRate, 100, 100000);
+            return clamped == 100 && scanRate < 100 ? 30000 : clamped;
+        }
+
+        public string? DescribeMismatch(LaserPlug plug)
+        {
+            var address = plug.Address ?? string.Empty;
+            if (address != _plugAddress && !IsAutoSelectedDevice(address))
+                return $"address '{_plugAddress}' -> '{plug.Address}'";
+            if ((plug.LocalAddress ?? string.Empty) != _localAddress)
+                return $"local address '{_localAddress}' -> '{plug.LocalAddress}'";
+            return null;
+        }
+
+        public void SubmitFrame(in LaserFrame frame)
+        {
+            if (Volatile.Read(ref _disposed) != 0)
+                return;
+
+            var copy = CopyForQueue(frame, _pointQueue, MaxQueuedFrames);
+            if (copy == null)
+                return;
+
+            Interlocked.Exchange(ref _lastEnqueueTimestamp, Environment.TickCount64);
+            _watchdogBlanked = false;
+            _pointQueue.Enqueue(copy);
+        }
+
+        private void StartConnection()
+        {
+            if (Volatile.Read(ref _disposed) != 0)
+                return;
+
+            TearDown();
+
+            var cts = new CancellationTokenSource();
+            _connectionCts = cts;
+            var token = cts.Token;
+            _ = Task.Run(async () =>
+                            {
+                                try
+                                {
+                                    await ConnectionLoopAsync(token);
+                                }
+                                finally
+                                {
+                                    cts.Dispose();
+                                }
+                            });
+        }
+
+        private void TearDown()
+        {
+            var cts = Interlocked.Exchange(ref _connectionCts, null);
+            if (cts != null)
+            {
+                try { cts.Cancel(); }
+                catch (ObjectDisposedException) { }
+            }
+
+            var socket = Interlocked.Exchange(ref _socket, null);
+            if (socket != null)
+            {
+                // Closing off-thread: a close can block while an abandoned send unwinds.
+                _ = Task.Run(() =>
+                                 {
+                                     try { socket.Close(); }
+                                     catch { }
+                                 });
+            }
+
+            _isConnected = false;
+            _pointQueue.Clear();
+            _lastFrame = null;
+        }
+
+        /// <summary>
+        /// Owns socket bring-up: wait for an address (typed or the first discovered laser), bind,
+        /// handshake, configure, stream. Retries with a fixed 2 s delay — the handshake's own
+        /// timeout ladder covers a device that is still booting.
+        /// </summary>
+        private async Task ConnectionLoopAsync(CancellationToken token)
+        {
+            var attempt = 0;
+            while (!token.IsCancellationRequested && Volatile.Read(ref _disposed) == 0)
+            {
+                attempt++;
+                Socket? socket = null;
+                var address = string.Empty;
+                try
+                {
+                    address = ResolveAddress();
+                    while (string.IsNullOrWhiteSpace(address))
+                    {
+                        SetStatus("No showNET address (discovering...)", IStatusProvider.StatusLevel.Notice);
+                        await Task.Delay(DiscoverPollDelayMs, token);
+                        address = ResolveAddress();
+                    }
+
+                    socket = CreateSocket(_localAddress);
+                    if (token.IsCancellationRequested)
+                        return;
+
+                    _socket = socket;
+                    var remote = new IPEndPoint(IPAddress.Parse(address), ShowNetProtocol.LaserPort);
+                    SetStatus($"Handshaking with {address}...", IStatusProvider.StatusLevel.Notice);
+                    Handshake(socket, remote);
+                    SendConfigure(socket, remote);
+                    LaserPlugDiscovery.SetConnectedDevice("showNET", address);
+                    _lastConnectIp = address;
+                    _isConnected = true;
+                    SetStatus($"Connected to {address}", IStatusProvider.StatusLevel.Success);
+                    await SendLoopAsync(socket, remote, token);
+                    return;
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+                catch (Exception e) when (!token.IsCancellationRequested && Volatile.Read(ref _disposed) == 0)
+                {
+                    CloseQuietly(socket);
+                    _isConnected = false;
+                    if (attempt == 1)
+                        Log.Warning($"showNET stream: connection to {address} failed - {e.Message}");
+                }
+
+                try
+                {
+                    await Task.Delay(ConnectRetryDelayMs, token);
+                }
+                catch (OperationCanceledException) { return; }
+            }
+        }
+
+        /// <summary>The plug's address, or the first discovered laser when empty (zero-touch).</summary>
+        private string ResolveAddress()
+        {
+            if (!string.IsNullOrWhiteSpace(_plug.Address))
+                return _plug.Address;
+
+            try
+            {
+                var lasers = LaserPlugDiscovery.ShowNetLasers;
+                if (_autoSelectedIp == null
+                    || lasers.All(laser => !string.Equals(laser.Ip, _autoSelectedIp, StringComparison.OrdinalIgnoreCase)))
+                {
+                    var first = lasers.FirstOrDefault();
+                    var picked = first.Ip;
+                    if (!string.IsNullOrWhiteSpace(picked) && picked != _autoSelectedIp)
+                    {
+                        _autoSelectedIp = picked;
+                        Log.Debug($"showNET stream: auto-selected laser at {_autoSelectedIp}");
+                    }
+                }
+
+                return _autoSelectedIp ?? string.Empty;
+            }
+            catch
+            {
+                // The discovery table mutates concurrently - a transient race just skips this poll.
+                return _autoSelectedIp ?? string.Empty;
+            }
+        }
+
+        /// <summary>A plug left empty streams to the first discovered laser; the plug card then
+        /// writes that laser's address into the plug, which is the connection the stream already has.</summary>
+        private bool IsAutoSelectedDevice(string address)
+        {
+            return _plugAddress.Length == 0
+                   && address.Length > 0
+                   && (address == _autoSelectedIp || address == _lastConnectIp);
+        }
+
+        /// <summary>
+        /// A UDP socket on an ephemeral local port, bound to the plug's interface when one is
+        /// pinned (falling back to any interface when the pin cannot bind — the NIC may be away;
+        /// the retry loop keeps the pin for when it returns).
+        /// </summary>
+        private static Socket CreateSocket(string localAddress)
+        {
+            var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+            try { socket.SendBufferSize = 256 * 1024; }
+            catch { /* default buffer size is fine */ }
+
+            var bindAddress = IPAddress.Any;
+            if (IPAddress.TryParse(localAddress, out var pinned) && !pinned.Equals(IPAddress.Any))
+                bindAddress = pinned;
+
+            try
+            {
+                socket.Bind(new IPEndPoint(bindAddress, 0));
+            }
+            catch (SocketException)
+            {
+                if (bindAddress.Equals(IPAddress.Any))
+                    throw;
+
+                bindAddress = IPAddress.Any;
+                socket.Bind(new IPEndPoint(bindAddress, 0));
+            }
+
+            return socket;
+        }
+
+        private static void CloseQuietly(Socket? socket)
+        {
+            if (socket == null)
+                return;
+
+            try { socket.Close(); }
+            catch { /* already dead */ }
+        }
+
+        /// <summary>
+        /// The showNET session opener: send the handshake (command 0x04, keys marker + full
+        /// obfuscation, scrambled+encrypted reply) up to HandshakeAttempts times, decode and parse
+        /// the reply. Throws when the device never answers — the connection loop's catch reports.
+        /// </summary>
+        private void Handshake(Socket socket, IPEndPoint remote)
+        {
+            Span<byte> keyBytes = stackalloc byte[4];
+            Random.Shared.NextBytes(keyBytes);
+            var clientKey = BinaryPrimitives.ReadUInt32LittleEndian(keyBytes);
+            var packet = ShowNetProtocol.BuildHandshake(clientKey);
+            for (var attempt = 1; attempt <= HandshakeAttempts; attempt++)
+            {
+                var seq = NextSequenceId();
+                ShowNetProtocol.PrepareSend(packet, packet.Length,
+                                            ShowNetSendFlags.Keys
+                                            | ShowNetSendFlags.ScrambleHeader
+                                            | ShowNetSendFlags.CryptHeader
+                                            | ShowNetSendFlags.ScramblePayload
+                                            | ShowNetSendFlags.CryptPayload
+                                            | ShowNetSendFlags.ScrambleResponse
+                                            | ShowNetSendFlags.CryptResponse,
+                                            seq);
+                socket.SendTo(packet, remote);
+                if (TryReceiveResponse(socket, seq, scrambled: true, crypted: true, out var rx, out var rxLength))
+                {
+                    if (!ShowNetProtocol.TryParseHandshakeResponse(rx, rxLength, out var parsed))
+                        throw new IOException($"showNET device at {remote.Address} answered with an unexpected handshake reply ({rxLength} bytes)");
+
+                    _session.Generation = parsed.Generation;
+                    _session.ColorFeatures = parsed.ColorFeatures;
+                    _session.ColorCount = parsed.ColorCount;
+                    _session.FramePointSize = parsed.FramePointSize;
+                    _session.TimeInterval = parsed.TimeInterval;
+                    _session.Revision = parsed.Revision;
+                    _session.Firmware = parsed.Firmware;
+                    _session.MemoryAddress = parsed.MemoryAddress;
+                    for (var i = 0; i < 3; i++)
+                        _session.InterfaceId[i] = parsed.InterfaceId[i];
+                    return;
+                }
+            }
+
+            throw new SocketException((int)SocketError.TimedOut);
+        }
+
+        /// <summary>Session-local sequence counter — the reference's lock-guarded increment.</summary>
+        private int NextSequenceId()
+        {
+            var seq = _sequenceId;
+            _sequenceId = (_sequenceId + 1) & 0x7FFFFFFF;
+            return seq;
+        }
+
+        /// <summary>
+        /// Waits for the reply carrying the expected sequence id, decoding it in place per the
+        /// request's response cipher. Stale replies (a reconnect's leftovers) cannot match the
+        /// fresh sequence id and are discarded until the deadline.
+        /// </summary>
+        private static bool TryReceiveResponse(Socket socket, int seq, bool scrambled, bool crypted, out byte[] rx, out int rxLength)
+        {
+            var buffer = new byte[1600];
+            EndPoint remote = new IPEndPoint(IPAddress.Any, 0);
+            var deadline = Environment.TickCount64 + HandshakeTimeoutMs;
+            while (Environment.TickCount64 < deadline)
+            {
+                socket.ReceiveTimeout = (int)Math.Max(1, deadline - Environment.TickCount64);
+                try
+                {
+                    var length = socket.ReceiveFrom(buffer, ref remote);
+                    if (length >= 24 && ShowNetProtocol.ResponseSeq(buffer.AsSpan(0, length)) == seq)
+                    {
+                        ShowNetProtocol.DecodeResponse(buffer, length, scrambled, crypted);
+                        rx = buffer;
+                        rxLength = length;
+                        return true;
+                    }
+
+                    // A stale reply for an older sequence id - keep waiting within the deadline.
+                }
+                catch (SocketException e) when (e.SocketErrorCode == SocketError.TimedOut)
+                {
+                    break;
+                }
+            }
+
+            rx = null;
+            rxLength = 0;
+            return false;
+        }
+
+        /// <summary>Sends the configure command (0x12) that sets up the device's frame memory
+        /// layout; the reply is ignored, matching the reference client.</summary>
+        private void SendConfigure(Socket socket, IPEndPoint remote)
+        {
+            var packet = ShowNetProtocol.BuildConfigure(_session.Generation2, FrameMemorySize, _session.MemoryAddress);
+            ShowNetProtocol.PrepareSend(packet, packet.Length,
+                                        ShowNetSendFlags.ScrambleHeader
+                                        | ShowNetSendFlags.CryptHeader
+                                        | ShowNetSendFlags.ScramblePayload
+                                        | ShowNetSendFlags.CryptPayload
+                                        | ShowNetSendFlags.ScrambleResponse
+                                        | ShowNetSendFlags.CryptResponse
+                                        | ShowNetSendFlags.IgnoreResponse,
+                                        NextSequenceId());
+            socket.SendTo(packet, remote);
+        }
+
+        /// <summary>
+        /// Streams queued frames and their blanked/repeated fallbacks; keeps the session alive
+        /// with NOPs while nothing flows. UDP is best-effort — the device loops its frame memory,
+        /// so this loop's only state is what to encode next.
+        /// </summary>
+        private async Task SendLoopAsync(Socket socket, IPEndPoint remote, CancellationToken token)
+        {
+            var consecutiveErrors = 0;
+            var lastRepeatTicks = 0L;
+            var lastNopTicks = 0L;
+            var exitX = 0;
+            var exitY = 0;
+            var blankScratch = Array.Empty<LaserPoint>();
+            var approachScratch = Array.Empty<LaserPoint>();
+
+            while (!token.IsCancellationRequested && Volatile.Read(ref _disposed) == 0)
+            {
+                var now = Environment.TickCount64;
+                var masterOff = !LaserMasterEnable.Enabled;
+
+                LaserPoint[]? frame = null;
+                if (_pointQueue.TryDequeue(out var queued) && queued.Length > 0)
+                {
+                    frame = queued;
+                    lastRepeatTicks = 0;
+                }
+                else if (_lastFrame is { Length: > 0 } && now - lastRepeatTicks >= RepeatIntervalMs)
+                {
+                    var watchdogBlank = WatchdogElapsed(ref _lastEnqueueTimestamp);
+                    if (watchdogBlank && !_watchdogBlanked)
+                    {
+                        _watchdogBlanked = true;
+                        Log.Warning("showNET stream: frame watchdog - no new frames, blanking output");
+                        SetStatus("Frame watchdog - no new frames, output blanked", IStatusProvider.StatusLevel.Warning);
+                    }
+
+                    frame = masterOff || watchdogBlank
+                                ? BlankFrame(_lastFrame, ref blankScratch)
+                                : _lastFrame;
+                    lastRepeatTicks = now;
+                }
+
+                if (frame == null)
+                {
+                    // Idle: NOP keepalive while nothing flows.
+                    if (now - lastNopTicks >= NopIntervalMs)
+                    {
+                        SendNop(socket, remote);
+                        lastNopTicks = now;
+                    }
+
+                    try { await Task.Delay(2, token); }
+                    catch (OperationCanceledException) { return; }
+                    continue;
+                }
+
+                // Galvo safety: every datagram replaces the device's memory image, so every
+                // datagram leads with the dark ramp from the scanners' last position.
+                var rawFrame = frame;
+                frame = PrependDarkApproach(frame, exitX, exitY, ref approachScratch);
+
+                try
+                {
+                    SendFrameDatagrams(socket, remote, frame);
+                    consecutiveErrors = 0;
+                    exitX = rawFrame[^1].X;
+                    exitY = rawFrame[^1].Y;
+                    if (rawFrame != blankScratch)
+                        _lastFrame = rawFrame;
+                    if (_status.Level != IStatusProvider.StatusLevel.Success && !_watchdogBlanked)
+                        SetStatus("Streaming", IStatusProvider.StatusLevel.Success);
+                }
+                catch (Exception e) when (!token.IsCancellationRequested)
+                {
+                    consecutiveErrors++;
+                    if (consecutiveErrors >= MaxConsecutiveSendErrors)
+                        throw;
+
+                    SetStatus($"Connection problems - retrying ({consecutiveErrors}/{MaxConsecutiveSendErrors})...",
+                              IStatusProvider.StatusLevel.Warning);
+                    await Task.Delay(50, token);
+                }
+
+                try { await Task.Delay(2, token); }
+                catch (OperationCanceledException) { return; }
+            }
+        }
+
+        /// <summary>The session keepalive while nothing else flows (command 0x1A without a frame).</summary>
+        private void SendNop(Socket socket, IPEndPoint remote)
+        {
+            var packet = ShowNetProtocol.BuildNop(_packetId);
+            ShowNetProtocol.PrepareSend(packet, packet.Length,
+                                        ShowNetSendFlags.ScrambleHeader | ShowNetSendFlags.CryptHeader
+                                        | ShowNetSendFlags.ScramblePayload | ShowNetSendFlags.ScrambleResponse
+                                        | ShowNetSendFlags.IgnoreResponse,
+                                        NextSequenceId());
+            socket.SendTo(packet, remote);
+        }
+
+        /// <summary>Encodes the frame and sends it as fragment datagrams; UDP is fire-and-forget.</summary>
+        private void SendFrameDatagrams(Socket socket, IPEndPoint remote, LaserPoint[] frame)
+        {
+            if (!ShowNetFrameEncoder.TryEncode(frame, frame.Length, in _session, _maxBrightness, _swapColorChannels,
+                                               ref _bitstream, out var length, out var compressed))
+                return;
+
+            _frameId = (_frameId + 1) & 0x7FFFFF;
+            var frameId = _frameId++;
+            _packetId = (_packetId + 1) & 0x7FF;
+            var ticksPerPoint = Math.Clamp(_session.TimeInterval / _scanRate, 1, 65535);
+            var datagrams = ShowNetProtocol.BuildFrame(_packetId, frameId, compressed, ticksPerPoint,
+                                                       frame.Length, _bitstream, length);
+            foreach (var datagram in datagrams)
+            {
+                ShowNetProtocol.PrepareSend(datagram, datagram.Length,
+                                            ShowNetSendFlags.ScrambleHeader | ShowNetSendFlags.CryptHeader
+                                            | ShowNetSendFlags.ScramblePayload | ShowNetSendFlags.ScrambleResponse
+                                            | ShowNetSendFlags.IgnoreResponse,
+                                            NextSequenceId());
+                socket.SendTo(datagram, remote);
+            }
+        }
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+                return;
+
+            TearDown();
+        }
+
+        private void SetStatus(string message, IStatusProvider.StatusLevel level)
+        {
+            // One immutable snapshot: the UI must never see the new message with the old level.
+            _status = new StatusInfo(message, level);
+        }
+    }
+
     #endregion
 
     #region CITP stream - Capture/Depence laser feed over CITP/CAEX (lifted from the former [CITPLaser] operator)

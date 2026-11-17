@@ -752,6 +752,7 @@ internal sealed class SetupFlowOutliner
                                         {
                                             LaserPlug.Kinds.Ponk => $"PONK · {laser.Address}:{(laser.Port > 0 ? laser.Port : 5583)}",
                                             LaserPlug.Kinds.Citp => laser.Port > 0 ? $"CITP · {laser.Address}:{laser.Port}" : $"CITP · discovery",
+                                            LaserPlug.Kinds.ShowNet => $"showNET · {(laser.Address.Length > 0 ? laser.Address : "discovering...")}",
                                             _ => $"EtherDream · {laser.Address}",
                                         },
                                LeadingIcon = Icon.ConnectedOutput,
@@ -812,6 +813,15 @@ internal sealed class SetupFlowOutliner
 
             CustomComponents.TooltipForLastItem("A CITP laser feed consumer (e.g. a media server's laser module) — the bound laser output's frame streams to it directly.",
                                                 "Leave the port 0 for PLoc multicast discovery, or set a host and port for a direct capture connection.");
+
+            if (CustomComponents.DrawMenuItem(104, "showNET laser"))
+            {
+                var laser = Plugs.AddLaser(machineConfig, LaserPlug.Kinds.ShowNet);
+                OutlinerItem.BeginRename(selection, SetupEntityKinds.Plug, laser.Id, laser.Name);
+            }
+
+            CustomComponents.TooltipForLastItem("A showNET laser (LaserAnimation Sollinger PHOENIX and compatibles) — the bound laser output's frame streams to it directly.",
+                                                "The laser announces itself on the LAN; the address picker lists what the probe listener found.");
 
             SetupPopup.End();
         }

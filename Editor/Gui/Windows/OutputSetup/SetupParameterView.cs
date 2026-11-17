@@ -963,6 +963,8 @@ internal static partial class SetupParameterView
             CitpPeerDiscovery.EnsureStarted();
         else if (plug.Kind == LaserPlug.Kinds.Ponk)
             PonkSenderDiscovery.EnsureStarted();
+        else if (plug.Kind == LaserPlug.Kinds.ShowNet)
+            LaserPlugDiscovery.EnsureShowNetDiscovery();
 
         // An address left empty gets a working basic one as soon as something is known - the
         // first active CITP peer (instantly, while it announces), the first discovered Ether
@@ -985,6 +987,7 @@ internal static partial class SetupParameterView
                                                 {
                                                     LaserPlug.Kinds.Ponk => "The PONK host: the 239.255.10.24 multicast group, or a receiver's unicast IP.",
                                                     LaserPlug.Kinds.Citp => "The CITP capture host (used with a Port above 0; 0 keeps PLoc multicast discovery).",
+                                                    LaserPlug.Kinds.ShowNet => "The showNET laser's IP address on the LAN — type it, or pick a discovered laser from the chevron.",
                                                     _ => "The Ether Dream DAC's IP address on the LAN — type it, or pick a discovered device from the chevron.",
                                                 });
 
@@ -1078,13 +1081,40 @@ internal static partial class SetupParameterView
                                           Fonts.FontSmall, UiColors.TextMuted);
             ImGui.EndPopup();
         }
+        else if (plug.Kind == LaserPlug.Kinds.ShowNet && ImGui.BeginPopup($"##laserAddressPick{plug.Id:N}"))
+        {
+            LaserPlugDiscovery.EnsureShowNetDiscovery();
+            var lasers = LaserPlugDiscovery.ShowNetLasers;
+            var connected = LaserPlugDiscovery.ConnectedDevice;
+
+            if (lasers.Count == 0 && connected == null)
+                CustomComponents.StylizedText("probing for showNET lasers…", Fonts.FontSmall, UiColors.TextMuted);
+
+            foreach (var laser in lasers)
+            {
+                if (ImGui.Selectable($"{laser.Name} ({laser.Ip})") && laser.Ip != plug.Address)
+                {
+                    _laserAddressBuffer = laser.Ip;
+                    Plugs.UpdateLaser(machineConfig, plug.Id, null, laser.Ip, null);
+                    ImGui.CloseCurrentPopup();
+                }
+            }
+
+            CustomComponents.StylizedText("Lasers answer the broadcast probe while streaming; entries age out after ~12 s of silence.",
+                                          Fonts.FontSmall, UiColors.TextMuted);
+            ImGui.EndPopup();
+        }
 
         // Ether Dream DACs listen on the protocol-fixed port, so editing would be a no-op — shown read-only
         // at its effective value; PONK and CITP endpoints are configurable.
-        if (plug.Kind == LaserPlug.Kinds.EtherDream)
+        if (plug.Kind is LaserPlug.Kinds.EtherDream or LaserPlug.Kinds.ShowNet)
         {
-            Span<int> port = [plug.Port > 0 ? plug.Port : 7765];
-            DrawIntsRow("Port", port, "The Ether Dream protocol port is fixed at 7765.", readOnly: true);
+            var defaultPort = plug.Kind == LaserPlug.Kinds.EtherDream ? 7765 : 41855;
+            Span<int> port = [plug.Port > 0 ? plug.Port : defaultPort];
+            var portNote = plug.Kind == LaserPlug.Kinds.EtherDream
+                               ? "The Ether Dream protocol port is fixed at 7765."
+                               : "The showNET protocol port is fixed at 41855.";
+            DrawIntsRow("Port", port, portNote, readOnly: true);
         }
         else
         {
@@ -1199,6 +1229,18 @@ internal static partial class SetupParameterView
                 const string multicast = "239.255.10.24";
                 _laserAddressBuffer = multicast;
                 Plugs.UpdateLaser(machineConfig, plug.Id, null, multicast, null);
+                break;
+            }
+            case LaserPlug.Kinds.ShowNet:
+            {
+                // The first discovered laser = the showNET basic: the probe listener starts with
+                // the plug card, so the first announcement arrives within a probe interval.
+                var lasers = LaserPlugDiscovery.ShowNetLasers;
+                if (lasers.Count == 0)
+                    return;
+
+                _laserAddressBuffer = lasers[0].Ip;
+                Plugs.UpdateLaser(machineConfig, plug.Id, null, lasers[0].Ip, null);
                 break;
             }
         }
@@ -1336,6 +1378,27 @@ internal static partial class SetupParameterView
                          () =>
                              {
                                  device.Keepalive = false;
+                                 OutputSetupHandling.SaveActive();
+                             }, null);
+
+            DrawLaserCeilingAndSwap(machineConfig, plug, ref device.MaxBrightness, ref device.SwapColorChannels);
+        }
+        else if (plug.Kind == LaserPlug.Kinds.ShowNet)
+        {
+            var device = plug.ShowNetSettings;
+            Span<int> scanRate = [device.ScanRate];
+            var scanState = DrawIntsRow("Scan rate (pps)", scanRate, "Points per second requested from the laser; 0 = the 30 kpps default — the device's ticks-per-point divisor.",
+                                        reserveRight: 22);
+            if ((scanState & InputEditStateFlags.Modified) != 0)
+            {
+                device.ScanRate = Math.Clamp(scanRate[0], 0, 100000);
+                OutputSetupHandling.SaveActive();
+            }
+
+            DrawRowReset("ResetShowNetScanRate", "scan rate",
+                         () =>
+                             {
+                                 device.ScanRate = 30000;
                                  OutputSetupHandling.SaveActive();
                              }, null);
 
