@@ -13,7 +13,7 @@ namespace Lib.io.video;
 /// <see cref="VideoStreamInput"/>. This replaces the OpenCV/DirectShowLib capture, which crashed in OpenCV's
 /// native initialization and could not run on Linux at all.
 /// </summary>
-[Guid("cd5a182e-254b-4e65-820b-ff754122614c")]
+[Guid("34c2d58d-ae76-47b6-9713-02911a783341")]
 public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolder, IStatusProvider, IRemoteVideoInput
 {
     // Output slots
