@@ -257,11 +257,9 @@ internal static class ShowNetProtocol
         if ((flags & ShowNetSendFlags.CryptHeader) != 0)
             ShowNetCrypt.Crypt(buf, 4, 16);
 
-        // One scrambler per packet, running continuously from the header into the payload — the
-        // reference's send() creates it once, and the device decodes with the same single stream.
-        var scrambler = new ShowNetScrambler();
         if ((flags & ShowNetSendFlags.ScrambleHeader) != 0)
         {
+            var scrambler = new ShowNetScrambler();
             for (var i = 1; i <= 4; i++)
             {
                 var offset = i * 4;
@@ -275,6 +273,7 @@ internal static class ShowNetProtocol
 
         if (scrambleWords > 0)
         {
+            var scrambler = new ShowNetScrambler();
             for (var i = 0; i < 2 * scrambleWords; i++)
             {
                 var offset = 20 + i * 4;

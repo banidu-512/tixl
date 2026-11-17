@@ -1088,7 +1088,7 @@ internal static partial class SetupParameterView
             var connected = LaserPlugDiscovery.ConnectedDevice;
 
             if (lasers.Count == 0 && connected == null)
-                CustomComponents.StylizedText("probing for showNET lasers...", Fonts.FontSmall, UiColors.TextMuted);
+                CustomComponents.StylizedText("probing for showNET lasers…", Fonts.FontSmall, UiColors.TextMuted);
 
             foreach (var laser in lasers)
             {

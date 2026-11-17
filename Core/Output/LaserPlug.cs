@@ -21,6 +21,7 @@ public sealed class LaserPlug
         public const string EtherDream = "EtherDream";
         public const string Ponk = "PONK";
         public const string Citp = "CITP";
+        public const string ShowNet = "ShowNet";
     }
 
     public Guid Id = Guid.NewGuid();
@@ -44,10 +45,12 @@ public sealed class LaserPlug
     public EtherDreamDeviceSettings? EtherDream;
     public PonkDeviceSettings? Ponk;
     public CitpDeviceSettings? Citp;
+    public ShowNetDeviceSettings? ShowNet;
 
     public EtherDreamDeviceSettings EtherDreamSettings => EtherDream ??= new EtherDreamDeviceSettings();
     public PonkDeviceSettings PonkSettings => Ponk ??= new PonkDeviceSettings();
     public CitpDeviceSettings CitpSettings => Citp ??= new CitpDeviceSettings();
+    public ShowNetDeviceSettings ShowNetSettings => ShowNet ??= new ShowNetDeviceSettings();
 
     public void WriteToJson(JsonTextWriter writer)
     {
@@ -78,6 +81,12 @@ public sealed class LaserPlug
             Citp.WriteToJson(writer);
         }
 
+        if (ShowNet != null)
+        {
+            writer.WritePropertyName("ShowNet");
+            ShowNet.WriteToJson(writer);
+        }
+
         writer.WriteEndObject();
     }
 
@@ -94,6 +103,7 @@ public sealed class LaserPlug
                        EtherDream = token["EtherDream"] is JObject ed ? EtherDreamDeviceSettings.ReadFromJson(ed) : null,
                        Ponk = token["Ponk"] is JObject po ? PonkDeviceSettings.ReadFromJson(po) : null,
                        Citp = token["Citp"] is JObject ci ? CitpDeviceSettings.ReadFromJson(ci) : null,
+                       ShowNet = token["ShowNet"] is JObject sn ? ShowNetDeviceSettings.ReadFromJson(sn) : null,
                    };
     }
 }
@@ -221,6 +231,41 @@ public sealed class CitpDeviceSettings
                        MaxBrightness = token.ReadValueSafe("MaxBrightness", 1f),
                        SwapColorChannels = token.ReadValueSafe("SwapColorChannels", false),
                        Keepalive = token.ReadValueSafe("Keepalive", true),
+                   };
+    }
+}
+
+/// <summary>showNET laser device settings.</summary>
+public sealed class ShowNetDeviceSettings
+{
+    /// <summary>Points per second requested from the device; 0 = the 30 kpps default. Becomes the
+    /// frame's ticks-per-point divisor (device clock / scan rate).</summary>
+    public int ScanRate;
+
+    /// <summary>Final intensity ceiling (0..1) applied at encode — the non-bypassable device audit.</summary>
+    public float MaxBrightness = 1f;
+
+    /// <summary>Some projectors expect the color channels as BGR.</summary>
+    public bool SwapColorChannels;
+
+    public void WriteToJson(JsonTextWriter writer)
+    {
+        writer.WriteStartObject();
+        if (ScanRate != 0)
+            writer.WriteValue("ScanRate", ScanRate);
+
+        writer.WriteValue("MaxBrightness", MaxBrightness);
+        writer.WriteValue("SwapColorChannels", SwapColorChannels);
+        writer.WriteEndObject();
+    }
+
+    public static ShowNetDeviceSettings ReadFromJson(JToken token)
+    {
+        return new ShowNetDeviceSettings
+                   {
+                       ScanRate = token.ReadValueSafe("ScanRate", 0),
+                       MaxBrightness = token.ReadValueSafe("MaxBrightness", 1f),
+                       SwapColorChannels = token.ReadValueSafe("SwapColorChannels", false),
                    };
     }
 }

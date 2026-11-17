@@ -1,16 +1,18 @@
-#nullable enable
+﻿#nullable enable
 using T3.Editor.SystemUi;
 using ImGuiNET;
 using T3.Core.DataTypes;
 using T3.Core.Operator;
 using T3.Core.Operator.Slots;
 using T3.Core.Output;
+using T3.Core.Output.Rendering;
 using T3.Core.Output.Streaming;
 using T3.Editor.Gui.Help;
 using T3.Editor.Gui.Input;
 using T3.Editor.Gui.InputUi.ListInputs;
 using T3.Editor.Gui.Styling;
 using T3.Editor.Gui.UiHelpers;
+using T3.Editor.Show;
 using T3.Editor.UiModel;
 using T3.Editor.UiModel.Commands;
 using T3.Editor.UiModel.Commands.Graph;
@@ -19,6 +21,7 @@ using T3.Editor.UiModel.InputsAndTypes;
 using T3.Editor.UiModel.Modification;
 using T3.Editor.UiModel.ProjectHandling;
 using T3.Editor.UiModel.Selection;
+using T3.Editor.Show;
 
 namespace T3.Editor.Gui.Windows.OutputSetup;
 
@@ -36,7 +39,9 @@ internal sealed class SetupFlowOutliner
     {
         _requestAddPlugMenu = _ => _addPlugMenuRequested = true;
         _requestAddOutputMenu = _ => _addOutputMenuRequested = true;
+        _requestAddContentMenu = _ => _addContentMenuRequested = true;
         _drawDisplayTooltip = DrawDisplayTooltip;
+        _drawRemoteDisplayTooltip = DrawRemoteDisplayTooltip;
         _drawSendParentTooltip = DrawSendParentTooltip;
     }
 
@@ -44,13 +49,12 @@ internal sealed class SetupFlowOutliner
     /// <param name="bodyVisible">False while collapsed: only the header draws.</param>
     /// <param name="drawGrip">The strip's resize grip, drawn first in the header.</param>
     /// <param name="drawToolbar">The canvas' toolbar (mode switch and its actions), drawn after the setup switcher.</param>
-    /// <param name="drawMenuExtras">Window-level entries appended to the setup menu (outliner toggle, pin).</param>
     /// <param name="onLeave">Leaves the setup for the operator view; drawn as the header's close button.</param>
     public void Draw(SetupEntitySelection selection, Action? onToggleCollapse, bool bodyVisible,
-                     Action? drawGrip = null, Action? drawToolbar = null, Action? drawMenuExtras = null, Action? onLeave = null)
+                     Action? drawGrip = null, Action? drawToolbar = null, Action? onLeave = null, Vector2? visibleBoardCentre = null)
     {
-        _drawMenuExtras = drawMenuExtras;
         _onLeave = onLeave;
+        _visibleBoardCentre = visibleBoardCentre;
         if (!OutputSetupHandling.TryGetActiveSetup(out var setup, out var machineConfig))
         {
             CustomComponents.EmptyWindowMessage("No project focused");
@@ -64,11 +68,11 @@ internal sealed class SetupFlowOutliner
         if (_cacheVersion != OutputSetupHandling.StructureVersion || _cacheSetupId != setup.Id)
             RefreshCaches(setup, machineConfig);
 
-        // Del removes the selection while the strip has focus — the same verb as the items' context menu.
+        // Del or Backspace removes the selection while the strip has focus — the same verb as the items' context menu.
         if (bodyVisible && selection.Count > 0
             && ImGui.IsWindowFocused(ImGuiFocusedFlags.RootAndChildWindows)
             && !ImGui.IsAnyItemActive()
-            && ImGui.IsKeyPressed(ImGuiKey.Delete, false))
+            && (ImGui.IsKeyPressed(ImGuiKey.Delete, false) || ImGui.IsKeyPressed(ImGuiKey.Backspace, false)))
         {
             SetupActions.DeleteSelection(selection, setup);
         }
@@ -76,7 +80,13 @@ internal sealed class SetupFlowOutliner
         DrawHeader(setup, selection, onToggleCollapse, bodyVisible, drawGrip, drawToolbar);
 
         if (bodyVisible)
+        {
+            var separatorStart = ImGui.GetCursorScreenPos();
+            var separatorEnd = separatorStart + new Vector2(ImGui.GetContentRegionAvail().X, 0);
+            SetupStrokes.DrawCrispLine(ImGui.GetWindowDrawList(), separatorStart, separatorEnd, UiColors.BackgroundFull.Fade(0.6f), 1);
+
             DrawColumns(setup, machineConfig, selection);
+        }
 
         OutlinerItem.ApplyPendingMove(setup);
         _hoveredKind = _pendingHoveredKind;
@@ -135,20 +145,18 @@ internal sealed class SetupFlowOutliner
         if (CustomComponents.IconButton(Icon.Plus, Vector2.Zero))
             ImGui.OpenPopup(AddBoardItemMenuId);
 
-        CustomComponents.TooltipForLastItem("Add to the Board", "A reference photo to trace surfaces on, a prop for scale, or a whole room.");
+        CustomComponents.TooltipForLastItem("Add to the Board", "A reference photo to trace surfaces on, a person for scale, or a whole room.");
 
         var openRoomDialog = false;
         if (SetupPopup.Begin(AddBoardItemMenuId))
         {
+            CustomComponents.MenuItemsFlushLeft = true;
             if (CustomComponents.DrawMenuItem(1, "Add Reference Image"))
-                SetupActions.AddReferenceImage(selection);
+                SetupActions.AddReferenceImage(selection, _visibleBoardCentre);
 
             CustomComponents.TooltipForLastItem("Adds an empty image card; pick its photo in the Parameter window.", "Or drop an image file onto the Board.");
 
-            if (CustomComponents.DrawMenuItem(2, "Add Prop"))
-                SetupActions.AddProp(selection);
-
-            CustomComponents.TooltipForLastItem("A box of known size on the Board — a doorway, a table — to judge the venue against.");
+            PersonImages.DrawAddMenu(2, selection, _visibleBoardCentre);
 
             // The dialog can't open from inside the menu (it would close with it), so it is opened once the menu is gone.
             if (CustomComponents.DrawMenuItem(3, "Add Floor Plan..."))
@@ -156,11 +164,12 @@ internal sealed class SetupFlowOutliner
 
             CustomComponents.TooltipForLastItem("The venue seen from above: a footprint whose edges carry the walls, drawn at true scale.");
 
+            CustomComponents.MenuItemsFlushLeft = false;
             SetupPopup.End();
         }
 
         if (openRoomDialog)
-            AddFloorPlanDialog.RequestOpen();
+            AddFloorPlanDialog.RequestOpen(_visibleBoardCentre);
 
         AddFloorPlanDialog.Draw(selection);
 
@@ -185,7 +194,8 @@ internal sealed class SetupFlowOutliner
     private void DrawColumns(Setup setup, MachineConfig machineConfig, SetupEntitySelection selection)
     {
         var scale = T3Ui.UiScaleFactor;
-        ImGui.BeginChild("##outlinerBody", Vector2.Zero, ImGuiChildFlags.None, ImGuiWindowFlags.NoBackground);
+        ImGui.BeginChild("##outlinerBody", Vector2.Zero, ImGuiChildFlags.None,
+                         ImGuiWindowFlags.NoBackground | ImGuiWindowFlags.AlwaysVerticalScrollbar);
 
         // Right-drag pans the list, as it does in the parameter popup. The item menus already ignore a right
         // release that came from a drag, so the two gestures don't fight over the button.
@@ -206,24 +216,33 @@ internal sealed class SetupFlowOutliner
 
         // Items are inset from the column boundaries so the gutters between columns have room for the connections.
         var gap = ColumnGap * scale;
+        _columnBodyBottom = origin.Y + avail.Y;
 
         BeginColumn(origin.X + gap * 0.5f, origin.Y, columnWidth - gap);
-        DrawColumnHeader("CONTENT", "##addContent", selection, ContentSourceSync.AddContentSend, SetupEntityKinds.ContentSource);
+        DrawColumnHeader("CONTENT", "##addContent", selection, _requestAddContentMenu,
+                         "Add content", "Adds a [SendToOutput] to the graph, or mirrors the editor UI as content.",
+                         SetupEntityKinds.ContentSource);
         DrawContentSends(selection, setup);
         maxY = MathF.Max(maxY, ImGui.GetCursorScreenPos().Y);
 
         BeginColumn(origin.X + columnWidth + gap * 0.5f, origin.Y, columnWidth - gap);
-        DrawColumnHeader("SURFACES", "##addSurface", selection, s => SetupActions.AddSurface(s), SetupEntityKinds.Surface);
+        DrawColumnHeader("SURFACES", "##addSurface", selection, s => SetupActions.AddSurface(s),
+                         "Add a surface", "A physical area in the venue, like a wall or a screen, that shows a slice of the content.",
+                         SetupEntityKinds.Surface);
         DrawSurfaces(selection, setup);
         maxY = MathF.Max(maxY, ImGui.GetCursorScreenPos().Y);
 
         BeginColumn(origin.X + 2 * columnWidth + gap * 0.5f, origin.Y, columnWidth - gap);
-        DrawColumnHeader("OUTPUTS", "##addOutput", selection, _requestAddOutputMenu, SetupEntityKinds.Output);
+        DrawColumnHeader("OUTPUTS", "##addOutput", selection, _requestAddOutputMenu,
+                         "Add an output", "A display, projector, laser or video stream that surfaces get mapped onto.",
+                         SetupEntityKinds.Output);
         DrawOutputs(selection, setup, machineConfig);
         maxY = MathF.Max(maxY, ImGui.GetCursorScreenPos().Y);
 
         BeginColumn(origin.X + 3 * columnWidth + gap * 0.5f, origin.Y, columnWidth - gap);
-        DrawColumnHeader("LOCAL BINDINGS", "##addPlug", selection, _requestAddPlugMenu, SetupEntityKinds.Plug);
+        DrawColumnHeader("LOCAL BINDINGS", "##addPlug", selection, _requestAddPlugMenu,
+                         "Add a stream sender", "Lets this machine send an output to other applications, e.g. over Spout, NDI or OMT. Its displays are listed already.",
+                         SetupEntityKinds.Plug);
         DrawLocalBindings(selection, setup, machineConfig);
         maxY = MathF.Max(maxY, ImGui.GetCursorScreenPos().Y);
 
@@ -235,7 +254,7 @@ internal sealed class SetupFlowOutliner
         for (var i = 1; i <= 3; i++)
         {
             var x = (float)Math.Round(origin.X + i * columnWidth);
-            dl.AddLine(new Vector2(x, origin.Y), new Vector2(x, dividerBottom), UiColors.BackgroundFull, 1 * scale);
+            dl.AddLine(new Vector2(x, origin.Y), new Vector2(x, dividerBottom), UiColors.BackgroundFull.Fade(0.6f), 1 * scale);
         }
 
         DrawConnections(dl, setup, machineConfig, selection);
@@ -267,6 +286,26 @@ internal sealed class SetupFlowOutliner
             var c = _connections[i];
             DrawConnection(dl, selection, c.FromKind, c.FromId, c.ToKind, c.ToId, setup);
         }
+
+        DrawDraggedConnection(dl, setup);
+    }
+
+    /// <summary>The temporary connection of a routing drag, from the dragged item to the mouse.</summary>
+    private void DrawDraggedConnection(ImDrawListPtr dl, Setup setup)
+    {
+        if (!DragAndDropHandling.TryGetDragData(DragAndDropHandling.DragTypes.SetupEntity, out var dragData)
+            || !SetupRouting.TryParseDrag(dragData, out var kind, out var id)
+            || !TryGetAnchor(setup, kind, id, out var anchor))
+            return;
+
+        var scale = T3Ui.UiScaleFactor;
+        var mouse = ImGui.GetMousePos();
+
+        // Routing is direction-agnostic, so the line leaves the item on the side the mouse is on.
+        var direction = mouse.X < anchor.Left ? -1f : 1f;
+        var start = new Vector2(direction < 0 ? anchor.Left : anchor.Right, anchor.Y);
+        var reach = direction * MathF.Max(24 * scale, MathF.Abs(mouse.X - start.X) * 0.4f);
+        dl.AddBezierCubic(start, start + new Vector2(reach, 0), mouse - new Vector2(reach, 0), mouse, SetupColors.ForKind(kind), 2.5f * scale);
     }
 
     /// <summary>
@@ -291,7 +330,12 @@ internal sealed class SetupFlowOutliner
                 _connections.Add(new Connection(SetupEntityKinds.Slice, surface.SliceId, SetupEntityKinds.Surface, surface.Id));
 
             foreach (var mapping in surface.OutputMappings)
-                _connections.Add(new Connection(SetupEntityKinds.Surface, surface.Id, SetupEntityKinds.Output, mapping.OutputId));
+            {
+                var patchId = SetupRelations.LinkedPatchOf(setup, mapping);
+                _connections.Add(patchId != Guid.Empty
+                                     ? new Connection(SetupEntityKinds.Surface, surface.Id, SetupEntityKinds.Patch, patchId)
+                                     : new Connection(SetupEntityKinds.Surface, surface.Id, SetupEntityKinds.Output, mapping.OutputId));
+            }
         }
 
         foreach (var output in setup.Outputs)
@@ -318,6 +362,23 @@ internal sealed class SetupFlowOutliner
                 var binding = machineConfig.FindBinding(output.Id);
                 if (binding != null)
                     _connections.Add(new Connection(SetupEntityKinds.Output, output.Id, SetupEntityKinds.Plug, Plugs.BoundPlugId(binding)));
+            }
+        }
+
+        // Render nodes present their own bindings; their display rows sit in the same column, so the
+        // board can draw the master's routing edges too.
+        foreach (var client in BoygroupManager.Instance.Clients)
+        {
+            if (client.MachineConfig == null)
+                continue;
+
+            foreach (var binding in client.MachineConfig.Bindings)
+            {
+                if (binding.IsStream || binding.IsLaser || setup.FindOutput(binding.OutputId) == null)
+                    continue;
+
+                _connections.Add(new Connection(SetupEntityKinds.Output, binding.OutputId, SetupEntityKinds.Plug,
+                                                BoygroupManager.RemoteDisplayPlugId(client, binding.DisplayIndex)));
             }
         }
 
@@ -354,11 +415,51 @@ internal sealed class SetupFlowOutliner
         var color = emphasized ? kindColor : kindColor.Fade(0.6f);
         var thickness = (emphasized ? 2.5f : 1.5f) * scale;
 
-        // Flush with the items: a connection grows out of one pill and into the next.
+        // Flush with the items: a connection grows out of one pill and into the next. Into an output, the ends
+        // spread along its pill in layer order, front at the top, so the stacking reads off the lines.
         var a = new Vector2(from.Right, from.Y);
-        var b = new Vector2(to.Left, to.Y);
+        var b = new Vector2(to.Left, to.Y + OutputLayerEndOffset(setup, to, fromKind, fromId, toKind, toId));
         var reach = MathF.Max(24 * scale, MathF.Abs(b.X - a.X) * 0.4f);
         dl.AddBezierCubic(a, a + new Vector2(reach, 0), b - new Vector2(reach, 0), b, color, thickness);
+    }
+
+    /// <summary>
+    /// How far below the pill's centre a connection into an output ends: its layer's place in the stack, front
+    /// at the top. A surface mapped onto the output is its own layer; a patch drawn folded into its output is too.
+    /// </summary>
+    private float OutputLayerEndOffset(Setup setup, in Anchor to, SetupEntityKinds fromKind, Guid fromId, SetupEntityKinds toKind, Guid toId)
+    {
+        if (to.Kind != SetupEntityKinds.Output)
+            return 0;
+
+        var layerId = toKind switch
+                          {
+                              SetupEntityKinds.Output when fromKind == SetupEntityKinds.Surface => fromId,
+                              SetupEntityKinds.Patch                                          => toId,
+                              _                                                               => Guid.Empty,
+                          };
+        if (layerId == Guid.Empty || setup.FindOutput(to.Id) is not { } output)
+            return 0;
+
+        OutputLayers.Collect(setup, output, _layerScratch);
+        var count = _layerScratch.Count;
+        if (count < 2)
+            return 0;
+
+        for (var index = 0; index < count; index++)
+        {
+            if (_layerScratch[index].Id != layerId)
+                continue;
+
+            // Inset by the pill's round caps, so the outermost lines end on its straight part.
+            var scale = T3Ui.UiScaleFactor;
+            var halfHeight = MathF.Round(OutlinerItem.InputPillHalfHeight * scale)
+                             - MathF.Max(1, MathF.Round(OutlinerItem.InputPillHalfWidth * scale));
+            var fromFront = count - 1 - index;
+            return -halfHeight + 2 * halfHeight * fromFront / (count - 1);
+        }
+
+        return 0;
     }
 
     private bool IsEmphasized(SetupEntitySelection selection, SetupEntityKinds kind, Guid id)
@@ -478,7 +579,7 @@ internal sealed class SetupFlowOutliner
 
     /// <summary>A column's persistent title, tinted in its kind's colour, with its `+` at the right end (none for the plug inventory).</summary>
     private void DrawColumnHeader(string title, string? addButtonId, SetupEntitySelection selection, Action<SetupEntitySelection>? onAdd,
-                                  SetupEntityKinds kind = SetupEntityKinds.None)
+                                  string addTooltip, string addTooltipNotes, SetupEntityKinds kind = SetupEntityKinds.None)
     {
         var scale = T3Ui.UiScaleFactor;
         // Anchored on the column's x: a spacer before a second header (the shelf) resets the cursor's x to the window.
@@ -497,6 +598,7 @@ internal sealed class SetupFlowOutliner
             if (CustomComponents.IconButton(Icon.Plus, Vector2.Zero))
                 onAdd(selection);
 
+            CustomComponents.TooltipForLastItem(addTooltip, addTooltipNotes);
             ImGui.PopID();
         }
 
@@ -506,12 +608,15 @@ internal sealed class SetupFlowOutliner
 
     private void DrawOutputs(SetupEntitySelection selection, Setup setup, MachineConfig machineConfig)
     {
+        var drawnCount = 0;
         for (var i = 0; i < setup.Outputs.Count; i++)
         {
             var output = setup.Outputs[i];
             // The Default output is the editor's internal preview, not something you present or map — hide it.
             if (output.Kind == OutputDefinition.Kinds.Default)
                 continue;
+
+            drawnCount++;
 
             // The implicit full-canvas patch is the output itself here: no item, and its slice connection
             // lands on the output item (TryGetAnchor folds an undrawn patch onto its output).
@@ -526,7 +631,7 @@ internal sealed class SetupFlowOutliner
                            {
                                Kind = SetupEntityKinds.Output,
                                Id = output.Id,
-                               Name = output.Name,
+                               Name = SetupLabels.OutputLabel(output),
                                // Nothing presents it yet — said in words, where the plug connection would otherwise start.
                                Status = machineConfig.FindBinding(output.Id) == null ? "unbound" : null,
                                IsExpanded = hasPatches ? isExpanded : null,
@@ -566,11 +671,13 @@ internal sealed class SetupFlowOutliner
             if (CustomComponents.DrawMenuItem(111, "Laser"))
                 SetupActions.AddLaserOutput(selection);
 
-            CustomComponents.TooltipForLastItem("A laser scanner: bind it to an EtherDream or PONK plug and aim it with its scanner camera.",
-                                                "Set a [LaserCamera]'s OutputRef to this output; its camera drives the projection and the bound plug names the device.");
+            CustomComponents.TooltipForLastItem("A laser scanner: bind it to an EtherDream, PONK or CITP plug; the routed [LaserCamera]'s own aim drives the projection.",
+                                                "A new [LaserCamera] attaches itself to a free laser output automatically; drop a camera onto this output (or set its OutputRef) to route a specific one.");
 
             SetupPopup.End();
         }
+        if (drawnCount == 0)
+            DrawColumnHint("The pixel canvases of your projectors and displays.");
     }
 
     /// <summary>
@@ -599,8 +706,10 @@ internal sealed class SetupFlowOutliner
             DrawItem(selection, setup, ref args);
         }
 
-        foreach (var binding in machineConfig.Bindings)
+        // By index: a row's drop or menu binds or unbinds an output, which changes this list.
+        for (var i = 0; i < machineConfig.Bindings.Count; i++)
         {
+            var binding = machineConfig.Bindings[i];
             if (binding.IsStream || binding.IsLaser || binding.DisplayIndex < screens.Count || setup.FindOutput(binding.OutputId) == null)
                 continue;
 
@@ -643,6 +752,7 @@ internal sealed class SetupFlowOutliner
                                         {
                                             LaserPlug.Kinds.Ponk => $"PONK · {laser.Address}:{(laser.Port > 0 ? laser.Port : 5583)}",
                                             LaserPlug.Kinds.Citp => laser.Port > 0 ? $"CITP · {laser.Address}:{laser.Port}" : $"CITP · discovery",
+                                            LaserPlug.Kinds.ShowNet => $"showNET · {(laser.Address.Length > 0 ? laser.Address : "discovering...")}",
                                             _ => $"EtherDream · {laser.Address}",
                                         },
                                LeadingIcon = Icon.ConnectedOutput,
@@ -650,6 +760,9 @@ internal sealed class SetupFlowOutliner
                            };
             DrawItem(selection, setup, ref args);
         }
+        // Displays are always listed, so this column explains itself until the first output is bound rather than when empty.
+        if (!HasBoundOutput(setup, machineConfig))
+            DrawColumnHint("Drag an output onto a display or stream to show it there.");
 
         if (_addPlugMenuRequested)
         {
@@ -662,7 +775,7 @@ internal sealed class SetupFlowOutliner
             CustomComponents.MenuGroupHeader("Add stream sender");
             var providers = OutputStreamRegistry.Providers;
             if (providers.Count == 0)
-                CustomComponents.DrawMenuItem(0, "No stream packages loaded (Spout, NDI)", isEnabled: false);
+                CustomComponents.DrawMenuItem(0, "No stream packages loaded (Spout, NDI, OMT)", isEnabled: false);
 
             for (var i = 0; i < providers.Count; i++)
             {
@@ -701,8 +814,21 @@ internal sealed class SetupFlowOutliner
             CustomComponents.TooltipForLastItem("A CITP laser feed consumer (e.g. a media server's laser module) — the bound laser output's frame streams to it directly.",
                                                 "Leave the port 0 for PLoc multicast discovery, or set a host and port for a direct capture connection.");
 
+            if (CustomComponents.DrawMenuItem(104, "showNET laser"))
+            {
+                var laser = Plugs.AddLaser(machineConfig, LaserPlug.Kinds.ShowNet);
+                OutlinerItem.BeginRename(selection, SetupEntityKinds.Plug, laser.Id, laser.Name);
+            }
+
+            CustomComponents.TooltipForLastItem("A showNET laser (LaserAnimation Sollinger PHOENIX and compatibles) — the bound laser output's frame streams to it directly.",
+                                                "The laser announces itself on the LAN; the address picker lists what the probe listener found.");
+
             SetupPopup.End();
         }
+
+        // After this machine's own plugs: the connected render nodes' displays, which take a drop
+        // the same way but bind inside the node.
+        DrawRemoteBindings(selection, setup);
     }
 
     private static string MissingPackageStatus(string kind)
@@ -727,6 +853,85 @@ internal sealed class SetupFlowOutliner
         DisplayLayoutView.DrawTooltip(_tooltipDisplayIndex);
     }
 
+    /// Displays of the connected render nodes, next to this machine's own. Dropping an output on one
+    /// binds it inside that client's machine config; the master never presents it itself, it only
+    /// asks the render node to.
+    /// </summary>
+    private void DrawRemoteBindings(SetupEntitySelection selection, Setup setup)
+    {
+        var manager = Show.BoygroupManager.Instance;
+        if (manager.State != Show.BoygroupManager.BoygroupState.Server || manager.Clients.Count == 0)
+            return;
+
+        foreach (var client in manager.Clients)
+        {
+            if (!client.Peer.IsAuthenticated || client.Screens.Count == 0)
+                continue;
+
+            FormInputs.AddVerticalSpace(10);
+            ImGui.TextDisabled($"{client.Name.ToUpperInvariant()} - RENDER NODE");
+
+            foreach (var screen in client.Screens)
+            {
+                var bound = client.MachineConfig == null
+                                ? null
+                                : Plugs.TryGetBoundOutput(setup, client.MachineConfig, Plugs.DisplayPlugId(screen.Index));
+                _tooltipRemoteClient = client;
+                _tooltipRemoteDisplayIndex = screen.Index;
+                var args = new OutlinerItem.Args
+                               {
+                                   Kind = SetupEntityKinds.Plug,
+                                   Id = Show.BoygroupManager.RemoteDisplayPlugId(client, screen.Index),
+                                   Name = $"{client.Name} / {screen.Name}",
+                                   // What presents on the node's display, said next to its resolution.
+                                   Status = bound == null
+                                                ? $"{screen.Width} x {screen.Height}"
+                                                : $"{SetupLabels.OutputLabel(bound)} - {screen.Width} x {screen.Height}",
+                                   LeadingIcon = Icon.ConnectedOutput,
+                                   IsMuted = bound == null,
+                                   DrawTooltip = _drawRemoteDisplayTooltip,
+                               };
+                DrawItem(selection, setup, ref args);
+            }
+
+            // What the node presents, in words: the master reads the slave's show next to its own
+            // without a second set of output rows (those carry the card/expander machinery and do
+            // not belong in a plug column).
+            if (client.MachineConfig == null || client.MachineConfig.Bindings.Count == 0)
+            {
+                ImGui.TextDisabled("	no output bound on this node yet");
+                continue;
+            }
+
+            var presented = new List<string>();
+            var seen = new HashSet<Guid>();
+            foreach (var binding in client.MachineConfig.Bindings)
+            {
+                var output = setup.FindOutput(binding.OutputId);
+                if (output == null || !seen.Add(output.Id))
+                    continue;
+
+                var plugLabel = binding.IsStream ? "stream" : $"Display {binding.DisplayIndex + 1}";
+                presented.Add($"{SetupLabels.OutputLabel(output)} on {plugLabel}");
+            }
+
+            if (presented.Count == 0)
+            {
+                ImGui.TextDisabled("	bindings name outputs this setup does not have");
+                continue;
+            }
+
+            ImGui.TextDisabled($"	Presents: {string.Join(", ", presented)}");
+        }
+    }
+
+    /// <summary>A render node's displays are displays too: the same arrangement hover, from what that node reported.</summary>
+    private void DrawRemoteDisplayTooltip()
+    {
+        if (_tooltipRemoteClient != null)
+            DisplayLayoutView.DrawRemoteTooltip(_tooltipRemoteClient, _tooltipRemoteDisplayIndex);
+    }
+
     /// <summary>
     /// Where a send lives when it isn't in the composition open in the graph, so a row whose op can't be seen there
     /// still says where to find it.
@@ -737,6 +942,17 @@ internal sealed class SetupFlowOutliner
             return;
 
         ImGui.TextUnformatted("In composition parent " + _tooltipSendParent.SymbolChild.ReadableName);
+    }
+
+    private static bool HasBoundOutput(Setup setup, MachineConfig machineConfig)
+    {
+        foreach (var binding in machineConfig.Bindings)
+        {
+            if (setup.FindOutput(binding.OutputId) != null)
+                return true;
+        }
+
+        return false;
     }
 
     private static bool IsPlugBound(Setup setup, MachineConfig machineConfig, Guid plugId)
@@ -774,52 +990,71 @@ internal sealed class SetupFlowOutliner
 
             drawnCount++;
 
-            var childId = instance.SymbolChildId;
-            var source = setup.FindSourceByChildId(childId);
-            // The implicit full-frame slice is the source itself here: no item, its connections start at the source.
-            var sliceCount = source == null ? 0 : SetupRelations.CountListedSlicesOfSource(setup, source.Id);
-            var expanded = !_collapsedSources.Contains(childId);
             var parent = instance.Parent;
             var isNested = parent != null && parent != ProjectView.Focused?.CompositionInstance;
             if (isNested)
                 _tooltipSendParent = parent;
 
+            DrawSourceItem(selection, setup, instance.SymbolChildId, ContentSourceSync.SendName(instance),
+                           isNested ? _drawSendParentTooltip : null);
+        }
+
+        // No op lists the editor UI; it shows while the setup holds its source.
+        var editorUiSource = setup.FindSourceByChildId(EditorUiContent.SourceChildId);
+        if (editorUiSource != null)
+        {
+            drawnCount++;
+            DrawSourceItem(selection, setup, EditorUiContent.SourceChildId, editorUiSource.Name, null);
+        }
+
+        // Indexed: an item's context menu can remove its source mid-walk.
+        for (var i = 0; i < setup.ContentSources.Count; i++)
+        {
+            var source = setup.ContentSources[i];
+            if (!ContentSourceSync.IsSendOpMissing(source.SymbolChildId))
+                continue;
+
+            drawnCount++;
             var args = new OutlinerItem.Args
                            {
                                Kind = SetupEntityKinds.ContentSource,
-                               Id = childId,
-                               Name = ContentSourceSync.SendName(instance),
-                               IsExpanded = sliceCount > 0 ? expanded : null,
-                               KeepsExpanderColumn = true,
-                               // Nothing shows this source, so it steps back visually.
-                               IsMuted = source == null || SetupRelations.CountConsumersOfSource(setup, source.Id) == 0,
-                               DrawTooltip = isNested ? _drawSendParentTooltip : null,
+                               Id = source.SymbolChildId,
+                               Name = source.Name,
+                               Status = "op missing",
+                               IsMuted = true,
                            };
-            if (DrawItem(selection, setup, ref args) == OutlinerItem.Actions.ToggleExpanded)
-                ToggleSourceExpanded(childId);
-
-            if (source == null || sliceCount == 0 || !expanded)
-                continue;
-
-            // Indexed: an item's context menu can delete its slice mid-walk, which an enumerator would refuse.
-            for (var s = 0; s < setup.Slices.Count; s++)
-            {
-                var slice = setup.Slices[s];
-                if (slice.SourceId != source.Id)
-                    continue;
-
-                DrawSliceItem(selection, setup, slice);
-            }
+            DrawItem(selection, setup, ref args);
+            DrawListedSlicesOfSource(selection, setup, source);
         }
 
         if (drawnCount == 0)
-        {
-            ImGui.Indent(8 * T3Ui.UiScaleFactor);
-            CustomComponents.StylizedText("no SendToOutput or LaserCamera ops in this composition", Fonts.FontSmall, UiColors.TextMuted.Fade(0.6f));
-            ImGui.Unindent(8 * T3Ui.UiScaleFactor);
-        }
+    {
+        DrawColumnHint("no SendToOutput or LaserCamera ops in this composition");
+    }
 
-        DrawLaserCameras(selection, setup);
+    DrawLaserCameras(selection, setup);
+
+    if (_addContentMenuRequested)
+    {
+        ImGui.OpenPopup(AddContentMenuId);
+        _addContentMenuRequested = false;
+    }
+
+    if (SetupPopup.Begin(AddContentMenuId))
+    {
+        if (CustomComponents.DrawMenuItem(0, "SendToOutput Op"))
+            ContentSourceSync.AddContentSend(selection);
+
+        CustomComponents.TooltipForLastItem("Adds a SendToOutput op to the open composition.",
+                                            "A selected texture op is wired straight into it.");
+
+        if (CustomComponents.DrawMenuItem(1, EditorUiContent.DefaultName, isEnabled: editorUiSource == null))
+            EditorUiContent.AddSource(selection, setup);
+
+        CustomComponents.TooltipForLastItem("Mirrors the editor window as content, to map onto a display.",
+                                            "For tutorials and live sets: much cheaper than letting the OS duplicate a screen.");
+        SetupPopup.End();
+    }
     }
 
     /// <summary>
@@ -832,21 +1067,88 @@ internal sealed class SetupFlowOutliner
         var cameras = LaserContent.Cameras;
         for (var i = 0; i < cameras.Count; i++)
         {
-            if (cameras[i] is not Instance instance || !ContentSourceSync.IsInScope(instance))
+            if (cameras[i] is not Instance instance || !ContentSourceSync.IsInScope(instance, requireExposure: false))
                 continue;
 
             var outputRef = LaserContent.OutputRefOf(instance);
+            var isFrozen = !cameras[i].GetUpdateEnabled(OutputContentResolver.Context);
             var args = new OutlinerItem.Args
                            {
                                Kind = SetupEntityKinds.ContentSource,
                                Id = instance.SymbolChildId,
                                Name = ContentSourceSync.SendName(instance),
-                               Status = "laser",
+                               Status = isFrozen ? "laser · frozen" : "laser",
                                IsMuted = outputRef == Guid.Empty || setup.FindOutput(outputRef) == null,
                            };
             DrawItem(selection, setup, ref args);
         }
     }
+
+    private void DrawListedSlicesOfSource(SetupEntitySelection selection, Setup setup, ContentSource source)
+    {
+        SetupRelations.TryGetImplicitSlice(setup, source.Id, out var implicitSlice);
+
+        // Indexed: an item's context menu can delete its slice mid-walk, which an enumerator would refuse.
+        for (var s = 0; s < setup.Slices.Count; s++)
+        {
+            var slice = setup.Slices[s];
+            if (slice.SourceId != source.Id || ReferenceEquals(slice, implicitSlice))
+                continue;
+
+            DrawSliceItem(selection, setup, slice);
+        }
+    }
+
+    /// <summary>A source and, unless folded, its slices.</summary>
+    private void DrawSourceItem(SetupEntitySelection selection, Setup setup, Guid childId, string name, Action? drawTooltip)
+    {
+        var source = setup.FindSourceByChildId(childId);
+        // The implicit full-frame slice is the source itself here: no item, its connections start at the source.
+        var sliceCount = source == null ? 0 : SetupRelations.CountListedSlicesOfSource(setup, source.Id);
+        if (source != null && OutlinerItem.RevealPendingId != Guid.Empty && setup.FindSlice(OutlinerItem.RevealPendingId)?.SourceId == source.Id)
+            _collapsedSources.Remove(childId);
+
+        var expanded = !_collapsedSources.Contains(childId);
+        var args = new OutlinerItem.Args
+                       {
+                           Kind = SetupEntityKinds.ContentSource,
+                           Id = childId,
+                           Name = name,
+                           IsExpanded = sliceCount > 0 ? expanded : null,
+                           KeepsExpanderColumn = true,
+                           // Nothing shows this source, so it steps back visually.
+                           IsMuted = source == null || SetupRelations.CountConsumersOfSource(setup, source.Id) == 0,
+                           DrawTooltip = drawTooltip,
+                       };
+        if (DrawItem(selection, setup, ref args) == OutlinerItem.Actions.ToggleExpanded)
+            ToggleSourceExpanded(childId);
+
+        if (source == null || sliceCount == 0 || !expanded)
+            return;
+
+        DrawListedSlicesOfSource(selection, setup, source);
+    }
+
+    /// <summary>
+    /// Explains a column in the free space below its items. The child window only gives the centered message
+    /// its bounds: it takes no input, so a click on it still counts as a click on empty strip.
+    /// </summary>
+    private void DrawColumnHint(string hint)
+    {
+        var top = new Vector2(_columnMinX, ImGui.GetCursorScreenPos().Y);
+        var height = MathF.Max(_columnBodyBottom - top.Y, MinColumnHintLines * ImGui.GetTextLineHeight());
+
+        ImGui.SetCursorScreenPos(top);
+        ImGui.BeginChild(hint, new Vector2(_columnWidth, height), ImGuiChildFlags.None,
+                         ImGuiWindowFlags.NoBackground | ImGuiWindowFlags.NoInputs | ImGuiWindowFlags.NoScrollbar);
+        CustomComponents.EmptyWindowMessage(hint);
+        ImGui.EndChild();
+
+        // Stacked columns measure their end from the cursor; the hint shouldn't count as content there.
+        ImGui.SetCursorScreenPos(top);
+    }
+
+    private const int MinColumnHintLines = 4;
 
     /// <summary>A slice under its source. A slice nothing shows reads as "unused".</summary>
     private void DrawSliceItem(SetupEntitySelection selection, Setup setup, Slice slice)
@@ -890,11 +1192,35 @@ internal sealed class SetupFlowOutliner
             if (setup.Surfaces[i].ParentId == Guid.Empty)
                 DrawSurfaceItem(selection, setup, setup.Surfaces[i], 0);
         }
+
+        if (setup.Surfaces.Count == 0)
+            DrawColumnHint("Physical surfaces\nlike a walls or screens.");
+    }
+
+    private static bool IsAncestorOfPendingRename(Setup setup, Guid surfaceId)
+    {
+        var reveal = OutlinerItem.RevealPendingId;
+        if (reveal == Guid.Empty)
+            return false;
+
+        var current = setup.FindSurface(reveal);
+        for (var guard = 0; current != null && current.ParentId != Guid.Empty && guard < 16; guard++)
+        {
+            if (current.ParentId == surfaceId)
+                return true;
+
+            current = setup.FindSurface(current.ParentId);
+        }
+
+        return false;
     }
 
     private void DrawSurfaceItem(SetupEntitySelection selection, Setup setup, Surface surface, int depth)
     {
         var surfaceId = surface.Id;
+        if (IsAncestorOfPendingRename(setup, surfaceId))
+            _collapsedSurfaces.Remove(surfaceId);
+
         var hasChildren = SetupRelations.CountChildren(setup, surfaceId) > 0;
         var isExpanded = !_collapsedSurfaces.Contains(surfaceId);
 
@@ -970,7 +1296,7 @@ internal sealed class SetupFlowOutliner
             for (var i = 0; i < _availableNames.Count; i++)
             {
                 var name = _availableNames[i];
-                if (CustomComponents.DrawMenuItem(i, name, isChecked: name == setup.Name) && name != setup.Name)
+                if (CustomComponents.DrawMenuItem(i, name, isChecked: name == setup.Name, reserveIconColumn: false) && name != setup.Name)
                 {
                     if (OutputSetupHandling.TrySwitchTo(name))
                         selection.Clear();
@@ -978,21 +1304,21 @@ internal sealed class SetupFlowOutliner
             }
 
             CustomComponents.SeparatorLine();
-            if (CustomComponents.DrawMenuItem(903, "Rename"))
+            if (CustomComponents.DrawMenuItem(903, "Rename", reserveIconColumn: false))
             {
                 _isRenamingSetup = true;
                 _setupRenameFocusPending = true;
                 _setupRenameBuffer = setup.Name;
             }
 
-            if (CustomComponents.DrawMenuItem(900, "Duplicate Current"))
+            if (CustomComponents.DrawMenuItem(900, "Duplicate Current", reserveIconColumn: false))
             {
                 OutputSetupHandling.TryDuplicateActive(GetFreeName(setup.Name + " copy"));
             }
             CustomComponents.TooltipForLastItem("Duplicates the setup for another venue.",
                                                 "Entity ids are preserved, so operator bindings stay intact.");
 
-            if (CustomComponents.DrawMenuItem(901, "New (Empty)"))
+            if (CustomComponents.DrawMenuItem(901, "New (Empty)", reserveIconColumn: false))
             {
                 if (OutputSetupHandling.TryCreateNew(GetFreeName("Setup")))
                     selection.Clear();
@@ -1000,16 +1326,18 @@ internal sealed class SetupFlowOutliner
             CustomComponents.TooltipForLastItem("Creates a fresh setup with new entity ids.",
                                                 "Operator bindings into it will be unresolved until re-assigned.");
 
-            if (_availableNames.Count > 1 && CustomComponents.DrawMenuItem(902, "Delete"))
-            {
-                if (OutputSetupHandling.TryDeleteActive())
-                    selection.Clear();
-            }
+            if (CustomComponents.DrawMenuItem(904, "Reveal in Explorer", reserveIconColumn: false))
+                OutputSetupHandling.RevealActiveFile();
 
-            if (_drawMenuExtras != null)
+            CustomComponents.TooltipForLastItem("Shows this setup's file in the project's .meta folder.");
+
+            if (_availableNames.Count > 1 && CustomComponents.DrawMenuItem(902, "Delete...", reserveIconColumn: false))
             {
-                CustomComponents.SeparatorLine();
-                _drawMenuExtras();
+                const string deleteChoice = "Delete";
+                var choice = T3.Core.SystemUi.BlockingWindow.Instance.ShowMessageBox($"Delete the setup \"{setup.Name}\" and its file? This can't be undone.",
+                                                                                      "Delete Setup", deleteChoice, "Cancel");
+                if (choice == deleteChoice && OutputSetupHandling.TryDeleteActive())
+                    selection.Clear();
             }
 
             SetupPopup.End();
@@ -1079,17 +1407,24 @@ internal sealed class SetupFlowOutliner
 
     private const string AddPlugMenuId = "##addPlugMenu";
     private const string AddOutputMenuId = "##addOutputMenu";
+    private const string AddContentMenuId = "##addContentMenu";
     private Action? _onLeave;
+    private Vector2? _visibleBoardCentre;
     private const string AddBoardItemMenuId = "##addBoardItemMenu";
     private const string HelpDocId = "OutputSetup";
     private const string HelpWikiUrl = "https://github.com/tixl3d/tixl/wiki/help.OutputSetup";
     private bool _addPlugMenuRequested;
     private bool _addOutputMenuRequested;
+    private bool _addContentMenuRequested;
+    private readonly Action<SetupEntitySelection> _requestAddContentMenu;
 
     // The display whose row is being drawn, read by the tooltip; a field rather than a captured lambda, which
     // would allocate a closure for every plug row every frame.
     private int _tooltipDisplayIndex;
     private readonly Action _drawDisplayTooltip;
+    private Show.BoygroupManager.ClientInfo? _tooltipRemoteClient;
+    private int _tooltipRemoteDisplayIndex;
+    private readonly Action _drawRemoteDisplayTooltip;
 
     // The parent op of the content row being drawn, read by its tooltip — a field for the same reason as above.
     private Instance? _tooltipSendParent;
@@ -1100,6 +1435,7 @@ internal sealed class SetupFlowOutliner
     // The column the items currently draw into (screen x + width); 0 width = whole window.
     private float _columnMinX;
     private float _columnWidth;
+    private float _columnBodyBottom;
 
     // Per-structure caches (see RefreshCaches), keyed on the structure version and the setup.
     private int _cacheVersion = -1;
@@ -1108,7 +1444,6 @@ internal sealed class SetupFlowOutliner
     private readonly Dictionary<Guid, string> _sliceLabels = [];
     private readonly Dictionary<Guid, string> _patchLabels = [];
 
-    private Action? _drawMenuExtras;
 
     private bool _isRenamingSetup;
     private bool _setupRenameFocusPending;
@@ -1116,6 +1451,7 @@ internal sealed class SetupFlowOutliner
 
     // Items drawn this frame, for the connections (cleared per frame; a few dozen entries, searched linearly).
     private readonly List<Anchor> _anchors = [];
+    private readonly List<OutputLayers.Layer> _layerScratch = [];
 
     private const float ColumnGap = 28; // unscaled px; the gutter the connections run through
 

@@ -320,14 +320,6 @@ public sealed class LaserOutputStream : IDisposable
     /// <summary>The library's own default for hardware that never advertised its capacity.</summary>
     internal const ushort DefaultBufferCapacity = 1799;
 
-    /// <summary>A plug left at its default scan rate (0) streams at 30 kpps — the rule every
-    /// transport shares; the clamp bounds must not drift between protocols.</summary>
-    internal static int NormalizeScanRate(int scanRate)
-    {
-        var clamped = Math.Clamp(scanRate, 100, 100000);
-        return clamped == 100 && scanRate < 100 ? 30000 : clamped;
-    }
-
     /// <summary>Queue bookkeeping shared by both transports: bounds the queue, copies the frame
     /// out of the upstream buffer (producers reuse their allocation every frame) and resets the
     /// watchdog clock.</summary>
@@ -433,6 +425,13 @@ public sealed class LaserOutputStream : IDisposable
         public bool IsConnected => _isConnected;
         public IStatusProvider.StatusLevel StatusLevel => _status.Level;
         public string StatusMessage => _status.Message;
+
+        /// <summary>A plug left at its default scan rate (0) streams at 30 kpps.</summary>
+        internal static int NormalizeScanRate(int scanRate)
+        {
+            var clamped = Math.Clamp(scanRate, 100, 100000);
+            return clamped == 100 && scanRate < 100 ? 30000 : clamped;
+        }
 
         /// <summary>
         /// Only the device address needs a new connection. Closing a session mid-write leaves the DAC's
@@ -2120,7 +2119,7 @@ private void HandleConnectionStateChanged(bool isConnected)
         private const int MaxQueuedFrames = 2;
         private const int RepeatIntervalMs = 33;
         private const int NopIntervalMs = 500;
-        private const int DiscoveryPollDelayMs = 500;
+        private const int DiscoverPollDelayMs = 500;
         private const int FrameMemorySize = 0x8000;
 
         public bool IsConnected => _isConnected;
@@ -2135,6 +2134,13 @@ private void HandleConnectionStateChanged(bool isConnected)
             _scanRate = NormalizeScanRate(device.ScanRate);
             _maxBrightness = Math.Clamp(device.MaxBrightness, 0f, 1f);
             _swapColorChannels = device.SwapColorChannels;
+        }
+
+        /// <summary>A plug left at the default 0 streams at 30 kpps — the rule all transports share.</summary>
+        private static int NormalizeScanRate(int scanRate)
+        {
+            var clamped = Math.Clamp(scanRate, 100, 100000);
+            return clamped == 100 && scanRate < 100 ? 30000 : clamped;
         }
 
         public string? DescribeMismatch(LaserPlug plug)
@@ -2204,12 +2210,6 @@ private void HandleConnectionStateChanged(bool isConnected)
                                  });
             }
 
-            // The connected-device slot is shared across protocols; a stale showNET entry would
-            // otherwise show up in the other pickers (and suppress this one's "probing..." hint).
-            var ip = _lastConnectIp;
-            if (ip != null)
-                LaserPlugDiscovery.ClearConnectedDevice(ip);
-
             _isConnected = false;
             _pointQueue.Clear();
             _lastFrame = null;
@@ -2234,7 +2234,7 @@ private void HandleConnectionStateChanged(bool isConnected)
                     while (string.IsNullOrWhiteSpace(address))
                     {
                         SetStatus("No showNET address (discovering...)", IStatusProvider.StatusLevel.Notice);
-                        await Task.Delay(DiscoveryPollDelayMs, token);
+                        await Task.Delay(DiscoverPollDelayMs, token);
                         address = ResolveAddress();
                     }
 
@@ -2363,13 +2363,9 @@ private void HandleConnectionStateChanged(bool isConnected)
             Span<byte> keyBytes = stackalloc byte[4];
             Random.Shared.NextBytes(keyBytes);
             var clientKey = BinaryPrimitives.ReadUInt32LittleEndian(keyBytes);
-
-            // A fresh packet per attempt: PrepareSend obfuscates in place (the cipher is not an
-            // involution), so a reused buffer would re-obfuscate ciphertext and every retry
-            // after the first would be garbage to the device.
+            var packet = ShowNetProtocol.BuildHandshake(clientKey);
             for (var attempt = 1; attempt <= HandshakeAttempts; attempt++)
             {
-                var packet = ShowNetProtocol.BuildHandshake(clientKey);
                 var seq = NextSequenceId();
                 ShowNetProtocol.PrepareSend(packet, packet.Length,
                                             ShowNetSendFlags.Keys
@@ -2479,32 +2475,14 @@ private void HandleConnectionStateChanged(bool isConnected)
             var exitY = 0;
             var blankScratch = Array.Empty<LaserPoint>();
             var approachScratch = Array.Empty<LaserPoint>();
-            var masterOffReported = false;
 
             while (!token.IsCancellationRequested && Volatile.Read(ref _disposed) == 0)
             {
                 var now = Environment.TickCount64;
                 var masterOff = !LaserMasterEnable.Enabled;
-                if (masterOff != masterOffReported)
-                {
-                    masterOffReported = masterOff;
-                    if (masterOff)
-                    {
-                        SetStatus("Laser master off - output blanked, session kept warm", IStatusProvider.StatusLevel.Notice);
-                        Log.Debug("showNET stream: master off - output blanked, session kept warm");
-                    }
-                }
-
-                if (masterOff)
-                {
-                    // The master is the hard kill for a real-scanner protocol: drop everything
-                    // queued and keep the session alive with blanked repeats below. Nothing lit
-                    // can leave this stream while it is off.
-                    _pointQueue.Clear();
-                }
 
                 LaserPoint[]? frame = null;
-                if (!masterOff && _pointQueue.TryDequeue(out var queued) && queued.Length > 0)
+                if (_pointQueue.TryDequeue(out var queued) && queued.Length > 0)
                 {
                     frame = queued;
                     lastRepeatTicks = 0;
@@ -2590,8 +2568,6 @@ private void HandleConnectionStateChanged(bool isConnected)
                                                ref _bitstream, out var length, out var compressed))
                 return;
 
-            // The reference's nextFrameId(): mask-increment then post-increment, so ids advance
-            // 1, 3, 5, ... exactly as the vendor client produces them (replicated deliberately).
             _frameId = (_frameId + 1) & 0x7FFFFF;
             var frameId = _frameId++;
             _packetId = (_packetId + 1) & 0x7FF;
