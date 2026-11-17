@@ -129,6 +129,7 @@ The new upstream op `[DrawLinesShaded]` does not have the capture tagging yet (s
 ## Fixes to problems that already existed on main-collective
 
 - `t3.sln` was missing `Operators/StreamDiffusion` and `StreamDiffusion.Tests`, so a Release solution build failed when the Editor packaged StreamDiffusion. Both are added back.
+- Parallel solution builds could package the Editor before an operator package had finished (`Operator package Lib has no Release build output`). `t3.sln` now declares the Editor's build dependency on all 13 packaged operator projects.
 - Duplicate `PackageReference`s (NU1504): `DataChannelDotnet` (Editor), `AssimpNetter` (Lib); duplicate `DepthAnything` package entry in Editor packaging.
 - `Operators/Video/.../VideoDeviceInput` had the **same symbol Guid** (`cd5a182e…`) as Lib's `[WebcamInput]` (upstream renamed VideoDeviceInput → WebcamInput), and its `.t3` had been deleted by a merge. Now it has its own Guid `34c2d58d-ae76-47b6-9713-02911a783341` and its `.t3` is restored from `0ae1d20` (23 inputs match `.cs` and `.t3ui`). Existing graphs keep resolving `cd5a182e` to WebcamInput. It is kept because `Operators/Video/Utils/PeerCameraProvider.cs` depends on it.
 
