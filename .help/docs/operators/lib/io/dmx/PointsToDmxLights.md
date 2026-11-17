@@ -12,7 +12,7 @@ Converts 3D points into DMX channel values for lighting fixtures. Supports posit
 | **FixtureChannelSize** (Int32) | Number of DMX channels each fixture occupies. All channel numbers below are 1-based within this fixture block. Set to 0 to disable DMX generation. |
 | **FitInUniverse** (Boolean) | Prevent a fixture's channel block from crossing a 512-channel universe boundary by padding with empty channels, so every fixture fits completely into a single universe. |
 | **FillUniverse** (Boolean) | Pad the end of the output with zero channels so the last universe is complete (512 slots), for interfaces that expect complete universes. |
-| **FixturesPerUniverse** (Int32) | Maximum number of fixtures placed in each 512-channel universe; the next fixture starts at the next universe boundary. A value above what fits (512 divided by FixtureChannelSize) is reduced to that number and a warning is logged. 0 disables batching and packs fixtures by channel count only. |
+| **FixturesPerUniverse** (Int32) | Number of fixtures packed back to back before the next batch starts at channel 1 of the next free universe. A batch spans as many universes as its channels need, e.g. 600 RGB pixels (1800 channels) fill 4 universes. 0 disables batching and packs fixtures by channel count only. |
 | **DebugToLog** (Boolean) | Log detailed debug output (pan/tilt angles, DMX mappings, custom variables) for the first fixture to the console. |
 | **TestModeSelect** (Int32) | Debug helper that overrides the rotation forward vector with a fixed axis direction to verify the pan/tilt channel mapping without live input data. |
 | **GetPosition** (Boolean) | Enable deriving a distance from the point position and writing it to a DMX channel. |

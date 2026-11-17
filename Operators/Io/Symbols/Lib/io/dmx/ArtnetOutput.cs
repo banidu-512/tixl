@@ -4,6 +4,7 @@ using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Text.RegularExpressions;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace Lib.io.dmx
 {
@@ -26,6 +27,7 @@ namespace Lib.io.dmx
         private readonly ConcurrentDictionary<int, IPEndPoint> _universeRoutingTable = new();
         private readonly byte[] _packetBuffer = new byte[18 + 512];
         private readonly byte[] _universeSequenceNumbers = new byte[65536];
+        private readonly List<List<int>?> _inputBuffers = new();
 
         // --- Zero-Allocation Queue ---
         private readonly ConcurrentQueue<FrameData> _dataQueue = new();
@@ -78,6 +80,11 @@ namespace Lib.io.dmx
         public ArtnetOutput()
         {
             Result.UpdateAction = Update;
+
+            // Constant part of the ArtDmx header; SendDmxPacket only writes the per-packet fields.
+            Array.Copy(_artnetId, 0, _packetBuffer, 0, 8);
+            _packetBuffer[10] = 0x00;
+            _packetBuffer[11] = 14;
         }
 
         private void Update(EvaluationContext context)
@@ -144,7 +151,9 @@ namespace Lib.io.dmx
             {
                 if (!_connected)
                 {
-                    SetStatus($"Not connected. {(_lastErrorMessage ?? "Check settings.")}", IStatusProvider.StatusLevel.Warning);
+                    var errorMessage = _lastErrorMessage;
+                    SetStatus(string.IsNullOrEmpty(errorMessage) ? "Not connected. Check settings." : "Not connected: " + errorMessage,
+                              IStatusProvider.StatusLevel.Warning);
                     return;
                 }
             }
@@ -152,35 +161,46 @@ namespace Lib.io.dmx
             SetStatus("Connected and sending.", IStatusProvider.StatusLevel.Success);
 
             var inputValueLists = InputsValues.GetCollectedTypedInputs();
+
+            // Evaluate each input once: an Animated upstream output can change length between two evaluations,
+            // and the frame buffer is sized from one while the copy reads the other.
+            var inputBuffers = _inputBuffers;
+            inputBuffers.Clear();
             int totalChannels = 0;
             for (int i = 0; i < inputValueLists.Count; i++)
             {
                 var buf = inputValueLists[i].GetValue(context);
+                inputBuffers.Add(buf);
                 if (buf != null) totalChannels += buf.Count;
             }
 
             if (totalChannels == 0) return;
 
-            var universeChannels = UniverseChannels.GetValue(context) ?? new List<int>();
+            var universeChannels = UniverseChannels.GetValue(context);
             int nextUniverse = 1;
-            if (universeChannels.Count > 0)
+            if (universeChannels != null && universeChannels.Count > 0)
             {
                 var lastInputIndex = universeChannels.Count - 1;
                 if (lastInputIndex < inputValueLists.Count)
                 {
-                    var lastBuffer = inputValueLists[lastInputIndex].GetValue(context);
+                    var lastBuffer = inputBuffers[lastInputIndex];
                     if (lastBuffer != null) nextUniverse = universeChannels[lastInputIndex] + (int)Math.Ceiling(lastBuffer.Count / 512.0);
                     else nextUniverse = universeChannels[lastInputIndex];
                 }
                 else nextUniverse = universeChannels[^1] + 1;
             }
 
-            while (universeChannels.Count < inputValueLists.Count)
+            if (universeChannels == null || universeChannels.Count < inputValueLists.Count)
             {
-                universeChannels.Add(nextUniverse);
-                nextUniverse++;
+                universeChannels ??= new List<int>();
+                while (universeChannels.Count < inputValueLists.Count)
+                {
+                    universeChannels.Add(nextUniverse);
+                    nextUniverse++;
+                }
+
+                UniverseChannels.SetTypedInputValue(universeChannels);
             }
-            UniverseChannels.SetTypedInputValue(universeChannels);
             ResolveUniverseOverlaps(universeChannels, inputValueLists, context);
 
             var frameData = RentFrameData(totalChannels, inputValueLists.Count);
@@ -189,7 +209,7 @@ namespace Lib.io.dmx
 
             for (int i = 0; i < inputValueLists.Count; i++)
             {
-                var buf = inputValueLists[i].GetValue(context);
+                var buf = inputBuffers[i];
                 if (buf == null || buf.Count == 0) continue;
                 buf.CopyTo(frameData.Buffer, currentOffset);
                 frameData.Mappings[frameData.MappingCount++] = new InputMapping { Input = i, Offset = currentOffset, Count = buf.Count, StartUniverse = universeChannels[i] };
@@ -374,7 +394,7 @@ namespace Lib.io.dmx
                                 break;
                             }
                             if (nextFrameTimeTicks - now > Stopwatch.Frequency / 1000) Thread.Sleep(1);
-                            else Thread.SpinWait(10);
+                            else Thread.Yield();
                         }
                     }
 
@@ -404,6 +424,9 @@ namespace Lib.io.dmx
                         while (remainingChannels > 0)
                         {
                             if (token.IsCancellationRequested) break;
+
+                            // Art-Net port addresses are 15 bit; anything else cannot be addressed or sequenced.
+                            if ((uint)currentUniverse > 0x7FFF) break;
 
                             int chunkCount = Math.Min(remainingChannels, 512);
                             int sendLength = Math.Max(2, chunkCount);
@@ -471,11 +494,8 @@ namespace Lib.io.dmx
         {
             try
             {
-                Array.Copy(_artnetId, 0, _packetBuffer, 0, 8);
                 _packetBuffer[8] = 0x00;
                 _packetBuffer[9] = 0x50;
-                _packetBuffer[10] = 0x00;
-                _packetBuffer[11] = 14;
                 _packetBuffer[12] = sequenceNumber;
                 _packetBuffer[13] = 0x00;
                 _packetBuffer[14] = (byte)(universe & 0xFF);
@@ -665,7 +685,54 @@ namespace Lib.io.dmx
             return new IPAddress(broadcastBytes);
         }
 
+        private static readonly object _networkInterfacesLock = new();
         private static List<NetworkAdapterInfo> _networkInterfaces = GetNetworkInterfaces();
+        private static int _isRefreshingInterfaces;
+
+        private static NetworkAdapterInfo? FindAdapter(IPAddress address)
+        {
+            lock (_networkInterfacesLock)
+            {
+                for (int i = 0; i < _networkInterfaces.Count; i++)
+                {
+                    if (_networkInterfaces[i].IpAddress.Equals(address))
+                        return _networkInterfaces[i];
+                }
+            }
+
+            return null;
+        }
+
+        /** Enumerating adapters can take tens of milliseconds, so it never runs on the frame thread. */
+        private static void RefreshNetworkInterfacesAsync()
+        {
+            if (Interlocked.CompareExchange(ref _isRefreshingInterfaces, 1, 0) != 0)
+                return;
+
+            Task.Run(() =>
+                     {
+                         try
+                         {
+                             var interfaces = GetNetworkInterfaces();
+                             lock (_networkInterfacesLock)
+                             {
+                                 _networkInterfaces = interfaces;
+                             }
+                         }
+                         finally
+                         {
+                             Volatile.Write(ref _isRefreshingInterfaces, 0);
+                         }
+                     });
+        }
+
+        private static List<NetworkAdapterInfo> GetNetworkInterfacesSnapshot()
+        {
+            lock (_networkInterfacesLock)
+            {
+                return _networkInterfaces;
+            }
+        }
 
         private static List<NetworkAdapterInfo> GetNetworkInterfaces()
         {
@@ -724,8 +791,8 @@ namespace Lib.io.dmx
         public void SetStatus(string m, IStatusProvider.StatusLevel l) { _lastErrorMessage = m; _lastStatusLevel = l; }
 
         string ICustomDropdownHolder.GetValueForInput(Guid inputId) { if (inputId == LocalIpAddress.Id) return _adapterResolver.EffectiveIp ?? LocalIpAddress.Value ?? string.Empty; if (inputId == TargetIpAddress.Id) return TargetIpAddress.Value ?? string.Empty; return string.Empty; }
-        IEnumerable<string> ICustomDropdownHolder.GetOptionsForInput(Guid inputId) { if (inputId == LocalIpAddress.Id) { _networkInterfaces = GetNetworkInterfaces(); foreach (var adapter in _networkInterfaces) yield return adapter.DisplayName; } else if (inputId == TargetIpAddress.Id) { if (!_isPolling && _discoveredNodes.IsEmpty) yield return "Enable 'Discover Nodes' to search..."; else if (_isPolling && _discoveredNodes.IsEmpty) yield return "Searching for nodes..."; else foreach (var nodeName in _discoveredNodes.Values.OrderBy(name => name)) yield return nodeName; } }
-        void ICustomDropdownHolder.HandleResultForInput(Guid inputId, string? selected, bool isAListItem) { if (string.IsNullOrEmpty(selected) || !isAListItem) return; if (inputId == LocalIpAddress.Id) { var foundAdapter = _networkInterfaces.FirstOrDefault(i => i.DisplayName == selected); if (foundAdapter == null) return; LocalIpAddress.SetTypedInputValue(foundAdapter.IpAddress.ToString()); _selectedSubnetMask = foundAdapter.SubnetMask; } else if (inputId == TargetIpAddress.Id) { var finalIp = selected; var match = Regex.Match(selected, @"\(([^)]*)\)"); if (match.Success) finalIp = match.Groups[1].Value; TargetIpAddress.SetTypedInputValue(finalIp); } }
+        IEnumerable<string> ICustomDropdownHolder.GetOptionsForInput(Guid inputId) { if (inputId == LocalIpAddress.Id) { var interfaces = GetNetworkInterfaces(); lock (_networkInterfacesLock) { _networkInterfaces = interfaces; } foreach (var adapter in interfaces) yield return adapter.DisplayName; } else if (inputId == TargetIpAddress.Id) { if (!_isPolling && _discoveredNodes.IsEmpty) yield return "Enable 'Discover Nodes' to search..."; else if (_isPolling && _discoveredNodes.IsEmpty) yield return "Searching for nodes..."; else foreach (var nodeName in _discoveredNodes.Values.OrderBy(name => name)) yield return nodeName; } }
+        void ICustomDropdownHolder.HandleResultForInput(Guid inputId, string? selected, bool isAListItem) { if (string.IsNullOrEmpty(selected) || !isAListItem) return; if (inputId == LocalIpAddress.Id) { var foundAdapter = GetNetworkInterfacesSnapshot().FirstOrDefault(i => i.DisplayName == selected); if (foundAdapter == null) return; LocalIpAddress.SetTypedInputValue(foundAdapter.IpAddress.ToString()); _selectedSubnetMask = foundAdapter.SubnetMask; } else if (inputId == TargetIpAddress.Id) { var finalIp = selected; var match = Regex.Match(selected, @"\(([^)]*)\)"); if (match.Success) finalIp = match.Groups[1].Value; TargetIpAddress.SetTypedInputValue(finalIp); } }
 
         [Input(Guid = "F7520A37-C2D4-41FA-A6BA-A6ED0423A4EC")] public readonly MultiInputSlot<List<int>> InputsValues = new();
         [Input(Guid = "B2C3D4E5-F6A7-8901-BCDE-F234567890AB")] public readonly InputSlot<List<int>> UniverseChannels = new();

@@ -202,7 +202,14 @@ public class Slot<T> : ISlot, ITimeClipRemapTarget
         if (_dirtyFlag.IsDirty || _valueIsCommand)
         {
             OpUpdateCounter.CountUp();
-            _effectiveUpdateAction?.Invoke(context);
+            if (OpTimings.Enabled)
+            {
+                OpTimings.Measure(_parent?.Symbol?.Name ?? "?", _effectiveUpdateAction, context);
+            }
+            else
+            {
+                _effectiveUpdateAction?.Invoke(context);
+            }
             _dirtyFlag.Clear();
             _dirtyFlag.SetUpdated();
         }
