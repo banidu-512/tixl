@@ -1,0 +1,64 @@
+{
+  "FormatVersion": 3,
+  "Id": "1f5f83dc-8301-520f-834e-e8b0613b0a35",
+  "Description": "Turns the active voxels of a NanoVDB grid into points on the GPU. [NanoVdbToPoints] dispatches one thread group per leaf from the buffer [VolumeToNanoVdb] produced, so it scales with the grid instead of reading it back to the CPU.",
+  "InputUis": [],
+  "SymbolChildUis": [
+    {
+      "ChildId": "b8bba283-50ba-5b1c-b983-dce7f6e3a8ad",
+      "SymbolName": "Lib.volume.generate.VolumePrimitive",
+      "Position": {
+        "X": 0.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "ab06ee18-23de-5052-a41d-f02f9e28c887",
+      "SymbolName": "Lib.volume.gpu.VolumeToNanoVdb",
+      "Position": {
+        "X": 300.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "c3af1cc9-64eb-5fe4-bb88-56057fa0d0fb",
+      "SymbolName": "Types.Gfx.ComputeShader",
+      "Position": {
+        "X": 300.0,
+        "Y": 260.0
+      }
+    },
+    {
+      "ChildId": "c0cb596b-721d-585a-83b2-71419c292a91",
+      "SymbolName": "Lib.volume.convert.NanoVdbToPoints",
+      "Position": {
+        "X": 600.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "e3d23b01-d3ea-5b0b-94b5-f1c88842cd66",
+      "SymbolName": "Lib.point.draw.DrawPoints",
+      "Position": {
+        "X": 900.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "d900a259-d949-5636-9484-211cd3eb1b39",
+      "SymbolName": "Lib.render.camera.OrbitCamera",
+      "Position": {
+        "X": 1200.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "5c1e84a3-ac7f-5d9a-8f50-3587c5f12fd4",
+      "SymbolName": "Lib.image.generate.basic.RenderTarget",
+      "Position": {
+        "X": 1500.0,
+        "Y": 0.0
+      }
+    }
+  ]
+}

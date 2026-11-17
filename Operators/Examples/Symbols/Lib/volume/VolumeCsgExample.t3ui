@@ -1,0 +1,211 @@
+{
+  "FormatVersion": 3,
+  "Id": "379fc9b9-e255-5630-9254-3fad8b5cb8fa"/*VolumeCsgExample*/,
+  "Description": "OpenVDB level sets in TiXL: build primitives with [VolumePrimitive], combine them with boolean CSG in [VolumeCsg] and raymarch the result on the GPU through [VolumeToTexture3D] + [VolumeField] + [RaymarchField].",
+  "InputUis": [],
+  "SymbolChildUis": [
+    {
+      "ChildId": "447f2a7b-282e-5720-afb9-11f11f937e24",
+      "SymbolName": "Lib.volume.generate.VolumePrimitive",
+      "SectionId": "b9e67023-d195-50f4-b2d2-6620d2a13c79",
+      "Comment": "Shape 5 = Cylinder. Size.Y is the height.",
+      "Position": {
+        "X": 60.0,
+        "Y": 540.0
+      }
+    },
+    {
+      "ChildId": "847e8f72-9010-52b3-bf16-196104b64e4e",
+      "SymbolName": "Lib.volume.generate.VolumePrimitive",
+      "SectionId": "b9e67023-d195-50f4-b2d2-6620d2a13c79",
+      "Comment": "Shape 1 = Box. Both volumes must share the same VoxelSize.",
+      "Position": {
+        "X": 60.0,
+        "Y": 330.0
+      }
+    },
+    {
+      "ChildId": "9ea7a1d6-294e-5dd0-902b-0fe5f9332d2c",
+      "SymbolName": "Lib.volume.generate.VolumePrimitive",
+      "SectionId": "b9e67023-d195-50f4-b2d2-6620d2a13c79",
+      "Comment": "Shape 0 = Sphere. Size.X is the diameter.",
+      "Position": {
+        "X": 60.0,
+        "Y": 120.0
+      }
+    },
+    {
+      "ChildId": "c767f3ff-9243-563a-8a9e-01d9bebc7af5",
+      "SymbolName": "Lib.render.camera.OrbitCamera",
+      "SectionId": "2c460050-8ae6-525f-a970-3d5d8942dd98",
+      "Comment": "SpinRate drives an orbit so the shape is visible from all sides.",
+      "Position": {
+        "X": 2020.0,
+        "Y": 200.0
+      }
+    },
+    {
+      "ChildId": "cdbbeaa5-7a24-542c-bbd7-3a4f54c5430f",
+      "SymbolName": "Lib.volume.modify.VolumeCsg",
+      "SectionId": "b9e67023-d195-50f4-b2d2-6620d2a13c79",
+      "Comment": "Operation 0 = Union (level set min).",
+      "Position": {
+        "X": 430.0,
+        "Y": 160.0
+      }
+    },
+    {
+      "ChildId": "d6a35005-7aa7-5699-b408-3b4f30231032",
+      "SymbolName": "Lib.mesh.draw.DrawMeshUnlit",
+      "SectionId": "2c460050-8ae6-525f-a970-3d5d8942dd98",
+      "Comment": "Draws a mesh with a flat colour.",
+      "Position": {
+        "X": 1500.0,
+        "Y": 200.0
+      }
+    },
+    {
+      "ChildId": "ec273016-75ec-5ee1-8c07-54a9c321dc31",
+      "SymbolName": "Lib.geometry.GeometryToMesh",
+      "SectionId": "2c460050-8ae6-525f-a970-3d5d8942dd98",
+      "Comment": "Uploads a mesh to the GPU as a drawable buffer.",
+      "Position": {
+        "X": 1240.0,
+        "Y": 200.0
+      }
+    },
+    {
+      "ChildId": "f11e75a1-e8d0-51ea-9ece-6ced1a9468ef",
+      "SymbolName": "Lib.volume.convert.VolumeToMesh",
+      "SectionId": "e9a3db14-6d85-59c4-a7fc-8e8ff1decf97",
+      "Comment": "Extracts a watertight isosurface mesh from a volume.",
+      "Position": {
+        "X": 980.0,
+        "Y": 200.0
+      }
+    },
+    {
+      "ChildId": "f990bd33-a94b-5787-a507-3e51e3cfd88a",
+      "SymbolName": "Lib.volume.modify.VolumeCsg",
+      "SectionId": "e9a3db14-6d85-59c4-a7fc-8e8ff1decf97",
+      "Comment": "Operation 2 = Difference: A minus B carves the cylinder out.",
+      "Position": {
+        "X": 700.0,
+        "Y": 330.0
+      }
+    },
+    {
+      "ChildId": "fa1b39f2-b0dd-50ce-b407-39a8a20af433",
+      "SymbolName": "Lib.image.generate.basic.RenderTarget",
+      "SectionId": "2c460050-8ae6-525f-a970-3d5d8942dd98",
+      "Comment": "Final image output.",
+      "Position": {
+        "X": 2280.0,
+        "Y": 200.0
+      }
+    }
+  ],
+  "OutputUis": [
+    {
+      "OutputId": "b5c7f13e-5e01-5753-9fea-027da689e7fd"/*ColorBuffer*/,
+      "Position": {
+        "X": 2300.0,
+        "Y": 300.0
+      }
+    }
+  ],
+  "Sections": [
+    {
+      "Id": "2c460050-8ae6-525f-a970-3d5d8942dd98",
+      "Label": "3 - Bake to texture and raymarch on the GPU",
+      "Color": {
+        "X": 0.4,
+        "Y": 0.7,
+        "Z": 0.5,
+        "W": 1.0
+      },
+      "Position": {
+        "X": 960.0,
+        "Y": 90.0
+      },
+      "Size": {
+        "X": 1480.0,
+        "Y": 700.0
+      }
+    },
+    {
+      "Id": "b9e67023-d195-50f4-b2d2-6620d2a13c79",
+      "Label": "1 - Build level sets",
+      "Color": {
+        "X": 0.35,
+        "Y": 0.5,
+        "Z": 0.75,
+        "W": 1.0
+      },
+      "Position": {
+        "X": 20.0,
+        "Y": 60.0
+      },
+      "Size": {
+        "X": 560.0,
+        "Y": 760.0
+      }
+    },
+    {
+      "Id": "e9a3db14-6d85-59c4-a7fc-8e8ff1decf97",
+      "Label": "2 - Boolean CSG",
+      "Color": {
+        "X": 0.75,
+        "Y": 0.5,
+        "Z": 0.3,
+        "W": 1.0
+      },
+      "Position": {
+        "X": 620.0,
+        "Y": 100.0
+      },
+      "Size": {
+        "X": 500.0,
+        "Y": 640.0
+      }
+    }
+  ],
+  "Settings": {
+    "OutputWindows": [
+      {
+  "ShowGizmos": "On",
+  "TransformGizmoMode": "Move",
+  "BackgroundColor": [
+    0.1,
+    0.1,
+    0.1,
+    1.0
+  ],
+  "CameraControlMode": "AutoUseFirstCam",
+  "CameraPosition": [
+    0.0,
+    0.0,
+    2.4142134
+  ],
+  "CameraTarget": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "CameraRoll": 0.0,
+  "CameraSpeed": 1.0,
+  "ResolutionTitle": "Fill",
+  "ResolutionWidth": 0,
+  "ResolutionHeight": 0,
+  "ResolutionUseAsAspectRatio": true,
+  "IsPinned": true,
+  "PinnedInstancePath": [
+    "f20e2713-73ef-248f-0eea-f4dfb8dae824"
+  ],
+  "PinnedOutputId": "00000000-0000-0000-0000-000000000000",
+  "PinnedEntityKind": "None",
+  "PinnedEntityId": "00000000-0000-0000-0000-000000000000"
+}
+    ]
+  }
+}

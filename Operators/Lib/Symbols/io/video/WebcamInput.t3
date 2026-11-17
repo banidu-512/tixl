@@ -3,8 +3,20 @@
   "Id": "cd5a182e-254b-4e65-820b-ff754122614c"/*WebcamInput*/,
   "Inputs": [
     {
+      "Id": "06c894a8-fe69-4cf6-bf54-b9c155b8f035"/*ControlValue*/,
+      "DefaultValue": 0.0
+    },
+    {
       "Id": "11f7432d-31f1-44b9-8f75-b1569b314b13"/*CustomFps*/,
       "DefaultValue": 0
+    },
+    {
+      "Id": "13553eca-d106-4eb6-afe9-095425b19b98"/*NormalizedControlValues*/,
+      "DefaultValue": true
+    },
+    {
+      "Id": "1ad30e74-ec75-43da-8e1c-4f9b55f14977"/*Control4Value*/,
+      "DefaultValue": 0.0
     },
     {
       "Id": "22513b82-e77a-417a-8a46-24e677f072d4"/*DeactivateWhenNotShowing*/,
@@ -15,6 +27,10 @@
       "DefaultValue": false
     },
     {
+      "Id": "2f1e2465-34c3-40b1-94c5-375e7a8d733f"/*Control1*/,
+      "DefaultValue": ""
+    },
+    {
       "Id": "3022de8a-5d88-4a37-9799-780f2a838a5f"/*FlipVertically*/,
       "DefaultValue": false
     },
@@ -23,12 +39,28 @@
       "DefaultValue": 0.0
     },
     {
+      "Id": "340481bb-c924-4bb1-a565-54d5bea3f2ea"/*Control3Value*/,
+      "DefaultValue": 0.0
+    },
+    {
       "Id": "49019d29-873e-4b7c-a897-c575a384a650"/*ResolutionFpsType*/,
       "DefaultValue": 0
     },
     {
+      "Id": "4e15a154-74ee-4fa7-9a31-62f23e8f5d61"/*CameraSettings*/,
+      "DefaultValue": ""
+    },
+    {
+      "Id": "5605ce18-38fd-45dc-bdba-19dc19f8b909"/*Control2Value*/,
+      "DefaultValue": 0.0
+    },
+    {
       "Id": "67e149a5-f7b6-47bc-b147-3b9b11c19c29"/*Reconnect*/,
       "DefaultValue": false
+    },
+    {
+      "Id": "71948b15-97d5-4a01-858f-d07bb3f60a26"/*Control1Value*/,
+      "DefaultValue": 0.0
     },
     {
       "Id": "805602d5-52b2-4a73-a337-12e00c3c91f2"/*Scale*/,
@@ -38,12 +70,24 @@
       }
     },
     {
+      "Id": "84b6e3c9-1a52-4f7d-9e28-67d3f1a5b496"/*Exposure*/,
+      "DefaultValue": 0.0
+    },
+    {
       "Id": "8d2c28c7-1234-40e2-9388-75574519543d"/*OpenSettings*/,
       "DefaultValue": false
     },
     {
+      "Id": "a3dd2efe-f31e-4f3c-bcd1-aab1972b9af5"/*Control4*/,
+      "DefaultValue": ""
+    },
+    {
       "Id": "a57e815d-70c9-4d3b-998c-d13506b8f56e"/*FlipHorizontally*/,
       "DefaultValue": false
+    },
+    {
+      "Id": "a5f4d2b8-63e9-4c17-8d40-52b7e9c6f183"/*Focus*/,
+      "DefaultValue": 0.0
     },
     {
       "Id": "c9e1c1f6-3a18-4a1c-8a5e-4b4119965b6e"/*CustomResolution*/,
@@ -51,6 +95,10 @@
         "X": 0,
         "Y": 0
       }
+    },
+    {
+      "Id": "e557173c-1835-4ef2-98da-0828b24a4ca1"/*Control3*/,
+      "DefaultValue": ""
     },
     {
       "Id": "f187a997-7e4a-48c6-81f9-2a27f150a68a"/*Reposition*/,
@@ -61,6 +109,10 @@
     },
     {
       "Id": "f5b900ec-ee17-123e-9972-cdd0580c104e"/*InputDeviceName*/,
+      "DefaultValue": ""
+    },
+    {
+      "Id": "ffb8bf70-1ef8-4e11-921c-fb76c8f8a4e6"/*Control2*/,
       "DefaultValue": ""
     }
   ],

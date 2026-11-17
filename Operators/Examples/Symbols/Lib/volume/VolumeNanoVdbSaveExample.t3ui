@@ -1,0 +1,134 @@
+{
+  "FormatVersion": 3,
+  "Id": "65643c65-e4d9-524d-98ea-7ee6b4257cbc"/*VolumeNanoVdbSaveExample*/,
+  "Description": "Exports a NanoVDB file from a generated volume while previewing the same data on the GPU.\n\n[VolumeToNanoVdb] feeds the preview in [NanoVdbRender], and [SaveNanoVdb] writes the same volume to disk when Save is switched on. The file is readable by the reference NanoVDB library.\n\nAKA: export nvdb, write nanovdb, openvdb interchange\n\nTips\n- Set PathSaved on [SaveNanoVdb] to the target file, then toggle Save.\n- Save writes on the rising edge only; switch it off and on to write again.",
+  "InputUis": [],
+  "SymbolChildUis": [
+    {
+      "ChildId": "04b385b8-0cd7-5362-b570-a758aa66887d",
+      "SymbolName": "Lib.render.camera.OrbitCamera",
+      "Position": {
+        "X": 2300.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "26fe4cca-6ceb-50d0-872a-1685504788b6",
+      "SymbolName": "Lib.volume.gpu.VolumeToNanoVdb",
+      "Position": {
+        "X": 1700.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "8856b5af-b98e-5408-acdb-8a42b30c1554",
+      "SymbolName": "Lib.volume.render.NanoVdbRender",
+      "Position": {
+        "X": 2000.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "9624ed42-4ac3-5e2c-bfb9-dda8c0bc3c07",
+      "SymbolName": "Lib.image.generate.basic.RenderTarget",
+      "Position": {
+        "X": 2600.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "aab5045a-d6ae-53bf-b906-1f77cfa17b42",
+      "SymbolName": "Lib.volume.io.SaveNanoVdb",
+      "Position": {
+        "X": 1100.0,
+        "Y": 700.0
+      }
+    },
+    {
+      "ChildId": "cda4ebf7-0f30-549a-8b62-dabb5c438efc",
+      "SymbolName": "Lib.numbers.anim.time.Time",
+      "Position": {
+        "X": 0.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "cf9e6088-956a-58a5-8271-6b4ca08ea8c0",
+      "SymbolName": "Lib.volume.generate.VolumePrimitive",
+      "Position": {
+        "X": 600.0,
+        "Y": 300.0
+      }
+    }
+  ],
+  "OutputUis": [
+    {
+      "OutputId": "4a5585b1-54d8-5365-a7fd-49b203f7b4d9"/*ColorBuffer*/,
+      "Position": {
+        "X": 2900.0,
+        "Y": 300.0
+      }
+    }
+  ],
+  "Settings": {
+    "OutputWindows": [
+      {
+  "ShowGizmos": "On",
+  "TransformGizmoMode": "Move",
+  "BackgroundColor": [
+    0.1,
+    0.1,
+    0.1,
+    1.0
+  ],
+  "CameraControlMode": "AutoUseFirstCam",
+  "CameraPosition": [
+    0.0,
+    0.0,
+    2.4142134
+  ],
+  "CameraTarget": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "CameraRoll": 0.0,
+  "CameraSpeed": 1.0,
+  "ResolutionTitle": "Fill",
+  "ResolutionWidth": 0,
+  "ResolutionHeight": 0,
+  "ResolutionUseAsAspectRatio": true,
+  "IsPinned": true,
+  "PinnedInstancePath": [
+    "2c5f20ba-1bdd-5179-afcc-3107618b4cce"
+  ],
+  "PinnedOutputId": "00000000-0000-0000-0000-000000000000",
+  "PinnedEntityKind": "None",
+  "PinnedEntityId": "00000000-0000-0000-0000-000000000000"
+}
+    ],
+    "WindowLayout": "[Window][Graph View##1]\nPos=71,27\nSize=672,1000\nCollapsed=0\nDockId=0x00000003,0\n\n[Window][Variations]\nPos=1388,591\nSize=292,436\nCollapsed=0\nDockId=0x0000000A,0\n\n[Window][Output View##0]\nPos=745,27\nSize=935,562\nCollapsed=0\nDockId=0x00000007,0\n\n[Window][Symbol Library]\nPos=0,27\nSize=69,1000\nCollapsed=0\nDockId=0x0000000D,0\n\n[Window][Parameters##1]\nPos=745,591\nSize=641,436\nCollapsed=0\nDockId=0x00000009,0\n\n[Window][Help]\nPos=1388,591\nSize=292,436\nCollapsed=0\nDockId=0x0000000A,1\n\n[Window][Collab]\nPos=1388,591\nSize=292,436\nCollapsed=0\nDockId=0x0000000A,2\n\n[Docking][Data]\nDockSpace         ID=0x08BD597D Window=0x1BBC0F80 Pos=0,27 Size=1680,1000 Split=X Selected=0x8995E68A\n  DockNode        ID=0x0000000B Parent=0x08BD597D SizeRef=69,1391 Split=Y Selected=0x42C24103\n    DockNode      ID=0x0000000D Parent=0x0000000B SizeRef=549,881 HiddenTabBar=1 Selected=0xD41FC2E2\n    DockNode      ID=0x0000000E Parent=0x0000000B SizeRef=549,508 HiddenTabBar=1 Selected=0x42C24103\n  DockNode        ID=0x0000000C Parent=0x08BD597D SizeRef=1609,1391 Split=X\n    DockNode      ID=0x00000003 Parent=0x0000000C SizeRef=672,1391 CentralNode=1 HiddenTabBar=1 Selected=0x8995E68A\n    DockNode      ID=0x00000004 Parent=0x0000000C SizeRef=935,1391 Split=Y Selected=0xC9567BC1\n      DockNode    ID=0x00000007 Parent=0x00000004 SizeRef=916,562 HiddenTabBar=1 Selected=0xC9567BC1\n      DockNode    ID=0x00000008 Parent=0x00000004 SizeRef=916,436 Split=X Selected=0x35577784\n        DockNode  ID=0x00000009 Parent=0x00000008 SizeRef=641,446 HiddenTabBar=1 Selected=0x35577784\n        DockNode  ID=0x0000000A Parent=0x00000008 SizeRef=292,446 Selected=0xF2F5D81D\n\n",
+    "WindowLayoutImGuiVersion": "1.91.6",
+    "WindowVisibility": {
+      "Variations": true,
+      "Output View##0": true,
+      "Graph View##0": false,
+      "Graph View##1": true,
+      "Parameters##1": true,
+      "Symbol Library": true,
+      "Assets": false,
+      "Variation Explorer": false,
+      "Render To File": false,
+      "IO Events": false,
+      "Performance": false,
+      "Help": true,
+      "Console": false,
+      "Utilities": false,
+      "Guided Feature Tests": false,
+      "Settings": false,
+      "Composition Settings": false,
+      "Welcome to the TiXL Alpha": false,
+      "Collab": true
+    }
+  }
+}

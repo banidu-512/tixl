@@ -17,6 +17,7 @@ Tips:
 - For broadcast, leave `TargetIpAddress` empty. For unicast, specify the destination IP.
 - Use `UniverseChannels` to define the starting universe for each input (auto-expands as needed)
 - Enable `SendTrigger` to start continuous transmission; disable to stop.
+- The node status lists the universes each input occupies. Starting universes are stored per input, so when an input grows (more fixtures, a changed `FixturesPerUniverse` on PointsToDmxLights) it can run into the next input's universes. A later input that would overlap an earlier one is moved to the first free universe behind it, and the move is logged.
 
 AKA: artnet, dmx, lighting, sacn
 

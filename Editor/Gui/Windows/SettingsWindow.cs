@@ -23,6 +23,11 @@ internal sealed partial class SettingsWindow : Window
     internal SettingsWindow()
     {
         Config.Title = "Settings";
+
+        // The sidebar plus the 560px content column; tall enough that the Collaboration
+        // participant table (and its per-row actions) and the AI model browser are
+        // visible without manual resizing.
+        WindowSizeOverride = new Vector2(700, 1000);
     }
 
     private enum Categories
@@ -30,6 +35,11 @@ internal sealed partial class SettingsWindow : Window
         Interface,
         Theme,
         Projects,
+        Startup,
+        AiModels,
+        Boygroup,
+        Collaboration,
+        Failover,
         Audio,
         Midi,
         InputDevices,
@@ -92,7 +102,9 @@ internal sealed partial class SettingsWindow : Window
             {
                 var name = category == Categories.Midi
                                ? "Midi & OSC"
-                               : CustomComponents.HumanReadablePascalCase(Enum.GetName(category));
+                               : category == Categories.AiModels
+                                   ? "AI Models"
+                                   : CustomComponents.HumanReadablePascalCase(Enum.GetName(category));
                 if (NavigationSidebar.Item(name, _activeCategory == category))
                     SelectCategory(category);
             }
@@ -101,7 +113,7 @@ internal sealed partial class SettingsWindow : Window
         }
         NavigationSidebar.EndColumn();
 
-        NavigationSidebar.BeginContentPanel(CategoryTitle(_activeCategory), this);
+        NavigationSidebar.BeginContentPanel(CategoryTitle(_activeCategory), this, alwaysShowScrollbar: true);
         {
             if (_scrollContentToTop)
             {
@@ -110,6 +122,7 @@ internal sealed partial class SettingsWindow : Window
             }
 
             FormInputs.SetIndentToParameters();
+            FormInputs.PushMaxContentWidth(560);
             switch (_activeCategory)
             {
                 case Categories.Interface:
@@ -230,6 +243,14 @@ internal sealed partial class SettingsWindow : Window
                                                       ref UserSettings.Config.Toasts.Enabled,
                                                       "Short messages in the menu bar that tell what a keyboard shortcut did, and tips about related shortcuts.",
                                                       UserSettings.Defaults.Toasts.Enabled);
+
+                    changed |= FormInputs.AddCheckBox("Show missing symbols warning at startup",
+                                                      ref UserSettings.Config.ShowMissingSymbolsWarningOnStartup,
+                                                      """
+                                                      Warning shown once after startup when symbols use operators that could not be found (missing package or deleted operator).
+                                                      The operators stay in your files and the gaps still show in the graph and the startup log; this only hides the summary.
+                                                      """,
+                                                      UserSettings.Defaults.ShowMissingSymbolsWarningOnStartup);
 
                     FormInputs.ApplyIndent();
                     if (ImGui.Button("Show Tips Again"))
@@ -360,6 +381,30 @@ internal sealed partial class SettingsWindow : Window
                     FormInputs.AddVerticalSpace();
 
                     ColorThemeEditor.DrawEditor();
+                    break;
+
+                case Categories.Startup:
+                    FormInputs.AddVerticalSpace();
+                    DrawStartupPanel(ref changed);
+                    break;
+
+                case Categories.AiModels:
+                    DrawAiModelsPanel(ref changed);
+                    break;
+
+                case Categories.Boygroup:
+                    FormInputs.AddVerticalSpace();
+                    DrawBoygroupPanel(ref changed);
+                    break;
+
+                case Categories.Collaboration:
+                    FormInputs.AddVerticalSpace();
+                    DrawCollabPanel(ref changed);
+                    break;
+
+                case Categories.Failover:
+                    FormInputs.AddVerticalSpace();
+                    DrawFailoverPanel(ref changed);
                     break;
 
                 case Categories.Projects:
@@ -690,6 +735,8 @@ internal sealed partial class SettingsWindow : Window
                 }
             }
 
+            FormInputs.PopMaxContentWidth();
+
             if (changed)
                 UserSettings.Save();
 
@@ -879,6 +926,11 @@ internal sealed partial class SettingsWindow : Window
                                                                         Categories.Interface  => "User Interface",
                                                                         Categories.Theme      => "Color Theme",
                                                                         Categories.Projects   => "Project specific settings",
+                                                                        Categories.Startup    => "Startup and Recovery",
+                                                                        Categories.AiModels   => "AI Models",
+                                                                        Categories.Boygroup   => "Boygrouping",
+                                                                        Categories.Collaboration => "Collaboration",
+                                                                        Categories.Failover   => "Show Failover",
                                                                         Categories.Audio      => "Audio System",
                                                                         Categories.Midi       => "Midi & OSC",
                                                                         Categories.InputDevices => "Input Devices",

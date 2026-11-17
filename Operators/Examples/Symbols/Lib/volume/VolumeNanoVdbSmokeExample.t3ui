@@ -1,0 +1,127 @@
+{
+  "FormatVersion": 3,
+  "Id": "a5e30eab-98f2-543f-9d82-d04d04b001df"/*VolumeNanoVdbSmokeExample*/,
+  "Description": "Billowing smoke rendered from a NanoVDB level set.\n\nA sphere is displaced by animated [VolumeNoise]. [NanoVdbRender] uses the depth below the surface of the grid as smoke density, broken up by procedural noise. Liquid and fire are switched off.\n\nAKA: cloud, fog, density volume\n\nTips\n- SmokeSoftness sets over what depth the smoke fades in; NoiseAmount sets how ragged it looks.",
+  "InputUis": [],
+  "SymbolChildUis": [
+    {
+      "ChildId": "0c58f2fb-aa93-5b8d-802b-134abdee9d95",
+      "SymbolName": "Lib.numbers.anim.time.Time",
+      "Position": {
+        "X": 0.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "1aaf8158-5e9f-5cf2-98d3-d1e9b78bdf71",
+      "SymbolName": "Types.Values.Vector3",
+      "Position": {
+        "X": 300.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "4b0b025e-2091-52d4-a465-d06870802df9",
+      "SymbolName": "Lib.numbers.anim.time.Time",
+      "Position": {
+        "X": 0.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "9b7876a1-ab59-5a06-8c4a-956dc4375d23",
+      "SymbolName": "Lib.image.generate.basic.RenderTarget",
+      "Position": {
+        "X": 2600.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "9f7bc41d-8ee1-56ce-bc4f-1775460ab7eb",
+      "SymbolName": "Lib.volume.render.NanoVdbRender",
+      "Position": {
+        "X": 2000.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "b2e9402a-6828-5e8e-820d-55cda9272f6e",
+      "SymbolName": "Lib.volume.generate.VolumePrimitive",
+      "Position": {
+        "X": 600.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "b96486ba-9240-5510-89aa-b0244637b52a",
+      "SymbolName": "Lib.render.camera.OrbitCamera",
+      "Position": {
+        "X": 2300.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "bedce3f0-79d2-56f5-81a9-1628f448ab09",
+      "SymbolName": "Lib.volume.modify.VolumeNoise",
+      "Position": {
+        "X": 1100.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "ChildId": "efb4bf18-36b6-55ff-9aff-d9ac8ae497c4",
+      "SymbolName": "Lib.volume.gpu.VolumeToNanoVdb",
+      "Position": {
+        "X": 1700.0,
+        "Y": 300.0
+      }
+    }
+  ],
+  "OutputUis": [
+    {
+      "OutputId": "daf9c4ae-237d-513a-a8d9-2b27ad3e37b9"/*ColorBuffer*/,
+      "Position": {
+        "X": 2900.0,
+        "Y": 300.0
+      }
+    }
+  ],
+  "Settings": {
+    "OutputWindows": [
+      {
+  "ShowGizmos": "On",
+  "TransformGizmoMode": "Move",
+  "BackgroundColor": [
+    0.1,
+    0.1,
+    0.1,
+    1.0
+  ],
+  "CameraControlMode": "AutoUseFirstCam",
+  "CameraPosition": [
+    0.0,
+    0.0,
+    2.4142134
+  ],
+  "CameraTarget": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "CameraRoll": 0.0,
+  "CameraSpeed": 1.0,
+  "ResolutionTitle": "Fill",
+  "ResolutionWidth": 0,
+  "ResolutionHeight": 0,
+  "ResolutionUseAsAspectRatio": true,
+  "IsPinned": true,
+  "PinnedInstancePath": [
+    "dca6ed5b-e2b4-923d-81b2-d0e31c7e7841"
+  ],
+  "PinnedOutputId": "00000000-0000-0000-0000-000000000000",
+  "PinnedEntityKind": "None",
+  "PinnedEntityId": "00000000-0000-0000-0000-000000000000"
+}
+    ]
+  }
+}

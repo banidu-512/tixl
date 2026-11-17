@@ -1,0 +1,16 @@
+{
+  "FormatVersion": 3,
+  "Id": "c5b0fe28-b153-43f8-82ed-bc67d3815cf7"/*VolumeNanoVdbFieldExample*/,
+  "Description": "A production .vdb file raymarched through TiXL's field pipeline.\n\n[LoadVdb] reads the OpenVDB file, [VolumeToNanoVdb] flattens the grid into the GPU layout, and [VdbToSdfField] exposes it as a signed-distance field. [RaymarchField] then draws it, and because the volume is now just a field, everything in the field library applies: CombineSDF to union it with primitives, TransformField to move it, SDFToColor to shade by distance.\n\nAKA: vdb raymarch, nanovdb field, openvdb render\n\nTips\n- Change LoadVdb's Path to any .vdb on disk, or to a package address.\n- The grid is trilinearly sampled, so a fog volume needs VdbDensityField rather than this level-set field.\n- VdbToSdfField's BoundsMin/BoundsMax come from the grid itself; if you set them by hand, a wrong box clips the volume.",
+  "InputUis": [],
+  "SymbolChildUis": [],
+  "OutputUis": [
+    {
+      "OutputId": "f56c30a6-d464-4673-95c4-706598ce13f7"/*ColorBuffer*/,
+      "Position": {
+        "X": 1034.593,
+        "Y": 170.0
+      }
+    }
+  ]
+}

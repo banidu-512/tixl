@@ -1,0 +1,56 @@
+{
+  "FormatVersion": 3,
+  "Id": "0454aceb-0ea0-5588-b37f-7b774f931a8a",
+  "Description": "A fog volume as a field: [VdbDensityField] returns IsoValue minus the sampled density, so dense smoke reads as inside. Here the shipped smoke.vdb is raymarched through [RaymarchField].",
+  "InputUis": [],
+  "SymbolChildUis": [
+    {
+      "ChildId": "46ef27fa-0d55-57be-92c3-e3eb47209e0b",
+      "SymbolName": "Lib.volume.io.LoadVdb",
+      "Position": {
+        "X": 0.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "bd79d83a-419b-574f-9be2-f8eed2584d9d",
+      "SymbolName": "Lib.volume.gpu.VolumeToNanoVdb",
+      "Position": {
+        "X": 300.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "8d52723c-87fd-529e-b17a-938bd6ab5064",
+      "SymbolName": "Lib.volume.fields.VdbDensityField",
+      "Position": {
+        "X": 600.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "7dcff64a-ffb3-52d2-9cb9-6d3a58847aa6",
+      "SymbolName": "Lib.field.render.RaymarchField",
+      "Position": {
+        "X": 900.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "a0c34c0e-f4b0-5e76-965e-2b9bf1ec7db8",
+      "SymbolName": "Lib.render.camera.OrbitCamera",
+      "Position": {
+        "X": 1200.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "9c45a659-c055-557b-a0ce-c0c973ba0a0a",
+      "SymbolName": "Lib.image.generate.basic.RenderTarget",
+      "Position": {
+        "X": 1500.0,
+        "Y": 0.0
+      }
+    }
+  ]
+}

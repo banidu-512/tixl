@@ -63,6 +63,45 @@ namespace Lib.io.dmx
         {
             Result.UpdateAction = Update;
         }
+
+        protected override void Dispose(bool isDisposing)
+        {
+            if (isDisposing)
+            {
+                _pointsBufferReader.Dispose();
+                _referencePointsBufferReader.Dispose();
+                if (_visualizeBuffer != null)
+                {
+                    _visualizeBuffer.Srv?.Dispose();
+                    _visualizeBuffer.Uav?.Dispose();
+                    _visualizeBuffer.Buffer?.Dispose();
+                    _visualizeBuffer = null;
+                }
+            }
+
+            base.Dispose(isDisposing);
+        }
+        #endregion
+
+        #region Warning throttle
+        private readonly Dictionary<string, long> _warningTicks = new();
+
+        /// <summary>
+        /// Warnings come from per-fixture code that runs every frame; the same message is logged at most once
+        /// per interval so a misconfiguration cannot flood the log.
+        /// </summary>
+        private void WarnThrottled(string message, object _ = null)
+        {
+            var now = System.Diagnostics.Stopwatch.GetTimestamp();
+            if (_warningTicks.TryGetValue(message, out var last) && now - last < System.Diagnostics.Stopwatch.Frequency * 10)
+                return;
+
+            if (_warningTicks.Count > 32)
+                _warningTicks.Clear();
+
+            _warningTicks[message] = now;
+            Log.Warning(message, this);
+        }
         #endregion
 
         #region Input Slots
@@ -239,7 +278,7 @@ namespace Lib.io.dmx
 
             if (pointBuffer == null || pointBuffer.Buffer == null || pointBuffer.Srv == null)
             {
-                Log.Warning("EffectedPoints buffer is not connected or invalid.", this);
+                WarnThrottled("EffectedPoints buffer is not connected or invalid.", this);
                 Result.Value?.Clear();
                 VisualizeLights.Value = null;
                 _lastPanTiltPerFixture.Clear();
@@ -380,7 +419,7 @@ namespace Lib.io.dmx
                 fixtureCount = _referencePoints.Length;
                 if (fixtureCount == 0 || effectedPointsCount % fixtureCount != 0)
                 {
-                    Log.Warning(
+                    WarnThrottled(
                         $"Effected points count ({effectedPointsCount}) is not a multiple of reference points count ({fixtureCount}). " +
                         "Falling back to 1‑to‑1 mapping.", this);
                     fixtureCount = effectedPointsCount;
@@ -411,8 +450,18 @@ namespace Lib.io.dmx
 
             if (fixtureChannelSize <= 0)
             {
-                if (effectedPointsCount > 0) Log.Warning("FixtureChannelSize is 0 or less, no DMX output generated.", this);
+                if (effectedPointsCount > 0) WarnThrottled("FixtureChannelSize is 0 or less, no DMX output generated.", this);
                 return;
+            }
+
+            // More fixtures than fit in one universe cannot be honored: the batch would spill into the next
+            // universe and every later batch would start misaligned. The batch size is capped to what fits.
+            var maxFixturesPerUniverse = Math.Max(1, UniverseSize / fixtureChannelSize);
+            if (fixturesPerUniverse > maxFixturesPerUniverse)
+            {
+                WarnThrottled($"FixturesPerUniverse ({fixturesPerUniverse}) does not fit: {fixtureChannelSize} channels per fixture allow at most " +
+                              $"{maxFixturesPerUniverse} per universe of {UniverseSize}. Using {maxFixturesPerUniverse}.");
+                fixturesPerUniverse = maxFixturesPerUniverse;
             }
 
             // Pre‑allocate the per‑fixture DMX channel buffer
@@ -423,7 +472,6 @@ namespace Lib.io.dmx
             // Track universe state for fixtures per universe limiting
             int currentChannelOffset = 0; // Offset in DMX channels (not absolute channel number)
             int fixturesInCurrentBatch = 0;
-            int channelsBeforeLastFixture = 0; // Track position before adding fixture for FillUniverse
 
             // Process each fixture
             for (int fixtureIdx = 0; fixtureIdx < fixtureCount; fixtureIdx++)
@@ -433,15 +481,14 @@ namespace Lib.io.dmx
                 // Check if we need to start a new batch based on fixtures per universe
                 if (fixturesPerUniverse > 0 && fixturesInCurrentBatch >= fixturesPerUniverse)
                 {
-                    // Pad to universe boundary for clean batch separation
-                    int currentUniverse = (currentChannelOffset / UniverseSize);
-                    int nextUniverseStart = (currentUniverse + 1) * UniverseSize;
-                    int paddingNeeded = nextUniverseStart - currentChannelOffset;
+                    // Pad to the next universe boundary for clean batch separation. A batch that ended exactly
+                    // on a boundary is already aligned; padding then would skip a whole empty universe.
+                    int paddingNeeded = (UniverseSize - currentChannelOffset % UniverseSize) % UniverseSize;
 
                     for (int p = 0; p < paddingNeeded; p++)
                         _resultItems.Add(0);
 
-                    currentChannelOffset = nextUniverseStart;
+                    currentChannelOffset += paddingNeeded;
                     fixturesInCurrentBatch = 0;
                 }
 
@@ -451,7 +498,9 @@ namespace Lib.io.dmx
                     int currentUniverseStart = (currentChannelOffset / UniverseSize) * UniverseSize;
                     int spaceLeftInUniverse = UniverseSize - (currentChannelOffset - currentUniverseStart);
 
-                    if (fixtureChannelSize > spaceLeftInUniverse)
+                    // A fixture larger than a universe cannot fit anywhere; padding from the start of a fresh
+                    // universe would only add a blank one in front of it.
+                    if (fixtureChannelSize > spaceLeftInUniverse && spaceLeftInUniverse < UniverseSize)
                     {
                         // Pad to next universe
                         int paddingNeeded = spaceLeftInUniverse;
@@ -466,9 +515,6 @@ namespace Lib.io.dmx
                 for (int i = 0; i < fixtureChannelSize; i++)
                     _pointChannelValues[i] = 0;
 
-                // Store position before adding this fixture for FillUniverse tracking
-                channelsBeforeLastFixture = currentChannelOffset;
-
                 // Get point data for this fixture (cycle through available points)
                 int pointIdx = fixtureIdx % Math.Max(1, effectedPointsCount);
                 int firstPixelIdx = pointIdx * Math.Min(pixelsPerFixture, Math.Max(1, effectedPointsCount - pointIdx));
@@ -477,8 +523,7 @@ namespace Lib.io.dmx
                     ? _referencePoints[fixtureIdx]
                     : transformPoint;
 
-                bool logBoundaryFixture = debugToLog && (fixtureIdx == 789 || fixtureIdx == 790 || fixtureIdx == 791);
-                if (logThisFixture || logBoundaryFixture)
+                if (logThisFixture)
                 {
                     Log.Debug($"--- Fixture {fixtureIdx} Debug --- PointIdx: {pointIdx}, Color: ({transformPoint.Color.X:F2}, {transformPoint.Color.Y:F2}, {transformPoint.Color.Z:F2}), Offset: {currentChannelOffset}", this);
                 }
@@ -516,35 +561,11 @@ namespace Lib.io.dmx
                 // Update tracking
                 currentChannelOffset += fixtureChannelSize;
                 fixturesInCurrentBatch++;
-
-                // FillUniverse: If we just crossed a universe boundary, fill the completed universe
-                if (fillUniverse && fixtureChannelSize > 0)
-                {
-                    int universeBefore = channelsBeforeLastFixture / UniverseSize;
-                    int universeAfter = currentChannelOffset / UniverseSize;
-
-                    if (universeAfter > universeBefore)
-                    {
-                        // We crossed one or more universe boundaries
-                        for (int u = universeBefore; u < universeAfter; u++)
-                        {
-                            int universeEnd = (u + 1) * UniverseSize;
-                            if (currentChannelOffset < universeEnd)
-                            {
-                                // Fill to end of this universe
-                                int paddingNeeded = universeEnd - currentChannelOffset;
-                                for (int p = 0; p < paddingNeeded; p++)
-                                    _resultItems.Add(0);
-
-                                currentChannelOffset = universeEnd;
-                            }
-                        }
-                    }
-                }
             }
 
-            // Final universe fill (only if not using fixtures per universe batching)
-            if (fillUniverse && fixturesPerUniverse == 0)
+            // Final universe fill: the last, partly used universe is completed so the list is a whole number
+            // of universes (also with fixtures-per-universe batching, where the last batch is not padded).
+            if (fillUniverse)
             {
                 int remainder = _resultItems.Count % UniverseSize;
                 if (remainder != 0)
@@ -613,7 +634,7 @@ namespace Lib.io.dmx
 
             if (Math.Abs(range.Y - range.X) < 1e-4f)
             {
-                Log.Warning("PositionDistanceRange min and max are too close – will output 0.", this);
+                WarnThrottled("PositionDistanceRange min and max are too close – will output 0.", this);
                 SetDmxValue(0f, channel, fineChannel, range.X, range.Y, shouldLog, "Position");
                 return point.Position;
             }
@@ -703,7 +724,7 @@ namespace Lib.io.dmx
                 Quat refRot = referencePoint.Orientation;
                 if (float.IsNaN(refRot.X) || float.IsNaN(refRot.Y) || float.IsNaN(refRot.Z) || float.IsNaN(refRot.W))
                 {
-                    if (shouldLog) Log.Warning("Reference rotation is invalid. Using Identity.", this);
+                    if (shouldLog) WarnThrottled("Reference rotation is invalid. Using Identity.", this);
                     refRot = Quat.Identity;
                 }
 
@@ -852,13 +873,13 @@ namespace Lib.io.dmx
         {
             if (pan == AxisModes.Disabled && tilt == AxisModes.Disabled)
             {
-                Log.Warning("Both Pan and Tilt axes are disabled – rotation will be ignored.", this);
+                WarnThrottled("Both Pan and Tilt axes are disabled – rotation will be ignored.", this);
                 return false;
             }
 
             if (pan != AxisModes.Disabled && pan == tilt)
             {
-                Log.Warning($"Pan and Tilt axes cannot be identical ({pan}). Skipping rotation.", this);
+                WarnThrottled($"Pan and Tilt axes cannot be identical ({pan}). Skipping rotation.", this);
                 return false;
             }
 
@@ -867,7 +888,7 @@ namespace Lib.io.dmx
             if (panVec != Vec3.Zero && tiltVec != Vec3.Zero &&
                 Vec3.Cross(panVec, tiltVec).LengthSquared() < 1e-6f)
             {
-                Log.Warning($"Pan ({pan}) and Tilt ({tilt}) axes are collinear – rotation undefined.", this);
+                WarnThrottled($"Pan ({pan}) and Tilt ({tilt}) axes are collinear – rotation undefined.", this);
                 return false;
             }
             return true;
@@ -880,7 +901,7 @@ namespace Lib.io.dmx
             if (float.IsNaN(reference.X) || float.IsNaN(reference.Y) ||
                 float.IsNaN(reference.Z) || float.IsNaN(reference.W))
             {
-                Log.Warning("Reference rotation is invalid (NaN components). Falling back to absolute rotation.", this);
+                WarnThrottled("Reference rotation is invalid (NaN components). Falling back to absolute rotation.", this);
                 return current;
             }
 
@@ -968,7 +989,7 @@ namespace Lib.io.dmx
             Vec3 localForward = Vec3.Normalize(Vec3.Cross(tiltVec, panVec));
             if (localForward.LengthSquared() < 1e-6f)
             {
-                Log.Error("Pan and Tilt axes are collinear – cannot form a proper coordinate system.", this);
+                WarnThrottled("Pan and Tilt axes are collinear – cannot form a proper coordinate system.", this);
                 return (rawPan, rawTilt);
             }
 
@@ -1030,7 +1051,7 @@ namespace Lib.io.dmx
         {
             if (panRangeDegrees.X >= panRangeDegrees.Y)
             {
-                Log.Warning("Pan range min must be < max.", this);
+                WarnThrottled("Pan range min must be < max.", this);
                 SetDmxValue(0f, panChannel, panFineChannel, 0f, 1f, shouldLog, "Pan");
                 return 0f;
             }
@@ -1068,7 +1089,7 @@ namespace Lib.io.dmx
         {
             if (tiltRangeDegrees.X >= tiltRangeDegrees.Y)
             {
-                Log.Warning("Tilt range min must be < max.", this);
+                WarnThrottled("Tilt range min must be < max.", this);
                 SetDmxValue(0f, tiltChannel, tiltFineChannel, 0f, 1f, shouldLog, "Tilt");
                 return 0f;
             }
@@ -1153,7 +1174,7 @@ namespace Lib.io.dmx
             }
             else if (hasAnyPerPixelAttributes && DebugToLog.GetValue(context))
             {
-                Log.Warning("Per-pixel attributes are enabled, but all associated DMX channels are 0 or less. No per-pixel output will be generated.", this);
+                WarnThrottled("Per-pixel attributes are enabled, but all associated DMX channels are 0 or less. No per-pixel output will be generated.", this);
             }
 
             for (int pix = 0; pix < pixelsPerFixture; ++pix)
@@ -1321,6 +1342,10 @@ namespace Lib.io.dmx
                 return;
             }
 
+            // A NaN input (NaN point position or orientation) would cast to an arbitrary integer.
+            if (float.IsNaN(value))
+                value = inMin;
+
             int listCoarseIndex = coarseChannel - 1;
 
             if (fineChannel > 0)
@@ -1360,7 +1385,7 @@ namespace Lib.io.dmx
                 return;
             if (index >= _pointChannelValues.Count)
             {
-                Log.Warning($"DMX channel list index {index + 1} out of range (list size {_pointChannelValues.Count}). " +
+                WarnThrottled($"DMX channel list index {index + 1} out of range (list size {_pointChannelValues.Count}). " +
                             $"Increase 'Fixture Channel Size' if you are using high channel numbers or 16-bit channels for multiple pixels.", this);
                 return;
             }

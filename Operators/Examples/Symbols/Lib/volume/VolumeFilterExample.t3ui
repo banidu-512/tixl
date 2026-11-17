@@ -1,0 +1,191 @@
+{
+  "FormatVersion": 3,
+  "Id": "5c0daf57-944a-584a-94b2-3cdca53da082"/*VolumeFilterExample*/,
+  "Description": "Fog volumes and smoothing: [VolumeFilter] blurs the voxel values themselves (not the surface), and [VolumeToTexture3D] exposes the result to the GPU so the density can be ray-marched directly - the classic cloud/smoke workflow.",
+  "InputUis": [],
+  "SymbolChildUis": [
+    {
+      "ChildId": "0933d1e7-39a0-5bec-96ed-adaad15df2d4",
+      "SymbolName": "Lib.mesh.draw.DrawMeshUnlit",
+      "SectionId": "a3122ddb-ebd0-5742-bf8e-f3cbb5db5635",
+      "Comment": "Draws a mesh with a flat colour.",
+      "Position": {
+        "X": 1480.0,
+        "Y": 140.0
+      }
+    },
+    {
+      "ChildId": "1c5acaca-3955-5eac-b8a8-c2aaa7e2675f",
+      "SymbolName": "Lib.geometry.GeometryToMesh",
+      "SectionId": "a3122ddb-ebd0-5742-bf8e-f3cbb5db5635",
+      "Comment": "Uploads a mesh to the GPU as a drawable buffer.",
+      "Position": {
+        "X": 1220.0,
+        "Y": 140.0
+      }
+    },
+    {
+      "ChildId": "27f1d8c5-9288-5e02-95fa-4f8481e53a08",
+      "SymbolName": "Lib.volume.generate.VolumePrimitive",
+      "SectionId": "0e689205-259e-553b-a132-721a8d94babf",
+      "Comment": "Generates a level set primitive (sphere, box, torus, ...) on a sparse grid.",
+      "Position": {
+        "X": 60.0,
+        "Y": 140.0
+      }
+    },
+    {
+      "ChildId": "48af8550-4306-537c-ab2b-6b3c705f0cd7",
+      "SymbolName": "Lib.render.camera.OrbitCamera",
+      "SectionId": "a3122ddb-ebd0-5742-bf8e-f3cbb5db5635",
+      "Comment": "Camera that orbits its target.",
+      "Position": {
+        "X": 2000.0,
+        "Y": 140.0
+      }
+    },
+    {
+      "ChildId": "5a4f74c0-029a-537b-a8f8-4255afff0b09",
+      "SymbolName": "Lib.volume.modify.VolumeNoise",
+      "SectionId": "2da9274e-a0fe-56a2-834a-6c5c315780cc",
+      "Comment": "Mode 1 = Multiply: sculpts density instead of the surface.",
+      "Position": {
+        "X": 380.0,
+        "Y": 140.0
+      }
+    },
+    {
+      "ChildId": "c76178f6-954b-5a69-bc4e-ea29d3c9d759",
+      "SymbolName": "Lib.image.generate.basic.RenderTarget",
+      "SectionId": "a3122ddb-ebd0-5742-bf8e-f3cbb5db5635",
+      "Comment": "Renders the command stream into an image.",
+      "Position": {
+        "X": 2260.0,
+        "Y": 140.0
+      }
+    },
+    {
+      "ChildId": "d8f56162-a0a0-5d34-8ac0-fd01a8b8abbf",
+      "SymbolName": "Lib.volume.modify.VolumeFilter",
+      "SectionId": "2da9274e-a0fe-56a2-834a-6c5c315780cc",
+      "Comment": "Filter 0 = Gaussian (binomial) blur. Iterations repeat the blur.",
+      "Position": {
+        "X": 660.0,
+        "Y": 140.0
+      }
+    },
+    {
+      "ChildId": "e55a555e-7612-5502-8b7a-47f0132e827d",
+      "SymbolName": "Lib.volume.convert.VolumeToMesh",
+      "SectionId": "a3122ddb-ebd0-5742-bf8e-f3cbb5db5635",
+      "Comment": "Extracts a watertight isosurface mesh from a volume.",
+      "Position": {
+        "X": 960.0,
+        "Y": 140.0
+      }
+    }
+  ],
+  "OutputUis": [
+    {
+      "OutputId": "1bca140a-12cb-58fa-b9c6-bd61a6a3f59f"/*ColorBuffer*/,
+      "Position": {
+        "X": 2300.0,
+        "Y": 300.0
+      }
+    }
+  ],
+  "Sections": [
+    {
+      "Id": "0e689205-259e-553b-a132-721a8d94babf",
+      "Label": "1 - Base volume",
+      "Color": {
+        "X": 0.4,
+        "Y": 0.6,
+        "Z": 0.8,
+        "W": 1.0
+      },
+      "Position": {
+        "X": 20.0,
+        "Y": 90.0
+      },
+      "Size": {
+        "X": 300.0,
+        "Y": 270.0
+      }
+    },
+    {
+      "Id": "2da9274e-a0fe-56a2-834a-6c5c315780cc",
+      "Label": "2 - Noise and blur",
+      "Color": {
+        "X": 0.75,
+        "Y": 0.45,
+        "Z": 0.5,
+        "W": 1.0
+      },
+      "Position": {
+        "X": 350.0,
+        "Y": 90.0
+      },
+      "Size": {
+        "X": 620.0,
+        "Y": 270.0
+      }
+    },
+    {
+      "Id": "a3122ddb-ebd0-5742-bf8e-f3cbb5db5635",
+      "Label": "3 - Bake and raymarch",
+      "Color": {
+        "X": 0.4,
+        "Y": 0.7,
+        "Z": 0.5,
+        "W": 1.0
+      },
+      "Position": {
+        "X": 940.0,
+        "Y": 90.0
+      },
+      "Size": {
+        "X": 1450.0,
+        "Y": 560.0
+      }
+    }
+  ],
+  "Settings": {
+    "OutputWindows": [
+      {
+  "ShowGizmos": "On",
+  "TransformGizmoMode": "Move",
+  "BackgroundColor": [
+    0.1,
+    0.1,
+    0.1,
+    1.0
+  ],
+  "CameraControlMode": "AutoUseFirstCam",
+  "CameraPosition": [
+    0.0,
+    0.0,
+    2.4142134
+  ],
+  "CameraTarget": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "CameraRoll": 0.0,
+  "CameraSpeed": 1.0,
+  "ResolutionTitle": "Fill",
+  "ResolutionWidth": 0,
+  "ResolutionHeight": 0,
+  "ResolutionUseAsAspectRatio": true,
+  "IsPinned": true,
+  "PinnedInstancePath": [
+    "d99fa135-6729-eac4-85a2-19daa11d2c56"
+  ],
+  "PinnedOutputId": "00000000-0000-0000-0000-000000000000",
+  "PinnedEntityKind": "None",
+  "PinnedEntityId": "00000000-0000-0000-0000-000000000000"
+}
+    ]
+  }
+}

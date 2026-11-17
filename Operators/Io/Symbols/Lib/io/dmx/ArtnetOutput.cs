@@ -9,15 +9,17 @@ namespace Lib.io.dmx
 {
     [Guid("98efc7c8-cafd-45ee-8746-14f37e9f59f8")]
     [ExportDependencies("ArtNet.dll")]
-    internal sealed class ArtnetOutput : Instance<ArtnetOutput>, IStatusProvider, ICustomDropdownHolder, IDisposable
+    internal sealed class ArtnetOutput : Instance<ArtnetOutput>, IStatusProvider, ICustomDropdownHolder
     {
         private const int ArtNetPort = 6454;
+        private const int MaxUniverse = 32767;
         private static readonly byte[] _artnetId = "Art-Net\0"u8.ToArray();
 
         [Output(Guid = "499329d0-15e9-410e-9f61-63724dbec937")]
         public readonly Slot<Command> Result = new();
 
         private readonly ConnectionSettings _connectionSettings = new();
+        private readonly T3.Core.Show.LocalAdapterResolver _adapterResolver = new();
         private readonly object _dataLock = new();
         private readonly object _connectionLock = new();
         private readonly ConcurrentDictionary<string, string> _discoveredNodes = new();
@@ -31,6 +33,7 @@ namespace Lib.io.dmx
 
         private struct InputMapping
         {
+            public int Input;
             public int Offset;
             public int Count;
             public int StartUniverse;
@@ -65,7 +68,6 @@ namespace Lib.io.dmx
         private IPAddress? _selectedSubnetMask;
         private CancellationTokenSource? _senderCts;
         private double _lastRetryTime;
-        private double _lastNetworkRefreshTime;
 
         private Thread? _senderThread;
         private Socket? _socket;
@@ -84,17 +86,11 @@ namespace Lib.io.dmx
             var localIpString = LocalIpAddress.GetValue(context);
             var targetIpString = TargetIpAddress.GetValue(context);
 
-            if (_selectedSubnetMask == null && !string.IsNullOrEmpty(localIpString))
-            {
-                var adapter = _networkInterfaces.FirstOrDefault(ni => ni.IpAddress.ToString() == localIpString);
-                if (adapter == null && context.LocalTime - _lastNetworkRefreshTime > 2.0)
-                {
-                    _lastNetworkRefreshTime = context.LocalTime;
-                    _networkInterfaces = GetNetworkInterfaces();
-                    adapter = _networkInterfaces.FirstOrDefault(ni => ni.IpAddress.ToString() == localIpString);
-                }
-                if (adapter != null) _selectedSubnetMask = adapter.SubnetMask;
-            }
+            // The stored address may belong to another machine (a failover pair or boygroup shares one project),
+            // so each machine binds to its own matching adapter instead of the stored address.
+            _adapterResolver.Update(localIpString, targetIpString, context.LocalTime);
+            localIpString = _adapterResolver.EffectiveIp;
+            _selectedSubnetMask = _adapterResolver.SubnetMask;
 
             _connectionSettings.Update(localIpString ?? string.Empty, _selectedSubnetMask, targetIpString ?? string.Empty, SendUnicast.GetValue(context), out bool needsSocketRebind);
 
@@ -132,6 +128,15 @@ namespace Lib.io.dmx
             if (!enableSending)
             {
                 SetStatus("Sending is disabled. Enable 'Send Trigger'.", IStatusProvider.StatusLevel.Notice);
+                return;
+            }
+
+            // Show failover: while this machine is Standby the failover arbiter suppresses all
+            // network output; frames stop being enqueued so the sender thread goes silent within
+            // one frame, and streaming resumes on the next frame after promotion.
+            if (T3.Core.Show.FailoverArbiter.IsOutputSuppressed)
+            {
+                SetStatus("Standby — the failover active node is streaming.", IStatusProvider.StatusLevel.Notice);
                 return;
             }
 
@@ -176,6 +181,7 @@ namespace Lib.io.dmx
                 nextUniverse++;
             }
             UniverseChannels.SetTypedInputValue(universeChannels);
+            ResolveUniverseOverlaps(universeChannels, inputValueLists, context);
 
             var frameData = RentFrameData(totalChannels, inputValueLists.Count);
             frameData.MappingCount = 0;
@@ -186,9 +192,11 @@ namespace Lib.io.dmx
                 var buf = inputValueLists[i].GetValue(context);
                 if (buf == null || buf.Count == 0) continue;
                 buf.CopyTo(frameData.Buffer, currentOffset);
-                frameData.Mappings[frameData.MappingCount++] = new InputMapping { Offset = currentOffset, Count = buf.Count, StartUniverse = universeChannels[i] };
+                frameData.Mappings[frameData.MappingCount++] = new InputMapping { Input = i, Offset = currentOffset, Count = buf.Count, StartUniverse = universeChannels[i] };
                 currentOffset += buf.Count;
             }
+
+            ReportUniverseLayout(frameData);
 
             lock (_dataLock)
             {
@@ -205,12 +213,117 @@ namespace Lib.io.dmx
             }
         }
 
+        #region Universe layout
+        private int _layoutSignature;
+        private string _layoutText = string.Empty;
+
+        private int _resolveSignature;
+
+        /// <summary>
+        /// Starting universes are stored per input, so an input that grows (more fixtures, a changed
+        /// FixturesPerUniverse) runs into the universes of the next one. Both would write the same universe and
+        /// the last packet wins, which looks like flickering fixtures. A later input that collides with an
+        /// earlier one is moved to the first free universe behind it. Runs only when starts or sizes change.
+        /// </summary>
+        private void ResolveUniverseOverlaps(List<int> starts, IReadOnlyList<Slot<List<int>>> inputs, EvaluationContext context)
+        {
+            var signature = LayoutSignature(starts, inputs, context);
+            if (signature == _resolveSignature)
+                return;
+
+            var moved = false;
+            for (var i = 1; i < inputs.Count; i++)
+            {
+                var count = inputs[i].GetValue(context)?.Count ?? 0;
+                if (count == 0)
+                    continue;
+
+                var span = (count + 511) / 512;
+                bool collided;
+                do
+                {
+                    collided = false;
+                    for (var j = 0; j < i; j++)
+                    {
+                        var otherCount = inputs[j].GetValue(context)?.Count ?? 0;
+                        if (otherCount == 0)
+                            continue;
+
+                        var otherEnd = starts[j] + (otherCount + 511) / 512 - 1;
+                        if (starts[i] > otherEnd || starts[i] + span - 1 < starts[j])
+                            continue;
+
+                        Log.Info($"ArtnetOutput: input {i + 1} moved from universe {starts[i]} to {otherEnd + 1} to avoid overlapping input {j + 1}.", this);
+                        starts[i] = otherEnd + 1;
+                        collided = true;
+                        moved = true;
+                    }
+                }
+                while (collided);
+            }
+
+            if (moved)
+                UniverseChannels.SetTypedInputValue(starts);
+
+            _resolveSignature = LayoutSignature(starts, inputs, context);
+        }
+
+        private static int LayoutSignature(List<int> starts, IReadOnlyList<Slot<List<int>>> inputs, EvaluationContext context)
+        {
+            var signature = inputs.Count;
+            for (var i = 0; i < inputs.Count; i++)
+                signature = HashCode.Combine(signature, starts[i], inputs[i].GetValue(context)?.Count ?? 0);
+
+            return signature;
+        }
+
+        /// <summary>Shows which universes each input occupies; rebuilt only when the layout changes.</summary>
+        private void ReportUniverseLayout(FrameData frame)
+        {
+            var signature = frame.MappingCount;
+            for (var i = 0; i < frame.MappingCount; i++)
+                signature = HashCode.Combine(signature, frame.Mappings[i].StartUniverse, frame.Mappings[i].Count);
+
+            if (signature != _layoutSignature || _layoutText.Length == 0)
+            {
+                _layoutSignature = signature;
+                _layoutText = DescribeLayout(frame);
+            }
+
+            SetStatus(_layoutText, IStatusProvider.StatusLevel.Success);
+        }
+
+        private static int LastUniverse(in InputMapping mapping) => mapping.StartUniverse + (mapping.Count + 511) / 512 - 1;
+
+        private static string DescribeLayout(FrameData frame)
+        {
+            const int maxListed = 6;
+            var text = new System.Text.StringBuilder("Connected and sending. Universes ");
+            for (var i = 0; i < frame.MappingCount && i < maxListed; i++)
+            {
+                var mapping = frame.Mappings[i];
+                if (i > 0)
+                    text.Append(", ");
+
+                text.Append(mapping.StartUniverse).Append('-').Append(LastUniverse(mapping));
+            }
+
+            if (frame.MappingCount > maxListed)
+                text.Append(", ...");
+
+            return text.ToString();
+        }
+        #endregion
+
         #region Sender Thread
         private void StartSenderThread()
         {
             if (_senderThread != null) return;
-            _senderCts = new CancellationTokenSource();
-            _senderThread = new Thread(() => SenderLoop(_senderCts.Token)) { IsBackground = true, Name = "ArtNetSender", Priority = ThreadPriority.AboveNormal };
+            // The token is captured here: the thread may start after Stop has already cleared the field.
+            var cts = new CancellationTokenSource();
+            _senderCts = cts;
+            var token = cts.Token;
+            _senderThread = new Thread(() => SenderLoop(token)) { IsBackground = true, Name = "ArtNetSender", Priority = ThreadPriority.AboveNormal };
             _senderThread.Start();
         }
 
@@ -296,6 +409,16 @@ namespace Lib.io.dmx
                             int sendLength = Math.Max(2, chunkCount);
                             if (sendLength % 2 != 0) sendLength++;
 
+                            // Art-Net addresses 15-bit universes; anything outside would index out of the sequence
+                            // table or wrap onto another universe, so such a chunk is skipped.
+                            if (currentUniverse < 0 || currentUniverse > MaxUniverse)
+                            {
+                                currentOffset += chunkCount;
+                                remainingChannels -= chunkCount;
+                                currentUniverse++;
+                                continue;
+                            }
+
                             byte seq = _universeSequenceNumbers[currentUniverse];
                             seq = (byte)((seq % 255) + 1);
                             _universeSequenceNumbers[currentUniverse] = seq;
@@ -315,6 +438,7 @@ namespace Lib.io.dmx
                                 {
                                     lock (_connectionLock) _connected = false;
                                     consecutiveErrors = 0;
+                                    T3.Core.Show.FailoverArbiter.ReportOutputFault("Art-Net send failing");
                                 }
                             }
 
@@ -330,7 +454,12 @@ namespace Lib.io.dmx
                 {
                     if (_printToLog) Log.Warning($"ArtNet Sender survived error: {e.Message}", this);
                     consecutiveErrors++;
-                    if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) { lock (_connectionLock) _connected = false; consecutiveErrors = 0; }
+                    if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS)
+                    {
+                        lock (_connectionLock) _connected = false;
+                        consecutiveErrors = 0;
+                        T3.Core.Show.FailoverArbiter.ReportOutputFault("Art-Net sender error");
+                    }
                     Thread.Sleep(10);
                 }
             }
@@ -467,7 +596,18 @@ namespace Lib.io.dmx
             }
         }
 
-        public void Dispose() { StopSenderThread(); StopArtPolling(); CloseSocket(); }
+        /// <summary>The framework only calls this hook; a plain Dispose() would leave the sender thread running and the port bound.</summary>
+        protected override void Dispose(bool isDisposing)
+        {
+            if (isDisposing)
+            {
+                StopSenderThread();
+                StopArtPolling();
+                CloseSocket();
+            }
+
+            base.Dispose(isDisposing);
+        }
 
         private void CloseSocket()
         {
@@ -503,7 +643,14 @@ namespace Lib.io.dmx
                         _lastErrorMessage = null;
                         return _connected = true;
                     }
-                    catch (Exception e) { _lastErrorMessage = $"Failed to bind socket: {e.Message}"; CloseSocket(); return false; }
+                    catch (Exception e)
+                    {
+                        // CloseSocket reports "Socket closed."; the bind failure is the message worth showing.
+                        var message = $"Failed to bind socket: {e.Message}";
+                        CloseSocket();
+                        _lastErrorMessage = message;
+                        return false;
+                    }
                 }
             }
         }
@@ -576,7 +723,7 @@ namespace Lib.io.dmx
         public string? GetStatusMessage() => _lastErrorMessage;
         public void SetStatus(string m, IStatusProvider.StatusLevel l) { _lastErrorMessage = m; _lastStatusLevel = l; }
 
-        string ICustomDropdownHolder.GetValueForInput(Guid inputId) { if (inputId == LocalIpAddress.Id) return LocalIpAddress.Value ?? string.Empty; if (inputId == TargetIpAddress.Id) return TargetIpAddress.Value ?? string.Empty; return string.Empty; }
+        string ICustomDropdownHolder.GetValueForInput(Guid inputId) { if (inputId == LocalIpAddress.Id) return _adapterResolver.EffectiveIp ?? LocalIpAddress.Value ?? string.Empty; if (inputId == TargetIpAddress.Id) return TargetIpAddress.Value ?? string.Empty; return string.Empty; }
         IEnumerable<string> ICustomDropdownHolder.GetOptionsForInput(Guid inputId) { if (inputId == LocalIpAddress.Id) { _networkInterfaces = GetNetworkInterfaces(); foreach (var adapter in _networkInterfaces) yield return adapter.DisplayName; } else if (inputId == TargetIpAddress.Id) { if (!_isPolling && _discoveredNodes.IsEmpty) yield return "Enable 'Discover Nodes' to search..."; else if (_isPolling && _discoveredNodes.IsEmpty) yield return "Searching for nodes..."; else foreach (var nodeName in _discoveredNodes.Values.OrderBy(name => name)) yield return nodeName; } }
         void ICustomDropdownHolder.HandleResultForInput(Guid inputId, string? selected, bool isAListItem) { if (string.IsNullOrEmpty(selected) || !isAListItem) return; if (inputId == LocalIpAddress.Id) { var foundAdapter = _networkInterfaces.FirstOrDefault(i => i.DisplayName == selected); if (foundAdapter == null) return; LocalIpAddress.SetTypedInputValue(foundAdapter.IpAddress.ToString()); _selectedSubnetMask = foundAdapter.SubnetMask; } else if (inputId == TargetIpAddress.Id) { var finalIp = selected; var match = Regex.Match(selected, @"\(([^)]*)\)"); if (match.Success) finalIp = match.Groups[1].Value; TargetIpAddress.SetTypedInputValue(finalIp); } }
 

@@ -1,0 +1,40 @@
+{
+  "FormatVersion": 3,
+  "Id": "790d64f6-d3ee-560d-9f3e-b8f890ba5bed",
+  "Description": "Plays a pre-converted NanoVDB cache. [LoadNanoVdb] uploads the .nvdb file straight to a GPU buffer with no CPU grid and no rebuild, and [NanoVdbRender] raymarches it. This is the path for large animated caches.",
+  "InputUis": [],
+  "SymbolChildUis": [
+    {
+      "ChildId": "5ccaffa1-0556-52ae-a347-b4d46efea597",
+      "SymbolName": "Lib.volume.io.LoadNanoVdb",
+      "Position": {
+        "X": 0.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "f4444a21-9d1f-5973-b0d9-581c4ccd5801",
+      "SymbolName": "Lib.volume.render.NanoVdbRender",
+      "Position": {
+        "X": 300.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "743c8fec-7e5f-55f9-8357-35a537fe626b",
+      "SymbolName": "Lib.render.camera.OrbitCamera",
+      "Position": {
+        "X": 600.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "279f027c-6149-5c75-b21b-ddbb6d9fe023",
+      "SymbolName": "Lib.image.generate.basic.RenderTarget",
+      "Position": {
+        "X": 900.0,
+        "Y": 0.0
+      }
+    }
+  ]
+}

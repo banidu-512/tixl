@@ -1,0 +1,210 @@
+{
+  "FormatVersion": 3,
+  "Id": "f44e5acd-ee4f-570f-9d48-f2248c42297d"/*VolumeMeshRoundtripExample*/,
+  "Description": "Mesh to volume and back: [VolumeFromMesh] voxelizes a mesh into an SDF, [VolumeMorphology] dilates it, and [VolumeToMesh] re-extracts a watertight surface. This is the workflow for remeshing, booleaning and smoothing arbitrary geometry.",
+  "InputUis": [],
+  "SymbolChildUis": [
+    {
+      "ChildId": "0cbb7844-c1eb-578d-9319-5975227fb1c0",
+      "SymbolName": "Lib.mesh.draw.DrawMeshUnlit",
+      "SectionId": "5ab0577f-8aa5-5265-bff3-216d96f0c64d",
+      "Comment": "Shaded mesh draw.",
+      "Position": {
+        "X": 1480.0,
+        "Y": 160.0
+      }
+    },
+    {
+      "ChildId": "0f46af25-5188-5e03-9d7d-7d660851440a",
+      "SymbolName": "Lib.volume.generate.VolumeFromMesh",
+      "SectionId": "6aae621f-40ff-5134-b9bb-c24131665662",
+      "Comment": "Mode 0 = SDF (negative inside). VoxelSize drives resolution and cost; BandWidth x VoxelSize is how far a later offset can move the surface.",
+      "Position": {
+        "X": 380.0,
+        "Y": 160.0
+      }
+    },
+    {
+      "ChildId": "4679ed94-4f2a-5232-9e9d-14b7ad433b52",
+      "SymbolName": "Lib.volume.convert.VolumeToMesh",
+      "SectionId": "1a04daa5-d4cf-596c-9fcf-b7528c651ae6",
+      "Comment": "Isosurface extraction. The result is watertight and can be rendered or exported.",
+      "Position": {
+        "X": 940.0,
+        "Y": 160.0
+      }
+    },
+    {
+      "ChildId": "5471a5d8-2139-51f0-94c6-76875abfd4ba",
+      "SymbolName": "Lib.geometry.GeometryToMesh",
+      "SectionId": "5ab0577f-8aa5-5265-bff3-216d96f0c64d",
+      "Comment": "Uploads the extracted mesh to the GPU.",
+      "Position": {
+        "X": 1220.0,
+        "Y": 160.0
+      }
+    },
+    {
+      "ChildId": "725a002f-9cec-5e8c-9162-0d23d21d648b",
+      "SymbolName": "Lib.image.generate.basic.RenderTarget",
+      "SectionId": "5ab0577f-8aa5-5265-bff3-216d96f0c64d",
+      "Comment": "Renders the command stream into an image.",
+      "Position": {
+        "X": 2260.0,
+        "Y": 160.0
+      }
+    },
+    {
+      "ChildId": "ac73b880-a931-538c-8733-2222d7e89671",
+      "SymbolName": "Lib.render.camera.OrbitCamera",
+      "SectionId": "5ab0577f-8aa5-5265-bff3-216d96f0c64d",
+      "Comment": "Camera that orbits its target.",
+      "Position": {
+        "X": 2000.0,
+        "Y": 160.0
+      }
+    },
+    {
+      "ChildId": "bf9ee90a-f128-5df3-b932-fab17ca3796e",
+      "SymbolName": "Lib.geometry.CubeGeometry",
+      "SectionId": "6aae621f-40ff-5134-b9bb-c24131665662",
+      "Comment": "Any MeshGeometry works here - a mesh file, a generated mesh, a boolean result.",
+      "Position": {
+        "X": 60.0,
+        "Y": 160.0
+      }
+    },
+    {
+      "ChildId": "ef4683b9-bda4-5de4-a63c-7a4819ea9ff7",
+      "SymbolName": "Lib.volume.modify.VolumeMorphology",
+      "SectionId": "1a04daa5-d4cf-596c-9fcf-b7528c651ae6",
+      "Comment": "Operation 0 = Dilate by a world-space radius; it must stay inside the band (0.08 < 4 x 0.03). Erode reverses it.",
+      "Position": {
+        "X": 660.0,
+        "Y": 160.0
+      }
+    }
+  ],
+  "OutputUis": [
+    {
+      "OutputId": "670dbf16-8af6-5233-a6f2-40cf4d4c6cd4"/*ColorBuffer*/,
+      "Position": {
+        "X": 2300.0,
+        "Y": 300.0
+      }
+    }
+  ],
+  "Sections": [
+    {
+      "Id": "1a04daa5-d4cf-596c-9fcf-b7528c651ae6",
+      "Label": "3 - Sculpt the SDF",
+      "ParentSectionId": "99751162-9c2a-58c7-99b4-cd023275e8e9",
+      "Color": {
+        "X": 0.7,
+        "Y": 0.4,
+        "Z": 0.6,
+        "W": 1.0
+      },
+      "Position": {
+        "X": 630.0,
+        "Y": 100.0
+      },
+      "Size": {
+        "X": 420.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "Id": "5ab0577f-8aa5-5265-bff3-216d96f0c64d",
+      "Label": "4 - Render",
+      "Color": {
+        "X": 0.4,
+        "Y": 0.7,
+        "Z": 0.5,
+        "W": 1.0
+      },
+      "Position": {
+        "X": 1190.0,
+        "Y": 100.0
+      },
+      "Size": {
+        "X": 1200.0,
+        "Y": 600.0
+      }
+    },
+    {
+      "Id": "6aae621f-40ff-5134-b9bb-c24131665662",
+      "Label": "1 - Source mesh",
+      "Color": {
+        "X": 0.4,
+        "Y": 0.6,
+        "Z": 0.8,
+        "W": 1.0
+      },
+      "Position": {
+        "X": 20.0,
+        "Y": 100.0
+      },
+      "Size": {
+        "X": 470.0,
+        "Y": 300.0
+      }
+    },
+    {
+      "Id": "99751162-9c2a-58c7-99b4-cd023275e8e9",
+      "Label": "2 - Voxelize and extract",
+      "Color": {
+        "X": 0.75,
+        "Y": 0.6,
+        "Z": 0.3,
+        "W": 1.0
+      },
+      "Position": {
+        "X": 350.0,
+        "Y": 100.0
+      },
+      "Size": {
+        "X": 760.0,
+        "Y": 300.0
+      }
+    }
+  ],
+  "Settings": {
+    "OutputWindows": [
+      {
+  "ShowGizmos": "On",
+  "TransformGizmoMode": "Move",
+  "BackgroundColor": [
+    0.1,
+    0.1,
+    0.1,
+    1.0
+  ],
+  "CameraControlMode": "AutoUseFirstCam",
+  "CameraPosition": [
+    0.0,
+    0.0,
+    2.4142134
+  ],
+  "CameraTarget": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "CameraRoll": 0.0,
+  "CameraSpeed": 1.0,
+  "ResolutionTitle": "Fill",
+  "ResolutionWidth": 0,
+  "ResolutionHeight": 0,
+  "ResolutionUseAsAspectRatio": true,
+  "IsPinned": true,
+  "PinnedInstancePath": [
+    "d00fba90-1e85-d09b-b7c9-ece4984dbded"
+  ],
+  "PinnedOutputId": "00000000-0000-0000-0000-000000000000",
+  "PinnedEntityKind": "None",
+  "PinnedEntityId": "00000000-0000-0000-0000-000000000000"
+}
+    ]
+  }
+}
