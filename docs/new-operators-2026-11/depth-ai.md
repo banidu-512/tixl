@@ -7,7 +7,7 @@ folder, and the packages ship download scripts for exactly that.
 
 ## DepthAnything
 
-Estimates a depth map from an image with **Depth Anything V2**. The operator runs the model on a
+Estimates a depth map from an image with **Depth Anything 3** (or V2). The operator runs the model on a
 background worker and publishes three textures: the input unchanged (`OutputTexture`), the raw float
 depth (`DepthTexture`) and a normalized, optionally colorized depth image
 (`NormalizedDepthTexture`). `UpdateCount`, `MinDepth`, `MaxDepth` and `Status` expose the worker's
@@ -16,8 +16,11 @@ state, so you can build graphs that wait for the first result or react to the de
 - `InputTexture` is any Texture2D — a webcam, an image loader, a render.
 - `Enabled` pauses/resumes inference; when off, `OutputTexture` passes the input through and the depth
   outputs are cleared.
-- `ModelSizeParam` selects Small (fp16), Small fp32, Small int8, Base or Large. Smaller models are
-  much faster; the small fp16 model is the default choice for live input.
+- `ModelSizeParam` selects a V3 model (Small, Base, Mono Large, Metric Large) or a V2 model. Smaller
+  models are much faster; a V3 selection falls back to the V2 model of similar size when no V3 file is
+  installed.
+- `Smoothing` blends consecutive results and settles the depth range, which calms the frame-to-frame
+  scale changes of the model. `FieldOfView` lets the Metric model report meters.
 - `InputResolution` fixes the model's input size (Auto, 196, 280, 392, 518); `MatchInputResolution`
   keeps the input image's aspect instead.
 - `ExecutionProviderParam` selects CPU, DirectML or CUDA. CUDA is the fastest on an NVIDIA GPU;
@@ -27,14 +30,17 @@ state, so you can build graphs that wait for the first result or react to the de
 - `Debug` logs model loading and inference details.
 
 **Outputs:** `OutputTexture` (input passthrough), `DepthTexture` (raw float), `NormalizedDepthTexture`
-(0..1, visualized), `UpdateCount`, `MinDepth`, `MaxDepth`, `Status`.
+(0..1, visualized, near bright), `ConfidenceTexture` and `SkyTexture` (when the model predicts them),
+`UpdateCount`, `MinDepth`, `MaxDepth`, `VerticalFov` (model estimate, 0 if none), `InferenceMs`,
+`LatencyMs`, `Status`.
 
-*Models:* put `depth-anything-v2-small-fp16.onnx` (and optionally base/large) into
+*Models:* put the model files (for example `da3-small.onnx`, `depth-anything-v2-small-fp16.onnx`) into
 `Operators/DepthAnything/Assets`, or run `Operators/DepthAnything/Scripts/download_models.py`. The
 operator resolves the file through the package's asset registry, so a restart is needed after adding
 it.
 
-*Tip:* inference is asynchronous. The depth outputs trail the input by a frame or more, and
+*Tip:* the input is resampled on the GPU, so any texture format works, and only the model-sized input
+is read back. Inference is asynchronous. The depth outputs trail the input by a frame or more, and
 `UpdateCount` only advances when a new frame has been processed — don't expect one update per graph
 frame.
 
@@ -45,7 +51,7 @@ frame.
 *`LoadImage` → `DepthAnything` → the three post-processing operators.*
 
 ![Normalized depth map](shots/DepthAnything-output.png)
-*The normalized depth of the frog image (small fp16 model, CPU).*
+*The normalized depth of the frog image (V3 Small on CUDA, colorized).*
 
 ## DepthFilter
 
@@ -71,6 +77,35 @@ cleanup before thresholding or normal generation.
 
 ![Filtered depth](shots/DepthFilter-output.png)
 *The filtered float depth (shown in the red channel, as float textures are).*
+
+## DepthToPosition
+
+Unprojects a depth map into camera-space positions on the GPU: red, green and blue hold x, y and
+the distance in front of the camera, alpha marks usable pixels. `FieldOfView` is the vertical angle
+(`DepthAnything.VerticalFov` provides the model's estimate), `DepthScale` sets the size of the
+reconstruction and `DepthIsDisparity` handles V2 output.
+
+**Output:** `PositionTexture` (RGBA32F).
+
+![DepthToPosition selected in the depth chain](shots/DepthToPosition-ui.png)
+*The unprojection parameters next to the position texture.*
+
+![Position texture](shots/DepthToPosition-output.png)
+*Camera-space positions; the blue channel grows with distance.*
+
+## DepthParallax
+
+Shifts an image by its depth as if the camera moved sideways, for 2.5D camera moves on stills or live
+video. `Offset` is the move, `FocalPlane` the depth that stays put, `MinDepth` and `MaxDepth` the depth
+range (wire them from `DepthAnything`) and `Steps` the search quality at depth edges.
+
+**Output:** `ResultTexture` (RGBA16F).
+
+![DepthParallax selected in the depth chain](shots/DepthParallax-ui.png)
+*The parallax inputs wired from DepthAnything, with a small horizontal offset.*
+
+![Parallax result](shots/DepthParallax-output.png)
+*The frog shifted against its background; the gather keeps depth edges from opening holes.*
 
 ## DepthThreshold
 

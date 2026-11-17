@@ -5,6 +5,7 @@ using System.Net.Sockets;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Threading.Channels;
 using Newtonsoft.Json.Linq;
 
 namespace T3.Editor.Collab;
@@ -108,6 +109,18 @@ internal class CollabRelayHostTransport : CollabTransport
     private readonly CancellationTokenSource _cancellation = new();
     private readonly Timer _keepAliveTimer;
 
+    /**
+     * Socket writes must not run on the caller's thread: presence, heartbeats and ops are sent from the
+     * UI/frame loop, and a relay that stops reading would otherwise block it for the socket's 5 s timeout.
+     * One bounded queue + writer task keeps ordering and turns a dead peer into dropped frames.
+     */
+    private readonly Channel<RelayFrame> _outbound = Channel.CreateUnbounded<RelayFrame>(
+        new UnboundedChannelOptions { SingleReader = true, SingleWriter = false });
+    private int _queuedBytes;
+    private const int MaxQueuedBytes = 32 * 1024 * 1024;
+
+    private readonly record struct RelayFrame(byte Slot, CollabProtocol.FrameType Type, byte[] Payload);
+
     /** The relay drops connections idle for 90 s; a host waiting for its first member sends nothing else. */
     private const int KeepAliveIntervalMs = 15_000;
 
@@ -126,7 +139,11 @@ internal class CollabRelayHostTransport : CollabTransport
     /// Starts reading relay traffic. Must run after <see cref="CollabTransport.PeerDisconnected"/> is
     /// wired, or a link that dies during the connect hand-off reports nothing.
     /// </summary>
-    public void StartReading() => _ = Task.Run(() => ReadRelayLoopAsync(_cancellation.Token));
+    public void StartReading()
+    {
+        _ = Task.Run(() => ReadRelayLoopAsync(_cancellation.Token));
+        _ = Task.Run(() => WriteRelayLoopAsync(_cancellation.Token));
+    }
 
     /// <summary>Connects to the relay and registers as a room owner. Throws with a readable message on failure.</summary>
     public static async Task<CollabRelayHostTransport> ConnectAsync(string relayHost, int relayPort, string roomCode, CancellationToken cancellation)
@@ -204,14 +221,47 @@ internal class CollabRelayHostTransport : CollabTransport
     }
 
     /// <summary>
-    /// Writes run on the UI thread and on the keep-alive timer; a dead relay link must not throw
-    /// into them. Closing the socket ends the read loop, which reports the lost relay.
+    /// Queues a frame for the relay writer. Callers are the UI/frame loop and the keep-alive timer, so this
+    /// must never touch the socket: a blocked relay must cost dropped frames, not a frozen editor.
     /// </summary>
     private void WriteToRelay(byte slot, CollabProtocol.FrameType type, ReadOnlySpan<byte> payload)
     {
+        if (_cancellation.IsCancellationRequested)
+            return;
+
+        var queued = Interlocked.Add(ref _queuedBytes, payload.Length);
+        if (queued > MaxQueuedBytes)
+        {
+            Interlocked.Add(ref _queuedBytes, -payload.Length);
+            Log.Warning($"Collab relay: peer is not keeping up ({queued} bytes queued) - dropping the relay link");
+            CloseRelayLink();
+            return;
+        }
+
+        var copy = payload.ToArray();
+        if (!_outbound.Writer.TryWrite(new RelayFrame(slot, type, copy)))
+            Interlocked.Add(ref _queuedBytes, -copy.Length);
+    }
+
+    private async Task WriteRelayLoopAsync(CancellationToken cancellation)
+    {
         try
         {
-            CollabRelayWire.WriteHostFrame(_relayStream, _relayWriteLock, slot, type, payload);
+            await foreach (var frame in _outbound.Reader.ReadAllAsync(cancellation))
+            {
+                try
+                {
+                    CollabRelayWire.WriteHostFrame(_relayStream, _relayWriteLock, frame.Slot, frame.Type, frame.Payload);
+                }
+                finally
+                {
+                    Interlocked.Add(ref _queuedBytes, -frame.Payload.Length);
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Teardown.
         }
         catch (Exception e) when (e is IOException or SocketException or ObjectDisposedException)
         {
@@ -255,25 +305,24 @@ internal class CollabRelayHostTransport : CollabTransport
         {
             while (!cancellation.IsCancellationRequested)
             {
-                // Control lines and frames share the stream; a frame length prefix can never start
-                // with '{' (that would be a >2 GiB length), so the discriminator is unambiguous.
-                var first = _relayStream.ReadByte();
-                if (first < 0)
+                // Frames start with a little-endian int32 length; control lines are raw JSON. The
+                // first byte alone cannot discriminate: a frame whose length is 123 modulo 256
+                // starts with '{'. Read the four-byte prefix and treat it as a control line only
+                // when it cannot be a valid frame length.
+                var prefix = new byte[4];
+                if (!await CollabProtocol.TryReadExactAsync(_relayStream, prefix.AsMemory(0, 1), cancellation))
+                    break;
+                if (!await CollabProtocol.TryReadExactAsync(_relayStream, prefix.AsMemory(1, 3), cancellation))
                     break;
 
-                if (first == '{')
+                var length = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(prefix);
+                if (prefix[0] == (byte)'{' && (length < 2 || length > CollabProtocol.MaxFrameSize))
                 {
-                    var line = await ReadRestOfLineAsync((byte)first, cancellation);
+                    var line = await ReadRestOfLineAsync(prefix, cancellation);
                     HandleControlLine(line);
                     continue;
                 }
 
-                var lengthBytes = new byte[4];
-                lengthBytes[0] = (byte)first;
-                if (!await CollabProtocol.TryReadExactAsync(_relayStream, lengthBytes.AsMemory(1), cancellation))
-                    break;
-
-                var length = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(lengthBytes);
                 if (length < 2 || length > CollabProtocol.MaxFrameSize)
                 {
                     Log.Warning($"Collab relay: illegal frame length {length}, disconnecting");
@@ -293,6 +342,7 @@ internal class CollabRelayHostTransport : CollabTransport
 
         _cancellation.Cancel();
         _keepAliveTimer.Dispose();
+        _outbound.Writer.TryComplete();
         lock (_peers)
         {
             foreach (var peer in _peers)
@@ -305,10 +355,17 @@ internal class CollabRelayHostTransport : CollabTransport
         OnPeerDisconnected(new CollabPeerConnection(Stream.Null, int.MaxValue, null));
     }
 
-    private async Task<string> ReadRestOfLineAsync(byte firstByte, CancellationToken cancellation)
+    private async Task<string> ReadRestOfLineAsync(ReadOnlyMemory<byte> prefix, CancellationToken cancellation)
     {
         var sb = new StringBuilder(64);
-        sb.Append((char)firstByte);
+        foreach (var b in prefix.Span)
+        {
+            if (b == (byte)'\n')
+                return sb.ToString();
+
+            sb.Append((char)b);
+        }
+
         var buffer = new byte[1];
         while (sb.Length < 256)
         {
@@ -463,6 +520,7 @@ internal class CollabRelayHostTransport : CollabTransport
     {
         _cancellation.Cancel();
         _keepAliveTimer.Dispose();
+        _outbound.Writer.TryComplete();
         lock (_peers)
         {
             foreach (var peer in _peers)
@@ -496,7 +554,15 @@ internal class CollabRelayClientTransport : CollabTransport
     protected CollabRelayClientTransport(TcpClient relayClient)
     {
         _relayClient = relayClient;
-        _hostPeer = new CollabPeerConnection(relayClient.GetStream(), 0, null);
+        // Closing the peer must close the shared relay socket: Client is null for relay links, so without
+        // this a failed write only marked the peer closed while the read loop stayed blocked forever.
+        _hostPeer = new CollabPeerConnection(relayClient.GetStream(), 0,
+                                             () =>
+                                             {
+                                                 try { relayClient.Close(); }
+                                                 catch { /* already gone */ }
+                                             });
+        _hostPeer.EnableQueuedWrites();
     }
 
     /// <summary>Connects to the relay and joins the room. Throws with a readable message on failure.</summary>

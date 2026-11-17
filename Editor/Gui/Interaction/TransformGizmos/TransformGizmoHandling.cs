@@ -15,6 +15,7 @@ using T3.Editor.UiModel;
 using T3.Editor.UiModel.Commands;
 using T3.Editor.UiModel.Commands.Graph;
 using Color = T3.Core.DataTypes.Vector.Color;
+using T3.Graphics;
 using GraphicsMath = T3.Core.Utils.Geometry.GraphicsMath;
 using Plane = System.Numerics.Plane;
 using Quaternion = System.Numerics.Quaternion;
@@ -249,8 +250,15 @@ internal static class TransformGizmoHandling
         // Don't draw gizmo behind camera (view plane)
         _renderGizmo = Math.Abs(_originInClipSpace.Z) <= 1 && Math.Abs(_originInClipSpace.X) <= 2 && Math.Abs(_originInClipSpace.Y) <= 2;
 
-        var viewports = ResourceManager.Device.ImmediateContext.Rasterizer.GetViewports<T3.Graphics.Viewport>();
-        _viewport = viewports[0];
+        // While drawing the all-cameras overlay the render pass is long gone: the rasterizer's
+        // viewport is then the editor's backbuffer, not the output image the overlay projects onto.
+        // The overlay has set _viewport to the image size before pulling the cameras.
+        if (!_drawingCameraOverlay)
+        {
+            var viewports = ResourceManager.Device.ImmediateContext.Rasterizer.GetViewports<T3.Graphics.Viewport>();
+            _viewport = viewports[0];
+        }
+
         var originInViewport = new Vector2(_viewport.Width * (_originInClipSpace.X * 0.5f + 0.5f),
                                            _viewport.Height * (1.0f - (_originInClipSpace.Y * 0.5f + 0.5f)));
 
@@ -1097,6 +1105,11 @@ internal static class TransformGizmoHandling
     
     #region camera view -----------------------------------------------------
 
+    /// <summary>True while <see cref="DrawCameraOverlays"/> draws the all-cameras overlay into an
+    /// output window: the render pass is over then, so the rasterizer's viewport is the editor's
+    /// backbuffer and must not replace the overlay's image-size viewport mid-draw.</summary>
+    private static bool _drawingCameraOverlay;
+
     /// <summary>
     /// Draws the view pyramid of every camera view gizmo in the focused project into an output
     /// window - not just the selected op's. Camera operators whose output is not part of the
@@ -1122,8 +1135,17 @@ internal static class TransformGizmoHandling
             return;
         }
 
-        var viewports = ResourceManager.Device.ImmediateContext.Rasterizer.GetViewports<T3.Graphics.Viewport>();
-        _viewport = viewports[0];
+        // The image was rendered at its own resolution (the panel's render target), while the
+        // rasterizer's current viewport at this point is the whole editor backbuffer. Projecting
+        // NDC through the backbuffer and then offsetting by the panel origin scaled and shifted
+        // every overlay element into the wrong place - a rig's pyramids drifted off their cameras
+        // and their aim lines crossed the view. Project through the rendered image's size instead;
+        // the canvas then maps image pixels to window pixels with the fitted scale.
+        var imageSize = _canvas.LastTexture?.Description
+                            ?? default; // SizeUnknown when a texture is not part of this draw
+        _viewport = imageSize.Width > 0
+                        ? new Viewport(0, 0, imageSize.Width, imageSize.Height, 0f, 1f)
+                        : new Viewport(0, 0, context.RequestedResolution.Width, context.RequestedResolution.Height, 0f, 1f);
         _topLeftOnScreen = _canvas.TransformPosition(Vector2.Zero);
 
         // The overlay (and any gizmo callback it triggers) must project with the window's view,
@@ -1133,46 +1155,52 @@ internal static class TransformGizmoHandling
         context.CameraToClipSpace = cameraToClipSpace;
         _objectToWorld = Matrix4x4.Identity;
         _objectToClipSpace = worldToCamera * cameraToClipSpace;
-
-        var rootPath = scopeRoot.InstancePath;
-        var suppliers = LaserContentRegistry.Suppliers;
-        for (var i = 0; i < suppliers.Count; i++)
+        _drawingCameraOverlay = true;
+        try
         {
-            if (suppliers[i] is not Instance camera || camera is not ICamera viewCamera || camera is not ICameraViewGizmo)
-                continue;
-
-            var path = camera.InstancePath;
-            if (path.Count <= rootPath.Count)
-                continue;
-
-            var underScope = true;
-            for (var depth = 0; depth < rootPath.Count; depth++)
+            var rootPath = scopeRoot.InstancePath;
+            var suppliers = LaserContentRegistry.Suppliers;
+            for (var i = 0; i < suppliers.Count; i++)
             {
-                if (path[depth] != rootPath[depth])
+                if (suppliers[i] is not Instance camera || camera is not ICamera viewCamera || camera is not ICameraViewGizmo)
+                    continue;
+
+                var path = camera.InstancePath;
+                if (path.Count <= rootPath.Count)
+                    continue;
+
+                var underScope = true;
+                for (var depth = 0; depth < rootPath.Count; depth++)
                 {
-                    underScope = false;
-                    break;
+                    if (path[depth] != rootPath[depth])
+                    {
+                        underScope = false;
+                        break;
+                    }
                 }
+
+                if (!underScope)
+                    continue;
+
+                // Force the cheap camera-definition update (position/target/lens math only) so the
+                // pyramid - and the selected camera's own gizmo callback - reflect this frame's values.
+                var reference = FindReferenceOutput(camera);
+                if (reference == null)
+                    continue;
+
+                reference.DirtyFlag.ForceInvalidate();
+                reference.GetValue(context);
+
+                var isSelectedCamera = ReferenceEquals(camera, _instance);
+                DrawCameraViewFrame(viewCamera, isSelectedCamera ? UiColors.StatusAnimated : CameraGizmoTint(camera),
+                                    drawFrustumEdges: isSelectedCamera);
             }
-
-            if (!underScope)
-                continue;
-
-            // Force the cheap camera-definition update (position/target/lens math only) so the
-            // pyramid - and the selected camera's own gizmo callback - reflect this frame's values.
-            var reference = FindReferenceOutput(camera);
-            if (reference == null)
-                continue;
-
-            reference.DirtyFlag.ForceInvalidate();
-            reference.GetValue(context);
-
-            var isSelectedCamera = ReferenceEquals(camera, _instance);
-            DrawCameraViewFrame(viewCamera, isSelectedCamera ? UiColors.StatusAnimated : CameraGizmoTint(camera),
-                                drawFrustumEdges: isSelectedCamera);
         }
-
-        RestoreDrawList();
+        finally
+        {
+            _drawingCameraOverlay = false;
+            RestoreDrawList();
+        }
     }
 
     private static Slot<Object>? FindReferenceOutput(Instance camera)
@@ -1440,10 +1468,8 @@ internal static class TransformGizmoHandling
             return false;
 
         var ndc = new Vector3(inClip.X, inClip.Y, inClip.Z) / inClip.W;
-        var viewports = ResourceManager.Device.ImmediateContext.Rasterizer.GetViewports<T3.Graphics.Viewport>();
-        var viewport = viewports[0];
-        var inViewport = new Vector2(viewport.Width * (ndc.X * 0.5f + 0.5f),
-                                     viewport.Height * (1.0f - (ndc.Y * 0.5f + 0.5f)));
+        var inViewport = new Vector2(_viewport.Width * (ndc.X * 0.5f + 0.5f),
+                                     _viewport.Height * (1.0f - (ndc.Y * 0.5f + 0.5f)));
 
         screenPos = _topLeftOnScreen + _canvas.TransformDirection(inViewport);
         return true;
@@ -1518,10 +1544,8 @@ internal static class TransformGizmoHandling
         var homogenousPosInLocal = new Vector4(posInLocal.X, posInLocal.Y, posInLocal.Z, 1);
         Vector4 originInClipSpace = Vector4.Transform(homogenousPosInLocal, _localToClipSpace);
         Vector3 posInNdc = new Vector3(originInClipSpace.X, originInClipSpace.Y, originInClipSpace.Z) / originInClipSpace.W;
-        var viewports = ResourceManager.Device.ImmediateContext.Rasterizer.GetViewports<T3.Graphics.Viewport>();
-        var viewport = viewports[0];
-        var originInViewport = new Vector2(viewport.Width * (posInNdc.X * 0.5f + 0.5f),
-                                           viewport.Height * (1.0f - (posInNdc.Y * 0.5f + 0.5f)));
+        var originInViewport = new Vector2(_viewport.Width * (posInNdc.X * 0.5f + 0.5f),
+                                           _viewport.Height * (1.0f - (posInNdc.Y * 0.5f + 0.5f)));
 
         var posInCanvas = _canvas.TransformDirection(originInViewport);
         return _topLeftOnScreen + posInCanvas;

@@ -307,6 +307,17 @@ void Postprocess(uint3 id : SV_DispatchThreadID)
 {
     if (any(id >= VoxelSize))
         return;
+
+    // A voxel that never found a seed (the mesh has no surface inside the bake box, e.g. the
+    // mesh moved out or AutoFit is off and the box is elsewhere) keeps w==0 and seedPos==id:
+    // without this guard its distance computes as 0, which the raymarcher treats as a surface
+    // hit at the first step - the whole box renders as one solid block.
+    if (VoxelRead.Load(int4(id, 0)).w == 0.0)
+    {
+        SdfWrite[id] = ClearValue;
+        return;
+    }
+
     float3 seedPos = VoxelRead.Load(int4(id, 0)).xyz;
     float3 delta = seedPos - float3(id);
     float dist = sqrt(dot(delta, delta)) / DistanceNormalization;

@@ -265,6 +265,10 @@ public static class FailoverArbiter
     private static long _lastFrameAdvanceTicks;
     private static long _frameCounter;
 
+    /// <summary>The adapter the live heartbeat socket set was bound for ("" = all interfaces),
+    /// under Gate — lets ApplyConfig notice a changed NetworkInterfaceName and rebind.</summary>
+    private static string _boundInterfaceName = "";
+
     /// <summary>
     /// Node-id derived claim offset: two machines that start together would otherwise cross their claim
     /// heartbeats and both stream for one evaluation tick. The offset separates the claims by a few tens
@@ -582,8 +586,20 @@ public static class FailoverArbiter
             }
             else if (_config.Enabled)
             {
-                // Priority/preempt changes re-evaluate on the next tick naturally.
-                RecordEvent("Configuration updated");
+                // A changed network interface must take effect while failover keeps running: the
+                // sockets still hold the old adapter until something unrelated forces a rebind.
+                if (!string.Equals(_boundInterfaceName,
+                                   _config.NetworkInterfaceName ?? "",
+                                   StringComparison.OrdinalIgnoreCase))
+                {
+                    RecordEvent($"Network interface changed to '{_config.NetworkInterfaceName ?? "any"}' — rebinding heartbeats");
+                    RebindSockets();
+                }
+                else
+                {
+                    // Priority/preempt changes re-evaluate on the next tick naturally.
+                    RecordEvent("Configuration updated");
+                }
             }
         }
     }
@@ -953,6 +969,10 @@ public static class FailoverArbiter
             pinnedInterface = null;
         }
 
+        // Remember what the live socket set was bound for, so ApplyConfig can rebind when the
+        // user selects a different adapter while failover is running.
+        _boundInterfaceName = pinnedInterface?.Name ?? "";
+
         var interfaces = new List<IPAddress>();
         if (pinnedInterface != null)
         {
@@ -963,17 +983,13 @@ public static class FailoverArbiter
         {
             try
             {
-                foreach (var networkInterface in NetworkInterface.GetAllNetworkInterfaces())
+                // LanInterfaces caches the enumeration and refreshes it off-thread. Enumerating adapters
+                // directly here stalls the render thread (which takes Gate every frame) for hundreds of
+                // milliseconds, and this runs every 2 s while sockets cannot be bound.
+                foreach (var adapter in LanInterfaces.GetUsable())
                 {
-                    if (networkInterface.OperationalStatus != OperationalStatus.Up
-                        || networkInterface.NetworkInterfaceType is NetworkInterfaceType.Loopback or NetworkInterfaceType.Tunnel
-                        || !networkInterface.SupportsMulticast)
-                        continue;
-
-                    var ipv4 = networkInterface.GetIPProperties().UnicastAddresses
-                                          .FirstOrDefault(a => a.Address.AddressFamily == AddressFamily.InterNetwork)?.Address;
-                    if (ipv4 != null)
-                        interfaces.Add(ipv4);
+                    if (adapter.SupportsMulticast)
+                        interfaces.Add(adapter.Address);
                 }
             }
             catch (Exception e)

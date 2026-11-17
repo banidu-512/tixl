@@ -32,6 +32,16 @@ public class RemoteVideoInputBusTests
             Assert.False(other.RemoteActive);
             Assert.False(string.IsNullOrEmpty(matching.LastStatus));
             Assert.Equal(0, matching.LastFrameCounter);
+
+            // The receiver is created on a worker because it registers with DNS-SD and binds sockets;
+            // the first pump only starts that task. Wait for it instead of assuming it finished inline.
+            var waitUntil = Environment.TickCount64 + 5000;
+            while (provider.Receiver == null && Environment.TickCount64 < waitUntil)
+            {
+                Thread.Sleep(10);
+                RemoteVideoInputBus.Pump();
+            }
+
             Assert.NotNull(provider.Receiver);
 
             RemoteVideoInputBus.SetRemoteSources([]);

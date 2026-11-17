@@ -12,7 +12,7 @@ internal enum ModelType { SD15, SDTurbo, SDXLTurbo, FLUX2Klein, SDXL10 }
 /// contains unet.onnx, text_encoder.onnx, vae_decoder.onnx (vae_encoder.onnx
 /// enables img2img) and tokenizer files.
 /// </summary>
-internal sealed class StableDiffusionPipeline : IDisposable
+internal sealed class StableDiffusionPipeline : IGenerationPipeline
 {
     public const float VaeScalingFactor = 0.18215f;
 
@@ -63,6 +63,7 @@ internal sealed class StableDiffusionPipeline : IDisposable
     public bool UseGpuLatentFlow => _gpuLatents != null;
     private ClipTokenizer? _tokenizer;
     private readonly object _lock = new();
+    private volatile bool _verboseLogging;
 
     // Cached UNet input-name discovery (resolved once per session)
     private string? _unetSampleName;
@@ -107,7 +108,11 @@ internal sealed class StableDiffusionPipeline : IDisposable
     /// "all zeros" encoder warnings. Bound to the operator's Debug input each
     /// frame so per-generation verbosity can be toggled without rebuilding the pipeline.
     /// </summary>
-    public bool VerboseLogging { get; set; }
+    public bool VerboseLogging
+    {
+        get => _verboseLogging;
+        set => _verboseLogging = value;
+    }
 
     /// <summary>Per-stage wall time of the most recent generation (milliseconds).</summary>
     public double LastEncodeMs { get; private set; }
@@ -1056,7 +1061,7 @@ Log.Info($"[StreamDiffusion] Pipeline ready ({_unet!.ProviderLabel}, " +
         });
     }
 
-    private static byte[] ResizeRgba(byte[] rgbaInput, int inputWidth, int inputHeight, int width, int height, int resizeMode)
+    internal static byte[] ResizeRgba(byte[] rgbaInput, int inputWidth, int inputHeight, int width, int height, int resizeMode)
     {
         if (resizeMode == 2)
         {

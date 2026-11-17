@@ -454,13 +454,17 @@ internal sealed partial class SettingsWindow
         while (_discoveryScanner.Results.TryDequeue(out var result))
         {
             var announcement = result.Announcement;
+            // Read type-tolerantly: the announcement comes from an untrusted UDP sender, and a
+            // malformed field must be a miss, not an exception out of the frame loop.
+            CollabProtocol.TryGetInt(announcement, "port", out var port);
+            CollabProtocol.TryGetBool(announcement, "pwd", out var passwordProtected);
             var session = new CollabManager.DiscoveredSession
                               {
                                   Name = CollabProtocol.GetString(announcement, "name", "TiXL session"),
                                   HostName = CollabProtocol.GetString(announcement, "host", ""),
                                   Address = result.Source.Address.ToString(),
-                                  Port = announcement["port"]?.Value<int>() ?? CollabProtocol.DefaultTcpPort,
-                                  PasswordProtected = announcement["pwd"]?.Value<bool>() ?? false,
+                                  Port = port > 0 ? port : CollabProtocol.DefaultTcpPort,
+                                  PasswordProtected = passwordProtected,
                               };
 
             if (_discovered.Any(d => d.Address == session.Address && d.Port == session.Port))

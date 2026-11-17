@@ -162,8 +162,10 @@ internal sealed class MeshToSDF : Instance<MeshToSDF>, IGraphNodeOp, IStatusProv
 
         // Any change to the baked inputs clears a previous bake failure so it is retried
         // once - but a persistent failure never falls into a per-frame retry loop.
+        // A mesh change during an in-flight bake is coalesced: restarting the step queue every frame
+        // meant the bake never reached its finalize step, and each restart paid the bounds readback.
         var rebakeRequested = _bakeRequested
-                              || (AutoRebake.GetValue(context) && meshIsDirty)
+                              || (AutoRebake.GetValue(context) && meshIsDirty && _bakeSteps == null)
                               || volumeChanged;
         if (rebakeRequested)
             _bakeFailed = false;

@@ -154,7 +154,9 @@ internal sealed class CollabPeerConnection
             return;
 
         // A relay peer shares one stream with every other peer, which its transport writes and flushes itself.
-        if (Client == null)
+        // Unless queued writes were explicitly enabled for it (the relay client's single host link does that),
+        // writing here would run a socket write on the caller's thread.
+        if (Client == null && _outbound == null)
         {
             WriteNow(type, payload);
             return;
@@ -199,6 +201,12 @@ internal sealed class CollabPeerConnection
         _ = Task.Run(() => WriteLoopAsync(created.Reader));
         return created;
     }
+
+    /// <summary>
+    /// Enables the outbound queue on a peer that has no socket of its own. Relay clients own one stream and
+    /// send from the UI thread, so their writes must go through the writer task rather than blocking a frame.
+    /// </summary>
+    public void EnableQueuedWrites() => EnsureOutbound();
 
     private async Task WriteLoopAsync(ChannelReader<OutboundFrame> reader)
     {

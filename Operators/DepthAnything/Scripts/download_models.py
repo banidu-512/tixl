@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-DepthAnything V2 Model Download Script
-Downloads the required ONNX models for the DepthAnything operator
+DepthAnything Model Download Script
+Downloads the ONNX models for the DepthAnything operator: Depth Anything 3 (preferred) and Depth Anything V2.
+Pass model file names as arguments to download only those, e.g. download_models.py da3-small.onnx
 """
 
 import os
@@ -19,7 +20,17 @@ BASE_URL = "https://huggingface.co/depth-anything/Depth-Anything-V2/resolve/main
 # fp32 despite the half-size naming in older revisions of this script.
 # expected_mb guards against the earlier mislabeled fp32 downloads.
 MODELS = [
-    {"name": "depth-anything-v2-small-fp16.onnx", "url": "https://huggingface.co/onnx-community/depth-anything-v2-small/resolve/main/onnx/model_fp16.onnx", "expected_mb": 50, "required": True},
+    # Depth Anything 3 (Apache-2.0 variants only; the Large and Giant any-view checkpoints are CC-BY-NC).
+    # Community ONNX exports of the official weights; input is float32 NCHW, ImageNet-normalized.
+    {"name": "da3-small.onnx", "url": "https://huggingface.co/zerochocobo/DepthAnything3_ONNX/resolve/main/da3_small.onnx", "expected_mb": 96, "required": True},
+    {"name": "da3-small-int8.onnx", "url": "https://huggingface.co/ohaiibuzzle/DA3-ONNX/resolve/main/da3_s_504x378_int8.onnx", "expected_mb": 37, "required": False},
+    {"name": "da3-base-fp16.onnx", "url": "https://huggingface.co/Heliosoph/da3-base-onnx/resolve/main/model_fp16.onnx", "expected_mb": 198, "required": False},
+    {"name": "da3-mono-large-int8.onnx", "url": "https://huggingface.co/ohaiibuzzle/DA3-ONNX/resolve/main/da3mono_l_504x378_int8.onnx", "expected_mb": 431, "required": False},
+    {"name": "da3-metric-large-fp16.onnx", "url": "https://huggingface.co/Heliosoph/da3metric-large-onnx/resolve/main/model_fp16.onnx", "expected_mb": 670, "required": False},
+    # Depth Anything V2. model_fp16.onnx is the real fp16 export - model.onnx is
+    # fp32 despite the half-size naming in older revisions of this script.
+    # expected_mb guards against the earlier mislabeled fp32 downloads.
+    {"name": "depth-anything-v2-small-fp16.onnx", "url": "https://huggingface.co/onnx-community/depth-anything-v2-small/resolve/main/onnx/model_fp16.onnx", "expected_mb": 50, "required": False},
     {"name": "depth-anything-v2-base-fp16.onnx", "url": "https://huggingface.co/onnx-community/depth-anything-v2-base/resolve/main/onnx/model_fp16.onnx", "expected_mb": 194, "required": False},
     {"name": "depth-anything-v2-large-fp16.onnx", "url": "https://huggingface.co/onnx-community/depth-anything-v2-large/resolve/main/onnx/model_fp16.onnx", "expected_mb": 672, "required": False},
 ]
@@ -50,13 +61,14 @@ def download_model(model):
         size_mb = output_path.stat().st_size / (1024 * 1024)
         # fp16 files are roughly half their fp32 counterparts - a size far off
         # the expectation means a mislabeled download; replace it
-        if abs(size_mb - model["expected_mb"]) / model["expected_mb"] < 0.25:
+        if model["expected_mb"] is None or abs(size_mb - model["expected_mb"]) / model["expected_mb"] < 0.25:
             print_color(Colors.GRAY, f"[OK] {name} already exists (skipping)")
             return True
         print_color(Colors.YELLOW, f"[REDO] {name} exists with unexpected size {size_mb:.1f} MB "
                                     f"(expected ~{model['expected_mb']} MB) - re-downloading")
 
-    print_color(Colors.YELLOW, f"Downloading: {name} (~{model['expected_mb']} MB)...")
+    expected = f"~{model['expected_mb']} MB" if model["expected_mb"] else "size unknown"
+    print_color(Colors.YELLOW, f"Downloading: {name} ({expected})...")
 
     try:
         urlretrieve(url, output_path)
@@ -81,7 +93,7 @@ def download_model(model):
 def main():
     """Main download function"""
     print_color(Colors.CYAN, "=" * 50)
-    print_color(Colors.CYAN, "DepthAnything V2 Model Download Script")
+    print_color(Colors.CYAN, "DepthAnything Model Download Script")
     print_color(Colors.CYAN, "=" * 50)
     print()
 
@@ -98,7 +110,14 @@ def main():
     success_count = 0
     failed_count = 0
 
-    for model in MODELS:
+    wanted = sys.argv[1:]
+    selected = [m for m in MODELS if not wanted or m["name"] in wanted]
+    if wanted and not selected:
+        print_color(Colors.RED, "No known model matches: " + ", ".join(wanted))
+        print_color(Colors.YELLOW, "Known models: " + ", ".join(m["name"] for m in MODELS))
+        return 1
+
+    for model in selected:
         if download_model(model):
             success_count += 1
         else:
@@ -115,7 +134,7 @@ def main():
     print()
 
     # Check required models
-    required_models = [m for m in MODELS if m["required"]]
+    required_models = [m for m in selected if m["required"]]
     all_required_present = True
 
     for model in required_models:

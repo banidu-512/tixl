@@ -1,101 +1,50 @@
-# Depth Anything V2 Operator Package for TiXL
+# Depth Anything Operator Package for TiXL
 
-This operator package integrates **Depth Anything V2** (Small model) with TiXL for real-time depth estimation from Texture2D inputs.
+Real-time monocular depth estimation for TiXL with **Depth Anything 3** (preferred) and Depth Anything V2, plus GPU operators that turn the depth into normals, positions and parallax.
 
-## Features
+## Operators
 
-- **Real-time depth estimation** from video/texture inputs
-- **Multiple model sizes**: Small (256x256), Base (384x384), Large (518x518)
-- **FP16 quantization** for improved performance
-- **Multiple output formats**: Grayscale, Color, Rainbow visualization
-- **Adjustable parameters**: Contrast enhancement, depth inversion
-- **Async processing** with worker thread pattern (similar to MediaPipe operators)
+| Operator | Purpose |
+|----------|---------|
+| `DepthAnything` | Runs the model on a worker thread; outputs depth, visualized depth, confidence, sky, field of view and timing |
+| `DepthFilter` | Edge-aware bilateral smoothing of depth (GPU) |
+| `DepthToNormal` | Normal map from depth with a Sobel gradient (GPU) |
+| `DepthToPosition` | Camera-space position texture from depth and field of view (GPU) |
+| `DepthParallax` | Shifts an image by its depth for 2.5D camera moves (GPU) |
+| `DepthThreshold` | Binary depth mask (still reads depth back on the CPU) |
 
-## Model Requirements
+## Models
 
-You need to download the Depth Anything V2 ONNX models and place them in the `Assets/` folder:
+Put the ONNX files in `Assets/`, or run `Scripts/download_models.py` (`Scripts/download_models.ps1` on Windows). Pass file names to download only those, e.g. `python download_models.py da3-small.onnx`.
 
-### Required Model Files
+| Selection | Files tried in order | License |
+|-----------|----------------------|---------|
+| V3 Small | `da3-small-fp16.onnx`, `da3-small.onnx`, `da3-small-int8.onnx` | Apache-2.0 |
+| V3 Base | `da3-base-fp16.onnx`, `da3-base.onnx` | Apache-2.0 |
+| V3 Mono Large | `da3-mono-large-fp16.onnx`, `da3-mono-large-int8.onnx` | Apache-2.0 |
+| V3 Metric Large | `da3-metric-large-fp16.onnx` | Apache-2.0 |
+| V2 Small/Base/Large | `depth-anything-v2-{small,base,large}-fp16.onnx` (also `-small-fp32`, `-small-int8`) | Apache-2.0 (Small), CC-BY-NC (Base, Large) |
 
-1. **depth-anything-v2-small-fp16.onnx** (Default, ~24MB)
-   - Download: [Depth Anything V2 Small](https://github.com/DepthAnything/Depth-Anything-V2)
-   - Input: 256x256
-   - Best for: Real-time applications
+A V3 selection without an installed V3 file falls back to the V2 model of similar size.
 
-2. **depth-anything-v2-base-fp16.onnx** (Optional, ~97MB)
-   - Download: [Depth Anything V2 Base](https://github.com/DepthAnything/Depth-Anything-V2)
-   - Input: 384x384
-   - Best for: Balance between quality and speed
+The V3 files are community ONNX exports of the official weights. The operator reads the input and output layout from the model and accepts float32 NCHW input (ImageNet normalization is done on the GPU) as well as uint8 NHWC input from exports that normalize inside the graph, such as `da3-small.onnx`. Other exports with these layouts work too: the depth output may be called `depth` or `predicted_depth`, and `depth_conf`, `sky` and `intrinsics` outputs are used when present. The DA3 Large and Giant any-view checkpoints are CC-BY-NC 4.0 and are not offered by the download scripts.
 
-3. **depth-anything-v2-large-fp16.onnx** (Optional, ~345MB)
-   - Download: [Depth Anything V2 Large](https://github.com/DepthAnything/Depth-Anything-V2)
-   - Input: 518x518
-   - Best for: Highest quality depth estimation
+Fixed-size exports (for example 504x504 or 504x378) dictate their input size; `InputResolution` only affects models with a dynamic input.
 
-### How to Get FP16 Models
+## Latency
 
-The official repository provides FP32 models. To get FP16 models:
+- Resampling to the model size, ImageNet normalization and the planar layout are one compute pass on the GPU. Only the model-sized input is read back, whatever the resolution of the source, and any texture format is accepted.
+- One frame is in flight at a time and a new one is captured as soon as the last result arrived, so results never queue behind stale input. `LatencyMs` reports capture to result, `InferenceMs` the model alone.
+- The session is created from the file path with the provider chain DirectML or CUDA, then CPU. DirectML runs sequentially without memory-pattern planning, as that provider requires.
+- `Smoothing` blends consecutive results and settles the depth range. DA3 predicts depth up to an unknown scale per frame, so this is what keeps a live visualization from pulsing.
+- int8 files are small and meant for the CPU. Use fp16 or fp32 files with CUDA or DirectML.
 
-1. Download the ONNX models from the official repo
-2. Convert to FP16 using ONNX Runtime tools:
-   ```bash
-   python -m onnxruntime.quantization.preprocess \
-     --input_model depth_anything_v2_small.onnx \
-     --output_model depth-anything-v2-small-fp16.onnx \
-     --per_channel \
-     --reduce_range
-   ```
+## Depth Semantics
 
-## Installation
-
-1. Place this folder in `Operators/DepthAnything/`
-2. Add project reference to your TiXL solution
-3. Download required model files to `Assets/`
-4. Build the solution
-
-## Usage
-
-### Inputs
-
-| Name | Type | Description |
-|------|------|-------------|
-| InputTexture | Texture2D | Input video/image texture |
-| Enabled | bool | Enable/disable processing |
-| ModelSize | enum | Small/Base/Large model selection |
-| OutputFormat | enum | Grayscale/Color/Rainbow visualization |
-| EnhanceContrast | bool | Enhance depth contrast |
-| InvertDepth | bool | Invert depth values |
-| Debug | bool | Enable debug logging |
-
-### Outputs
-
-| Name | Type | Description |
-|------|------|-------------|
-| OutputTexture | Texture2D | Passthrough of input texture |
-| DepthTexture | Texture2D | Raw depth (R32_Float) |
-| NormalizedDepthTexture | Texture2D | Visualized depth (RGBA) |
-| UpdateCount | int | Frame counter |
-| MinDepth | float | Minimum depth value in frame |
-| MaxDepth | float | Maximum depth value in frame |
-
-## Technical Details
-
-- **Framework**: ONNX Runtime 1.20.1
-- **Processing**: Async worker thread with input/output queues
-- **Memory**: Staging texture caching and buffer pooling
-- **GPU Support**: Compatible with DirectX11/SharpDX
-
-## Dependencies
-
-- Microsoft.ML.OnnxRuntime (1.20.1)
-- SharpDX (via TiXL Core)
-- OpenCvSharp (optional, for advanced use cases)
-
-## License
-
-Depth Anything V2 is licensed under Apache 2.0. See the official repository for details.
+V3 models predict depth (far is larger), V2 models predict disparity (near is larger). `NormalizedDepthTexture` is near bright for both. `DepthToPosition` and `DepthParallax` have a `DepthIsDisparity` switch for V2. The Metric model returns meters when `FieldOfView` matches the source camera.
 
 ## Credits
 
+- [Depth Anything 3](https://github.com/ByteDance-Seed/Depth-Anything-3) by ByteDance Seed
 - [Depth Anything V2](https://github.com/DepthAnything/Depth-Anything-V2) by Lihe Yang et al.
 - ONNX Runtime by Microsoft

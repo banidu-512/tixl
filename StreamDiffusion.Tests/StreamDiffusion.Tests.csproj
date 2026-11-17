@@ -23,6 +23,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Operators\StreamDiffusion\StreamDiffusion.csproj" />
+    <ProjectReference Include="..\Core\Core.csproj" />
     <ProjectReference Include="..\Logging\Logging.csproj" />
   </ItemGroup>
 </Project>

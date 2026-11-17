@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 using T3.Core.DataTypes;
 using T3.Core.Logging;
 
@@ -217,8 +218,12 @@ public static class RemoteVideoInputBus
             if (_sources.TryGetValue(key, out var source) && _states[key].Address == source.Address)
                 continue;
 
-            _states[key].Dispose();
+            // Retire instead of disposing here: an input may still hold this state's texture for the
+            // current frame, and the receiver's Dispose joins its receive thread (up to 2 s).
+            var state = _states[key];
             _states.Remove(key);
+            state.RetiredAtPump = _pumpCount;
+            _retired.Add(state);
         }
 
         if (_activeInputs.Count == 0)
@@ -240,11 +245,31 @@ public static class RemoteVideoInputBus
         _endedScratch.Clear();
     }
 
+    /// <summary>
+    /// Disposes retired states two pumps after they lost their source: by then every input has been handed
+    /// a null frame, so no slot references the receiver's texture. The native join then runs off-thread.
+    /// </summary>
+    private static void PurgeRetired()
+    {
+        _pumpCount++;
+        for (var i = _retired.Count - 1; i >= 0; i--)
+        {
+            var state = _retired[i];
+            if (_pumpCount - state.RetiredAtPump < 2)
+                continue;
+
+            _retired.RemoveAt(i);
+            _ = Task.Run(() => state.Dispose());
+        }
+    }
+
     /// <summary>Updates every active receiver and feeds the matching inputs. Call once per frame on a render node.</summary>
     public static void Pump()
     {
         lock (_lock)
         {
+            PurgeRetired();
+
             if (_sources.Count == 0)
             {
                 if (_activeInputs.Count == 0)
@@ -351,10 +376,18 @@ public static class RemoteVideoInputBus
 
         public void Update()
         {
+            if (_disposed)
+                return;
+
             if (_receiver == null)
             {
-                TryCreateReceiver();
-                return;
+                if (_createTask is { IsCompleted: true })
+                    _createTask = null; // the task publishes the receiver itself
+                else if (_createTask == null)
+                    TryCreateReceiver();
+
+                if (_receiver == null)
+                    return;
             }
 
             try
@@ -378,11 +411,32 @@ public static class RemoteVideoInputBus
             }
         }
 
+        public long RetiredAtPump { get; set; } = -1;
+
         public void Dispose()
         {
-            DisposeReceiver();
+            IRemoteVideoInputReceiver? receiver;
+            lock (_gate)
+            {
+                if (_disposed)
+                    return;
+
+                _disposed = true;
+                receiver = _receiver;
+                _receiver = null;
+            }
+
             Texture = null;
             FrameCounter = 0;
+
+            try
+            {
+                receiver?.Dispose();
+            }
+            catch (Exception e)
+            {
+                Log.Debug($"Disposing a remote video receiver failed: {e.Message}");
+            }
         }
 
         private void TryCreateReceiver()
@@ -412,42 +466,80 @@ public static class RemoteVideoInputBus
                 return;
             }
 
-            try
+            // Creating the native receiver registers with DNS-SD and binds sockets, so it runs on a worker.
+            // The task publishes the receiver under the gate; if this state was retired meanwhile, the task
+            // sees _disposed and closes the receiver it just created.
+            var address = Address;
+            _createTask = Task.Run(() =>
             {
-                _receiver = provider.CreateReceiver(Address);
-                if (_receiver == null)
+                IRemoteVideoInputReceiver? receiver;
+                try
                 {
-                    Status = $"{PreferredTransportKind} could not open {Address}";
-                    _nextCreateTicks = now + RetryIntervalMs;
+                    receiver = provider.CreateReceiver(address);
+                }
+                catch (Exception e)
+                {
+                    lock (_gate)
+                    {
+                        if (_disposed)
+                            return;
+
+                        Status = $"Could not receive {address}: {e.Message}";
+                        _nextCreateTicks = Environment.TickCount64 + RetryIntervalMs;
+                    }
+
                     return;
                 }
 
-                Status = string.IsNullOrWhiteSpace(_receiver.StatusMessage) ? "Connecting…" : _receiver.StatusMessage!;
-            }
-            catch (Exception e)
-            {
-                Status = $"Could not receive {Address}: {e.Message}";
-                _nextCreateTicks = now + RetryIntervalMs;
-            }
+                lock (_gate)
+                {
+                    if (_disposed)
+                    {
+                        try { receiver?.Dispose(); } catch { }
+                        return;
+                    }
+
+                    if (receiver == null)
+                    {
+                        Status = $"{PreferredTransportKind} could not open {address}";
+                        _nextCreateTicks = Environment.TickCount64 + RetryIntervalMs;
+                        return;
+                    }
+
+                    _receiver = receiver;
+                    Status = string.IsNullOrWhiteSpace(receiver.StatusMessage) ? "Connecting…" : receiver.StatusMessage!;
+                }
+            });
         }
 
         private void DisposeReceiver()
         {
-            try
-            {
-                _receiver?.Dispose();
-            }
-            catch (Exception e)
-            {
-                Log.Debug($"Disposing a remote video receiver failed: {e.Message}");
-            }
-
+            // Called on the render thread after a receive failure. The receiver's Dispose may join its
+            // receive thread, so hand it to the pool; no input can reference a texture we are dropping here.
+            var receiver = _receiver;
             _receiver = null;
+            if (receiver == null)
+                return;
+
+            _ = Task.Run(() =>
+            {
+                try
+                {
+                    receiver.Dispose();
+                }
+                catch (Exception e)
+                {
+                    Log.Debug($"Disposing a remote video receiver failed: {e.Message}");
+                }
+            });
         }
 
         private const int RetryIntervalMs = 2000;
         private readonly RemoteVideoSource _source;
+        private readonly object _gate = new();
         private IRemoteVideoInputReceiver? _receiver;
+        private Task? _createTask;
+        private volatile bool _disposed;
         private long _nextCreateTicks;
     }
 
@@ -460,5 +552,7 @@ public static class RemoteVideoInputBus
     private static readonly Dictionary<string, RemoteVideoSource> _peerSources = new(StringComparer.Ordinal);
     private static readonly Dictionary<string, RemoteVideoSource> _sources = new(StringComparer.Ordinal);
     private static readonly Dictionary<string, RemoteSourceState> _states = new(StringComparer.Ordinal);
+    private static readonly List<RemoteSourceState> _retired = [];
+    private static long _pumpCount;
     private static int _inputsVersion;
 }

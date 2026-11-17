@@ -424,7 +424,9 @@ internal sealed class CollabManager
             return;
         }
 
-        if (IsSessionActive)
+        // A join from a still-Connecting session (the previous host never answered) must not leak
+        // its transport: tear down whatever session object still exists, whatever its state.
+        if (State != SessionState.Off)
             Leave();
 
         if (string.IsNullOrWhiteSpace(roomCode))
@@ -514,6 +516,16 @@ internal sealed class CollabManager
                                                          ? $"{errorPrefix}: {message}"
                                                          : $"{errorPrefix}: {message} (relay {RelayEndpoint}). Start a relay there or set one under Advanced.";
                                          StatusText = statusText;
+
+                                         // Going to Off must also drop the transport, or its late events
+                                         // replay into whatever session comes next.
+                                         if (_transport != null)
+                                         {
+                                             _transport.PeerDisconnected -= OnPeerDisconnectedTransport;
+                                             _transport.Dispose();
+                                             _transport = null;
+                                         }
+
                                          State = SessionState.Off;
                                          _sessionProjectName = "";
                                          Log.Warning($"Collab: {errorPrefix.ToLowerInvariant()}: {message}");
@@ -531,7 +543,8 @@ internal sealed class CollabManager
         // Joining is an explicit session choice — release the manual-leave latch (see Leave).
         LeftManually = false;
 
-        if (IsSessionActive)
+        // Also tear down a session stuck in Connecting (see JoinViaRelay).
+        if (State != SessionState.Off)
             Leave();
 
         ++_sessionGeneration;
@@ -689,6 +702,15 @@ internal sealed class CollabManager
         _opsReceivedThisSecond.Clear();
         _pendingAuth.Clear();
         _chatLog.Clear();
+
+        // A session's participants must not survive into the next one. Per-peer disconnects do not
+        // run for every peer on teardown (and failover recreates sessions often), so clear the
+        // roster here or stale cursors/participants reappear as ghosts after reconnecting.
+        _roster.Clear();
+        _rosterUserIds.Clear();
+        _latestPresenceByPeer.Clear();
+        MyPeerId = 0;
+
         foreach (var upload in _projectUploads.Values)
             upload.Sender?.Dispose();
 
@@ -1027,6 +1049,16 @@ internal sealed class CollabManager
                 ErrorText = "Disconnected from relay session";
                 Leave();
             }
+            else if (State == SessionState.Connecting && _transport != null
+                     && (ReferenceEquals(peer, (_transport as CollabClientTransport)?.HostPeer)
+                         || _transport is CollabRelayClientTransport))
+            {
+                // The host/relay link died while the handshake was still running. Without this the
+                // state stays "Connecting" forever with no error, and the next Join click builds a
+                // second transport without disposing the first.
+                ErrorText = "Could not connect to host";
+                Leave();
+            }
         }
     }
 
@@ -1065,7 +1097,12 @@ internal sealed class CollabManager
 
     private void HandlePresence(CollabPeerConnection peer, PresencePacket presence)
     {
-        peer.LatestPresence = presence;
+        // On a client the only transport peer is the host link, but the host relays other clients'
+        // presence frames through it. Only the packet that belongs to this peer may replace its
+        // own presence, or another participant's cursor/selection overwrites the host's.
+        if (presence.PeerId == peer.PresencePeerId)
+            peer.LatestPresence = presence;
+
         _latestPresenceByPeer[presence.PeerId] = presence;
 
         // The host relays presence between clients on the reliable path when UDP isn't available
@@ -2179,13 +2216,19 @@ internal sealed class CollabManager
         while (scanner.Results.TryDequeue(out var result))
         {
             var announcement = result.Announcement;
+
+            // Announcements come from anyone who answers the UDP probe, so every field is read
+            // type-tolerantly: a hostile or malformed reply must be a miss, not an exception out
+            // of the frame loop (Value<int> throws on a string or object token).
+            CollabProtocol.TryGetInt(announcement, "port", out var port);
+            CollabProtocol.TryGetBool(announcement, "pwd", out var passwordProtected);
             var session = new DiscoveredSession
                               {
                                   Name = CollabProtocol.GetString(announcement, "name", "TiXL session"),
                                   HostName = CollabProtocol.GetString(announcement, "host", ""),
                                   Address = result.Source.Address.ToString(),
-                                  Port = announcement["port"]?.Value<int>() ?? CollabProtocol.DefaultTcpPort,
-                                  PasswordProtected = announcement["pwd"]?.Value<bool>() ?? false,
+                                  Port = port > 0 ? port : CollabProtocol.DefaultTcpPort,
+                                  PasswordProtected = passwordProtected,
                                   Project = CollabProtocol.GetString(announcement, "project", ""),
                               };
 
@@ -2348,6 +2391,7 @@ internal sealed class CollabManager
     }
 
     private readonly Dictionary<CollabPeerConnection, ProjectUpload> _projectUploads = new();
+    private readonly Dictionary<CollabPeerConnection, int> _projectRequestGenerations = new();
 
     private void HandleRequestProject(CollabPeerConnection peer, JObject json)
     {
@@ -2362,21 +2406,56 @@ internal sealed class CollabManager
         // A repeated request replaces the running transfer; its open file handle must go with it.
         DropProjectUpload(peer);
 
-        var inventory = BoygroupDeployer.BuildInventory(folder);
-        _projectUploads[peer] = new ProjectUpload
-                                    {
-                                        Peer = peer,
-                                        ProjectFolder = folder,
-                                        ProjectName = ShortProjectName(projectName),
-                                        PendingFiles = new Queue<string>(inventory.Keys),
-                                        TotalFiles = inventory.Count,
-                                    };
-        Log.Info($"Collab: sending project '{projectName}' ({inventory.Count} files) to {peer.Name}");
+        // The inventory is a recursive directory walk: on a large or network project it blocks the UI
+        // thread for seconds. Build it on a worker and install it through the UI-thread action queue.
+        var generation = NextProjectRequestGeneration(peer);
+        _ = Task.Run(() =>
+        {
+            Dictionary<string, BoygroupDeployer.InventoryEntry> inventory;
+            try
+            {
+                inventory = BoygroupDeployer.BuildInventory(folder);
+            }
+            catch (Exception e)
+            {
+                Log.Warning($"Collab: could not inventory '{projectName}': {e.Message}");
+                _uiThreadActions.Enqueue(() => SendJson(peer, new { t = "projectFail", reason = $"host could not read project '{projectName}'" }));
+                return;
+            }
+
+            _uiThreadActions.Enqueue(() =>
+            {
+                // Superseded by a newer request or the peer went away while the walk ran.
+                if (!_projectRequestGenerations.TryGetValue(peer, out var current) || current != generation || peer.SessionClosed)
+                    return;
+
+                _projectUploads[peer] = new ProjectUpload
+                                            {
+                                                Peer = peer,
+                                                ProjectFolder = folder,
+                                                ProjectName = ShortProjectName(projectName),
+                                                PendingFiles = new Queue<string>(inventory.Keys),
+                                                TotalFiles = inventory.Count,
+                                            };
+                Log.Info($"Collab: sending project '{projectName}' ({inventory.Count} files) to {peer.Name}");
+            });
+        });
+    }
+
+    private int NextProjectRequestGeneration(CollabPeerConnection peer)
+    {
+        if (_projectRequestGenerations.TryGetValue(peer, out var generation))
+            return _projectRequestGenerations[peer] = generation + 1;
+
+        _projectRequestGenerations[peer] = 1;
+        return 1;
     }
 
     /// <summary>Ends a pending upload for one peer and releases the file it had open.</summary>
     private void DropProjectUpload(CollabPeerConnection peer)
     {
+        NextProjectRequestGeneration(peer);
+
         if (!_projectUploads.Remove(peer, out var upload))
             return;
 
@@ -2403,7 +2482,9 @@ internal sealed class CollabManager
         if (_projectUploads.Count == 0)
             return;
 
-        var budget = 32;
+        // Chunks are ~192 KB and are base64-encoded here on the UI thread. 8 keeps a transfer moving without
+        // several megabytes of encoding per frame; the peer's QueuedBytes still paces the wire.
+        var budget = 8;
         List<CollabPeerConnection>? finished = null;
         foreach (var upload in _projectUploads.Values)
         {
