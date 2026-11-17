@@ -1,4 +1,4 @@
-#nullable enable
+﻿#nullable enable
 using System;
 using System.Linq;
 using System.Runtime.CompilerServices;
@@ -202,7 +202,14 @@ public class Slot<T> : ISlot, ITimeClipRemapTarget
         if (_dirtyFlag.IsDirty || _valueIsCommand)
         {
             OpUpdateCounter.CountUp();
-            _effectiveUpdateAction?.Invoke(context);
+            if (OpTimings.Enabled)
+            {
+                OpTimings.Measure(_parent?.Symbol?.Name ?? "?", _effectiveUpdateAction, context);
+            }
+            else
+            {
+                _effectiveUpdateAction?.Invoke(context);
+            }
             _dirtyFlag.Clear();
             _dirtyFlag.SetUpdated();
         }
@@ -407,6 +414,14 @@ public class Slot<T> : ISlot, ITimeClipRemapTarget
             {
                 return _dirtyFlag.Invalidate();
             }
+            _dirtyFlag.InvalidationTick = globalTick;
+            return _dirtyFlag.SourceVersion;
+        }
+
+        // A disabled output returns its cached value without reading the operator's inputs.
+        // Keep its current version so consumers can still see changes already made to the slot.
+        if (_isDisabled && ReferenceEquals(_updateAction, EmptyAction))
+        {
             _dirtyFlag.InvalidationTick = globalTick;
             return _dirtyFlag.SourceVersion;
         }
