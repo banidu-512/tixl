@@ -1,7 +1,7 @@
 {
   "FormatVersion": 3,
   "Id": "2ccc2f86-fe71-42ff-b91d-812763f5c6cf"/*LaserCamera*/,
-  "Description": "Geometry-to-laser converter and a standard camera in one: it aims with its own lens (Position/Target or Use Rotation angles, FieldOfView — camera dropdown, mouse control, gizmo) or borrows the lens of a camera wired into CameraReference, and every point/line/mesh drawn inside the Scene connected to it is captured and encoded into a laser frame — dots, line segments and mesh wireframes merged, with Group/transform scopes applied.\n\nThe Command output renders NOTHING — the only thing it carries is the gizmo. Laser data leaves exclusively through LaserPoints: route it via OutputRef to a laser output of the active output setup, whose driver streams it to the bound device. Each camera keeps its own viewpoint, so multiple cameras stay separate, and the scene is captured once per laser pump on the pump's budget — never per rendered frame.\n\nAll positions are projected into ILDA 16-bit (depth/|NDC| culling), colors from the source geometry, 16-bit.\n\nOptimization and safety settings are managed in the Output Setup; the app bar's LASER button is the master enable.\n\nLike SendToOutput it lists as content in the Output Setup, where Update freezes the camera on its last frame.",
+  "Description": "Geometry-to-laser converter and a standard camera in one: it aims with its own lens (Position/Target or Use Rotation angles, FieldOfView — camera dropdown, mouse control, gizmo) or borrows the lens of a camera wired into CameraReference, and every point/line/mesh drawn inside the Scene connected to it is captured and encoded into a laser frame — dots, line segments and mesh wireframes merged, with Group/transform scopes applied.\n\nThe Command output renders NOTHING — the only thing it carries is the gizmo. Laser data leaves exclusively through LaserPoints: route it via OutputRef to a laser output of the active output setup, whose driver streams it to the bound device. Each camera keeps its own viewpoint, so multiple cameras stay separate, and the scene is captured once per laser pump on the pump's budget — never per rendered frame.\n\nAll positions are projected into ILDA 16-bit (depth/|NDC| culling), colors from the source geometry, 16-bit.\n\nMesh wireframes can be culled: CreaseAngle skips edges between faces that fold less than the angle, BackfaceCulling drops the mesh's hidden side. When the scene needs more points than the frame budget, the op's status line reports the drop.\n\nOptimization and safety settings are managed in the Output Setup; the app bar's LASER button is the master enable.\n\nLike SendToOutput it lists as content in the Output Setup, where Update freezes the camera on its last frame.",
   "InputUis": [
     {
       "InputId": "0c48ed58-1242-4f8b-869a-7396cb055931"/*DotDwellPoints*/,
@@ -88,6 +88,19 @@
       "Format": "{0:0.0}°"
     },
     {
+      "InputId": "5b629016-9618-4b4b-82e9-b266f330355d"/*CreaseAngle*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 125.0
+      },
+      "Description": "Wireframe only: minimum angle in degrees between a mesh edge's faces for the edge to be drawn - seams that fold less read as one surface. The default 1° keeps a quad's triangle diagonal out; raise it to sketch only the folds and silhouette of a curved mesh, which also saves points.",
+      "Min": 0.0,
+      "Max": 180.0,
+      "ClampMin": true,
+      "ClampMax": true,
+      "Format": "{0:0.0}°"
+    },
+    {
       "InputId": "6475ca9c-6ed6-4659-87d2-a602813c823c"/*Scene*/,
       "Position": {
         "X": -200.0,
@@ -140,6 +153,14 @@
       },
       "Description": "Aspect ratio of the projection. -1 = square scanner field (the laser frame is square). Set explicitly only for anamorphic framing - any other value squeezes the picture to match.",
       "Format": "{0:0.00}"
+    },
+    {
+      "InputId": "ef444cd1-f58e-4d92-a09a-8b6a93487dd9"/*BackfaceCulling*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 100.0
+      },
+      "Description": "Wireframe only: drops mesh edges whose faces all face away from the camera - the hidden side of a closed mesh. Needs consistent triangle winding (the mesh operators' standard); leave off for meshes with unknown winding."
     },
     {
       "InputId": "e7a2c41d-9b58-4c0f-a3d6-8e41f2b7c5a9"/*OutputRef*/,

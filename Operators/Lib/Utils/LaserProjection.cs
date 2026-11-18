@@ -103,6 +103,22 @@ internal static class LaserProjection
         return float.IsFinite(ax + ay + bx + by);
     }
 
+    /// <summary>
+    /// World-space position of the camera defined by a rigid view matrix (rotation-translation,
+    /// as the LookAt and aim paths build them): the view origin transformed back into the world,
+    /// for tests that compare geometry directions against the eye point.
+    /// </summary>
+    public static Vector3 GetViewOrigin(Matrix4x4 worldToCamera)
+    {
+        var tx = worldToCamera.M41;
+        var ty = worldToCamera.M42;
+        var tz = worldToCamera.M43;
+        return new Vector3(
+            -(tx * worldToCamera.M11 + ty * worldToCamera.M21 + tz * worldToCamera.M31),
+            -(tx * worldToCamera.M12 + ty * worldToCamera.M22 + tz * worldToCamera.M32),
+            -(tx * worldToCamera.M13 + ty * worldToCamera.M23 + tz * worldToCamera.M33));
+    }
+
     /// <summary>RGB in 0..1 times brightness to the 16-bit laser color range; NaN becomes dark.</summary>
     public static void ToColor(float red, float green, float blue, float brightness, out int r, out int g, out int b)
     {

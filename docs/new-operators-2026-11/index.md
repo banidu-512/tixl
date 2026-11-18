@@ -792,6 +792,11 @@ through `LaserPoints`, routed to a laser output via `OutputRef`.
 - `OutputRef` selects which laser output the frame is routed to.
 - `MaxEdgeStep` is the maximum distance between samples along lines and mesh edges; smaller values
   trace smoother curves and cost more points.
+- `CreaseAngle` is the minimum angle between a mesh edge's faces for the edge to be drawn: seams
+  that fold less read as one surface. The default 1° drops a quad's triangle diagonal; higher
+  values sketch only the sharp folds and silhouette of a curved mesh, which also saves points.
+- `BackfaceCulling` drops mesh edges whose faces all face away from the camera — the hidden side
+  of a closed mesh. It needs consistent triangle winding.
 - `DotDwellPoints` is how many points an isolated dot gets on the scanner (its dwell time).
 - `Update` re-captures each frame; disable it for a still frame.
 - `UseRotation` / `Rotation` rotate the captured field.
@@ -805,6 +810,8 @@ through `LaserPoints`, routed to a laser output via `OutputRef`.
 *Tips:* each camera has its own viewpoint, so several cameras can capture different parts of a rig
 independently; the scene is captured once per laser pump and the pump budget is shared between
 cameras. If the frame bounds are empty, the scene is probably outside the camera's clip planes.
+When the scene needs more points than the budget, the op's status line warns that the excess is
+dropped.
 
 ![LaserCamera selected in the laser rig](shots/LaserCamera-ui.png)
 *Lens, output routing and point-encoding parameters, with several cameras in one rig.*

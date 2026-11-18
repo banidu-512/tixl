@@ -54,6 +54,10 @@
       "DefaultValue": 0.0
     },
     {
+      "Id": "5b629016-9618-4b4b-82e9-b266f330355d"/*CreaseAngle*/,
+      "DefaultValue": 1.0
+    },
+    {
       "Id": "6475ca9c-6ed6-4659-87d2-a602813c823c"/*Scene*/,
       "DefaultValue": null
     },
@@ -80,6 +84,10 @@
     {
       "Id": "d62b1d2f-8b69-4f58-a8cb-9f9eb89a831d"/*AspectRatio*/,
       "DefaultValue": -1.0
+    },
+    {
+      "Id": "ef444cd1-f58e-4d92-a09a-8b6a93487dd9"/*BackfaceCulling*/,
+      "DefaultValue": false
     },
     {
       "Id": "e7a2c41d-9b58-4c0f-a3d6-8e41f2b7c5a9"/*OutputRef*/,
