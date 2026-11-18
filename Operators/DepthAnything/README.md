@@ -14,6 +14,7 @@ Real-time monocular depth estimation for TiXL with **Depth Anything 3**, plus GP
 | `DepthParallax` | Shifts an image by its depth for 2.5D camera moves (GPU) |
 | `DepthThreshold` | Binary depth mask (still reads depth back on the CPU) |
 | `DepthScanBuffer` | LiDAR-style scan buffer: merges depth frames into one held map (with color), rebuilds a drawable point cloud and saves 16-bit PNG / raw float32 |
+| `DepthScan3D` | World-space 3D point cloud scanner: unprojects depth with the DA3 camera pose into a voxel-merged, held cloud; saves PLY |
 
 ## Depth Scan Buffer
 
@@ -41,6 +42,24 @@ live scan keeps updating, `PointGrid` picks Square or Hexagonal sampling (hex ro
 offset by half a stride with sqrt(3)/2 row spacing, so all six neighbors sit at the same
 distance) and `PointStability` blends rebuilt point positions toward their previous spots
 (0 = exact, 1 = frozen).
+
+## Depth Scan 3D
+
+`DepthScan3D` is the 3D sibling of `DepthScanBuffer`: instead of holding a 2D depth map,
+it scans depth into a persistent **world-space point cloud**. Every valid pixel is
+unprojected using the camera pose (connect `DepthAnything.CamReference` to
+`CameraReference` - DA3 estimates pose and field of view per frame), quantized to a
+voxel grid (`VoxelSize` - your min-distance knob), and merged: overlapping observations
+are averaged (`Mode: Average`, weighted running mean - the LiDAR-style denoising) or
+replaced. Confidence gates samples, `ColorMap` colors them, and `SampleLifetime` ages
+points out so the cloud follows what the camera keeps seeing.
+
+Without a camera reference, points land in DA3 camera space (+Z forward), matching
+`DepthToPoints`/`DepthScanBuffer` output.
+
+`Save` exports the cloud as a **PLY** file (binary or ASCII - opens in MeshLab,
+CloudCompare, Blender); the `Points` output feeds `DrawPoints` directly and draws on
+both D3D11 and Vulkan.
 
 ## Models
 

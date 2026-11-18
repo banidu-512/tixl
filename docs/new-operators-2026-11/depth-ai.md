@@ -180,6 +180,25 @@ positions toward their previous spots to minimize jitter.
 *Note:* the held outputs keep publishing the last scan even when the input stops; a size
 change of the incoming depth resets the buffer and starts a fresh scan.
 
+## DepthScan3D
+
+The 3D sibling of `DepthScanBuffer`: depth is unprojected into a persistent **world-space
+point cloud** instead of a held 2D map. The camera pose comes from
+`DepthAnything.CamReference` (DA3 estimates pose and vertical FOV per frame); without it,
+points stay in DA3 camera space like `DepthToPoints`.
+
+- Every valid pixel is unprojected and inserted into a voxel grid of `VoxelSize` (the min-distance knob: points never sit closer than that).
+- Overlapping observations merge: `Mode: Average` keeps a weighted running mean per voxel (true multi-frame denoising), `Mode: Replace` lets the latest observation win.
+- `Confidence` gating, `ColorMap` coloring and `SampleLifetime` aging work like in `DepthScanBuffer` - the cloud follows what the camera keeps seeing.
+- `StartRecord`/`StopRecord` latch a hands-free recording run; `MaxPoints` caps the cloud.
+
+**Output:** `Points` + `PointCount` (CPU-built Point buffer - draws on D3D11 and
+Vulkan), `Captures`, `PointsAdded`, `SavedPath`, `Recording`. Save writes a **PLY**
+(binary or ASCII) that opens in MeshLab, CloudCompare or Blender.
+
+*Note:* pixel-wise fusion assumes the pose source is consistent; DA3's monocular pose
+drifts over long hand scans, so slow scans or a turntable give the cleanest clouds.
+
 ## StreamDiffusion
 
 Image generation with **Stable Diffusion 1.x / SD-Turbo** through ONNX Runtime, in text-to-image and
