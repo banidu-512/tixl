@@ -5,6 +5,7 @@ using T3.Core.Operator;
 using T3.Core.Operator.Interfaces;
 using T3.Core.Operator.Slots;
 using T3.Core.Output;
+using T3.Core.Rendering;
 using T3.Core.Resource;
 using T3.Core.Utils;
 using T3.Core.Utils.Geometry;
@@ -249,8 +250,15 @@ internal static class TransformGizmoHandling
         // Don't draw gizmo behind camera (view plane)
         _renderGizmo = Math.Abs(_originInClipSpace.Z) <= 1 && Math.Abs(_originInClipSpace.X) <= 2 && Math.Abs(_originInClipSpace.Y) <= 2;
 
-        var viewports = ResourceManager.Device.ImmediateContext.Rasterizer.GetViewports<T3.Graphics.Viewport>();
-        _viewport = viewports[0];
+        // While the all-cameras overlay runs, the render pass is over and the rasterizer's viewport is
+        // the editor's backbuffer, not the output image the overlay projects onto: keep the image-sized
+        // viewport the overlay set before it pulled the cameras (their callbacks land here).
+        if (!_drawingCameraOverlay)
+        {
+            var viewports = ResourceManager.Device.ImmediateContext.Rasterizer.GetViewports<T3.Graphics.Viewport>();
+            _viewport = viewports[0];
+        }
+
         var originInViewport = new Vector2(_viewport.Width * (_originInClipSpace.X * 0.5f + 0.5f),
                                            _viewport.Height * (1.0f - (_originInClipSpace.Y * 0.5f + 0.5f)));
 
@@ -1122,9 +1130,30 @@ internal static class TransformGizmoHandling
             return;
         }
 
-        var viewports = ResourceManager.Device.ImmediateContext.Rasterizer.GetViewports<T3.Graphics.Viewport>();
-        _viewport = viewports[0];
+        // Project through the rendered image's own size: the canvas draws the image at its origin with
+        // one canvas unit per image pixel. The rasterizer's viewport at this point is the editor's whole
+        // backbuffer, which scaled and shifted every overlay element away from its camera.
+        var imageWidth = _canvas.LastTexture is { IsDisposed: false } shown ? shown.Description.Width : 0;
+        var imageHeight = imageWidth > 0 ? _canvas.LastTexture!.Description.Height : 0;
+        if (imageWidth <= 0 || imageHeight <= 0)
+        {
+            imageWidth = context.RequestedResolution.Width;
+            imageHeight = context.RequestedResolution.Height;
+        }
+
+        if (imageWidth <= 0 || imageHeight <= 0)
+        {
+            RestoreDrawList();
+            return;
+        }
+
+        _viewport = new T3.Graphics.Viewport(0, 0, imageWidth, imageHeight);
         _topLeftOnScreen = _canvas.TransformPosition(Vector2.Zero);
+
+        // Camera ops are instantiated lazily: one whose output nothing evaluates (a rig's unused
+        // cameras, a camera inside a composition that was never opened) has no instance, never
+        // registered as laser content and would stay invisible. Instantiate them (throttled).
+        EnsureCameraInstancesExist(scopeRoot);
 
         // The overlay (and any gizmo callback it triggers) must project with the window's view,
         // not whatever the rendered chain left in the context.
@@ -1134,6 +1163,20 @@ internal static class TransformGizmoHandling
         _objectToWorld = Matrix4x4.Identity;
         _objectToClipSpace = worldToCamera * cameraToClipSpace;
 
+        _drawingCameraOverlay = true;
+        try
+        {
+            DrawCameraOverlaysInScope(context, scopeRoot);
+        }
+        finally
+        {
+            _drawingCameraOverlay = false;
+            RestoreDrawList();
+        }
+    }
+
+    private static void DrawCameraOverlaysInScope(EvaluationContext context, Instance scopeRoot)
+    {
         var rootPath = scopeRoot.InstancePath;
         var suppliers = LaserContentRegistry.Suppliers;
         for (var i = 0; i < suppliers.Count; i++)
@@ -1167,12 +1210,96 @@ internal static class TransformGizmoHandling
             reference.DirtyFlag.ForceInvalidate();
             reference.GetValue(context);
 
-            var isSelectedCamera = ReferenceEquals(camera, _instance);
+            var isSelectedCamera = camera is ITransformable cameraTransformable && _selectedTransformables.Contains(cameraTransformable);
             DrawCameraViewFrame(viewCamera, isSelectedCamera ? UiColors.StatusAnimated : CameraGizmoTint(camera),
                                 drawFrustumEdges: isSelectedCamera);
         }
+    }
 
-        RestoreDrawList();
+    /// <summary>True while <see cref="DrawCameraOverlays"/> runs: the render pass is over, so the
+    /// rasterizer's viewport must not replace the overlay's image-sized viewport mid-draw.</summary>
+    private static bool _drawingCameraOverlay;
+
+    private static Instance? _discoveryRoot;
+    private static double _lastDiscoveryTime = double.NegativeInfinity;
+    private const double DiscoveryInterval = 1.0;
+
+    /// <summary>
+    /// Creates the instances of every camera-view-gizmo op (laser cameras) below the scope root, so
+    /// they register as laser content and the overlay can draw them even when nothing evaluates
+    /// them. Only compositions that (transitively) contain such an op are descended into, and the
+    /// walk runs at most once a second per scope - new cameras appear within that time.
+    /// </summary>
+    private static void EnsureCameraInstancesExist(Instance scopeRoot)
+    {
+        var now = ImGui.GetTime();
+        if (ReferenceEquals(scopeRoot, _discoveryRoot) && now - _lastDiscoveryTime < DiscoveryInterval)
+            return;
+
+        _discoveryRoot = scopeRoot;
+        _lastDiscoveryTime = now;
+
+        var containsCamera = new Dictionary<Symbol, bool>();
+        try
+        {
+            InstantiateCamerasBelow(scopeRoot, containsCamera, depth: 0);
+        }
+        catch (Exception e)
+        {
+            Log.Warning($"Camera gizmo overlay: could not discover cameras below {scopeRoot}: {e.Message}");
+        }
+    }
+
+    private const int MaxDiscoveryDepth = 32;
+
+    private static void InstantiateCamerasBelow(Instance instance, Dictionary<Symbol, bool> containsCamera, int depth)
+    {
+        if (depth > MaxDiscoveryDepth)
+            return;
+
+        foreach (var child in instance.Symbol.Children.Values)
+        {
+            var childSymbol = child.Symbol;
+            var isCamera = IsCameraGizmoSymbol(childSymbol);
+            if (!isCamera && !SymbolContainsCamera(childSymbol, containsCamera, depth + 1))
+                continue;
+
+            if (!instance.Children.TryGetChildInstance(child.Id, out var childInstance))
+                continue;
+
+            if (!isCamera)
+                InstantiateCamerasBelow(childInstance, containsCamera, depth + 1);
+        }
+    }
+
+    private static bool IsCameraGizmoSymbol(Symbol symbol)
+    {
+        var type = symbol.InstanceType;
+        return type != null && typeof(ICameraViewGizmo).IsAssignableFrom(type) && typeof(ICamera).IsAssignableFrom(type);
+    }
+
+    private static bool SymbolContainsCamera(Symbol symbol, Dictionary<Symbol, bool> memo, int depth)
+    {
+        if (memo.TryGetValue(symbol, out var known))
+            return known;
+
+        // Provisional answer guards against recursive symbol graphs.
+        memo[symbol] = false;
+        var result = false;
+        if (depth <= MaxDiscoveryDepth)
+        {
+            foreach (var child in symbol.Children.Values)
+            {
+                if (IsCameraGizmoSymbol(child.Symbol) || SymbolContainsCamera(child.Symbol, memo, depth + 1))
+                {
+                    result = true;
+                    break;
+                }
+            }
+        }
+
+        memo[symbol] = result;
+        return result;
     }
 
     private static Slot<Object>? FindReferenceOutput(Instance camera)
@@ -1286,25 +1413,51 @@ internal static class TransformGizmoHandling
         var cameraPosition = definition.Position;
         var target = definition.Target;
 
-        var forward = target - cameraPosition;
-        if (forward.LengthSquared() < 1e-8f)
+        Vector3 forward, rightRolled, upRolled;
+        float tanHalfFov, aspect;
+        if (TryGetViewBasis(camera, out var matrixPosition, out var matrixForward, out var matrixRight, out var matrixUp,
+                            out var matrixTanHalfFov, out var matrixAspect))
         {
-            forward = -Vector3.UnitZ;
-            target = cameraPosition + forward;
+            // The matrices are what the camera actually projects with (Up input, Rotation aim with its
+            // roll, a borrowed reference camera, the square scanner field) - the definition fields
+            // can't express all of these, so the gizmo follows the matrices.
+            var distanceToTarget = Vector3.Distance(cameraPosition, target);
+            cameraPosition = matrixPosition;
+            forward = matrixForward;
+            rightRolled = matrixRight;
+            upRolled = matrixUp;
+            tanHalfFov = matrixTanHalfFov;
+            aspect = matrixAspect;
+
+            // Keep the aim point on the view axis (the target can sit off-axis with a lens shift or
+            // an inconsistent reference); a degenerate distance falls back to one unit.
+            var along = Vector3.Dot(target - cameraPosition, forward);
+            if (!float.IsFinite(along) || along < 1e-4f)
+                along = distanceToTarget > 1e-4f ? distanceToTarget : 1f;
+            target = cameraPosition + forward * along;
         }
+        else
+        {
+            forward = target - cameraPosition;
+            if (forward.LengthSquared() < 1e-8f)
+            {
+                forward = -Vector3.UnitZ;
+                target = cameraPosition + forward;
+            }
 
-        forward = Vector3.Normalize(forward);
-        var up = MathF.Abs(Vector3.Dot(forward, Vector3.UnitY)) > 0.99f ? Vector3.UnitZ : Vector3.UnitY;
-        var right = Vector3.Normalize(Vector3.Cross(forward, up));
-        var upVector = Vector3.Cross(right, forward);
+            forward = Vector3.Normalize(forward);
+            var up = MathF.Abs(Vector3.Dot(forward, Vector3.UnitY)) > 0.99f ? Vector3.UnitZ : Vector3.UnitY;
+            var right = Vector3.Normalize(Vector3.Cross(forward, up));
+            var upVector = Vector3.Cross(right, forward);
 
-        var roll = definition.Roll.ToRadians();
-        var rightRolled = right * MathF.Cos(roll) + upVector * MathF.Sin(roll);
-        var upRolled = upVector * MathF.Cos(roll) - right * MathF.Sin(roll);
+            var roll = definition.Roll.ToRadians();
+            rightRolled = right * MathF.Cos(roll) + upVector * MathF.Sin(roll);
+            upRolled = upVector * MathF.Cos(roll) - right * MathF.Sin(roll);
 
-        var fov = MathF.Max(0.001f, definition.FieldOfView);
-        var aspect = MathF.Max(0.01f, definition.AspectRatio);
-        var tanHalfFov = MathF.Tan(fov * 0.5f);
+            var fov = MathF.Max(0.001f, definition.FieldOfView);
+            aspect = MathF.Max(0.01f, definition.AspectRatio);
+            tanHalfFov = MathF.Tan(fov * 0.5f);
+        }
 
         if (!TryWorldPosToScreenPos(cameraPosition, out var cameraScreen))
             return;
@@ -1344,6 +1497,44 @@ internal static class TransformGizmoHandling
             if (TryWorldPosToScreenPos(corner, out var cornerScreen))
                 _drawList.AddLine(cameraScreen, cornerScreen, edgeColor, 1f);
         }
+    }
+
+    /// <summary>
+    /// Position, axes and lens of a camera from the matrices it renders with (right-handed view,
+    /// looking down -Z). False for cameras without matrices or with a degenerate projection.
+    /// </summary>
+    private static bool TryGetViewBasis(ICamera camera, out Vector3 position, out Vector3 forward, out Vector3 right, out Vector3 up,
+                                        out float tanHalfFov, out float aspect)
+    {
+        position = forward = right = up = default;
+        tanHalfFov = aspect = 0;
+        if (camera is not ICameraPropertiesProvider provider)
+            return false;
+
+        var projection = provider.CameraToClipSpace;
+        if (!Matrix4x4.Invert(provider.WorldToCamera, out var cameraToWorld))
+            return false;
+
+        if (!float.IsFinite(projection.M11) || !float.IsFinite(projection.M22)
+                                            || MathF.Abs(projection.M11) < 1e-6f || MathF.Abs(projection.M22) < 1e-6f)
+            return false;
+
+        right = new Vector3(cameraToWorld.M11, cameraToWorld.M12, cameraToWorld.M13);
+        up = new Vector3(cameraToWorld.M21, cameraToWorld.M22, cameraToWorld.M23);
+        forward = -new Vector3(cameraToWorld.M31, cameraToWorld.M32, cameraToWorld.M33);
+        position = new Vector3(cameraToWorld.M41, cameraToWorld.M42, cameraToWorld.M43);
+        if (right.LengthSquared() < 1e-10f || up.LengthSquared() < 1e-10f || forward.LengthSquared() < 1e-10f
+            || !float.IsFinite(position.X + position.Y + position.Z))
+            return false;
+
+        right = Vector3.Normalize(right);
+        up = Vector3.Normalize(up);
+        forward = Vector3.Normalize(forward);
+
+        // PerspectiveFovRH: M22 = 1/tan(fov/2), M11 = M22/aspect.
+        tanHalfFov = 1f / MathF.Abs(projection.M22);
+        aspect = MathF.Abs(projection.M22 / projection.M11);
+        return true;
     }
 
     /// <summary>Draws a camera-facing rectangle: four edges through the given half-extents.</summary>
@@ -1440,10 +1631,8 @@ internal static class TransformGizmoHandling
             return false;
 
         var ndc = new Vector3(inClip.X, inClip.Y, inClip.Z) / inClip.W;
-        var viewports = ResourceManager.Device.ImmediateContext.Rasterizer.GetViewports<T3.Graphics.Viewport>();
-        var viewport = viewports[0];
-        var inViewport = new Vector2(viewport.Width * (ndc.X * 0.5f + 0.5f),
-                                     viewport.Height * (1.0f - (ndc.Y * 0.5f + 0.5f)));
+        var inViewport = new Vector2(_viewport.Width * (ndc.X * 0.5f + 0.5f),
+                                     _viewport.Height * (1.0f - (ndc.Y * 0.5f + 0.5f)));
 
         screenPos = _topLeftOnScreen + _canvas.TransformDirection(inViewport);
         return true;
@@ -1518,10 +1707,8 @@ internal static class TransformGizmoHandling
         var homogenousPosInLocal = new Vector4(posInLocal.X, posInLocal.Y, posInLocal.Z, 1);
         Vector4 originInClipSpace = Vector4.Transform(homogenousPosInLocal, _localToClipSpace);
         Vector3 posInNdc = new Vector3(originInClipSpace.X, originInClipSpace.Y, originInClipSpace.Z) / originInClipSpace.W;
-        var viewports = ResourceManager.Device.ImmediateContext.Rasterizer.GetViewports<T3.Graphics.Viewport>();
-        var viewport = viewports[0];
-        var originInViewport = new Vector2(viewport.Width * (posInNdc.X * 0.5f + 0.5f),
-                                           viewport.Height * (1.0f - (posInNdc.Y * 0.5f + 0.5f)));
+        var originInViewport = new Vector2(_viewport.Width * (posInNdc.X * 0.5f + 0.5f),
+                                           _viewport.Height * (1.0f - (posInNdc.Y * 0.5f + 0.5f)));
 
         var posInCanvas = _canvas.TransformDirection(originInViewport);
         return _topLeftOnScreen + posInCanvas;
