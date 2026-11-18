@@ -71,7 +71,9 @@ The step count is the batch size, so every extra step doubles the KV cache. Atte
 Larger GPUs can run more steps at 512; below 16 GB, stay at 256 for multi-step streaming.
 
 The RTX 3080 Ti Laptop throttles at 87°C under sustained streaming (clocks oscillate between 1.1 and 1.8 GHz), so long
-takes show occasional 2-3x slower frames. It is a cooling limit, not a leak: GPU memory stayed flat at ~7.5 GB over a
+takes show occasional 2-3x slower frames. On this machine with the fp16 TensorRT engines the steady state is
+denoise ~55-85 ms with periodic 400-900 ms dips every 1-2 s once the GPU heat-soaks; lower **TargetFps** (8-10) to
+keep clocks high and the dips away - stability costs a little average throughput. It is a cooling limit, not a leak: GPU memory stayed flat at ~7.5 GB over a
 100-frame soak and returned to idle after disposal. The operator skips identical input frames, so a frozen source stops
 using the GPU entirely; prompt changes encode in the background (the stream keeps the previous prompt) and the encoded
 prompt is cached on disk, so a known prompt starts in about 1.4 s instead of loading the 11 GB text encoder (~40-60 s).
