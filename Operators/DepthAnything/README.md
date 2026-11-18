@@ -13,6 +13,34 @@ Real-time monocular depth estimation for TiXL with **Depth Anything 3**, plus GP
 | `DepthToPoints` | Camera-space point buffer from depth and color, for live splats with `DrawPoints` (GPU) |
 | `DepthParallax` | Shifts an image by its depth for 2.5D camera moves (GPU) |
 | `DepthThreshold` | Binary depth mask (still reads depth back on the CPU) |
+| `DepthScanBuffer` | LiDAR-style scan buffer: merges depth frames into one held map (with color), rebuilds a drawable point cloud and saves 16-bit PNG / raw float32 |
+
+## Depth Scan Buffer
+
+`DepthScanBuffer` turns the per-frame depth output into a held scan, the way a LiDAR
+scanner accumulates: while `Capture` is on, every frame is merged into one persistent
+map (`Latest`, `Average`, `Min`, `Max`; per-pixel sample counts make `Average` a true
+multi-frame average). The held map is published on `HeldDepth` until `Reset`, and it
+survives a disconnected input. Optional `Confidence` gating drops unreliable samples;
+optional `ColorMap` is held alongside and colors the cloud.
+
+`PointCloud` unprojects the held scan into a CPU-built point buffer that draws on the
+D3D11 backend too (unlike the compute-written buffer of `DepthToPoints`, which needs
+Vulkan). Wire `FieldOfView` from `DepthAnything.VerticalFov` for a correctly scaled
+cloud, and feed `HeldDepth` to `DepthToPosition` for camera-space reconstruction.
+
+`Save` writes the scan as a 16-bit PNG (depth x `SaveScale`; 1000 = millimeters) or as
+exact raw float32 with a small header (magic `T3DS`, width, height, captures, valid
+pixels, min/max, then row-major float32).
+
+Recording works trigger-based: `StartRecord` / `StopRecord` latch a recording run (the
+`Recording` output shows the state), `Capture` stays the manual override. `SampleLifetime`
+ages samples out after N seconds without a re-observation, so a scan fades like a decaying
+LiDAR sweep; `Coverage`, the masks and the point cloud follow. For stable points while a
+live scan keeps updating, `PointGrid` picks Square or Hexagonal sampling (hex rows are
+offset by half a stride with sqrt(3)/2 row spacing, so all six neighbors sit at the same
+distance) and `PointStability` blends rebuilt point positions toward their previous spots
+(0 = exact, 1 = frozen).
 
 ## Models
 
