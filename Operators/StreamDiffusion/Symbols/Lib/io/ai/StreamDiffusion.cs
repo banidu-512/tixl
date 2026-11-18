@@ -45,6 +45,7 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
         int Height,
         int ResizeMode,
         bool ResetStream,
+        bool MatchInputResolution,
         byte[]? InputData,
         int InputWidth,
         int InputHeight,
@@ -163,6 +164,14 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
     /// </summary>
     [Input(Guid = "C1D2E3F4-A5B6-4C7D-8E9F-0A1B2C3D4E5F")]
     public readonly InputSlot<float> TargetFps = new(16f);
+
+    /// <summary>
+    /// Stretches the model's baked output (e.g. 256x256) back over the input image's dimensions, so
+    /// the published output matches the source's aspect ratio and pixel size for compositing. The
+    /// model itself always renders square - this undoes the fit stretch on the way out.
+    /// </summary>
+    [Input(Guid = "B4C5D6E7-C8D9-4E0F-A1B2-3C4D5E6F7A8B")]
+    public readonly InputSlot<bool> MatchInputResolution = new();
 
     #endregion
 
@@ -334,6 +343,8 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
             var debug = Debug.GetValue(context);
             var fastDecode = FastDecode.GetValue(context);
             var feedback = Math.Clamp(Feedback.GetValue(context), 0f, 1f);
+            var matchInputResolution = MatchInputResolution.GetValue(context);
+
             if (MathUtils.WasTriggered(ResetStream.GetValue(context), ref _resetState))
             {
                 ResetStream.SetTypedInputValue(false);
@@ -505,6 +516,7 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
                         height: fixedHeight,
                         resizeMode: resizeMode,
                         resetStream: resetPending,
+                        matchInputResolution: matchInputResolution,
                         inputData: data,
                         inputWidth: w,
                         inputHeight: h,
@@ -565,8 +577,8 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
     }
 
     private void BuildAndEnqueueRequest(string prompt, int steps, float strength, int seed, int width, int height,
-                                        int resizeMode, bool resetStream, byte[]? inputData, int inputWidth,
-                                        int inputHeight, InputPixelFormat inputFormat)
+                                        int resizeMode, bool resetStream, bool matchInputResolution,
+                                        byte[]? inputData, int inputWidth, int inputHeight, InputPixelFormat inputFormat)
     {
         // The V2 step count is the KV-cache batch size, so it is capped at 4
         var clampedSteps = Math.Clamp(steps, 1, 4);
@@ -580,7 +592,7 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
 
         var request = new GenerationRequest(
             prompt, clampedSteps, strength, seed,
-            width, height, resizeMode, resetStream,
+            width, height, resizeMode, resetStream, matchInputResolution,
             inputData, inputWidth, inputHeight, inputFormat);
 
         // The request consumes the pending flag. Without this, a txt2img trigger (or an AutoGenerate
@@ -984,7 +996,19 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
             if (imageData == null && error == null)
                 error = "Pipeline returned null";
 
-            return new GenerationResult(imageData, request.Width, request.Height, (float)sw.Elapsed.TotalSeconds, error);
+            var outWidth = request.Width;
+            var outHeight = request.Height;
+
+            // MatchInputResolution: stretch the baked-size output back over the input frame, restoring
+            // the source aspect ratio and pixel size for compositing (the model always renders square)
+            if (imageData != null && request.MatchInputResolution && request.InputWidth > 0 && request.InputHeight > 0)
+            {
+                imageData = RgbaResize.Apply(imageData, request.Width, request.Height, request.InputWidth, request.InputHeight, 0);
+                outWidth = request.InputWidth;
+                outHeight = request.InputHeight;
+            }
+
+            return new GenerationResult(imageData, outWidth, outHeight, (float)sw.Elapsed.TotalSeconds, error);
         }
         catch (Exception ex)
         {

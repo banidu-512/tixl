@@ -19,6 +19,7 @@ Realtime video-to-video diffusion with ONNX Runtime, running the StreamDiffusion
 - **bool FastDecode** - Decodes one latent instead of a three-latent window
 - **bool ResetStream** - Momentarily true to drop the rolling KV cache and re-prime from the next frame (scene cuts, style drift)
 - **float TargetFps** - Paces the stream at this rate (default 16); 0 = as fast as the GPU allows
+- **bool MatchInputResolution** - Stretches the baked-size output back over the input frame, so the output matches the source aspect ratio and pixel size
 - **bool Debug** - Logs detailed timing and state information
 
 ## Outputs

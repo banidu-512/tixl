@@ -27,6 +27,7 @@ AKA: ai, generation, diffusion, onnx, streamdiffusion, streamdiffusion v2, video
 | **FastDecode** (Boolean) | V2 only: decode one latent instead of a three-latent window. Saves about 20 ms per frame on TensorRT with slightly less temporal smoothing. |
 | **ResetStream** (Boolean) | Momentarily true to drop the rolling KV cache and re-prime the stream from the next input frame - useful on scene cuts or when the style drifts. |
 | **TargetFps** (Single) | Paces the stream at this many frames per second (default 16, matching capture and downstream). 0 runs as fast as the GPU allows; identical input frames cost nothing at any rate. |
+| **MatchInputResolution** (Boolean) | Stretches the model output (e.g. 256x256) back over the input image dimensions, so the output matches the source aspect ratio and pixel size for compositing. |
 | **Prompt** (String) | Text prompt describing the desired image. Be descriptive for better results. |
 | **AutoGenerate** (Boolean) | Continuously regenerate when inputs change. Disable for manual trigger mode. |
 | **ExecutionProviderParam** (Int32) | Hardware used for inference. The dropdown lists only the accelerations that can actually run this model on this operating system: Windows and Linux offer CUDA and TensorRT, macOS offers CoreML. DirectML cannot run the V2 model (its DiT/VAE 5D reshapes fail on the DML provider), and a saved DirectML choice snaps to CUDA. A provider that cannot initialize falls back to the next one, ending at CPU. |
