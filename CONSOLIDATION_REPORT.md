@@ -22,6 +22,7 @@ Date: 2026-11-17 · Target: `D:\CrossTixlClaude` · Branch: `crosstixlultimate` 
 | `docs: CONSOLIDATION_REPORT.md` | This file. |
 | `feat: showNET laser output …` + `fix: review findings for the showNET transport + docs` | Cherry-picked from `D:\CrossTixlDEV\tixl` branch `feat/laser-shownet` (2026-11-18, `c8d59ee`, `3469726`): showNET (LaserAnimation Sollinger PHOENIX) as the 4th laser plug transport — protocol layer, UDP stream with handshake/configure/frames, discovery on UDP 41856, plug settings, Output Setup UI, docs, 14 protocol tests. Applied cleanly. |
 | `fix: showNET delta encoder allocates its point scratch once per frame` | Moves a per-point `stackalloc` out of the encoder loop (CA2014, stack growth on large frames). Core.Tests ShowNet/Laser: 116/116. |
+| `fix: laser camera gizmos - every camera shows, in the right place, with its real view` | Output-window overlay with gizmos on: projects through the shown image size instead of the editor backbuffer (markers were offset/scaled), instantiates laser cameras nothing evaluates so all of them appear, and builds each frame from the camera's real view/projection matrices (Up input, Rotation aim, reference camera, square field). |
 
 Two reference branches were also created locally (not merged, not pushed):
 `archive/devdevdev-allin-wip` and `archive/devdevdev-stable-auto-startup-dmx` (see "Not merged").
