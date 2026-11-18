@@ -1,5 +1,6 @@
 #nullable enable
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
@@ -245,4 +246,198 @@ public static class LaserPlugDiscovery
     // Half of long.MinValue: the delta `now - this` must not overflow (TickCount64 - long.MinValue
     // wraps negative), or the refresh never fires and the picker keeps the two basic entries forever.
     private static long _interfacesTimestamp = long.MinValue / 2;
+
+    #region ShowNet discovery
+    /// <summary>
+    /// Starts the shared showNET probe listener if it isn't already running (idempotent, never
+    /// throws). The device answers the 30-byte broadcast probe on UDP 41856 — a port only one
+    /// process can own, so a failed start (another TiXL instance or the vendor AdminTool is
+    /// listening) is retried later instead of leaving the picker empty for the whole session.
+    /// </summary>
+    public static void EnsureShowNetDiscovery()
+    {
+        ShowNetListener listener;
+        lock (_showNetLock)
+        {
+            if (_showNetListener != null)
+                return;
+
+            var now = Environment.TickCount64;
+            if (now < _showNetNextStartAttempt)
+                return;
+
+            _showNetNextStartAttempt = now + StartRetryIntervalMs;
+            try
+            {
+                listener = new ShowNetListener();
+            }
+            catch (Exception e)
+            {
+                Log.Debug($"showNET plug discovery not started ({e.Message}) - retrying in {StartRetryIntervalMs / 1000} s");
+                return;
+            }
+
+            _showNetListener = listener;
+        }
+
+        new Thread(() => DrainShowNet(listener))
+            {
+                IsBackground = true,
+                Name = "showNET_Discovery",
+            }
+            .Start();
+    }
+
+    private static void DrainShowNet(ShowNetListener listener)
+    {
+        while (true)
+        {
+            try
+            {
+                listener.Poll();
+            }
+            catch (SocketException)
+            {
+                // One stray ICMP-driven reset must not end discovery for the session.
+                continue;
+            }
+            catch
+            {
+                // Disposed (editor shutdown) — nothing left to drain
+                return;
+            }
+
+            Thread.Sleep(200);
+        }
+    }
+
+    /// <summary>Currently announced showNET lasers as "(name, ip)" pairs, sorted by ip. Cached for a second.</summary>
+    public static IReadOnlyList<(string Name, string Ip)> ShowNetLasers
+    {
+        get
+        {
+            var now = Environment.TickCount64;
+            if (_showNetCachedLasers != null && now - _showNetLasersTimestamp < 1000)
+                return _showNetCachedLasers;
+
+            _showNetLasersTimestamp = now;
+            var listener = _showNetListener;
+            if (listener == null)
+                return _showNetCachedLasers = Array.Empty<(string, string)>();
+
+            try
+            {
+                return _showNetCachedLasers = listener.Snapshot();
+            }
+            catch
+            {
+                return _showNetCachedLasers = Array.Empty<(string, string)>();
+            }
+        }
+    }
+
+    private static readonly object _showNetLock = new();
+    private static ShowNetListener? _showNetListener;
+    private static long _showNetNextStartAttempt;
+    private static IReadOnlyList<(string Name, string Ip)>? _showNetCachedLasers;
+    private static long _showNetLasersTimestamp = long.MinValue / 2;
+
+    /// <summary>
+    /// Owns the UDP 41856 probe socket: broadcasts the 30-byte probe to 255.255.255.255:41855 from
+    /// that port, and collects the plaintext replies (device identity XOR 0xD49A3433).
+    /// </summary>
+    private sealed class ShowNetListener : IDisposable
+    {
+        public ShowNetListener()
+        {
+            _socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp)
+                          {
+                              EnableBroadcast = true,
+                          };
+            _socket.Bind(new IPEndPoint(IPAddress.Any, ShowNetProtocol.DiscoveryPort));
+        }
+
+        private const int ProbeIntervalMs = 4000;
+        private const int PruneAfterMs = 12000;
+
+        private readonly Socket _socket;
+        private readonly ConcurrentDictionary<string, ShowNetLaserInfo> _lasers = new(StringComparer.OrdinalIgnoreCase);
+        private long _lastProbeTicks;
+
+        /// <summary>The listener thread's poll: probe when due, drain replies, prune stale entries.</summary>
+        public void Poll()
+        {
+            var now = Environment.TickCount64;
+            if (now - _lastProbeTicks >= ProbeIntervalMs)
+            {
+                _lastProbeTicks = now;
+                BroadcastProbe();
+            }
+
+            DrainReplies();
+            Prune(now);
+        }
+
+        private void BroadcastProbe()
+        {
+            var probe = ShowNetProtocol.DiscoveryProbe;
+            var broadcast = new IPEndPoint(IPAddress.Broadcast, ShowNetProtocol.LaserPort);
+            try
+            {
+                _socket.SendTo(probe, broadcast);
+            }
+            catch (SocketException)
+            {
+                // Network unreachable mid-poll - the next poll retries.
+            }
+        }
+
+        private void DrainReplies()
+        {
+            while (_socket.Available > 0)
+            {
+                var buffer = new byte[1600];
+                EndPoint remote = new IPEndPoint(IPAddress.Any, 0);
+                var length = _socket.ReceiveFrom(buffer, ref remote);
+                if (length < 104)
+                    continue;
+
+                var address = ((IPEndPoint)remote).Address;
+                var info = ShowNetProtocol.TryParseDiscoveryReply(address, buffer, length);
+                if (info != null)
+                {
+                    info.Timestamp = Environment.TickCount64;
+                    _lasers[address.ToString()] = info;
+                }
+            }
+        }
+
+        /// <summary>The picker's view: (display name, ip) pairs, sorted by ip.</summary>
+        public List<(string Name, string Ip)> Snapshot()
+        {
+            return _lasers.Values
+                          .Select(laser => (laser.DisplayName, laser.Address.ToString()))
+                          .OrderBy(pair => pair.Item2, StringComparer.OrdinalIgnoreCase)
+                          .ToList();
+        }
+
+        private void Prune(long now)
+        {
+            // The ConcurrentDictionary is already thread-safe - no additional lock.
+            var expired = _lasers.Values
+                                 .Where(laser => now - laser.Timestamp > PruneAfterMs)
+                                 .ToArray();
+            foreach (var laser in expired)
+            {
+                _lasers.TryRemove(laser.Address.ToString(), out _);
+            }
+        }
+
+        public void Dispose()
+        {
+            try { _socket.Close(); }
+            catch { /* already dead */ }
+        }
+    }
+    #endregion
 }
