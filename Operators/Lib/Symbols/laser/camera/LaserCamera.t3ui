@@ -155,14 +155,6 @@
       "Format": "{0:0.00}"
     },
     {
-      "InputId": "ef444cd1-f58e-4d92-a09a-8b6a93487dd9"/*BackfaceCulling*/,
-      "Position": {
-        "X": -200.0,
-        "Y": 100.0
-      },
-      "Description": "Wireframe only: drops mesh edges whose faces all face away from the camera - the hidden side of a closed mesh. Needs consistent triangle winding (the mesh operators' standard); leave off for meshes with unknown winding."
-    },
-    {
       "InputId": "e7a2c41d-9b58-4c0f-a3d6-8e41f2b7c5a9"/*OutputRef*/,
       "Position": {
         "X": -200.0,
@@ -170,6 +162,14 @@
       },
       "Description": "Routes this op's laser frame to a laser output of the active output setup (the output's driver streams it to the bound device). The projection is always this op's own aim - Position/Target or Use Rotation angles, FieldOfView. New cameras attach themselves to a free laser output automatically.",
       "Usage": "OutputSetupEntities"
+    },
+    {
+      "InputId": "ef444cd1-f58e-4d92-a09a-8b6a93487dd9"/*BackfaceCulling*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 100.0
+      },
+      "Description": "Wireframe only: drops mesh edges whose faces all face away from the camera - the hidden side of a closed mesh. Needs consistent triangle winding (the mesh operators' standard); leave off for meshes with unknown winding."
     }
   ],
   "SymbolChildUis": [],
