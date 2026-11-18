@@ -24,6 +24,50 @@ internal static class RgbaResize
         return ResizeRgbaStretch(rgbaInput, inputWidth, inputHeight, width, height);
     }
 
+    /// <summary>
+    /// Stretch variant that writes into a caller-provided buffer: the MatchInputResolution path runs
+    /// every frame, and allocating the multi-megabyte target each frame starves the GC.
+    /// </summary>
+    internal static void ApplyInto(byte[] target, byte[] rgbaInput, int inputWidth, int inputHeight, int width, int height)
+    {
+        float scaleX = (float)inputWidth / width;
+        float scaleY = (float)inputHeight / height;
+
+        Parallel.For(0, height, y =>
+        {
+            float srcYF = y * scaleY;
+            int srcY0 = (int)Math.Floor(srcYF);
+            int srcY1 = Math.Min(srcY0 + 1, inputHeight - 1);
+            float fy = srcYF - srcY0;
+
+            for (var x = 0; x < width; x++)
+            {
+                float srcXF = x * scaleX;
+                int srcX0 = (int)Math.Floor(srcXF);
+                int srcX1 = Math.Min(srcX0 + 1, inputWidth - 1);
+                float fx = srcXF - srcX0;
+
+                srcX0 = Math.Clamp(srcX0, 0, inputWidth - 1);
+                srcY0 = Math.Clamp(srcY0, 0, inputHeight - 1);
+
+                var dstIdx = (y * width + x) * 4;
+                for (var c = 0; c < 4; c++)
+                {
+                    float v00 = rgbaInput[(srcY0 * inputWidth + srcX0) * 4 + c];
+                    float v10 = rgbaInput[(srcY0 * inputWidth + srcX1) * 4 + c];
+                    float v01 = rgbaInput[(srcY1 * inputWidth + srcX0) * 4 + c];
+                    float v11 = rgbaInput[(srcY1 * inputWidth + srcX1) * 4 + c];
+
+                    float top = v00 + fx * (v10 - v00);
+                    float bottom = v01 + fx * (v11 - v01);
+                    float val = top + fy * (bottom - top);
+
+                    target[dstIdx + c] = (byte)Math.Clamp(val, 0, 255);
+                }
+            }
+        });
+    }
+
     private static byte[] ResizeRgbaStretch(byte[] rgbaInput, int inputWidth, int inputHeight, int width, int height)
     {
         var output = new byte[width * height * 4];

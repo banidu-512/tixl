@@ -58,7 +58,9 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
         int Height,
         float Time,
         string? Error,
-        int Generation = 0);
+        int Generation = 0,
+        /** The resize target when MatchInputResolution pooled one; the render thread returns it after upload. */
+        byte[]? PooledBuffer = null);
 
     // Immutable so the render thread can read the failure state while a worker updates it
     private sealed record FailureKey(string? Path, int Device, int Provider);
@@ -540,6 +542,7 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
                 {
                     UploadRgbaTexture(ApplyFeedback(newest.Data, newest.Width, newest.Height, feedback),
                                       newest.Width, newest.Height);
+                    ReturnOutputBuffer(newest.PooledBuffer);
                     _lastOutputSize = new Int2(newest.Width, newest.Height);
                     _lastGenerationTime = newest.Time;
                     _lastStatusMessage = null;
@@ -998,17 +1001,23 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
 
             var outWidth = request.Width;
             var outHeight = request.Height;
+            byte[]? pooledBuffer = null;
 
             // MatchInputResolution: stretch the baked-size output back over the input frame, restoring
-            // the source aspect ratio and pixel size for compositing (the model always renders square)
-            if (imageData != null && request.MatchInputResolution && request.InputWidth > 0 && request.InputHeight > 0)
+            // the source aspect ratio and pixel size for compositing (the model always renders square).
+            // The target buffer is pooled: a fresh multi-megabyte allocation per frame at 12+ fps made
+            // the GC stall the worker mid-step.
+            if (imageData != null && request.MatchInputResolution && request.InputWidth > 0 && request.InputHeight > 0
+                && (request.InputWidth != request.Width || request.InputHeight != request.Height))
             {
-                imageData = RgbaResize.Apply(imageData, request.Width, request.Height, request.InputWidth, request.InputHeight, 0);
+                pooledBuffer = RentOutputBuffer(request.InputWidth * request.InputHeight * 4);
+                RgbaResize.ApplyInto(pooledBuffer, imageData, request.Width, request.Height, request.InputWidth, request.InputHeight);
+                imageData = pooledBuffer;
                 outWidth = request.InputWidth;
                 outHeight = request.InputHeight;
             }
 
-            return new GenerationResult(imageData, outWidth, outHeight, (float)sw.Elapsed.TotalSeconds, error);
+            return new GenerationResult(imageData, outWidth, outHeight, (float)sw.Elapsed.TotalSeconds, error, PooledBuffer: pooledBuffer);
         }
         catch (Exception ex)
         {
@@ -1302,6 +1311,38 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
         }));
 
         return _stagingTexture;
+    }
+
+    /** Output buffers for the MatchInputResolution resize, pooled because a fresh multi-megabyte
+     *  allocation per frame starves the GC and stalls the worker mid-inference. Returned from the
+     *  render thread only after the upload consumed the buffer. */
+    private readonly Stack<byte[]> _outputBufferPool = new();
+
+    private byte[] RentOutputBuffer(int minimumSize)
+    {
+        lock (_poolLock)
+        {
+            while (_outputBufferPool.Count > 0)
+            {
+                var buffer = _outputBufferPool.Pop();
+                if (buffer.Length >= minimumSize)
+                    return buffer;
+            }
+        }
+
+        return new byte[minimumSize];
+    }
+
+    private void ReturnOutputBuffer(byte[]? buffer)
+    {
+        if (buffer == null)
+            return;
+
+        lock (_poolLock)
+        {
+            if (_outputBufferPool.Count < 2)
+                _outputBufferPool.Push(buffer);
+        }
     }
 
     private byte[] RentExtractBuffer(int minimumSize)
