@@ -1,5 +1,9 @@
 using System.Collections.Generic;
+using System.IO;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using T3.Core.DataTypes;
+using T3.Core.Output;
 using Xunit;
 
 namespace Core.Tests;
@@ -8,8 +12,8 @@ namespace Core.Tests;
 /// Tests for the laser point-data safety transforms (Core/DataTypes/LaserSafetyTransforms.cs)
 /// used by the LaserSafety operator and the built-in output safety in
 /// EtherDreamOutput / PONKOutput. The transforms run in a fixed order (safe-zone clamp →
-/// jump limiting → static-dwell blanking → intensity ceiling → out-of-bounds audit);
-/// these tests pin each stage's behaviour so the order's assumptions stay valid.
+/// mask blanking → jump limiting → static-dwell blanking → intensity ceiling → out-of-bounds
+/// audit); these tests pin each stage's behaviour so the order's assumptions stay valid.
 /// </summary>
 public class LaserSafetyTransformTests
 {
@@ -527,5 +531,233 @@ public class LaserSafetyTransformTests
         LaserSafetyTransforms.LimitStaticDwell(points, in config, ref stats);
 
         Assert.Equal(0, stats.StaticBlanked);
+    }
+
+    // --- Safety masks ---------------------------------------------------------
+
+    private static float[] CenterQuad(float half = 1000f) =>
+        [-half, half, half, half, half, -half, -half, -half];
+
+    [Fact]
+    public void Masks_BlankInsideQuadKeepPositionAndCount()
+    {
+        var points = Points(Lit(0, 0), Lit(5000, 5000), LaserPoint.CreateBlanked(200, 200));
+        var config = LaserSafetyTransforms.Config.Default;
+        config.MaskCorners = CenterQuad();
+        config.MaskAllowOnlyInside = [false];
+        config.MaskCount = 1;
+
+        var stats = new LaserSafetyTransforms.Stats();
+        LaserSafetyTransforms.Apply(points, in config, ref stats);
+
+        // Blanked inside the mask, position kept so the scanners keep moving the same path.
+        Assert.Equal(0, points[0].R);
+        Assert.Equal(0, points[0].I);
+        Assert.Equal(0, points[0].X);
+        Assert.Equal(0, points[0].Y);
+
+        // Outside the mask stays lit; the pre-blanked point is not counted as masked.
+        Assert.Equal(65535, points[1].I);
+        Assert.Equal(1, stats.MaskedPoints);
+    }
+
+    [Fact]
+    public void Masks_AllowOnlyInsideBlanksEverythingOutside()
+    {
+        var points = Points(Lit(0, 0), Lit(5000, 5000), Lit(-5000, 0));
+        var config = LaserSafetyTransforms.Config.Default;
+        config.MaskCorners = CenterQuad();
+        config.MaskAllowOnlyInside = [true];
+        config.MaskCount = 1;
+
+        var stats = new LaserSafetyTransforms.Stats();
+        LaserSafetyTransforms.Apply(points, in config, ref stats);
+
+        Assert.Equal(65535, points[0].I);
+        Assert.Equal(0, points[1].I);
+        Assert.Equal(0, points[2].I);
+        Assert.Equal(2, stats.MaskedPoints);
+    }
+
+    [Fact]
+    public void Masks_BlankInsideWinsOverAllowMask()
+    {
+        var allow = CenterQuad();
+        var blank = new float[] { 0, 1000, 1000, 1000, 1000, -1000, 0, -1000 };
+        var corners = new float[16];
+        allow.CopyTo(corners, 0);
+        blank.CopyTo(corners, 8);
+
+        var points = Points(Lit(-500, 0), Lit(500, 0), Lit(5000, 0));
+        var config = LaserSafetyTransforms.Config.Default;
+        config.MaskCorners = corners;
+        config.MaskAllowOnlyInside = [true, false];
+        config.MaskCount = 2;
+
+        var stats = new LaserSafetyTransforms.Stats();
+        LaserSafetyTransforms.Apply(points, in config, ref stats);
+
+        // In the allow mask only -> lit; in allow AND blank -> blanked; outside allow -> blanked.
+        Assert.Equal(65535, points[0].I);
+        Assert.Equal(0, points[1].I);
+        Assert.Equal(0, points[2].I);
+        Assert.Equal(2, stats.MaskedPoints);
+    }
+
+    [Fact]
+    public void Masks_WorkOnRotatedQuads()
+    {
+        // Diamond: corners at the axes, not an axis-aligned rectangle.
+        var corners = new float[] { 0, 1000, 1000, 0, 0, -1000, -1000, 0 };
+        var points = Points(Lit(0, 0), Lit(900, 900));
+        var config = LaserSafetyTransforms.Config.Default;
+        config.MaskCorners = corners;
+        config.MaskAllowOnlyInside = [false];
+        config.MaskCount = 1;
+
+        var stats = new LaserSafetyTransforms.Stats();
+        LaserSafetyTransforms.Apply(points, in config, ref stats);
+
+        Assert.Equal(0, points[0].I);
+        Assert.Equal(65535, points[1].I);
+        Assert.Equal(1, stats.MaskedPoints);
+    }
+
+    [Fact]
+    public void Masks_DescribeReportsMaskedPoints()
+    {
+        var points = Points(Lit(0, 0));
+        var config = LaserSafetyTransforms.Config.Default;
+        config.MaskCorners = CenterQuad();
+        config.MaskAllowOnlyInside = [false];
+        config.MaskCount = 1;
+
+        var stats = new LaserSafetyTransforms.Stats();
+        LaserSafetyTransforms.Apply(points, in config, ref stats);
+
+        Assert.Contains("mask blanked 1", stats.Describe(points.Count));
+    }
+
+    [Fact]
+    public void Masks_AttenuatingLevelDimsInsideQuad()
+    {
+        var points = Points(Lit(0, 0), Lit(5000, 5000));
+        var config = LaserSafetyTransforms.Config.Default;
+        config.MaskCorners = CenterQuad();
+        config.MaskAllowOnlyInside = [false];
+        config.MaskLevels = [0.1f];
+        config.MaskCount = 1;
+
+        var stats = new LaserSafetyTransforms.Stats();
+        LaserSafetyTransforms.Apply(points, in config, ref stats);
+
+        // Inside: dimmed to 10%, position kept, still a lit point. Outside: untouched.
+        Assert.Equal(6553, points[0].R);
+        Assert.Equal(6553, points[0].I);
+        Assert.Equal(0, points[0].X);
+        Assert.Equal(65535, points[1].I);
+        Assert.Equal(1, stats.MaskedPoints);
+    }
+
+    [Fact]
+    public void ApplyColorLevels_GainsAndMinimumsShapeTheFrame()
+    {
+        // Gain lifts a weak channel; the minimum cuts a diode below its emission threshold;
+        // a channel that is off stays off even when the gain would lift it.
+        var points = Points(new LaserPoint(30000, 0, 10000, 1000, 0, 65535));
+        var config = LaserSafetyTransforms.Config.Default;
+        config.ColorGainR = 2f;
+        config.ColorGainG = 2f;
+        config.ColorMinB = 0.05f;
+
+        LaserSafetyTransforms.ApplyColorLevels(points, in config);
+
+        Assert.Equal(20000, points[0].R);
+        Assert.Equal(2000, points[0].G);
+        Assert.Equal(0, points[0].B);
+
+        // Default levels leave the frame untouched.
+        var untouched = Points(Lit(100, 100));
+        LaserSafetyTransforms.ApplyColorLevels(untouched, LaserSafetyTransforms.Config.Default);
+        Assert.Equal(65535, untouched[0].R);
+    }
+
+    [Fact]
+    public void LaserProcessingSettings_MasksRoundTripAndConfigure()
+    {
+        var settings = new LaserProcessingSettings();
+        settings.Safety.Masks.Add(new LaserProcessingSettings.SafetySettings.MaskQuad
+                                     {
+                                         X1 = -0.5f, Y1 = 0.5f,
+                                         X2 = 0.5f, Y2 = 0.5f,
+                                         X3 = 0.5f, Y3 = -0.5f,
+                                         X4 = -0.5f, Y4 = -0.5f,
+                                         AllowOnlyInside = true,
+                                         Enabled = false,
+                                     });
+        settings.Safety.MasksChanged();
+
+        var stringWriter = new StringWriter();
+        using (var writer = new JsonTextWriter(stringWriter))
+        {
+            settings.WriteToJson(writer);
+        }
+
+        var read = LaserProcessingSettings.ReadFromJson(JObject.Parse(stringWriter.ToString()));
+        var mask = Assert.Single(read.Safety.Masks);
+        Assert.Equal(-0.5f, mask.X1);
+        Assert.Equal(0.5f, mask.Y1);
+        Assert.Equal(-0.5f, mask.Y4);
+        Assert.True(mask.AllowOnlyInside);
+        Assert.False(mask.Enabled);
+
+        // A disabled mask is absent from the safety config.
+        var config = read.Safety.ToConfig();
+        Assert.Equal(0, config.MaskCount);
+        Assert.Null(config.MaskCorners);
+
+        // Enabled, it lands in the config scaled to ILDA units.
+        mask.Enabled = true;
+        read.Safety.MasksChanged();
+        config = read.Safety.ToConfig();
+        Assert.Equal(1, config.MaskCount);
+        Assert.Equal(-0.5f * LaserSafetyTransforms.FieldMax, config.MaskCorners[0]);
+        Assert.Equal(-0.5f * LaserSafetyTransforms.FieldMax, config.MaskCorners[7]);
+        Assert.True(config.MaskAllowOnlyInside[0]);
+    }
+
+    [Fact]
+    public void BuildSafetyShapes_DrawsZoneAndEnabledMasksOnly()
+    {
+        var safety = new LaserProcessingSettings();
+        safety.Safety.RenderShapesLevel = 0.5f;
+        safety.Safety.Masks.Add(new LaserProcessingSettings.SafetySettings.MaskQuad
+                                    {
+                                        X1 = -0.5f, Y1 = 0.5f, X2 = 0.5f, Y2 = 0.5f,
+                                        X3 = 0.5f, Y3 = -0.5f, X4 = -0.5f, Y4 = -0.5f,
+                                        Enabled = true,
+                                    });
+        safety.Safety.Masks.Add(new LaserProcessingSettings.SafetySettings.MaskQuad
+                                    {
+                                        X1 = -0.1f, Y1 = 0.1f, X2 = 0.1f, Y2 = 0.1f,
+                                        X3 = 0.1f, Y3 = -0.1f, X4 = -0.1f, Y4 = -0.1f,
+                                        Enabled = false,
+                                    });
+
+        var target = new LaserPoint[4096];
+        var count = LaserPipeline.BuildSafetyShapes(safety.Safety, target);
+
+        // The disabled mask must contribute nothing: two quads at 76 points each.
+        Assert.Equal(152, count);
+
+        // First point is the blanked approach; the corner dwell is lit green at half level.
+        Assert.Equal(0, target[0].R);
+        Assert.Equal(0, target[0].I);
+        Assert.Equal((int)(65535 * 0.5f), target[1].G);
+        Assert.Equal(0, target[1].R);
+
+        // Level 0 means nothing is written.
+        safety.Safety.RenderShapesLevel = 0f;
+        Assert.Equal(0, LaserPipeline.BuildSafetyShapes(safety.Safety, target));
     }
 }

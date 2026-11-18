@@ -852,6 +852,65 @@ internal static partial class SetupParameterView
         dl.AddRect(projection.CanvasToScreen(zoneMin), projection.CanvasToScreen(zoneMax),
                    UiColors.TextMuted.Fade(0.3f), 0, ImDrawFlags.None, MathF.Max(1f, MathF.Round(uiScale)));
 
+        // Safety masks: every quad outlined (allow masks green, blank masks orange, disabled
+        // dimmed); the selected one gets the draggable corner handles, same gesture as the
+        // keystone. Drawn whatever the warp state - masks apply after the warp, so they land
+        // exactly where they are drawn.
+        if (_laserMaskSelected >= safety.Masks.Count)
+            _laserMaskSelected = -1;
+
+        for (var m = 0; m < safety.Masks.Count; m++)
+        {
+            var mask = safety.Masks[m];
+            Span<Vector2> maskCorners =
+            [
+                new Vector2(mask.X1, mask.Y1),
+                new Vector2(mask.X2, mask.Y2),
+                new Vector2(mask.X3, mask.Y3),
+                new Vector2(mask.X4, mask.Y4),
+            ];
+
+            var maskColor = !mask.Enabled
+                                ? UiColors.TextMuted.Fade(0.3f)
+                                : mask.AllowOnlyInside
+                                    ? UiColors.StatusOkay.Fade(0.8f)
+                                    : UiColors.StatusAttention.Fade(0.8f);
+            for (var i = 0; i < 4; i++)
+            {
+                dl.AddLine(projection.CanvasToScreen(maskCorners[i]), projection.CanvasToScreen(maskCorners[(i + 1) % 4]),
+                           maskColor, 1.5f * uiScale);
+            }
+
+            if (m != _laserMaskSelected)
+                continue;
+
+            var handleStyle = CanvasPointHandle.Style.Default(mask.Enabled ? UiColors.StatusAttention : UiColors.TextMuted);
+            handleStyle.Radius = 4;
+            for (var i = 0; i < 4; i++)
+            {
+                ImGui.PushID(100 + m * 4 + i);
+                var phase = CanvasPointHandle.Draw(ref maskCorners[i], projection, handleStyle);
+                if (phase != CanvasPointHandle.DragPhases.None)
+                {
+                    maskCorners[i] = ClampToZone(maskCorners[i], zoneMin, zoneMax);
+                    SetMaskCorner(safety, m, i, maskCorners[i]);
+
+                    if (phase == CanvasPointHandle.DragPhases.Started)
+                    {
+                        _laserMaskDragOldJson = setup.ToJsonString();
+                        OutputSetupHandling.NotifyLiveEdit();
+                    }
+                    else if (phase == CanvasPointHandle.DragPhases.Completed && _laserMaskDragOldJson != null)
+                    {
+                        SetupUndo.CommitGesture(setup, "Edit laser mask corners", _laserMaskDragOldJson);
+                        _laserMaskDragOldJson = null;
+                    }
+                }
+
+                ImGui.PopID();
+            }
+        }
+
         if (!safety.FrameWarp)
             return;
 
@@ -903,6 +962,32 @@ internal static partial class SetupParameterView
                            Math.Clamp(corner.Y, zoneMin.Y, zoneMax.Y));
     }
 
+    private static void SetMaskCorner(LaserProcessingSettings.SafetySettings safety, int maskIndex, int cornerIndex, Vector2 value)
+    {
+        var mask = safety.Masks[maskIndex];
+        switch (cornerIndex)
+        {
+            case 0:
+                mask.X1 = value.X;
+                mask.Y1 = value.Y;
+                break;
+            case 1:
+                mask.X2 = value.X;
+                mask.Y2 = value.Y;
+                break;
+            case 2:
+                mask.X3 = value.X;
+                mask.Y3 = value.Y;
+                break;
+            case 3:
+                mask.X4 = value.X;
+                mask.Y4 = value.Y;
+                break;
+        }
+
+        safety.MasksChanged();
+    }
+
     private static void SetWarpCorner(LaserProcessingSettings.SafetySettings safety, int corner, Vector2 value)
     {
         switch (corner)
@@ -946,6 +1031,10 @@ internal static partial class SetupParameterView
     }
 
     private static string? _laserWarpDragOldJson;
+
+    /** The laser output card's mask currently showing its draggable corner handles; -1 = none. */
+    private static int _laserMaskSelected = -1;
+    private static string? _laserMaskDragOldJson;
     private static readonly List<string> _boundPlugNames = [];
 
     /// <summary>
@@ -1088,7 +1177,7 @@ internal static partial class SetupParameterView
             var connected = LaserPlugDiscovery.ConnectedDevice;
 
             if (lasers.Count == 0 && connected == null)
-                CustomComponents.StylizedText("probing for showNET lasers…", Fonts.FontSmall, UiColors.TextMuted);
+                CustomComponents.StylizedText("probing for showNET lasers...", Fonts.FontSmall, UiColors.TextMuted);
 
             foreach (var laser in lasers)
             {
@@ -1721,6 +1810,184 @@ internal static partial class SetupParameterView
                              safety.MaxStaticPoints = 64;
                              safety.MaxBrightness = 1f;
                          }, setup);
+
+        Span<float> gains =
+        [
+            safety.ColorGainR, safety.ColorGainG, safety.ColorGainB,
+        ];
+        var gainsState = DrawFloatsRow("Color gains (R G B)", gains,
+                                       "Per-channel projector calibration: multiplies each diode's level (0..2) so the projectors' whites match or a weak diode is lifted.",
+                                       reserveRight: 22);
+        BeginFieldUndo(setup, gainsState);
+        if ((gainsState & InputEditStateFlags.Modified) != 0)
+        {
+            // NaN through MathF.Max would persist as an unusable gain - fold it to neutral.
+            safety.ColorGainR = float.IsNaN(gains[0]) ? 1f : Math.Clamp(gains[0], 0f, 2f);
+            safety.ColorGainG = float.IsNaN(gains[1]) ? 1f : Math.Clamp(gains[1], 0f, 2f);
+            safety.ColorGainB = float.IsNaN(gains[2]) ? 1f : Math.Clamp(gains[2], 0f, 2f);
+        }
+
+        CommitFieldUndo(setup, "Laser color gains", gainsState);
+        DrawRowReset("ResetColorGains", "color gains",
+                     () =>
+                         {
+                             safety.ColorGainR = 1f;
+                             safety.ColorGainG = 1f;
+                             safety.ColorGainB = 1f;
+                         }, setup);
+
+        Span<float> minimums =
+        [
+            safety.ColorMinR, safety.ColorMinG, safety.ColorMinB,
+        ];
+        var minState = DrawFloatsRow("Color min (R G B)", minimums,
+                                     "Per-channel emission threshold (0..1): a diode below this fraction of the field stays dark. Laser diodes start emitting at slightly different voltages - without a minimum, near-black content shows a faint unwanted color.",
+                                     speed: 0.002f, format: "{0:0.000}", reserveRight: 22);
+        BeginFieldUndo(setup, minState);
+        if ((minState & InputEditStateFlags.Modified) != 0)
+        {
+            safety.ColorMinR = float.IsNaN(minimums[0]) ? 0f : Math.Clamp(minimums[0], 0f, 1f);
+            safety.ColorMinG = float.IsNaN(minimums[1]) ? 0f : Math.Clamp(minimums[1], 0f, 1f);
+            safety.ColorMinB = float.IsNaN(minimums[2]) ? 0f : Math.Clamp(minimums[2], 0f, 1f);
+        }
+
+        CommitFieldUndo(setup, "Laser color minimums", minState);
+        DrawRowReset("ResetColorMinimums", "color minimums",
+                     () =>
+                         {
+                             safety.ColorMinR = 0f;
+                             safety.ColorMinG = 0f;
+                             safety.ColorMinB = 0f;
+                         }, setup);
+
+        DrawLaserMasks(setup, safety);
+    }
+
+    /// <summary>
+    /// Safety masks: quads in the frame preview where the beam is blanked or dimmed - or, in
+    /// allow-only mode, the only place it may emit. Edited like the keystone corners, but they
+    /// apply in the safety stage after the warp, so a mask lands exactly where it is drawn
+    /// regardless of keystone or content - no graph operator can bypass it.
+    /// </summary>
+    private static void DrawLaserMasks(Setup setup, LaserProcessingSettings.SafetySettings safety)
+    {
+        FormInputs.AddSectionSubHeader("Masks");
+
+        var renderShapes = safety.RenderSafetyShapes;
+        if (FormInputs.AddCheckBox("Render shapes on the laser", ref renderShapes,
+                                   "Streams the safe-zone rectangle and the enabled masks as faint outlines on top of the calibrated frame, so you can verify the protected regions against the real venue while aiming."))
+        {
+            SetupUndo.RunUndoable("Toggle laser safety shapes", setup, () => safety.RenderSafetyShapes = renderShapes);
+        }
+
+        if (renderShapes)
+        {
+            Span<float> shapeLevel = [safety.RenderShapesLevel];
+            var levelState = DrawFloatsRow("Shape level", shapeLevel,
+                                           "Brightness of the rendered safety outlines (0..1). Kept low on purpose: the outline is an aiming aid, not content.",
+                                           reserveRight: 22);
+            BeginFieldUndo(setup, levelState);
+            if ((levelState & InputEditStateFlags.Modified) != 0)
+                safety.RenderShapesLevel = float.IsNaN(shapeLevel[0]) ? 0.1f : Math.Clamp(shapeLevel[0], 0f, 1f);
+            CommitFieldUndo(setup, "Laser safety shape level", levelState);
+        }
+
+        if (safety.Masks.Count == 0)
+        {
+            CustomComponents.StylizedText("None - add quads to blank or dim the beam where drawn, e.g. over people or structures.",
+                                          Fonts.FontSmall, UiColors.TextMuted);
+        }
+
+        for (var i = 0; i < safety.Masks.Count; i++)
+        {
+            var mask = safety.Masks[i];
+            ImGui.PushID(i);
+
+            var enabled = mask.Enabled;
+            if (FormInputs.AddCheckBox("Enabled", ref enabled,
+                                       mask.AllowOnlyInside
+                                           ? "Allow-only mask: everything OUTSIDE this quad is blanked - the beam may only emit inside it. Off disables the mask."
+                                           : "Blank mask: the beam is off inside this quad (the scanners keep moving the path). Off disables the mask."))
+            {
+                var captured = i;
+                SetupUndo.RunUndoable("Toggle laser mask", setup, () =>
+                                                                     {
+                                                                         safety.Masks[captured].Enabled = enabled;
+                                                                         safety.MasksChanged();
+                                                                     });
+            }
+
+            ImGui.SameLine();
+            if (ImGui.SmallButton(mask.AllowOnlyInside ? "Allow inside" : "Blank inside"))
+            {
+                var captured = i;
+                SetupUndo.RunUndoable("Switch laser mask mode", setup, () =>
+                                                                           {
+                                                                               safety.Masks[captured].AllowOnlyInside = !safety.Masks[captured].AllowOnlyInside;
+                                                                               safety.MasksChanged();
+                                                                           });
+            }
+
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("Blank inside = protect this area. Allow inside = the beam may only emit here.");
+
+            if (!mask.AllowOnlyInside)
+            {
+                ImGui.SameLine();
+                ImGui.SetNextItemWidth(60f * T3Ui.UiScaleFactor);
+                var level = mask.Level;
+                if (ImGui.DragFloat("##masklevel", ref level, 0.005f, 0f, 1f, "{0:0.00}"))
+                {
+                    var capturedValue = Math.Clamp(level, 0f, 1f);
+                    var captured = i;
+                    SetupUndo.RunUndoable("Set laser mask level", setup, () =>
+                                                                             {
+                                                                                 safety.Masks[captured].Level = capturedValue;
+                                                                                 safety.MasksChanged();
+                                                                             });
+                }
+
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("Beam level kept inside the mask: 0 blanks it, 0.05 keeps a faint 5% beam (reduced-level audience scanning), 1 would change nothing.");
+            }
+
+            ImGui.SameLine();
+            var selected = _laserMaskSelected == i;
+            if (ImGui.SmallButton(selected ? "Editing" : "Edit"))
+                _laserMaskSelected = selected ? -1 : i;
+
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("Drag this mask's four corners in the frame preview above.");
+
+            ImGui.SameLine();
+            if (ImGui.SmallButton("Remove"))
+            {
+                if (_laserMaskSelected == i)
+                    _laserMaskSelected = -1;
+                SetupUndo.RunUndoable("Remove laser mask", setup, () =>
+                                                                      {
+                                                                          safety.Masks.RemoveAt(i);
+                                                                          safety.MasksChanged();
+                                                                      });
+                ImGui.PopID();
+                break; // the list shortened under this row
+            }
+
+            ImGui.PopID();
+        }
+
+        if (ImGui.SmallButton("Add mask"))
+        {
+            SetupUndo.RunUndoable("Add laser mask", setup, () =>
+                                                               {
+                                                                   safety.Masks.Add(LaserProcessingSettings.SafetySettings.MaskQuad.Centered());
+                                                                   safety.MasksChanged();
+                                                                   _laserMaskSelected = safety.Masks.Count - 1;
+                                                               });
+        }
+
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Adds a centered quad; drag its corners in the frame preview above (select Edit first).");
     }
 
     /// <summary>

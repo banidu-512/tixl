@@ -5,9 +5,12 @@ namespace T3.Core.DataTypes;
 
 /// <summary>
 /// Point-data safety transforms for laser output, applied in a fixed order:
-/// scan-field clamp → jump-distance limiting → static-dwell blanking →
-/// intensity ceiling → out-of-bounds audit. A later stage relies on the guarantees
-/// of the earlier ones, so the order must not be changed.
+/// blanking normalization → scan-field clamp → mask blanking → jump-distance limiting →
+/// static-dwell blanking → intensity ceiling → per-channel calibration → out-of-bounds audit.
+/// A later stage relies on the guarantees of the earlier ones, so the order must not be changed.
+/// Masks sit before the jump limiter so the approach into a masked region is already blanked
+/// travel for it; the calibration stage sits last among the shaping passes because it may lift
+/// levels back up and must not undo a protective stage.
 ///
 /// These functions reduce the risk of unsafe content reaching a projector, but they
 /// are not a compliance certificate: audience scanning also requires a hardware
@@ -31,6 +34,11 @@ public static class LaserSafetyTransforms
     /// </summary>
     public struct Config
     {
+        /// <summary>Required because the struct uses field initializers (CS8983).</summary>
+        public Config()
+        {
+        }
+
         /// <summary>Master beam switch. False blanks every point (positions are kept so the scanners keep moving the same path).</summary>
         public bool BeamEnable;
 
@@ -50,6 +58,27 @@ public static class LaserSafetyTransforms
         /// <summary>0..1 ceiling applied to R, G and B of every lit point, independent of what upstream content requests.</summary>
         public float MaxBrightness;
 
+        /// <summary>Per-channel projector calibration: gains multiply each diode (0..2), minimums
+        /// (0..1) shut a diode off below that fraction - laser diodes start emitting at slightly
+        /// different voltages, so near-black content would otherwise show a dim unwanted color.
+        /// Applied after the brightness ceiling; these shape the output, they do not protect.</summary>
+        public float ColorGainR = 1f, ColorGainG = 1f, ColorGainB = 1f;
+        public float ColorMinR, ColorMinG, ColorMinB;
+
+        /// <summary>Safety mask quads in ILDA 16-bit units: eight floats per mask (x1,y1 … x4,y4,
+        /// corners in draw order), parallel to <see cref="MaskAllowOnlyInside"/> and
+        /// <see cref="MaskLevels"/>. Points inside a blank mask are blanked; with an allow mask
+        /// present, everything outside every allow mask is blanked. Disabled masks are absent
+        /// from the arrays. Null or empty = no masks.</summary>
+        public float[]? MaskCorners;
+        public bool[]? MaskAllowOnlyInside;
+
+        /// <summary>Per blank mask, the beam level kept inside (0..1): 0 blanks, 0.1 keeps 10%
+        /// brightness - the attenuating mask for jurisdictions that allow reduced-level audience
+        /// scanning. Only blank masks carry a level; allow masks blank outside unconditionally.</summary>
+        public float[]? MaskLevels;
+        public int MaskCount;
+
         public static Config Default => new()
         {
             BeamEnable = true,
@@ -68,13 +97,14 @@ public static class LaserSafetyTransforms
     public struct Stats
     {
         public int ClampedPoints;
+        public int MaskedPoints;
         public int JumpPointsInserted;
         public int StaticBlanked;
         public int IntensityScaled;
         public int OutOfBoundsBlanked;
         public bool BeamDisabled;
 
-        public readonly bool AnythingEngaged => BeamDisabled || ClampedPoints > 0 || JumpPointsInserted > 0
+        public readonly bool AnythingEngaged => BeamDisabled || ClampedPoints > 0 || MaskedPoints > 0 || JumpPointsInserted > 0
                                                 || StaticBlanked > 0 || IntensityScaled > 0 || OutOfBoundsBlanked > 0;
 
         public readonly string Describe(int pointCount)
@@ -85,8 +115,9 @@ public static class LaserSafetyTransforms
             if (!AnythingEngaged)
                 return $"OK - {pointCount} points";
 
-            var parts = new List<string>(5);
+            var parts = new List<string>(6);
             if (ClampedPoints > 0) parts.Add($"safe zone moved {ClampedPoints}");
+            if (MaskedPoints > 0) parts.Add($"mask blanked {MaskedPoints}");
             if (JumpPointsInserted > 0) parts.Add($"jump limit +{JumpPointsInserted}");
             if (StaticBlanked > 0) parts.Add($"static dwell blanked {StaticBlanked}");
             if (IntensityScaled > 0) parts.Add($"brightness capped {IntensityScaled}");
@@ -123,6 +154,8 @@ public static class LaserSafetyTransforms
         if (points.Count == 0)
             return points;
 
+        NormalizeBlanking(points);
+
         if (!config.BeamEnable)
         {
             for (var i = 0; i < points.Count; i++)
@@ -133,9 +166,11 @@ public static class LaserSafetyTransforms
 
         var safeConfig = Sanitize(in config);
         ClampToScanField(points, in safeConfig, ref stats);
+        ApplyMasks(points, in safeConfig, ref stats);
         points = LimitJumpDistance(points, subdivisionScratch, in safeConfig, ref stats);
         LimitStaticDwell(points, in safeConfig, ref stats);
         ClampIntensity(points, in safeConfig, ref stats);
+        ApplyColorLevels(points, in safeConfig);
         DetectAndBlankOutOfBounds(points, ref stats);
         return points;
     }
@@ -168,6 +203,15 @@ public static class LaserSafetyTransforms
         if (!float.IsFinite(result.MaxBrightness))
             result.MaxBrightness = 0f;
 
+        // Calibration gains shape the output; a broken value must not boost a diode beyond
+        // twice its content level (and NaN gains would zero it - NaN fails every comparison).
+        result.ColorGainR = Math.Clamp(float.IsFinite(result.ColorGainR) ? result.ColorGainR : 1f, 0f, 2f);
+        result.ColorGainG = Math.Clamp(float.IsFinite(result.ColorGainG) ? result.ColorGainG : 1f, 0f, 2f);
+        result.ColorGainB = Math.Clamp(float.IsFinite(result.ColorGainB) ? result.ColorGainB : 1f, 0f, 2f);
+        result.ColorMinR = Math.Clamp(float.IsFinite(result.ColorMinR) ? result.ColorMinR : 0f, 0f, 1f);
+        result.ColorMinG = Math.Clamp(float.IsFinite(result.ColorMinG) ? result.ColorMinG : 0f, 0f, 1f);
+        result.ColorMinB = Math.Clamp(float.IsFinite(result.ColorMinB) ? result.ColorMinB : 0f, 0f, 1f);
+
         // The dwell cap and the motion threshold are counts, not geometry: clamp them into
         // the range the stage can actually express instead of letting negative/overflow
         // values silently blank or pass every point.
@@ -175,6 +219,22 @@ public static class LaserSafetyTransforms
         result.StaticDistance = Math.Clamp(result.StaticDistance, 0, FieldMax * 2);
 
         return result;
+    }
+
+    /// <summary>
+    /// Makes <c>I &lt;= 0</c> mean dark on every transport. Every later stage treats such a point as
+    /// blanked and skips it, but no encoder can rely on the I channel alone: PONK and CITP carry no
+    /// intensity at all, and many ILDA projectors ignore I and emit on RGB. A point with I = 0 and
+    /// colour would therefore bypass the brightness, dwell and bounds stages and still be drawn.
+    /// </summary>
+    public static void NormalizeBlanking(List<LaserPoint> points)
+    {
+        for (var i = 0; i < points.Count; i++)
+        {
+            var p = points[i];
+            if (p.I <= 0 && (p.I != 0 || p.R != 0 || p.G != 0 || p.B != 0))
+                points[i] = LaserPoint.CreateBlanked(p.X, p.Y);
+        }
     }
 
     private static float NormalizeZoneExtent(float halfExtent)
@@ -206,6 +266,105 @@ public static class LaserSafetyTransforms
                 stats.ClampedPoints++;
             }
         }
+    }
+
+    /// <summary>
+    /// Shapes every lit point a safety mask covers, position kept: the scanners keep moving the
+    /// same path with the beam off (or dimmed, by the mask's level) inside the mask - deleting
+    /// the points would connect the neighbours with a lit stroke straight across the masked
+    /// area. With an allow-only mask present, everything outside every allow mask is blanked
+    /// first; blank masks subtract on top, so a blank mask inside an allow mask wins. Points
+    /// already blanked are skipped.
+    /// </summary>
+    private static void ApplyMasks(List<LaserPoint> points, in Config config, ref Stats stats)
+    {
+        var corners = config.MaskCorners;
+        var maskCount = config.MaskCount;
+        if (corners == null || maskCount <= 0 || corners.Length < maskCount * 8)
+            return;
+
+        var levels = config.MaskLevels;
+        var allowOnly = config.MaskAllowOnlyInside;
+        var hasAllowOnly = false;
+        for (var m = 0; m < maskCount; m++)
+        {
+            if (allowOnly != null && m < allowOnly.Length && allowOnly[m])
+            {
+                hasAllowOnly = true;
+                break;
+            }
+        }
+
+        for (var i = 0; i < points.Count; i++)
+        {
+            var p = points[i];
+            if (p.I == 0 && p.R == 0 && p.G == 0 && p.B == 0)
+                continue;
+
+            var masked = false;
+            float level = 0f;
+            if (hasAllowOnly)
+            {
+                var insideAnyAllow = false;
+                for (var m = 0; m < maskCount && !insideAnyAllow; m++)
+                {
+                    if (allowOnly[m] && InsideQuad(p.X, p.Y, corners, m))
+                        insideAnyAllow = true;
+                }
+
+                masked = !insideAnyAllow;
+            }
+
+            for (var m = 0; m < maskCount && !masked; m++)
+            {
+                if (allowOnly != null && m < allowOnly.Length && allowOnly[m])
+                    continue;
+
+                if (InsideQuad(p.X, p.Y, corners, m))
+                {
+                    masked = true;
+                    level = levels != null && m < levels.Length ? levels[m] : 0f;
+                }
+            }
+
+            if (!masked)
+                continue;
+
+            if (level > 0f && level < 1f)
+            {
+                // Attenuating mask: the beam stays on inside the mask but dimmed - the
+                // reduced-level audience-scanning case. Level 1 means blank.
+                points[i] = new LaserPoint(p.X, p.Y,
+                                           (int)(p.R * level), (int)(p.G * level), (int)(p.B * level),
+                                           (int)(p.I * level));
+            }
+            else
+            {
+                points[i] = LaserPoint.CreateBlanked(p.X, p.Y);
+            }
+
+            stats.MaskedPoints++;
+        }
+    }
+
+    /// <summary>Even-odd point-in-quad test; handles concave quads. A point exactly on an edge
+    /// counts either way - both readings are a safe answer.</summary>
+    private static bool InsideQuad(int px, int py, float[] corners, int maskIndex)
+    {
+        var inside = false;
+        var offset = maskIndex * 8;
+        for (var i = 0; i < 4; i++)
+        {
+            var j = (i + 3) & 3;
+            var xi = corners[offset + 2 * i];
+            var yi = corners[offset + 2 * i + 1];
+            var xj = corners[offset + 2 * j];
+            var yj = corners[offset + 2 * j + 1];
+            if ((yi > py) != (yj > py) && px < (xj - xi) * (py - yi) / (yj - yi) + xi)
+                inside = !inside;
+        }
+
+        return inside;
     }
 
     /// <summary>
@@ -273,37 +432,66 @@ public static class LaserSafetyTransforms
     }
 
     /// <summary>
-    /// Caps how long the beam may sit near-motionless at one coordinate - a frozen lit
-    /// beam is the classic scan-failure hazard. Points beyond the cap keep their
-    /// position but are blanked, so the scanners keep moving with the beam off.
+    /// Caps how long the beam may sit near-motionless at one coordinate - a frozen lit beam is the
+    /// classic scan-failure hazard. Points beyond the cap keep their position but are blanked, so
+    /// the scanners keep moving with the beam off.
+    ///
+    /// The frame is treated as a loop, because that is how it is played: a DAC replays the last
+    /// frame until a new one arrives. A run therefore continues across the seam (last point back
+    /// to the first), and only movement ends it - blanking in place does not, since the beam comes
+    /// back on at the same spot. A frame that never moves at all would be a static beam for as long
+    /// as it is shown, so all of its lit points are blanked.
     /// </summary>
     public static void LimitStaticDwell(List<LaserPoint> points, in Config config, ref Stats stats)
     {
+        var count = points.Count;
+        if (count == 0)
+            return;
+
         var safeConfig = Sanitize(in config);
         // Widened before squaring: a full-field step squared overflows int and would read as "not moving".
         var staticDistance = (long)safeConfig.StaticDistance;
         var thresholdSq = staticDistance * staticDistance;
         var maxStaticPoints = safeConfig.MaxStaticPoints;
-        var run = 0;
 
-        for (var i = 0; i < points.Count; i++)
+        // Start right after a movement, so the run that wraps over the seam is counted in one pass.
+        var start = -1;
+        for (var i = 0; i < count; i++)
         {
+            if (MovesFromPrevious(points, i, thresholdSq))
+            {
+                start = i;
+                break;
+            }
+        }
+
+        if (start < 0)
+        {
+            for (var i = 0; i < count; i++)
+            {
+                var p = points[i];
+                if (p.I <= 0)
+                    continue;
+
+                points[i] = LaserPoint.CreateBlanked(p.X, p.Y);
+                stats.StaticBlanked++;
+            }
+
+            return;
+        }
+
+        var run = 0;
+        for (var k = 0; k < count; k++)
+        {
+            var i = (start + k) % count;
+            if (MovesFromPrevious(points, i, thresholdSq))
+                run = 0;
+
             var p = points[i];
             if (p.I <= 0)
-            {
-                run = 0;
                 continue;
-            }
 
-            var moving = i == 0;
-            if (!moving)
-            {
-                long dx = p.X - points[i - 1].X;
-                long dy = p.Y - points[i - 1].Y;
-                moving = dx * dx + dy * dy > thresholdSq;
-            }
-
-            run = moving ? 1 : run + 1;
+            run++;
             if (run > maxStaticPoints)
             {
                 points[i] = LaserPoint.CreateBlanked(p.X, p.Y);
@@ -312,10 +500,21 @@ public static class LaserSafetyTransforms
         }
     }
 
+    /** True when point <paramref name="index"/> is farther than the static threshold from the point before it in loop order. */
+    private static bool MovesFromPrevious(List<LaserPoint> points, int index, long thresholdSq)
+    {
+        var previous = points[index == 0 ? points.Count - 1 : index - 1];
+        var current = points[index];
+        long dx = current.X - previous.X;
+        long dy = current.Y - previous.Y;
+        return dx * dx + dy * dy > thresholdSq;
+    }
+
     /// <summary>
-    /// Hard ceiling on output color, independent of whatever upstream content requests.
-    /// Also folds stray out-of-range values into 0..65535. The blanking gate (I) is left
-    /// untouched so blanked points stay blanked.
+    /// Hard ceiling on output color, independent of whatever upstream content requests. Scales the
+    /// I channel too: a single-colour projector driven from I would otherwise ignore the ceiling.
+    /// A lit point whose intensity rounds to zero becomes a canonical blank. Also folds stray
+    /// out-of-range values into 0..65535.
     /// </summary>
     public static void ClampIntensity(List<LaserPoint> points, in Config config, ref Stats stats)
     {
@@ -327,14 +526,67 @@ public static class LaserSafetyTransforms
             if (p.I <= 0)
                 continue;
 
-            var r = Math.Min(Math.Max(p.R, 0) * scale, 65535f);
-            var g = Math.Min(Math.Max(p.G, 0) * scale, 65535f);
-            var b = Math.Min(Math.Max(p.B, 0) * scale, 65535f);
-            if ((int)r != p.R || (int)g != p.G || (int)b != p.B)
-            {
-                points[i] = new LaserPoint(p.X, p.Y, (int)r, (int)g, (int)b, p.I);
-                stats.IntensityScaled++;
-            }
+            var r = (int)Math.Min(Math.Max(p.R, 0) * scale, 65535f);
+            var g = (int)Math.Min(Math.Max(p.G, 0) * scale, 65535f);
+            var b = (int)Math.Min(Math.Max(p.B, 0) * scale, 65535f);
+            var intensity = (int)Math.Min(p.I * scale, 65535f);
+            if (r == p.R && g == p.G && b == p.B && intensity == p.I)
+                continue;
+
+            points[i] = intensity > 0
+                            ? new LaserPoint(p.X, p.Y, r, g, b, intensity)
+                            : LaserPoint.CreateBlanked(p.X, p.Y);
+            stats.IntensityScaled++;
+        }
+    }
+
+    /// <summary>
+    /// Per-channel projector calibration: gains shape each diode's level, minimums cut a diode
+    /// off entirely below its threshold (a diode near its minimum voltage emits a faint
+    /// unwanted glow on near-black content). Runs after the brightness ceiling; gains can lift
+    /// levels back up, so a point that left here dim may still light - this stage calibrates,
+    /// it does not protect. Default gains/minimums leave the frame untouched.
+    /// </summary>
+    public static void ApplyColorLevels(List<LaserPoint> points, in Config config)
+    {
+        var safeConfig = Sanitize(in config);
+        if (safeConfig.ColorGainR == 1f && safeConfig.ColorGainG == 1f && safeConfig.ColorGainB == 1f
+            && safeConfig.ColorMinR == 0f && safeConfig.ColorMinG == 0f && safeConfig.ColorMinB == 0f)
+            return;
+
+        var minR = safeConfig.ColorMinR * FieldMax;
+        var minG = safeConfig.ColorMinG * FieldMax;
+        var minB = safeConfig.ColorMinB * FieldMax;
+
+        for (var i = 0; i < points.Count; i++)
+        {
+            var p = points[i];
+            if (p.I == 0 && p.R == 0 && p.G == 0 && p.B == 0)
+                continue;
+
+            var r = (int)(Math.Max(p.R, 0) * safeConfig.ColorGainR);
+            var g = (int)(Math.Max(p.G, 0) * safeConfig.ColorGainG);
+            var b = (int)(Math.Max(p.B, 0) * safeConfig.ColorGainB);
+
+            // A channel that gains up from zero must not glow: the minimum applies to the
+            // pre-gain level, so an off channel stays off.
+            if (p.R < minR)
+                r = 0;
+            if (p.G < minG)
+                g = 0;
+            if (p.B < minB)
+                b = 0;
+
+            r = Math.Min(r, FieldMax);
+            g = Math.Min(g, FieldMax);
+            b = Math.Min(b, FieldMax);
+
+            if (r == p.R && g == p.G && b == p.B)
+                continue;
+
+            points[i] = p.I > 0 || r > 0 || g > 0 || b > 0
+                            ? new LaserPoint(p.X, p.Y, r, g, b, p.I)
+                            : LaserPoint.CreateBlanked(p.X, p.Y);
         }
     }
 
