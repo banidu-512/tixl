@@ -38,16 +38,13 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
 
     private sealed record GenerationRequest(
         string Prompt,
-        string? NegativePrompt,
-        int Mode,
         int Steps,
-        float Guidance,
         float Strength,
         int Seed,
         int Width,
         int Height,
         int ResizeMode,
-        float PreserveDetails,
+        bool ResetStream,
         byte[]? InputData,
         int InputWidth,
         int InputHeight,
@@ -63,7 +60,7 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
         int Generation = 0);
 
     // Immutable so the render thread can read the failure state while a worker updates it
-    private sealed record FailureKey(string? Path, int Device, int Type, int Provider);
+    private sealed record FailureKey(string? Path, int Device, int Provider);
 
     #region Outputs
 
@@ -76,6 +73,19 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
     [Output(Guid = "F1A4B3C2-9D5E-6F7A-0B2C-3D4E5F6A7B8C")]
     public readonly Slot<float> GenerationTime = new();
 
+    /// <summary>Effective noise scale after the motion-aware controller: starts at Strength, lowered on fast motion, raised on still scenes.</summary>
+    [Output(Guid = "F6B7E8C9-A01B-4B2D-9C3E-4D5F6A7B8C9E")]
+    public readonly Slot<float> NoiseScale = new();
+
+    [Output(Guid = "07C8F9DA-B12C-4C3E-8D4F-5E6A7B8C9D0F")]
+    public readonly Slot<float> EncodeMs = new();
+
+    [Output(Guid = "18D9A0EB-C23D-4D4F-9E5A-6F7B8C9D0E10")]
+    public readonly Slot<float> DenoiseMs = new();
+
+    [Output(Guid = "29EAB1FC-D34E-4E5A-8F6B-7A8C9D0E1F21")]
+    public readonly Slot<float> DecodeMs = new();
+
     #endregion
 
     #region Inputs
@@ -83,38 +93,25 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
     [Input(Guid = "A1B2C3D4-E5F6-7890-ABCD-EF1234567890")]
     public readonly InputSlot<string> EnginePath = new();
 
-    [Input(Guid = "B2C3D4E5-F6A7-8901-BCDE-F12345678901", MappedType = typeof(ModeOptions))]
-    public readonly InputSlot<int> Mode = new(0);
-
     [Input(Guid = "C3D4E5F6-A7B8-9012-CDEF-123456789012")]
     public readonly InputSlot<string> Prompt = new();
-
-    [Input(Guid = "D4E5F6A7-B8C9-0123-DEF0-234567890123")]
-    public readonly InputSlot<string> NegativePrompt = new();
 
     [Input(Guid = "E5F6A7B8-C9D0-1234-EF01-345678901234")]
     public readonly InputSlot<int> Seed = new(-1);
 
-    [Input(Guid = "F6A7B8C9-D0E1-2345-F012-456789012345")]
-    public readonly InputSlot<int> Width = new(512);
-
-    [Input(Guid = "A7B8C9D0-E1F2-3456-0123-567890123456")]
-    public readonly InputSlot<int> Height = new(512);
-
-    [Input(Guid = "B8C9D0E1-F2A3-4567-1234-678901234567")]
-    public readonly InputSlot<float> Guidance = new(1.0f);
-
+    /// <summary>
+    /// How strongly each Stream frame is re-noised (the V2 stream strength): lower keeps more of the
+    /// previous frame, higher follows the input faster. (In pre-V2 builds this input was the img2img
+    /// strength; the semantics carry over, so old graphs keep working.)
+    /// </summary>
     [Input(Guid = "C9D0E1F2-A3B4-5678-2345-789012345678")]
-    public readonly InputSlot<float> Strength = new(0.8f);
+    public readonly InputSlot<float> Strength = new(0.6f);
 
     [Input(Guid = "D0E1F2A3-B4C5-6789-3456-890123456789")]
     public readonly InputSlot<int> Steps = new(1);
 
     [Input(Guid = "E1F2A3B4-C5D6-7890-4567-901234567890")]
     public readonly InputSlot<Texture2D?> InputImage = new();
-
-    [Input(Guid = "F2A3B4C5-D6E7-8901-5678-012345678901", MappedType = typeof(ModelTypeOptions))]
-    public readonly InputSlot<int> ModelType = new(1);
 
     [Input(Guid = "A3B4C5D6-E7F8-9012-6789-123456789012")]
     public readonly InputSlot<int> CudaDevice = new(0);
@@ -128,14 +125,8 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
     [Input(Guid = "C5D6E7F8-A9B0-1234-8901-345678901234")]
     public readonly InputSlot<bool> AutoGenerate = new();
 
-    [Input(Guid = "D1E2F3A4-B5C6-7890-1234-567890123456")]
-    public readonly InputSlot<bool> MatchInputSize = new(false);
-
     [Input(Guid = "E2F3A4B5-C6D7-8901-2345-678901234567", MappedType = typeof(ResizeModeOptions))]
     public readonly InputSlot<int> ResizeMode = new(0);
-
-    [Input(Guid = "F3A4B5C6-D7E8-9012-3456-789012345678")]
-    public readonly InputSlot<float> PreserveDetails = new(0.0f);
 
     /// <summary>
     /// Temporal feedback (like ossia's "Feed prev. output"): blends the newly generated frame with the
@@ -149,12 +140,16 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
     [Input(Guid = "D2E3F4A5-B6C7-8901-2345-678901234567")]
     public readonly InputSlot<bool> Debug = new(false);
 
-    [Input(Guid = "A4B5C6D7-E8F9-0123-4567-890123456789")]
-    public readonly InputSlot<float> StreamStrength = new(0.6f);
-
     /// <summary>V2 only: decode one latent instead of a three-latent window. Faster, with less temporal smoothing.</summary>
     [Input(Guid = "B7C8D9E0-F1A2-3456-7890-123456789012")]
     public readonly InputSlot<bool> FastDecode = new();
+
+    /// <summary>
+    /// Momentarily true to drop the rolling KV cache and re-prime the stream from the next input frame -
+    /// useful on scene cuts or when the style drifts over a long take.
+    /// </summary>
+    [Input(Guid = "E5A6D7C8-9F0B-4A1C-8B2D-3C4E5F6A7B8D")]
+    public readonly InputSlot<bool> ResetStream = new();
 
     #endregion
 
@@ -164,13 +159,57 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
     private const string PlaceholderTextDevice = "Select device...";
     private const int ReadbackTimeoutFrames = 60;
 
-    private static readonly string[] ModeNames = { "Text to Image", "Image to Image", "Stream" };
-    private static readonly string[] ModelTypeNames = { "SD 1.5", "SD Turbo", "SDXL Turbo", "FLUX.2 Klein 4B", "SDXL 1.0", "StreamDiffusion V2" };
     private static readonly string[] ResizeModeNames = { "Stretch", "CenterCrop", "Pad" };
-    private static readonly string[] ExecutionProviderNames = { "CPU", "DirectML", "CUDA", "TensorRT", "CoreML" };
+    /**
+     * The dropdown only lists the execution providers this operating system can run:
+     * Windows: CPU, DirectML, CUDA, TensorRT - Linux: CPU, CUDA, TensorRT - macOS: CPU, CoreML.
+     * The value maps onto the ExecutionProvider enum, so the order is free.
+     */
+    private static readonly (string Name, t3.streamdiffusion.Onnx.ExecutionProvider Provider)[] ExecutionProviderOptions = BuildExecutionProviderOptions();
 
-    public enum ModeOptions { TextToImage, ImageToImage, Stream }
-    public enum ModelTypeOptions { SD15, SDTurbo, SDXLTurbo, FLUX2Klein, SDXL10, StreamDiffusionV2 }
+    private static (string, t3.streamdiffusion.Onnx.ExecutionProvider)[] BuildExecutionProviderOptions()
+    {
+        var options = new List<(string, t3.streamdiffusion.Onnx.ExecutionProvider)> { ("CPU", t3.streamdiffusion.Onnx.ExecutionProvider.Cpu) };
+        if (OperatingSystem.IsWindows())
+        {
+            options.Add(("DirectML", t3.streamdiffusion.Onnx.ExecutionProvider.DirectMl));
+            options.Add(("CUDA", t3.streamdiffusion.Onnx.ExecutionProvider.Cuda));
+            options.Add(("TensorRT", t3.streamdiffusion.Onnx.ExecutionProvider.TensorRt));
+        }
+        else if (OperatingSystem.IsLinux())
+        {
+            options.Add(("CUDA", t3.streamdiffusion.Onnx.ExecutionProvider.Cuda));
+            options.Add(("TensorRT", t3.streamdiffusion.Onnx.ExecutionProvider.TensorRt));
+        }
+        else if (OperatingSystem.IsMacOS())
+        {
+            options.Add(("CoreML", t3.streamdiffusion.Onnx.ExecutionProvider.CoreMl));
+        }
+
+        return options.ToArray();
+    }
+
+    /** Values that are impossible on this OS (e.g. a saved CoreML on Windows) snap onto the closest provider that works. */
+    private static t3.streamdiffusion.Onnx.ExecutionProvider NormalizeProviderForOs(t3.streamdiffusion.Onnx.ExecutionProvider provider)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return provider == t3.streamdiffusion.Onnx.ExecutionProvider.CoreMl ? t3.streamdiffusion.Onnx.ExecutionProvider.DirectMl : provider;
+        }
+
+        if (OperatingSystem.IsLinux())
+        {
+            return provider switch
+            {
+                t3.streamdiffusion.Onnx.ExecutionProvider.DirectMl or t3.streamdiffusion.Onnx.ExecutionProvider.CoreMl => t3.streamdiffusion.Onnx.ExecutionProvider.Cuda,
+                _ => provider
+            };
+        }
+
+        // macOS: everything except CPU and CoreML runs through CoreML
+        return provider == t3.streamdiffusion.Onnx.ExecutionProvider.Cpu ? t3.streamdiffusion.Onnx.ExecutionProvider.Cpu : t3.streamdiffusion.Onnx.ExecutionProvider.CoreMl;
+    }
+
     public enum ResizeModeOptions { Stretch, CenterCrop, Pad }
 
     #endregion
@@ -178,7 +217,7 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
     #region Fields
 
     // Worker-per-pipeline lifecycle (DepthAnything port)
-    private volatile IGenerationPipeline? _pipeline;
+    private volatile StreamDiffusionV2Pipeline? _pipeline;
     private readonly object _stateLock = new();
     private Task? _processingTask;
     private CancellationTokenSource? _workerCts;
@@ -188,7 +227,6 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
     private int _workerGeneration;
     private string? _activeModelPath;
     private int _activeDeviceId = -1;
-    private int _activeModelType = -1;
     private int _activeProvider = -1;
     private readonly AutoResetEvent _workerWake = new(false);
 
@@ -206,11 +244,11 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
     private string? _lastLoggedError;
     private int _lastHeartbeatFrame;
     private bool _triggerState;
+    private bool _resetState;
+    private bool _resetPending;
     private int _updating;
     private int _lastSkipLogFrame;
     private int _updateFrameCounter;
-    private bool _hasTxtFingerprint;
-    private int _lastTxtFingerprint;
 
     // Deferred GPU readback - the map only runs after the copy query signaled,
     // so the render thread never waits for the GPU.
@@ -234,8 +272,6 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
     private readonly object _poolLock = new();
 
     // UI dropdown cache
-    private int _uiMode;
-    private int _uiModelType;
     private int _uiResizeMode;
     private int _uiExecutionProvider;
 
@@ -246,8 +282,6 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
         Output.UpdateAction += Update;
     }
 
-    private static int AlignTo8(int value) => Math.Max(64, value / 8 * 8);
-
     private void Update(EvaluationContext context)
     {
         if (Interlocked.CompareExchange(ref _updating, 1, 0) != 0)
@@ -256,23 +290,18 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
         try
         {
             var modelPath = EnginePath.GetValue(context);
-            var mode = Mode.GetValue(context);
             var prompt = Prompt.GetValue(context);
-            var negativePrompt = NegativePrompt.GetValue(context);
             var seed = Seed.GetValue(context);
-            var width = AlignTo8(Width.GetValue(context));
-            var height = AlignTo8(Height.GetValue(context));
-            var guidance = Guidance.GetValue(context);
-            var strength = Strength.GetValue(context);
-            var streamStrength = StreamStrength.GetValue(context);
+            var strength = Math.Clamp(Strength.GetValue(context), 0f, 1f);
             var steps = Steps.GetValue(context);
             var inputImage = InputImage.GetValue(context);
-            var matchInputSize = MatchInputSize.GetValue(context);
             var resizeMode = ResizeMode.GetValue(context);
-            var preserveDetails = PreserveDetails.GetValue(context);
-            var modelType = ModelType.GetValue(context);
             var deviceId = CudaDevice.GetValue(context);
             var provider = ExecutionProviderParam.GetValue(context);
+
+            // A provider that cannot run on this OS (a saved CoreML on Windows, DirectML on Linux...)
+            // snaps onto the closest one that can, so the dropdown and the label always show a real option.
+            provider = (int)NormalizeProviderForOs((t3.streamdiffusion.Onnx.ExecutionProvider)provider);
 
             // The AI settings' DirectML preference flips the default provider on Windows,
             // e.g. for AMD/Intel machines without a usable CUDA stack. An explicit
@@ -289,11 +318,16 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
             var debug = Debug.GetValue(context);
             var fastDecode = FastDecode.GetValue(context);
             var feedback = Math.Clamp(Feedback.GetValue(context), 0f, 1f);
+            if (MathUtils.WasTriggered(ResetStream.GetValue(context), ref _resetState))
+            {
+                ResetStream.SetTypedInputValue(false);
+                _resetPending = true;
+            }
 
-            // No EnginePath: fall back to a model folder from the AI model store that matches the
-            // selected model type, so a model installed through the settings window just works.
+            // No EnginePath: fall back to the first V2 export in the model store, so a model
+            // installed through the settings window just works.
             if (string.IsNullOrWhiteSpace(modelPath))
-                modelPath = FindManagedModelFolder(modelType);
+                modelPath = FindManagedModelFolder();
 
             _debugLogging = debug;
             _updateFrameCounter++;
@@ -301,37 +335,34 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
             if (debug && _updateFrameCounter - _lastHeartbeatFrame >= 120)
             {
                 _lastHeartbeatFrame = _updateFrameCounter;
-                Log.Debug($"[StreamDiffusion] alive f={_updateFrameCounter} mode={mode} provider={provider} " +
+                Log.Debug($"[StreamDiffusion] alive f={_updateFrameCounter} provider={provider} " +
                           $"auto={autoGenerate} trigger={triggerGenerate} pipeline={(_pipeline != null)} " +
                           $"pending={_hasPendingInput} inFlight={_requestInFlight} readback={_readbackPending} " +
                           $"init={_isInitializing} outputNull={Output.Value == null}", this);
             }
 
-            _uiMode = mode;
-            _uiModelType = modelType;
             _uiResizeMode = resizeMode;
             _uiExecutionProvider = provider;
 
             var pipeline = _pipeline;
             if (pipeline != null)
+            {
                 pipeline.VerboseLogging = debug;
-
-            if (pipeline is StreamDiffusionV2Pipeline v2Pipeline)
-                v2Pipeline.FastDecodeEnabled = fastDecode;
+                pipeline.FastDecodeEnabled = fastDecode;
+            }
 
             // Re-init trigger: inputs changed OR worker died. A failed initialization is only retried after the
             // inputs change - otherwise a missing model or unsupported provider would reload every frame.
-            var inputsChanged = modelPath != _activeModelPath || deviceId != _activeDeviceId
-                                || modelType != _activeModelType || provider != _activeProvider;
+            var inputsChanged = modelPath != _activeModelPath || deviceId != _activeDeviceId || provider != _activeProvider;
             var workerGone = _processingTask == null || _processingTask.IsCompleted;
             var failed = _failedInputs;
             var failedWithSameInputs = _initFailed && failed != null
                                        && failed.Path == modelPath && failed.Device == deviceId
-                                       && failed.Type == modelType && failed.Provider == provider;
+                                       && failed.Provider == provider;
 
             if (!_isInitializing && !failedWithSameInputs && (inputsChanged || workerGone))
             {
-                InitializePipelineWorker(modelPath, deviceId, modelType, provider);
+                InitializePipelineWorker(modelPath, deviceId, provider);
             }
 
             pipeline = _pipeline;
@@ -369,19 +400,18 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
                 return;
             }
 
-            // V2 bakes its resolution into the exported DiT, so the Width/Height inputs cannot apply
-            if (pipeline.TryGetFixedOutputSize(out var fixedWidth, out var fixedHeight))
+            // V2 bakes its resolution into the exported DiT; the output size comes from the export
+            if (!pipeline.TryGetFixedOutputSize(out var fixedWidth, out var fixedHeight))
             {
-                width = fixedWidth;
-                height = fixedHeight;
-                matchInputSize = false;
+                fixedWidth = 256;
+                fixedHeight = 256;
             }
 
-            // img2img/Stream: continuously chase the latest input frame. Dirty-flag checks can't
-            // detect in-place texture updates (GetValue already consumed the flag, and video sources
-            // like PlayVideo rewrite the same texture), so with AutoGenerate on we keep a request
-            // in flight with the newest frame; _requestInFlight rate-limits to GPU speed.
-            if (autoGenerate && mode != 0 && inputImage != null && !inputImage.IsDisposed)
+            // Stream: continuously chase the latest input frame. Dirty-flag checks can't detect
+            // in-place texture updates (GetValue already consumed the flag, and video sources like
+            // PlayVideo rewrite the same texture), so with AutoGenerate on we keep a request in
+            // flight with the newest frame; _requestInFlight rate-limits to GPU speed.
+            if (autoGenerate && inputImage != null && !inputImage.IsDisposed)
             {
                 _hasPendingInput = true;
             }
@@ -390,25 +420,13 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
             if (autoGenerate)
             {
                 var promptValid = !string.IsNullOrEmpty(prompt);
-                var inputValid = mode == 0 || (inputImage != null && !inputImage.IsDisposed);
-                bool modeWants;
-                if (mode == 0)
-                {
-                    modeWants = Txt2ImgParamsChanged(prompt, negativePrompt, seed, width, height, steps, guidance, modelType);
-                }
-                else
-                {
-                    modeWants = true;
-                }
-
-                wantGenerate = promptValid && inputValid && modeWants;
+                var inputValid = inputImage != null && !inputImage.IsDisposed;
+                wantGenerate = promptValid && inputValid;
 
                 if (!wantGenerate && _debugLogging && _updateFrameCounter - _lastSkipLogFrame >= 60)
                 {
                     _lastSkipLogFrame = _updateFrameCounter;
-                    var reason = !promptValid ? "prompt empty"
-                                 : !inputValid ? "no input"
-                                 : "input unchanged";
+                    var reason = !promptValid ? "prompt empty" : "no input";
                     Log.Debug($"[StreamDiffusion] AutoGenerate skipped: {reason}", this);
                 }
             }
@@ -425,32 +443,18 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
             if (wantGenerate)
                 _hasPendingInput = true;
 
-            // Start a new readback or enqueue immediately (txt2img / no input)
+            // Start a new readback when there is an input image. The V2 model is a video model and
+            // cannot generate from text alone; without an image the operator just waits.
             if (_hasPendingInput && !_requestInFlight && _inputQueue.IsEmpty && !_readbackPending)
             {
-                if (mode != 0 && inputImage != null && !inputImage.IsDisposed)
+                if (inputImage != null && !inputImage.IsDisposed)
                 {
                     BeginReadback(inputImage);
                 }
-                else
+                else if (_debugLogging && _updateFrameCounter - _lastSkipLogFrame >= 60)
                 {
-                    BuildAndEnqueueRequest(
-                        prompt: prompt ?? string.Empty,
-                        negativePrompt: negativePrompt,
-                        mode: mode,
-                        steps: steps,
-                        guidance: guidance,
-                        strength: mode == 2 ? streamStrength : strength,
-                        seed: seed,
-                        width: width,
-                        height: height,
-                        resizeMode: resizeMode,
-                        preserveDetails: preserveDetails,
-                        modelType: modelType,
-                        inputData: null,
-                        inputWidth: 0,
-                        inputHeight: 0,
-                        inputFormat: InputPixelFormat.Rgba8);
+                    _lastSkipLogFrame = _updateFrameCounter;
+                    Log.Debug("[StreamDiffusion] Waiting for an input image - the V2 model streams video, it cannot generate from text alone", this);
                 }
             }
 
@@ -461,51 +465,21 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
                 if (data != null)
                 {
                     _hasPendingInput = false;
-
-                    var useImage = mode != 0 && inputImage != null && !inputImage.IsDisposed;
-                    if (!useImage)
-                    {
-                        ReturnExtractBuffer(data);
-                        BuildAndEnqueueRequest(
-                            prompt: prompt ?? string.Empty,
-                            negativePrompt: negativePrompt,
-                            mode: mode,
-                            steps: steps,
-                            guidance: guidance,
-                            strength: mode == 2 ? streamStrength : strength,
-                            seed: seed,
-                            width: width,
-                            height: height,
-                            resizeMode: resizeMode,
-                            preserveDetails: preserveDetails,
-                            modelType: modelType,
-                            inputData: null,
-                            inputWidth: 0,
-                            inputHeight: 0,
-                            inputFormat: InputPixelFormat.Rgba8);
-                    }
-                    else
-                    {
-                        var effectiveWidth = matchInputSize ? AlignTo8(w) : width;
-                        var effectiveHeight = matchInputSize ? AlignTo8(h) : height;
-                        BuildAndEnqueueRequest(
-                            prompt: prompt ?? string.Empty,
-                            negativePrompt: negativePrompt,
-                            mode: mode,
-                            steps: steps,
-                            guidance: guidance,
-                            strength: mode == 2 ? streamStrength : strength,
-                            seed: seed,
-                            width: effectiveWidth,
-                            height: effectiveHeight,
-                            resizeMode: resizeMode,
-                            preserveDetails: preserveDetails,
-                            modelType: modelType,
-                            inputData: data,
-                            inputWidth: w,
-                            inputHeight: h,
-                            inputFormat: format);
-                    }
+                    var resetPending = _resetPending;
+                    _resetPending = false;
+                    BuildAndEnqueueRequest(
+                        prompt: prompt ?? string.Empty,
+                        steps: steps,
+                        strength: strength,
+                        seed: seed,
+                        width: fixedWidth,
+                        height: fixedHeight,
+                        resizeMode: resizeMode,
+                        resetStream: resetPending,
+                        inputData: data,
+                        inputWidth: w,
+                        inputHeight: h,
+                        inputFormat: format);
                 }
             }
 
@@ -545,6 +519,15 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
             Output.Value = _outputTexture;
             OutputSize.Value = _lastOutputSize;
             GenerationTime.Value = _lastGenerationTime;
+
+            // Stage telemetry from the pipeline's latest step; safe to read while the worker runs
+            if (pipeline != null)
+            {
+                NoiseScale.Value = pipeline.EffectiveNoiseScale;
+                EncodeMs.Value = (float)pipeline.LastEncodeMs;
+                DenoiseMs.Value = (float)pipeline.LastDenoiseMs;
+                DecodeMs.Value = (float)pipeline.LastDecodeMs;
+            }
         }
         finally
         {
@@ -552,58 +535,21 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
         }
     }
 
-    private bool Txt2ImgParamsChanged(string? prompt, string? negativePrompt, int seed, int width, int height, int steps,
-                                      float guidance, int modelType)
-    {
-        // Regenerate only when a parameter actually changes - including a random-seed setting (-1).
-        // Re-rolling the random seed every frame flooded the GPU with back-to-back generations;
-        // users reroll via TriggerGenerate or by changing the seed value.
-        var hash = HashCode.Combine(prompt, negativePrompt, seed, width, height, steps, guidance, modelType);
-        if (_hasTxtFingerprint && hash == _lastTxtFingerprint)
-            return false;
-
-        _lastTxtFingerprint = hash;
-        _hasTxtFingerprint = true;
-        return true;
-    }
-
-    private void BuildAndEnqueueRequest(string prompt, string? negativePrompt, int mode, int steps, float guidance,
-                                        float strength, int seed, int width, int height, int resizeMode,
-                                        float preserveDetails, int modelType, byte[]? inputData, int inputWidth,
+    private void BuildAndEnqueueRequest(string prompt, int steps, float strength, int seed, int width, int height,
+                                        int resizeMode, bool resetStream, byte[]? inputData, int inputWidth,
                                         int inputHeight, InputPixelFormat inputFormat)
     {
-        var clampedSteps = steps;
-        var clampedGuidance = guidance;
-        var pipeline = _pipeline;
-        if (pipeline != null)
+        // The V2 step count is the KV-cache batch size, so it is capped at 4
+        var clampedSteps = Math.Clamp(steps, 1, 4);
+
+        if (_debugLogging)
         {
-            var recommended = pipeline.RecommendedSteps;
-            var recommendedGuidance = pipeline.RecommendedGuidance;
-
-            if (modelType is (int)ModelTypeOptions.SDTurbo or (int)ModelTypeOptions.SDXLTurbo or (int)ModelTypeOptions.FLUX2Klein)
-            {
-                clampedSteps = Math.Clamp(steps <= 0 ? recommended : steps, 1, 8);
-                clampedGuidance = Math.Clamp(guidance, 0f, 3f);
-            }
-            else if (modelType == (int)ModelTypeOptions.StreamDiffusionV2)
-            {
-                clampedSteps = Math.Clamp(steps, 1, 4);
-            }
-            else if (mode == 1)
-            {
-                clampedSteps = Math.Max(steps, 10);
-            }
-
-            if (_debugLogging)
-            {
-                Log.Debug($"[StreamDiffusion] Model: {ModelTypeNames[modelType]}, steps={clampedSteps} (recommended: {recommended}), " +
-                          $"guidance={clampedGuidance:F1} (recommended: {recommendedGuidance:F1})", this);
-            }
+            Log.Debug($"[StreamDiffusion] StreamDiffusion V2, steps={clampedSteps}", this);
         }
 
         var request = new GenerationRequest(
-            prompt, negativePrompt, mode, clampedSteps, clampedGuidance, strength, seed,
-            width, height, resizeMode, preserveDetails,
+            prompt, clampedSteps, strength, seed,
+            width, height, resizeMode, resetStream,
             inputData, inputWidth, inputHeight, inputFormat);
 
         // The request consumes the pending flag. Without this, a txt2img trigger (or an AutoGenerate
@@ -656,28 +602,24 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
         return prev;
     }
 
-    /** Model store scan results per model type, cached briefly so an empty EnginePath
-     *  does not rescan (and re-log) the store on every frame. */
-    private static readonly ConcurrentDictionary<int, (string? Folder, long ScannedAtTicks)> ManagedFolderCache = new();
+    /** Model store scan result, cached briefly so an empty EnginePath does not rescan (and re-log) the store on every frame. */
+    private static (string? Folder, long ScannedAtTicks) ManagedFolderCache;
     private const double ManagedModelScanIntervalMs = 5000;
     private static string? _lastLoggedManagedFolder;
 
-    /** The first folder in the model store that validates for the selected model type, or null. */
-    private static string? FindManagedModelFolder(int modelType)
+    /** The first folder in the model store that passes V2 validation, or null. */
+    private static string? FindManagedModelFolder()
     {
         var nowTicks = Environment.TickCount64;
-        if (ManagedFolderCache.TryGetValue(modelType, out var cached)
-            && nowTicks - cached.ScannedAtTicks < ManagedModelScanIntervalMs)
-        {
-            return cached.Folder;
-        }
+        if (nowTicks - ManagedFolderCache.ScannedAtTicks < ManagedModelScanIntervalMs)
+            return ManagedFolderCache.Folder;
 
-        var found = ScanManagedModelFolders(modelType);
-        ManagedFolderCache[modelType] = (found, nowTicks);
+        var found = ScanManagedModelFolders();
+        ManagedFolderCache = (found, nowTicks);
         return found;
     }
 
-    private static string? ScanManagedModelFolders(int modelType)
+    private static string? ScanManagedModelFolders()
     {
         var familyDirectory = T3.Core.Settings.AiModelSettings.FamilyDirectory(T3.Core.Settings.AiModelSettings.StreamDiffusionFamilyFolder);
         if (!Directory.Exists(familyDirectory))
@@ -687,9 +629,7 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
         {
             foreach (var directory in Directory.GetDirectories(familyDirectory).OrderBy(d => d, StringComparer.OrdinalIgnoreCase))
             {
-                var error = modelType == (int)ModelTypeOptions.StreamDiffusionV2
-                                ? StreamDiffusionV2Pipeline.ValidateModelDirectory(directory)
-                                : StableDiffusionPipeline.ValidateModelDirectory(directory);
+                var error = StreamDiffusionV2Pipeline.ValidateModelDirectory(directory);
                 if (error.Length == 0)
                 {
                     if (Interlocked.CompareExchange(ref _lastLoggedManagedFolder, directory, null) != directory)
@@ -708,48 +648,25 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
         return null;
     }
 
-    private void InitializePipelineWorker(string? modelPath, int deviceId, int modelType, int provider)
+    private void InitializePipelineWorker(string? modelPath, int deviceId, int provider)
     {
         var previousTask = _processingTask;
         StopWorker();
 
-        var validationError = modelType == (int)ModelTypeOptions.StreamDiffusionV2
-                                  ? StreamDiffusionV2Pipeline.ValidateModelDirectory(modelPath)
-                                  : StableDiffusionPipeline.ValidateModelDirectory(modelPath);
+        var validationError = StreamDiffusionV2Pipeline.ValidateModelDirectory(modelPath);
         if (validationError.Length > 0)
         {
             _lastStatusMessage = validationError;
             _initFailed = true;
-            _failedInputs = new FailureKey(modelPath, deviceId, modelType, provider);
+            _failedInputs = new FailureKey(modelPath, deviceId, provider);
             Log.Warning($"[StreamDiffusion] {validationError}", this);
             return;
-        }
-
-        // The heavier families need their own exports - pointing them at an
-        // SD 1.5/Turbo folder loads fine mechanically but produces garbage.
-        // Warn instead of blocking: a valid export may just use a layout we
-        // don't recognize.
-        if (modelType is (int)ModelTypeOptions.SDXLTurbo or (int)ModelTypeOptions.FLUX2Klein or (int)ModelTypeOptions.SDXL10
-            && modelPath != null)
-        {
-            var hasSecondStage = Directory.Exists(Path.Combine(modelPath, "text_encoder_2"))
-                                 || Directory.Exists(Path.Combine(modelPath, "tokenizer_2"))
-                                 || File.Exists(Path.Combine(modelPath, "text_encoder_2.onnx"));
-            if (!hasSecondStage)
-            {
-                Log.Warning($"[StreamDiffusion] Model type '{ModelTypeNames[modelType]}' selected, but " +
-                            $"'{Path.GetFileName(modelPath.TrimEnd('\\', '/'))}' has no second-stage components " +
-                            "(text_encoder_2 / tokenizer_2). If this folder is an SD 1.5 / SD Turbo export, " +
-                            "output will be wrong - switch to 'SD 1.5' or 'SD Turbo', or point the model path " +
-                            "at an export of the selected family.", this);
-            }
         }
 
         _isInitializing = true;
         _initFailed = false;
         _activeModelPath = modelPath;
         _activeDeviceId = deviceId;
-        _activeModelType = modelType;
         _activeProvider = provider;
         _failedInputs = null;
         _hasPendingInput = true;
@@ -776,7 +693,7 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
             if (token.IsCancellationRequested)
                 return;
 
-            WorkerLoop(modelPath!, deviceId, modelType, provider, token, generation);
+            WorkerLoop(modelPath!, deviceId, provider, token, generation);
         }, CancellationToken.None);
     }
 
@@ -811,7 +728,7 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
         _readbackPending = false;
     }
 
-    private void WorkerLoop(string modelPath, int deviceId, int modelType, int provider, CancellationToken token, int generation)
+    private void WorkerLoop(string modelPath, int deviceId, int provider, CancellationToken token, int generation)
     {
         // Only the current worker touches the fingerprint fields from here on: the previous worker is
         // provably dead (this task awaited it), so the reset cannot be overwritten by a stale write.
@@ -819,23 +736,13 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
         // model/device/provider from skipping the first request.
         _hasProcessedFingerprint = false;
 
-        IGenerationPipeline? pipeline = null;
+        StreamDiffusionV2Pipeline? pipeline = null;
         var failedToInit = false;
         try
         {
-            bool initialized;
-            if (modelType == (int)ModelTypeOptions.StreamDiffusionV2)
-            {
-                var streamPipeline = new StreamDiffusionV2Pipeline();
-                pipeline = streamPipeline;
-                initialized = streamPipeline.Initialize(modelPath, deviceId, (t3.streamdiffusion.Onnx.ExecutionProvider)provider);
-            }
-            else
-            {
-                var stablePipeline = new StableDiffusionPipeline();
-                pipeline = stablePipeline;
-                initialized = stablePipeline.Initialize(modelPath, deviceId, (ModelType)modelType, (t3.streamdiffusion.Onnx.ExecutionProvider)provider);
-            }
+            var streamPipeline = new StreamDiffusionV2Pipeline();
+            pipeline = streamPipeline;
+            var initialized = streamPipeline.Initialize(modelPath, deviceId, (t3.streamdiffusion.Onnx.ExecutionProvider)provider);
 
             pipeline.VerboseLogging = _debugLogging;
 
@@ -850,7 +757,7 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
                 {
                     _isInitializing = false;
                     _initFailed = true;
-                    _failedInputs = new FailureKey(_activeModelPath, _activeDeviceId, _activeModelType, _activeProvider);
+                    _failedInputs = new FailureKey(_activeModelPath, _activeDeviceId, _activeProvider);
                     _lastStatusMessage = pipeline?.InitializationError ?? "Failed to initialize ONNX pipeline. See log for details.";
                 }
             }
@@ -866,15 +773,14 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
                     _isInitializing = false;
 
                 _lastStatusMessage = null;
-                Log.Info($"[StreamDiffusion] Pipeline ready ({pipeline.ProviderLabel}, " +
-                         $"img2img: {(pipeline.SupportsImg2Img ? "yes" : "no")}, model: {ModelTypeNames[modelType]})", this);
+                Log.Info($"[StreamDiffusion] Pipeline ready ({pipeline.ProviderLabel}, StreamDiffusion V2)", this);
             }
 
             while (!token.IsCancellationRequested)
             {
                 if (_inputQueue.TryDequeue(out var request))
                 {
-                    if (request != null)
+                    if (request != null && pipeline != null)
                     {
                         // Float render targets are converted here rather than on the render thread; the raw
                         // staging buffer is returned before the request reaches the pipeline.
@@ -929,7 +835,7 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
                 if (failedToInit)
                 {
                     _initFailed = true;
-                    _failedInputs = new FailureKey(_activeModelPath, _activeDeviceId, _activeModelType, _activeProvider);
+                    _failedInputs = new FailureKey(_activeModelPath, _activeDeviceId, _activeProvider);
                     _lastStatusMessage = pipeline?.InitializationError ?? "Failed to initialize ONNX pipeline. See log for details.";
                 }
             }
@@ -964,30 +870,31 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
         return request with { InputData = converted, InputFormat = InputPixelFormat.Rgba8 };
     }
 
-    private GenerationResult? ProcessGenerationRequest(IGenerationPipeline pipeline, GenerationRequest request, int generation)
+    private GenerationResult? ProcessGenerationRequest(StreamDiffusionV2Pipeline pipeline, GenerationRequest request, int generation)
     {
         try
         {
+            if (request.ResetStream)
+                pipeline.ResetStream();
+
             pipeline.ConfigureStream(request.Steps);
 
             // Negative seeds randomize per call, so only fixed-seed requests are safely skippable there.
-            // Stream mode consumes one new input frame per request regardless of seed: an unchanged frame can
-            // reuse the previous result, which also stops a frozen source from keeping the GPU busy indefinitely.
-            var canSkipIdentical = request.Seed >= 0 || request.Mode == 2;
+            // The stream consumes one new input frame per request regardless of seed: an unchanged frame
+            // can reuse the previous result, which also stops a frozen source from keeping the GPU busy.
+            var canSkipIdentical = request.Seed >= 0;
             if (canSkipIdentical)
             {
-                // A V2 prompt that was swapped in by the background encoder must produce one new frame even when
+                // A prompt that was swapped in by the background encoder must produce one new frame even when
                 // the input pixels did not change; the version is part of the fingerprint. The worker generation
                 // and the FastDecode state are folded in as well, so a swapped model or decode-window change
                 // always produces one fresh frame - without the render thread writing any worker-side state.
-                var promptVersion = 0;
+                var promptVersion = pipeline.PromptVersion;
                 var fingerprintSalt = generation;
-                if (pipeline is StreamDiffusionV2Pipeline v2)
-                {
-                    promptVersion = v2.PromptVersion;
-                    if (v2.FastDecodeEnabled)
-                        fingerprintSalt ^= unchecked((int)0x5A5A5A5A);
-                }
+                if (pipeline.FastDecodeEnabled)
+                    fingerprintSalt ^= unchecked((int)0x5A5A5A5A);
+                if (request.ResetStream)
+                    fingerprintSalt ^= unchecked((int)0x2B3C4D5E);
 
                 var fingerprint = ComputeFingerprint(request, promptVersion, fingerprintSalt);
                 if (_hasProcessedFingerprint && fingerprint == _lastProcessedFingerprint)
@@ -997,35 +904,16 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
                 _hasProcessedFingerprint = true;
             }
 
-            var sw = System.Diagnostics.Stopwatch.StartNew();
-            byte[]? imageData = null;
-            string? error = null;
+            if (request.InputData == null)
+            {
+                return new GenerationResult(null, request.Width, request.Height, 0, "No input frame reached the pipeline");
+            }
 
-            if (request.Mode == 0)
-            {
-                imageData = pipeline.Txt2Img(
-                    request.Prompt, request.NegativePrompt, request.Width, request.Height,
-                    request.Steps, request.Guidance, request.Seed, out error);
-            }
-            else if (request.Mode == 1 && request.InputData != null)
-            {
-                imageData = pipeline.Img2Img(
-                    request.Prompt, request.NegativePrompt, request.InputData,
-                    request.InputWidth, request.InputHeight, request.Width, request.Height,
-                    request.Steps, request.Guidance, request.Strength, request.Seed,
-                    request.ResizeMode, request.PreserveDetails, request.InputFormat == InputPixelFormat.Bgra8, out error);
-            }
-            else if (request.Mode == 2 && request.InputData != null)
-            {
-                imageData = pipeline.StreamStep(
-                    request.Prompt, request.InputData, request.InputWidth, request.InputHeight,
-                    request.Width, request.Height, request.Strength, request.ResizeMode,
-                    request.Seed, request.InputFormat == InputPixelFormat.Bgra8, out error);
-            }
-            else
-            {
-                error = $"Unsupported mode/input combination (mode={request.Mode}, inputData={(request.InputData != null ? "yes" : "no")})";
-            }
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var imageData = pipeline.StreamStep(
+                request.Prompt, request.InputData, request.InputWidth, request.InputHeight,
+                request.Strength, request.ResizeMode, request.Seed,
+                request.InputFormat == InputPixelFormat.Bgra8, out var error);
 
             sw.Stop();
 
@@ -1036,7 +924,7 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
         }
         catch (Exception ex)
         {
-            Log.Error($"[StreamDiffusion] ProcessGenerationRequest failed for mode={request.Mode}: {ex.Message}", this);
+            Log.Error($"[StreamDiffusion] ProcessGenerationRequest failed: {ex.Message}", this);
             return new GenerationResult(null, request.Width, request.Height, 0, $"Error: {ex.Message}");
         }
     }
@@ -1046,12 +934,11 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
         unchecked
         {
             var hash = (int)HashCode.Combine(
-                request.Prompt, request.NegativePrompt, request.Steps, request.Guidance,
-                request.Strength, request.Seed, request.Width, request.Height);
+                request.Prompt, request.Steps, request.Strength, request.Seed,
+                request.Width, request.Height);
 
             hash = (hash * 31) ^ fingerprintSalt;
             hash = (hash * 31) ^ request.ResizeMode;
-            hash = (hash * 31) ^ request.PreserveDetails.GetHashCode();
             hash = (hash * 31) ^ request.InputWidth;
             hash = (hash * 31) ^ request.InputHeight;
             hash = (hash * 31) ^ request.InputFormat.GetHashCode();
@@ -1411,7 +1298,7 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
                     detail += ", encoding new prompt";
             }
 
-            return $"Ready ({pipeline.ProviderLabel}, img2img: {(pipeline.SupportsImg2Img ? "yes" : "no")}{detail})";
+            return $"Ready ({pipeline.ProviderLabel}{detail})";
         }
         catch (ObjectDisposedException)
         {
@@ -1425,18 +1312,6 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
 
     public string GetValueForInput(Guid inputId)
     {
-        if (inputId == Mode.Id)
-        {
-            var mode = _uiMode;
-            return mode >= 0 && mode < ModeNames.Length ? ModeNames[mode] : "Unknown";
-        }
-
-        if (inputId == ModelType.Id)
-        {
-            var type = _uiModelType;
-            return type >= 0 && type < ModelTypeNames.Length ? ModelTypeNames[type] : "Unknown";
-        }
-
         if (inputId == ResizeMode.Id)
         {
             var mode = _uiResizeMode;
@@ -1445,8 +1320,8 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
 
         if (inputId == ExecutionProviderParam.Id)
         {
-            var provider = _uiExecutionProvider;
-            return provider >= 0 && provider < ExecutionProviderNames.Length ? ExecutionProviderNames[provider] : "CUDA";
+            var provider = (t3.streamdiffusion.Onnx.ExecutionProvider)_uiExecutionProvider;
+            return ExecutionProviderOptions.FirstOrDefault(o => o.Provider == provider).Name ?? "CPU";
         }
 
         if (inputId == EnginePath.Id)
@@ -1467,20 +1342,6 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
 
     public IEnumerable<string> GetOptionsForInput(Guid inputId)
     {
-        if (inputId == Mode.Id)
-        {
-            foreach (var mode in ModeNames)
-                yield return mode;
-            yield break;
-        }
-
-        if (inputId == ModelType.Id)
-        {
-            foreach (var type in ModelTypeNames)
-                yield return type;
-            yield break;
-        }
-
         if (inputId == ResizeMode.Id)
         {
             foreach (var mode in ResizeModeNames)
@@ -1490,8 +1351,8 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
 
         if (inputId == ExecutionProviderParam.Id)
         {
-            foreach (var provider in ExecutionProviderNames)
-                yield return provider;
+            foreach (var option in ExecutionProviderOptions)
+                yield return option.Name;
             yield break;
         }
 
@@ -1510,22 +1371,6 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
     {
         if (string.IsNullOrEmpty(selected))
             return;
-
-        if (inputId == Mode.Id)
-        {
-            var index = Array.IndexOf(ModeNames, selected);
-            if (index >= 0)
-                Mode.SetTypedInputValue(index);
-            return;
-        }
-
-        if (inputId == ModelType.Id)
-        {
-            var index = Array.IndexOf(ModelTypeNames, selected);
-            if (index >= 0)
-                ModelType.SetTypedInputValue(index);
-            return;
-        }
 
         if (inputId == ResizeMode.Id)
         {
@@ -1551,9 +1396,9 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
 
         if (inputId == ExecutionProviderParam.Id)
         {
-            var index = Array.IndexOf(ExecutionProviderNames, selected);
+            var index = Array.FindIndex(ExecutionProviderOptions, o => o.Name == selected);
             if (index >= 0)
-                ExecutionProviderParam.SetTypedInputValue(index);
+                ExecutionProviderParam.SetTypedInputValue((int)ExecutionProviderOptions[index].Provider);
         }
     }
 

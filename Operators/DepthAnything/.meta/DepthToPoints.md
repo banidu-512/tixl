@@ -11,7 +11,6 @@ The work stays on the GPU: there is no readback and no compaction pass. Invalid 
 - **Texture2D ConfidenceTexture** - Optional confidence map; points below `ConfidenceThreshold` are dropped
 - **float FieldOfView** - Vertical field of view in degrees (default: 50; 0 falls back to 50)
 - **float DepthScale** - Scales the distance of every point (default: 1)
-- **bool DepthIsDisparity** - Treat larger values as nearer, as Depth Anything V2 does (default: false)
 - **int PixelStride** - Sample every Nth pixel (default: 2)
 - **int MaxPoints** - Upper bound for the buffer (default: 262,144); the stride grows when needed
 - **float SplatSizePixels** - Screen-space splat diameter in pixels (default: 2)

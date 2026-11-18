@@ -43,8 +43,10 @@ internal sealed class VolumeToField : Instance<VolumeToField>
             return;
         }
 
+        // Equals instead of ==: a NaN input compares unequal with ==, which rebuilt the fields (and
+        // re-ran every consumer keyed on the field instance) on every frame.
         var key = (volume, scale, offset, outsideValue);
-        if (key == _last)
+        if (key.Equals(_last))
             return;
 
         try
@@ -90,7 +92,7 @@ internal sealed class VolumeToField : Instance<VolumeToField>
             // An exception escaping an update is fatal to the editor; degrade to an empty output.
             Field.Value = null;
             Vectors.Value = null;
-            _last = default;
+            _last = key;  // a broken volume stays broken until the inputs change
             if (_lastError != e.Message)
                 Log.Warning($"VolumeToField failed: {e.Message}", this);
             _lastError = e.Message;

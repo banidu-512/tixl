@@ -83,6 +83,7 @@ internal sealed class PhysicsWorld : Instance<PhysicsWorld>
     {
         CollectInputs(context);
 
+        var deterministic = Deterministic.GetValue(context);
         var settings = new PhysicsWorldSettings
                            {
                                Gravity = Gravity.GetValue(context),
@@ -92,11 +93,12 @@ internal sealed class PhysicsWorld : Instance<PhysicsWorld>
                                SolverIterations = SolverIterations.GetValue(context),
                                TimeScale = TimeScale.GetValue(context),
                                Multithreaded = Multithreaded.GetValue(context),
-                               Deterministic = Deterministic.GetValue(context),
+                               Deterministic = deterministic,
                                Interpolate = Interpolate.GetValue(context),
                                Paused = Paused.GetValue(context),
                                Reset = Reset.GetValue(context),
                                ContactSpeedThreshold = ContactSpeed.GetValue(context),
+                               BuildMeshesInBackground = !context.Playback.IsRenderingToFile && !deterministic,
                            };
         var includeStatics = IncludeStatics.GetValue(context);
 

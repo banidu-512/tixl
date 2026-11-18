@@ -22,14 +22,13 @@ Connect an image to `[DepthAnything]`, leave `ModelSizeParam` on "V3 Small", set
 - Near objects are bright and far objects dark.
 - `InferenceMs` and `LatencyMs` show values, with `LatencyMs` not much larger than `InferenceMs` plus a frame or two.
 
-## Step: Falling back without a V3 model
+## Step: Without a model installed
 
 **Action:**
-Rename the V3 model files in Assets so none is found, restart TiXL and create a new `[DepthAnything]`.
+Rename the DA3 model files in Assets so none is found, restart TiXL and create a new `[DepthAnything]`.
 
 **Expected:**
-- A warning in the console names the V2 model that is used instead.
-- Depth still appears, with near objects bright.
+- `Status` reads "Model not found: da3-small-fp16.onnx" and the operator shows an error state until a model is installed from the model store.
 
 ## Step: Any input texture format
 

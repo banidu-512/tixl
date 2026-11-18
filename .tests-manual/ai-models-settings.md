@@ -22,7 +22,7 @@ Steps that download models are marked (network) in their titles.
 Open the settings and select the **AI Models** category.
 
 **Expected:**
-- The page shows the sections **Model Store**, **Setup Check**, **Engine Runtimes** and **Model Browser**, in that order.
+- The page shows the sections **Model Store**, **Model Browser**, **Setup Check** and **Engine Runtimes**, in that order; Setup Check offers **Setup wizard…**, **Run check** and **Download defaults**.
 - No error is logged on first open, even with no models installed.
 
 ## Step: The store folder and Open folder
@@ -40,7 +40,7 @@ Read the **Store folder** path field, then press **Open folder**.
 Press **Run check** under **Setup Check**.
 
 **Expected:**
-- After a short "Checking…" the result lists the model families (depth, diffusion, MediaPipe) with an **OK**, **Missing** or **Optional** status each.
+- After a short "Checking…" the result lists the model families (depth, diffusion) with an **OK**, **Missing** or **Optional** status each; MediaPipe is bundled and not listed.
 - Missing models come with a readable reason, e.g. that a `[DepthAnything]` operator shows an error until a depth model is downloaded.
 - The engine runtimes (CUDA, TensorRT, DirectML) are reported with readable reasons for what is not found.
 
@@ -57,11 +57,11 @@ With at least one family reporting a missing model, press **Download Defaults**.
 ## Step: Family tabs in the model browser
 
 **Action:**
-Switch the model browser between **All**, **Depth Anything**, **Stream Diffusion** and **MediaPipe**.
+Switch the model browser between **All**, **Depth Anything** and **Stream Diffusion**.
 
 **Expected:**
 - **All** lists every entry grouped by family.
-- **Depth Anything** lists only depth models (Depth Anything 3 in several sizes plus the V2 exports), **Stream Diffusion** only diffusion exports, **MediaPipe** only the tracking and segmentation models.
+- **Depth Anything** lists only depth models (Depth Anything 3 in several sizes), **Stream Diffusion** the V2 export entry and its checkpoint download.
 - Each entry shows what it is used for, its size and whether it is installed.
 
 ## Step: Installing one model (network)
@@ -99,3 +99,43 @@ Set the **TensorRT runtime folder** to an empty folder, press **Re-detect runtim
 **Expected:**
 - With the override set, TensorRT is reported as not found and the message points at the folder that was checked.
 - After clearing, the detection returns to what it was before (automatic sources like `TENSORRT_ROOT` and the standard installs).
+
+## Step: AI Model Setup opens once on a fresh installation
+
+**Action:**
+Close TiXL, delete the model store folder and remove `"SetupWizardOffered": true` from `aiModels.json` in the settings folder. Start TiXL and wait for the startup dialogs to finish.
+
+**Expected:**
+- The **AI Model Setup** wizard opens on its own on the **Welcome** page, with a footer hint that it is shown once.
+- After closing it with **Not now** and restarting TiXL, it does not open again.
+
+## Step: Choosing components in the setup wizard
+
+**Action:**
+Open **Help › AI Model Setup…**, press **Next >**, then switch the **Setup type** between Recommended, Minimal and Everything. Hover several models and families, then untick one model.
+
+**Expected:**
+- Each setup type ticks a different set of models and shows its total download size next to the combo.
+- The StreamDiffusion V2 export entry is greyed and marked *own export*; its checkpoint download is listed separately and pre-ticked in the wizard's recommended set (17 GB, untick to skip).
+- The description pane shows the hovered model's text, Speed/Quality bars, hardware hint and *Used by* operators; hovering a family shows the family description.
+- A family whose models are only partly ticked shows a mixed checkbox; clicking it ticks all of them.
+- Unticking a model switches the setup type to **Custom**; **Space required** updates.
+
+## Step: Installing through the wizard (network)
+
+**Action:**
+Select only **Depth Anything 3 – Small (int8)** (Custom) and press **Install**. While it downloads, press **Run in background**, then reopen **Help › AI Model Setup…**.
+
+**Expected:**
+- The Installing page shows overall progress, the current file with bytes received, speed and remaining time.
+- After **Run in background** the download continues (visible in the settings model browser); reopening shows the progress page again, or the **Setup Complete** summary once it is done.
+- The finished model is listed as *installed* in the wizard and in the settings model browser.
+
+## Step: Cancelling and resuming in the wizard (network)
+
+**Action:**
+Start installing **Depth Anything 3 – Metric Large (fp16)** in the wizard and press **Cancel** after a few seconds. Then install it again and disconnect the network for about 10 seconds mid-download.
+
+**Expected:**
+- Cancel stops within a second, marks the model *Cancelled* and leaves no `.part` file in the store.
+- With the network interrupted, the log shows a retry and the download continues from where it stopped once the network is back, instead of starting over.

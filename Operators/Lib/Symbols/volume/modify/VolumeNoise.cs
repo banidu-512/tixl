@@ -6,6 +6,7 @@ using T3.Core.DataTypes.Volume;
 using T3.Core.DataTypes.Volume.Tools;
 using T3.Core.DataTypes.Volume.IO;
 using T3.Core.Logging;
+using Lib.Utils;
 
 namespace Lib.volume.modify;
 
@@ -13,9 +14,11 @@ namespace Lib.volume.modify;
 [Guid("157fac50-f3ea-5404-94ef-89b470fd6194")]
 internal sealed class VolumeNoise : Instance<VolumeNoise>
 {
+    private readonly record struct Key(VdbVolume Volume, int Seed, VdbNoiseType NoiseType, VdbNoiseFractalType Fractal, int Octaves,
+                                       float Frequency, float Amplitude, Vector3 Offset, T3.Core.DataTypes.Volume.Tools.VolumeNoise.Mode Mode);
+
     [Output(Guid = "2f675093-d490-50ea-ac15-613f7c5b367d")]
     public readonly Slot<VdbVolume> Result = new();
-
 
     private enum NoiseTypes
     {
@@ -43,6 +46,7 @@ internal sealed class VolumeNoise : Instance<VolumeNoise>
     public VolumeNoise()
     {
         Result.UpdateAction = Update;
+        _job = new BackgroundJob<Key, VdbVolume>(this, nameof(VolumeNoise), Compute, Result);
     }
 
     private void Update(EvaluationContext context)
@@ -60,36 +64,40 @@ internal sealed class VolumeNoise : Instance<VolumeNoise>
         var grid = volume?.GetFloatGrid();
         if (grid == null)
         {
+            _job.Reset();
             Result.Value = volume;
-            _last = default;
             return;
         }
 
-        var key = (volume, seed, noiseType, fractal, octaves, frequency, amplitude, offset, mode);
-        if (key == _last)
-            return;
-
-        try
+        if (!float.IsFinite(frequency) || !float.IsFinite(amplitude) || !float.IsFinite(offset.X + offset.Y + offset.Z))
         {
-            var noise = new VdbNoise(seed);
-            Result.Value = new VdbVolume(T3.Core.DataTypes.Volume.Tools.VolumeNoise.Apply(grid, noise, frequency, amplitude, offset, octaves, noiseType, fractal, mode));
-            _last = key;
-            _lastError = null;
-        }
-        catch (Exception e)
-        {
-            // An exception escaping an update is fatal to the editor; degrade to an empty output.
+            _job.Reset();
             Result.Value = null;
-            _last = default;
-            if (_lastError != e.Message)
-                Log.Warning($"VolumeNoise failed: {e.Message}", this);
-            _lastError = e.Message;
+            return;
+        }
+
+        // Noise evaluates octaves per active voxel; an animated Offset therefore shows the newest finished
+        // result each frame instead of stalling playback until every frame's noise is done.
+        var key = new Key(volume, seed, noiseType, fractal, octaves, frequency, amplitude, offset, mode);
+        switch (_job.Poll(context, key, out var result))
+        {
+            case BackgroundJobOutcome.Ready:
+                Result.Value = result;
+                break;
+            case BackgroundJobOutcome.Failed:
+                Result.Value = null;
+                break;
         }
     }
 
-    private (VdbVolume, int, VdbNoiseType, VdbNoiseFractalType, int, float, float, Vector3, T3.Core.DataTypes.Volume.Tools.VolumeNoise.Mode) _last
-        = (null, -1, (VdbNoiseType)(-1), (VdbNoiseFractalType)(-1), -1, -1, -1, Vector3.Zero, (T3.Core.DataTypes.Volume.Tools.VolumeNoise.Mode)(-1));
-    private string _lastError;
+    private static VdbVolume Compute(Key key)
+    {
+        var noise = new VdbNoise(key.Seed);
+        return new VdbVolume(T3.Core.DataTypes.Volume.Tools.VolumeNoise.Apply(key.Volume.GetFloatGrid(), noise, key.Frequency, key.Amplitude,
+                                                                              key.Offset, key.Octaves, key.NoiseType, key.Fractal, key.Mode));
+    }
+
+    private readonly BackgroundJob<Key, VdbVolume> _job;
 
     [Input(Guid = "20af828b-f18e-5822-95e1-e9708aa8fd01")]
     public readonly InputSlot<VdbVolume> Volume = new();

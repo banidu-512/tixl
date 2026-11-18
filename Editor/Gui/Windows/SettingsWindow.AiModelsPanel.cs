@@ -19,7 +19,7 @@ namespace T3.Editor.Gui.Windows;
 internal sealed partial class SettingsWindow
 {
     /** Which family the model browser lists; All shows every entry grouped by family. */
-    private enum AiModelBrowserFilter { All, DepthAnything, StreamDiffusion, MediaPipe }
+    private enum AiModelBrowserFilter { All, DepthAnything, StreamDiffusion }
 
     private static AiModelBrowserFilter _aiBrowserFilter = AiModelBrowserFilter.All;
 
@@ -127,8 +127,9 @@ internal sealed partial class SettingsWindow
         CustomComponents.HelpText(
             """
             Checks everything the AI operators need: CUDA/TensorRT runtimes, the model store and the
-            models for DepthAnything, StreamDiffusion and MediaPipe. "Download defaults" installs the
-            fastest working model of every family that is missing one.
+            models for DepthAnything and StreamDiffusion. "Setup wizard" lets you pick models with
+            descriptions; "Download defaults" installs the fastest model of every family missing one.
+            The MediaPipe tracking models ship bundled with TiXL and need no setup.
             """);
         FormInputs.AddVerticalSpace();
 
@@ -145,6 +146,15 @@ internal sealed partial class SettingsWindow
             ImGui.BeginDisabled();
         }
 
+        if (CustomComponents.DrawCtaButton("Setup wizard…", Icon.None, UiColors.ForegroundFull, UiColors.StatusActivated, Color.Transparent))
+        {
+            T3Ui.AiModelSetupWizard.ShowNextFrame();
+        }
+
+        CustomComponents.TooltipForLastItem("Choose the models to install, installer-style, with a description of each.",
+                                            "Downloads go into the model store and continue if the wizard is closed.");
+        ImGui.SameLine(0, 8 * T3Ui.UiScaleFactor);
+
         if (ImGui.Button("Run check"))
         {
             AiSetupChecker.Run();
@@ -154,7 +164,7 @@ internal sealed partial class SettingsWindow
                                             "Probing CUDA/TensorRT loads the runtime DLLs, exactly like the operators do later.");
         ImGui.SameLine(0, 8 * T3Ui.UiScaleFactor);
 
-        if (CustomComponents.DrawCtaButton("Download defaults", Icon.None, UiColors.ForegroundFull, UiColors.StatusActivated, Color.Transparent))
+        if (ImGui.Button("Download defaults"))
         {
             if (AiSetupChecker.LastCheckAt == DateTime.MinValue)
                 AiSetupChecker.Run();
@@ -189,6 +199,15 @@ internal sealed partial class SettingsWindow
 
             DrawStatusLine(color, $"{item.ResultText}  {item.Title}");
             CustomComponents.TooltipForLastItem(item.Title, item.Detail);
+
+            // Rows that need attention carry the "what to do" guidance directly on the page;
+            // OK rows keep it in the tooltip to keep the list compact.
+            if (item.Result is AiCheckResult.Fixable or AiCheckResult.Missing && !string.IsNullOrWhiteSpace(item.Detail))
+            {
+                ImGui.Indent();
+                CustomComponents.HelpText(item.Detail);
+                ImGui.Unindent();
+            }
         }
     }
 
@@ -308,7 +327,7 @@ internal sealed partial class SettingsWindow
         switch (_aiBrowserFilter)
         {
             case AiModelBrowserFilter.All:
-                foreach (var family in AiModelCatalog.Families)
+                foreach (var family in AiModelCatalog.VisibleFamilies)
                 {
                     DrawFamilyGroup(family);
                 }
@@ -321,10 +340,6 @@ internal sealed partial class SettingsWindow
 
             case AiModelBrowserFilter.StreamDiffusion:
                 DrawFamilyGroup(AiModelFamily.StreamDiffusion);
-                break;
-
-            case AiModelBrowserFilter.MediaPipe:
-                DrawFamilyGroup(AiModelFamily.MediaPipe);
                 break;
         }
     }

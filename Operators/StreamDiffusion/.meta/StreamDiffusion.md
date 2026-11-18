@@ -1,64 +1,34 @@
 # StreamDiffusion Operator
 
 ## Overview
-AI image and video generation with ONNX Runtime. Supports text-to-image, image-to-image and continuous video restyling, with Stable Diffusion 1.x / SD-Turbo / SDXL exports and the StreamDiffusion V2 (causal Wan2.1 DiT) export. GPU acceleration uses the CUDA or TensorRT execution provider (ONNX Runtime 1.30, CUDA 13 + cuDNN 9, NVIDIA driver 580+); macOS uses CoreML. Without a usable GPU provider the operator falls back to CPU and says so in its status line.
+Realtime video-to-video diffusion with ONNX Runtime, running the StreamDiffusion V2 causal Wan2.1 DiT export as a pipelined stream-batch. GPU acceleration uses the CUDA or TensorRT execution provider (ONNX Runtime 1.30, CUDA 13 + cuDNN 9, NVIDIA driver 580+); macOS uses CoreML. Without a usable GPU provider the operator falls back to CPU and says so in its status line.
 
 ## Inputs
-- **string EnginePath** - Path to the model folder with the ONNX models (see below)
-- **int Mode** - Generation mode (Text to Image / Image to Image)
-- **string Prompt** - Text description of desired image
-- **string NegativePrompt** - Used as the unconditional side when Guidance > 1.0
-- **int Seed** - Random seed (-1 = random)
-- **int Width** - Output width in pixels (aligned to multiples of 8)
-- **int Height** - Output height in pixels (aligned to multiples of 8)
-- **float Guidance** - Classifier-free guidance (1.0 = no CFG, fastest; 7-12 typical for SD 1.5)
-- **float Strength** - img2img transformation strength (0.0 = keep input, 1.0 = ignore input)
-- **int Steps** - Number of denoising steps (1-50)
-- **Texture2D? InputImage** - Source image for img2img mode
-- **int ModelType** - Informational label; the exported models define the actual model
+- **string EnginePath** - Path to the V2 export folder (empty = first V2 export in the model store)
+- **string Prompt** - Text description of the restyle
+- **int Seed** - A changed seed re-primes the stream with fresh noise (-1 keeps the current one)
+- **float Strength** - How strongly each Stream frame is re-noised (0 = keep the previous frame, 1 = fresh frame)
+- **int Steps** - KV-cache batch size (1-4); every extra step doubles the cache
+- **Texture2D? InputImage** - Video or camera frame to restyle; the model is video-only
 - **int CudaDevice** - CUDA/TensorRT device index (the dropdown lists the adapters found by the driver)
-- **bool TriggerGenerate** - Momentarily true to trigger single generation
-- **bool AutoGenerate** - Continuously regenerate on input changes
+- **int ExecutionProvider** - CPU/DirectML/CUDA/TensorRT, listed per OS
+- **bool TriggerGenerate** - Momentarily true to step one frame when AutoGenerate is off
+- **bool AutoGenerate** - Continuously restyle incoming frames
+- **int ResizeMode** - How the input image fits the export's baked size (Stretch/CenterCrop/Pad)
+- **float Feedback** - Blends the previous output frame to smooth flicker
+- **bool FastDecode** - Decodes one latent instead of a three-latent window
+- **bool ResetStream** - Momentarily true to drop the rolling KV cache and re-prime from the next frame (scene cuts, style drift)
+- **bool Debug** - Logs detailed timing and state information
 
 ## Outputs
-- **Texture2D Output** - Generated image texture
-- **Int2 OutputSize** - Dimensions of generated image
-- **float GenerationTime** - Time in seconds for last generation
+- **Texture2D Output** - Restyled stream frame
+- **Int2 OutputSize** - Dimensions of generated image (from the export)
+- **float GenerationTime** - Time in seconds for the last stream step
+- **float NoiseScale** - Effective noise scale after the motion-aware controller (starts at Strength, lowered on fast motion, raised on still scenes)
+- **float EncodeMs / DenoiseMs / DecodeMs** - Per-stage wall time of the last stream step
 
 ## Model Files Required
 Point `EnginePath` to a folder containing:
-
-| File | Required | Purpose |
-|---|---|---|
-| `unet.onnx` | yes | Denoising UNet |
-| `text_encoder.onnx` | yes | CLIP text encoder |
-| `vae_decoder.onnx` | yes | Latent-to-image decoder |
-| `vae_encoder.onnx` | img2img only | Image-to-latent encoder |
-| `tokenizer.json` (or `vocab.json` + `merges.txt`) | yes | CLIP tokenizer data |
-
-The operator validates the folder and reports exactly which files are missing.
-
-### Exporting models
-Export SD 1.5 or SD-Turbo (fp16 recommended) to ONNX with
-[diffusers' `StableDiffusionPipeline.to_onnx` / `optimum`]:
-```bash
-optimum-cli export onnx --model stabilityai/sd-turbo --task stable-diffusion ./sd-turbo-onnx
-```
-Or from Python:
-```python
-from diffusers import StableDiffusionPipeline
-pipe = StableDiffusionPipeline.from_single_file("sd-turbo.safetensors")
-pipe.to_onnx("./sd-turbo-onnx", fp16=True)
-```
-The single `model.onnx` file produced by some exporters is NOT enough — the operator needs the per-component files listed above. Note: SDXL and FLUX variants use different text encoders and are not supported by this pipeline.
-
-## StreamDiffusion V2 (ModelType = StreamDiffusion V2)
-
-Runs the causal Wan2.1 1.3B video DiT from [StreamDiffusionV2](https://github.com/chenfengxu714/StreamDiffusionV2) as a
-pipelined stream-batch: each input frame advances every denoising step at once, and keys/values of past frames are kept in
-a GPU-resident cache. Use it with Mode = Stream (Image to Image is routed to the same path; Text to Image is unsupported).
-
-Model folder (produced by `tools/streamdiffusionv2/`, see the README there):
 
 | File | Purpose |
 |---|---|
@@ -66,6 +36,16 @@ Model folder (produced by `tools/streamdiffusionv2/`, see the README there):
 | `cross_kv.onnx`, `kv_zeros.onnx` | Prompt cross-attention K/V and device-side cache allocation |
 | `text_encoder.onnx` (+ `.data`), `tokenizer.json` | UMT5-XXL, loaded on the CPU only while the prompt changes |
 | `vae_encoder.onnx`, `vae_decoder.onnx` | TAEHV (Wan-compatible tiny VAE) |
+
+The operator validates the folder and reports exactly which files are missing. Produce the export with the scripts in `Operators/StreamDiffusion/tools/streamdiffusionv2` (see their README); the checkpoint download in the model browser provides model.pt, the T5 encoder and the tokenizer.
+
+## StreamDiffusion V2 (ModelType = StreamDiffusion V2)
+
+Runs the causal Wan2.1 1.3B video DiT from [StreamDiffusionV2](https://github.com/chenfengxu714/StreamDiffusionV2) as a
+pipelined stream-batch: each input frame advances every denoising step at once, and keys/values of past frames are kept in
+a GPU-resident cache. Use it with Mode = Stream (Image to Image is routed to the same path; Text to Image is unsupported).
+
+The files come from the export scripts; see the export steps below.
 
 Input mapping: `Width`/`Height` are ignored (taken from the export), `Steps` selects 1-4 denoising steps (restarts the
 stream), `StreamStrength` is the starting noise level (the pipeline lowers it automatically on fast motion), and a changed
@@ -138,35 +118,32 @@ The managed code is portable: Windows-only calls (DXGI adapter names) are guarde
 other platforms simply list a single "Default" device.
 
 ## Recommended Settings
-| Model | Steps | Guidance | Resolution |
-|-------|-------|----------|------------|
-| SD Turbo | 1 | 1.0 (no CFG) | 512x512 |
-| SD 1.5 | 20-50 | 7.5-12.0 | 512x512 |
+| Configuration | Steps | Feedback | Resolution |
+|---------------|-------|----------|------------|
+| Fastest stream (TensorRT) | 1 | 0 | 256x256 export |
+| More temporal context | 2 | 0.3-0.6 | 256x256 export |
 
 ## Troubleshooting
-- **"Model path is empty"**: Set `EnginePath` to the model folder
-- **"Model directory not found" / "Missing in ..."**: The folder must contain the required .onnx files listed above
-- **"img2img requires vae_encoder.onnx"**: Export the VAE encoder too, or use Text to Image mode
-- **Slow generation**: Prefer SD-Turbo with 1 step and Guidance 1.0; keep resolution at 512x512; check the status line — "(CPU)" means no GPU provider initialized (read the log line that names the reason)
-- **Black output with non-turbo models at 1 step**: SD 1.5 needs 20+ steps and Guidance 7.5+
+- **"Missing in ..."**: The export folder must contain all files listed above; re-run the export scripts
+- **Slow generation**: check the status line — "(CPU)" means no GPU provider initialized (read the log line that names the reason); TensorRT + FastDecode + Steps 1 is the fastest configuration
+- **TensorRT engine build fails**: transient builder workspace; lower `TIXL_SD_TRT_WORKSPACE_MB` or free VRAM, the operator re-initializes on CUDA and the stream recovers
 
 ## Performance Notes
-- SD Turbo at 1 step / Guidance 1.0 runs a single UNet pass (fastest path)
-- Guidance > 1.0 doubles UNet work (two passes per step for CFG)
-- Width/Height are aligned to multiples of 8 for the latent space
-- img2img at Strength < 1.0 skips the first denoise steps proportional to (1 - Strength)
+- The V2 step count is the stream batch size; every extra step doubles the GPU-resident KV cache
+- `FastDecode` decodes one latent instead of a three-latent window (about 10 ms decode on TensorRT)
+- Prompt encodes run in the background; known prompts start from the disk cache in about 1.4 s
+- Identical input frames reuse the last result, so a frozen source stops consuming the GPU
 
 ## Use Cases
-- Text-to-image generation
-- Image-to-image style transfer
-- Sketch/ photo guided generation
-- Creative coding and VJ performances
+- Live camera restyling with temporal stability (VJ sets, installations)
+- Recorded footage transformations with consistent style across frames
+- Prompt-driven looks that survive scene cuts via re-priming
 
 ## Examples
 
 The Examples package ships three example compositions (symbol browser → Examples → Lib/io/ai):
 
-- `StreamDiffusionExample` — text to image with SD Turbo, one prompt and an AutoGenerate toggle.
+- `StreamDiffusionExample` — StreamDiffusion V2 with a prompt and an AutoGenerate toggle.
 - `StreamDiffusionExampleImg2ImgRestyle` — LoadImage → StreamDiffusion in Image to Image mode, with Strength and MatchInputSize wired.
 - `StreamDiffusionExampleV2Restyle` — LoadImage → AdjustColors → StreamDiffusion V2 in Stream mode; the float render target exercises the worker-side conversion. Set ModelPath to a V2 export and use CUDA or TensorRT.
 

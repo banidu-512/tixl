@@ -6,6 +6,17 @@ DiT) into the ONNX folder the `StreamDiffusion` operator loads when `ModelType` 
 The PyTorch modules here are independent re-implementations of the model layout; the upstream repository is only a
 reference for the architecture and is never imported or executed.
 
+## Model store flow
+
+The Model Browser entry "StreamDiffusion V2 checkpoint (for export)" downloads `model.pt`,
+`models_t5_umt5-xxl-enc-bf16.pth` and `tokenizer.json` into
+`%LOCALAPPDATA%\TiXL\Models\StreamDiffusion\streamdiffusion-v2-checkpoint\`. Run the three
+steps below against those files (pass their full paths) and write the finished export into its
+own folder next to the checkpoint, for example
+`%LOCALAPPDATA%\TiXL\Models\StreamDiffusion\wan-480p\`. The operator scans that folder when
+`EnginePath` is empty, and the setup check turns green once the export files are in place.
+`taew2_1.pth` comes from the taehv GitHub project and is not part of the download.
+
 ## Inputs
 
 | File | Source |

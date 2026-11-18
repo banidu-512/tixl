@@ -1,4 +1,4 @@
-using t3.streamdiffusion.Onnx;
+using t3.streamdiffusion.V2;
 using T3.Core.Settings;
 using Xunit;
 
@@ -7,7 +7,7 @@ namespace StreamDiffusion.Tests;
 /// <summary>
 /// Pins the contract between the model store (Settings > AI Models) and the operator: exports install
 /// into one subfolder of <c>StreamDiffusion/</c> per model, and the operator's empty-EnginePath scan
-/// finds the first of them that validates.
+/// finds the first of them that passes V2 validation.
 /// </summary>
 public class ManagedModelStoreTests : IDisposable
 {
@@ -46,14 +46,13 @@ public class ManagedModelStoreTests : IDisposable
     [Fact]
     public void ExportSubfolder_LayoutIsFoundByTheOperatorScan()
     {
-        // The layout the model browser produces: one folder per export inside the family folder
-        var exportFolder = Path.Combine(AiModelSettings.FamilyDirectory(AiModelSettings.StreamDiffusionFamilyFolder), "sd-turbo-onnx");
+        // The layout the export tools produce: one folder with the V2 file set, inside the family folder
+        var exportFolder = Path.Combine(AiModelSettings.FamilyDirectory(AiModelSettings.StreamDiffusionFamilyFolder), "streamdiffusion-v2");
         Directory.CreateDirectory(exportFolder);
-        foreach (var file in new[] { "unet.onnx", "text_encoder.onnx", "vae_decoder.onnx", "vocab.json", "merges.txt" })
+        foreach (var file in new[] { "dit_step.onnx", "dit_manifest.json", "cross_kv.onnx", "kv_zeros.onnx", "text_encoder.onnx", "vae_encoder.onnx", "vae_decoder.onnx", "tokenizer.json" })
             File.WriteAllText(Path.Combine(exportFolder, file), "placeholder");
 
-        var found = ScanForValidExport();
-        Assert.Equal(exportFolder, found);
+        Assert.Equal(exportFolder, ScanForValidExport());
     }
 
     [Fact]
@@ -61,13 +60,13 @@ public class ManagedModelStoreTests : IDisposable
     {
         var familyDirectory = AiModelSettings.FamilyDirectory(AiModelSettings.StreamDiffusionFamilyFolder);
         Directory.CreateDirectory(Path.Combine(familyDirectory, "broken-export"));
-        File.WriteAllText(Path.Combine(familyDirectory, "broken-export", "unet.onnx"), "placeholder");
+        File.WriteAllText(Path.Combine(familyDirectory, "broken-export", "dit_step.onnx"), "placeholder");
 
-        Directory.CreateDirectory(Path.Combine(familyDirectory, "sd-turbo-onnx"));
-        foreach (var file in new[] { "unet.onnx", "text_encoder.onnx", "vae_decoder.onnx", "vocab.json", "merges.txt" })
-            File.WriteAllText(Path.Combine(familyDirectory, "sd-turbo-onnx", file), "placeholder");
+        Directory.CreateDirectory(Path.Combine(familyDirectory, "streamdiffusion-v2"));
+        foreach (var file in new[] { "dit_step.onnx", "dit_manifest.json", "cross_kv.onnx", "kv_zeros.onnx", "text_encoder.onnx", "vae_encoder.onnx", "vae_decoder.onnx", "tokenizer.json" })
+            File.WriteAllText(Path.Combine(familyDirectory, "streamdiffusion-v2", file), "placeholder");
 
-        Assert.Equal(Path.Combine(familyDirectory, "sd-turbo-onnx"), ScanForValidExport());
+        Assert.Equal(Path.Combine(familyDirectory, "streamdiffusion-v2"), ScanForValidExport());
     }
 
     [Fact]
@@ -85,7 +84,7 @@ public class ManagedModelStoreTests : IDisposable
 
         foreach (var directory in Directory.GetDirectories(familyDirectory).OrderBy(d => d, StringComparer.OrdinalIgnoreCase))
         {
-            if (StableDiffusionPipeline.ValidateModelDirectory(directory).Length == 0)
+            if (StreamDiffusionV2Pipeline.ValidateModelDirectory(directory).Length == 0)
                 return directory;
         }
 

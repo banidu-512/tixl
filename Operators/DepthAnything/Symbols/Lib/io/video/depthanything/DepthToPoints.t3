@@ -27,10 +27,6 @@
       "DefaultValue": true
     },
     {
-      "Id": "67b05edd-6091-4b6e-b179-34b11f7a5d8c"/*DepthIsDisparity*/,
-      "DefaultValue": false
-    },
-    {
       "Id": "782f0918-4efe-46fc-8a2f-3456d509e2d4"/*MaxPoints*/,
       "DefaultValue": 262144
     },

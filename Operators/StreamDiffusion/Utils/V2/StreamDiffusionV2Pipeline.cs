@@ -15,7 +15,7 @@ namespace t3.streamdiffusion.V2;
 /// and advances all denoising steps at once, each batch element holding a different latent frame at a different noise level.
 /// Keys/values of past frames live in a GPU-resident cache owned here; the exported DiT is stateless.
 /// </summary>
-internal sealed class StreamDiffusionV2Pipeline : IGenerationPipeline
+internal sealed class StreamDiffusionV2Pipeline : IDisposable
 {
     public const string DiTFileName = "dit_step.onnx";
 
@@ -38,7 +38,6 @@ internal sealed class StreamDiffusionV2Pipeline : IGenerationPipeline
     };
 
     public bool IsInitialized => _dit != null && _tokenizer != null;
-    public bool SupportsImg2Img => true;
     public string ProviderLabel => _dit?.ProviderLabel ?? "CPU";
     public string? InitializationError => _initializationError;
 
@@ -62,18 +61,33 @@ internal sealed class StreamDiffusionV2Pipeline : IGenerationPipeline
         set => _verboseLogging = value;
     }
 
-    public int RecommendedSteps => DenoisingTimesteps.Length;
-    public float RecommendedGuidance => 1f;
-
     /// <summary>Per-stage wall time of the most recent stream step (milliseconds).</summary>
     public double LastEncodeMs { get; private set; }
     public double LastDenoiseMs { get; private set; }
     public double LastDecodeMs { get; private set; }
 
+    /// <summary>
+    /// The noise scale the motion-aware controller actually used for the newest frame: it starts at the
+    /// Strength input and is lowered on fast motion (which would tear) and raised towards it on still
+    /// scenes (which would freeze). Telemetry; see <see cref="ResetStream"/>.
+    /// </summary>
+    public float EffectiveNoiseScale => _noiseScale;
+
+    /// <summary>
+    /// Drops the rolling KV cache, sink tokens and the decode ring; the next <see cref="StreamStep"/>
+    /// re-primes the stream from the incoming frame. Use on scene cuts or when the output drifts.
+    /// </summary>
+    public void ResetStream()
+    {
+        _needsPrime = true;
+    }
+
     public static string ValidateModelDirectory(string? modelDirectory)
     {
         if (string.IsNullOrWhiteSpace(modelDirectory))
-            return "Model path is empty. Select a folder with the StreamDiffusion V2 ONNX export.";
+            return "No StreamDiffusion V2 export found. Download the checkpoint in Settings > AI Models, run the export " +
+                   "scripts in Operators/StreamDiffusion/tools/streamdiffusionv2, and leave EnginePath empty to pick up the " +
+                   "result from the model store - or point EnginePath at an export folder.";
 
         if (!Directory.Exists(modelDirectory))
             return $"Model directory not found: {modelDirectory}";
@@ -213,21 +227,11 @@ internal sealed class StreamDiffusionV2Pipeline : IGenerationPipeline
         }
     }
 
-    public byte[]? Txt2Img(string prompt, string? negativePrompt, int width, int height, int steps, float guidance, int seed, out string? error)
-    {
-        error = "StreamDiffusion V2 is a video model and needs an input image. Use the Stream mode.";
-        return null;
-    }
-
-    public byte[]? Img2Img(string prompt, string? negativePrompt, byte[] rgbaInput, int inputWidth, int inputHeight, int width, int height,
-                           int steps, float guidance, float strength, int seed, int resizeMode, float preserveDetails, bool isBgra,
-                           out string? error)
-    {
-        ConfigureStream(steps);
-        return StreamStep(prompt, rgbaInput, inputWidth, inputHeight, width, height, strength, resizeMode, seed, isBgra, out error);
-    }
-
-    public byte[]? StreamStep(string prompt, byte[] rgbaInput, int inputWidth, int inputHeight, int width, int height,
+    /// <summary>
+    /// Streams one input frame through the causal DiT. The output size is baked into the export,
+    /// so there are no width/height arguments; the caller learns it from <see cref="TryGetFixedOutputSize"/>.
+    /// </summary>
+    public byte[]? StreamStep(string prompt, byte[] rgbaInput, int inputWidth, int inputHeight,
                               float strength, int resizeMode, int seed, bool isBgra, out string? error)
     {
         lock (_lock)
@@ -253,7 +257,7 @@ internal sealed class StreamDiffusionV2Pipeline : IGenerationPipeline
             var stage = "resize";
             try
             {
-                var resized = StableDiffusionPipeline.ResizeRgba(rgbaInput, inputWidth, inputHeight, _width, _height, resizeMode);
+                var resized = RgbaResize.Apply(rgbaInput, inputWidth, inputHeight, _width, _height, resizeMode);
                 var frameChange = PushFrame(resized, isBgra);
 
                 if (!string.Equals(prompt, _preparedPrompt, StringComparison.Ordinal))

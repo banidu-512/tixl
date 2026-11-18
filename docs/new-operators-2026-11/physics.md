@@ -60,9 +60,6 @@ stopped — pump frames to see motion.
 ![PhysicsWorld node and its body buffer](shots/PhysicsWorld-graph.png)
 *The world collects the bodies and feeds the draw operator.*
 
-![Bouncing balls example](shots/example-PhysicsBouncingBallsExample.png)
-*Five dynamic bodies above a static floor.*
-
 ## RigidBody
 
 Describes Bepu bodies: shape, kind, transform, size, mass and material parameters. On its own it is
@@ -71,26 +68,43 @@ one primitive body. Two optional inputs turn it into many:
 - `Points` (a CPU point list): one body per point. The point's position, rotation and scale place
   and size the body relative to `Position` and `Rotation`. GPU points go through
   `ReadPointsFromGpu` first. A point that moves teleports its body, like a changed `Position`.
-- `Geometry`: the bodies collide as the geometry. Without `Points` every geometry part becomes its
-  own body, so `VoronoiFracture` → `RigidBody` is a shattering object. With `Points` the whole
-  geometry sits at every point. The published pose is the pose of the part's pivot, which is what
-  `GeometryToMeshChunks` and `DrawMeshChunksAtPoints` expect.
+- `Geometry`: the bodies collide as the geometry. `Pieces` decides what its parts become:
+  **EachPartIsABody** (default) makes every part its own body, so `VoronoiFracture` → `RigidBody` is
+  a shattering object; **WholeObject** keeps all parts together as one body, which is what an
+  imported model with several pieces wants. With `Points` the whole geometry sits at every point. The
+  published pose is the pose of the part's pivot, which is what `GeometryToMeshChunks` and
+  `DrawMeshChunksAtPoints` expect. A GPU mesh (`LoadGltf`, `CubeMesh`, …) goes through
+  `MeshToGeometry` first.
 
-Shape `ConvexHull` wraps each piece in a convex hull; `Mesh` uses the exact triangles and is for
-static and kinematic bodies (a dynamic `Mesh` body is simulated as its hull). With geometry
-connected, a primitive `Shape` picks `ConvexHull` for dynamic and `Mesh` for static bodies. A volume
-collides the same way: `VolumeToMesh` → `Geometry`, `Kind` Static.
+`Shape` picks the collider. **Auto** (the default) is a box without geometry. With geometry it is the
+exact triangles for static and kinematic bodies, and for dynamic bodies a convex hull per piece that
+is **split into several hulls where the piece is concave**: a torus keeps its hole, a cup its hollow,
+a letter its counters. The hulls of one piece move as one Bepu compound body. `MaxHulls` caps how
+many hulls one part is split into (1 turns splitting off). **ConvexHull** wraps every part in exactly
+one hull, the cheapest choice for shapes that are already convex; **ConvexDecomposition** splits even
+mildly concave parts; **Mesh** uses the exact triangles. With geometry connected, a primitive `Shape`
+behaves like Auto. A volume collides the same way: `VolumeToMesh` → `Geometry`, `Kind` Static.
+
+The split is an approximate convex decomposition: the part is voxelized as a solid (overlapping shells
+count as one solid), then cut along axis planes, always the piece whose hull wastes most volume,
+where the two halves' hulls waste least. Each hull is built from the real surface inside it, so outer
+faces stay exact. It runs when the geometry changes and takes a fraction of a second for a typical
+part. It runs on a worker thread, from a copy of the geometry, so the frame never waits for it: a new body appears once
+its hulls are ready, and a body whose geometry changes keeps its old hulls until the new ones are done. Animating the
+geometry of a dynamic body still rebuilds it at every change, so don't.
+
+**Mass:** `MassMode` Auto weighs bodies made from geometry by their collider volume times `Density`,
+so a small fracture shard is lighter than a big chunk and a hollow ring lighter than a disc, and gives
+primitives the fixed `Mass`. Fixed and FromDensity force either rule for every body.
 
 `CollisionGroup`: bodies with the same non-zero group pass through each other.
 
-Describes one Bepu body in the simplest case: shape, kind, transform, size, mass and material parameters. The operator
-publishes the description; `PhysicsWorld` turns it into a Bepu body and keeps it in sync. The body id
-is fixed for the lifetime of this instance, so the world recognises the same body across evaluations.
-
-- `Shape` selects box, sphere, capsule, cylinder, convex hull or mesh.
+- `Shape` selects Auto, box, sphere, capsule, cylinder, convex hull, convex decomposition or mesh.
+- `Pieces` and `MaxHulls` shape geometry bodies, as described above.
 - `Kind` is dynamic, kinematic or static.
 - `Position`, `Rotation` place the body; `Size`, `Radius`, `Length` dimension it.
-- `Mass` sets the dynamic mass (kinematic/static ignore it).
+- `Mass` sets the dynamic mass (kinematic/static ignore it); `MassMode` and `Density` weigh
+  bodies by their volume instead.
 - `LinearVelocity` / `AngularVelocity` give it an initial push.
 - `Friction` and `Bounciness` are the contact material.
 - `LinearDamping` / `AngularDamping` bleed off motion.
@@ -107,9 +121,6 @@ is fixed for the lifetime of this instance, so the world recognises the same bod
 
 ![RigidBody node](shots/RigidBody-graph.png)
 *A body wired into `PhysicsWorld`.*
-
-![The simulated balls](shots/example-PhysicsBouncingBallsExample.png)
-*Bodies rendered at the world's published poses.*
 
 ## RigidJoint
 
@@ -158,9 +169,6 @@ as the fixed point.
 ![RigidJoint node](shots/RigidJoint-graph.png)
 *Joints linking the bridge segments.*
 
-![Rope bridge example](shots/example-PhysicsRopeBridgeExample.png)
-*The constraint chain holding the sagging bridge.*
-
 ## RigidBodyPoints
 
 The world publishes all its bodies in one point buffer, which a draw operator can only draw with one
@@ -193,7 +201,27 @@ surface from the distances the points carry. Any field works: `SphereSDF`, a `Co
 shapes, or a volume through `VdbToSdfField`. See `PhysicsSdfFieldExample`.
 
 The point grid sets the detail. The field is sampled when the points are read back, so an animated
-field needs `UpdateContinuously` on `ReadPointsFromGpu`, and rebuilds the collider when it changes.
+field needs `UpdateContinuously` on `ReadPointsFromGpu`, and rebuilds the collider when it changes:
+a read-back and a new mesh collider on every frame. A moving shape that is a sphere, box or capsule
+collides far more cheaply as a Kinematic `RigidBody` driven by the same animation, which is what the
+example does for its blob. A Kinematic body animated through `Position` or `Rotation` is moved there
+by velocity, so it pushes what it meets instead of jumping into it; a jump of more than 2 m in one
+frame is treated as a cut and placed directly.
+
+A triangle-mesh collider builds its search tree on a background thread, which keeps a collider of a
+hundred thousand triangles from stalling the frame it appears or changes in. Until it is ready the
+body collides as nothing; with `Deterministic` on, or while rendering to a file, it is built at once.
+
+## MeshToGeometry
+
+Reads a GPU mesh back into a `MeshGeometry`, so meshes from `LoadGltf`, `AssimpImport`, `CubeMesh` and
+the other mesh operators can feed the geometry operators and `RigidBody`. Every triangle becomes a
+face and every mesh chunk a part, so a model loaded in several pieces keeps them apart (use `Pieces`
+WholeObject to simulate it as one body). `WeldPoints` joins vertices at the same position, which
+reconnects faces a mesh splits for its normals or UVs; normals and texture coordinates are kept per
+corner. The readback stalls the GPU briefly and only runs when the incoming mesh changes.
+
+**Inputs:** `Mesh`, `WeldPoints`. **Output:** `Result`. It lives in `Lib.geometry`.
 
 ## RigidBodyGeometry
 
@@ -209,44 +237,34 @@ geometry. Physics runs on the CPU and so does geometry, so an object needs to be
 Every body is one part of the result, and bodies spawned from points carry the point color as a
 `Color` part attribute. The result is ordinary geometry, so any geometry operator can follow it.
 
-**Inputs:** `World` (the world's `OutBuffer`), `Body`. **Outputs:** `Result`, `Count`.
+`ShowColliders` draws bodies made from geometry as the convex hulls they collide as, each hull in a face color
+of its own, instead of as their geometry. Use it to check how a concave shape was split.
+
+**Inputs:** `World` (the world's `OutBuffer`), `Body`, `ShowColliders`. **Outputs:** `Result`, `Count`.
 
 *Cost:* the geometry is rebuilt and uploaded every frame. For many identical bodies,
 `RigidBodyPoints` with `DrawMeshAtPoints` is cheaper.
 
 ## Examples
 
-All of them build the world, feed it bodies and draw the result through `RigidBodyGeometry` → `GeometryToMesh`:
-the bodies are drawn as the geometry of their own colliders, so no example keeps a second mesh in step with
-its physics shapes. Together they cover every collider shape and joint type.
+Eleven example graphs in `Examples.Lib.physics`, each a scene of its own, lit with shadows and laid out the same
+way: sections for the sources, the bodies, the world and the drawing, and the shared render set-up on the right.
+Each one has a guided tour that walks through its graph step by step. Most are named after the operator they show,
+so they open from that operator's help.
 
 | Example | Shows |
 | --- | --- |
-| `PhysicsBouncingBallsExample` | Five spheres with bounciness from 0 to 1 — restitution |
-| `PhysicsDominoRunExample` | Fifteen boxes falling in a row — stacking and contact stability |
-| `PhysicsNewtonsCradleExample` | Five spheres hung on ball sockets — constrained motion |
-| `PhysicsParticlesExample` | 77 spheres raining onto a floor — throughput |
-| `PhysicsRopeBridgeExample` | A ten-link bridge held by ball sockets — chains |
-| `PhysicsSeesawExample` | A plank on a hinge over a kinematic fulcrum — hinges |
-| `MeshPhysicsExample` | Bodies driven along a path by distance servos |
-| `PhysicsCapsulesAndCylindersExample` | Capsules and cylinders — the two shapes the others skip |
-| `PhysicsWeldedPairsExample` | Balls welded into pairs — weld joints as compound bodies |
-| `PhysicsBrickWallExample` | 80 bricks from one `CubeGeometry` and a grid of points, drawn through `RigidBodyGeometry` — one geometry as collider and drawing |
-| `PhysicsFractureExample` | A `VoronoiFracture` cube dropped on the floor — one convex body per geometry part |
-| `PhysicsPlanetExample` | 200 moons pulled onto a planet with gravity off — radial `RigidForce` |
-| `PhysicsRopeExample` | 24 links from a line of points, hung by the first — Chain and World joints, `InstanceIndex` |
-| `PhysicsNetExample` | A 14×14 net draped over a sphere — Nearby joints, collision groups |
-| `PhysicsVortexExample` | 300 boxes in a whirlwind — vortex, radial and directional forces together |
-| `PhysicsContactsExample` | Bouncing balls with a flash at every impact — the `Contacts` output |
-| `PhysicsVolumeColliderExample` | Balls raining on a torus made from a volume — `VolumeToMesh` as a static mesh collider |
-| `PhysicsCarExample` | A chassis on four motorised wheels driving into boxes — `AutoAnchor`, `MotorSpeed`, `RigidBodyPoints` |
-| `PhysicsMotorExample` | A motorised paddle on a kinematic hub sweeping balls away — hinge motor |
-| `PhysicsRagdollExample` | Six ragdolls from ten bodies and nine joints — instanced Pair joints with `SwingLimit` |
-| `PhysicsVdbColliderExample` | 300 balls on the bunny from `bunny.vdb` — `LoadVdb` → `VolumeResample` → `VolumeToMesh` as a static collider |
-| `PhysicsVolumeCsgExample` | A bowl carved from a block with `VolumeCsg` catches the balls — edited volumes as colliders |
-| `PhysicsVolumeGravityExample` | A torus volume pulls 300 boxes onto itself — `VolumeToField` vectors into a Field `RigidForce` |
-| `PhysicsToVolumeExample` | A falling pile of balls wrapped in one skin — world poses → `VolumeFromPoints` → `VolumeToMesh` |
-| `PhysicsSdfFieldExample` | Balls on a shape that is only an SDF field (`BoxSDF` minus `SphereSDF`) — sampled with `SampleFieldPoints`, meshed by `SdfPointsToGeometry` |
+| `PhysicsWorldExample` | The basics: Bounciness from 0 to 1, a domino run from points, capsules and cylinders, and a spark at every contact |
+| `RigidBodyExample` | Geometry bodies: rings that slide down posts because Auto keeps their holes open, and the same word with Pieces EachPartIsABody and WholeObject |
+| `RigidJointExample` | A rope from Chain and World joints, a seesaw on a Hinge around a kinematic pivot, a net from Nearby links |
+| `RigidForceExample` | A whirlwind from vortex, radial and directional forces, and an impulse blast on Trigger |
+| `RigidBodyGeometryExample` | A `VoronoiFracture` cube that shatters, and a ring drawn with ShowColliders |
+| `RigidBodyPointsExample` | A car on four motorised wheels into a wall of crates, drawn instanced with `RepeatMeshAtPoints` |
+| `MeshToGeometryExample` | GPU meshes (tori, icosahedra, cylinders) as bodies, falling into a bowl carved from volumes |
+| `PhysicsVolumesExample` | `bunny.vdb` and a `VolumeCsg` bowl as colliders |
+| `PhysicsSdfFieldExample` | A raymarched SDF terrain and a moving SDF blob; geometry and mesh bodies collide with both |
+| `PhysicsVolumeGravityExample` | A torus volume's gradient as a Field force, in zero gravity |
+| `PhysicsToVolumeExample` | Falling balls wrapped in one skin with `VolumeFromPoints` |
 
-The last sixteen are generated by `gen-physics-examples.py`; their set-ups are also simulated headlessly
-in `Tests/Lib.Tests/Physics/PhysicsExampleScenesTests.cs`.
+The graphs are generated by `Scripts/example-scenes/physics.py`; their set-ups are also simulated headlessly in
+`Tests/Lib.Tests/Physics/PhysicsExampleScenesTests.cs`.

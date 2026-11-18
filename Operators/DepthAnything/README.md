@@ -1,6 +1,6 @@
 # Depth Anything Operator Package for TiXL
 
-Real-time monocular depth estimation for TiXL with **Depth Anything 3** (preferred) and Depth Anything V2, plus GPU operators that turn the depth into normals, positions and parallax.
+Real-time monocular depth estimation for TiXL with **Depth Anything 3**, plus GPU operators that turn the depth into normals, positions and parallax.
 
 ## Operators
 
@@ -24,11 +24,11 @@ Put the ONNX files in `Assets/`, or run `Scripts/download_models.py` (`Scripts/d
 | V3 Base | `da3-base-fp16.onnx`, `da3-base.onnx` | Apache-2.0 |
 | V3 Mono Large | `da3-mono-large-fp16.onnx`, `da3-mono-large-int8.onnx` | Apache-2.0 |
 | V3 Metric Large | `da3-metric-large-fp16.onnx` | Apache-2.0 |
-| V2 Small/Base/Large | `depth-anything-v2-{small,base,large}-fp16.onnx` (also `-small-fp32`, `-small-int8`) | Apache-2.0 (Small), CC-BY-NC (Base, Large) |
+| V3 Large | `da3-large-fp16.onnx`, `da3-large.onnx` | CC-BY-NC 4.0 |
+| V3 Giant | `da3-giant-fp16.onnx`, `da3-giant.onnx` (own export from the official weights) | CC-BY-NC 4.0 |
+| V3 Nested Giant | `da3-nested-giant-fp16.onnx`, `da3-nested-giant.onnx` (own export) | CC-BY-NC 4.0 |
 
-A V3 selection without an installed V3 file falls back to the V2 model of similar size.
-
-The V3 files are community ONNX exports of the official weights. The operator reads the input and output layout from the model and accepts float32 NCHW input (ImageNet normalization is done on the GPU) as well as uint8 NHWC input from exports that normalize inside the graph, such as `da3-small.onnx`. Other exports with these layouts work too: the depth output may be called `depth` or `predicted_depth`, and `depth_conf`, `sky`, `intrinsics` and `extrinsics` outputs are used when present. The V3 Base export includes extrinsics, so `DepthAnything.CamReference` can publish the estimated camera; the Small export is depth-only. The DA3 Large and Giant any-view checkpoints are CC-BY-NC 4.0 and are not offered by the download scripts.
+The V3 files are community ONNX exports of the official weights. The operator reads the input and output layout from the model and accepts float32 NCHW input (ImageNet normalization is done on the GPU) as well as uint8 NHWC input from exports that normalize inside the graph, such as `da3-small.onnx`. Other exports with these layouts work too: the depth output may be called `depth` or `predicted_depth`, and `depth_conf`, `sky`, `intrinsics` and `extrinsics` outputs are used when present. The V3 Base export includes extrinsics, so `DepthAnything.CamReference` can publish the estimated camera; the Small export is depth-only. The Giant and Nested-Giant any-view checkpoints are CC-BY-NC 4.0 and have no public ONNX export; the model browser lists them as own-export entries.
 
 Fixed-size exports (for example 504x504 or 504x378) dictate their input size; `InputResolution` only affects models with a dynamic input.
 
@@ -47,7 +47,7 @@ Fixed-size exports (for example 504x504 or 504x378) dictate their input size; `I
 
 ## Depth Semantics
 
-V3 models predict depth (far is larger), V2 models predict disparity (near is larger). `NormalizedDepthTexture` is near bright for both. `DepthToPosition`, `DepthToPoints` and `DepthParallax` have a `DepthIsDisparity` switch for V2. The Metric model returns meters when `FieldOfView` matches the source camera.
+DA3 predicts depth (far is larger). `NormalizedDepthTexture` is near bright. The Metric model returns meters when `FieldOfView` matches the source camera.
 
 ## Live Depth Splats
 
@@ -95,5 +95,4 @@ They default to the Depth Anything 3 Small model, so they run as soon as `da3-sm
 ## Credits
 
 - [Depth Anything 3](https://github.com/ByteDance-Seed/Depth-Anything-3) by ByteDance Seed
-- [Depth Anything V2](https://github.com/DepthAnything/Depth-Anything-V2) by Lihe Yang et al.
 - ONNX Runtime by Microsoft

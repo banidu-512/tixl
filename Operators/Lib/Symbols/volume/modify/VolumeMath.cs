@@ -6,6 +6,7 @@ using T3.Core.DataTypes.Volume;
 using T3.Core.DataTypes.Volume.Tools;
 using T3.Core.DataTypes.Volume.IO;
 using T3.Core.Logging;
+using Lib.Utils;
 
 namespace Lib.volume.modify;
 
@@ -13,9 +14,10 @@ namespace Lib.volume.modify;
 [Guid("608bc5be-57d2-5450-a9c2-f85a68fe95eb")]
 internal sealed class VolumeMath : Instance<VolumeMath>
 {
+    private readonly record struct Key(VdbVolume A, VdbVolume B, T3.Core.DataTypes.Volume.Tools.VolumeMath.BinaryOp Operation, float Constant);
+
     [Output(Guid = "1b9bd8b1-5d32-547f-ad2f-fe0f1a7171f3")]
     public readonly Slot<VdbVolume> Result = new();
-
 
     private enum Operations
     {
@@ -30,6 +32,7 @@ internal sealed class VolumeMath : Instance<VolumeMath>
     public VolumeMath()
     {
         Result.UpdateAction = Update;
+        _job = new BackgroundJob<Key, VdbVolume>(this, nameof(VolumeMath), Compute, Result);
     }
 
     private void Update(EvaluationContext context)
@@ -40,48 +43,37 @@ internal sealed class VolumeMath : Instance<VolumeMath>
         var useConstant = UseConstant.GetValue(context);
         var constant = Constant.GetValue(context);
 
-        var gridA = a?.GetFloatGrid();
-        if (gridA == null)
+        if (a?.GetFloatGrid() == null)
         {
+            _job.Reset();
             Result.Value = null;
-            _last = default;
             return;
         }
 
-        var gridB = useConstant ? null : b?.GetFloatGrid();
-        var key = (a, useConstant ? null : b, operation, useConstant, constant);
-        if (key == _last)
-            return;
-
-        try
+        // Without a usable B the constant path runs, matching the previous behaviour for an unconnected B.
+        var usedB = useConstant || b?.GetFloatGrid() == null ? null : b;
+        var key = new Key(a, usedB, operation, usedB == null ? constant : 0);
+        switch (_job.Poll(context, key, out var result))
         {
-            VdbGrid<float> result;
-            if (gridB != null)
-            {
-                result = T3.Core.DataTypes.Volume.Tools.VolumeMath.Combine(gridA, gridB, operation);
-            }
-            else
-            {
-                result = T3.Core.DataTypes.Volume.Tools.VolumeMath.Constant(gridA, constant, operation);
-            }
-
-            Result.Value = new VdbVolume(result);
-            _last = key;
-            _lastError = null;
-        }
-        catch (Exception e)
-        {
-            // An exception escaping an update is fatal to the editor; degrade to an empty output.
-            Result.Value = null;
-            _last = default;
-            if (_lastError != e.Message)
-                Log.Warning($"VolumeMath failed: {e.Message}", this);
-            _lastError = e.Message;
+            case BackgroundJobOutcome.Ready:
+                Result.Value = result;
+                break;
+            case BackgroundJobOutcome.Failed:
+                Result.Value = null;
+                break;
         }
     }
 
-    private (VdbVolume, VdbVolume, T3.Core.DataTypes.Volume.Tools.VolumeMath.BinaryOp, bool, float) _last = (null, null, (T3.Core.DataTypes.Volume.Tools.VolumeMath.BinaryOp)(-1), false, 0);
-    private string _lastError;
+    private static VdbVolume Compute(Key key)
+    {
+        var gridA = key.A.GetFloatGrid();
+        var result = key.B != null
+                         ? T3.Core.DataTypes.Volume.Tools.VolumeMath.Combine(gridA, key.B.GetFloatGrid(), key.Operation)
+                         : T3.Core.DataTypes.Volume.Tools.VolumeMath.Constant(gridA, key.Constant, key.Operation);
+        return new VdbVolume(result);
+    }
+
+    private readonly BackgroundJob<Key, VdbVolume> _job;
 
     [Input(Guid = "db65839e-a02b-58a2-b1f7-341ea1b5b390")]
     public readonly InputSlot<VdbVolume> VolumeA = new();

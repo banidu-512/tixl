@@ -12,7 +12,7 @@ Add the project reference to `t3.sln`:
 
 ### 2. Download Models
 
-Run `python Scripts/download_models.py` (or `Scripts/download_models.ps1`) to fetch the Depth Anything 3 and V2 models into `Assets/`.
+Run `python Scripts/download_models.py` (or `Scripts/download_models.ps1`) to fetch the Depth Anything 3 models into `Assets/`.
 Pass file names to fetch only some, for example `python Scripts/download_models.py da3-small.onnx`.
 See `README.md` for the file names each model selection looks for.
 
@@ -92,5 +92,4 @@ The model files in `Assets/` are not tracked in git — `Scripts/download_models
 ## License
 
 - This code: MIT
-- Depth Anything V2 model: Apache 2.0
 - ONNX Runtime: MIT

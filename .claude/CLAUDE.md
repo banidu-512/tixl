@@ -10,6 +10,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `.agentic/SOLUTION_OVERVIEW.md` -- architecture map, dependency flow, task-oriented navigation
 - `.agentic/DEBUG_PROTOCOL.md` -- TCP debug bridge for driving the editor (graphs, params, screenshots, visual tests)
 - `.agentic/BISECT_PROTOCOL.md` -- bisecting runtime regressions across editor versions (roles, per-commit loop, injected measure probe, pitfalls)
+- `.agentic/DOCUMENTATION_ECOSYSTEM.md` -- map of the `.help/` docs system (help surfaces by depth, index schema, cross-references, the video-transcript-to-docs pipeline)
 - `.agentic/Reviews/FEATURE_REVIEW.md` -- feature review procedure (`/review-tixl-feature` is a stub pointing here)
 - `.agentic/Plans/` -- implementation plans for upcoming work (automatic tests, undo/redo coverage)
 - `.tests-manual/` -- manual test sets (step-by-step walkthroughs for humans). See [`.tests-manual/README.md`](../.tests-manual/README.md) for format and process.
@@ -56,6 +57,10 @@ dotnet run --project Tests/CollabHeadless             # console harness for the 
 - Store references by `Guid`, not by direct object reference
 - Prefer editing existing files over creating new ones
 - **Never reference a plan in a code comment** — no `.agentic/Plans/` paths, `Plan_*.md` filenames, or "see the plan / open question #N". Plans get archived and rewritten; the pointer rots. State the lasting *why* inline. (Agent-neutral rule; full version under "Comment Restraint" in AGENT_INSTRUCTIONS.)
+
+## Line Endings
+
+The repo has mixed line endings (most `.cs` files CRLF, some LF); there is no `.gitattributes` and `core.autocrlf` is `false`. Bulk-edit scripts must read and write files in binary mode and detect each file's existing ending per file -- text-mode reads silently strip `\r` and turn a small change into a whole-file diff. Sanity-check with `git diff --shortstat` before committing.
 
 ## Documentation, Tests, and Background
 

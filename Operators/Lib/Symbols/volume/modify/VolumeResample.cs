@@ -6,6 +6,7 @@ using T3.Core.DataTypes.Volume;
 using T3.Core.DataTypes.Volume.Tools;
 using T3.Core.DataTypes.Volume.IO;
 using T3.Core.Logging;
+using Lib.Utils;
 
 namespace Lib.volume.modify;
 
@@ -13,13 +14,15 @@ namespace Lib.volume.modify;
 [Guid("5c4dc3a7-fc82-59c1-afde-daf023bad7c9")]
 internal sealed class VolumeResample : Instance<VolumeResample>
 {
+    private readonly record struct Key(VdbVolume Volume, float VoxelSize);
+
     [Output(Guid = "def20e90-909a-5405-b7ad-0e6a953727db")]
     public readonly Slot<VdbVolume> Result = new();
-
 
     public VolumeResample()
     {
         Result.UpdateAction = Update;
+        _job = new BackgroundJob<Key, VdbVolume>(this, nameof(VolumeResample), Compute, Result);
     }
 
     private void Update(EvaluationContext context)
@@ -28,37 +31,30 @@ internal sealed class VolumeResample : Instance<VolumeResample>
         var voxelSize = VoxelSize.GetValue(context);
 
         var grid = volume?.GetFloatGrid();
-        if (grid == null || voxelSize <= 0)
+        if (grid == null || !(voxelSize > 0) || !float.IsFinite(voxelSize))
         {
+            _job.Reset();
             Result.Value = volume;
-            _last = default;
             return;
         }
 
-        var key = (volume, voxelSize);
-        if (key == _last)
-            return;
-
-        try
+        // The core rejects results that would exhaust memory; the job reports that once instead of every frame.
+        var key = new Key(volume, voxelSize);
+        switch (_job.Poll(context, key, out var result))
         {
-            Result.Value = new VdbVolume(T3.Core.DataTypes.Volume.Tools.VolumeDense.Resample(grid, voxelSize));
-            _last = key;
-            _lastError = null;
-        }
-        catch (Exception e)
-        {
-            // An exception escaping an update is fatal to the editor. The core rejects results that
-            // would exhaust memory, so report that instead of passing a broken volume downstream.
-            Result.Value = null;
-            _last = default;
-            if (_lastError != e.Message)
-                Log.Warning($"VolumeResample failed: {e.Message}", this);
-            _lastError = e.Message;
+            case BackgroundJobOutcome.Ready:
+                Result.Value = result;
+                break;
+            case BackgroundJobOutcome.Failed:
+                Result.Value = null;
+                break;
         }
     }
 
-    private (VdbVolume, float) _last = (null, -1);
-    private string _lastError;
+    private static VdbVolume Compute(Key key)
+        => new(T3.Core.DataTypes.Volume.Tools.VolumeDense.Resample(key.Volume.GetFloatGrid(), key.VoxelSize));
+
+    private readonly BackgroundJob<Key, VdbVolume> _job;
 
     [Input(Guid = "3b90bbbd-0607-5c2b-8e65-61c8a7e04030")]
     public readonly InputSlot<VdbVolume> Volume = new();

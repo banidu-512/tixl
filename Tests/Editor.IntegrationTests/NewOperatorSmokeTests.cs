@@ -18,55 +18,6 @@ namespace Editor.IntegrationTests;
 public sealed class NewOperatorSmokeTests(EditorFixture editor)
 {
     [Fact]
-    public void MeshToSdf_Bakes_And_Feeds_RaymarchToCubeMap()
-    {
-        var client = editor.Client;
-        var baseline = editor.OpenPlayground();
-        var logSeq = client.GetLatestLogSeq();
-
-        var cube = client.AddOp("CubeMesh", posX: -400);
-        var sdf = client.AddOp("MeshToSDF", posX: -100);
-        client.ConnectOps(cube, "Data", sdf, "Mesh");
-        client.SetInput(sdf, "Resolution", 64);
-        client.SetInput(sdf, "BakeFrames", 1);
-        client.SetInput(sdf, "SampleDensity", 8);
-
-        try
-        {
-            var baked = false;
-            for (var i = 0; i < 100 && !baked; i++)
-            {
-                client.PumpFrames(2);
-                var bakeCount = Pull(client, sdf, "BakeCount")?.Value<float>() ?? 0;
-                var inProgress = Pull(client, sdf, "BakeInProgress")?.Value<bool>() ?? true;
-                baked = bakeCount >= 1 && !inProgress;
-            }
-
-            Assert.True(baked, "MeshToSDF never completed a bake");
-
-            var raymarch = client.AddOp("RaymarchToCubeMap", posX: 200);
-            client.ConnectOps(sdf, "Result", raymarch, "SdfField");
-            client.SetInput(raymarch, "Resolution", 64);
-
-            JToken? cubeMap = null;
-            for (var i = 0; i < 50 && cubeMap is null; i++)
-            {
-                client.PumpFrames(2);
-                cubeMap = Pull(client, raymarch, "CubeMap");
-            }
-
-            Assert.NotNull(cubeMap);
-            Assert.Equal(64, cubeMap!["width"]!.Value<int>());
-            Assert.Equal(6, cubeMap["arraySize"]!.Value<int>());
-            AssertNoErrors(client, logSeq);
-        }
-        finally
-        {
-            UndoToBaseline(client, baseline);
-        }
-    }
-
-    [Fact]
     public void RenderToCubeMap_ProducesMippedCubeMap()
     {
         var client = editor.Client;

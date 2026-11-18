@@ -7,6 +7,7 @@ using T3.Core.DataTypes.Volume;
 using T3.Core.DataTypes.Volume.Tools;
 using T3.Core.DataTypes.Volume.IO;
 using T3.Core.Logging;
+using Lib.Utils;
 
 namespace Lib.volume.io;
 
@@ -24,6 +25,12 @@ internal sealed class SaveVdb : Instance<SaveVdb>
     }
 
     private void Update(EvaluationContext context)
+    {
+        UpdateCore(context);
+        BackgroundPolling.Set(_saveTask != null, Saved);
+    }
+
+    private void UpdateCore(EvaluationContext context)
     {
         var volume = Volume.GetValue(context);
         var path = PathSaved.GetValue(context)?.Trim();

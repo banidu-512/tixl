@@ -44,8 +44,6 @@ public static class VolumeCsg
         };
 
         var leafCoords = new SortedSet<VdbCoord>();
-        VdbSampler? samplerA = null;
-        VdbSampler? samplerB = null;
         if (sameSpace)
         {
             CollectLeafCoords(a, leafCoords);
@@ -53,89 +51,123 @@ public static class VolumeCsg
         }
         else
         {
-            // The result takes the finer voxel size, so neither grid's leaf origins are valid in it as they are.
+            // The result's index space differs from at least one grid's, so its leaf origins are not valid as they are.
             CollectLeafCoordsMapped(a, transform, leafCoords);
             CollectLeafCoordsMapped(b, transform, leafCoords);
-            samplerA = new VdbSampler(a);
-            samplerB = new VdbSampler(b);
         }
 
-        foreach (var coord in leafCoords)
+        Func<float, float, float> combine = operation switch
         {
-            var values = new float[VdbLeafNode<float>.Size];
-            var active = new bool[VdbLeafNode<float>.Size];
-            var anyActive = false;
-
-            for (var i = 0; i < VdbLeafNode<float>.Size; i++)
-            {
-                var voxelCoord = coord + VdbCoord.LocalFromOffset(i);
-                float va, vb;
-                bool onA, onB;
-
-                if (sameSpace)
-                {
-                    va = a.Tree.GetValue(voxelCoord);
-                    vb = b.Tree.GetValue(voxelCoord);
-                    onA = a.Tree.IsValueOn(voxelCoord);
-                    onB = b.Tree.IsValueOn(voxelCoord);
-                }
-                else
-                {
-                    // Different index spaces (a primitive with a Center offset, a resampled grid):
-                    // read both grids through their own transform at the same world point.
-                    var world = transform.IndexToWorld(voxelCoord);
-                    va = SampleWorld(a, samplerA!, world, out onA);
-                    vb = SampleWorld(b, samplerB!, world, out onB);
-                }
-
-                var combined = operation switch
-                {
-                    Operation.Union => MathF.Min(va, vb),
-                    Operation.Intersection => MathF.Max(va, vb),
-                    Operation.Difference => MathF.Max(va, -vb),
-                    _ => va,
-                };
-
-                var voxelActive = onA || onB;
-                values[i] = combined;
-                active[i] = voxelActive;
-                anyActive |= voxelActive;
-            }
-
-            if (!anyActive)
-                continue;
-
-            var leaf = result.Tree.AddLeaf(coord);
-            Array.Copy(values, leaf.Values, values.Length);
-            for (var i = 0; i < active.Length; i++)
-            {
-                if (active[i])
-                    leaf.ValueMask.SetOn(i);
-            }
-        }
+            Operation.Union => static (va, vb) => MathF.Min(va, vb),
+            Operation.Intersection => static (va, vb) => MathF.Max(va, vb),
+            Operation.Difference => static (va, vb) => MathF.Max(va, -vb),
+            _ => static (va, _) => va,
+        };
+        CombineInto(result, a, b, leafCoords, combine);
 
         result.Tree.Prune();
         return result;
+    }
+
+    /// <summary>
+    /// Fills <paramref name="result"/> with <paramref name="combine"/>(a, b) at every voxel of the given leaves, in the
+    /// result's index space. A voxel is active where either input is.
+    /// </summary>
+    /// <remarks>
+    /// A grid whose translation differs from the result's by whole voxels (a primitive with a Center offset that is a
+    /// multiple of the voxel size) is read voxel by voxel at a shifted coordinate; only grids that are really offset by
+    /// a fraction of a voxel, or have another voxel size, are sampled trilinearly. Leaves are combined in parallel into
+    /// plain arrays (reads only), then added to the tree serially in sorted order because the tree is not thread-safe.
+    /// </remarks>
+    internal static void CombineInto(VdbGrid<float> result, VdbGrid<float> a, VdbGrid<float> b, SortedSet<VdbCoord> leafCoords,
+                                     Func<float, float, float> combine)
+    {
+        var transform = result.Transform;
+        var shiftA = IntegerShift(a.Transform, transform);
+        var shiftB = IntegerShift(b.Transform, transform);
+        var coords = new VdbCoord[leafCoords.Count];
+        leafCoords.CopyTo(coords);
+        var leafValues = new float[coords.Length][];
+        var leafActive = new ulong[coords.Length][];
+        Parallel.For(0, coords.Length, VolumeParallelism.Options,
+                     () => (A: new VdbAccessor(a.Tree), B: new VdbAccessor(b.Tree)),
+                     (leafIndex, _, accessors) =>
+                     {
+                         var coord = coords[leafIndex];
+                         var values = new float[VdbLeafNode<float>.Size];
+                         ulong[]? activeWords = null;
+                         for (var i = 0; i < VdbLeafNode<float>.Size; i++)
+                         {
+                             var voxelCoord = coord + VdbCoord.LocalFromOffset(i);
+                             var world = transform.IndexToWorld(voxelCoord);
+                             var va = shiftA is { } sa
+                                          ? accessors.A.GetValue(voxelCoord + sa, out var onA)
+                                          : SampleWorld(a.Transform, accessors.A, world, out onA);
+                             var vb = shiftB is { } sb
+                                          ? accessors.B.GetValue(voxelCoord + sb, out var onB)
+                                          : SampleWorld(b.Transform, accessors.B, world, out onB);
+
+                             values[i] = combine(va, vb);
+                             if (onA || onB)
+                             {
+                                 activeWords ??= new ulong[VdbLeafNode<float>.Size / 64];
+                                 activeWords[i >> 6] |= 1ul << (i & 63);
+                             }
+                         }
+
+                         // A leaf without an active voxel is left out.
+                         if (activeWords != null)
+                         {
+                             leafValues[leafIndex] = values;
+                             leafActive[leafIndex] = activeWords;
+                         }
+
+                         return accessors;
+                     },
+                     _ => { });
+
+        for (var leafIndex = 0; leafIndex < coords.Length; leafIndex++)
+        {
+            if (leafActive[leafIndex] is not { } activeWords)
+                continue;
+
+            var leaf = result.Tree.AddLeaf(coords[leafIndex]);
+            Array.Copy(leafValues[leafIndex], leaf.Values, VdbLeafNode<float>.Size);
+            activeWords.AsSpan().CopyTo(leaf.ValueMask.Words);
+        }
+    }
+
+    /// <summary>Trilinear value through the grid's own transform; <paramref name="isOn"/> is the nearest voxel's state.</summary>
+    private static float SampleWorld(VdbTransform gridTransform, VdbAccessor accessor, Vector3 world, out bool isOn)
+    {
+        var index = gridTransform.WorldToIndexf(world);
+        accessor.GetValue(new VdbCoord((int)MathF.Round(index.X), (int)MathF.Round(index.Y), (int)MathF.Round(index.Z)), out isOn);
+        return accessor.SampleIndex(index);
+    }
+
+    /// <summary>
+    /// The whole-voxel index offset from <paramref name="target"/>'s index space into <paramref name="source"/>'s, or null
+    /// when the two have different voxel sizes or are offset by a fraction of a voxel.
+    /// </summary>
+    private static VdbCoord? IntegerShift(VdbTransform source, VdbTransform target)
+    {
+        if (source.VoxelSize != target.VoxelSize)
+            return null;
+
+        var shift = (target.Translation - source.Translation) / source.VoxelSize;
+        var rounded = new Vector3(MathF.Round(shift.X), MathF.Round(shift.Y), MathF.Round(shift.Z));
+        var error = Vector3.Abs(shift - rounded);
+        const float tolerance = 1e-3f;
+        if (error.X > tolerance || error.Y > tolerance || error.Z > tolerance)
+            return null;
+
+        return new VdbCoord((int)rounded.X, (int)rounded.Y, (int)rounded.Z);
     }
 
     private static void CollectLeafCoords(VdbGrid<float> grid, SortedSet<VdbCoord> into)
     {
         foreach (var leaf in grid.Tree.Leaves)
             into.Add(leaf.Origin);
-    }
-
-    /// <summary>
-    /// Trilinear value at a world position through the grid's own transform, so a distance field keeps
-    /// its sub-voxel surface position. <paramref name="isOn"/> reports the nearest voxel's active state.
-    /// </summary>
-    internal static float SampleWorld(VdbGrid<float> grid, VdbSampler sampler, Vector3 world, out bool isOn)
-    {
-        var index = grid.Transform.WorldToIndexf(world);
-        var nearest = new VdbCoord((int)MathF.Round(index.X),
-                                   (int)MathF.Round(index.Y),
-                                   (int)MathF.Round(index.Z));
-        isOn = grid.Tree.IsValueOn(nearest);
-        return sampler.SampleIndex(index);
     }
 
     /// <summary>Adds the leaves of <paramref name="grid"/> expressed in <paramref name="target"/>'s index space.</summary>

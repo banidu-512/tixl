@@ -14,15 +14,17 @@ namespace Editor.IntegrationTests;
 public sealed class PhysicsExamplesTests(EditorFixture editor)
 {
     [Theory]
-    [InlineData("PhysicsBouncingBallsExample")]
-    [InlineData("PhysicsDominoRunExample")]
-    [InlineData("PhysicsNewtonsCradleExample")]
-    [InlineData("PhysicsParticlesExample")]
-    [InlineData("PhysicsRopeBridgeExample")]
-    [InlineData("PhysicsSeesawExample")]
-    [InlineData("MeshPhysicsExample")]
-    [InlineData("PhysicsCapsulesAndCylindersExample")]
-    [InlineData("PhysicsWeldedPairsExample")]
+    [InlineData("PhysicsWorldExample")]
+    [InlineData("RigidBodyExample")]
+    [InlineData("RigidJointExample")]
+    [InlineData("RigidForceExample")]
+    [InlineData("RigidBodyGeometryExample")]
+    [InlineData("RigidBodyPointsExample")]
+    [InlineData("MeshToGeometryExample")]
+    [InlineData("PhysicsVolumesExample")]
+    [InlineData("PhysicsSdfFieldExample")]
+    [InlineData("PhysicsVolumeGravityExample")]
+    [InlineData("PhysicsToVolumeExample")]
     public void ExampleProducesItsOutputTexture(string name)
     {
         var client = editor.Client;

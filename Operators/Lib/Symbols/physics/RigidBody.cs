@@ -10,11 +10,30 @@ namespace Lib.physics;
 ///
 /// On its own the description is one primitive body. With <see cref="Points"/> it is one body per
 /// point, and with <see cref="Geometry"/> the bodies take their collision shape from the geometry:
-/// one convex piece per geometry part, or the geometry as a whole at every point.
+/// one body per geometry part, or the whole geometry as one body - at every point when points are connected.
+/// A concave piece collides as a compound of convex hulls, so holes and hollows stay open.
 /// </summary>
 [Guid("efa358f6-8f07-448f-ad9e-d911c41a2098")]
 internal sealed class RigidBody : Instance<RigidBody>
 {
+    /// <summary>What the parts of connected geometry become.</summary>
+    private enum GeometryPieces
+    {
+        /// <summary>Every part is a body of its own, like the cells of a fracture.</summary>
+        EachPartIsABody = 0,
+
+        /// <summary>All parts move together as one body, like the pieces of an imported model.</summary>
+        WholeObject = 1,
+    }
+
+    private enum MassModes
+    {
+        /// <summary>Weighs geometry bodies by their volume and primitives by <see cref="Mass"/>.</summary>
+        Auto = 0,
+        Fixed = 1,
+        FromDensity = 2,
+    }
+
     [Output(Guid = "165a613b-df3a-4d84-b5af-1c72a381fa15", DirtyFlagTrigger = DirtyFlagTrigger.Animated)]
     public readonly Slot<PhysicsBody> OutBody = new();
 
@@ -33,15 +52,44 @@ internal sealed class RigidBody : Instance<RigidBody>
         var geometry = Geometry.GetValue(context);
         var hasGeometry = geometry != null && geometry.FaceCount > 0;
 
-        // Connecting geometry is the request to collide as that geometry. A primitive shape setting then
-        // picks the form that fits the body: a hull for something that moves, the exact triangles otherwise.
-        if (hasGeometry && shape != PhysicsShapeType.ConvexHull && shape != PhysicsShapeType.Mesh)
-            shape = kind == PhysicsBodyKind.Dynamic ? PhysicsShapeType.ConvexHull : PhysicsShapeType.Mesh;
+        var mergeParts = hasPoints || (GeometryPieces)Pieces.GetValue(context) == GeometryPieces.WholeObject;
+        var split = PhysicsGeometry.HullSplit.None;
+        if (hasGeometry)
+        {
+            (shape, split) = ResolveGeometryShape(shape, kind);
+        }
+        else if (shape == PhysicsShapeType.Auto)
+        {
+            shape = PhysicsShapeType.Box;
+        }
 
-        UpdateCollisionData(hasGeometry ? geometry : null, shape, kind, hasPoints);
+        try
+        {
+            UpdateCollisionData(hasGeometry ? geometry : null, shape, split, Math.Clamp(MaxHulls.GetValue(context), 1, 64), mergeParts);
+            _hasLoggedGeometryError = false;
+        }
+        catch (Exception e)
+        {
+            // Geometry arrives from the graph in any state; a bad index must not take the evaluator down.
+            // With no hulls or triangles the world resolves the shape back to its primitive.
+            _descriptor.Hulls = null;
+            _descriptor.MeshTriangles = null;
+            _pendingSplit = null;
+            _hulls = null;
+            _triangles = null;
+            _geometryStamp = 0;
+            if (!_hasLoggedGeometryError)
+                Log.Warning($"RigidBody: building the collision data failed: {e.Message}", this);
+            _hasLoggedGeometryError = true;
+        }
+
         UpdateInstances(hasPoints ? points : null, shape);
         _descriptor.SourceGeometry = hasGeometry ? geometry : null;
-        _descriptor.SourcePerPart = hasGeometry && !hasPoints && _descriptor.Hulls != null && geometry.Parts.Length > 0;
+        _descriptor.SourcePerPart = hasGeometry && !mergeParts && _descriptor.Hulls != null && geometry.Parts.Length > 0;
+
+        var massMode = (MassModes)MassMode.GetValue(context);
+        _descriptor.MassFromDensity = massMode == MassModes.FromDensity || (massMode == MassModes.Auto && hasGeometry);
+        _descriptor.Density = Density.GetValue(context);
 
         _descriptor.Shape = shape;
         _descriptor.Kind = kind;
@@ -64,17 +112,42 @@ internal sealed class RigidBody : Instance<RigidBody>
         _descriptor.LinearDamping = LinearDamping.GetValue(context);
         _descriptor.AngularDamping = AngularDamping.GetValue(context);
         _descriptor.GravityScale = GravityScale.GetValue(context);
-        _descriptor.Enabled = Enabled.GetValue(context);
+        // A body whose first colliders are still being split appears once they are ready, at its start pose, rather than
+        // falling as a stand-in hull and jumping back when the real shape arrives.
+        _descriptor.Enabled = Enabled.GetValue(context) && !(_pendingSplit != null && _hulls == null);
 
         OutBody.Value = _descriptor;
         OutBody.DirtyFlag.Invalidate();
     }
 
     /// <summary>
+    /// The collider a geometry body is built as. Connecting geometry is the request to collide as that geometry, so a
+    /// primitive shape setting is read like Auto: the exact triangles for bodies that don't move by themselves, and for
+    /// dynamic ones hulls that are split where the shape is concave.
+    /// </summary>
+    private static (PhysicsShapeType Shape, PhysicsGeometry.HullSplit Split) ResolveGeometryShape(PhysicsShapeType shape, PhysicsBodyKind kind)
+    {
+        var isDynamic = kind == PhysicsBodyKind.Dynamic;
+        switch (shape)
+        {
+            case PhysicsShapeType.ConvexHull:
+                return (PhysicsShapeType.ConvexHull, PhysicsGeometry.HullSplit.None);
+
+            case PhysicsShapeType.ConvexDecomposition:
+                return (PhysicsShapeType.ConvexHull, PhysicsGeometry.HullSplit.Always);
+
+            default:
+                return isDynamic
+                           ? (PhysicsShapeType.ConvexHull, PhysicsGeometry.HullSplit.Concave)
+                           : (PhysicsShapeType.Mesh, PhysicsGeometry.HullSplit.None);
+        }
+    }
+
+    /// <summary>
     /// Rebuilds hulls and triangles only when the geometry's content or the way it is used changed. The arrays are
     /// replaced, never edited, because the world recognises a changed shape by the array it was built from.
     /// </summary>
-    private void UpdateCollisionData(MeshGeometry geometry, PhysicsShapeType shape, PhysicsBodyKind kind, bool mergeParts)
+    private void UpdateCollisionData(MeshGeometry geometry, PhysicsShapeType shape, PhysicsGeometry.HullSplit split, int maxHulls, bool mergeParts)
     {
         if (geometry == null)
         {
@@ -82,18 +155,52 @@ internal sealed class RigidBody : Instance<RigidBody>
             _descriptor.MeshTriangles = null;
             _hulls = null;
             _triangles = null;
+            _pendingSplit = null;
             _geometryStamp = 0;
+            _stampedGeometry = null;
             return;
         }
 
-        // A dynamic body cannot be a triangle mesh; the world simulates it as a hull, so that is what it needs.
-        var needsHulls = shape == PhysicsShapeType.ConvexHull || kind == PhysicsBodyKind.Dynamic;
-        var stamp = HashCode.Combine(PhysicsGeometry.Stamp(geometry), needsHulls, mergeParts);
-        if (stamp != _geometryStamp || (_hulls == null && _triangles == null))
+        var needsHulls = shape == PhysicsShapeType.ConvexHull;
+        var stamp = HashCode.Combine(GeometryStamp(geometry), needsHulls, mergeParts, split, split == PhysicsGeometry.HullSplit.None ? 0 : maxHulls);
+        // One split at a time: an abandoned split would keep burning a worker thread to a result
+        // that is discarded on arrival. A geometry that changed meanwhile is picked up by the stamp
+        // mismatch when the running split finishes, and rebuilt from the then-current snapshot.
+        if (_pendingSplit == null && (stamp != _geometryStamp || (_hulls == null && _triangles == null)))
         {
             _geometryStamp = stamp;
-            _hulls = needsHulls ? PhysicsGeometry.BuildHulls(geometry, mergeParts) : null;
-            _triangles = needsHulls ? null : PhysicsGeometry.BuildTriangles(geometry);
+            if (needsHulls && split != PhysicsGeometry.HullSplit.None)
+            {
+                // Splitting takes a noticeable fraction of a second, so it runs on a worker from a copy of the geometry:
+                // producers rebuild their output in place on later frames. The current colliders stay until it is done.
+                var snapshot = Snapshot(geometry);
+                _pendingSplit = new PendingSplit(stamp, Task.Run(() => PhysicsGeometry.BuildHulls(snapshot, mergeParts, split, maxHulls)));
+            }
+            else
+            {
+                _pendingSplit = null;
+                _hulls = needsHulls ? PhysicsGeometry.BuildHulls(geometry, mergeParts) : null;
+                _triangles = needsHulls ? null : PhysicsGeometry.BuildTriangles(geometry);
+            }
+        }
+
+        if (_pendingSplit is { Hulls.IsCompleted: true } finished)
+        {
+            _pendingSplit = null;
+            if (finished.Stamp == _geometryStamp)
+            {
+                if (finished.Hulls.IsCompletedSuccessfully)
+                {
+                    _hulls = finished.Hulls.Result;
+                }
+                else
+                {
+                    Log.Warning($"RigidBody: splitting the geometry into hulls failed, using one hull per part: {finished.Hulls.Exception?.GetBaseException().Message}", this);
+                    _hulls = PhysicsGeometry.BuildHulls(geometry, mergeParts);
+                }
+
+                _triangles = null;
+            }
         }
 
         _descriptor.Hulls = _hulls;
@@ -161,18 +268,64 @@ internal sealed class RigidBody : Instance<RigidBody>
         _descriptor.InstanceCount = 0;
     }
 
+    /// <summary>A copy of what <see cref="PhysicsGeometry.BuildHulls"/> reads, safe to hand to a worker thread.</summary>
+    private static MeshGeometry Snapshot(MeshGeometry geometry)
+    {
+        return new MeshGeometry
+                   {
+                       Positions = (Vector3[])geometry.Positions.Clone(),
+                       FaceCornerOffsets = (int[])geometry.FaceCornerOffsets.Clone(),
+                       CornerPointIndices = (int[])geometry.CornerPointIndices.Clone(),
+                       Parts = (GeometryPart[])geometry.Parts.Clone(),
+                   };
+    }
+
     private void EnsureInstanceCapacity(int count)
     {
         if (_instances.Length < count)
             _instances = new PhysicsBodyInstance[Math.Max(count, _instances.Length * 2)];
     }
 
+    /// <summary>
+    /// The geometry's content stamp, recomputed only when the instance, its <see cref="MeshGeometry.Version"/>
+    /// or its size changed. Producers bump the version when they rebuild their output, so a static input costs
+    /// nothing per frame; hashing the buffers every evaluation reads megabytes for the same result.
+    /// </summary>
+    private int GeometryStamp(MeshGeometry geometry)
+    {
+        if (ReferenceEquals(geometry, _stampedGeometry)
+            && geometry.Version == _stampedVersion
+            && geometry.PointCount == _stampedPointCount
+            && geometry.FaceCount == _stampedFaceCount
+            && geometry.CornerCount == _stampedCornerCount)
+            return _geometryContentStamp;
+
+        _stampedGeometry = geometry;
+        _stampedVersion = geometry.Version;
+        _stampedPointCount = geometry.PointCount;
+        _stampedFaceCount = geometry.FaceCount;
+        _stampedCornerCount = geometry.CornerCount;
+        _geometryContentStamp = PhysicsGeometry.Stamp(geometry);
+        return _geometryContentStamp;
+    }
+
+    /** Hulls being split on a worker, for the geometry stamp they were started for. */
+    private sealed record PendingSplit(int Stamp, Task<PhysicsHull[]> Hulls);
+
     private readonly Guid _id = Guid.NewGuid();
+    private PendingSplit _pendingSplit;
     private readonly PhysicsBody _descriptor = new();
+    private bool _hasLoggedGeometryError;
     private PhysicsBodyInstance[] _instances = [];
     private PhysicsHull[] _hulls;
     private Vector3[] _triangles;
     private int _geometryStamp;
+    private MeshGeometry _stampedGeometry;
+    private int _stampedVersion;
+    private int _stampedPointCount;
+    private int _stampedFaceCount;
+    private int _stampedCornerCount;
+    private int _geometryContentStamp;
 
     [Input(Guid = "c37e0055-1f11-4b35-8d1f-0a3eb0c64a57")]
     public readonly InputSlot<StructuredList> Points = new();
@@ -181,7 +334,13 @@ internal sealed class RigidBody : Instance<RigidBody>
     public readonly InputSlot<MeshGeometry> Geometry = new();
 
     [Input(Guid = "5f6cc54b-9221-42b9-87d7-a0f9669c64b2", MappedType = typeof(PhysicsShapeType))]
-    public readonly InputSlot<int> Shape = new(0);
+    public readonly InputSlot<int> Shape = new((int)PhysicsShapeType.Auto);
+
+    [Input(Guid = "e13e2b87-7a04-4197-82a8-a11fab87d1f9", MappedType = typeof(GeometryPieces))]
+    public readonly InputSlot<int> Pieces = new(0);
+
+    [Input(Guid = "dba98aeb-66df-41eb-b3a2-e91acb71d0be")]
+    public readonly InputSlot<int> MaxHulls = new(8);
 
     [Input(Guid = "70f094d8-c499-40bf-ab28-0081297a5985", MappedType = typeof(PhysicsBodyKind))]
     public readonly InputSlot<int> Kind = new(0);
@@ -203,6 +362,12 @@ internal sealed class RigidBody : Instance<RigidBody>
 
     [Input(Guid = "974ca0a2-5f02-4ccd-817b-5114070b243e")]
     public readonly InputSlot<float> Mass = new(1f);
+
+    [Input(Guid = "10919c3d-5979-4499-a958-c347008f7c12", MappedType = typeof(MassModes))]
+    public readonly InputSlot<int> MassMode = new(0);
+
+    [Input(Guid = "cf7c8302-520f-4a41-84ad-18d9f0b7148b")]
+    public readonly InputSlot<float> Density = new(1f);
 
     [Input(Guid = "e965e0ce-38ce-46da-a7ac-e730d7876d29")]
     public readonly InputSlot<Vector3> LinearVelocity = new();

@@ -6,6 +6,7 @@ using T3.Core.DataTypes.Volume;
 using T3.Core.DataTypes.Volume.Tools;
 using T3.Core.DataTypes.Volume.IO;
 using T3.Core.Logging;
+using Lib.Utils;
 
 namespace Lib.volume.modify;
 
@@ -13,9 +14,10 @@ namespace Lib.volume.modify;
 [Guid("4c253b2e-fc94-586f-b6c9-c30c7862cf9d")]
 internal sealed class VolumeFilter : Instance<VolumeFilter>
 {
+    private readonly record struct Key(VdbVolume Volume, T3.Core.DataTypes.Volume.Tools.VolumeFilter.FilterType Type, float Radius, int Iterations, float Offset);
+
     [Output(Guid = "7fb850c0-2036-5922-89df-565c9c0ba8b7")]
     public readonly Slot<VdbVolume> Result = new();
-
 
     private enum FilterTypes
     {
@@ -28,6 +30,7 @@ internal sealed class VolumeFilter : Instance<VolumeFilter>
     public VolumeFilter()
     {
         Result.UpdateAction = Update;
+        _job = new BackgroundJob<Key, VdbVolume>(this, nameof(VolumeFilter), Compute, Result);
     }
 
     private void Update(EvaluationContext context)
@@ -39,38 +42,34 @@ internal sealed class VolumeFilter : Instance<VolumeFilter>
         var offset = Offset.GetValue(context);
 
         var grid = volume?.GetFloatGrid();
-        if (grid == null)
+        if (grid == null || !float.IsFinite(radius) || !float.IsFinite(offset))
         {
-            Result.Value = volume;
-            _last = default;
+            _job.Reset();
+            Result.Value = grid == null ? volume : null;
             return;
         }
 
-        var key = (volume, filterType, radius, iterations, offset);
-        if (key == _last)
-            return;
-
-        try
+        // Filtering touches every active voxel several times; it runs on a worker so dragging Radius never stalls a frame.
+        var key = new Key(volume, filterType, radius, iterations, offset);
+        switch (_job.Poll(context, key, out var result))
         {
-            Result.Value = new VdbVolume(T3.Core.DataTypes.Volume.Tools.VolumeFilter.Apply(grid, filterType,
-                                                            (int)MathF.Round(radius / grid.Transform.VoxelSize),
-                                                            offset, iterations));
-            _last = key;
-            _lastError = null;
-        }
-        catch (Exception e)
-        {
-            // An exception escaping an update is fatal to the editor; degrade to an empty output.
-            Result.Value = null;
-            _last = default;
-            if (_lastError != e.Message)
-                Log.Warning($"VolumeFilter failed: {e.Message}", this);
-            _lastError = e.Message;
+            case BackgroundJobOutcome.Ready:
+                Result.Value = result;
+                break;
+            case BackgroundJobOutcome.Failed:
+                Result.Value = null;
+                break;
         }
     }
 
-    private (VdbVolume, T3.Core.DataTypes.Volume.Tools.VolumeFilter.FilterType, float, int, float) _last = (null, (T3.Core.DataTypes.Volume.Tools.VolumeFilter.FilterType)(-1), -1, -1, 0);
-    private string _lastError;
+    private static VdbVolume Compute(Key key)
+    {
+        var grid = key.Volume.GetFloatGrid();
+        var radiusVoxels = (int)MathF.Round(key.Radius / grid.Transform.VoxelSize);
+        return new VdbVolume(T3.Core.DataTypes.Volume.Tools.VolumeFilter.Apply(grid, key.Type, radiusVoxels, key.Offset, key.Iterations));
+    }
+
+    private readonly BackgroundJob<Key, VdbVolume> _job;
 
     [Input(Guid = "0241402e-4fae-5ca3-98be-eb4bcd4fc339")]
     public readonly InputSlot<VdbVolume> Volume = new();

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 DepthAnything Model Download Script
-Downloads the ONNX models for the DepthAnything operator: Depth Anything 3 (preferred) and Depth Anything V2.
+Downloads the Depth Anything 3 ONNX models for the DepthAnything operator.
 Pass model file names as arguments to download only those, e.g. download_models.py da3-small.onnx
 """
 
@@ -27,12 +27,8 @@ MODELS = [
     {"name": "da3-base-fp16.onnx", "url": "https://huggingface.co/Heliosoph/da3-base-onnx/resolve/main/model_fp16.onnx", "expected_mb": 198, "required": False},
     {"name": "da3-mono-large-int8.onnx", "url": "https://huggingface.co/ohaiibuzzle/DA3-ONNX/resolve/main/da3mono_l_504x378_int8.onnx", "expected_mb": 431, "required": False},
     {"name": "da3-metric-large-fp16.onnx", "url": "https://huggingface.co/Heliosoph/da3metric-large-onnx/resolve/main/model_fp16.onnx", "expected_mb": 670, "required": False},
-    # Depth Anything V2. model_fp16.onnx is the real fp16 export - model.onnx is
-    # fp32 despite the half-size naming in older revisions of this script.
-    # expected_mb guards against the earlier mislabeled fp32 downloads.
-    {"name": "depth-anything-v2-small-fp16.onnx", "url": "https://huggingface.co/onnx-community/depth-anything-v2-small/resolve/main/onnx/model_fp16.onnx", "expected_mb": 50, "required": False},
-    {"name": "depth-anything-v2-base-fp16.onnx", "url": "https://huggingface.co/onnx-community/depth-anything-v2-base/resolve/main/onnx/model_fp16.onnx", "expected_mb": 194, "required": False},
-    {"name": "depth-anything-v2-large-fp16.onnx", "url": "https://huggingface.co/onnx-community/depth-anything-v2-large/resolve/main/onnx/model_fp16.onnx", "expected_mb": 672, "required": False},
+    {"name": "da3-large.onnx", "url": "https://huggingface.co/zerochocobo/DepthAnything3_ONNX/resolve/main/da3_large_1036.onnx", "expected_mb": 1287, "required": False},
+    {"name": "da3-mono-large-fp32.onnx", "url": "https://huggingface.co/ohaiibuzzle/DA3-ONNX/resolve/main/da3mono_l_504x378.onnx", "expected_mb": 1275, "required": False},
 ]
 
 # Colors for terminal output

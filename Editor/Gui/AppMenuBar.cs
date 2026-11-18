@@ -580,6 +580,11 @@ internal static class AppMenuBar
 
             CustomComponents.SeparatorLine();
 
+            if (MenuItem("AI Model Setup..."))
+            {
+                T3Ui.AiModelSetupWizard.ShowNextFrame();
+            }
+
             _licenseLink.DrawMenuItem();
 
             if (MenuItem("About TiXL"))

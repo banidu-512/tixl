@@ -230,6 +230,7 @@ public static partial class T3Ui
     internal static readonly ShareSessionDialog ShareSessionDialog = new();
     internal static readonly ExitDialog ExitDialog = new();
     internal static readonly LaserArmWarningDialog LaserArmWarningDialog = new();
+    internal static readonly AiModelSetupWizard AiModelSetupWizard = new();
     private static readonly List<EditableSymbolProject> _modifiedProjects = new();
     private static bool _couldEscapeCancelSomething;
 

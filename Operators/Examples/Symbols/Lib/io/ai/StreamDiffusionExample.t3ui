@@ -1,7 +1,7 @@
 {
   "FormatVersion": 3,
   "Id": "fe71eba4-ba4d-4fc3-b6bf-3cb4a33cdbcc"/*StreamDiffusionExample*/,
-  "Description": "Generates an image from a prompt with SD Turbo. Point ModelPath at an ONNX export folder containing unet.onnx, text_encoder.onnx, vae_decoder.onnx and tokenizer files; AutoGenerate redraws when the prompt changes.",
+  "Description": "Generates an image from a prompt with the StreamDiffusion V2 Wan2.1 model. Point ModelPath at a V2 ONNX export folder (dit_step.onnx, text_encoder.onnx, vae_decoder.onnx, tokenizer.json); AutoGenerate redraws when the prompt changes.",
   "SymbolTags": "10",
   "InputUis": [
     {
@@ -10,7 +10,7 @@
         "X": -620.0,
         "Y": -60.0
       },
-      "Description": "Folder with the SD Turbo ONNX export.",
+      "Description": "Folder with a StreamDiffusion V2 ONNX export.",
       "Usage": "DirectoryPath"
     },
     {

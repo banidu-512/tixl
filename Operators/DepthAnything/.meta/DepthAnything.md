@@ -1,23 +1,24 @@
 # DepthAnything Operator
 
 ## Overview
-Estimates depth from images with Depth Anything 3 (preferred) or Depth Anything V2 through ONNX Runtime. The input is resampled and normalized on the GPU, inference runs on a worker thread, and the latest result is published when it is ready.
+Estimates depth from images with Depth Anything 3 through ONNX Runtime. The input is resampled and normalized on the GPU, inference runs on a worker thread, and the latest result is published when it is ready.
 
 ## Inputs
 - **Texture2D InputTexture** - Source image or video texture, any format and size
 - **bool Enabled** - Toggle processing on/off
-- **ModelSize** - V2 Small, Base, Large, Small Fp32, Small Int8; V3 Small, Base, Mono Large, Metric Large
+- **ModelSize** - V3 Small, Base, Large, Mono Large, Metric Large, Giant, Nested Giant; legacy V2-era values run their DA3 equivalent
 - **Resolution** - Inference size for models with dynamic input. Fixed-size exports ignore it
-- **ExecutionProvider** - CPU, DirectML, CUDA, CoreML, TensorRT
+- **ExecutionProvider** - Only the providers this OS supports are offered: Windows CPU/DirectML/CUDA/TensorRT, Linux CPU/CUDA/TensorRT, macOS CPU/CoreML; a saved value the OS cannot run snaps to the closest one
 - **bool MatchInputResolution** - Resize outputs to the input size on the CPU (costs latency)
 - **float Smoothing** - Temporal blend of depth and depth range
 - **float FieldOfView** - Horizontal field of view in degrees; used by the Metric model
 - **DepthOutputFormat OutputFormat** - Grayscale/Color/Rainbow visualization
+- **DepthNormalization Normalization** - Full Range stretches the frame min/max (sky excluded when the model predicts sky); Percentile bounds the range at the 2nd/98th quantiles against outlier spikes
 - **bool EnhanceContrast, InvertDepth, Debug**
 
 ## Outputs
 - **Texture2D OutputTexture** - Original input (passthrough)
-- **Texture2D DepthTexture** - Raw model output (R32_Float); V3 is depth (far larger), V2 is disparity (near larger)
+- **Texture2D DepthTexture** - Raw model output (R32_Float); depth (far larger)
 - **Texture2D NormalizedDepthTexture** - Visualized depth (RGBA), near bright
 - **Texture2D ConfidenceTexture** - Per-pixel confidence, when the model predicts it
 - **Texture2D SkyTexture** - Sky score, when the model predicts it
@@ -25,7 +26,7 @@ Estimates depth from images with Depth Anything 3 (preferred) or Depth Anything 
 - **float VerticalFov** - Camera field of view in degrees estimated by the model, 0 when unknown
 - **float InferenceMs**, **float LatencyMs** - Model time and capture-to-result time
 - **string Status**
-- **Object CamReference** - Estimated camera as an ICamera: pose from the model's extrinsics and FOV from its intrinsics. Falls back to the reference pose at the origin when the model has no extrinsics output (the V3 Small export is depth-only; V3 Base has the pose).
+- **Object CamReference** - Estimated camera as an ICamera: pose from the model's extrinsics and FOV from its intrinsics. Falls back to the reference pose at the origin when the model has no extrinsics output (the Small export is depth-only; Base and some larger exports have the pose).
 
 ## Camera Reference
 `CamReference` can be connected to camera-reference inputs such as `ApplyCamTransform.CamReference` or `SortPoints.CameraReference`. The pose is in DA3's image frame: +Z forward, image-up axis, position from the extrinsics. The depth splat is built in a y-up, +Z-forward frame, so a render camera driven directly by `CamReference` needs a Y flip to match the splat's orientation.
@@ -34,11 +35,10 @@ Estimates depth from images with Depth Anything 3 (preferred) or Depth Anything 
 Place in `Assets/`, or run `Scripts/download_models.py` (`.ps1` on Windows). The first file found wins:
 - V3 Small: `da3-small-fp16.onnx`, `da3-small.onnx`, `da3-small-int8.onnx`
 - V3 Base: `da3-base-fp16.onnx`, `da3-base.onnx`
-- V3 Mono Large: `da3-mono-large-fp16.onnx`, `da3-mono-large-int8.onnx`
+- V3 Large: `da3-large-fp16.onnx`, `da3-large.onnx`
+- V3 Mono Large: `da3-mono-large-fp32.onnx`, `da3-mono-large-fp16.onnx`, `da3-mono-large-w8a16.onnx`, `da3-mono-large-int8.onnx`
 - V3 Metric Large: `da3-metric-large-fp16.onnx`
-- V2: `depth-anything-v2-{small,base,large}-fp16.onnx`, `-small-fp32`, `-small-int8`
-
-A V3 selection without an installed V3 file falls back to the V2 model of similar size.
+- V3 Giant / Nested Giant: own export from the official weights (no public ONNX export)
 
 ## Low-Latency Notes
 - Preprocessing (resample, ImageNet normalization, planar layout) is one compute pass; only the model-sized input crosses to the CPU.

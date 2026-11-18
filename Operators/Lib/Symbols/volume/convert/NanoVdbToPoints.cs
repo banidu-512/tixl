@@ -56,6 +56,7 @@ internal sealed class NanoVdbToPoints : Instance<NanoVdbToPoints>
 
             var csStage = deviceContext.ComputeShader;
             csStage.Set(shader);
+            csStage.SetConstantBuffer(0, _paramsBuffer);
             csStage.SetShaderResource(0, grid.Srv);
             csStage.SetUnorderedAccessView(0, _points.Uav);
             csStage.SetUnorderedAccessView(1, _counter.Uav);
@@ -104,7 +105,7 @@ internal sealed class NanoVdbToPoints : Instance<NanoVdbToPoints>
                               };
         using var data = new DataStream(ParamsSizeInBytes, true, true);
         _paramsBuffer = new Buffer(ResourceManager.Device, data, description);
-        ResourceManager.Device.ImmediateContext.ComputeShader.SetConstantBuffer(0, _paramsBuffer);
+        _paramsData = new DataStream(ParamsSizeInBytes, true, true);
     }
 
     /// <summary>Writes the pass constants. Both passes share one buffer, so each is set before its dispatch.</summary>
@@ -115,11 +116,11 @@ internal sealed class NanoVdbToPoints : Instance<NanoVdbToPoints>
         _params[0].Pass = (uint)pass;
         _params[0].MaxLeaves = (uint)maxLeaves;
 
-        using var data = new DataStream(ParamsSizeInBytes, true, true);
-        data.WriteRange(_params);
-        data.Position = 0;
+        _paramsData.Position = 0;
+        _paramsData.WriteRange(_params);
+        _paramsData.Position = 0;
 
-        var box = new DataBox(data.DataPointer, 0, 0);
+        var box = new DataBox(_paramsData.DataPointer, 0, 0);
         ResourceManager.Device.ImmediateContext.UpdateSubresource(box, _paramsBuffer, 0);
     }
 
@@ -130,6 +131,8 @@ internal sealed class NanoVdbToPoints : Instance<NanoVdbToPoints>
             _points.Dispose();
             _counter.Dispose();
             T3.Graphics.Compat.GraphicsUtilities.Dispose(ref _paramsBuffer);
+            _paramsData?.Dispose();
+            _paramsData = null;
         }
 
         base.Dispose(disposing);
@@ -153,6 +156,7 @@ internal sealed class NanoVdbToPoints : Instance<NanoVdbToPoints>
     private readonly BufferWithViews _points = new();
     private readonly BufferWithViews _counter = new();
     private Buffer _paramsBuffer;
+    private DataStream _paramsData;
 
     [Input(Guid = "6c01c2c6-c3ec-4f59-93ee-a4654b218f2e")]
     public readonly InputSlot<BufferWithViews> Grid = new();

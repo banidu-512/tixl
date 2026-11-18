@@ -1,11 +1,13 @@
 using System;
 using System.Collections.Generic;
 using System.Numerics;
+using System.Threading;
 using T3.Core.DataTypes;
 using T3.Core.DataTypes.Volume;
 using T3.Core.DataTypes.Volume.Tools;
 using T3.Core.DataTypes.Volume.IO;
 using T3.Core.Logging;
+using Lib.Utils;
 
 namespace Lib.volume.io;
 
@@ -23,6 +25,12 @@ internal sealed class SaveNanoVdb : Instance<SaveNanoVdb>
     }
 
     private void Update(EvaluationContext context)
+    {
+        UpdateCore(context);
+        BackgroundPolling.Set(_saveTask != null, Saved);
+    }
+
+    private void UpdateCore(EvaluationContext context)
     {
         var volume = Volume.GetValue(context);
         var path = PathSaved.GetValue(context)?.Trim();
@@ -87,7 +95,10 @@ internal sealed class SaveNanoVdb : Instance<SaveNanoVdb>
                                          result = new SaveResult { Error = e.Message, Path = path };
                                      }
 
-                                     Saved.DirtyFlag.Invalidate();
+                                     // Bump the version atomically rather than calling Invalidate():
+                                     // see LoadVdb for why the pass-scoped tick must stay on the
+                                     // evaluation thread.
+                                     Interlocked.Increment(ref Saved.DirtyFlag.SourceVersion);
                                      return result;
                                  });
     }

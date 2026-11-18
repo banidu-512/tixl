@@ -40,6 +40,12 @@ public sealed class AiModelSettings : T3.Core.IO.Settings<AiModelSettings.Config
         /// otherwise after a restart.
         /// </summary>
         public bool PreferDirectMlForOnnx = false;
+
+        /// <summary>
+        /// Set once the AI model setup wizard opened on its own (first start without models). Afterwards it is
+        /// only reached through Help › AI Model Setup… and Settings › AI Models.
+        /// </summary>
+        public bool SetupWizardOffered = false;
     }
 
     /// <summary>Subfolders of the model store, one per operator package.</summary>

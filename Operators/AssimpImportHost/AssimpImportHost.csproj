@@ -16,5 +16,39 @@
     <InvariantGlobalization>true</InvariantGlobalization>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <PackageId>a87748e1-bff7-4c5a-8412-39bea4510b1a</PackageId>
+    <HomeGuid>00000000-0000-0000-0000-000000000000</HomeGuid>
+    <VersionPrefix>1.0.0</VersionPrefix>
+    <EditorVersion>4.3.0</EditorVersion>
+    <IsEditorOnly>false</IsEditorOnly>
   </PropertyGroup>
+  <Target Name="CreatePackageInfo" AfterTargets="AfterBuild">
+    <ItemGroup Label="Define json structure of referenced operator packages">
+      <OpPacks Include="@(Operators)">
+        <OpPackageInfoJson>{
+    "Identity": "%(Identity)",
+    "Version": "%(Version)", 
+    "ResourcesOnly": "%(ResourcesOnly)"
+}</OpPackageInfoJson>
+      </OpPacks>
+    </ItemGroup>
+    <PropertyGroup>
+      <OperatorReferenceArray>@(OpPacks -> '%(OpPackageInfoJson)', ',')</OperatorReferenceArray>
+      <OperatorPackageInfoJson>{
+    "HomeGuid": "$(HomeGuid)", 
+    "PackageId": "$(PackageId)",
+    "RootNamespace": "$(RootNamespace)",
+    "AssemblyFileName": "$(RootNamespace)",
+    "Version": "$(VersionPrefix)",
+    "EditorVersion": "$(EditorVersion)",
+    "IsEditorOnly": "$(IsEditorOnly)",
+    "OperatorPackages": [$(OperatorReferenceArray)
+    ]
+}</OperatorPackageInfoJson>
+    </PropertyGroup>
+    <WriteLinesToFile File="$(OutputPath)/OperatorPackage.json" Lines="$(OperatorPackageInfoJson)" Overwrite="True" Encoding="UTF-8" />
+  </Target>
+  <Target Name="ClearBuildOutput" BeforeTargets="BeforeBuild" Condition="'$(Configuration)' == 'Release'">
+    <RemoveDir Directories="$(BaseOutputPath)$(Configuration)" />
+  </Target>
 </Project>

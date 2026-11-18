@@ -39,6 +39,7 @@ public static class PointsToVolume
                                         + "increase VoxelSize or reduce Radius.");
         }
         var transform = new VdbTransform(voxelSize, Vector3.Zero);
+        var radiusSq = radius * radius;
 
         var grid = new VdbGrid<float>(0f, voxelSize, "density", VdbGridClass.FogVolume);
 
@@ -46,6 +47,10 @@ public static class PointsToVolume
         var leafGroups = new Dictionary<VdbCoord, List<int>>();
         for (var i = 0; i < positions.Length; i++)
         {
+            // A NaN position (a body that blew up) would floor to int.MinValue and loop over the whole index range.
+            if (!float.IsFinite(positions[i].X + positions[i].Y + positions[i].Z))
+                continue;
+
             var center = transform.WorldToIndexf(positions[i]);
             var minCoord = new VdbCoord((int)MathF.Floor(center.X - radiusVoxels), (int)MathF.Floor(center.Y - radiusVoxels), (int)MathF.Floor(center.Z - radiusVoxels));
             var maxCoord = new VdbCoord((int)MathF.Floor(center.X + radiusVoxels), (int)MathF.Floor(center.Y + radiusVoxels), (int)MathF.Floor(center.Z + radiusVoxels));
@@ -72,7 +77,7 @@ public static class PointsToVolume
         foreach (var origin in leafList)
             leafNodes.Add(grid.Tree.AddLeaf(origin));
 
-        Parallel.For(0, leafList.Count, leafIndex =>
+        Parallel.For(0, leafList.Count, VolumeParallelism.Options, leafIndex =>
         {
             var group = new KeyValuePair<VdbCoord, List<int>>(leafList[leafIndex], leafGroups[leafList[leafIndex]]);
             var values = new float[VdbLeafNode<float>.Size];
@@ -84,27 +89,35 @@ public static class PointsToVolume
                 var center = transform.WorldToIndexf(positions[pointIndex]);
                 var weight = weights != null ? weights[pointIndex] : 1f;
 
-                for (var dz = -radiusVoxels; dz <= radiusVoxels; dz++)
+                // Only the part of the kernel box inside this leaf: the full box is up to (2r+1)^3 voxels,
+                // a leaf holds 512, and every point is visited once per leaf its kernel touches.
+                var minX = Math.Max((int)MathF.Floor(center.X - radiusVoxels), group.Key.X);
+                var minY = Math.Max((int)MathF.Floor(center.Y - radiusVoxels), group.Key.Y);
+                var minZ = Math.Max((int)MathF.Floor(center.Z - radiusVoxels), group.Key.Z);
+                var maxX = Math.Min((int)MathF.Floor(center.X + radiusVoxels), group.Key.X + 7);
+                var maxY = Math.Min((int)MathF.Floor(center.Y + radiusVoxels), group.Key.Y + 7);
+                var maxZ = Math.Min((int)MathF.Floor(center.Z + radiusVoxels), group.Key.Z + 7);
+                var position = positions[pointIndex];
+                if (!float.IsFinite(position.X + position.Y + position.Z))
+                    continue;
+
+                for (var z = minZ; z <= maxZ; z++)
                 {
-                    for (var dy = -radiusVoxels; dy <= radiusVoxels; dy++)
+                    for (var y = minY; y <= maxY; y++)
                     {
-                        for (var dx = -radiusVoxels; dx <= radiusVoxels; dx++)
+                        for (var x = minX; x <= maxX; x++)
                         {
-                            var local = center + new Vector3(dx, dy, dz);
-                            var coord = new VdbCoord((int)MathF.Floor(local.X), (int)MathF.Floor(local.Y), (int)MathF.Floor(local.Z));
-                            var offsetIndex = coord - group.Key;
-                            if (offsetIndex.X < 0 || offsetIndex.X > 7 || offsetIndex.Y < 0 || offsetIndex.Y > 7 || offsetIndex.Z < 0 || offsetIndex.Z > 7)
-                                continue;
-
+                            var coord = new VdbCoord(x, y, z);
                             var world = transform.IndexToWorld(coord);
-                            var dist = Vector3.Distance(world, positions[pointIndex]);
-                            if (dist > radius)
+                            var distSq = Vector3.DistanceSquared(world, position);
+                            if (distSq > radiusSq)
                                 continue;
 
+                            var dist = MathF.Sqrt(distSq);
                             var t = 1f - dist / radius;
                             var contribution = falloff switch
                             {
-                                Falloff.Gaussian => MathF.Exp(-6f * dist * dist / (radius * radius)),
+                                Falloff.Gaussian => MathF.Exp(-6f * distSq / radiusSq),
                                 Falloff.Smoothstep => t * t * (3f - 2f * t),
                                 Falloff.Constant => 1f,
                                 _ => t,
@@ -232,30 +245,50 @@ public static class VolumePrimitives
         if (leafCount > 262_144)
             throw new ArgumentException($"Primitive too large for voxel size {voxelSize} ({leafCount} leaves, limit 262144)");
 
-        for (var lz = leafMin.Z >> 3; lz <= leafMax.Z >> 3; lz++)
+        // Leaves are rasterized in parallel into plain arrays (the SDF is a pure function), then added to the tree
+        // serially in a fixed order because the tree is not thread-safe.
+        var count = (int)leafCount;
+        var leafValues = new float[count][];
+        var leafActive = new ulong[count][];
+        // Every SDF here is at most 1-Lipschitz, so a leaf whose centre is further outside than the band plus the
+        // leaf's half diagonal has no voxel in the band and is skipped without evaluating its 512 voxels.
+        var skipDistance = bandWorld + 0.5f * MathF.Sqrt(3f) * VdbLeafNode<float>.Dim * t.VoxelSize;
+        Parallel.For(0, count, VolumeParallelism.Options, leafIndex =>
         {
-            for (var ly = leafMin.Y >> 3; ly <= leafMax.Y >> 3; ly++)
-            {
-                for (var lx = leafMin.X >> 3; lx <= leafMax.X >> 3; lx++)
-                {
-                    RasterizeLeaf(grid, worldSdf, new VdbCoord(lx << 3, ly << 3, lz << 3), t, bandWorld, background);
-                }
-            }
+            var lx = leafIndex % leafCountX;
+            var ly = leafIndex / leafCountX % leafCountY;
+            var lz = leafIndex / (leafCountX * leafCountY);
+            var leafOrigin = new VdbCoord(leafMin.X + (lx << 3), leafMin.Y + (ly << 3), leafMin.Z + (lz << 3));
+            var centre = t.IndexToWorld(leafOrigin.ToVector3() + new Vector3(3.5f));
+            if (worldSdf(centre) > skipDistance)
+                return;
+
+            RasterizeLeaf(worldSdf, leafOrigin, t, bandWorld, background, out leafValues[leafIndex], out leafActive[leafIndex]);
+        });
+
+        for (var leafIndex = 0; leafIndex < count; leafIndex++)
+        {
+            if (leafActive[leafIndex] is not { } activeWords)
+                continue;
+
+            var lx = leafIndex % leafCountX;
+            var ly = leafIndex / leafCountX % leafCountY;
+            var lz = leafIndex / (leafCountX * leafCountY);
+            var leaf = grid.Tree.AddLeaf(new VdbCoord(leafMin.X + (lx << 3), leafMin.Y + (ly << 3), leafMin.Z + (lz << 3)));
+            Array.Copy(leafValues[leafIndex], leaf.Values, VdbLeafNode<float>.Size);
+            activeWords.AsSpan().CopyTo(leaf.ValueMask.Words);
         }
 
         grid.Tree.Prune();
         return grid;
     }
 
-    private static void RasterizeLeaf(VdbGrid<float> grid, SdfFn worldSdf, VdbCoord leafOrigin,
-                                      VdbTransform t, float bandWorld, float background)
+    private static void RasterizeLeaf(SdfFn worldSdf, VdbCoord leafOrigin, VdbTransform t, float bandWorld, float background,
+                                      out float[] values, out ulong[] activeWords)
     {
         // Voxels outside the band keep the background value, so inactive reads stay consistent.
-        var values = new float[VdbLeafNode<float>.Size];
-        Array.Fill(values, background);
-        var active = new bool[VdbLeafNode<float>.Size];
-        var anyActive = false;
-
+        values = null!;
+        activeWords = null!;
         for (var i = 0; i < VdbLeafNode<float>.Size; i++)
         {
             var local = VdbCoord.LocalFromOffset(i);
@@ -264,20 +297,15 @@ public static class VolumePrimitives
             if (d > bandWorld)
                 continue;
 
+            if (values == null)
+            {
+                values = new float[VdbLeafNode<float>.Size];
+                Array.Fill(values, background);
+                activeWords = new ulong[VdbLeafNode<float>.Size / 64];
+            }
+
             values[i] = d;
-            active[i] = true;
-            anyActive = true;
-        }
-
-        if (!anyActive)
-            return;
-
-        var leaf = grid.Tree.AddLeaf(leafOrigin);
-        Array.Copy(values, leaf.Values, values.Length);
-        for (var i = 0; i < active.Length; i++)
-        {
-            if (active[i])
-                leaf.ValueMask.SetOn(i);
+            activeWords[i >> 6] |= 1ul << (i & 63);
         }
     }
 
@@ -362,8 +390,6 @@ public static class VolumeMath
                         && a.Transform.Translation == b.Transform.Translation;
 
         var leafCoords = new SortedSet<VdbCoord>();
-        VdbSampler? samplerA = null;
-        VdbSampler? samplerB = null;
         foreach (var leaf in a.Tree.Leaves)
             leafCoords.Add(leaf.Origin);
         if (sameSpace)
@@ -374,51 +400,9 @@ public static class VolumeMath
         else
         {
             VolumeCsg.CollectLeafCoordsMapped(b, a.Transform, leafCoords);
-            samplerA = new VdbSampler(a);
-            samplerB = new VdbSampler(b);
         }
 
-        foreach (var coord in leafCoords)
-        {
-            var values = new float[VdbLeafNode<float>.Size];
-            var active = new bool[VdbLeafNode<float>.Size];
-            var anyActive = false;
-            for (var i = 0; i < VdbLeafNode<float>.Size; i++)
-            {
-                var voxelCoord = coord + VdbCoord.LocalFromOffset(i);
-                float va, vb;
-                bool onA, onB;
-                if (sameSpace)
-                {
-                    va = a.Tree.GetValue(voxelCoord);
-                    vb = b.Tree.GetValue(voxelCoord);
-                    onA = a.Tree.IsValueOn(voxelCoord);
-                    onB = b.Tree.IsValueOn(voxelCoord);
-                }
-                else
-                {
-                    var world = a.Transform.IndexToWorld(voxelCoord);
-                    va = VolumeCsg.SampleWorld(a, samplerA!, world, out onA);
-                    vb = VolumeCsg.SampleWorld(b, samplerB!, world, out onB);
-                }
-
-                values[i] = Apply(op, va, vb);
-                active[i] = onA || onB;
-                anyActive |= active[i];
-            }
-
-            if (!anyActive)
-                continue;
-
-            var leaf = result.Tree.AddLeaf(coord);
-            Array.Copy(values, leaf.Values, values.Length);
-            for (var i = 0; i < active.Length; i++)
-            {
-                if (active[i])
-                    leaf.ValueMask.SetOn(i);
-            }
-        }
-
+        VolumeCsg.CombineInto(result, a, b, leafCoords, (va, vb) => Apply(op, va, vb));
         return result;
     }
 
@@ -486,10 +470,18 @@ public static class VolumeNoise
         var displacementScale = mode == Mode.Displace ? amplitude * voxelSize : amplitude;
         var isReplace = mode == Mode.Replace;
 
-        foreach (var leaf in input.Tree.Leaves)
+        // Leaves are allocated serially (the tree is not thread-safe), then filled in parallel: the noise is a pure
+        // function of the position, so the result is the same on any number of threads.
+        var sources = new List<VdbLeafNode<float>>(input.Tree.Leaves);
+        var targets = new VdbLeafNode<float>[sources.Count];
+        for (var leafIndex = 0; leafIndex < sources.Count; leafIndex++)
+            targets[leafIndex] = result.Tree.AddLeaf(sources[leafIndex].Origin);
+
+        Parallel.For(0, sources.Count, VolumeParallelism.Options, leafIndex =>
         {
+            var leaf = sources[leafIndex];
             var origin = leaf.Origin;
-            var newLeaf = result.Tree.AddLeaf(origin);
+            var newLeaf = targets[leafIndex];
             var values = newLeaf.Values;
 
             // Inactive voxels keep their values: for a level set they carry the interior fill.
@@ -539,7 +531,7 @@ public static class VolumeNoise
                 newLeaf.ValueMask.SetAll();
             else
                 newLeaf.ValueMask.Words.AsSpan().CopyFrom(leaf.ValueMask.Words);
-        }
+        });
 
         result.Tree.Prune();
         return result;

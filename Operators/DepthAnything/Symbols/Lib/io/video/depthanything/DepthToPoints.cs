@@ -102,7 +102,6 @@ public sealed class DepthToPoints : Instance<DepthToPoints>, IStatusProvider
                                  DepthScale = DepthScale.GetValue(context),
                                  SplatSizePixels = Math.Max(0.1f, SplatSizePixels.GetValue(context)),
                                  Opacity = Math.Clamp(Opacity.GetValue(context), 0f, 1f),
-                                 DepthIsDisparity = DepthIsDisparity.GetValue(context) ? 1u : 0u,
                                  HasColor = colorSrv != null ? 1u : 0u,
                                  HasConfidence = confidenceSrv != null ? 1u : 0u,
                                  PixelStride = (uint)pixelStride,
@@ -278,7 +277,6 @@ public sealed class DepthToPoints : Instance<DepthToPoints>, IStatusProvider
         public float DepthScale;
         public float SplatSizePixels;
         public float Opacity;
-        public uint DepthIsDisparity;
         public uint HasColor;
         public uint HasConfidence;
         public uint PixelStride;
@@ -319,9 +317,6 @@ public sealed class DepthToPoints : Instance<DepthToPoints>, IStatusProvider
 
     [Input(Guid = "3494a9de-be76-4408-948f-f33a03de56d8")]
     public readonly InputSlot<float> DepthScale = new();
-
-    [Input(Guid = "67b05edd-6091-4b6e-b179-34b11f7a5d8c")]
-    public readonly InputSlot<bool> DepthIsDisparity = new();
 
     [Input(Guid = "22ec87ea-deb5-405e-a109-1130e27b0a59")]
     public readonly InputSlot<int> PixelStride = new();
