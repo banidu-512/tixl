@@ -2,7 +2,7 @@
 
 TiXL can drive real laser projectors: render geometry into a laser point stream
 ([LaserCamera]), shape it with the output's optimization and safety settings, and
-stream it to the projector over EtherDream (ILDA), PONK or CITP — all configured in
+stream it to the projector over EtherDream (ILDA), PONK, showNET or CITP — all configured in
 the [Output Setup](OutputSetup.md).
 
 **Start here:**
@@ -29,6 +29,7 @@ edited on the laser output and its plug in the Output Setup.
 | **EtherDream DAC** | ILDA over TCP — real show lasers | [doc](laser/EtherDream.md) |
 | **PONK endpoint** | PONK over UDP — e.g. MadMapper | [doc](laser/PONK.md) |
 | **CITP capture** | CITP/CAEX preview feed — e.g. Capture | [doc](laser/CITP.md) |
+| **showNET laser** | showNET over UDP — LaserAnimation Sollinger PHOENIX | [doc](laser/ShowNet.md) |
 
 The safety pipeline (calibration gate, safe zone, dwell/jump/brightness limits)
 and the optimization pipeline (path reorder, blanking, corner anchors) are edited

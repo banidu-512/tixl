@@ -296,6 +296,11 @@ public static class LaserPlugDiscovery
             {
                 listener.Poll();
             }
+            catch (SocketException)
+            {
+                // One stray ICMP-driven reset must not end discovery for the session.
+                continue;
+            }
             catch
             {
                 // Disposed (editor shutdown) — nothing left to drain
@@ -418,14 +423,10 @@ public static class LaserPlugDiscovery
 
         private void Prune(long now)
         {
-            ShowNetLaserInfo[] expired;
-            lock (_lasers)
-            {
-                expired = _lasers.Values
+            // The ConcurrentDictionary is already thread-safe - no additional lock.
+            var expired = _lasers.Values
                                  .Where(laser => now - laser.Timestamp > PruneAfterMs)
                                  .ToArray();
-            }
-
             foreach (var laser in expired)
             {
                 _lasers.TryRemove(laser.Address.ToString(), out _);

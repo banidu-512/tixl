@@ -65,3 +65,14 @@ See `Core.Tests/PonkUdpWireFormatTests.cs`.
 * LaserFeedFrame points: X low byte, Y low byte, packed X/Y high nibbles (12-bit coordinates each), uint16 RGB565 color.
 
 See the `CitpStream` constants in `Core/Output/LaserOutputStream.cs`.
+
+## showNET (UDP)
+
+*Transport:* plaintext discovery probe (30-byte broadcast to port **41855**, replies on **41856**); data packets to the device's UDP **41855**.
+
+* Point records: inverted 12-bit X/Y (`(0xFFFF − point) >> 4`), 8-bit colors (generation 1 divides by 512, generation 2 by 256), 7 bytes (gen 1 RGB+intensity) or 9 bytes (gen 2 adds two user-color slots; color-features 5 swaps intensity for three user colors).
+* Every packet: 20-byte header (marker flags + crypt/scramble word counts in word 0, response cipher in word 1's high byte, sequence id in word 2), then command fields. Commands: handshake `0x04` (full obfuscation, reply awaited, sizes 124/132/232), frame-memory configure `0x12` (reply ignored), frames `0x1A` (fragment count/sequence/offset/size fields support multi-datagram frames; the 8-byte frame header travels in fragment 0), NOP keepalive (`0x1A` without a frame header).
+* Obfuscation: a TEA-like 32-round cipher (delta `0x9E3779B9`, fixed key) over 8-byte blocks, and a 4-word LFSR keystream scramble — one scrambler per packet, running continuously from the header into the payload.
+* Identity words in every discovery reply and handshake response arrive XOR'd with `0xD49A3433`.
+
+See `ShowNetProtocol`/`ShowNetFrameEncoder` in `Core/Output/ShowNetProtocol.cs`; characterization tests in `Core.Tests/ShowNetProtocolTests.cs`.
