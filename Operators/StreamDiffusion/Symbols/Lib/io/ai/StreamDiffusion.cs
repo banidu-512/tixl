@@ -273,6 +273,7 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
     private bool _resetState;
     private bool _resetPending;
     private long _lastEnqueueTicks;
+    private long _cooldownUntilTicks;
     private int _updating;
     private int _lastSkipLogFrame;
     private int _updateFrameCounter;
@@ -451,8 +452,18 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
             // flight with the newest frame; _requestInFlight rate-limits to GPU speed and TargetFps
             // paces how often new frames are started.
             var targetFps = TargetFps.GetValue(context);
-            var paced = targetFps <= 0f
-                        || System.Diagnostics.Stopwatch.GetTimestamp() - _lastEnqueueTicks >= (long)(System.Diagnostics.Stopwatch.Frequency / targetFps);
+            var nowTicks = System.Diagnostics.Stopwatch.GetTimestamp();
+
+            // Thermal stability: laptop GPUs dip their clocks at ~87 C under sustained load, and a frame
+            // produced inside that dip costs 6-12x while heating the GPU further. After a throttled
+            // frame (>250 ms) hold new requests back briefly so the clocks recover; this trades a
+            // little average throughput for a consistent cadence instead of spike-and-stall.
+            if (_lastGenerationTime > 0.25f)
+                _cooldownUntilTicks = nowTicks + (long)(System.Diagnostics.Stopwatch.Frequency * 0.25f);
+
+            var paced = (targetFps <= 0f
+                         || nowTicks - _lastEnqueueTicks >= (long)(System.Diagnostics.Stopwatch.Frequency / targetFps))
+                        && nowTicks >= _cooldownUntilTicks;
             if (autoGenerate && paced && inputImage != null && !inputImage.IsDisposed)
             {
                 _hasPendingInput = true;
