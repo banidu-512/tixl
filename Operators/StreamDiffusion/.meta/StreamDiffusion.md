@@ -4,20 +4,21 @@
 Realtime video-to-video diffusion with ONNX Runtime, running the StreamDiffusion V2 causal Wan2.1 DiT export as a pipelined stream-batch. GPU acceleration uses the CUDA or TensorRT execution provider (ONNX Runtime 1.30, CUDA 13 + cuDNN 9, NVIDIA driver 580+); macOS uses CoreML. Without a usable GPU provider the operator falls back to CPU and says so in its status line.
 
 ## Inputs
-- **string EnginePath** - Path to the V2 export folder (empty = first V2 export in the model store)
+- **string Model** - Export to run, chosen by name from the model store (Auto = first valid; models are installed in Settings > AI Models, never as paths)
 - **string Prompt** - Text description of the restyle
 - **int Seed** - A changed seed re-primes the stream with fresh noise (-1 keeps the current one)
-- **float Strength** - How strongly each Stream frame is re-noised (0 = keep the previous frame, 1 = fresh frame)
-- **int Steps** - KV-cache batch size (1-4); every extra step doubles the cache
+- **float Strength** - How strongly each Stream frame is re-noised, default 0.8 (0 = keep the previous frame, 1 = fresh frame; the motion-aware controller lowers it on fast motion)
+- **int Steps** - KV-cache batch size (1-4), default 2; every extra step doubles the cache
 - **Texture2D? InputImage** - Video or camera frame to restyle; the model is video-only
 - **int CudaDevice** - CUDA/TensorRT device index (the dropdown lists the adapters found by the driver)
-- **int ExecutionProvider** - CPU/DirectML/CUDA/TensorRT, listed per OS
+- **int ExecutionProvider** - CPU/CUDA/TensorRT per OS (macOS CoreML); DirectML cannot run the V2 model and snaps to CUDA
 - **bool TriggerGenerate** - Momentarily true to step one frame when AutoGenerate is off
 - **bool AutoGenerate** - Continuously restyle incoming frames
 - **int ResizeMode** - How the input image fits the export's baked size (Stretch/CenterCrop/Pad)
 - **float Feedback** - Blends the previous output frame to smooth flicker
 - **bool FastDecode** - Decodes one latent instead of a three-latent window
 - **bool ResetStream** - Momentarily true to drop the rolling KV cache and re-prime from the next frame (scene cuts, style drift)
+- **float TargetFps** - Paces the stream at this rate (default 16); 0 = as fast as the GPU allows
 - **bool Debug** - Logs detailed timing and state information
 
 ## Outputs

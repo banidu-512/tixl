@@ -85,9 +85,8 @@ internal sealed class StreamDiffusionV2Pipeline : IDisposable
     public static string ValidateModelDirectory(string? modelDirectory)
     {
         if (string.IsNullOrWhiteSpace(modelDirectory))
-            return "No StreamDiffusion V2 export found. Download the checkpoint in Settings > AI Models, run the export " +
-                   "scripts in Operators/StreamDiffusion/tools/streamdiffusionv2, and leave EnginePath empty to pick up the " +
-                   "result from the model store - or point EnginePath at an export folder.";
+            return "No StreamDiffusion V2 export found. Download the ready-to-run export in Settings > AI Models " +
+                   "(or the checkpoint + export scripts for other sizes); the operator picks it up from the model store automatically.";
 
         if (!Directory.Exists(modelDirectory))
             return $"Model directory not found: {modelDirectory}";

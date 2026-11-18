@@ -8,7 +8,7 @@ Produce the ONNX export once with the scripts in Operators/StreamDiffusion/tools
 
 Tips:
 - Connect a video or camera to `InputImage` - the model is video-only and cannot generate from text alone.
-- Point `EnginePath` at the V2 export folder, or leave it empty to use the first V2 export in the model store.
+- `Model` picks the export from the model store (Auto = first valid); models are installed in Settings > AI Models.
 - `Steps` is the KV-cache batch size (1-4); every extra step doubles the cache.
 - `Strength` is how strongly each frame is re-noised: lower keeps more of the previous frame.
 - `FastDecode` decodes one latent instead of a three-latent window: faster, less temporal smoothing.
@@ -21,16 +21,17 @@ AKA: ai, generation, diffusion, onnx, streamdiffusion, streamdiffusion v2, video
 
 | Name (Relevancy & Type) | Description |
 |---|---|
-| **EnginePath** (String) | Folder with the StreamDiffusion V2 export (dit_step.onnx, text_encoder.onnx, vae_decoder.onnx, tokenizer.json, ...). Empty = first V2 export in the model store. |
+| **Model** (String) | Which export in the model store to run. Auto picks the first valid one; the dropdown lists everything Settings > AI Models has installed. Models are managed in the AI settings, never as paths here. |
 | **CudaDevice** (Int32) | DirectML device index for multi-GPU systems. Shows available adapters in dropdown. |
 | **TriggerGenerate** (Boolean) | Momentarily true to trigger a single generation when AutoGenerate is off. |
 | **FastDecode** (Boolean) | V2 only: decode one latent instead of a three-latent window. Saves about 20 ms per frame on TensorRT with slightly less temporal smoothing. |
 | **ResetStream** (Boolean) | Momentarily true to drop the rolling KV cache and re-prime the stream from the next input frame - useful on scene cuts or when the style drifts. |
+| **TargetFps** (Single) | Paces the stream at this many frames per second (default 16, matching capture and downstream). 0 runs as fast as the GPU allows; identical input frames cost nothing at any rate. |
 | **Prompt** (String) | Text prompt describing the desired image. Be descriptive for better results. |
 | **AutoGenerate** (Boolean) | Continuously regenerate when inputs change. Disable for manual trigger mode. |
-| **ExecutionProviderParam** (Int32) | Hardware used for inference. The dropdown lists only the providers this operating system supports: Windows has DirectML, CUDA and TensorRT, Linux has CUDA and TensorRT, macOS has CoreML. A provider that cannot initialize falls back to the next one, ending at CPU. |
-| **Strength** (Single) | How strongly each Stream frame is re-noised: lower keeps more of the previous frame, higher follows the input faster. |
-| **Steps** (Int32) | The V2 step count is the KV-cache batch size: 1 is realtime, 2-4 add temporal context at twice the cache per step. Changing it restarts the stream. |
+| **ExecutionProviderParam** (Int32) | Hardware used for inference. The dropdown lists only the accelerations that can actually run this model on this operating system: Windows and Linux offer CUDA and TensorRT, macOS offers CoreML. DirectML cannot run the V2 model (its DiT/VAE 5D reshapes fail on the DML provider), and a saved DirectML choice snaps to CUDA. A provider that cannot initialize falls back to the next one, ending at CPU. |
+| **Strength** (Single) | How strongly each Stream frame is re-noised (default 0.8): lower keeps more of the previous frame, higher follows the input faster; the motion-aware controller lowers it automatically on fast motion. |
+| **Steps** (Int32) | The KV-cache batch size (default 2): 1 is fastest, 2-4 add temporal context at twice the cache per step. Changing it restarts the stream. |
 | **Debug** (Boolean) | Logs detailed timing and state information. |
 | **InputImage** (Texture2D) | Source image for img2img and Stream mode. Ignored in txt2img mode. Accepts RGBA images and float render targets; linear float values are encoded to sRGB before generation. |
 | **ResizeMode** (Int32) | How the input image fits the output: Stretch = fill, CenterCrop = crop then fill, Pad = fit with borders. |

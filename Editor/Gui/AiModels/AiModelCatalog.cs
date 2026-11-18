@@ -365,6 +365,36 @@ internal static class AiModelCatalog
         // ---------------------------------------------------------------- StreamDiffusion
         new()
         {
+            Id = "streamdiffusion-v2-256",
+            Family = AiModelFamily.StreamDiffusion,
+            DisplayName = "StreamDiffusion V2 – 256×256 (ready-to-run)",
+            Description = "Pre-exported ONNX of the causal Wan2.1 video model at 256×256 fp16 - download and stream, no Python needed.",
+            Details = "The complete export: DiT, text encoder, TAEHV VAE and tokenizer, produced once with the bundled " +
+                      "scripts so you don't have to. Download it and leave the operator's EnginePath empty. The realtime " +
+                      "size: about 8 fps on TensorRT, 4 fps on CUDA for a 16 GB GPU. For other resolutions use the " +
+                      "checkpoint download below with the export scripts.",
+            UsedBy = "[StreamDiffusion]",
+            Speed = 4, Quality = 4,
+            Hardware = "NVIDIA, 8 GB VRAM or more",
+            IsRecommended = true,
+            TotalSizeBytes = 617_503 + 300_744_704 + 186 + 4_133_427 + 2_537_750_528 + 117 + 1_550_935 + 11_364_335_616 + 16_837_417 + 39_562_590 + 6_057_351,
+            Files =
+            [
+                new($"{HuggingFace}/banidu-512/streamdiffusion-v2-onnx/resolve/main/cross_kv.onnx", "cross_kv.onnx", 617_503),
+                new($"{HuggingFace}/banidu-512/streamdiffusion-v2-onnx/resolve/main/cross_kv.onnx.data", "cross_kv.onnx.data", 300_744_704),
+                new($"{HuggingFace}/banidu-512/streamdiffusion-v2-onnx/resolve/main/dit_manifest.json", "dit_manifest.json", 186),
+                new($"{HuggingFace}/banidu-512/streamdiffusion-v2-onnx/resolve/main/dit_step.onnx", "dit_step.onnx", 4_133_427),
+                new($"{HuggingFace}/banidu-512/streamdiffusion-v2-onnx/resolve/main/dit_step.onnx.data", "dit_step.onnx.data", 2_537_750_528),
+                new($"{HuggingFace}/banidu-512/streamdiffusion-v2-onnx/resolve/main/kv_zeros.onnx", "kv_zeros.onnx", 117),
+                new($"{HuggingFace}/banidu-512/streamdiffusion-v2-onnx/resolve/main/text_encoder.onnx", "text_encoder.onnx", 1_550_935),
+                new($"{HuggingFace}/banidu-512/streamdiffusion-v2-onnx/resolve/main/text_encoder.onnx.data", "text_encoder.onnx.data", 11_364_335_616),
+                new($"{HuggingFace}/banidu-512/streamdiffusion-v2-onnx/resolve/main/tokenizer.json", "tokenizer.json", 16_837_417),
+                new($"{HuggingFace}/banidu-512/streamdiffusion-v2-onnx/resolve/main/vae_decoder.onnx", "vae_decoder.onnx", 39_562_590),
+                new($"{HuggingFace}/banidu-512/streamdiffusion-v2-onnx/resolve/main/vae_encoder.onnx", "vae_encoder.onnx", 6_057_351),
+            ],
+        },
+        new()
+        {
             Id = "streamdiffusion-v2",
             Family = AiModelFamily.StreamDiffusion,
             DisplayName = "StreamDiffusion V2 (own export)",
@@ -389,9 +419,6 @@ internal static class AiModelCatalog
             UsedBy = "[StreamDiffusion]",
             Speed = 2, Quality = 5,
             Hardware = "NVIDIA, 12 GB VRAM or more",
-            // Part of the wizard's recommended set so one flow installs everything; the row shows
-            // the 17 GB size and can be unticked.
-            IsRecommended = true,
             TotalSizeBytes = 5_676_282_858L + 11_361_920_418L + 16_837_417,
             Files =
             [
