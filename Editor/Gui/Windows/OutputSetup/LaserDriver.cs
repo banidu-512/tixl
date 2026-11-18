@@ -607,6 +607,8 @@ internal static class LaserDriver
 
         var pipelineStart = Stopwatch.GetTimestamp();
         var result = session.Apply(settings, input, count, out var frameCount);
+        if (settings.Safety.Calibrated && settings.Safety.RenderSafetyShapes)
+            result = session.AppendSafetyShapes(settings.Safety, result, frameCount, out frameCount);
         _lastPipelineTotalMs += (Stopwatch.GetTimestamp() - pipelineStart) * 1000.0 / Stopwatch.Frequency;
         return new LaserFrame(result, frameCount, settings.Safety.Calibrated);
     }

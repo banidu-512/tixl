@@ -120,3 +120,23 @@ Give the [LaserCamera] a dense scene - several [DrawMesh] spheres and **MaxEdgeS
 - The camera's outliner item shows a warning and its status message reads "Over budget: the frame is capped at ... points - the excess is dropped."
 - The frame stays stable: the same parts of the picture stay missing while the scene stands still, nothing flickers in and out.
 - Raising **MaxEdgeStep** (or ticking **BackfaceCulling**) clears the warning and the status returns to the point count.
+
+## Step: Safety masks blank the beam where drawn
+
+**Action:**
+On a calibrated laser output with content streaming, click **Add mask** in the card's **Masks** section, click its **Edit** button, and drag the four corners in the **Laser frame** preview over a region that must never emit. Then click the mode button so it reads **Allow inside**, and finally untick **Enabled** and save/reload the project.
+
+**Expected:**
+- With **Blank inside**, the beam goes dark inside the drawn quad and the geometry keeps moving through it - no lit line crosses the masked area where the content's path enters it; the card's safety status shows "mask blanked N".
+- With **Allow inside**, only the inside of the quad lights up; the rest of the frame goes dark.
+- Unticking **Enabled** brings the full frame back; masks survive a project reload and stay where drawn when the keystone changes. The safety stage applies them after the warp, so they land exactly where drawn regardless of content.
+
+## Step: A dimming mask and the rendered safety shapes
+
+**Action:**
+Switch the mask back to **Blank inside** and drag its **level** field to 0.05, then tick **Render shapes on the laser** (with the output calibrated and streaming) and watch both the laser and the frame preview. Raise the mask level back to 0 afterwards.
+
+**Expected:**
+- With level 0.05 the content inside the mask keeps scanning at a faint 5% brightness instead of going dark - the reduced-level audience-scanning mode; the safety status still counts the masked points.
+- With **Render shapes on the laser**, faint outlines appear on the real projection: the safe-zone rectangle in green, the enabled masks in orange, at the **Shape level** brightness. They follow a keystone change (they are drawn after the warp) and stay exactly over the regions they protect.
+- Raising the mask level back to 0 restores the hard blank.

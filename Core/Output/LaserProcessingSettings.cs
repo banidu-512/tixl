@@ -1,5 +1,6 @@
 #nullable enable
 using System;
+using System.Collections.Generic;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using T3.Core.DataTypes;
@@ -44,6 +45,14 @@ public sealed class LaserProcessingSettings
         writer.WriteValue("MaxStepPerPoint", Safety.MaxStepPerPoint);
         writer.WriteValue("MaxStaticPoints", Safety.MaxStaticPoints);
         writer.WriteValue("MaxBrightness", Safety.MaxBrightness);
+        writer.WriteValue("ColorGainR", Safety.ColorGainR);
+        writer.WriteValue("ColorGainG", Safety.ColorGainG);
+        writer.WriteValue("ColorGainB", Safety.ColorGainB);
+        writer.WriteValue("ColorMinR", Safety.ColorMinR);
+        writer.WriteValue("ColorMinG", Safety.ColorMinG);
+        writer.WriteValue("ColorMinB", Safety.ColorMinB);
+        writer.WriteValue("RenderSafetyShapes", Safety.RenderSafetyShapes);
+        writer.WriteValue("RenderShapesLevel", Safety.RenderShapesLevel);
         writer.WriteValue("SetupCenterX", Safety.SetupCenterX);
         writer.WriteValue("SetupCenterY", Safety.SetupCenterY);
         writer.WriteValue("SetupWidth", Safety.SetupWidth);
@@ -57,6 +66,30 @@ public sealed class LaserProcessingSettings
         writer.WriteValue("WarpCorner3Y", Safety.WarpCorner3Y);
         writer.WriteValue("WarpCorner4X", Safety.WarpCorner4X);
         writer.WriteValue("WarpCorner4Y", Safety.WarpCorner4Y);
+        if (Safety.Masks.Count > 0)
+        {
+            writer.WritePropertyName("Masks");
+            writer.WriteStartArray();
+            foreach (var mask in Safety.Masks)
+            {
+                writer.WriteStartObject();
+                writer.WriteValue("X1", mask.X1);
+                writer.WriteValue("Y1", mask.Y1);
+                writer.WriteValue("X2", mask.X2);
+                writer.WriteValue("Y2", mask.Y2);
+                writer.WriteValue("X3", mask.X3);
+                writer.WriteValue("Y3", mask.Y3);
+                writer.WriteValue("X4", mask.X4);
+                writer.WriteValue("Y4", mask.Y4);
+                writer.WriteValue("AllowOnlyInside", mask.AllowOnlyInside);
+                writer.WriteValue("Level", mask.Level);
+                writer.WriteValue("Enabled", mask.Enabled);
+                writer.WriteEndObject();
+            }
+
+            writer.WriteEndArray();
+        }
+
         writer.WriteEndObject();
 
         writer.WriteEndObject();
@@ -93,6 +126,14 @@ public sealed class LaserProcessingSettings
                                       MaxStepPerPoint = safety.ReadValueSafe("MaxStepPerPoint", 4000f),
                                       MaxStaticPoints = safety.ReadValueSafe("MaxStaticPoints", 64),
                                       MaxBrightness = safety.ReadValueSafe("MaxBrightness", 1f),
+                                      ColorGainR = safety.ReadValueSafe("ColorGainR", 1f),
+                                      ColorGainG = safety.ReadValueSafe("ColorGainG", 1f),
+                                      ColorGainB = safety.ReadValueSafe("ColorGainB", 1f),
+                                      ColorMinR = safety.ReadValueSafe("ColorMinR", 0f),
+                                      ColorMinG = safety.ReadValueSafe("ColorMinG", 0f),
+                                      ColorMinB = safety.ReadValueSafe("ColorMinB", 0f),
+                                      RenderSafetyShapes = safety.ReadValueSafe("RenderSafetyShapes", false),
+                                      RenderShapesLevel = safety.ReadValueSafe("RenderShapesLevel", 0.1f),
                                       SetupCenterX = safety.ReadValueSafe("SetupCenterX", 0f),
                                       SetupCenterY = safety.ReadValueSafe("SetupCenterY", 0f),
                                       SetupWidth = safety.ReadValueSafe("SetupWidth", 0.04f),
@@ -107,6 +148,26 @@ public sealed class LaserProcessingSettings
                                       WarpCorner4X = safety.ReadValueSafe("WarpCorner4X", -0.02f),
                                       WarpCorner4Y = safety.ReadValueSafe("WarpCorner4Y", -0.02f),
                                   };
+            if (safety["Masks"] is JArray masks)
+            {
+                foreach (var maskToken in masks)
+                {
+                    settings.Safety.Masks.Add(new SafetySettings.MaskQuad
+                                                  {
+                                                      X1 = maskToken.ReadValueSafe("X1", 0f),
+                                                      Y1 = maskToken.ReadValueSafe("Y1", 0f),
+                                                      X2 = maskToken.ReadValueSafe("X2", 0f),
+                                                      Y2 = maskToken.ReadValueSafe("Y2", 0f),
+                                                      X3 = maskToken.ReadValueSafe("X3", 0f),
+                                                      Y3 = maskToken.ReadValueSafe("Y3", 0f),
+                                                      X4 = maskToken.ReadValueSafe("X4", 0f),
+                                                      Y4 = maskToken.ReadValueSafe("Y4", 0f),
+                                                      AllowOnlyInside = maskToken.ReadValueSafe("AllowOnlyInside", false),
+                                                      Level = Math.Clamp(maskToken.ReadValueSafe("Level", 0f), 0f, 1f),
+                                                      Enabled = maskToken.ReadValueSafe("Enabled", true),
+                                                  });
+                }
+            }
         }
 
         return settings;
@@ -150,6 +211,16 @@ public sealed class LaserProcessingSettings
         /// <summary>Show-level intensity ceiling (0..1); the plug's device ceiling stays the final audit.</summary>
         public float MaxBrightness = 1f;
 
+        /// <summary>Per-channel projector calibration: gains shape each diode's level (0..2),
+        /// minimums (0..1) cut a diode off below its emission threshold so near-black content
+        /// stays black. Calibration, not protection - the safety limiters run unchanged.</summary>
+        public float ColorGainR = 1f;
+        public float ColorGainG = 1f;
+        public float ColorGainB = 1f;
+        public float ColorMinR;
+        public float ColorMinG;
+        public float ColorMinB;
+
         /// <summary>Manual alignment rectangle, in normalized field units: center -1..1, width/height
         /// 0..1 where 1.0 spans the full scanner field (-32767..32767). Starts tiny; the user extends
         /// it step by step before switching Calibrated on.</summary>
@@ -174,21 +245,147 @@ public sealed class LaserProcessingSettings
         public float WarpCorner4X = -0.02f;
         public float WarpCorner4Y = -0.02f;
 
-        public LaserSafetyTransforms.Config ToConfig() => new()
-                                                              {
-                                                                  BeamEnable = BeamEnable,
-                                                                  ZoneCenterX = SafeZoneCenterX,
-                                                                  ZoneCenterY = SafeZoneCenterY,
-                                                                  ZoneHalfWidth = MathF.Max(0f, SafeZoneWidth) * 0.5f,
-                                                                  ZoneHalfHeight = MathF.Max(0f, SafeZoneHeight) * 0.5f,
-                                                                  MaxStepPerPoint = Math.Clamp(MaxStepPerPoint, 100f, 65535f),
-                                                                  MaxStaticPoints = Math.Clamp(MaxStaticPoints, 1, 100000),
-                                                                  StaticDistance = 5,
-                                                                  MaxBrightness = Math.Clamp(MaxBrightness, 0f, 1f),
-                                                              };
+        /// <summary>Safety masks: quads in normalized field units (same order as the warp
+        /// corners) where the beam is blanked — or, in allow-only mode, the only place it may
+        /// emit. Part of the safety stage: applied after the frame warp, before streaming, and
+        /// no graph content can bypass them.</summary>
+        public List<MaskQuad> Masks { get; } = [];
+
+        /// <summary>When on, the safe-zone rectangle and the enabled mask outlines stream as
+        /// faint shapes appended to the calibrated frame, so the protected regions can be
+        /// verified against the real venue while aiming. The shapes are appended after the
+        /// safety stage and stay inside the safe zone by construction.</summary>
+        public bool RenderSafetyShapes;
+
+        /// <summary>Brightness (0..1) of the rendered safety shapes. Kept low on purpose: the
+        /// outline is an aiming aid, not content.</summary>
+        public float RenderShapesLevel = 0.1f;
+
+        private int _masksVersion;
+        private int _configuredMasksVersion = -1;
+        private float[]? _maskCorners;
+        private bool[]? _maskAllowOnly;
+        private float[]? _maskLevels;
+        private int _maskCount;
+
+        /** Bump after any change to <see cref="Masks"/> so the next ToConfig rebuilds the ILDA arrays. */
+        public void MasksChanged() => _masksVersion++;
+
+        public LaserSafetyTransforms.Config ToConfig()
+        {
+            if (_configuredMasksVersion != _masksVersion)
+                RebuildMaskArrays();
+
+            return new()
+                       {
+                           BeamEnable = BeamEnable,
+                           ZoneCenterX = SafeZoneCenterX,
+                           ZoneCenterY = SafeZoneCenterY,
+                           ZoneHalfWidth = MathF.Max(0f, SafeZoneWidth) * 0.5f,
+                           ZoneHalfHeight = MathF.Max(0f, SafeZoneHeight) * 0.5f,
+                           MaxStepPerPoint = Math.Clamp(MaxStepPerPoint, 100f, 65535f),
+                           MaxStaticPoints = Math.Clamp(MaxStaticPoints, 1, 100000),
+                           StaticDistance = 5,
+                           MaxBrightness = Math.Clamp(MaxBrightness, 0f, 1f),
+                           ColorGainR = ColorGainR,
+                           ColorGainG = ColorGainG,
+                           ColorGainB = ColorGainB,
+                           ColorMinR = ColorMinR,
+                           ColorMinG = ColorMinG,
+                           ColorMinB = ColorMinB,
+                           MaskCorners = _maskCorners,
+                           MaskAllowOnlyInside = _maskAllowOnly,
+                           MaskLevels = _maskLevels,
+                           MaskCount = _maskCount,
+                       };
+        }
+
+        /// <summary>The masks list is read-only to the pipeline: this copies the enabled ones into
+        /// reused ILDA-unit arrays so the per-pump ToConfig stays allocation-free.</summary>
+        private void RebuildMaskArrays()
+        {
+            var enabled = 0;
+            for (var i = 0; i < Masks.Count; i++)
+            {
+                if (Masks[i].Enabled)
+                    enabled++;
+            }
+
+            if (enabled == 0)
+            {
+                _maskCorners = null;
+                _maskAllowOnly = null;
+                _maskLevels = null;
+                _maskCount = 0;
+                _configuredMasksVersion = _masksVersion;
+                return;
+            }
+
+            if (_maskCorners == null || _maskCorners.Length != enabled * 8)
+            {
+                _maskCorners = new float[enabled * 8];
+                _maskAllowOnly = new bool[enabled];
+                _maskLevels = new float[enabled];
+            }
+
+            var n = 0;
+            for (var i = 0; i < Masks.Count; i++)
+            {
+                var mask = Masks[i];
+                if (!mask.Enabled)
+                    continue;
+
+                var offset = n * 8;
+                _maskCorners[offset] = Math.Clamp(mask.X1, -1f, 1f) * LaserSafetyTransforms.FieldMax;
+                _maskCorners[offset + 1] = Math.Clamp(mask.Y1, -1f, 1f) * LaserSafetyTransforms.FieldMax;
+                _maskCorners[offset + 2] = Math.Clamp(mask.X2, -1f, 1f) * LaserSafetyTransforms.FieldMax;
+                _maskCorners[offset + 3] = Math.Clamp(mask.Y2, -1f, 1f) * LaserSafetyTransforms.FieldMax;
+                _maskCorners[offset + 4] = Math.Clamp(mask.X3, -1f, 1f) * LaserSafetyTransforms.FieldMax;
+                _maskCorners[offset + 5] = Math.Clamp(mask.Y3, -1f, 1f) * LaserSafetyTransforms.FieldMax;
+                _maskCorners[offset + 6] = Math.Clamp(mask.X4, -1f, 1f) * LaserSafetyTransforms.FieldMax;
+                _maskCorners[offset + 7] = Math.Clamp(mask.Y4, -1f, 1f) * LaserSafetyTransforms.FieldMax;
+                _maskAllowOnly[n] = mask.AllowOnlyInside;
+                _maskLevels[n] = Math.Clamp(mask.Level, 0f, 1f);
+                n++;
+            }
+
+            _maskCount = n;
+            _configuredMasksVersion = _masksVersion;
+        }
 
         public string DescribeSetup() =>
             $"Safety setup (manual): {SetupWidth:F2} x {SetupHeight:F2} field at ({SetupCenterX:F2}, {SetupCenterY:F2})"
             + " - switch Calibrated on for content";
+
+        /// <summary>One safety mask quad. Corners are normalized field units (-1..1, same order
+        /// as the warp corners) and may be concave.</summary>
+        public sealed class MaskQuad
+        {
+            public float X1;
+            public float Y1;
+            public float X2;
+            public float Y2;
+            public float X3;
+            public float Y3;
+            public float X4;
+            public float Y4;
+
+            /// <summary>False = shape inside (protect an area). True = allow only inside (everything outside is blanked).</summary>
+            public bool AllowOnlyInside;
+
+            /// <summary>Blank masks only: the beam level kept inside (0..1). 0 blanks; a small
+            /// value like 0.05 keeps a faint beam - the reduced-level audience-scanning case.</summary>
+            public float Level;
+
+            public bool Enabled = true;
+
+            public static MaskQuad Centered(float halfExtent = 0.1f) => new()
+                                                                            {
+                                                                                X1 = -halfExtent, Y1 = halfExtent,
+                                                                                X2 = halfExtent, Y2 = halfExtent,
+                                                                                X3 = halfExtent, Y3 = -halfExtent,
+                                                                                X4 = -halfExtent, Y4 = -halfExtent,
+                                                                            };
+        }
     }
 }

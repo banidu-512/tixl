@@ -42,6 +42,7 @@ public static class LaserPipeline
         private LaserPoint[] _result = [];
         private int _resultWritten;
         private LaserPoint[]? _setupRectangle;
+        private LaserPoint[] _shapeFrame = [];
         private (int Cx, int Cy, int HalfWidth, int HalfHeight) _setupRectangleKey;
 
         /// <summary>A buffer of at least <paramref name="minimumSize"/> points for the frame
@@ -51,6 +52,22 @@ public static class LaserPipeline
             if (_mapped.Length < minimumSize)
                 _mapped = new LaserPoint[minimumSize];
             return _mapped;
+        }
+
+        /// <summary>
+        /// Appends the safety-shape outlines (safe zone + masks, see <see cref="BuildSafetyShapes"/>)
+        /// to a calibrated frame: content first into one session-owned buffer, so a stream that
+        /// truncates at a wire budget loses outlines, never content.
+        /// </summary>
+        public LaserPoint[] AppendSafetyShapes(LaserProcessingSettings.SafetySettings safety, LaserPoint[] content, int contentCount, out int frameCount)
+        {
+            var shapeCapacity = (1 + safety.Masks.Count) * 4 * 20 + 8;
+            if (_shapeFrame.Length < contentCount + shapeCapacity)
+                _shapeFrame = new LaserPoint[contentCount + shapeCapacity];
+
+            Array.Copy(content, _shapeFrame, contentCount);
+            frameCount = contentCount + BuildSafetyShapes(safety, _shapeFrame.AsSpan(contentCount));
+            return _shapeFrame;
         }
 
         /// <summary>
@@ -298,6 +315,83 @@ public static class LaserPipeline
         }
 
         return mapped;
+    }
+
+    /// <summary>
+    /// The safety shapes streamed as faint outlines when an output's Render Safety Shapes is on:
+    /// the safe-zone rectangle (green) and every enabled mask (orange), so the protected regions
+    /// can be checked against the real venue while aiming. Appended after the safety stage on
+    /// purpose - the shapes sit inside the safe zone by construction and must not be blanked by
+    /// the very masks they draw. Returns the written point count.
+    /// </summary>
+    public static int BuildSafetyShapes(LaserProcessingSettings.SafetySettings safety, Span<LaserPoint> target)
+    {
+        var level = Math.Clamp(safety.RenderShapesLevel, 0f, 1f);
+        if (level <= 0f || target.Length == 0)
+            return 0;
+
+        const float field = 32767f;
+        var n = 0;
+
+        RectFromSafety(safety, out var zcx, out var zcy, out var zhw, out var zhh);
+        n = WriteQuadOutline(target, n,
+                             zcx - zhw, zcy - zhh, zcx + zhw, zcy - zhh,
+                             zcx + zhw, zcy + zhh, zcx - zhw, zcy + zhh,
+                             0, 65535, 0, level);
+
+        for (var i = 0; i < safety.Masks.Count && n < target.Length; i++)
+        {
+            var mask = safety.Masks[i];
+            if (!mask.Enabled)
+                continue;
+
+            n = WriteQuadOutline(target, n,
+                                 Math.Clamp(mask.X1, -1f, 1f) * field, Math.Clamp(mask.Y1, -1f, 1f) * field,
+                                 Math.Clamp(mask.X2, -1f, 1f) * field, Math.Clamp(mask.Y2, -1f, 1f) * field,
+                                 Math.Clamp(mask.X3, -1f, 1f) * field, Math.Clamp(mask.Y3, -1f, 1f) * field,
+                                 Math.Clamp(mask.X4, -1f, 1f) * field, Math.Clamp(mask.Y4, -1f, 1f) * field,
+                                 65535, 32000, 0, level);
+        }
+
+        return n;
+    }
+
+    /** One quad outline: per side a blanked approach, a lit corner dwell and straight samples - the same isolated encoding the setup rectangle uses. */
+    private static int WriteQuadOutline(Span<LaserPoint> target, int n,
+                                        float x1, float y1, float x2, float y2, float x3, float y3, float x4, float y4,
+                                        int r, int g, int b, float level)
+    {
+        const int steps = 16;
+        const int cornerDwell = 2;
+        const int fieldMin = -32767;
+        const int fieldMax = 32767;
+
+        Span<(float X, float Y)> corners = [(x1, y1), (x2, y2), (x3, y3), (x4, y4)];
+        var lr = (int)(r * level);
+        var lg = (int)(g * level);
+        var lb = (int)(b * level);
+
+        for (var side = 0; side < 4 && n < target.Length; side++)
+        {
+            var a = corners[side];
+            var c = corners[(side + 1) % 4];
+            var ax = Math.Clamp((int)MathF.Round(a.X), fieldMin, fieldMax);
+            var ay = Math.Clamp((int)MathF.Round(a.Y), fieldMin, fieldMax);
+
+            target[n++] = LaserPoint.CreateBlanked(ax, ay);
+            for (var d = 0; d <= cornerDwell && n < target.Length; d++)
+                target[n++] = new LaserPoint(ax, ay, lr, lg, lb);
+
+            for (var s = 1; s < steps && n < target.Length; s++)
+            {
+                var f = (float)s / steps;
+                var x = Math.Clamp((int)MathF.Round(a.X + (c.X - a.X) * f), fieldMin, fieldMax);
+                var y = Math.Clamp((int)MathF.Round(a.Y + (c.Y - a.Y) * f), fieldMin, fieldMax);
+                target[n++] = new LaserPoint(x, y, lr, lg, lb);
+            }
+        }
+
+        return n;
     }
 
     /// <summary>
