@@ -34,7 +34,8 @@ AKA: depth estimation, depth anything, depth anything 3, da3, monocular depth, z
 | **Enabled** (Boolean) | Enables or disables depth estimation. |
 | **MatchInputResolution** (Boolean) | Scales the depth outputs to the input resolution on the CPU. Leave off for the lowest latency; the GPU upsamples the model-sized depth when it is sampled. |
 | **ModelSizeParam** (Int32) | Model variant: V3 Small, Base, Large, Mono Large, Metric Large, Giant, Nested Giant. Larger models are more detailed and slower; Metric Large predicts depth in meters. Legacy V2-era values run their DA3 equivalent. |
-| **Normalization** (Int32) | Visualization range: Full Range stretches the frame min/max (sky pixels excluded when the model predicts sky); Percentile bounds the range at the 2nd/98th quantiles so outlier spikes and sky values do not compress the foreground. |
+| **Normalization** (Int32) | Visualization range: Full Range stretches the frame min/max; Percentile bounds the range at the 2nd/98th quantiles so outlier spikes do not compress the foreground. |
+| **SkyHandlingParam** (Int32) | Stabilize (default) clamps sky depth to the foreground maximum and excludes sky from the range, so sky reads as consistently far; Keep publishes the raw model output. |
 | **OutputFormat** (Int32) | Visualization of NormalizedDepthTexture. |
 | **EnhanceContrast** (Boolean) | Stretches the depth range of the visualization. |
 | **InvertDepth** (Boolean) | Flips near and far. |

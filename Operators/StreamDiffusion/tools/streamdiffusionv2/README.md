@@ -6,6 +6,12 @@ DiT) into the ONNX folder the `StreamDiffusion` operator loads when `ModelType` 
 The PyTorch modules here are independent re-implementations of the model layout; the upstream repository is only a
 reference for the architecture and is never imported or executed.
 
+## Ready-made export (no Python needed)
+
+The Model Browser carries a **"StreamDiffusion V2 - 256x256 (ready-to-run)"** entry that downloads the
+finished ONNX export (DiT, text encoder, TAEHV, tokenizer) straight into the model store. Use it unless
+you need a different resolution or want to customize the export.
+
 ## Model store flow
 
 The Model Browser entry "StreamDiffusion V2 checkpoint (for export)" downloads `model.pt`,

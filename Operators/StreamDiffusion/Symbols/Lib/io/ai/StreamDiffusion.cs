@@ -90,8 +90,13 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
 
     #region Inputs
 
+    /// <summary>
+    /// Which export in the model store to run. Empty = the first valid export. The dropdown lists
+    /// the exports the scan finds, so no paths are typed anywhere; the model store is managed in
+    /// Settings > AI Models.
+    /// </summary>
     [Input(Guid = "A1B2C3D4-E5F6-7890-ABCD-EF1234567890")]
-    public readonly InputSlot<string> EnginePath = new();
+    public readonly InputSlot<string> Model = new();
 
     [Input(Guid = "C3D4E5F6-A7B8-9012-CDEF-123456789012")]
     public readonly InputSlot<string> Prompt = new();
@@ -105,10 +110,10 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
     /// strength; the semantics carry over, so old graphs keep working.)
     /// </summary>
     [Input(Guid = "C9D0E1F2-A3B4-5678-2345-789012345678")]
-    public readonly InputSlot<float> Strength = new(0.6f);
+    public readonly InputSlot<float> Strength = new(0.8f);
 
     [Input(Guid = "D0E1F2A3-B4C5-6789-3456-890123456789")]
-    public readonly InputSlot<int> Steps = new(1);
+    public readonly InputSlot<int> Steps = new(2);
 
     [Input(Guid = "E1F2A3B4-C5D6-7890-4567-901234567890")]
     public readonly InputSlot<Texture2D?> InputImage = new();
@@ -151,32 +156,37 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
     [Input(Guid = "E5A6D7C8-9F0B-4A1C-8B2D-3C4E5F6A7B8D")]
     public readonly InputSlot<bool> ResetStream = new();
 
+    /// <summary>
+    /// Pace the stream at this many frames per second (default 16, matching capture and downstream
+    /// consumers). 0 runs the model as fast as the GPU allows. The model already skips identical
+    /// input frames, so a frozen source costs nothing at any rate.
+    /// </summary>
+    [Input(Guid = "C1D2E3F4-A5B6-4C7D-8E9F-0A1B2C3D4E5F")]
+    public readonly InputSlot<float> TargetFps = new(16f);
+
     #endregion
 
     #region Constants
 
-    private const string PlaceholderTextModel = "Path to model folder...";
+    /** Label of the auto entry in the Model dropdown; maps onto the empty value. */
+    private const string AutoModelOption = "Auto (first found)";
     private const string PlaceholderTextDevice = "Select device...";
     private const int ReadbackTimeoutFrames = 60;
 
     private static readonly string[] ResizeModeNames = { "Stretch", "CenterCrop", "Pad" };
     /**
-     * The dropdown only lists the execution providers this operating system can run:
-     * Windows: CPU, DirectML, CUDA, TensorRT - Linux: CPU, CUDA, TensorRT - macOS: CPU, CoreML.
-     * The value maps onto the ExecutionProvider enum, so the order is free.
+     * The dropdown only lists the accelerations that can actually run this model on the current OS:
+     * Windows: CPU, CUDA, TensorRT - Linux: CPU, CUDA, TensorRT - macOS: CPU, CoreML.
+     * DirectML is excluded even on Windows: the Wan DiT/VAE graphs use 5D reshapes that the DML
+     * provider fails with an internal error, so it can never run this model. The value maps onto
+     * the ExecutionProvider enum, so the order is free.
      */
     private static readonly (string Name, t3.streamdiffusion.Onnx.ExecutionProvider Provider)[] ExecutionProviderOptions = BuildExecutionProviderOptions();
 
     private static (string, t3.streamdiffusion.Onnx.ExecutionProvider)[] BuildExecutionProviderOptions()
     {
         var options = new List<(string, t3.streamdiffusion.Onnx.ExecutionProvider)> { ("CPU", t3.streamdiffusion.Onnx.ExecutionProvider.Cpu) };
-        if (OperatingSystem.IsWindows())
-        {
-            options.Add(("DirectML", t3.streamdiffusion.Onnx.ExecutionProvider.DirectMl));
-            options.Add(("CUDA", t3.streamdiffusion.Onnx.ExecutionProvider.Cuda));
-            options.Add(("TensorRT", t3.streamdiffusion.Onnx.ExecutionProvider.TensorRt));
-        }
-        else if (OperatingSystem.IsLinux())
+        if (OperatingSystem.IsWindows() || OperatingSystem.IsLinux())
         {
             options.Add(("CUDA", t3.streamdiffusion.Onnx.ExecutionProvider.Cuda));
             options.Add(("TensorRT", t3.streamdiffusion.Onnx.ExecutionProvider.TensorRt));
@@ -189,25 +199,30 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
         return options.ToArray();
     }
 
-    /** Values that are impossible on this OS (e.g. a saved CoreML on Windows) snap onto the closest provider that works. */
+    /**
+     * Values that this OS (or this model) cannot run snap onto the closest provider that works:
+     * a saved CoreML on Windows, DirectML on Linux, and DirectML everywhere for the V2 model -
+     * its DiT/VAE 5D reshapes fail on the DML provider regardless of the machine.
+     */
     private static t3.streamdiffusion.Onnx.ExecutionProvider NormalizeProviderForOs(t3.streamdiffusion.Onnx.ExecutionProvider provider)
     {
+        if (OperatingSystem.IsMacOS())
+        {
+            return provider == t3.streamdiffusion.Onnx.ExecutionProvider.Cpu ? t3.streamdiffusion.Onnx.ExecutionProvider.Cpu : t3.streamdiffusion.Onnx.ExecutionProvider.CoreMl;
+        }
+
+        if (provider == t3.streamdiffusion.Onnx.ExecutionProvider.DirectMl)
+        {
+            return t3.streamdiffusion.Onnx.ExecutionProvider.Cuda;
+        }
+
         if (OperatingSystem.IsWindows())
         {
-            return provider == t3.streamdiffusion.Onnx.ExecutionProvider.CoreMl ? t3.streamdiffusion.Onnx.ExecutionProvider.DirectMl : provider;
+            return provider == t3.streamdiffusion.Onnx.ExecutionProvider.CoreMl ? t3.streamdiffusion.Onnx.ExecutionProvider.Cuda : provider;
         }
 
-        if (OperatingSystem.IsLinux())
-        {
-            return provider switch
-            {
-                t3.streamdiffusion.Onnx.ExecutionProvider.DirectMl or t3.streamdiffusion.Onnx.ExecutionProvider.CoreMl => t3.streamdiffusion.Onnx.ExecutionProvider.Cuda,
-                _ => provider
-            };
-        }
-
-        // macOS: everything except CPU and CoreML runs through CoreML
-        return provider == t3.streamdiffusion.Onnx.ExecutionProvider.Cpu ? t3.streamdiffusion.Onnx.ExecutionProvider.Cpu : t3.streamdiffusion.Onnx.ExecutionProvider.CoreMl;
+        // Linux (and any other OS): CoreML cannot run here
+        return provider == t3.streamdiffusion.Onnx.ExecutionProvider.CoreMl ? t3.streamdiffusion.Onnx.ExecutionProvider.Cuda : provider;
     }
 
     public enum ResizeModeOptions { Stretch, CenterCrop, Pad }
@@ -246,6 +261,7 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
     private bool _triggerState;
     private bool _resetState;
     private bool _resetPending;
+    private long _lastEnqueueTicks;
     private int _updating;
     private int _lastSkipLogFrame;
     private int _updateFrameCounter;
@@ -289,7 +305,7 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
 
         try
         {
-            var modelPath = EnginePath.GetValue(context);
+            var modelPath = Model.GetValue(context);
             var prompt = Prompt.GetValue(context);
             var seed = Seed.GetValue(context);
             var strength = Math.Clamp(Strength.GetValue(context), 0f, 1f);
@@ -324,8 +340,17 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
                 _resetPending = true;
             }
 
-            // No EnginePath: fall back to the first V2 export in the model store, so a model
-            // installed through the settings window just works.
+            // Model names an export inside the model store; empty or unknown = the first valid export.
+            // The store itself is managed in Settings > AI Models - the operator never takes a path.
+            if (!string.IsNullOrWhiteSpace(modelPath))
+            {
+                var named = Path.Combine(T3.Core.Settings.AiModelSettings.FamilyDirectory(T3.Core.Settings.AiModelSettings.StreamDiffusionFamilyFolder), modelPath);
+                if (StreamDiffusionV2Pipeline.ValidateModelDirectory(named).Length > 0)
+                    modelPath = null;
+                else
+                    modelPath = named;
+            }
+
             if (string.IsNullOrWhiteSpace(modelPath))
                 modelPath = FindManagedModelFolder();
 
@@ -410,8 +435,12 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
             // Stream: continuously chase the latest input frame. Dirty-flag checks can't detect
             // in-place texture updates (GetValue already consumed the flag, and video sources like
             // PlayVideo rewrite the same texture), so with AutoGenerate on we keep a request in
-            // flight with the newest frame; _requestInFlight rate-limits to GPU speed.
-            if (autoGenerate && inputImage != null && !inputImage.IsDisposed)
+            // flight with the newest frame; _requestInFlight rate-limits to GPU speed and TargetFps
+            // paces how often new frames are started.
+            var targetFps = TargetFps.GetValue(context);
+            var paced = targetFps <= 0f
+                        || System.Diagnostics.Stopwatch.GetTimestamp() - _lastEnqueueTicks >= (long)(System.Diagnostics.Stopwatch.Frequency / targetFps);
+            if (autoGenerate && paced && inputImage != null && !inputImage.IsDisposed)
             {
                 _hasPendingInput = true;
             }
@@ -547,6 +576,8 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
             Log.Debug($"[StreamDiffusion] StreamDiffusion V2, steps={clampedSteps}", this);
         }
 
+        _lastEnqueueTicks = System.Diagnostics.Stopwatch.GetTimestamp();
+
         var request = new GenerationRequest(
             prompt, clampedSteps, strength, seed,
             width, height, resizeMode, resetStream,
@@ -606,6 +637,39 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
     private static (string? Folder, long ScannedAtTicks) ManagedFolderCache;
     private const double ManagedModelScanIntervalMs = 5000;
     private static string? _lastLoggedManagedFolder;
+
+    /** Export folder names in the model store, cached briefly for the Model dropdown. */
+    private static string[]? _validExportNames;
+    private static long _validExportScanTicks;
+
+    private static string[] GetValidExportNames()
+    {
+        var now = Environment.TickCount64;
+        if (_validExportNames != null && now - _validExportScanTicks < ManagedModelScanIntervalMs)
+            return _validExportNames;
+
+        var names = new List<string>();
+        var familyDirectory = T3.Core.Settings.AiModelSettings.FamilyDirectory(T3.Core.Settings.AiModelSettings.StreamDiffusionFamilyFolder);
+        if (Directory.Exists(familyDirectory))
+        {
+            try
+            {
+                foreach (var directory in Directory.GetDirectories(familyDirectory).OrderBy(d => d, StringComparer.OrdinalIgnoreCase))
+                {
+                    if (StreamDiffusionV2Pipeline.ValidateModelDirectory(directory).Length == 0)
+                        names.Add(Path.GetFileName(directory.TrimEnd(Path.DirectorySeparatorChar)));
+                }
+            }
+            catch
+            {
+                // An unreadable store folder leaves the dropdown empty rather than failing the frame
+            }
+        }
+
+        _validExportNames = names.ToArray();
+        _validExportScanTicks = now;
+        return _validExportNames;
+    }
 
     /** The first folder in the model store that passes V2 validation, or null. */
     private static string? FindManagedModelFolder()
@@ -1273,7 +1337,11 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
     public string? GetStatusMessage()
     {
         if (_isInitializing)
-            return "Loading model...";
+        {
+            return _activeProvider == (int)t3.streamdiffusion.Onnx.ExecutionProvider.TensorRt
+                       ? "Loading model... (TensorRT builds its engines on first use - this can take 10+ minutes; CUDA starts instantly)"
+                       : "Loading model...";
+        }
 
         var pipeline = _pipeline;
         if (pipeline == null)
@@ -1324,10 +1392,16 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
             return ExecutionProviderOptions.FirstOrDefault(o => o.Provider == provider).Name ?? "CPU";
         }
 
-        if (inputId == EnginePath.Id)
+        if (inputId == Model.Id)
         {
-            var value = EnginePath.Value;
-            return string.IsNullOrEmpty(value) ? PlaceholderTextModel : value;
+            var value = Model.Value;
+            if (string.IsNullOrEmpty(value))
+            {
+                var auto = FindManagedModelFolder();
+                return auto == null ? "No export in model store" : Path.GetFileName(auto.TrimEnd(Path.DirectorySeparatorChar)) + " (auto)";
+            }
+
+            return value;
         }
 
         if (inputId == CudaDevice.Id)
@@ -1356,6 +1430,14 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
             yield break;
         }
 
+        if (inputId == Model.Id)
+        {
+            yield return AutoModelOption;
+            foreach (var name in GetValidExportNames())
+                yield return name;
+            yield break;
+        }
+
         if (inputId == CudaDevice.Id)
         {
             var names = GetDeviceNames();
@@ -1380,10 +1462,10 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
             return;
         }
 
-        if (inputId == EnginePath.Id)
+        if (inputId == Model.Id)
         {
-            if (selected != PlaceholderTextModel)
-                EnginePath.SetTypedInputValue(selected);
+            var model = selected == AutoModelOption ? string.Empty : selected;
+            Model.SetTypedInputValue(model);
             return;
         }
 

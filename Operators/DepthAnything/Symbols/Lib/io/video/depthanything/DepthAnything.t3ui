@@ -106,6 +106,14 @@
         "Y": 150.0
       },
       "Description": "How depth maps to brightness: Full Range stretches the frame minimum/maximum (sky excluded when the model predicts sky); Percentile bounds the range at the 2nd/98th quantiles so outlier spikes do not compress the foreground."
+    },
+    {
+      "InputId": "d2e3f4a5-b6c7-4d8e-9f0a-1b2c3d4e5f60"/*SkyHandlingParam*/,
+      "Position": {
+        "X": -250.0,
+        "Y": 200.0
+      },
+      "Description": "Stabilize (default) excludes sky pixels from the depth range and clamps their depth to the foreground maximum, so sky reads as consistently far. Keep publishes the raw model output."
     }
   ],
   "SymbolChildUis": [],

@@ -13,7 +13,8 @@ Estimates depth from images with Depth Anything 3 through ONNX Runtime. The inpu
 - **float Smoothing** - Temporal blend of depth and depth range
 - **float FieldOfView** - Horizontal field of view in degrees; used by the Metric model
 - **DepthOutputFormat OutputFormat** - Grayscale/Color/Rainbow visualization
-- **DepthNormalization Normalization** - Full Range stretches the frame min/max (sky excluded when the model predicts sky); Percentile bounds the range at the 2nd/98th quantiles against outlier spikes
+- **DepthNormalization Normalization** - Full Range stretches the frame min/max; Percentile bounds the range at the 2nd/98th quantiles against outlier spikes
+- **SkyHandling** - Stabilize (default) clamps sky depth to the foreground maximum and excludes sky from the range; Keep publishes raw model output
 - **bool EnhanceContrast, InvertDepth, Debug**
 
 ## Outputs

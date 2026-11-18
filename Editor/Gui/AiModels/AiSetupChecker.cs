@@ -238,22 +238,14 @@ internal static class AiSetupChecker
                 }
                 else
                 {
-                    var checkpoint = AiModelCatalog.ForFamily(AiModelFamily.StreamDiffusion)
-                                                   .FirstOrDefault(e => e.Id == "streamdiffusion-v2-checkpoint");
                     items.Add(new AiSetupCheckItem
                                   {
                                       Title = "Diffusion models",
                                       Result = AiCheckResult.Fixable,
-                                      Detail = checkpoint is { } entry && entry.IsInstalled()
-                                                   ? "The StreamDiffusion V2 checkpoint is installed in " +
-                                                     checkpoint.StoreDirectory +
-                                                     ". Run the export scripts in Operators/StreamDiffusion/tools/streamdiffusionv2 " +
-                                                     "against it (see the README there) and put the finished export into " +
-                                                     AiModelSettings.FamilyDirectory(AiModelSettings.StreamDiffusionFamilyFolder) +
-                                                     " - the operator finds it on its own."
-                                                   : "No usable ONNX export found. [StreamDiffusion] cannot start without one. " +
-                                                     "Download the StreamDiffusion V2 checkpoint in the model browser, then run the export " +
-                                                     "scripts in Operators/StreamDiffusion/tools/streamdiffusionv2 - the result is found automatically.",
+                                      Detail = "No usable ONNX export found. [StreamDiffusion] cannot start without one. " +
+                                               "Download \"StreamDiffusion V2 - 256x256 (ready-to-run)\" in the model browser - no Python needed. " +
+                                               "Advanced: download the checkpoint entry instead and run the export scripts in " +
+                                               "Operators/StreamDiffusion/tools/streamdiffusionv2 against it.",
                                   });
                 }
 

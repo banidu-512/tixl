@@ -203,6 +203,7 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
         };
         var outputFormat = (DepthOutputFormat)OutputFormat.GetValue(context);
         var normalization = (DepthNormalization)Normalization.GetValue(context);
+        var skyHandling = (SkyHandling)SkyHandlingParam.GetValue(context);
         var enhanceContrast = EnhanceContrast.GetValue(context);
         var invertDepth = InvertDepth.GetValue(context);
         var matchRes = MatchInputResolution.GetValue(context);
@@ -211,12 +212,14 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
         _workerEnhanceContrast = enhanceContrast;
         _workerInvertDepth = invertDepth;
         _workerPercentileNormalization = normalization == DepthNormalization.Percentile;
+        _workerStabilizeSky = skyHandling == SkyHandling.Stabilize;
         _workerSmoothing = Math.Clamp(Smoothing.GetValue(context), 0f, MaxSmoothing);
         _workerFieldOfViewDegrees = Math.Clamp(FieldOfView.GetValue(context), 1f, 179f);
 
         // Store values for UI dropdowns
         _uiOutputFormat = (int)outputFormat;
         _uiNormalization = (int)normalization;
+        _uiSkyHandling = (int)skyHandling;
         _uiModelSize = (int)modelSize;
         _uiInputResolution = (int)InputResolution.GetValue(context);
         _uiExecutionProvider = (int)provider;
@@ -642,6 +645,7 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
     private volatile bool _workerEnhanceContrast;
     private volatile bool _workerInvertDepth;
     private volatile bool _workerPercentileNormalization;
+    private volatile bool _workerStabilizeSky;
     private volatile float _workerSmoothing;
     private volatile float _workerFieldOfViewDegrees;
 
@@ -678,6 +682,7 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
     // Stored values for UI dropdowns (updated each frame, read by UI thread)
     private int _uiOutputFormat;
     private int _uiNormalization;
+    private int _uiSkyHandling;
     private int _uiModelSize;
     private int _uiInputResolution;
     private int _uiExecutionProvider;
@@ -702,7 +707,9 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
         }
 
         _isInitializing = true;
-        Status.Value = "Loading model...";
+        Status.Value = provider == ExecutionProvider.TensorRt
+                           ? "Loading model... (TensorRT builds its engine on first use - this can take a few minutes; CUDA starts instantly)"
+                           : "Loading model...";
 
         var generation = Interlocked.Increment(ref _workerGeneration);
         _cancellationTokenSource = new CancellationTokenSource();
@@ -1294,7 +1301,7 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
 
             var smoothing = _workerSmoothing;
             SmoothDepth(workerContext, resultDepth, outputWidth, outputHeight, smoothing);
-            ComputeDepthRange(resultDepth, resultSky, count, _workerPercentileNormalization, out float min, out float max);
+            ComputeDepthRange(resultDepth, resultSky, count, _workerStabilizeSky, _workerPercentileNormalization, out float min, out float max);
             if (smoothing > 0 && workerContext.HasRange)
             {
                 // The model's depth scale drifts between frames; a settled range keeps the visualization from pulsing
@@ -1305,6 +1312,16 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
             workerContext.SmoothedMin = min;
             workerContext.SmoothedMax = max;
             workerContext.HasRange = true;
+
+            // Stabilize: clamp sky pixels to the foreground maximum so sky reads as consistently "far"
+            if (_workerStabilizeSky && resultSky != null)
+            {
+                for (int i = 0; i < count; i++)
+                {
+                    if (resultSky[i] > 0.5f && float.IsFinite(resultDepth[i]))
+                        resultDepth[i] = max;
+                }
+            }
 
             // At model resolution the GPU sampler upscales when the texture is
             // used downstream, which skips all full-resolution CPU work per result
@@ -1493,7 +1510,7 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
     /// their far-plane values would otherwise stretch the range and wash out the foreground. In percentile
     /// mode the 2nd/98th quantiles bound the range instead of the extremes, ignoring outlier spikes.
     /// </summary>
-    private static void ComputeDepthRange(float[] depthData, float[]? skyData, int count, bool percentile, out float minDepth, out float maxDepth)
+    private static void ComputeDepthRange(float[] depthData, float[]? skyData, int count, bool excludeSky, bool percentile, out float minDepth, out float maxDepth)
     {
         float min = float.MaxValue;
         float max = float.MinValue;
@@ -1502,7 +1519,7 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
             float depth = depthData[i];
             if (float.IsNaN(depth) || float.IsInfinity(depth))
                 continue;
-            if (skyData != null && skyData[i] > 0.5f)
+            if (excludeSky && skyData != null && skyData[i] > 0.5f)
                 continue;
             if (depth < min)
                 min = depth;
@@ -1528,7 +1545,7 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
                 float depth = depthData[i];
                 if (float.IsNaN(depth) || float.IsInfinity(depth))
                     continue;
-                if (skyData != null && skyData[i] > 0.5f)
+                if (excludeSky && skyData != null && skyData[i] > 0.5f)
                     continue;
                 bins[(int)((depth - min) * scale)]++;
                 sampled++;
@@ -1867,8 +1884,10 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
     [Input(Guid = "90123456-9012-9012-9012-901234567890", MappedType = typeof(Resolution))]
     public readonly InputSlot<int> InputResolution = new((int)Resolution.Auto);
 
+    /// <summary>Defaults to CUDA so all ONNX operators share one GPU native build; the DirectML
+    /// preference in the AI settings still flips it, and macOS normalizes CUDA onto CoreML.</summary>
     [Input(Guid = "012345ab-cdef-0123-4567-89abcdef0123", MappedType = typeof(ExecutionProvider))]
-    public readonly InputSlot<int> ExecutionProviderParam = new((int)ExecutionProvider.DirectMl);
+    public readonly InputSlot<int> ExecutionProviderParam = new((int)ExecutionProvider.Cuda);
 
     [Input(Guid = "234567cd-8912-9012-3456-6789012345ab")]
     public readonly InputSlot<bool> MatchInputResolution = new(false);
@@ -1889,6 +1908,14 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
     /// </summary>
     [Input(Guid = "3f4a5b6c-7d8e-4f90-a1b2-c3d4e5f6a7b8", MappedType = typeof(DepthNormalization))]
     public readonly InputSlot<int> Normalization = new();
+
+    /// <summary>
+    /// How sky pixels are treated: Stabilize (default) excludes them from the depth range and clamps
+    /// their depth to the foreground maximum, so the output reads sky as consistently "far" instead of
+    /// flickering with the model's raw sky values. Keep publishes the raw model output untouched.
+    /// </summary>
+    [Input(Guid = "d2e3f4a5-b6c7-4d8e-9f0a-1b2c3d4e5f60", MappedType = typeof(SkyHandling))]
+    public readonly InputSlot<int> SkyHandlingParam = new((int)SkyHandling.Stabilize);
 
     [Input(Guid = "56789012-5678-5678-5678-567890123456")]
     public readonly InputSlot<bool> EnhanceContrast = new(false);
@@ -1962,12 +1989,20 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
         Percentile
     }
 
+    /// <summary>Sky treatment; values are saved in projects and only ever appended.</summary>
+    public enum SkyHandling
+    {
+        Keep,
+        Stabilize
+    }
+
     #endregion
 
     #region ICustomDropdownHolder
 
     private static readonly string[] OutputFormatNames = { "Grayscale", "Color", "Rainbow" };
     private static readonly string[] NormalizationNames = { "Full Range", "Percentile" };
+    private static readonly string[] SkyHandlingNames = { "Keep Raw", "Stabilize (clamp to far)" };
 
     /** The dropdown only offers DA3 models; the index maps onto the ModelSize enum value. */
     private static readonly (string Name, ModelSize Size)[] ModelSizeOptions =
@@ -2056,6 +2091,12 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
             return val >= 0 && val < NormalizationNames.Length ? NormalizationNames[val] : "Full Range";
         }
 
+        if (inputId == SkyHandlingParam.Id)
+        {
+            var val = _uiSkyHandling;
+            return val >= 0 && val < SkyHandlingNames.Length ? SkyHandlingNames[val] : "Stabilize";
+        }
+
         if (inputId == ModelSizeParam.Id)
         {
             var size = (ModelSize)_uiModelSize;
@@ -2089,6 +2130,13 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
         if (inputId == Normalization.Id)
         {
             foreach (var name in NormalizationNames)
+                yield return name;
+            yield break;
+        }
+
+        if (inputId == SkyHandlingParam.Id)
+        {
+            foreach (var name in SkyHandlingNames)
                 yield return name;
             yield break;
         }
@@ -2135,6 +2183,14 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
             var index = Array.IndexOf(NormalizationNames, selected);
             if (index >= 0)
                 Normalization.SetTypedInputValue(index);
+            return;
+        }
+
+        if (inputId == SkyHandlingParam.Id)
+        {
+            var index = Array.IndexOf(SkyHandlingNames, selected);
+            if (index >= 0)
+                SkyHandlingParam.SetTypedInputValue(index);
             return;
         }
 
