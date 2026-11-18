@@ -1179,6 +1179,9 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
                             {
                                 ["device_id"] = "0",
                                 ["trt_max_workspace_size"] = "2147483648",
+                                // fp16 engines: the widely-used da3-small.onnx export is fp32, and without
+                                // this flag TensorRT would build a 2x slower fp32 engine for it
+                                ["trt_fp16_enable"] = "1",
                                 ["trt_engine_cache_enable"] = "1",
                                 ["trt_engine_cache_path"] = trtCache,
                                 ["trt_timing_cache_enable"] = "1",

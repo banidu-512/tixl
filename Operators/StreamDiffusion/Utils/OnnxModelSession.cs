@@ -198,7 +198,19 @@ internal sealed class OnnxModelSession : IDisposable
                 break;
 
             case ExecutionProvider.Cuda:
-                options.AppendExecutionProvider_CUDA(deviceId);
+                // HEURISTIC conv-algorithm search avoids cuDNN's exhaustive autotune, which stalls
+                // session creation and re-runs on every new shape (the KV-cache batch changes 1-4).
+                // A large conv workspace lets cuDNN choose the fastest algorithms it finds.
+                using (var cudaOptions = new OrtCUDAProviderOptions())
+                {
+                    cudaOptions.UpdateOptions(new Dictionary<string, string>
+                    {
+                        ["device_id"] = deviceId.ToString(),
+                        ["cudnn_conv_algo_search"] = "HEURISTIC",
+                        ["cudnn_conv_use_max_workspace"] = "1",
+                    });
+                    options.AppendExecutionProvider_CUDA(cudaOptions);
+                }
                 break;
 
             case ExecutionProvider.CoreMl:
@@ -223,6 +235,9 @@ internal sealed class OnnxModelSession : IDisposable
                     {
                         ["device_id"] = deviceId.ToString(),
                         ["trt_max_workspace_size"] = (workspaceMb * 1024L * 1024L).ToString(),
+                        // fp16 engines: roughly doubles throughput on fp32 exports and halves engine
+                        // memory; fp16 exports rebind to fp16 anyway, so this never hurts
+                        ["trt_fp16_enable"] = "1",
                         ["trt_engine_cache_enable"] = "1",
                         ["trt_engine_cache_path"] = trtCache,
                         ["trt_timing_cache_enable"] = "1",
