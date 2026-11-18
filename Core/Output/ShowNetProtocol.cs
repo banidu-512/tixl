@@ -610,11 +610,14 @@ internal static class ShowNetFrameEncoder
         var lastColor1 = 0xFFFFFF;
         var lastColor2 = 0xFFFFFF;
         var lastColor3 = 0xFFFFFF;
+        // One scratch record for the whole frame: a stackalloc inside the loop would grow the stack by
+        // 10 bytes per point until the method returns (CA2014), which large frames could overflow.
+        // Only the first n bytes of each record are written and copied, so reuse is safe.
+        Span<byte> point = stackalloc byte[10];
         for (var i = 0; i < count; i++)
         {
             AuditPoint(points[i], maxBrightness, swapColorChannels, scale,
                        out var x12, out var y12, out var r8, out var g8, out var b8, out var i8);
-            Span<byte> point = stackalloc byte[10];
             var n = 1;
             var flags = 0;
             var dx = x12 - lastX;
