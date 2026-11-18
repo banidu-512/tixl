@@ -145,6 +145,41 @@ setups that expect world- or view-space normals.
 ![Normal map](shots/DepthToNormal-output.png)
 *Normals reconstructed from the depth map.*
 
+## DepthScanBuffer
+
+A LiDAR-style scan buffer for depth: while `Capture` is on, every incoming depth frame is
+merged into one persistent map that is held on the outputs until `Reset` - the held scan
+survives a disconnected input, which is what makes "scan, then keep working with it"
+possible. `Mode` picks the merge: `Latest` freezes the most recent frame, `Average`
+averages all captures (per-pixel sample counts, so it is a true multi-frame average -
+the LiDAR-style denoiser for a still camera), `Min` keeps the nearest surface and `Max`
+the farthest. Merging runs on the CPU from a single in-flight readback, the same
+back-pressured pattern the other depth readers use.
+
+- `DepthMap` is the raw depth to scan (`DepthAnything.DepthTexture`, R32_Float).
+- `Confidence` (optional) gates samples below `ConfidenceThreshold` out of the merge.
+- `ColorMap` (optional) is held alongside the scan; it colors `PointCloud` and fills `HeldColor`.
+- `Capture` merges every new frame while on; `CaptureOnce` merges exactly one; `Reset` clears.
+- `Mode` picks Latest / Average / Min / Max; `MaxCaptures` stops merging after N frames (0 = keep going).
+- `Save` + `SaveFolder`/`SaveFileName`/`SaveFormat` write the scan: 16-bit PNG (`depth x SaveScale`, 1000 = millimeters) or exact raw float32 with a small `T3DS` header.
+- `FieldOfView`, `PointScale`, `PixelStride`, `MaxPoints` shape the `PointCloud` unprojection (wire `DepthAnything.VerticalFov`).
+
+**Output:** `HeldDepth` (R32_Float), `HeldColor` (RGBA8), `MaskTexture` (R8),
+`PointCloud` + `PointCount` (CPU-built point buffer - draws on D3D11 and Vulkan, unlike
+the compute-written buffer of `DepthToPoints` which needs Vulkan), `Coverage`, `Captures`,
+`SavedPath`.
+
+`StartRecord` / `StopRecord` latch a recording run (with a `Recording` output), so scanning
+can be driven like a LiDAR session instead of holding a bool. `SampleLifetime` gives every
+sample a lifetime in seconds: pixels not re-observed within that time are dropped, so the
+scan fades like a decaying sweep and `Coverage` / masks / point cloud follow. For stable
+points on a live scan, `PointGrid` picks Square or Hexagonal sampling (hex = offset rows at
+sqrt(3)/2 spacing, even neighbor distances) and `PointStability` blends rebuilt point
+positions toward their previous spots to minimize jitter.
+
+*Note:* the held outputs keep publishing the last scan even when the input stops; a size
+change of the incoming depth resets the buffer and starts a fresh scan.
+
 ## StreamDiffusion
 
 Image generation with **Stable Diffusion 1.x / SD-Turbo** through ONNX Runtime, in text-to-image and

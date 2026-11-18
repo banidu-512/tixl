@@ -23,7 +23,7 @@ The same content is also split into one page per area for review: [Volumes](volu
 | Volumes — render | `NanoVdbRender`, `VolumeField` |
 | Volumes — I/O and analysis | `LoadVdb`, `SaveVdb`, `SaveNanoVdb`, `VolumeInfo` |
 | Physics | `PhysicsWorld`, `RigidBody`, `RigidJoint`, `RigidBodyPoints`, `RigidForce`, `RigidBodyGeometry`, `MeshToGeometry` |
-| AI video | `DepthAnything`, `DepthFilter`, `DepthThreshold`, `DepthToNormal`, `StreamDiffusion` |
+| AI video | `DepthAnything`, `DepthFilter`, `DepthThreshold`, `DepthToNormal`, `DepthScanBuffer`, `StreamDiffusion` |
 | Laser | `LaserCamera`, `LaserPointsToBuffer`, `PONKInput` |
 | OMT | `OmtInput`, `OmtOutput` |
 | Video input | `VideoDeviceInput` (peer cameras) |
