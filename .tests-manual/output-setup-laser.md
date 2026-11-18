@@ -14,7 +14,8 @@ related-help:
 ---
 
 Covers the laser output card end to end: the aim rectangle before calibration, **Send**, the
-scanner camera's calibration solve, live device settings, and several outputs on one plug.
+scanner camera's calibration solve, live device settings, several outputs on one plug, the laser
+camera's wireframe culling, and its point-budget warning.
 
 ## Step: An uncalibrated output streams the aim rectangle
 
@@ -34,6 +35,29 @@ Untick **Send** at the top of the laser output card, wait a second, then tick it
 **Expected:**
 - While unticked the device stops receiving frames and the card says so, but the plug stays connected - no discovery or reconnect status appears.
 - Ticking it again resumes streaming within a frame or two; nothing about the binding changes.
+
+## Step: A laser camera freezes like a send
+
+**Action:**
+Select the [LaserCamera] in the flow outliner's CONTENT column, untick **Update** on its card, then animate something in its **Scene** (or move an object in it).
+
+**Expected:**
+- The outliner item reads "laser · frozen" and the card names the output it streams to with its point count.
+- **Laser frame** and the device keep showing the last frame; the scene's changes no longer reach the laser, and the editor's frame time drops.
+- Ticking **Update** again resumes at once. The change is a normal undoable edit of the camera's **Update** input.
+
+## Step: A camera reference takes over the laser camera's aim
+
+**Action:**
+1. Add a [Camera] to the graph and wire its **Reference** output into the [LaserCamera]'s **CameraReference** input.
+2. Move the [Camera]'s **Position** and **Target** - or use an [OrbitCamera] with some **Spin Rate** instead.
+3. Move the [LaserCamera]'s own **Position** and **Target**, then toggle its **Use Rotation**.
+
+**Expected:**
+- The **Laser frame** follows the referenced camera live, including while it animates; the laser camera's own aim inputs change nothing while the reference resolves.
+- The drawn view frame sits on the referenced camera, and the laser camera's position/target gizmo handles disappear - the aim belongs to the referenced camera.
+- The frame stays **square** (the scanner field): a 16:9 camera gives a square crop of its view, not a horizontally squeezed picture.
+- Removing the connection returns the camera to its own aim. A connected output that is not a camera makes the node report `Camera reference is not usable - using this op's own aim`.
 
 ## Step: The calibration solve replaces the manual aim
 
@@ -71,8 +95,28 @@ Add a second laser output (`+` on **OUTPUTS** → **Laser**), then drag it onto 
 ## Step: A dense frame stays real time
 
 **Action:**
-Feed the [LaserCamera] a mesh (`SphereMesh` with the default 64 × 32 segments into its **Mesh** input), confirm its **OutputRef** names the calibrated laser output, and watch the editor's frame rate and the **Laser frame** preview for ten seconds.
+Feed the [LaserCamera] a dense mesh scene (`SphereMesh` with the default 64 × 32 segments into a [DrawMesh], its command into the camera's **Scene** input), confirm its **OutputRef** names the calibrated laser output, and watch the editor's frame rate and the **Laser frame** preview for ten seconds.
 
 **Expected:**
 - The editor stays at interactive frame rate (well above 30 fps on a laptop-class GPU) - the frame has about 19 000 points and the optimizer must not stall it.
 - The preview animates smoothly and the device keeps streaming; no `frame watchdog` warning appears.
+
+## Step: Wireframe culling reads a mesh as outline and folds
+
+**Action:**
+Feed the [LaserCamera] a `CubeMesh` through [DrawMesh] into its **Scene** input and look at the **Laser frame** preview. Then tick the camera's **BackfaceCulling** and rotate the camera around the cube, and finally raise **CreaseAngle** to 30° while a `SphereMesh` (not a cube) feeds the scene.
+
+**Expected:**
+- At the defaults the cube shows its face borders without triangle diagonals, and shared borders are not brighter than outer ones (each edge is scanned once, even though the cube's faces have separate vertices).
+- With **BackfaceCulling** on, only the edges of the faces turned toward the camera are scanned; rotating the camera brings other faces forward and the hidden ones disappear.
+- Raising **CreaseAngle** thins a curved mesh's wireframe: the sphere keeps its silhouette and sharp folds while interior tessellation lines drop out, and the camera's point count falls with it.
+
+## Step: An over-budget scene warns instead of flickering
+
+**Action:**
+Give the [LaserCamera] a dense scene - several [DrawMesh] spheres and **MaxEdgeStep** down at 500 - until the scene clearly holds more points than the output's frame budget, then select the camera in the flow outliner's CONTENT column and watch the **Laser frame** for a few seconds. Finally raise **MaxEdgeStep** back up.
+
+**Expected:**
+- The camera's outliner item shows a warning and its status message reads "Over budget: the frame is capped at ... points - the excess is dropped."
+- The frame stays stable: the same parts of the picture stay missing while the scene stands still, nothing flickers in and out.
+- Raising **MaxEdgeStep** (or ticking **BackfaceCulling**) clears the warning and the status returns to the point count.

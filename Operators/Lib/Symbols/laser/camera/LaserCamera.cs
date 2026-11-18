@@ -82,6 +82,9 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
         if (CameraReference.HasInputConnections && !_hasCameraReference)
             return IStatusProvider.StatusLevel.Warning;
 
+        if (_overBudget)
+            return IStatusProvider.StatusLevel.Warning;
+
         return OutputRef.Value == Guid.Empty
                    ? IStatusProvider.StatusLevel.Notice
                    : IStatusProvider.StatusLevel.Success;
@@ -97,6 +100,9 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
 
         if (CameraReference.HasInputConnections && !_hasCameraReference)
             return "Camera reference is not usable - using this op's own aim.";
+
+        if (_overBudget)
+            return $"Over budget: the frame is capped at {_lastCap:N0} points - the excess is dropped. Raise MaxEdgeStep or cull with BackfaceCulling / CreaseAngle.";
 
         if (OutputRef.Value == Guid.Empty)
             return "Not routed to a laser output. Drop it on one in the Output Setup.";
@@ -259,10 +265,19 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
         if (cap <= 0 || cap > MaxOutputPoints)
             cap = MaxOutputPoints;
 
+        var creaseAngle = CreaseAngle.GetValue(context);
+        creaseAngle = float.IsFinite(creaseAngle) ? Math.Clamp(creaseAngle, 0f, 180f) : DefaultCreaseAngle;
+        var creaseCosine = MathF.Cos(creaseAngle.ToRadians());
+        var cullBackfaces = BackfaceCulling.GetValue(context);
+        var cameraWorldPosition = GetViewOrigin(WorldToCamera);
+
+        _overBudget = false;
+        _lastCap = cap;
+
         // Scene capture content changes silently from the GPU's point of view, so it reconverts
         // every frame.
         var combined = WorldToCamera * CameraToClipSpace;
-        var count = AppendCaptured(captured, combined, dotDwell, maxEdgeStep, cap, out var stats);
+        var count = AppendCaptured(captured, combined, dotDwell, maxEdgeStep, cap, creaseCosine, cullBackfaces, cameraWorldPosition, out var stats);
 
         if (PrintToLog.GetValue(context))
             LogDiagnostics(captured, count, stats);
@@ -277,7 +292,7 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
     /// collapsed frame comes from the capture, the projection or the aim.</summary>
     private void LogDiagnostics(CapturedScene? captured, int count, in EncodeStats stats)
     {
-        Log.Debug($"LaserCamera: captured sources {stats.Sources}, dots {stats.Dots}, segments {stats.Segments}, wireframe edges {stats.Edges}, output {count} (scene {_lastEvalMs:0.0}ms, readback {_lastReadMs:0.0}ms, data age {_lastDataAgeMs:0.0}ms, {_lastStaleReads} stale reads)",
+        Log.Debug($"LaserCamera: captured sources {stats.Sources}, dots {stats.Dots}, segments {stats.Segments}, wireframe edges {stats.Edges}, output {count} (scene {_lastEvalMs:0.0}ms, readback {_lastReadMs:0.0}ms, data age {_lastDataAgeMs:0.0}ms, {_lastStaleReads} stale reads){(_overBudget ? " OVER BUDGET" : "")}",
                   this);
 
         // Logged even for a collapsed frame: a broken aim (unresolved reference, NaN projection) is
@@ -366,6 +381,8 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
         public int VertexCount;
         public int[] EdgeIndices = [];     // mesh wireframes: unique edge vertex-index pairs (i0, i1, ...)
         public int EdgeIndexCount;
+        public Vector3[] EdgeNormals = []; // per edge: the two adjacent face normals (NaN where unknown)
+
     }
 
     /// <summary>The sources of one capture pass. Pooled by the owning camera: a pass allocates nothing
@@ -547,7 +564,8 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
         source.ObjectToWorld = entry.ObjectToWorld;
         source.Vertices = vertices;
         source.VertexCount = readVertices;
-        CollectUniqueMeshEdges(faces, readFaces, vertices, readVertices, source);
+        if (CollectMeshEdges(faces, readFaces, vertices, readVertices, source))
+            Log.Debug($"LaserCamera: wireframe capped at {MaxEdges} edges", this);
     }
 
     /// <summary>
@@ -557,14 +575,16 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
     /// kind is encoded: a laser frame is exactly what the scene contains, and the capture collector
     /// is the only place that decides what is drawn (Draw ops and their capture inputs).
     /// </summary>
-    private int AppendCaptured(CapturedScene? captured, Matrix4x4 viewClip, int dotDwell, float maxEdgeStep, int cap, out EncodeStats stats)
+    private int AppendCaptured(CapturedScene? captured, Matrix4x4 viewClip, int dotDwell, float maxEdgeStep, int cap,
+                               float creaseCosine, bool cullBackfaces, Vector3 cameraWorldPosition, out EncodeStats stats)
     {
         stats = default;
         var count = 0;
         if (captured == null)
             return count;
 
-        for (var s = 0; s < captured.Count && count < cap; s++)
+        var s = 0;
+        for (; s < captured.Count && count < cap; s++)
         {
             var source = captured.Sources[s];
 
@@ -586,12 +606,28 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
                     break;
 
                 case GeometryPrimitiveKind.Mesh:
-                    count = AppendMeshWireframe(source.Vertices, source.EdgeIndices, source.EdgeIndexCount, objectToClip, maxEdgeStep, cap, count, out var edges);
+                    // Backface culling needs the eye point in the source's own space; a singular
+                    // object transform just leaves its edges drawn.
+                    var objectCameraPosition = default(Vector3);
+                    var cull = false;
+                    if (cullBackfaces && Matrix4x4.Invert(source.ObjectToWorld, out var worldToObject))
+                    {
+                        cull = true;
+                        objectCameraPosition = Vector3.Transform(cameraWorldPosition, worldToObject);
+                    }
+
+                    count = AppendMeshWireframe(source.Vertices, source.EdgeIndices, source.EdgeIndexCount, source.EdgeNormals,
+                                                objectToClip, objectCameraPosition, cull, creaseCosine, maxEdgeStep, cap, count, out var edges);
                     stats.Edges += edges;
                     stats.Sources++;
                     break;
             }
         }
+
+        // The budget ran out before all captured sources were encoded - the rest of the scene is
+        // missing from the frame.
+        if (s < captured.Count)
+            _overBudget = true;
 
         return count;
     }
@@ -639,7 +675,10 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
     private bool Reserve(int count, int needed, int cap)
     {
         if (count + needed > cap)
+        {
+            _overBudget = true;
             return false;
+        }
 
         if (count + needed > _scratch.Length)
             Array.Resize(ref _scratch, Math.Min(Math.Max(_scratch.Length * 2, count + needed), cap));
@@ -821,10 +860,14 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
 
     /// <summary>
     /// Mesh content: each unique triangle edge becomes an isolated lit run - blanked
-    /// approach, then straight-line samples from start to end. The edges were deduplicated
-    /// once when the capture was read (shared by all cameras), so this only projects.
+    /// approach, then straight-line samples from start to end. The edges were welded and
+    /// deduplicated once when the capture was read (shared by all cameras), so this only
+    /// culls and projects: a seam both faces fold into flat is the interior of one surface,
+    /// and an edge all of whose faces look away from the camera sits on the object's hidden
+    /// side.
     /// </summary>
-    private int AppendMeshWireframe(PbrVertex[] vertices, int[] edgeIndices, int edgeIndexCount, Matrix4x4 objectToClip, float maxEdgeStep, int cap, int count,
+    private int AppendMeshWireframe(PbrVertex[] vertices, int[] edgeIndices, int edgeIndexCount, Vector3[] edgeNormals, Matrix4x4 objectToClip,
+                                    Vector3 cameraPositionObject, bool cullBackfaces, float creaseCosine, float maxEdgeStep, int cap, int count,
                                     out int edgesEmitted)
     {
         edgesEmitted = 0;
@@ -836,6 +879,14 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
             var i0 = edgeIndices[e];
             var i1 = edgeIndices[e + 1];
             if ((uint)i0 >= (uint)vertices.Length || (uint)i1 >= (uint)vertices.Length)
+                continue;
+
+            var n0 = edgeNormals[e];
+            var n1 = edgeNormals[e + 1];
+            if (IsFlatSeam(n0, n1, creaseCosine))
+                continue;
+
+            if (cullBackfaces && IsEdgeHidden(n0, n1, vertices[i0].Position, cameraPositionObject))
                 continue;
 
             // Clipped, not clamped: an edge that leaves the frame is cut at the border; one
@@ -872,13 +923,34 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
     }
 
     /// <summary>Deduplicates a mesh's triangle edges into vertex-index pairs (i0, i1, ...) - done
-    /// once per capture instead of once per camera, so the per-camera encode only projects.
-    /// An edge strictly interior to a flat surface is dropped: a quad built from two triangles
-    /// shares a diagonal, and drawing it turns every face into an X - a cube reads as a tangle of
-    /// diagonals instead of a wireframe. Curved tessellation keeps its edges; only a near-exactly
-    /// coplanar seam is culled.</summary>
-    private void CollectUniqueMeshEdges(Int3[] faces, int faceCount, PbrVertex[] vertices, int vertexCount, CapturedSource target)
+    /// once per capture instead of once per camera, so the per-camera encode only culls and
+    /// projects. Edges match across split-vertex seams: they are keyed by welded vertex position,
+    /// so a cube with per-face normals does not draw every edge of its six faces as an independent
+    /// border. Alongside each edge it keeps the normals of its two adjacent faces (NaN where
+    /// unknown), what the per-camera crease and backface culls in AppendMeshWireframe read.
+    /// Returns true when <see cref="MaxEdges"/> was reached and further edges were dropped.</summary>
+    private bool CollectMeshEdges(Int3[] faces, int faceCount, PbrVertex[] vertices, int vertexCount, CapturedSource target)
     {
+        if (_vertexRemap.Length < vertexCount)
+            _vertexRemap = new int[Math.Max(vertexCount, _vertexRemap.Length * 2)];
+
+        // Map every vertex to the first vertex sharing its exact position; non-finite positions
+        // never weld (NaN never equals).
+        _positionToVertex.Clear();
+        for (var i = 0; i < vertexCount; i++)
+        {
+            var position = vertices[i].Position;
+            if (_positionToVertex.TryGetValue(position, out var first))
+            {
+                _vertexRemap[i] = first;
+            }
+            else
+            {
+                _positionToVertex[position] = i;
+                _vertexRemap[i] = i;
+            }
+        }
+
         _edgeRecords.Clear();
         target.EdgeIndexCount = 0;
 
@@ -895,45 +967,75 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
                 if (i0 < 0 || i0 >= vertexCount || i1 < 0 || i1 >= vertexCount)
                     continue;
 
-                var a = Math.Min(i0, i1);
-                var b = Math.Max(i0, i1);
-                var key = ((long)a << 32) | (uint)b;
+                var a = _vertexRemap[Math.Min(i0, i1)];
+                var b = _vertexRemap[Math.Max(i0, i1)];
+                if (a == b)
+                    continue;
 
+                var key = ((long)a << 32) | (uint)b;
                 ref var record = ref CollectionsMarshal.GetValueRefOrAddDefault(_edgeRecords, key, out var exists);
                 if (!exists)
                 {
-                    record = new EdgeRecord { A = a, B = b, Faces = 1, Normal = normal, HasNormal = hasNormal };
+                    record = new EdgeRecord { A = a, B = b, Faces = 1, Normal0 = hasNormal ? normal : NaNNormal };
                     continue;
                 }
 
                 record.Faces++;
-                if (record.HasNormal && hasNormal)
-                {
-                    record.Comparisons++;
-                    if (MathF.Abs(Vector3.Dot(record.Normal, normal)) > CoplanarSeamDot)
-                        record.CoplanarComparisons++;
-                }
+                if (record.Faces == 2)
+                    record.Normal1 = hasNormal ? normal : NaNNormal;
             }
         }
 
+        var capped = false;
         foreach (var record in _edgeRecords.Values)
         {
-            // Border edges have nothing to compare against; a seam needs every neighbour coplanar.
-            if (record.Faces > 1 && record.Comparisons > 0 && record.CoplanarComparisons == record.Comparisons)
-                continue;
-
             if (target.EdgeIndexCount >= MaxEdges * 2)
             {
-                Log.Debug($"LaserCamera: wireframe capped at {MaxEdges} edges", this);
+                capped = true;
                 break;
             }
 
             if (target.EdgeIndices.Length < target.EdgeIndexCount + 2)
                 Array.Resize(ref target.EdgeIndices, Math.Max(target.EdgeIndexCount + 2, target.EdgeIndices.Length * 2));
 
-            target.EdgeIndices[target.EdgeIndexCount++] = record.A;
-            target.EdgeIndices[target.EdgeIndexCount++] = record.B;
+            if (target.EdgeNormals.Length < target.EdgeIndexCount + 2)
+                Array.Resize(ref target.EdgeNormals, Math.Max(target.EdgeIndexCount + 2, target.EdgeNormals.Length * 2));
+
+            // A third face makes the facing comparison incomplete: leave both normals NaN so a
+            // non-manifold edge is never culled as hidden or flat.
+            var facesKnown = record.Faces == 2;
+            target.EdgeNormals[target.EdgeIndexCount] = facesKnown ? record.Normal0 : NaNNormal;
+            target.EdgeNormals[target.EdgeIndexCount + 1] = facesKnown ? record.Normal1 : NaNNormal;
+            target.EdgeIndices[target.EdgeIndexCount] = record.A;
+            target.EdgeIndices[target.EdgeIndexCount + 1] = record.B;
+            target.EdgeIndexCount += 2;
         }
+
+        return capped;
+    }
+
+    /// <summary>True when the edge's two faces fold less than the crease angle (the caller
+    /// passes the angle's cosine): the shared seam of one flat surface, which reads as noise
+    /// on the scanner. NaN normals keep the edge drawn.</summary>
+    private static bool IsFlatSeam(Vector3 normal0, Vector3 normal1, float minCreaseCosine)
+    {
+        var dot = Vector3.Dot(normal0, normal1);
+        return float.IsFinite(dot) && MathF.Abs(dot) > minCreaseCosine;
+    }
+
+    /// <summary>True when every face recorded for the edge faces away from the camera: the edge
+    /// lies on the hidden side of the surface and a backface-culling caller drops it. NaN
+    /// normals keep the edge drawn.</summary>
+    private static bool IsEdgeHidden(Vector3 normal0, Vector3 normal1, Vector3 edgePosition, Vector3 cameraPosition)
+    {
+        var toCamera = cameraPosition - edgePosition;
+        return FacesAway(normal0, toCamera) && FacesAway(normal1, toCamera);
+    }
+
+    private static bool FacesAway(Vector3 normal, Vector3 toCamera)
+    {
+        var dot = Vector3.Dot(normal, toCamera);
+        return float.IsFinite(dot) && dot <= 0f;
     }
 
     /// <summary>Unit normal of a triangle, or false when it is degenerate or references missing
@@ -1362,10 +1464,16 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
                 ResourceManager.Device.ImmediateContext.CopyResource(source, _buffers[_writeIndex]);
                 _copyStamp[_writeIndex] = Stopwatch.GetTimestamp();
 
+                // The slice belongs to the copy, not to the read: mapping last frame's copy with this
+                // frame's (larger) element count would read elements that copy never drew - whatever
+                // the buffer held before, served as one frame of phantom points.
+                _copyElementCount[_writeIndex] = elementCount;
+                _copyOffsetElements[_writeIndex] = offsetElements;
+
                 if (!_hasPrevious)
                 {
                     // First use: nothing to read yet, so wait for the fresh copy once.
-                    TryMapInto<T>(_writeIndex, true, sourceBytes, stride, elementCount, offsetElements);
+                    TryMapInto<T>(_writeIndex, true, sourceBytes, stride);
                     _hasPrevious = true;
                     LastAgeMs = 0;
                     LastReadWasStale = false;
@@ -1374,7 +1482,7 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
                 else
                 {
                     var readIndex = 1 - _writeIndex;
-                    if (TryMapInto<T>(readIndex, false, sourceBytes, stride, elementCount, offsetElements))
+                    if (TryMapInto<T>(readIndex, false, sourceBytes, stride))
                     {
                         LastAgeMs = (Stopwatch.GetTimestamp() - _copyStamp[readIndex]) * 1000.0 / Stopwatch.Frequency;
                         LastReadWasStale = false;
@@ -1457,8 +1565,10 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
         /// <summary>Maps one staging buffer and copies the requested slice into the reusable array.
         /// With <paramref name="wait"/> off it does not stall on queued GPU work: false means "copy not
         /// finished" (the blocking map was 7-30ms per pull).</summary>
-        private bool TryMapInto<T>(int index, bool wait, int sourceBytes, int stride, int elementCount, int offsetElements) where T : struct
+        private bool TryMapInto<T>(int index, bool wait, int sourceBytes, int stride) where T : struct
         {
+            var elementCount = _copyElementCount[index];
+            var offsetElements = _copyOffsetElements[index];
             var context = ResourceManager.Device.ImmediateContext;
             DataStream stream = null;
             var mapped = false;
@@ -1509,6 +1619,8 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
 
         private Buffer[] _buffers;
         private readonly long[] _copyStamp = new long[2];
+private readonly int[] _copyElementCount = new int[2];
+private readonly int[] _copyOffsetElements = new int[2];
         private int _writeIndex;
         private bool _hasPrevious;
         private bool _failureLogged;
@@ -1528,6 +1640,7 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
         // without needing a manual nudge on any input.
         _hasFrame = false;
         _lastPointCount = 0;
+        _overBudget = false;
     }
 
     protected override void Dispose(bool disposing)
@@ -1575,26 +1688,37 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
     private StructuredList<LaserPoint>? _published;
     private int _scratchSlackFrames;
 
-    /// <summary>Per-capture edge table: first face normal plus how many neighbours were coplanar.
-    /// Reused across captures (cleared, capacity kept) so a wireframe pass allocates no per-edge
+    /// <summary>Per-capture edge table: welded edge plus its two adjacent face normals. Reused
+    /// across captures (cleared, capacity kept) so a wireframe pass allocates no per-edge
     /// objects.</summary>
     private readonly Dictionary<long, EdgeRecord> _edgeRecords = new();
+
+    /// <summary>Vertex position to its first occurrence, and the weld remap it fills - what
+    /// makes edge keys match across split-vertex seams.</summary>
+    private readonly Dictionary<Vector3, int> _positionToVertex = new();
+    private int[] _vertexRemap = [];
 
     private struct EdgeRecord
     {
         public int A;
         public int B;
         public int Faces;
-        public int Comparisons;
-        public int CoplanarComparisons;
-        public Vector3 Normal;
-        public bool HasNormal;
+        public Vector3 Normal0;
+        public Vector3 Normal1;
     }
 
-    /// <summary>Cos of the largest angle between two faces that still counts as one flat surface
-    /// (~1°). A quad's triangle diagonal sits at exactly 1, so the seam is culled; noisy
-    /// tessellation stays below it and keeps its edges.</summary>
-    private const float CoplanarSeamDot = 0.99985f;
+    private static readonly Vector3 NaNNormal = new(float.NaN, float.NaN, float.NaN);
+
+    /** Set when the point budget refused part of the scene - drives the op's status warning. */
+    private bool _overBudget;
+
+    /** The budget the last published frame was built against, for the status message. */
+    private int _lastCap = MaxOutputPoints;
+
+    /// <summary>Interior edges whose faces fold less than this (in degrees) count as one flat
+    /// surface - the seam cull that keeps a quad's triangle diagonal from turning every face
+    /// into an X. The CreaseAngle input raises it.</summary>
+    private const float DefaultCreaseAngle = 1f;
 
     /// <summary>Hard cap on generated points (1M points = 24 MB scratch) - bounds damage
     /// from huge input.</summary>
@@ -1634,6 +1758,19 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
 
     [Input(Guid = "4F55D55B-B51D-4A29-8788-E1AE21A80960")]
     public readonly InputSlot<float> MaxEdgeStep = new(DefaultMaxEdgeStep);
+
+    /// <summary>Minimum angle in degrees between a mesh edge's faces for the edge to be drawn;
+    /// seams that fold less read as one surface. The default keeps a quad's triangle diagonal
+    /// out; higher values sketch only the folds and silhouette of a curved mesh, which also
+    /// saves points.</summary>
+    [Input(Guid = "5B629016-9618-4B4B-82E9-B266F330355D")]
+    public readonly InputSlot<float> CreaseAngle = new(DefaultCreaseAngle);
+
+    /// <summary>Drops wireframe edges whose faces all face away from the camera - the hidden
+    /// side of a closed mesh. Needs consistent triangle winding; leave off for meshes with
+    /// unknown winding.</summary>
+    [Input(Guid = "EF444CD1-F58E-4D92-A09A-8B6A93487DD9")]
+    public readonly InputSlot<bool> BackfaceCulling = new();
 
     [Input(Guid = "0C48ED58-1242-4F8B-869A-7396CB055931")]
     public readonly InputSlot<int> DotDwellPoints = new(8);
