@@ -298,8 +298,9 @@ public static class LaserPlugDiscovery
             }
             catch (SocketException)
             {
-                // One stray ICMP-driven reset must not end discovery for the session.
-                continue;
+                // One stray ICMP-driven reset must not end discovery for the session. Fall
+                // through to the sleep below: a persistent failure (network down, repeated
+                // WSAECONNRESET) must not turn this loop into a hot spin.
             }
             catch
             {
@@ -394,9 +395,11 @@ public static class LaserPlugDiscovery
 
         private void DrainReplies()
         {
+            // One buffer for the drain: the single listener thread parses each datagram before
+            // receiving the next.
+            var buffer = new byte[1600];
             while (_socket.Available > 0)
             {
-                var buffer = new byte[1600];
                 EndPoint remote = new IPEndPoint(IPAddress.Any, 0);
                 var length = _socket.ReceiveFrom(buffer, ref remote);
                 if (length < 104)
@@ -423,13 +426,12 @@ public static class LaserPlugDiscovery
 
         private void Prune(long now)
         {
-            // The ConcurrentDictionary is already thread-safe - no additional lock.
-            var expired = _lasers.Values
-                                 .Where(laser => now - laser.Timestamp > PruneAfterMs)
-                                 .ToArray();
-            foreach (var laser in expired)
+            // The ConcurrentDictionary is already thread-safe - no additional lock, and the
+            // enumerator tolerates removals during the walk.
+            foreach (var pair in _lasers)
             {
-                _lasers.TryRemove(laser.Address.ToString(), out _);
+                if (now - pair.Value.Timestamp > PruneAfterMs)
+                    _lasers.TryRemove(pair.Key, out _);
             }
         }
 

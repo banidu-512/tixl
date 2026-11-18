@@ -972,6 +972,12 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
                 if (a == b)
                     continue;
 
+                // The raw-index min/max does not order the welded pair: max can weld below min.
+                // Canonicalize, or the same edge keys twice (once per face's raw order) and each
+                // record's single face leaves its normals NaN - drawn twice and never culled.
+                if (a > b)
+                    (a, b) = (b, a);
+
                 var key = ((long)a << 32) | (uint)b;
                 ref var record = ref CollectionsMarshal.GetValueRefOrAddDefault(_edgeRecords, key, out var exists);
                 if (!exists)

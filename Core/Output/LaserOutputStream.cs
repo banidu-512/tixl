@@ -2110,6 +2110,7 @@ private void HandleConnectionStateChanged(bool isConnected)
         private volatile bool _watchdogBlanked;
         private volatile string? _lastConnectIp;
         private volatile string? _autoSelectedIp;
+        private bool _frameOverBudget;
 
         private volatile StatusInfo _status = new("Disconnected", IStatusProvider.StatusLevel.Notice);
 
@@ -2588,7 +2589,18 @@ private void HandleConnectionStateChanged(bool isConnected)
         {
             if (!ShowNetFrameEncoder.TryEncode(frame, frame.Length, in _session, _maxBrightness, _swapColorChannels,
                                                ref _bitstream, out var length, out var compressed))
+            {
+                // Over the 32-fragment wire budget. Dropping is the only safe move, but a
+                // silently blank laser reads as a dead device - report once per incident.
+                if (!_frameOverBudget)
+                {
+                    _frameOverBudget = true;
+                    Log.Warning($"showNET stream: frame with {frame.Length} points exceeds the wire budget ({ShowNetProtocol.MaxFrameBytes} bytes) - dropped. Reduce the point count.");
+                    SetStatus("Frame too large for showNET - output blanked, reduce point count", IStatusProvider.StatusLevel.Warning);
+                }
+
                 return;
+            }
 
             // The reference's nextFrameId(): mask-increment then post-increment, so ids advance
             // 1, 3, 5, ... exactly as the vendor client produces them (replicated deliberately).
@@ -2607,6 +2619,8 @@ private void HandleConnectionStateChanged(bool isConnected)
                                             NextSequenceId());
                 socket.SendTo(datagram, remote);
             }
+
+            _frameOverBudget = false;
         }
 
         public void Dispose()
