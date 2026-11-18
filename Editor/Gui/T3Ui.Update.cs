@@ -3,6 +3,7 @@ using T3.Core.Animation;
 using T3.Core.Audio;
 using T3.Core.Audio.Graph;
 using T3.Core.Resource;
+using T3.Core.Stats;
 using T3.Editor.App;
 using T3.Editor.Gui.Dialog;
 using T3.Editor.Compilation;
@@ -49,6 +50,7 @@ public static partial class T3Ui
         T3.Core.Show.FailoverArbiter.ApplyConfig(_failoverConfig);
         Show.FailoverProjectFollow.Update();
         Show.BoygroupManager.Instance.Update();
+        Collab.CollabManager.Instance.Update();
         //ImGui.PushStyleColor(ImGuiCol.Text, UiColors.Text.Rgba);
         DragAndDropHandling.Update();
         MagGraph.Ui.DropHandling.DrawDragIndicator();
@@ -61,6 +63,7 @@ public static partial class T3Ui
         
         // Prepare the current frame 
         RenderStatsCollector.StartNewFrame();
+        OpTimings.StartNewFrame();
         
         UpdateModifiedProjects();
 
@@ -75,7 +78,7 @@ public static partial class T3Ui
             // the mix only through the implicit default bus, so without this it would be decoded and fed but
             // never routed — silent in the rendered file while audible live. (The collector's own transport
             // gate already treats recording as running, so it expects to be called here.)
-            AudioGraphCollector.CollectLooseSources(ProjectView.Focused.CompositionInstance);
+            AudioGraphCollector.CollectLooseSources(ProjectView.Focused.TryGetCompositionInstance());
         }
 
         ScreenshotWriter.Update();
@@ -151,11 +154,13 @@ public static partial class T3Ui
         _missingOperatorsDialog.Draw();
         _sendCrashReportsDialog.Draw();
         ShareSessionDialog.Draw();
-        CreateFromTemplateDialog.Draw();
         _userNameDialog.Draw();
+        _collabPasswordDialog.Draw();
         Windows.AssetLib.FolderImportDialog.Instance.Draw();
         AboutDialog.Draw();
         ExitDialog.Draw();
+        LaserArmWarningDialog.Draw();
+        AiModelSetupWizard.Draw();
         OperatorHelp.EditDescriptionDialog.Draw();
         SkillMapPopup.Draw();
 
@@ -191,12 +196,19 @@ public static partial class T3Ui
             else if (!_missingOperatorsChecked && !IsAnyPopupOpen)
             {
                 _missingOperatorsChecked = true;
-                _missingOperatorsDialog.ShowIfOperatorsAreMissing();
+                if (UserSettings.Config.ShowMissingSymbolsWarningOnStartup)
+                    _missingOperatorsDialog.ShowIfOperatorsAreMissing();
             }
             else if (!_crashReportsChecked && !IsAnyPopupOpen)
             {
                 _crashReportsChecked = true;
                 _sendCrashReportsDialog.ShowIfReportsArePending();
+            }
+            else if (!_aiModelSetupChecked && !IsAnyPopupOpen)
+            {
+                // Last in the startup chain: a fresh installation without AI models gets the setup once
+                _aiModelSetupChecked = true;
+                AiModelSetupWizard.ShowOnFirstStartIfNeeded();
             }
         }
 
@@ -253,6 +265,7 @@ public static partial class T3Ui
     private static bool _blockedProjectsChecked;
     private static bool _missingOperatorsChecked;
     private static bool _crashReportsChecked;
+    private static bool _aiModelSetupChecked;
 
     private static void UpdateModifiedProjects()
     {

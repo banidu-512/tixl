@@ -45,7 +45,7 @@ public class StreamDiffusionSymbolTests
 
         var description = json["Description"]?.Value<string>();
         Assert.NotNull(description);
-        Assert.Contains("Stable Diffusion", description);
+        Assert.Contains("StreamDiffusion V2", description);
         Assert.Contains("ONNX", description);
 
         var inputUis = json["InputUis"] as JArray;
@@ -82,10 +82,22 @@ public class StreamDiffusionSymbolTests
         var onnxDir = Path.Combine(OperatorRoot, "Utils");
         Assert.True(Directory.Exists(onnxDir), $"Utils folder not found at {onnxDir}");
 
-        Assert.True(File.Exists(Path.Combine(onnxDir, "ClipTokenizer.cs")), "ClipTokenizer.cs missing");
-        Assert.True(File.Exists(Path.Combine(onnxDir, "StreamScheduler.cs")), "StreamScheduler.cs missing");
         Assert.True(File.Exists(Path.Combine(onnxDir, "OnnxModelSession.cs")), "OnnxModelSession.cs missing");
-        Assert.True(File.Exists(Path.Combine(onnxDir, "StableDiffusionPipeline.cs")), "StableDiffusionPipeline.cs missing");
+
+        var v2Dir = Path.Combine(onnxDir, "V2");
+        Assert.True(File.Exists(Path.Combine(v2Dir, "StreamDiffusionV2Pipeline.cs")), "StreamDiffusionV2Pipeline.cs missing");
+        Assert.True(File.Exists(Path.Combine(v2Dir, "StreamV2Schedule.cs")), "StreamV2Schedule.cs missing");
+        Assert.True(File.Exists(Path.Combine(v2Dir, "Umt5Tokenizer.cs")), "Umt5Tokenizer.cs missing");
+    }
+
+    [Fact]
+    public void RemovedV1PipelineSources_AreGone()
+    {
+        // The SD 1.5 / Turbo / SDXL pipelines were removed; the operator only runs StreamDiffusion V2
+        Assert.False(File.Exists(Path.Combine(OperatorRoot, "Utils", "StableDiffusionPipeline.cs")), "StableDiffusionPipeline.cs should be gone");
+        Assert.False(File.Exists(Path.Combine(OperatorRoot, "Utils", "ClipTokenizer.cs")), "ClipTokenizer.cs should be gone");
+        Assert.False(File.Exists(Path.Combine(OperatorRoot, "Utils", "StreamScheduler.cs")), "StreamScheduler.cs should be gone");
+        Assert.False(File.Exists(Path.Combine(OperatorRoot, "Utils", "GpuLatentOps.cs")), "GpuLatentOps.cs should be gone");
     }
 
     [Fact]

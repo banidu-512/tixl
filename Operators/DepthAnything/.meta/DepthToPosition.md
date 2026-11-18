@@ -7,7 +7,6 @@ Unprojects a depth map into camera-space positions on the GPU.
 - **Texture2D DepthTexture** - Source depth data (R32_Float)
 - **float FieldOfView** - Vertical field of view in degrees (default: 50)
 - **float DepthScale** - Scales the distance of every point (default: 1)
-- **bool DepthIsDisparity** - Treat larger values as nearer, as Depth Anything V2 does (default: false)
 
 ## Outputs
 - **Texture2D PositionTexture** - RGBA32F; xyz is the camera-space position (x right, y up, z forward), w is 1 where the depth was usable

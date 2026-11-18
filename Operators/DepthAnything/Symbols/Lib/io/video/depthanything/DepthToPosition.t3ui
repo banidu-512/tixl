@@ -26,14 +26,6 @@
         "Y": -250.0
       },
       "Description": "Scales the distance of every point from the camera. Relative depth has no unit, so this sets the size of the reconstruction."
-    },
-    {
-      "InputId": "3e7a9c5d-8daf-4a6e-9487-2b3f5a7cae38"/*DepthIsDisparity*/,
-      "Position": {
-        "X": -250.0,
-        "Y": -200.0
-      },
-      "Description": "Enable for models that predict inverse depth (Depth Anything V2), where larger values are nearer."
     }
   ],
   "SymbolChildUis": [],

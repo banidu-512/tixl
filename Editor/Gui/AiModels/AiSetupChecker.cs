@@ -40,19 +40,20 @@ internal sealed class AiSetupCheckItem
 /// </summary>
 internal static class AiSetupChecker
 {
-    public static readonly List<AiSetupCheckItem> LastResults = new();
+    /**
+     * The latest result, swapped as a whole: the one-click setup re-checks on a worker thread while the
+     * settings page iterates the list every frame, so the published list is never modified.
+     */
+    public static IReadOnlyList<AiSetupCheckItem> LastResults => _lastResults;
+
+    private static volatile IReadOnlyList<AiSetupCheckItem> _lastResults = [];
 
     public static DateTime LastCheckAt = DateTime.MinValue;
 
     /** While true a fix-up download is in progress; the settings page polls until it ends. */
-    public static bool IsFixing;
+    public static volatile bool IsFixing;
 
     public static string FixProgressText = "";
-
-    private static readonly string[] SdRequiredFiles =
-    [
-        "unet.onnx", "text_encoder.onnx", "vae_decoder.onnx",
-    ];
 
     private static readonly string[] V2RequiredFiles =
     [
@@ -65,12 +66,10 @@ internal static class AiSetupChecker
 
         CheckEngineRuntimes(items);
         CheckModelStore(items);
-        CheckFamily(AiModelFamily.DepthAnything, items);
-        CheckFamily(AiModelFamily.MediaPipe, items);
-        CheckFamily(AiModelFamily.StreamDiffusion, items);
+        foreach (var family in AiModelCatalog.VisibleFamilies)
+            CheckFamily(family, items);
 
-        LastResults.Clear();
-        LastResults.AddRange(items);
+        _lastResults = items;
         LastCheckAt = DateTime.Now;
         return items;
     }
@@ -175,14 +174,12 @@ internal static class AiSetupChecker
                 }
                 else if (available.Count > 0 || HasAnyDepthModelInStore() || HasShippedDepthModel())
                 {
-                    // Operators already work through the bundled V2 fallback, but the one-click
-                    // setup still installs the latest model - V2 is the compatibility fallback.
                     items.Add(new AiSetupCheckItem
                                   {
                                       Title = "Depth models",
                                       Result = AiCheckResult.Fixable,
-                                      Detail = "Operators fall back to the bundled V2 model. The DA3 models are faster and more accurate; " +
-                                               "the default DA3 Small (about 96 MB) is installed by Download defaults.",
+                                      Detail = "A depth model is already present, but not a store-managed one. " +
+                                               "The default DA3 Small (about 96 MB) is installed by Download defaults.",
                                       EntryToInstall = defaultEntry,
                                   });
                 }
@@ -241,14 +238,22 @@ internal static class AiSetupChecker
                 }
                 else
                 {
+                    var checkpoint = AiModelCatalog.ForFamily(AiModelFamily.StreamDiffusion)
+                                                   .FirstOrDefault(e => e.Id == "streamdiffusion-v2-checkpoint");
                     items.Add(new AiSetupCheckItem
                                   {
                                       Title = "Diffusion models",
                                       Result = AiCheckResult.Fixable,
-                                      Detail = "No usable ONNX export found. [StreamDiffusion] cannot start without one. " +
-                                               "Recommended: a StreamDiffusion V2 export (see Operators/StreamDiffusion/tools). " +
-                                               "Quick start: SD-Turbo, about 2.5 GB, via Download defaults.",
-                                      EntryToInstall = defaultEntry,
+                                      Detail = checkpoint is { } entry && entry.IsInstalled()
+                                                   ? "The StreamDiffusion V2 checkpoint is installed in " +
+                                                     checkpoint.StoreDirectory +
+                                                     ". Run the export scripts in Operators/StreamDiffusion/tools/streamdiffusionv2 " +
+                                                     "against it (see the README there) and put the finished export into " +
+                                                     AiModelSettings.FamilyDirectory(AiModelSettings.StreamDiffusionFamilyFolder) +
+                                                     " - the operator finds it on its own."
+                                                   : "No usable ONNX export found. [StreamDiffusion] cannot start without one. " +
+                                                     "Download the StreamDiffusion V2 checkpoint in the model browser, then run the export " +
+                                                     "scripts in Operators/StreamDiffusion/tools/streamdiffusionv2 - the result is found automatically.",
                                   });
                 }
 
@@ -273,11 +278,7 @@ internal static class AiSetupChecker
                                      .Select(i => i.EntryToInstall!)
                                      .ToList();
 
-            // MediaPipe can miss several entries at once; queue them all
-            var pipeMissing = LastResults.Where(i => i.Title == "MediaPipe models" && i.Result == AiCheckResult.Fixable)
-                                         .SelectMany(_ => AiModelCatalog.ForFamily(AiModelFamily.MediaPipe)
-                                                                        .Where(e => !e.RequiresLocalExport && !e.IsAvailable()));
-            pending = pending.Union(pipeMissing).ToList();
+            // MediaPipe ships bundled with TiXL and never auto-downloads
 
             foreach (var entry in pending)
             {
@@ -306,10 +307,10 @@ internal static class AiSetupChecker
         return Directory.EnumerateFiles(folder, "*.onnx").Any();
     }
 
-    /** The DepthAnything package can ship a small model; the operators fall back to it. */
+    /** The DepthAnything package can ship a small DA3 model; the operators fall back to it. */
     private static bool HasShippedDepthModel()
     {
-        foreach (var shippedName in new[] { "depth-anything-v2-small-fp16.onnx", "da3-small-fp16.onnx", "da3-small.onnx" })
+        foreach (var shippedName in new[] { "da3-small-fp16.onnx", "da3-small.onnx" })
         {
             if (ModelCatalogEntry.TryResolveShippedFile(AiModelFamily.DepthAnything, shippedName, out _))
                 return true;
@@ -318,7 +319,7 @@ internal static class AiSetupChecker
         return false;
     }
 
-    /** Any folder in the store that satisfies the SD or the V2 file layout. */
+    /** Any folder in the store that satisfies the V2 export file layout. */
     private static string? FindUsableExport()
     {
         var familyDirectory = AiModelSettings.FamilyDirectory(AiModelSettings.StreamDiffusionFamilyFolder);
@@ -328,11 +329,6 @@ internal static class AiSetupChecker
         foreach (var directory in Directory.GetDirectories(familyDirectory))
         {
             if (V2RequiredFiles.All(f => File.Exists(Path.Combine(directory, f))))
-                return directory;
-
-            if (SdRequiredFiles.All(f => File.Exists(Path.Combine(directory, f)))
-                && (File.Exists(Path.Combine(directory, "tokenizer.json"))
-                    || (File.Exists(Path.Combine(directory, "vocab.json")) && File.Exists(Path.Combine(directory, "merges.txt")))))
                 return directory;
         }
 

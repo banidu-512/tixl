@@ -1,7 +1,7 @@
 {
   "FormatVersion": 3,
   "Id": "d9057671-ba90-47c5-bfaa-c9c53b3abf90"/*StreamDiffusionExampleImg2ImgRestyle*/,
-  "Description": "Transforms an image with a prompt. Strength controls how far the result moves away from the input: 0 keeps the image, 1 replaces it. The export needs vae_encoder.onnx for img2img.",
+  "Description": "Transforms an image with a prompt. Strength controls how far the result moves away from the input: 0 keeps the image, 1 replaces it. Point ModelPath at a StreamDiffusion V2 export folder.",
   "SymbolTags": "10",
   "InputUis": [
     {
@@ -10,7 +10,7 @@
         "X": -620.0,
         "Y": -60.0
       },
-      "Description": "Folder with the SD Turbo ONNX export.",
+      "Description": "Folder with a StreamDiffusion V2 ONNX export.",
       "Usage": "DirectoryPath"
     },
     {

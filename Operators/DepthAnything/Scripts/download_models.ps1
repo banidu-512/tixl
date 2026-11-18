@@ -1,5 +1,5 @@
 ﻿# DepthAnything Model Download Script
-# Downloads the ONNX models for the DepthAnything operator: Depth Anything 3 (preferred) and Depth Anything V2.
+# Downloads the Depth Anything 3 ONNX models for the DepthAnything operator.
 # Pass model file names to download only those, e.g. .\download_models.ps1 da3-small.onnx
 
 param([string[]]$Only = @())
@@ -26,9 +26,8 @@ $Models = @(
     @{Name="da3-base-fp16.onnx"; Url="https://huggingface.co/Heliosoph/da3-base-onnx/resolve/main/model_fp16.onnx"; ExpectedMb=198; Required=$false},
     @{Name="da3-mono-large-int8.onnx"; Url="https://huggingface.co/ohaiibuzzle/DA3-ONNX/resolve/main/da3mono_l_504x378_int8.onnx"; ExpectedMb=431; Required=$false},
     @{Name="da3-metric-large-fp16.onnx"; Url="https://huggingface.co/Heliosoph/da3metric-large-onnx/resolve/main/model_fp16.onnx"; ExpectedMb=670; Required=$false},
-    @{Name="depth-anything-v2-small-fp16.onnx"; Url="$BaseUrl/depth-anything-v2-small/resolve/main/onnx/model_fp16.onnx"; ExpectedMb=50; Required=$false},
-    @{Name="depth-anything-v2-base-fp16.onnx"; Url="$BaseUrl/depth-anything-v2-base/resolve/main/onnx/model_fp16.onnx"; ExpectedMb=194; Required=$false},
-    @{Name="depth-anything-v2-large-fp16.onnx"; Url="$BaseUrl/depth-anything-v2-large/resolve/main/onnx/model_fp16.onnx"; ExpectedMb=672; Required=$false}
+    @{Name="da3-large.onnx"; Url="https://huggingface.co/zerochocobo/DepthAnything3_ONNX/resolve/main/da3_large_1036.onnx"; ExpectedMb=1287; Required=$false},
+    @{Name="da3-mono-large-fp32.onnx"; Url="https://huggingface.co/ohaiibuzzle/DA3-ONNX/resolve/main/da3mono_l_504x378.onnx"; ExpectedMb=1275; Required=$false}
 )
 
 # Create Assets directory

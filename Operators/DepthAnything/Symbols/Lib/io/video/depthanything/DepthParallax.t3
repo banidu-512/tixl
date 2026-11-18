@@ -11,10 +11,6 @@
       "DefaultValue": 16
     },
     {
-      "Id": "283df5a1-c4e6-481b-b9ca-f5179c24e60b"/*DepthIsDisparity*/,
-      "DefaultValue": false
-    },
-    {
       "Id": "b16c8e3a-5d7f-41a4-82b3-8ea02b5d7f94"/*ImageTexture*/,
       "DefaultValue": null
     },

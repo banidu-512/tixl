@@ -38,9 +38,28 @@ internal static class AiModelFamilyExtension
             AiModelFamily.MediaPipe => "Face, hand, pose tracking and segmentation ([Face…], [Hand…], [Pose…] operators)",
             _ => string.Empty,
         };
+
+    /** The longer text the setup wizard shows when the family row is hovered. */
+    public static string Details(this AiModelFamily family) => family switch
+        {
+            AiModelFamily.DepthAnything =>
+                "Turns any image or live camera feed into a depth map, so you can displace geometry, build point clouds, " +
+                "fake depth of field or key by distance. Usually one model is enough; pick a bigger one only if you need finer edges.",
+            AiModelFamily.StreamDiffusion =>
+                "Temporally stable realtime video-to-video diffusion (the StreamDiffusion V2 Wan2.1 model). The operator runs " +
+                "an ONNX export you produce once with the bundled scripts; a checkpoint download in the browser feeds them.",
+            AiModelFamily.MediaPipe =>
+                "Google's lightweight trackers for faces, hands, bodies, gestures, objects and person segmentation. " +
+                "Small files that run on the CPU, most of them already ship with TiXL.",
+            _ => string.Empty,
+        };
 }
 
 /// <summary>One file of a catalog entry, downloaded to a fixed name inside the family's store folder.</summary>
+/// <param name="ExpectedSizeBytes">
+/// Size of the file at the source. Used for progress and the disk-space estimate; the download itself is
+/// verified against the server's Content-Length, so a slightly outdated value here never fails an install.
+/// </param>
 internal sealed record CatalogFile(string Url, string TargetFileName, long ExpectedSizeBytes);
 
 /// <summary>
@@ -52,7 +71,22 @@ internal sealed class ModelCatalogEntry
     public required string Id { get; init; }
     public required AiModelFamily Family { get; init; }
     public required string DisplayName { get; init; }
+
+    /** One line, shown under the name in the model browser. */
     public string Description { get; init; } = "";
+
+    /** A few sentences for the setup wizard's description pane: what it is good for and when to pick it. */
+    public string Details { get; init; } = "";
+
+    /** The operators that use this model, e.g. "[DepthAnything]". */
+    public string UsedBy { get; init; } = "";
+
+    /** Relative ratings 1..5 within the family, shown as bars in the setup wizard. 0 hides the rating. */
+    public int Speed { get; init; }
+    public int Quality { get; init; }
+
+    /** Rough hardware hint, e.g. "Any GPU" or "NVIDIA, 8 GB VRAM". */
+    public string Hardware { get; init; } = "";
 
     /** Empty for entries that are only listed (installed with local export tooling). */
     public IReadOnlyList<CatalogFile> Files { get; init; } = [];
@@ -63,11 +97,19 @@ internal sealed class ModelCatalogEntry
     /** Installed as the family's default by the one-click setup. */
     public bool IsDefault { get; init; }
 
+    /** Part of the "Recommended" setup type of the wizard. */
+    public bool IsRecommended { get; init; }
+
+    /** Part of the "Minimal" setup type of the wizard: the smallest set that makes each light family work. */
+    public bool IsMinimal { get; init; }
+
     /** Not a download: the row shows how the export is produced locally. */
     public bool RequiresLocalExport { get; init; }
 
     /** When true, presence is checked against the packaged assets too (MediaPipe models ship with TiXL). */
     public bool ShippedWithTiXl { get; init; }
+
+    public bool IsDownloadable => !RequiresLocalExport && Files.Count > 0;
 
     /**
      * Subfolder of the family directory the files install into. Families of single model files
@@ -111,10 +153,23 @@ internal sealed class ModelCatalogEntry
         if (IsInstalled())
             return true;
 
-        if (!ShippedWithTiXl)
+        if (!ShippedWithTiXl || Files.Count == 0)
             return false;
 
         return TryResolveShippedFile(Family, Files[0].TargetFileName, out _);
+    }
+
+    /** Bytes still to download: files already in the store don't count. */
+    public long RemainingDownloadBytes()
+    {
+        var remaining = 0L;
+        foreach (var file in Files)
+        {
+            if (!File.Exists(TargetPath(file.TargetFileName)))
+                remaining += file.ExpectedSizeBytes;
+        }
+
+        return remaining;
     }
 
     /** Checks the packaged assets through the asset registry, as the operators do. */
@@ -139,8 +194,8 @@ internal sealed class ModelCatalogEntry
 }
 
 /// <summary>
-/// The models known to the settings window's browser. URLs are checked against the download script
-/// shipped with the DepthAnything package and Google's MediaPipe model bucket; every entry must be
+/// The models known to the settings window's browser and the setup wizard. URLs and sizes are checked
+/// against the HuggingFace file listings and Google's MediaPipe model bucket; every entry must be
 /// reachable without authentication.
 /// </summary>
 internal static class AiModelCatalog
@@ -148,6 +203,9 @@ internal static class AiModelCatalog
     private const string HuggingFace = "https://huggingface.co";
     private const string MediaPipeModels = "https://storage.googleapis.com/mediapipe-models";
     private const string MediaPipeAssets = "https://storage.googleapis.com/mediapipe-assets";
+
+    private const long KB = 1024;
+    private const long MB = 1024 * 1024;
 
     public static readonly IReadOnlyList<ModelCatalogEntry> Entries =
     [
@@ -158,11 +216,17 @@ internal static class AiModelCatalog
             Family = AiModelFamily.DepthAnything,
             DisplayName = "Depth Anything 3 – Small",
             Description = "Fastest DA3 model. Recommended default for interactive depth.",
-            TotalSizeBytes = 96 * 1024 * 1024,
+            Details = "The best starting point. Runs at full frame rate on almost any GPU and gives clean, stable depth " +
+                      "for live camera input, displacement and point clouds.",
+            UsedBy = "[DepthAnything]",
+            Speed = 5, Quality = 3,
+            Hardware = "Any GPU, about 1 GB VRAM",
+            TotalSizeBytes = 100_704_575,
             IsDefault = true,
+            IsRecommended = true,
             Files =
             [
-                new($"{HuggingFace}/zerochocobo/DepthAnything3_ONNX/resolve/main/da3_small.onnx", "da3-small.onnx", 96 * 1024 * 1024),
+                new($"{HuggingFace}/zerochocobo/DepthAnything3_ONNX/resolve/main/da3_small.onnx", "da3-small.onnx", 100_704_575),
             ],
         },
         new()
@@ -170,11 +234,17 @@ internal static class AiModelCatalog
             Id = "da3-small-int8",
             Family = AiModelFamily.DepthAnything,
             DisplayName = "Depth Anything 3 – Small (int8)",
-            Description = "Quantized small model; lower quality, a quarter of the download.",
-            TotalSizeBytes = 37 * 1024 * 1024,
+            Description = "Quantized small model; lower quality, a third of the download.",
+            Details = "Compressed version of the Small model. Choose it for laptops, slow connections or CPU-only machines; " +
+                      "edges are a little softer and flatter areas can shimmer.",
+            UsedBy = "[DepthAnything]",
+            Speed = 5, Quality = 2,
+            Hardware = "Any GPU or CPU",
+            TotalSizeBytes = 37_027_601,
+            IsMinimal = true,
             Files =
             [
-                new($"{HuggingFace}/ohaiibuzzle/DA3-ONNX/resolve/main/da3_s_504x378_int8.onnx", "da3-small-int8.onnx", 37 * 1024 * 1024),
+                new($"{HuggingFace}/ohaiibuzzle/DA3-ONNX/resolve/main/da3_s_504x378_int8.onnx", "da3-small-int8.onnx", 37_027_601),
             ],
         },
         new()
@@ -183,10 +253,15 @@ internal static class AiModelCatalog
             Family = AiModelFamily.DepthAnything,
             DisplayName = "Depth Anything 3 – Base (fp16)",
             Description = "More detail than Small, still realtime on most GPUs.",
-            TotalSizeBytes = 198 * 1024 * 1024,
+            Details = "Noticeably sharper object boundaries and better separation of background layers than Small, at " +
+                      "roughly half its frame rate. A good upgrade for recorded footage or high-resolution output.",
+            UsedBy = "[DepthAnything]",
+            Speed = 4, Quality = 4,
+            Hardware = "Mid-range GPU, about 2 GB VRAM",
+            TotalSizeBytes = 207_235_996,
             Files =
             [
-                new($"{HuggingFace}/Heliosoph/da3-base-onnx/resolve/main/model_fp16.onnx", "da3-base-fp16.onnx", 198 * 1024 * 1024),
+                new($"{HuggingFace}/Heliosoph/da3-base-onnx/resolve/main/model_fp16.onnx", "da3-base-fp16.onnx", 207_235_996),
             ],
         },
         new()
@@ -195,10 +270,15 @@ internal static class AiModelCatalog
             Family = AiModelFamily.DepthAnything,
             DisplayName = "Depth Anything 3 – Mono Large (int8)",
             Description = "Large single-image model, quantized.",
-            TotalSizeBytes = 431 * 1024 * 1024,
+            Details = "The large model tuned for single images, compressed to int8. Very fine detail on hair, foliage and " +
+                      "thin structures; better suited to stills and offline renders than live input.",
+            UsedBy = "[DepthAnything]",
+            Speed = 2, Quality = 4,
+            Hardware = "Fast GPU, about 3 GB VRAM",
+            TotalSizeBytes = 431_206_981,
             Files =
             [
-                new($"{HuggingFace}/ohaiibuzzle/DA3-ONNX/resolve/main/da3mono_l_504x378_int8.onnx", "da3-mono-large-int8.onnx", 431 * 1024 * 1024),
+                new($"{HuggingFace}/ohaiibuzzle/DA3-ONNX/resolve/main/da3mono_l_504x378_int8.onnx", "da3-mono-large-int8.onnx", 431_206_981),
             ],
         },
         new()
@@ -207,46 +287,78 @@ internal static class AiModelCatalog
             Family = AiModelFamily.DepthAnything,
             DisplayName = "Depth Anything 3 – Metric Large (fp16)",
             Description = "Metric depth in meters; largest and slowest DA3 model.",
-            TotalSizeBytes = 670 * 1024 * 1024,
+            Details = "Outputs real distances in meters instead of relative depth, so values stay comparable between frames " +
+                      "and scenes. Pick it for measuring, room-scale projection mapping or matching a 3D scene's scale.",
+            UsedBy = "[DepthAnything]",
+            Speed = 1, Quality = 5,
+            Hardware = "High-end GPU, about 4 GB VRAM",
+            TotalSizeBytes = 669_065_321,
             Files =
             [
-                new($"{HuggingFace}/Heliosoph/da3metric-large-onnx/resolve/main/model_fp16.onnx", "da3-metric-large-fp16.onnx", 670 * 1024 * 1024),
+                new($"{HuggingFace}/Heliosoph/da3metric-large-onnx/resolve/main/model_fp16.onnx", "da3-metric-large-fp16.onnx", 669_065_321),
             ],
         },
         new()
         {
-            Id = "v2-small-fp16",
+            Id = "da3-large",
             Family = AiModelFamily.DepthAnything,
-            DisplayName = "Depth Anything V2 – Small (fp16)",
-            Description = "The classic V2 small export, kept for older compositions.",
-            TotalSizeBytes = 50 * 1024 * 1024,
+            DisplayName = "Depth Anything 3 – Large",
+            Description = "The 0.35B any-view model at 1036×1036; sharpest relative depth.",
+            Details = "The full-size DA3 Large encoder. Fine detail on hair, foliage and thin structures; better suited to " +
+                      "stills and offline renders than live input because of the large fixed input size.",
+            UsedBy = "[DepthAnything]",
+            Speed = 1, Quality = 5,
+            Hardware = "Fast GPU, about 4 GB VRAM",
+            TotalSizeBytes = 1_349_415_225,
             Files =
             [
-                new($"{HuggingFace}/onnx-community/depth-anything-v2-small/resolve/main/onnx/model_fp16.onnx", "depth-anything-v2-small-fp16.onnx", 50 * 1024 * 1024),
+                new($"{HuggingFace}/zerochocobo/DepthAnything3_ONNX/resolve/main/da3_large_1036.onnx", "da3-large.onnx", 1_349_415_225),
             ],
         },
         new()
         {
-            Id = "v2-base-fp16",
+            Id = "da3-giant-1.1",
             Family = AiModelFamily.DepthAnything,
-            DisplayName = "Depth Anything V2 – Base (fp16)",
-            Description = "The classic V2 base export, kept for older compositions.",
-            TotalSizeBytes = 194 * 1024 * 1024,
-            Files =
-            [
-                new($"{HuggingFace}/onnx-community/depth-anything-v2-base/resolve/main/onnx/model_fp16.onnx", "depth-anything-v2-base-fp16.onnx", 194 * 1024 * 1024),
-            ],
+            DisplayName = "Depth Anything 3 – Giant 1.1 (own export)",
+            Description = "The 1.15B any-view model; export locally with the bundled script.",
+            Details = "The largest Apache-quality any-view checkpoint line. No public ONNX export exists; run " +
+                      "Operators/DepthAnything/Scripts/export_da3_onnx.py once against the official weights " +
+                      "(depth-anything/DA3-GIANT-1.1) and the operator finds da3-giant-fp16.onnx in the model store.",
+            UsedBy = "[DepthAnything]",
+            Speed = 1, Quality = 5,
+            Hardware = "High-end GPU, 8 GB VRAM or more",
+            RequiresLocalExport = true,
         },
         new()
         {
-            Id = "v2-large-fp16",
+            Id = "da3-nested-giant-1.1",
             Family = AiModelFamily.DepthAnything,
-            DisplayName = "Depth Anything V2 – Large (fp16)",
-            Description = "The classic V2 large export, kept for older compositions.",
-            TotalSizeBytes = 672 * 1024 * 1024,
+            DisplayName = "Depth Anything 3 – Nested Giant 1.1 (own export)",
+            Description = "The 1.40B nested model with metric depth and sky segmentation; export locally.",
+            Details = "The full nested checkpoint (relative depth, metric depth, sky segmentation). No public ONNX export exists; run " +
+                      "Operators/DepthAnything/Scripts/export_da3_onnx.py once against the official weights " +
+                      "(depth-anything/DA3NESTED-GIANT-LARGE-1.1) and the operator finds da3-nested-giant-fp16.onnx in the model store. " +
+                      "The nested model's metric-depth and sky outputs are exported when the script runs in metric mode.",
+            UsedBy = "[DepthAnything]",
+            Speed = 1, Quality = 5,
+            Hardware = "High-end GPU, 8 GB VRAM or more",
+            RequiresLocalExport = true,
+        },
+        new()
+        {
+            Id = "da3-mono-large-fp32",
+            Family = AiModelFamily.DepthAnything,
+            DisplayName = "Depth Anything 3 – Mono Large (fp32)",
+            Description = "Large single-image model, full precision.",
+            Details = "The large model tuned for single images at full precision - the int8 variant trades a little quality " +
+                      "for three quarters less download and faster inference.",
+            UsedBy = "[DepthAnything]",
+            Speed = 1, Quality = 5,
+            Hardware = "Fast GPU, about 4 GB VRAM",
+            TotalSizeBytes = 1_336_957_133,
             Files =
             [
-                new($"{HuggingFace}/onnx-community/depth-anything-v2-large/resolve/main/onnx/model_fp16.onnx", "depth-anything-v2-large-fp16.onnx", 672 * 1024 * 1024),
+                new($"{HuggingFace}/ohaiibuzzle/DA3-ONNX/resolve/main/da3mono_l_504x378.onnx", "da3-mono-large-fp32.onnx", 1_336_957_133),
             ],
         },
 
@@ -255,45 +367,38 @@ internal static class AiModelCatalog
         {
             Id = "streamdiffusion-v2",
             Family = AiModelFamily.StreamDiffusion,
-            DisplayName = "StreamDiffusion V2 (recommended)",
+            DisplayName = "StreamDiffusion V2 (own export)",
             Description = "Causal Wan2.1 1.3B video model - the latest and best variant. Produces its export with the scripts in Operators/StreamDiffusion/tools/streamdiffusionv2.",
+            Details = "Temporally stable video-to-video diffusion: far less flicker than the image models. It can't be downloaded " +
+                      "ready-made; run the export scripts in Operators/StreamDiffusion/tools/streamdiffusionv2 once, and TiXL finds the result in the model store.",
+            UsedBy = "[StreamDiffusion]",
+            Speed = 2, Quality = 5,
+            Hardware = "NVIDIA, 12 GB VRAM or more",
             RequiresLocalExport = true,
         },
         new()
         {
-            Id = "sd-turbo-onnx",
+            Id = "streamdiffusion-v2-checkpoint",
             Family = AiModelFamily.StreamDiffusion,
-            DisplayName = "SD-Turbo (ONNX, fp16)",
-            Description = "Official ONNX Runtime export, per-component. 1 step, realtime capable.",
-            TotalSizeBytes = 2_462L * 1024 * 1024,
-            IsDefault = true,
+            DisplayName = "StreamDiffusion V2 checkpoint (for export)",
+            Description = "The 1.3B causal DMD checkpoint plus the T5 text encoder and tokenizer the export scripts consume.",
+            Details = "Everything the export scripts in Operators/StreamDiffusion/tools/streamdiffusionv2 need except the TAEHV " +
+                      "autoencoder (taew2_1.pth, from the taehv GitHub project). Download this, then run: export-dit.py --ckpt model.pt, " +
+                      "export-text-encoder.py --t5 models_t5_umt5-xxl-enc-bf16.pth, export-vae.py --taehv taew2_1.pth. " +
+                      "A 14B checkpoint also exists upstream, but the export tooling covers the 1.3B model.",
+            UsedBy = "[StreamDiffusion]",
+            Speed = 2, Quality = 5,
+            Hardware = "NVIDIA, 12 GB VRAM or more",
+            // Part of the wizard's recommended set so one flow installs everything; the row shows
+            // the 17 GB size and can be unticked.
+            IsRecommended = true,
+            TotalSizeBytes = 5_676_282_858L + 11_361_920_418L + 16_837_417,
             Files =
             [
-                new($"{HuggingFace}/onnxruntime/sd-turbo/resolve/main/unet/model.onnx", "unet.onnx", 1_652 * 1024 * 1024),
-                new($"{HuggingFace}/onnxruntime/sd-turbo/resolve/main/text_encoder/model.onnx", "text_encoder.onnx", 649 * 1024 * 1024),
-                new($"{HuggingFace}/onnxruntime/sd-turbo/resolve/main/vae_decoder/model.onnx", "vae_decoder.onnx", 95 * 1024 * 1024),
-                new($"{HuggingFace}/onnxruntime/sd-turbo/resolve/main/vae_encoder/model.onnx", "vae_encoder.onnx", 65 * 1024 * 1024),
-                new($"{HuggingFace}/onnxruntime/sd-turbo/resolve/main/tokenizer/vocab.json", "vocab.json", 1 * 1024 * 1024),
-                new($"{HuggingFace}/onnxruntime/sd-turbo/resolve/main/tokenizer/merges.txt", "merges.txt", 512 * 1024),
+                new($"{HuggingFace}/jerryfeng/StreamDiffusionV2/resolve/main/wan_causal_dmd_v2v/model.pt", "model.pt", 5_676_282_858),
+                new($"{HuggingFace}/Wan-AI/Wan2.1-T2V-1.3B/resolve/main/models_t5_umt5-xxl-enc-bf16.pth", "models_t5_umt5-xxl-enc-bf16.pth", 11_361_920_418),
+                new($"{HuggingFace}/Wan-AI/Wan2.1-T2V-1.3B/resolve/main/google/umt5-xxl/tokenizer.json", "tokenizer.json", 16_837_417),
             ],
-        },
-
-        // Exports that have to be produced locally; listed so the browser answers "what works".
-        new()
-        {
-            Id = "sd15-onnx",
-            Family = AiModelFamily.StreamDiffusion,
-            DisplayName = "SD 1.5 (own export)",
-            Description = "Export with optimum: optimum-cli export onnx --model stable-diffusion-v1-5 --task stable-diffusion <folder>. Multi-step, use Guidance 7.5+.",
-            RequiresLocalExport = true,
-        },
-        new()
-        {
-            Id = "sdxl-turbo-onnx",
-            Family = AiModelFamily.StreamDiffusion,
-            DisplayName = "SDXL-Turbo (not usable yet)",
-            Description = "ONNX exports exist, but the pipeline loads a single text encoder, so SDXL's second encoder is not wired up. Shown for completeness; no download.",
-            RequiresLocalExport = true,
         },
 
         // ---------------------------------------------------------------- MediaPipe
@@ -303,11 +408,18 @@ internal static class AiModelCatalog
             Family = AiModelFamily.MediaPipe,
             DisplayName = "Face Landmarker",
             Description = "Used by [FaceLandmarkDetection].",
-            TotalSizeBytes = 4 * 1024 * 1024,
+            Details = "Tracks 478 points on each face plus blendshapes (smile, blink, jaw open…). Use it to drive masks, " +
+                      "face filters or animation from facial expressions.",
+            UsedBy = "[FaceLandmarkDetection]",
+            Speed = 4, Quality = 4,
+            Hardware = "CPU",
+            TotalSizeBytes = 4 * MB,
             ShippedWithTiXl = true,
+            IsRecommended = true,
+            IsMinimal = true,
             Files =
             [
-                new($"{MediaPipeModels}/face_landmarker/face_landmarker/float16/1/face_landmarker.task", "face_landmarker.task", 4 * 1024 * 1024),
+                new($"{MediaPipeModels}/face_landmarker/face_landmarker/float16/1/face_landmarker.task", "face_landmarker.task", 4 * MB),
             ],
         },
         new()
@@ -316,11 +428,18 @@ internal static class AiModelCatalog
             Family = AiModelFamily.MediaPipe,
             DisplayName = "Hand Landmarker",
             Description = "Used by [HandLandmarkDetection] and [GestureRecognition].",
-            TotalSizeBytes = 8 * 1024 * 1024,
+            Details = "Finds up to several hands and tracks 21 joints on each, in 2D and 3D. Good for pinch, point and " +
+                      "air-drawing interactions.",
+            UsedBy = "[HandLandmarkDetection], [GestureRecognition]",
+            Speed = 4, Quality = 4,
+            Hardware = "CPU",
+            TotalSizeBytes = 8 * MB,
             ShippedWithTiXl = true,
+            IsRecommended = true,
+            IsMinimal = true,
             Files =
             [
-                new($"{MediaPipeModels}/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task", "hand_landmarker.task", 8 * 1024 * 1024),
+                new($"{MediaPipeModels}/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task", "hand_landmarker.task", 8 * MB),
             ],
         },
         new()
@@ -329,11 +448,18 @@ internal static class AiModelCatalog
             Family = AiModelFamily.MediaPipe,
             DisplayName = "Pose Landmarker",
             Description = "Used by [PoseLandmarkDetection].",
-            TotalSizeBytes = 9 * 1024 * 1024,
+            Details = "Full-body tracking with 33 joints. Drive skeletons, particles or effects from a dancer's or " +
+                      "performer's movement.",
+            UsedBy = "[PoseLandmarkDetection]",
+            Speed = 3, Quality = 4,
+            Hardware = "CPU",
+            TotalSizeBytes = 9 * MB,
             ShippedWithTiXl = true,
+            IsRecommended = true,
+            IsMinimal = true,
             Files =
             [
-                new($"{MediaPipeModels}/pose_landmarker/pose_landmarker_full/float16/latest/pose_landmarker_full.task", "pose_landmarker.task", 9 * 1024 * 1024),
+                new($"{MediaPipeModels}/pose_landmarker/pose_landmarker_full/float16/latest/pose_landmarker_full.task", "pose_landmarker.task", 9 * MB),
             ],
         },
         new()
@@ -342,11 +468,17 @@ internal static class AiModelCatalog
             Family = AiModelFamily.MediaPipe,
             DisplayName = "Gesture Recognizer",
             Description = "Used by [GestureRecognition].",
-            TotalSizeBytes = 8 * 1024 * 1024,
+            Details = "Recognizes common hand gestures (open palm, fist, thumbs up, victory, pointing…) so you can trigger " +
+                      "cues without touching a controller.",
+            UsedBy = "[GestureRecognition]",
+            Speed = 4, Quality = 3,
+            Hardware = "CPU",
+            TotalSizeBytes = 8 * MB,
             ShippedWithTiXl = true,
+            IsRecommended = true,
             Files =
             [
-                new($"{MediaPipeModels}/gesture_recognizer/gesture_recognizer/float16/1/gesture_recognizer.task", "gesture_recognizer.task", 8 * 1024 * 1024),
+                new($"{MediaPipeModels}/gesture_recognizer/gesture_recognizer/float16/1/gesture_recognizer.task", "gesture_recognizer.task", 8 * MB),
             ],
         },
         new()
@@ -355,11 +487,16 @@ internal static class AiModelCatalog
             Family = AiModelFamily.MediaPipe,
             DisplayName = "Face Detector (short range)",
             Description = "Used by [FaceDetection].",
-            TotalSizeBytes = 230 * 1024,
+            Details = "Very fast face boxes for faces close to the camera (within about 2 m), e.g. a webcam at a desk or an installation kiosk.",
+            UsedBy = "[FaceDetection]",
+            Speed = 5, Quality = 3,
+            Hardware = "CPU",
+            TotalSizeBytes = 230 * KB,
             ShippedWithTiXl = true,
+            IsRecommended = true,
             Files =
             [
-                new($"{MediaPipeAssets}/face_detection_short_range.tflite", "blaze_face_short_range.tflite", 230 * 1024),
+                new($"{MediaPipeAssets}/face_detection_short_range.tflite", "blaze_face_short_range.tflite", 230 * KB),
             ],
         },
         new()
@@ -368,11 +505,15 @@ internal static class AiModelCatalog
             Family = AiModelFamily.MediaPipe,
             DisplayName = "Face Detector (full range)",
             Description = "Full-range face detection; works at larger distances than the short-range model.",
-            TotalSizeBytes = 1084 * 1024,
+            Details = "Finds smaller faces further from the camera (up to about 5 m), for stages and rooms.",
+            UsedBy = "[FaceDetection]",
+            Speed = 4, Quality = 4,
+            Hardware = "CPU",
+            TotalSizeBytes = 1084 * KB,
             ShippedWithTiXl = true,
             Files =
             [
-                new($"{MediaPipeAssets}/face_detection_full_range.tflite", "face_detection_full_range.tflite", 1084 * 1024),
+                new($"{MediaPipeAssets}/face_detection_full_range.tflite", "face_detection_full_range.tflite", 1084 * KB),
             ],
         },
         new()
@@ -381,11 +522,17 @@ internal static class AiModelCatalog
             Family = AiModelFamily.MediaPipe,
             DisplayName = "Selfie Segmenter",
             Description = "Used by [ImageSegmentation].",
-            TotalSizeBytes = 256 * 1024,
+            Details = "Cuts people out of the background in realtime: a green screen without the green screen.",
+            UsedBy = "[ImageSegmentation]",
+            Speed = 5, Quality = 3,
+            Hardware = "CPU",
+            TotalSizeBytes = 256 * KB,
             ShippedWithTiXl = true,
+            IsRecommended = true,
+            IsMinimal = true,
             Files =
             [
-                new($"{MediaPipeModels}/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite", "selfie_segmenter.tflite", 256 * 1024),
+                new($"{MediaPipeModels}/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite", "selfie_segmenter.tflite", 256 * KB),
             ],
         },
         new()
@@ -394,11 +541,15 @@ internal static class AiModelCatalog
             Family = AiModelFamily.MediaPipe,
             DisplayName = "Selfie Segmenter (landscape)",
             Description = "Used by [ImageSegmentation] in landscape mode.",
-            TotalSizeBytes = 256 * 1024,
+            Details = "The same person cut-out, tuned for 16:9 camera input. Slightly cleaner edges on wide shots.",
+            UsedBy = "[ImageSegmentation]",
+            Speed = 5, Quality = 3,
+            Hardware = "CPU",
+            TotalSizeBytes = 256 * KB,
             ShippedWithTiXl = true,
             Files =
             [
-                new($"{MediaPipeModels}/image_segmenter/selfie_segmenter_landscape/float16/latest/selfie_segmenter_landscape.tflite", "selfie_segmenter_landscape.tflite", 256 * 1024),
+                new($"{MediaPipeModels}/image_segmenter/selfie_segmenter_landscape/float16/latest/selfie_segmenter_landscape.tflite", "selfie_segmenter_landscape.tflite", 256 * KB),
             ],
         },
         new()
@@ -407,11 +558,16 @@ internal static class AiModelCatalog
             Family = AiModelFamily.MediaPipe,
             DisplayName = "Selfie Multiclass Segmenter",
             Description = "Used by [ImageSegmentation]; segments hair, skin, clothes and background.",
-            TotalSizeBytes = 16 * 1024 * 1024,
+            Details = "Separates hair, face skin, body skin, clothes and accessories into their own masks, so each can be " +
+                      "recolored or affected separately.",
+            UsedBy = "[ImageSegmentation]",
+            Speed = 3, Quality = 4,
+            Hardware = "CPU",
+            TotalSizeBytes = 16 * MB,
             ShippedWithTiXl = true,
             Files =
             [
-                new($"{MediaPipeModels}/image_segmenter/selfie_multiclass_256x256/float32/latest/selfie_multiclass_256x256.tflite", "selfie_multiclass_256x256.tflite", 16 * 1024 * 1024),
+                new($"{MediaPipeModels}/image_segmenter/selfie_multiclass_256x256/float32/latest/selfie_multiclass_256x256.tflite", "selfie_multiclass_256x256.tflite", 16 * MB),
             ],
         },
         new()
@@ -420,11 +576,16 @@ internal static class AiModelCatalog
             Family = AiModelFamily.MediaPipe,
             DisplayName = "Object Detector (EfficientDet Lite0)",
             Description = "Used by [ObjectDetection].",
-            TotalSizeBytes = 8 * 1024 * 1024,
+            Details = "Detects 80 everyday object classes (people, cars, cups, phones…) with bounding boxes. The fast default.",
+            UsedBy = "[ObjectDetection]",
+            Speed = 4, Quality = 3,
+            Hardware = "CPU",
+            TotalSizeBytes = 8 * MB,
             ShippedWithTiXl = true,
+            IsRecommended = true,
             Files =
             [
-                new($"{MediaPipeModels}/object_detector/efficientdet_lite0/float32/latest/efficientdet_lite0.tflite", "efficientdet_lite0.tflite", 8 * 1024 * 1024),
+                new($"{MediaPipeModels}/object_detector/efficientdet_lite0/float32/latest/efficientdet_lite0.tflite", "efficientdet_lite0.tflite", 8 * MB),
             ],
         },
         new()
@@ -433,11 +594,15 @@ internal static class AiModelCatalog
             Family = AiModelFamily.MediaPipe,
             DisplayName = "Object Detector (EfficientDet Lite2)",
             Description = "Used by [ObjectDetection]; more accuracy than Lite0, slower.",
-            TotalSizeBytes = 8 * 1024 * 1024,
+            Details = "Finds smaller and partly hidden objects more reliably than Lite0, at about half its speed.",
+            UsedBy = "[ObjectDetection]",
+            Speed = 2, Quality = 4,
+            Hardware = "CPU",
+            TotalSizeBytes = 8 * MB,
             ShippedWithTiXl = true,
             Files =
             [
-                new($"{MediaPipeModels}/object_detector/efficientdet_lite2/float32/latest/efficientdet_lite2.tflite", "efficientdet_lite2.tflite", 8 * 1024 * 1024),
+                new($"{MediaPipeModels}/object_detector/efficientdet_lite2/float32/latest/efficientdet_lite2.tflite", "efficientdet_lite2.tflite", 8 * MB),
             ],
         },
         new()
@@ -446,11 +611,15 @@ internal static class AiModelCatalog
             Family = AiModelFamily.MediaPipe,
             DisplayName = "Object Detector (SSD MobileNet v2)",
             Description = "Alternative object detection model for [ObjectDetection].",
-            TotalSizeBytes = 7 * 1024 * 1024,
+            Details = "An older, very light detector. Useful on slow machines when Lite0 is still too heavy.",
+            UsedBy = "[ObjectDetection]",
+            Speed = 5, Quality = 2,
+            Hardware = "CPU",
+            TotalSizeBytes = 7 * MB,
             ShippedWithTiXl = true,
             Files =
             [
-                new($"{MediaPipeModels}/object_detector/ssd_mobilenet_v2/float32/latest/ssd_mobilenet_v2.tflite", "ssd_mobilenet_v2.tflite", 7 * 1024 * 1024),
+                new($"{MediaPipeModels}/object_detector/ssd_mobilenet_v2/float32/latest/ssd_mobilenet_v2.tflite", "ssd_mobilenet_v2.tflite", 7 * MB),
             ],
         },
         new()
@@ -459,23 +628,48 @@ internal static class AiModelCatalog
             Family = AiModelFamily.MediaPipe,
             DisplayName = "DeepLab v3 Segmenter",
             Description = "Used by [ImageSegmentation]; general-purpose segmentation.",
-            TotalSizeBytes = 3 * 1024 * 1024,
+            Details = "Segments 21 scene classes (person, car, animal, furniture…) instead of only people.",
+            UsedBy = "[ImageSegmentation]",
+            Speed = 3, Quality = 3,
+            Hardware = "CPU",
+            TotalSizeBytes = 3 * MB,
             ShippedWithTiXl = true,
             Files =
             [
-                new($"{MediaPipeAssets}/deeplabv3.tflite", "deeplabv3.tflite", 3 * 1024 * 1024),
+                new($"{MediaPipeAssets}/deeplabv3.tflite", "deeplabv3.tflite", 3 * MB),
             ],
         },
     ];
 
-    public static IEnumerable<ModelCatalogEntry> ForFamily(AiModelFamily family)
+    public static readonly AiModelFamily[] Families = Enum.GetValues<AiModelFamily>();
+
+    /**
+     * The families the settings page and the setup wizard manage. The MediaPipe models ship bundled
+     * with TiXL and need no setup, so they stay out of the model browser, the setup check and the wizard.
+     */
+    public static readonly AiModelFamily[] VisibleFamilies = [AiModelFamily.DepthAnything, AiModelFamily.StreamDiffusion];
+
+    /** Per-family index built once: the settings panel draws it every frame, so it must not iterate. */
+    private static readonly Dictionary<AiModelFamily, IReadOnlyList<ModelCatalogEntry>> _entriesByFamily = BuildFamilyIndex();
+
+    private static Dictionary<AiModelFamily, IReadOnlyList<ModelCatalogEntry>> BuildFamilyIndex()
     {
-        foreach (var entry in Entries)
+        var index = new Dictionary<AiModelFamily, IReadOnlyList<ModelCatalogEntry>>();
+        foreach (var family in Families)
         {
-            if (entry.Family == family)
-                yield return entry;
+            var list = new List<ModelCatalogEntry>();
+            foreach (var entry in Entries)
+            {
+                if (entry.Family == family)
+                    list.Add(entry);
+            }
+            index[family] = list;
         }
+        return index;
     }
+
+    public static IReadOnlyList<ModelCatalogEntry> ForFamily(AiModelFamily family)
+        => _entriesByFamily.TryGetValue(family, out var list) ? list : [];
 
     /** The entries the one-click setup downloads when missing: the fastest working model per family. */
     public static IEnumerable<ModelCatalogEntry> Defaults

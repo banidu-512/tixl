@@ -75,8 +75,8 @@ internal sealed class OnnxModelSession : IDisposable
         var chain = provider switch
         {
             ExecutionProvider.Cpu => new[] { ExecutionProvider.Cpu },
-            ExecutionProvider.DirectMl => new[] { ExecutionProvider.DirectMl, ExecutionProvider.Cuda, ExecutionProvider.CoreMl, ExecutionProvider.Cpu },
-            ExecutionProvider.Cuda => new[] { ExecutionProvider.Cuda, ExecutionProvider.CoreMl, ExecutionProvider.Cpu },
+            ExecutionProvider.DirectMl => new[] { ExecutionProvider.DirectMl, ExecutionProvider.TensorRt, ExecutionProvider.Cuda, ExecutionProvider.CoreMl, ExecutionProvider.Cpu },
+            ExecutionProvider.Cuda => new[] { ExecutionProvider.Cuda, ExecutionProvider.TensorRt, ExecutionProvider.CoreMl, ExecutionProvider.Cpu },
             ExecutionProvider.TensorRt => new[] { ExecutionProvider.TensorRt, ExecutionProvider.Cuda, ExecutionProvider.CoreMl, ExecutionProvider.Cpu },
             ExecutionProvider.CoreMl => new[] { ExecutionProvider.CoreMl, ExecutionProvider.Cpu },
             _ => new[] { ExecutionProvider.Cpu }

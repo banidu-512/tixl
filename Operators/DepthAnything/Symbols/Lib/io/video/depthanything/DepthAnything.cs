@@ -114,14 +114,13 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
     {
         public int DeclaredWidth;
         public int DeclaredHeight;
-        public bool IsV3;
         public bool IsMetric;
 
         /** uint8 NHWC input that the graph normalizes itself; otherwise float32 NCHW. */
         public bool InputIsBytes;
     }
 
-    private readonly record struct ModelFile(string Name, bool IsV3, bool IsMetric);
+    private readonly record struct ModelFile(string Name, bool IsMetric);
 
     // Everything a worker generation touches exclusively; isolates an exiting
     // worker from its replacement during model/provider switches
@@ -177,8 +176,12 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
         var inputTexture = InputTexture.GetValue(context);
         var enabled = Enabled.GetValue(context);
         var debug = Debug.GetValue(context);
-        var modelSize = (ModelSize)ModelSizeParam.GetValue(context);
+        var modelSize = NormalizeModelSize((ModelSize)ModelSizeParam.GetValue(context));
         var provider = (ExecutionProvider)ExecutionProviderParam.GetValue(context);
+
+        // A provider that cannot run on this OS (a saved CoreML on Windows, DirectML on Linux...)
+        // snaps onto the closest one that can, so the dropdown and the label always show a real option.
+        provider = NormalizeProviderForOs(provider);
 
         // The AI settings' DirectML preference flips the default provider on Windows,
         // e.g. for AMD/Intel machines without a usable CUDA stack. An explicit
@@ -199,6 +202,7 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
             _ => 0
         };
         var outputFormat = (DepthOutputFormat)OutputFormat.GetValue(context);
+        var normalization = (DepthNormalization)Normalization.GetValue(context);
         var enhanceContrast = EnhanceContrast.GetValue(context);
         var invertDepth = InvertDepth.GetValue(context);
         var matchRes = MatchInputResolution.GetValue(context);
@@ -206,11 +210,13 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
         _workerOutputFormat = outputFormat;
         _workerEnhanceContrast = enhanceContrast;
         _workerInvertDepth = invertDepth;
+        _workerPercentileNormalization = normalization == DepthNormalization.Percentile;
         _workerSmoothing = Math.Clamp(Smoothing.GetValue(context), 0f, MaxSmoothing);
         _workerFieldOfViewDegrees = Math.Clamp(FieldOfView.GetValue(context), 1f, 179f);
 
         // Store values for UI dropdowns
         _uiOutputFormat = (int)outputFormat;
+        _uiNormalization = (int)normalization;
         _uiModelSize = (int)modelSize;
         _uiInputResolution = (int)InputResolution.GetValue(context);
         _uiExecutionProvider = (int)provider;
@@ -588,8 +594,8 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
 
         return modelSize switch
         {
-            ModelSize.Small or ModelSize.SmallFp32 or ModelSize.SmallInt8 => 392,
-            ModelSize.Da3Small or ModelSize.Da3Base or ModelSize.Da3MonoLarge or ModelSize.Da3MetricLarge => 504,
+            ModelSize.Da3Small or ModelSize.Da3Base or ModelSize.Da3Large or ModelSize.Da3MonoLarge
+                or ModelSize.Da3MetricLarge or ModelSize.Da3Giant or ModelSize.Da3NestedGiant => 504,
             _ => DefaultInputSize
         };
     }
@@ -635,6 +641,7 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
     private volatile DepthOutputFormat _workerOutputFormat;
     private volatile bool _workerEnhanceContrast;
     private volatile bool _workerInvertDepth;
+    private volatile bool _workerPercentileNormalization;
     private volatile float _workerSmoothing;
     private volatile float _workerFieldOfViewDegrees;
 
@@ -670,6 +677,7 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
 
     // Stored values for UI dropdowns (updated each frame, read by UI thread)
     private int _uiOutputFormat;
+    private int _uiNormalization;
     private int _uiModelSize;
     private int _uiInputResolution;
     private int _uiExecutionProvider;
@@ -728,23 +736,33 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
         _pendingStatus = status;
     }
 
-    /** Candidate file names per model, in order of preference. A DA3 selection falls back to the V2 model of similar size. */
+    /**
+     * Candidate file names per model, in order of preference. Every model is DA3 now; the V2-era
+     * enum values are normalized onto their DA3 equivalents before this runs (see NormalizeModelSize).
+     */
     private static string[] GetModelCandidates(ModelSize modelSize)
     {
         return modelSize switch
         {
-            ModelSize.Small => ["depth-anything-v2-small-fp16.onnx"],
-            ModelSize.SmallFp32 => ["depth-anything-v2-small-fp32.onnx"],
-            ModelSize.SmallInt8 => ["depth-anything-v2-small-int8.onnx"],
-            ModelSize.Base => ["depth-anything-v2-base-fp16.onnx"],
-            ModelSize.Large => ["depth-anything-v2-large-fp16.onnx"],
-            ModelSize.Da3Small => ["da3-small-fp16.onnx", "da3-small.onnx", "da3-small-int8.onnx", "depth-anything-v2-small-fp16.onnx"],
-            ModelSize.Da3Base => ["da3-base-fp16.onnx", "da3-base.onnx", "depth-anything-v2-base-fp16.onnx"],
-            ModelSize.Da3MonoLarge => ["da3-mono-large-fp16.onnx", "da3-mono-large-int8.onnx", "depth-anything-v2-large-fp16.onnx"],
+            ModelSize.Da3Small => ["da3-small-fp16.onnx", "da3-small.onnx", "da3-small-int8.onnx"],
+            ModelSize.Da3Base => ["da3-base-fp16.onnx", "da3-base.onnx"],
+            ModelSize.Da3Large => ["da3-large-fp16.onnx", "da3-large.onnx"],
+            ModelSize.Da3MonoLarge => ["da3-mono-large-fp32.onnx", "da3-mono-large-fp16.onnx", "da3-mono-large-w8a16.onnx", "da3-mono-large-int8.onnx"],
             ModelSize.Da3MetricLarge => ["da3-metric-large-fp16.onnx"],
-            _ => ["depth-anything-v2-small-fp16.onnx"]
+            ModelSize.Da3Giant => ["da3-giant-fp16.onnx", "da3-giant.onnx"],
+            ModelSize.Da3NestedGiant => ["da3-nested-giant-fp16.onnx", "da3-nested-giant.onnx"],
+            _ => ["da3-small-fp16.onnx", "da3-small.onnx", "da3-small-int8.onnx"]
         };
     }
+
+    /** Legacy V2-era ModelSize values route onto their DA3 equivalents; only DA3 models remain. */
+    private static ModelSize NormalizeModelSize(ModelSize modelSize) => modelSize switch
+    {
+        ModelSize.Small or ModelSize.SmallFp32 or ModelSize.SmallInt8 => ModelSize.Da3Small,
+        ModelSize.Base => ModelSize.Da3Base,
+        ModelSize.Large => ModelSize.Da3MonoLarge,
+        _ => modelSize
+    };
 
     private ModelFile ResolveModelFile(ModelSize modelSize, bool debug, out string? modelPath)
     {
@@ -755,22 +773,12 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
             if (path == null)
                 continue;
 
-            var isV3 = candidate.StartsWith("da3-", StringComparison.Ordinal);
-            if (!isV3 && modelSize >= ModelSize.Da3Small)
-            {
-                // The enum is persisted in project files. A value from a newer build must not turn
-                // into an IndexOutOfRangeException on the evaluation thread.
-                var requestedName = Enum.IsDefined(typeof(ModelSize), modelSize) ? modelSize.ToString() : ((int)modelSize).ToString();
-                Log.Warning($"[DepthAnything] No Depth Anything 3 model installed for {requestedName} - using {candidate}. " +
-                            "Run Scripts/download_models.py in the DepthAnything package to install one.", this);
-            }
-
             modelPath = path;
-            return new ModelFile(candidate, isV3, candidate.Contains("metric", StringComparison.Ordinal));
+            return new ModelFile(candidate, candidate.Contains("metric", StringComparison.Ordinal));
         }
 
         var status = $"Model not found: {candidates[0]}";
-        if (debug) Log.Error($"[DepthAnything] {status}. Place the model in Assets/ folder.", this);
+        if (debug) Log.Error($"[DepthAnything] {status}. Place it in the model store (Settings > AI Models) or the package's Assets/ folder.", this);
         Status.Value = status;
         // Update would otherwise overwrite this with a generic init-failure message on the same frame
         _initFailureMessage = status;
@@ -972,7 +980,6 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
                    {
                        DeclaredHeight = dimensions[heightIndex] > 0 ? dimensions[heightIndex] : 0,
                        DeclaredWidth = dimensions[heightIndex + 1] > 0 ? dimensions[heightIndex + 1] : 0,
-                       IsV3 = modelFile.IsV3,
                        IsMetric = modelFile.IsMetric,
                        InputIsBytes = isBytePacked
                    };
@@ -1100,7 +1107,7 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
                 && ((OperatingSystem.IsLinux() && !LinuxCudaRuntime.TryPrepare(out cudaMissing))
                     || (OperatingSystem.IsWindows() && !WindowsCudaRuntime.TryPrepare(out cudaMissing))))
             {
-                Log.Info($"[DepthAnything] {ExecutionProviderNames[(int)candidate]} unavailable, trying next provider: {cudaMissing}", this);
+                Log.Info($"[DepthAnything] {ProviderLabel(candidate)} unavailable, trying next provider: {cudaMissing}", this);
                 continue;
             }
 
@@ -1183,12 +1190,12 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
 
                 // From the path rather than from bytes, so models with external weight files load too
                 var session = new InferenceSession(modelPath, options);
-                _activeProviderLabel = ExecutionProviderNames[(int)candidate];
+                _activeProviderLabel = ProviderLabel(candidate);
                 return session;
             }
             catch (Exception ex) when (candidate != ExecutionProvider.Cpu)
             {
-                Log.Info($"[DepthAnything] {ExecutionProviderNames[(int)candidate]} unavailable, trying next provider: {ex.Message}", this);
+                Log.Info($"[DepthAnything] {ProviderLabel(candidate)} unavailable, trying next provider: {ex.Message}", this);
                 options?.Dispose();
             }
         }
@@ -1287,7 +1294,7 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
 
             var smoothing = _workerSmoothing;
             SmoothDepth(workerContext, resultDepth, outputWidth, outputHeight, smoothing);
-            ComputeMinMax(resultDepth, count, out float min, out float max);
+            ComputeDepthRange(resultDepth, resultSky, count, _workerPercentileNormalization, out float min, out float max);
             if (smoothing > 0 && workerContext.HasRange)
             {
                 // The model's depth scale drifts between frames; a settled range keeps the visualization from pulsing
@@ -1329,7 +1336,7 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
             var enhanceContrast = _workerEnhanceContrast;
             var invertDepth = _workerInvertDepth;
             colorData = GetBuffer(resultWidth * resultHeight * 4);
-            ColorizeDepth(resultDepth, resultWidth * resultHeight, colorData, min, max, outputFormat, enhanceContrast, invertDepth, modelInfo.IsV3);
+            ColorizeDepth(resultDepth, resultWidth * resultHeight, colorData, min, max, outputFormat, enhanceContrast, invertDepth, farIsLarge: true);
 
             if (!workerContext.LoggedFirstInference)
             {
@@ -1357,7 +1364,7 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
                 ColorFormat = outputFormat,
                 ColorEnhance = enhanceContrast,
                 ColorInvert = invertDepth,
-                FarIsLarge = modelInfo.IsV3
+                FarIsLarge = true
             };
         }
         catch (Exception ex)
@@ -1481,26 +1488,85 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
         return resized;
     }
 
-    private static void ComputeMinMax(float[] depthData, int count, out float minDepth, out float maxDepth)
+    /// <summary>
+    /// Depth range for the visualization. Sky pixels are excluded when the model predicts a sky plane -
+    /// their far-plane values would otherwise stretch the range and wash out the foreground. In percentile
+    /// mode the 2nd/98th quantiles bound the range instead of the extremes, ignoring outlier spikes.
+    /// </summary>
+    private static void ComputeDepthRange(float[] depthData, float[]? skyData, int count, bool percentile, out float minDepth, out float maxDepth)
     {
         float min = float.MaxValue;
         float max = float.MinValue;
         for (int i = 0; i < count; i++)
         {
             float depth = depthData[i];
-            if (!float.IsNaN(depth) && !float.IsInfinity(depth))
-            {
-                if (depth < min)
-                    min = depth;
-                if (depth > max)
-                    max = depth;
-            }
+            if (float.IsNaN(depth) || float.IsInfinity(depth))
+                continue;
+            if (skyData != null && skyData[i] > 0.5f)
+                continue;
+            if (depth < min)
+                min = depth;
+            if (depth > max)
+                max = depth;
         }
 
         if (min == float.MaxValue)
         {
-            min = 0.0f;
-            max = 1.0f;
+            minDepth = 0.0f;
+            maxDepth = 1.0f;
+            return;
+        }
+
+        if (percentile)
+        {
+            // 256-bin histogram over the finite, non-sky range; the 2%/98% quantiles bound the range
+            var bins = new int[256];
+            var scale = 255f / MathF.Max(1e-6f, max - min);
+            var sampled = 0;
+            for (int i = 0; i < count; i++)
+            {
+                float depth = depthData[i];
+                if (float.IsNaN(depth) || float.IsInfinity(depth))
+                    continue;
+                if (skyData != null && skyData[i] > 0.5f)
+                    continue;
+                bins[(int)((depth - min) * scale)]++;
+                sampled++;
+            }
+
+            if (sampled > 0)
+            {
+                var lowTarget = sampled * 2 / 100;
+                var highTarget = sampled * 98 / 100;
+                float low = min, high = max;
+                var seen = 0;
+                for (var bin = 0; bin < 256; bin++)
+                {
+                    seen += bins[bin];
+                    if (seen >= lowTarget)
+                    {
+                        low = min + (bin + 0.5f) / scale;
+                        break;
+                    }
+                }
+
+                seen = 0;
+                for (var bin = 255; bin >= 0; bin--)
+                {
+                    seen += bins[bin];
+                    if (seen >= sampled - highTarget)
+                    {
+                        high = min + (bin + 0.5f) / scale;
+                        break;
+                    }
+                }
+
+                if (high > low)
+                {
+                    min = low;
+                    max = high;
+                }
+            }
         }
 
         minDepth = min;
@@ -1816,6 +1882,14 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
     [Input(Guid = "45678901-4567-4567-4567-456789012345", MappedType = typeof(DepthOutputFormat))]
     public readonly InputSlot<int> OutputFormat = new();
 
+    /// <summary>
+    /// How the NormalizedDepthTexture and color output map depth to brightness: Full Range stretches
+    /// the exact frame minimum/maximum (sky pixels excluded when the model predicts sky); Percentile
+    /// bounds the range at the 2nd/98th quantiles so outlier spikes do not compress the foreground.
+    /// </summary>
+    [Input(Guid = "3f4a5b6c-7d8e-4f90-a1b2-c3d4e5f6a7b8", MappedType = typeof(DepthNormalization))]
+    public readonly InputSlot<int> Normalization = new();
+
     [Input(Guid = "56789012-5678-5678-5678-567890123456")]
     public readonly InputSlot<bool> EnhanceContrast = new(false);
 
@@ -1829,7 +1903,11 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
 
     #region Enums
 
-    /// <summary>The numeric values are saved in projects; new models are only ever appended.</summary>
+    /// <summary>
+    /// The numeric values are saved in projects; new models are only ever appended. The V2-era values
+    /// (0-4) keep their slots so old files still load; they are normalized onto their DA3 equivalents
+    /// at runtime (the V2 models are no longer shipped or downloaded).
+    /// </summary>
     public enum ModelSize
     {
         Small,
@@ -1840,7 +1918,10 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
         Da3Small,
         Da3Base,
         Da3MonoLarge,
-        Da3MetricLarge
+        Da3MetricLarge,
+        Da3Large,
+        Da3Giant,
+        Da3NestedGiant
     }
 
     /// <summary>
@@ -1874,17 +1955,92 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
         Rainbow
     }
 
+    /// <summary>Visualization range strategy; values are saved in projects and only ever appended.</summary>
+    public enum DepthNormalization
+    {
+        FullRange,
+        Percentile
+    }
+
     #endregion
 
     #region ICustomDropdownHolder
 
     private static readonly string[] OutputFormatNames = { "Grayscale", "Color", "Rainbow" };
+    private static readonly string[] NormalizationNames = { "Full Range", "Percentile" };
 
-    private static readonly string[] ModelSizeNames =
-        { "V2 Small", "V2 Base", "V2 Large", "V2 Small Fp32", "V2 Small Int8", "V3 Small", "V3 Base", "V3 Mono Large", "V3 Metric Large" };
+    /** The dropdown only offers DA3 models; the index maps onto the ModelSize enum value. */
+    private static readonly (string Name, ModelSize Size)[] ModelSizeOptions =
+    {
+        ("V3 Small", ModelSize.Da3Small),
+        ("V3 Base", ModelSize.Da3Base),
+        ("V3 Large", ModelSize.Da3Large),
+        ("V3 Mono Large", ModelSize.Da3MonoLarge),
+        ("V3 Metric Large", ModelSize.Da3MetricLarge),
+        ("V3 Giant", ModelSize.Da3Giant),
+        ("V3 Nested Giant", ModelSize.Da3NestedGiant),
+    };
 
     private static readonly string[] ResolutionNames = { "Auto", "196", "280", "392", "518", "504" };
-    private static readonly string[] ExecutionProviderNames = { "CPU", "DirectML", "CUDA", "CoreML", "TensorRT" };
+    /**
+     * The dropdown only lists the execution providers this operating system can run:
+     * Windows: CPU, DirectML, CUDA, TensorRT - Linux: CPU, CUDA, TensorRT - macOS: CPU, CoreML.
+     * The value maps onto the ExecutionProvider enum, so the order is free.
+     */
+    private static readonly (string Name, ExecutionProvider Provider)[] ExecutionProviderOptions = BuildExecutionProviderOptions();
+
+    private static (string, ExecutionProvider)[] BuildExecutionProviderOptions()
+    {
+        var options = new List<(string, ExecutionProvider)> { ("CPU", ExecutionProvider.Cpu) };
+        if (OperatingSystem.IsWindows())
+        {
+            options.Add(("DirectML", ExecutionProvider.DirectMl));
+            options.Add(("CUDA", ExecutionProvider.Cuda));
+            options.Add(("TensorRT", ExecutionProvider.TensorRt));
+        }
+        else if (OperatingSystem.IsLinux())
+        {
+            options.Add(("CUDA", ExecutionProvider.Cuda));
+            options.Add(("TensorRT", ExecutionProvider.TensorRt));
+        }
+        else if (OperatingSystem.IsMacOS())
+        {
+            options.Add(("CoreML", ExecutionProvider.CoreMl));
+        }
+
+        return options.ToArray();
+    }
+
+    /** Label for the session logs and the status line; the dropdowns read the option table instead. */
+    private static string ProviderLabel(ExecutionProvider provider) => provider switch
+    {
+        ExecutionProvider.DirectMl => "DirectML",
+        ExecutionProvider.Cuda => "CUDA",
+        ExecutionProvider.TensorRt => "TensorRT",
+        ExecutionProvider.CoreMl => "CoreML",
+        _ => "CPU"
+    };
+
+    /** Values that are impossible on this OS (a saved CoreML on Windows, DirectML on Linux...) snap onto the closest provider that works. */
+    private static ExecutionProvider NormalizeProviderForOs(ExecutionProvider provider)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return provider == ExecutionProvider.CoreMl ? ExecutionProvider.DirectMl : provider;
+        }
+
+        if (OperatingSystem.IsLinux())
+        {
+            return provider switch
+            {
+                ExecutionProvider.DirectMl or ExecutionProvider.CoreMl => ExecutionProvider.Cuda,
+                _ => provider
+            };
+        }
+
+        // macOS: everything except CPU runs through CoreML
+        return provider == ExecutionProvider.Cpu ? ExecutionProvider.Cpu : ExecutionProvider.CoreMl;
+    }
 
     string ICustomDropdownHolder.GetValueForInput(Guid inputId)
     {
@@ -1894,10 +2050,16 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
             return val >= 0 && val < OutputFormatNames.Length ? OutputFormatNames[val] : "Grayscale";
         }
 
+        if (inputId == Normalization.Id)
+        {
+            var val = _uiNormalization;
+            return val >= 0 && val < NormalizationNames.Length ? NormalizationNames[val] : "Full Range";
+        }
+
         if (inputId == ModelSizeParam.Id)
         {
-            var val = _uiModelSize;
-            return val >= 0 && val < ModelSizeNames.Length ? ModelSizeNames[val] : "V3 Small";
+            var size = (ModelSize)_uiModelSize;
+            return ModelSizeOptions.FirstOrDefault(o => o.Size == size).Name ?? "V3 Small";
         }
 
         if (inputId == InputResolution.Id)
@@ -1908,8 +2070,8 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
 
         if (inputId == ExecutionProviderParam.Id)
         {
-            var val = _uiExecutionProvider;
-            return val >= 0 && val < ExecutionProviderNames.Length ? ExecutionProviderNames[val] : "CPU";
+            var provider = (ExecutionProvider)_uiExecutionProvider;
+            return ExecutionProviderOptions.FirstOrDefault(o => o.Provider == provider).Name ?? "CPU";
         }
 
         return "";
@@ -1924,10 +2086,17 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
             yield break;
         }
 
+        if (inputId == Normalization.Id)
+        {
+            foreach (var name in NormalizationNames)
+                yield return name;
+            yield break;
+        }
+
         if (inputId == ModelSizeParam.Id)
         {
-            foreach (var name in ModelSizeNames)
-                yield return name;
+            foreach (var option in ModelSizeOptions)
+                yield return option.Name;
             yield break;
         }
 
@@ -1940,8 +2109,8 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
 
         if (inputId == ExecutionProviderParam.Id)
         {
-            foreach (var name in ExecutionProviderNames)
-                yield return name;
+            foreach (var option in ExecutionProviderOptions)
+                yield return option.Name;
             yield break;
         }
 
@@ -1961,11 +2130,19 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
             return;
         }
 
+        if (inputId == Normalization.Id)
+        {
+            var index = Array.IndexOf(NormalizationNames, selected);
+            if (index >= 0)
+                Normalization.SetTypedInputValue(index);
+            return;
+        }
+
         if (inputId == ModelSizeParam.Id)
         {
-            var index = Array.IndexOf(ModelSizeNames, selected);
+            var index = Array.FindIndex(ModelSizeOptions, o => o.Name == selected);
             if (index >= 0)
-                ModelSizeParam.SetTypedInputValue(index);
+                ModelSizeParam.SetTypedInputValue((int)ModelSizeOptions[index].Size);
             return;
         }
 
@@ -1979,9 +2156,9 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
 
         if (inputId == ExecutionProviderParam.Id)
         {
-            var index = Array.IndexOf(ExecutionProviderNames, selected);
+            var index = Array.FindIndex(ExecutionProviderOptions, o => o.Name == selected);
             if (index >= 0)
-                ExecutionProviderParam.SetTypedInputValue(index);
+                ExecutionProviderParam.SetTypedInputValue((int)ExecutionProviderOptions[index].Provider);
             return;
         }
     }

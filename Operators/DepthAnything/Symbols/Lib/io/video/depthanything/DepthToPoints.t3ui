@@ -52,14 +52,6 @@
       "Description": "Toggle the point generation."
     },
     {
-      "InputId": "67b05edd-6091-4b6e-b179-34b11f7a5d8c"/*DepthIsDisparity*/,
-      "Position": {
-        "X": -250.0,
-        "Y": -200.0
-      },
-      "Description": "Enable for models that predict inverse depth (Depth Anything V2), where larger values are nearer."
-    },
-    {
       "InputId": "782f0918-4efe-46fc-8a2f-3456d509e2d4"/*MaxPoints*/,
       "Position": {
         "X": -250.0,

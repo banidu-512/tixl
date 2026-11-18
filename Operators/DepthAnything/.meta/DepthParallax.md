@@ -10,7 +10,6 @@ Shifts an image by its depth map, as if the camera moved sideways. Runs on the G
 - **Vector2 Offset** - Camera move as a fraction of the image
 - **float FocalPlane** - Depth that stays still, 0 (far) to 1 (near)
 - **int Steps** - Search steps per pixel
-- **bool DepthIsDisparity** - Treat larger values as nearer, as Depth Anything V2 does
 
 ## Outputs
 - **Texture2D ResultTexture** - RGBA16F shifted image

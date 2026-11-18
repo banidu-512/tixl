@@ -35,7 +35,6 @@ public class DepthToPosition : Instance<DepthToPosition>
                              {
                                  TanHalfFovY = MathF.Tan(Math.Clamp(FieldOfView.GetValue(context), 1f, 179f) * MathF.PI / 360f),
                                  DepthScale = DepthScale.GetValue(context),
-                                 DepthIsDisparity = DepthIsDisparity.GetValue(context) ? 1u : 0u
                              };
 
         var description = depthTexture.Description;
@@ -68,7 +67,6 @@ public class DepthToPosition : Instance<DepthToPosition>
     {
         public float TanHalfFovY;
         public float DepthScale;
-        public uint DepthIsDisparity;
         public float Padding;
     }
 #pragma warning restore CS0649
@@ -87,8 +85,6 @@ public class DepthToPosition : Instance<DepthToPosition>
     [Input(Guid = "2d6f8b4c-7c9e-4f5d-8376-1a2e4f6b9d27")]
     public readonly InputSlot<float> DepthScale = new(1f);
 
-    [Input(Guid = "3e7a9c5d-8daf-4a6e-9487-2b3f5a7cae38")]
-    public readonly InputSlot<bool> DepthIsDisparity = new(false);
 
     #endregion
 }

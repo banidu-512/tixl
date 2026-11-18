@@ -13,10 +13,6 @@
     {
       "Id": "2d6f8b4c-7c9e-4f5d-8376-1a2e4f6b9d27"/*DepthScale*/,
       "DefaultValue": 1.0
-    },
-    {
-      "Id": "3e7a9c5d-8daf-4a6e-9487-2b3f5a7cae38"/*DepthIsDisparity*/,
-      "DefaultValue": false
     }
   ],
   "Children": [],

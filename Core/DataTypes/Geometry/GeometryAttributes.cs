@@ -142,11 +142,21 @@ public sealed class GeometryAttributes : IEnumerable<GeometryAttribute>
 
     public void Remove(string name, AttributeDomain domain)
     {
-        _attributes.RemoveAll(a => a.Domain == domain && string.Equals(a.Name, name, StringComparison.OrdinalIgnoreCase));
+        // A loop instead of RemoveAll with a lambda: the captured name and domain allocated a closure on every
+        // call, and operators call this once per frame.
+        for (var index = _attributes.Count - 1; index >= 0; index--)
+        {
+            var attribute = _attributes[index];
+            if (attribute.Domain == domain && string.Equals(attribute.Name, name, StringComparison.OrdinalIgnoreCase))
+                _attributes.RemoveAt(index);
+        }
     }
 
     public void Clear() => _attributes.Clear();
     public int Count => _attributes.Count;
+
+    /// <summary>Indexed access, for per-frame code: enumerating with foreach boxes the list's enumerator.</summary>
+    public GeometryAttribute this[int index] => _attributes[index];
 
     public IEnumerator<GeometryAttribute> GetEnumerator() => _attributes.GetEnumerator();
     IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();

@@ -1,5 +1,7 @@
 using System;
 using System.Numerics;
+using System.Collections.Generic;
+using BepuUtilities.Memory;
 using T3.Core.DataTypes;
 
 namespace Lib.physics;
@@ -16,8 +18,9 @@ internal static class PhysicsGeometry
     public const int MaxHullPoints = 2048;
 
     /// <summary>
-    /// Fingerprint of everything the collision data depends on. Geometry instances are reused and rebuilt in
-    /// place by their producers, so neither the reference nor its version counter says whether the points moved.
+    /// Fingerprint of everything the collision data depends on. Costs linear time in the geometry, so the
+    /// caller runs it only when the instance, its <see cref="MeshGeometry.Version"/> or its size changed -
+    /// producers bump the version when they rebuild their output, matching the other geometry consumers.
     /// </summary>
     public static int Stamp(MeshGeometry geometry)
     {
@@ -38,29 +41,151 @@ internal static class PhysicsGeometry
         return hash.ToHashCode();
     }
 
+    /// <summary>How far a geometry part may be split into several convex hulls.</summary>
+    public enum HullSplit
+    {
+        /// <summary>Every part is one hull.</summary>
+        None,
+
+        /// <summary>A part is split where one hull would clearly fill in its concave shape.</summary>
+        Concave,
+
+        /// <summary>Every part is split until its hulls follow its shape closely.</summary>
+        Always,
+    }
+
     /// <summary>
-    /// One convex piece per geometry part, with its points relative to the part's pivot. Geometry without parts,
-    /// or <paramref name="merge"/>, gives a single piece around the origin that wraps everything.
+    /// One collision piece per geometry part, with its points relative to the part's pivot. Geometry without parts,
+    /// or <paramref name="merge"/>, gives a single piece around the origin that keeps every part as a hull of its own, so
+    /// the whole object moves as one compound body.
     /// </summary>
-    public static PhysicsHull[] BuildHulls(MeshGeometry geometry, bool merge)
+    public static PhysicsHull[] BuildHulls(MeshGeometry geometry, bool merge, HullSplit split = HullSplit.None, int maxHullsPerPart = 1)
     {
         var parts = geometry.Parts;
-        if (merge || parts.Length == 0)
-            return [new PhysicsHull { Points = CollectPoints(geometry, 0, geometry.FaceCount, Vector3.Zero, new int[geometry.PointCount], 1) }];
-
-        var hulls = new PhysicsHull[parts.Length];
         var marks = new int[geometry.PointCount];
-        for (var index = 0; index < parts.Length; index++)
+        var pool = split == HullSplit.None ? null : new BufferPool();
+        try
         {
-            var part = parts[index];
-            hulls[index] = new PhysicsHull
+            if (merge || parts.Length == 0)
+            {
+                var whole = new PhysicsHull { Points = CollectPoints(geometry, 0, geometry.FaceCount, Vector3.Zero, marks, 1) };
+                var convexParts = new List<Vector3[]>();
+                if (parts.Length == 0)
+                {
+                    AddConvexParts(geometry, 0, geometry.FaceCount, Vector3.Zero, whole.Points, split, maxHullsPerPart, pool, convexParts);
+                }
+                else
+                {
+                    for (var index = 0; index < parts.Length; index++)
+                    {
+                        var part = parts[index];
+                        var points = CollectPoints(geometry, part.FaceStart, part.FaceCount, Vector3.Zero, marks, index + 2);
+                        AddConvexParts(geometry, part.FaceStart, part.FaceCount, Vector3.Zero, points, split, maxHullsPerPart, pool, convexParts);
+                    }
+                }
+
+                SetConvexParts(whole, convexParts, pool);
+                return [whole];
+            }
+
+            var hulls = new PhysicsHull[parts.Length];
+            var scratch = new List<Vector3[]>();
+            for (var index = 0; index < parts.Length; index++)
+            {
+                var part = parts[index];
+                var hull = new PhysicsHull
                                {
                                    Points = CollectPoints(geometry, part.FaceStart, part.FaceCount, part.Pivot, marks, index + 1),
                                    Pivot = part.Pivot,
                                };
+                scratch.Clear();
+                AddConvexParts(geometry, part.FaceStart, part.FaceCount, part.Pivot, hull.Points, split, maxHullsPerPart, pool, scratch);
+                SetConvexParts(hull, scratch, pool);
+                hulls[index] = hull;
+            }
+
+            return hulls;
+        }
+        finally
+        {
+            pool?.Clear();
+        }
+    }
+
+    /// <summary>The hulls one face range is simulated as: its decomposition when it is split, otherwise its own points.</summary>
+    private static void AddConvexParts(MeshGeometry geometry, int faceStart, int faceCount, Vector3 pivot, Vector3[] points,
+                                       HullSplit split, int maxHulls, BufferPool pool, List<Vector3[]> convexParts)
+    {
+        if (points.Length < 4)
+            return;
+
+        if (split != HullSplit.None && maxHulls > 1)
+        {
+            var triangles = CollectTriangles(geometry, faceStart, faceCount, pivot);
+            var tolerance = split == HullSplit.Always ? PhysicsDecomposition.ForcedConcavityTolerance : PhysicsDecomposition.AutoConcavityTolerance;
+            var decomposed = PhysicsDecomposition.Decompose(triangles, maxHulls, tolerance, pool);
+            if (decomposed != null)
+            {
+                convexParts.AddRange(decomposed);
+                return;
+            }
         }
 
-        return hulls;
+        convexParts.Add(points);
+    }
+
+    /// <summary>Stores the hulls a piece is made of and its volume; a piece that is one hull keeps only its points.</summary>
+    private static void SetConvexParts(PhysicsHull hull, List<Vector3[]> convexParts, BufferPool pool)
+    {
+        var ownPool = pool == null;
+        pool ??= new BufferPool();
+        try
+        {
+            var volume = 0f;
+            foreach (var part in convexParts)
+                volume += PhysicsDecomposition.HullVolume(part, pool);
+
+            hull.Volume = convexParts.Count > 0 ? volume : PhysicsDecomposition.HullVolume(hull.Points, pool);
+            hull.ConvexParts = convexParts.Count > 1 ? convexParts.ToArray() : null;
+        }
+        finally
+        {
+            if (ownPool)
+                pool.Clear();
+        }
+    }
+
+    /// <summary>The triangles of a face range relative to a pivot, three points per triangle; faces with more corners are fanned.</summary>
+    private static Vector3[] CollectTriangles(MeshGeometry geometry, int faceStart, int faceCount, Vector3 pivot)
+    {
+        var positions = geometry.Positions;
+        var corners = geometry.CornerPointIndices;
+        var offsets = geometry.FaceCornerOffsets;
+        faceStart = Math.Clamp(faceStart, 0, geometry.FaceCount);
+        var faceEnd = Math.Clamp(faceStart + Math.Max(0, faceCount), faceStart, geometry.FaceCount);
+        var triangles = new List<Vector3>();
+        for (var face = faceStart; face < faceEnd; face++)
+        {
+            var start = offsets[face];
+            var count = offsets[face + 1] - start;
+            if (count < 3 || start < 0 || start + count > corners.Length)
+                continue;
+
+            for (var corner = 1; corner + 1 < count; corner++)
+            {
+                var a = corners[start];
+                var b = corners[start + corner];
+                var c = corners[start + corner + 1];
+                if ((uint)a >= (uint)positions.Length || (uint)b >= (uint)positions.Length || (uint)c >= (uint)positions.Length)
+                    continue;
+
+                triangles.Add(positions[a] - pivot);
+                triangles.Add(positions[b] - pivot);
+                triangles.Add(positions[c] - pivot);
+            }
+        }
+
+        return triangles.ToArray();
     }
 
     /// <summary>All faces as a triangle list, three points per triangle; faces with more corners are fanned.</summary>
@@ -153,6 +278,20 @@ internal static class PhysicsGeometry
     /// </summary>
     public static int BuildPosed(PhysicsBody body, MeshGeometry output, ref MeshGeometry primitiveCache, ref (PhysicsShapeType, Vector3, float, float) primitiveKey)
     {
+        var cache = new PosedBody { Primitive = primitiveCache, PrimitiveKey = primitiveKey };
+        var count = BuildPosed(body, output, cache, false);
+        primitiveCache = cache.Primitive;
+        primitiveKey = cache.PrimitiveKey;
+        return count;
+    }
+
+    /// <summary>
+    /// <see cref="BuildPosed(PhysicsBody, MeshGeometry, ref MeshGeometry, ref ValueTuple{PhysicsShapeType, Vector3, float, float})"/>
+    /// with a cache kept by the caller. With <paramref name="showColliders"/> a hull body is drawn as the convex hulls it
+    /// collides as, each hull in a face color of its own, instead of as its source geometry.
+    /// </summary>
+    private static int BuildPosed(PhysicsBody body, MeshGeometry output, PosedBody cache, bool showColliders)
+    {
         var poses = body.PublishedPoints;
         var count = body.PublishedCount;
         var start = body.PublishedStart;
@@ -161,22 +300,33 @@ internal static class PhysicsGeometry
 
         var source = body.SourceGeometry;
         var perPart = body.SourcePerPart;
+        if (showColliders && body.Hulls is { Length: > 0 } hulls && source != null)
+        {
+            if (!ReferenceEquals(cache.ColliderSource, hulls))
+            {
+                cache.Collider = BuildColliderGeometry(hulls);
+                cache.ColliderSource = hulls;
+            }
+
+            source = cache.Collider;
+        }
+
         if (source == null || source.FaceCount == 0)
         {
             var key = (body.Shape, body.Size, body.Radius, body.Length);
-            if (primitiveCache == null || key != primitiveKey)
+            if (cache.Primitive == null || key != cache.PrimitiveKey)
             {
-                primitiveCache = BuildPrimitive(body);
-                primitiveKey = key;
+                cache.Primitive = BuildPrimitive(body);
+                cache.PrimitiveKey = key;
             }
 
-            source = primitiveCache;
+            source = cache.Primitive;
             perPart = false;
         }
 
         return perPart
-                   ? PoseParts(body, source, poses.AsSpan(start, count), output)
-                   : PoseCopies(body, source, poses.AsSpan(start, count), output);
+                   ? PoseParts(body, source, poses.AsSpan(start, count), output, cache)
+                   : PoseCopies(body, source, poses.AsSpan(start, count), output, cache);
     }
 
     /// <summary>Per-body working data for <see cref="BuildPosed(System.Collections.Generic.IReadOnlyList{PhysicsBody}, MeshGeometry, System.Collections.Generic.List{PosedBody})"/>, kept by the caller between frames.</summary>
@@ -186,6 +336,131 @@ internal static class PhysicsGeometry
         public MeshGeometry Primitive;
         public (PhysicsShapeType, Vector3, float, float) PrimitiveKey;
         public int Count;
+
+        /** Collider view of <see cref="ColliderSource"/>, rebuilt when the body's hulls are replaced. */
+        public MeshGeometry Collider;
+
+        public PhysicsHull[] ColliderSource;
+
+        /** Scratch for <see cref="PoseParts"/>: the posed parts of the last frame and its moved-point marks. */
+        public GeometryPart[] PosedParts;
+
+        public bool[] MovedPoints;
+
+        /** The poses of the last build, kept by <see cref="Lib.physics.RigidBodyGeometry"/> to skip rebuilds of an unchanged pose. */
+        public Point[] LastPoses;
+
+        public Vector3[] LastScales;
+
+        public int LastPoseStart = -1;
+
+        public int LastPoseCount = -1;
+
+        // Attribute buffers this entry owns and reuses from frame to frame, so posing allocates only when a count changes.
+        internal GeometryAttribute<Vector3> Normals;
+        internal GeometryAttribute<Vector4> Colors;
+        internal GeometryAttribute<Vector4> FaceColors;
+    }
+
+    /// <summary>The attribute in <paramref name="slot"/>, created or resized to <paramref name="count"/>, added to <paramref name="output"/>.</summary>
+    private static GeometryAttribute<T> AddOwned<T>(MeshGeometry output, ref GeometryAttribute<T> slot, string name, AttributeDomain domain, int count)
+        where T : unmanaged
+    {
+        if (slot == null)
+            slot = new GeometryAttribute<T>(name, domain, count);
+        else
+            slot.Resize(count);
+
+        output.Attributes.Add(slot);
+        return slot;
+    }
+
+    private static GeometryPart[] ReuseParts(PosedBody cache, int length)
+    {
+        if (cache.PosedParts == null || cache.PosedParts.Length != length)
+            cache.PosedParts = new GeometryPart[length];
+        return cache.PosedParts;
+    }
+
+    /// <summary>
+    /// The hulls of a body as geometry in the space of its source: one part per piece, pivoted where the piece is, so it
+    /// poses exactly like the source geometry would. Every convex hull gets a face color of its own.
+    /// </summary>
+    public static MeshGeometry BuildColliderGeometry(PhysicsHull[] hulls)
+    {
+        var positions = new List<Vector3>();
+        var corners = new List<int>();
+        var offsets = new List<int> { 0 };
+        var faceColors = new List<Vector4>();
+        var parts = new GeometryPart[hulls.Length];
+        var pool = new BufferPool();
+        var hullIndex = 0;
+        try
+        {
+            for (var index = 0; index < hulls.Length; index++)
+            {
+                var hull = hulls[index];
+                var faceStart = offsets.Count - 1;
+                if (hull != null)
+                {
+                    var convexParts = hull.ConvexParts ?? [hull.Points];
+                    foreach (var convex in convexParts)
+                    {
+                        var added = PhysicsDecomposition.AppendHullFaces(convex, hull.Pivot, pool, positions, corners, offsets);
+                        var color = HullColor(hullIndex++);
+                        for (var face = 0; face < added; face++)
+                            faceColors.Add(color);
+                    }
+                }
+
+                parts[index] = new GeometryPart(faceStart, offsets.Count - 1 - faceStart, hull?.Pivot ?? Vector3.Zero, index, index);
+            }
+        }
+        finally
+        {
+            pool.Clear();
+        }
+
+        var geometry = new MeshGeometry
+                           {
+                               Positions = positions.ToArray(),
+                               CornerPointIndices = corners.ToArray(),
+                               FaceCornerOffsets = offsets.ToArray(),
+                               Parts = parts,
+                           };
+        var colors = geometry.Attributes.GetOrCreate<Vector4>(GeometryAttributeNames.Color, AttributeDomain.Face, faceColors.Count);
+        faceColors.CopyTo(colors.Values);
+        AddFlatNormals(geometry);
+        geometry.InvalidateTopologyCaches();
+        return geometry;
+    }
+
+    /** Evenly spread hues, so neighbouring hulls of one body are told apart. */
+    private static Vector4 HullColor(int index)
+    {
+        var hue = index * 0.618034f % 1f;
+        var r = Math.Clamp(MathF.Abs(hue * 6f - 3f) - 1f, 0f, 1f);
+        var g = Math.Clamp(2f - MathF.Abs(hue * 6f - 2f), 0f, 1f);
+        var b = Math.Clamp(2f - MathF.Abs(hue * 6f - 4f), 0f, 1f);
+        return new Vector4(0.35f + 0.65f * r, 0.35f + 0.65f * g, 0.35f + 0.65f * b, 1f);
+    }
+
+    private static void AddFlatNormals(MeshGeometry geometry)
+    {
+        var normals = geometry.Attributes.GetOrCreate<Vector3>(GeometryAttributeNames.Normal, AttributeDomain.Corner, geometry.CornerCount).Values;
+        for (var face = 0; face < geometry.FaceCount; face++)
+        {
+            var start = geometry.FaceCornerOffsets[face];
+            var end = geometry.FaceCornerOffsets[face + 1];
+            var a = geometry.Positions[geometry.CornerPointIndices[start]];
+            var normal = Vector3.Zero;
+            for (var corner = start + 1; corner + 1 < end; corner++)
+                normal += Vector3.Cross(geometry.Positions[geometry.CornerPointIndices[corner]] - a, geometry.Positions[geometry.CornerPointIndices[corner + 1]] - a);
+
+            normal = normal.LengthSquared() > 1e-20f ? Vector3.Normalize(normal) : Vector3.UnitY;
+            for (var corner = start; corner < end; corner++)
+                normals[corner] = normal;
+        }
     }
 
     /// <summary>
@@ -193,20 +468,22 @@ internal static class PhysicsGeometry
     /// joined only what they all have survives: positions, faces, parts, and normals and part colors if every one has them.
     /// Returns the number of bodies written; 0 leaves <paramref name="output"/> untouched.
     /// </summary>
-    public static int BuildPosed(System.Collections.Generic.IReadOnlyList<PhysicsBody> bodies, MeshGeometry output, System.Collections.Generic.List<PosedBody> scratch)
+    public static int BuildPosed(System.Collections.Generic.IReadOnlyList<PhysicsBody> bodies, MeshGeometry output, System.Collections.Generic.List<PosedBody> scratch,
+                                 bool showColliders = false)
     {
-        while (scratch.Count < bodies.Count)
+        // One entry per body, plus one after them that owns the joined output's buffers.
+        while (scratch.Count < bodies.Count + 1)
             scratch.Add(new PosedBody());
 
         if (bodies.Count == 1)
-            return BuildPosed(bodies[0], output, ref scratch[0].Primitive, ref scratch[0].PrimitiveKey);
+            return BuildPosed(bodies[0], output, scratch[0], showColliders);
 
         int total = 0, pointCount = 0, cornerCount = 0, faceCount = 0, partCount = 0;
         bool allNormals = true, allColors = true;
         for (var index = 0; index < bodies.Count; index++)
         {
             var entry = scratch[index];
-            entry.Count = bodies[index] == null ? 0 : BuildPosed(bodies[index], entry.Geometry, ref entry.Primitive, ref entry.PrimitiveKey);
+            entry.Count = bodies[index] == null ? 0 : BuildPosed(bodies[index], entry.Geometry, entry, showColliders);
             if (entry.Count == 0)
                 continue;
 
@@ -229,10 +506,11 @@ internal static class PhysicsGeometry
         if (output.FaceCornerOffsets.Length != faceCount + 1)
             output.FaceCornerOffsets = new int[faceCount + 1];
 
-        var parts = new GeometryPart[partCount];
+        var join = scratch[bodies.Count];
+        var parts = ReuseParts(join, partCount);
         output.Attributes.Clear();
-        var normals = allNormals ? output.Attributes.GetOrCreate<Vector3>(GeometryAttributeNames.Normal, AttributeDomain.Corner, cornerCount) : null;
-        var colors = allColors ? output.Attributes.GetOrCreate<Vector4>(GeometryAttributeNames.Color, AttributeDomain.Part, partCount) : null;
+        var normals = allNormals ? AddOwned(output, ref join.Normals, GeometryAttributeNames.Normal, AttributeDomain.Corner, cornerCount) : null;
+        var colors = allColors ? AddOwned(output, ref join.Colors, GeometryAttributeNames.Color, AttributeDomain.Part, partCount) : null;
 
         int pointBase = 0, cornerBase = 0, faceBase = 0, partBase = 0;
         for (var index = 0; index < bodies.Count; index++)
@@ -270,7 +548,7 @@ internal static class PhysicsGeometry
     }
 
     /// <summary>Same topology as the source; every part is moved from its place in the source to the pose of its body.</summary>
-    private static int PoseParts(PhysicsBody body, MeshGeometry source, ReadOnlySpan<Point> poses, MeshGeometry output)
+    private static int PoseParts(PhysicsBody body, MeshGeometry source, ReadOnlySpan<Point> poses, MeshGeometry output, PosedBody cache)
     {
         var parts = source.Parts;
         var count = Math.Min(poses.Length, parts.Length);
@@ -285,33 +563,32 @@ internal static class PhysicsGeometry
 
         var positions = output.Positions;
         Array.Copy(sourcePositions, positions, sourcePositions.Length);
-        var posedParts = new GeometryPart[parts.Length];
+        var posedParts = ReuseParts(cache, parts.Length);
         Array.Copy(parts, posedParts, parts.Length);
 
         output.Attributes.Clear();
-        GeometryAttribute<Vector3> sourceNormals = null;
+        source.Attributes.TryGet<Vector3>(GeometryAttributeNames.Normal, AttributeDomain.Corner, out var sourceNormals);
         GeometryAttribute<Vector3> normals = null;
-        foreach (var attribute in source.Attributes)
-        {
-            if (attribute is GeometryAttribute<Vector3> vectors && attribute.Domain == AttributeDomain.Corner
-                                                                && string.Equals(attribute.Name, GeometryAttributeNames.Normal, StringComparison.OrdinalIgnoreCase))
-                sourceNormals = vectors;
-        }
 
         if (sourceNormals != null)
         {
-            normals = output.Attributes.GetOrCreate<Vector3>(GeometryAttributeNames.Normal, AttributeDomain.Corner, sourceNormals.Values.Length);
+            normals = AddOwned(output, ref cache.Normals, GeometryAttributeNames.Normal, AttributeDomain.Corner, sourceNormals.Values.Length);
             Array.Copy(sourceNormals.Values, normals.Values, sourceNormals.Values.Length);
         }
 
-        foreach (var attribute in source.Attributes)
+        // Every other attribute is shared with the source unchanged; indexed, because foreach boxes the enumerator.
+        for (var index = 0; index < source.Attributes.Count; index++)
         {
+            var attribute = source.Attributes[index];
             if (!ReferenceEquals(attribute, sourceNormals))
                 output.Attributes.Add(attribute);
         }
 
         // A point shared by two parts can only follow one of them; the first part to use it wins.
-        var moved = new bool[sourcePositions.Length];
+        if (cache.MovedPoints == null || cache.MovedPoints.Length != sourcePositions.Length)
+            cache.MovedPoints = new bool[sourcePositions.Length];
+        var moved = cache.MovedPoints;
+        Array.Clear(moved, 0, sourcePositions.Length);   // the buffer persists between frames
         for (var index = 0; index < count; index++)
         {
             ref readonly var pose = ref poses[index];
@@ -344,7 +621,7 @@ internal static class PhysicsGeometry
     }
 
     /// <summary>One copy of the whole source per body, each copy one part.</summary>
-    private static int PoseCopies(PhysicsBody body, MeshGeometry source, ReadOnlySpan<Point> poses, MeshGeometry output)
+    private static int PoseCopies(PhysicsBody body, MeshGeometry source, ReadOnlySpan<Point> poses, MeshGeometry output, PosedBody cache)
     {
         var count = poses.Length;
         var sourcePositions = source.Positions;
@@ -364,14 +641,20 @@ internal static class PhysicsGeometry
         var positions = output.Positions;
         var offsets = output.FaceCornerOffsets;
         var corners = output.CornerPointIndices;
-        var parts = new GeometryPart[count];
+        var parts = ReuseParts(cache, count);
 
         output.Attributes.Clear();
         source.Attributes.TryGet<Vector3>(GeometryAttributeNames.Normal, AttributeDomain.Corner, out var sourceNormals);
         var normals = sourceNormals != null
-                          ? output.Attributes.GetOrCreate<Vector3>(GeometryAttributeNames.Normal, AttributeDomain.Corner, cornerCount * count)
+                          ? AddOwned(output, ref cache.Normals, GeometryAttributeNames.Normal, AttributeDomain.Corner, cornerCount * count)
                           : null;
-        var colors = output.Attributes.GetOrCreate<Vector4>(GeometryAttributeNames.Color, AttributeDomain.Part, count);
+        var colors = AddOwned(output, ref cache.Colors, GeometryAttributeNames.Color, AttributeDomain.Part, count);
+
+        // Face colors, such as the hull colors of the collider view, repeat in every copy.
+        source.Attributes.TryGet<Vector4>(GeometryAttributeNames.Color, AttributeDomain.Face, out var sourceFaceColors);
+        var faceColors = sourceFaceColors != null && sourceFaceColors.Values.Length >= faceCount
+                             ? AddOwned(output, ref cache.FaceColors, GeometryAttributeNames.Color, AttributeDomain.Face, faceCount * count)
+                             : null;
 
         // The pivot of a single-hull body is where its pose is published; the copy is built around it.
         var hulls = body.Hulls;
@@ -390,6 +673,9 @@ internal static class PhysicsGeometry
 
             for (var face = 0; face < faceCount; face++)
                 offsets[faceBase + face] = cornerBase + sourceOffsets[face];
+
+            if (faceColors != null)
+                Array.Copy(sourceFaceColors.Values, 0, faceColors.Values, faceBase, faceCount);
 
             for (var corner = 0; corner < cornerCount; corner++)
                 corners[cornerBase + corner] = pointBase + sourceCorners[corner];
@@ -426,7 +712,7 @@ internal static class PhysicsGeometry
         scale = new Vector3(Positive(scale.X), Positive(scale.Y), Positive(scale.Z));
 
         // Primitive colliders cannot be squashed: round shapes take the larger of X and Z, as the world does.
-        if (body.SourceGeometry == null && body.Shape != PhysicsShapeType.Box)
+        if (body.SourceGeometry == null && body.Shape is PhysicsShapeType.Sphere or PhysicsShapeType.Capsule or PhysicsShapeType.Cylinder)
         {
             var radial = MathF.Max(scale.X, scale.Z);
             scale = body.Shape == PhysicsShapeType.Sphere ? new Vector3(radial) : new Vector3(radial, scale.Y, radial);
@@ -480,7 +766,7 @@ internal static class PhysicsGeometry
                 return BuildBox(body.Size);
         }
 
-        return Lathe(profile, 20);
+        return Lathe(profile, 12);
     }
 
     private static MeshGeometry BuildBox(Vector3 size)

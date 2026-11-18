@@ -11,7 +11,6 @@ using T3.Editor.Gui.Interaction.Keyboard;
 using T3.Editor.Gui.Interaction.Timing;
 using T3.Editor.Gui.MagGraph.Interaction.KeyboardEditing;
 using T3.Editor.Gui.Styling;
-using T3.Editor.Gui.Templates;
 using T3.Editor.Gui.UiHelpers;
 using T3.Editor.Gui.Window;
 using T3.Editor.Gui.Windows.Layouts;
@@ -218,8 +217,8 @@ public static partial class T3Ui
     internal static readonly MidiDataRecording MidiDataRecording = new(DataRecording.ActiveRecordingSet);
     internal static readonly OscDataRecording OscDataRecording = new(DataRecording.ActiveRecordingSet);
 
-    internal static readonly CreateFromTemplateDialog CreateFromTemplateDialog = new();
     private static readonly UserNameDialog _userNameDialog = new();
+    private static readonly CollabPasswordDialog _collabPasswordDialog = new();
     internal static readonly AboutDialog AboutDialog = new();
     private static readonly SearchDialog _searchDialog = new();
     internal static readonly NewProjectDialog NewProjectDialog = new();
@@ -230,6 +229,8 @@ public static partial class T3Ui
     private static readonly SendCrashReportsDialog _sendCrashReportsDialog = new();
     internal static readonly ShareSessionDialog ShareSessionDialog = new();
     internal static readonly ExitDialog ExitDialog = new();
+    internal static readonly LaserArmWarningDialog LaserArmWarningDialog = new();
+    internal static readonly AiModelSetupWizard AiModelSetupWizard = new();
     private static readonly List<EditableSymbolProject> _modifiedProjects = new();
     private static bool _couldEscapeCancelSomething;
 

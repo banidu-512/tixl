@@ -41,7 +41,6 @@ public class DepthParallax : Instance<DepthParallax>
                                  MaxDepth = MaxDepth.GetValue(context),
                                  FocalPlane = FocalPlane.GetValue(context),
                                  Steps = Math.Clamp(Steps.GetValue(context), 1, MaxSteps),
-                                 DepthIsDisparity = DepthIsDisparity.GetValue(context) ? 1u : 0u
                              };
 
         var description = imageTexture.Description;
@@ -78,7 +77,6 @@ public class DepthParallax : Instance<DepthParallax>
         public float MaxDepth;
         public float FocalPlane;
         public int Steps;
-        public uint DepthIsDisparity;
         public float Padding;
     }
 #pragma warning restore CS0649
@@ -111,8 +109,6 @@ public class DepthParallax : Instance<DepthParallax>
     [Input(Guid = "172ce490-b3d5-470a-a8b9-e4068b13d5fa")]
     public readonly InputSlot<int> Steps = new(16);
 
-    [Input(Guid = "283df5a1-c4e6-481b-b9ca-f5179c24e60b")]
-    public readonly InputSlot<bool> DepthIsDisparity = new(false);
 
     #endregion
 }

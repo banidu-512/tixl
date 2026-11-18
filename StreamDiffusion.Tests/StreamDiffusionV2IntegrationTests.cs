@@ -97,7 +97,7 @@ public class StreamDiffusionV2IntegrationTests
         {
             var input = MakeFrame(width, height, frame);
             var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-            var result = pipeline.StreamStep("a watercolor painting of a fox in a forest", input, width, height, width, height,
+            var result = pipeline.StreamStep("a watercolor painting of a fox in a forest", input, width, height,
                                              0.8f, 0, 1234, false, out var error);
             if (result != null)
                 last = result;
@@ -164,7 +164,7 @@ public class StreamDiffusionV2IntegrationTests
         var lengths = new System.Collections.Concurrent.ConcurrentBag<int>();
         Parallel.For(0, 4, _ =>
         {
-            var result = pipeline.StreamStep("a watercolor painting of a fox in a forest", input, width, height, width, height,
+            var result = pipeline.StreamStep("a watercolor painting of a fox in a forest", input, width, height,
                                              0.8f, 0, 1234, false, out var error);
             errors.Add(error);
             if (result != null)
@@ -193,7 +193,7 @@ public class StreamDiffusionV2IntegrationTests
             pipeline.ConfigureStream(1);
 
             var frame = MakeFrame(width, height, iteration);
-            var result = pipeline.StreamStep("a watercolor painting of a fox in a forest", frame, width, height, width, height,
+            var result = pipeline.StreamStep("a watercolor painting of a fox in a forest", frame, width, height,
                                              0.8f, 0, 1234, false, out var error);
             Assert.Null(error);
             Assert.NotNull(result);
@@ -220,7 +220,7 @@ public class StreamDiffusionV2IntegrationTests
         for (var frame = 0; frame < frameCount; frame++)
         {
             var input = MakeFrame(width, height, frame);
-            var result = pipeline.StreamStep("a watercolor painting of a fox in a forest", input, width, height, width, height,
+            var result = pipeline.StreamStep("a watercolor painting of a fox in a forest", input, width, height,
                                              0.8f, 0, 1234, false, out var error);
             Assert.Null(error);
             Assert.NotNull(result);
@@ -257,12 +257,12 @@ public class StreamDiffusionV2IntegrationTests
         var frame = MakeFrame(width, height, 0);
         const string firstPrompt = "a watercolor painting of a fox in a forest";
         const string secondPrompt = "a neon cyberpunk city at night";
-        var firstFrame = pipeline.StreamStep(firstPrompt, frame, width, height, width, height, 0.8f, 0, 1234, false, out var error);
+        var firstFrame = pipeline.StreamStep(firstPrompt, frame, width, height, 0.8f, 0, 1234, false, out var error);
         Assert.NotNull(firstFrame);
         Assert.Null(error);
 
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-        var duringEncode = pipeline.StreamStep(secondPrompt, frame, width, height, width, height, 0.8f, 0, 1234, false, out error);
+        var duringEncode = pipeline.StreamStep(secondPrompt, frame, width, height, 0.8f, 0, 1234, false, out error);
         stopwatch.Stop();
         Assert.Null(error);
         Assert.NotNull(duringEncode);
@@ -274,7 +274,7 @@ public class StreamDiffusionV2IntegrationTests
             System.Threading.Thread.Sleep(250);
 
         Assert.False(pipeline.IsPromptPending, "background prompt encoding did not finish");
-        var afterSwap = pipeline.StreamStep(secondPrompt, frame, width, height, width, height, 0.8f, 0, 1234, false, out error);
+        var afterSwap = pipeline.StreamStep(secondPrompt, frame, width, height, 0.8f, 0, 1234, false, out error);
         Assert.Null(error);
         Assert.NotNull(afterSwap);
         Console.WriteLine($"Prompt swap: {stopwatch.ElapsedMilliseconds} ms to keep streaming");
