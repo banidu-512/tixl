@@ -216,8 +216,39 @@ public sealed class DepthScanBuffer : Instance<DepthScanBuffer>, IStatusProvider
         _pendingScale = Math.Max(0f, PointScale.GetValue(context));
         _pendingStride = Math.Clamp(PixelStride.GetValue(context), 1, 64);
         _pendingMaxPoints = Math.Max(256, MaxPoints.GetValue(context));
+        PreparePointCamera(context);
 
         UpdateHoldingStatus();
+    }
+
+    /// <summary>
+    /// Latches the camera for the next merge: with a camera connected (DepthAnything's CamReference
+    /// implements ICamera) PointCloud unprojects into the camera's world space; without one it keeps
+    /// the DA3-style camera space with +Z forward that DepthToPoints expects. FieldOfView stays the
+    /// fallback frustum when no camera is connected.
+    /// </summary>
+    private void PreparePointCamera(EvaluationContext context)
+    {
+        _pendingCamToWorld = System.Numerics.Matrix4x4.Identity;
+        _pendingCamIsPose = false;
+        _pendingTanHalfX = MathF.Tan(_pendingFov * MathF.PI / 360f) * (float)_width / Math.Max(_height, 1);
+        _pendingTanHalfY = MathF.Tan(_pendingFov * MathF.PI / 360f);
+
+        var camObj = CameraReference.GetValue(context);
+        if (camObj is ICamera camera)
+        {
+            var worldToCamera = camera.WorldToCamera;
+            var clip = camera.CameraToClipSpace;
+            if (worldToCamera != default
+                && clip.M11 > 1e-6f && clip.M22 > 1e-6f
+                && System.Numerics.Matrix4x4.Invert(worldToCamera, out var camToWorld))
+            {
+                _pendingCamToWorld = camToWorld;
+                _pendingTanHalfX = 1f / clip.M11;
+                _pendingTanHalfY = 1f / clip.M22;
+                _pendingCamIsPose = true;
+            }
+        }
     }
 
     /// <summary>
@@ -943,13 +974,11 @@ public sealed class DepthScanBuffer : Instance<DepthScanBuffer>, IStatusProvider
         }
 
         var points = new Point[pointCount];
-        var tanHalf = MathF.Tan(_pendingFov * MathF.PI / 360f);
-        var aspect = (float)_width / _height;
         var held = _heldDepth;
         var count = _heldCount;
         var stability = _uiStability;
         var blend = stability > 0f;
-        var layout = HashCode.Combine(_width, _height, stride, hex, gridWidth, gridHeight, yStep);
+        var layout = HashCode.Combine(_width, _height, stride, hex, gridWidth, gridHeight, yStep, _pendingCamIsPose);
         if (blend && (_prevPositions == null || _prevLayout != layout))
         {
             _prevPositions = new System.Numerics.Vector3[pointCount];
@@ -987,7 +1016,17 @@ public sealed class DepthScanBuffer : Instance<DepthScanBuffer>, IStatusProvider
                 var v = (py + 0.5f) / _height;
                 var ndcX = u * 2f - 1f;
                 var ndcY = 1f - v * 2f;
-                var position = new System.Numerics.Vector3(ndcX * tanHalf * aspect * z, ndcY * tanHalf * z, z);
+                System.Numerics.Vector3 position;
+                if (_pendingCamIsPose)
+                {
+                    // tixl cameras are right-handed and look down -Z, so flip the depth sign.
+                    var camPoint = new System.Numerics.Vector3(ndcX * _pendingTanHalfX * z, ndcY * _pendingTanHalfY * z, -z);
+                    position = System.Numerics.Vector3.Transform(camPoint, _pendingCamToWorld);
+                }
+                else
+                {
+                    position = new System.Numerics.Vector3(ndcX * _pendingTanHalfX * z, ndcY * _pendingTanHalfY * z, z);
+                }
                 if (prev != null)
                     position = System.Numerics.Vector3.Lerp(prev[idx], position, 1f - stability);
                 p.Position = position;
@@ -1172,6 +1211,9 @@ public sealed class DepthScanBuffer : Instance<DepthScanBuffer>, IStatusProvider
     [Input(Guid = "a1f2e3d4-c5b6-4a7c-8d9e-0f1a2b3c4d5e")]
     public readonly InputSlot<float> FieldOfView = new(50f);
 
+    [Input(Guid = "c8d9e0f1-a2b3-4c5d-8e6f-7a8b9c0d1e2f")]
+    public readonly InputSlot<object> CameraReference = new();
+
     [Input(Guid = "b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6f")]
     public readonly InputSlot<float> PointScale = new(1f);
 
@@ -1230,6 +1272,10 @@ public sealed class DepthScanBuffer : Instance<DepthScanBuffer>, IStatusProvider
     private int _confWaitFrames;
     private int _colorWaitFrames;
 
+    private System.Numerics.Matrix4x4 _pendingCamToWorld;
+    private float _pendingTanHalfX;
+    private float _pendingTanHalfY;
+    private bool _pendingCamIsPose;
     private ScanMode _pendingMode;
     private float _pendingThreshold;
     private float _pendingFov;

@@ -162,7 +162,8 @@ back-pressured pattern the other depth readers use.
 - `Capture` merges every new frame while on; `CaptureOnce` merges exactly one; `Reset` clears.
 - `Mode` picks Latest / Average / Min / Max; `MaxCaptures` stops merging after N frames (0 = keep going).
 - `Save` + `SaveFolder`/`SaveFileName`/`SaveFormat` write the scan: 16-bit PNG (`depth x SaveScale`, 1000 = millimeters) or exact raw float32 with a small `T3DS` header.
-- `FieldOfView`, `PointScale`, `PixelStride`, `MaxPoints` shape the `PointCloud` unprojection (wire `DepthAnything.VerticalFov`).
+- `FieldOfView`, `PointScale`, `PixelStride`, `MaxPoints` shape the `PointCloud` unprojection.
+- `CameraReference` (wire `DepthAnything.CamReference`) unprojects the cloud into the camera's world space (pose + frustum from `ICamera`); without it the cloud stays in DA3-style camera space (+Z forward, like `DepthToPoints`).
 
 **Output:** `HeldDepth` (R32_Float), `HeldColor` (RGBA8), `MaskTexture` (R8),
 `PointCloud` + `PointCount` (CPU-built point buffer - draws on D3D11 and Vulkan, unlike

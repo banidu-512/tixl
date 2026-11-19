@@ -27,8 +27,11 @@ optional `ColorMap` is held alongside and colors the cloud.
 
 `PointCloud` unprojects the held scan into a CPU-built point buffer that draws on the
 D3D11 backend too (unlike the compute-written buffer of `DepthToPoints`, which needs
-Vulkan). Wire `FieldOfView` from `DepthAnything.VerticalFov` for a correctly scaled
-cloud, and feed `HeldDepth` to `DepthToPosition` for camera-space reconstruction.
+Vulkan). With `CameraReference` connected (wire `DepthAnything.CamReference`, which
+implements `ICamera`) the cloud unprojects into the camera's world space using the pose
+and frustum of the capture frame; without it, `FieldOfView` builds a DA3-style
+camera-space cloud (+Z forward, like `DepthToPoints`). Feed `HeldDepth` to
+`DepthToPosition` for camera-space reconstruction regardless.
 
 `Save` writes the scan as a 16-bit PNG (depth x `SaveScale`; 1000 = millimeters) or as
 exact raw float32 with a small header (magic `T3DS`, width, height, captures, valid
@@ -85,12 +88,12 @@ Fixed-size exports (for example 504x504 or 504x378) dictate their input size; `I
 - CUDA is the fastest provider for the uint8 NHWC DA3 Small export. TensorRT's parser rejects the graph's uint8 `Transpose` input and assigns that node to CUDA, so plain CUDA is the better choice for this file. TensorRT is useful for float-NCHW exports such as DA3 Base; the operator still lets CUDA run the nodes TensorRT does not claim.
 - Resampling to the model size, ImageNet normalization and the planar layout are one compute pass on the GPU. Only the model-sized input is read back, whatever the resolution of the source, and any texture format is accepted.
 - One frame is in flight at a time and a new one is captured as soon as the last result arrived, so results never queue behind stale input. `LatencyMs` reports capture to result, `InferenceMs` the model alone.
-- The session is created from the file path with the provider chain DirectML, CUDA, TensorRT or CoreML, then CPU. DirectML runs sequentially without memory-pattern planning, as that provider requires. TensorRT builds a cached engine under `%LOCALAPPDATA%\TiXL\trt_cache\<model>` — the first load of a model takes a minute or two while the engine builds, after which it starts instantly.
-- Measured on an RTX 3080 Ti Laptop, V3 Small at 518x518, single frame: **TensorRT 9 ms (fp16 engines - fp32 exports like `da3-small.onnx` run at roughly half their fp32 engine latency), CUDA 24 ms, DirectML 47 ms, CPU ~970 ms**. TensorRT wins; CUDA is the good compromise when you want no engine-build wait. All four were verified end to end, and a provider that is unavailable falls through to the next one in the chain with a log line naming the reason.
-- On Linux (GTX 1070, Vulkan) the operator was verified end to end as well: **CUDA 93 ms, CPU ~1475 ms**, and the splat chain renders. There is no DirectML on Linux. CUDA needs the toolkit's runtime libraries (`libcudart.so.12`, cuBLAS, cuDNN 9); the operator finds them in `/usr/local/cuda*`, `CUDA_PATH` or a `CudaRuntime` folder next to the package even when they are not in `ldconfig`. TensorRT on Linux needs version 10 (`libnvinfer.so.10`) — a TensorRT 8 install is rejected and the chain falls back, so prefer CUDA there.
-- Windows can only load **one** ONNX Runtime native build per process: the GPU build (CUDA/TensorRT) or the DirectML build. Choosing DirectML and later switching to CUDA in the same session needs a restart — the operator logs a warning when that happens. CUDA and TensorRT switch freely within a session.
+- The session is created from the file path with the provider chain CUDA, TensorRT or CoreML (macOS), then CPU. TensorRT builds a cached engine under `%LOCALAPPDATA%\TiXL\trt_cache\<model>` — the first load of a model takes a minute or two while the engine builds, after which it starts instantly.
+- Measured on an RTX 3080 Ti Laptop, V3 Small at 518x518, single frame: **TensorRT ~6 ms (fp16 engines - fp32 exports like `da3-small.onnx` run at roughly half their fp32 engine latency), CUDA ~31 ms, CPU ~970 ms**. TensorRT wins; CUDA is the good compromise when you want no engine-build wait. A provider that is unavailable falls through to the next one in the chain with a log line naming the reason.
+- On Linux (GTX 1070, Vulkan) the operator was verified end to end as well: **CUDA 93 ms, CPU ~1475 ms**, and the splat chain renders. CUDA needs the toolkit's runtime libraries (cuBLAS, cuDNN 9, and the CUDA 13 runtime on the shared ONNX Runtime build); the operator finds them in `/usr/local/cuda*`, `CUDA_PATH` or a `CudaRuntime` folder next to the package even when they are not in `ldconfig`. TensorRT on Linux needs version 10 (`libnvinfer.so.10`) — a TensorRT 8 install is rejected and the chain falls back, so prefer CUDA there.
+- DepthAnything and StreamDiffusion share the **same ONNX Runtime 1.30 GPU build**, so both operators run CUDA/TensorRT in one session. The version must match because Windows serves every native import of the module name `onnxruntime.dll` from whichever copy loaded first; mixed versions used to fail provider initialization with Error 1114 and silently fall back to CPU. The 1.30 build needs CUDA 13 + cuDNN 9 and the 580+ driver; Pascal GPUs (like the Linux test box's GTX 1070) no longer get the CUDA provider and run on CPU. DirectML was removed with this change — ORT 1.28 dropped its build; saved DirectML settings run on CUDA instead.
 - `Smoothing` blends consecutive results and settles the depth range. DA3 predicts depth up to an unknown scale per frame, so this is what keeps a live visualization from pulsing.
-- int8 files are small and meant for the CPU. Use fp16 or fp32 files with CUDA, DirectML or TensorRT. TiXL discovers the TensorRT 10 runtime in the standard NVIDIA install, `TENSORRT_ROOT`, or a `TensorRTRuntime` folder next to the editor and preloads it; no `PATH` change is needed.
+- int8 files are small and meant for the CPU. Use fp16 or fp32 files with CUDA or TensorRT. TiXL discovers the TensorRT 10 runtime in the standard NVIDIA install, `TENSORRT_ROOT`, or a `TensorRTRuntime` folder next to the editor and preloads it; no `PATH` change is needed.
 
 ## Depth Semantics
 
