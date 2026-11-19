@@ -51,6 +51,9 @@ public sealed class LaserProcessingSettings
         writer.WriteValue("ColorMinR", Safety.ColorMinR);
         writer.WriteValue("ColorMinG", Safety.ColorMinG);
         writer.WriteValue("ColorMinB", Safety.ColorMinB);
+        writer.WriteValue("ColorShiftR", Safety.ColorShiftR);
+        writer.WriteValue("ColorShiftG", Safety.ColorShiftG);
+        writer.WriteValue("ColorShiftB", Safety.ColorShiftB);
         writer.WriteValue("RenderSafetyShapes", Safety.RenderSafetyShapes);
         writer.WriteValue("RenderShapesLevel", Safety.RenderShapesLevel);
         writer.WriteValue("SetupCenterX", Safety.SetupCenterX);
@@ -132,6 +135,9 @@ public sealed class LaserProcessingSettings
                                       ColorMinR = safety.ReadValueSafe("ColorMinR", 0f),
                                       ColorMinG = safety.ReadValueSafe("ColorMinG", 0f),
                                       ColorMinB = safety.ReadValueSafe("ColorMinB", 0f),
+                                      ColorShiftR = safety.ReadValueSafe("ColorShiftR", 0),
+                                      ColorShiftG = safety.ReadValueSafe("ColorShiftG", 0),
+                                      ColorShiftB = safety.ReadValueSafe("ColorShiftB", 0),
                                       RenderSafetyShapes = safety.ReadValueSafe("RenderSafetyShapes", false),
                                       RenderShapesLevel = safety.ReadValueSafe("RenderShapesLevel", 0.1f),
                                       SetupCenterX = safety.ReadValueSafe("SetupCenterX", 0f),
@@ -221,6 +227,12 @@ public sealed class LaserProcessingSettings
         public float ColorMinG;
         public float ColorMinB;
 
+        /// <summary>Per-channel time shift in points (negative = the color leads the beam),
+        /// for diodes that react at different speeds. Calibration, like the gains.</summary>
+        public int ColorShiftR;
+        public int ColorShiftG;
+        public int ColorShiftB;
+
         /// <summary>Manual alignment rectangle, in normalized field units: center -1..1, width/height
         /// 0..1 where 1.0 spans the full scanner field (-32767..32767). Starts tiny; the user extends
         /// it step by step before switching Calibrated on.</summary>
@@ -293,6 +305,9 @@ public sealed class LaserProcessingSettings
                            ColorMinR = ColorMinR,
                            ColorMinG = ColorMinG,
                            ColorMinB = ColorMinB,
+                           ColorShiftR = ColorShiftR,
+                           ColorShiftG = ColorShiftG,
+                           ColorShiftB = ColorShiftB,
                            MaskCorners = _maskCorners,
                            MaskAllowOnlyInside = _maskAllowOnly,
                            MaskLevels = _maskLevels,

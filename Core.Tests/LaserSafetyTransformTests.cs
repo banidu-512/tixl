@@ -683,6 +683,165 @@ public class LaserSafetyTransformTests
     }
 
     [Fact]
+    public void ApplyColorLevels_UseTheFull16BitColorScale()
+    {
+        // A gain on one channel must not halve full-scale colors on the others, and a minimum is a
+        // fraction of full scale: 0.5 cuts 20000 (of 65535) but keeps 40000.
+        var points = Points(Lit(0, 0));
+        var gainConfig = LaserSafetyTransforms.Config.Default;
+        gainConfig.ColorGainR = 2f;
+        LaserSafetyTransforms.ApplyColorLevels(points, in gainConfig);
+
+        Assert.Equal(65535, points[0].R);
+        Assert.Equal(65535, points[0].G);
+        Assert.Equal(65535, points[0].B);
+
+        var minConfig = LaserSafetyTransforms.Config.Default;
+        minConfig.ColorMinG = 0.5f;
+        minConfig.ColorMinB = 0.5f;
+        var shaped = Points(Lit(0, 0, 65535, 20000, 40000));
+        LaserSafetyTransforms.ApplyColorLevels(shaped, in minConfig);
+
+        Assert.Equal(0, shaped[0].G);
+        Assert.Equal(40000, shaped[0].B);
+    }
+
+    [Fact]
+    public void ApplyColorTimeShift_DelaysAChannelAlongThePath()
+    {
+        var points = Points(Lit(0, 0, 65535, 0, 0),
+                            Lit(100, 0, 0, 65535, 0),
+                            Lit(200, 0, 0, 65535, 0),
+                            Lit(300, 0, 0, 0, 65535));
+        var config = LaserSafetyTransforms.Config.Default;
+        config.ColorShiftG = 1;
+
+        LaserSafetyTransforms.ApplyColorTimeShift(points, in config);
+
+        // The green run moved one point later; the point that only had green before is now dark.
+        Assert.Equal(65535, points[0].R);
+        Assert.Equal(0, points[1].I);
+        Assert.Equal(0, points[1].G);
+        Assert.Equal(65535, points[2].G);
+        Assert.Equal(0, points[2].R);
+        Assert.Equal(65535, points[3].G);
+        Assert.Equal(65535, points[3].B);
+    }
+
+    [Fact]
+    public void ApplyColorTimeShift_NegativeShiftLeadsTheBeam()
+    {
+        var points = Points(Lit(0, 0, 0, 0, 0),
+                            Lit(100, 0, 65535, 0, 0),
+                            Lit(200, 0, 0, 0, 0));
+        var config = LaserSafetyTransforms.Config.Default;
+        config.ColorShiftR = -1;
+
+        LaserSafetyTransforms.ApplyColorTimeShift(points, in config);
+
+        Assert.Equal(65535, points[0].R);
+        Assert.Equal(0, points[1].I);
+    }
+
+    [Fact]
+    public void ApplyColorTimeShift_NeverLightsABlankedPoint()
+    {
+        var points = Points(Lit(0, 0, 65535, 0, 0),
+                            LaserPoint.CreateBlanked(100, 0),
+                            Lit(200, 0, 0, 0, 0));
+        var config = LaserSafetyTransforms.Config.Default;
+        config.ColorShiftR = 2;
+
+        LaserSafetyTransforms.ApplyColorTimeShift(points, in config);
+
+        // The red skips over the blanked point: it stays dark and the color lands two points later.
+        Assert.Equal(0, points[1].I);
+        Assert.Equal(0, points[1].R);
+        Assert.Equal(65535, points[2].R);
+    }
+
+    [Fact]
+    public void ApplyColorTimeShift_DoesNotWrapAroundTheFrame()
+    {
+        var points = Points(Lit(0, 0, 0, 65535, 0), Lit(100, 0, 65535, 0, 0));
+        var config = LaserSafetyTransforms.Config.Default;
+        config.ColorShiftR = 1;
+
+        LaserSafetyTransforms.ApplyColorTimeShift(points, in config);
+
+        // Red from the last point does not reappear on the first one, it is dropped past the end.
+        Assert.Equal(0, points[0].R);
+        Assert.Equal(65535, points[0].G);
+        Assert.Equal(0, points[1].R);
+    }
+
+    [Fact]
+    public void ApplyColorTimeShift_ClampsToTheMaximumShift()
+    {
+        var points = new List<LaserPoint> { Lit(0, 0, 65535, 0, 0) };
+        for (var i = 1; i < 40; i++)
+            points.Add(Lit(i, 0, 0, 0, 0));
+
+        var config = LaserSafetyTransforms.Config.Default;
+        config.ColorShiftR = 1000;
+
+        LaserSafetyTransforms.ApplyColorTimeShift(points, in config);
+
+        Assert.Equal(65535, points[LaserSafetyTransforms.MaxColorShiftPoints].R);
+        Assert.Equal(0, points[0].I);
+    }
+
+    [Fact]
+    public void ApplyColorTimeShift_DefaultShiftsLeaveTheFrameUntouched()
+    {
+        var points = Points(Lit(0, 0, 65535, 0, 0), Lit(100, 0, 0, 65535, 0));
+
+        LaserSafetyTransforms.ApplyColorTimeShift(points, LaserSafetyTransforms.Config.Default);
+
+        Assert.Equal(65535, points[0].R);
+        Assert.Equal(65535, points[1].G);
+    }
+
+    [Fact]
+    public void Apply_ShiftedColorStaysUnderTheBrightnessCeiling()
+    {
+        // The shift runs before the ceiling, so a color moved onto another point is still capped.
+        var points = Points(Lit(0, 0, 65535, 0, 0), Lit(100, 0, 0, 0, 0), Lit(200, 0, 0, 0, 0));
+        var config = LaserSafetyTransforms.Config.Default;
+        config.ColorShiftR = 1;
+        config.MaxBrightness = 0.5f;
+
+        var stats = new LaserSafetyTransforms.Stats();
+        var result = LaserSafetyTransforms.Apply(points, in config, ref stats);
+
+        Assert.Equal(0, result[0].I);
+        Assert.Equal(32767, result[1].R);
+    }
+
+    [Fact]
+    public void LaserProcessingSettings_ColorShiftRoundTripsAndConfigures()
+    {
+        var settings = new LaserProcessingSettings();
+        settings.Safety.ColorShiftR = -3;
+        settings.Safety.ColorShiftB = 5;
+
+        var stringWriter = new StringWriter();
+        using (var writer = new JsonTextWriter(stringWriter))
+        {
+            settings.WriteToJson(writer);
+        }
+
+        var read = LaserProcessingSettings.ReadFromJson(JObject.Parse(stringWriter.ToString()));
+        Assert.Equal(-3, read.Safety.ColorShiftR);
+        Assert.Equal(0, read.Safety.ColorShiftG);
+        Assert.Equal(5, read.Safety.ColorShiftB);
+
+        var config = read.Safety.ToConfig();
+        Assert.Equal(-3, config.ColorShiftR);
+        Assert.Equal(5, config.ColorShiftB);
+    }
+
+    [Fact]
     public void LaserProcessingSettings_MasksRoundTripAndConfigure()
     {
         var settings = new LaserProcessingSettings();

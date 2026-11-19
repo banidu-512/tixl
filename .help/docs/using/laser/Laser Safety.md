@@ -34,10 +34,12 @@ Three layers of software safety ship with the laser output. They reduce risk fro
 
 * **Calibrated gate**: while off, upstream content is ignored and only the setup rectangle streams.
 * **Safe zone**: hard-clips all points into a configurable region of the field (build audience keep-out areas).
+* **Masks**: quads drawn on the output's frame preview that blank the beam where drawn, dim it to a set level (reduced-level audience scanning), or - in *Allow inside* mode - blank everything outside them. They apply after the keystone warp, so no graph content can bypass them; **Render shapes on the laser** draws the safe zone and mask outlines faintly onto the projection so you can verify them while aiming.
 * **Jump limiting**: subdivides over-long jumps so scanners track linearly instead of overshooting.
 * **Static-dwell blanking**: blanks a beam that sits near-motionless too long (the classic scan-fail hazard). The DAC replays the last frame until a new one arrives, so dwell is measured across the frame loop: a run continues over the frame seam, and a frame that never moves at all has every lit point blanked - which also means a frame that is *only* a static spot (a single beam dot without motion) renders dark. Beam effects need motion.
 * **Show brightness ceiling**: hard cap on R/G/B regardless of what content requests; single-colour setups driven from the intensity channel are capped through `I` the same way.
 * **Beam enable**: per-output master switch; off blanks every point but keeps the geometry.
+* **Color gains / min / shift**: per-diode projector calibration, not protection. Gains (0..2) match the projectors' whites, minimums cut a diode below its emission threshold so near-black content stays black, and the shift (up to 32 points, negative leads the beam) lines up diodes that react at different speeds. The shift runs before the masks and the brightness ceiling and never lights a blanked point; the gains run after the ceiling, so keep the plug's device ceiling as the final limit.
 
 **The laser plug's device settings** (Output Setup - select the plug under Local Bindings):
 
