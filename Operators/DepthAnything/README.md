@@ -72,13 +72,14 @@ Put the ONNX files in `Assets/`, or run `Scripts/download_models.py` (`Scripts/d
 |-----------|----------------------|---------|
 | V3 Small | `da3-small-fp16.onnx`, `da3-small.onnx`, `da3-small-int8.onnx` | Apache-2.0 |
 | V3 Base | `da3-base-fp16.onnx`, `da3-base.onnx` | Apache-2.0 |
+| V3 Base (camera tracking) | `da3-base-mv2.onnx` (own export, see `Scripts/export_da3_multiview.py`) | Apache-2.0 |
 | V3 Mono Large | `da3-mono-large-fp16.onnx`, `da3-mono-large-int8.onnx` | Apache-2.0 |
 | V3 Metric Large | `da3-metric-large-fp16.onnx` | Apache-2.0 |
 | V3 Large | `da3-large-fp16.onnx`, `da3-large.onnx` | CC-BY-NC 4.0 |
 | V3 Giant | `da3-giant-fp16.onnx`, `da3-giant.onnx` (own export from the official weights) | CC-BY-NC 4.0 |
 | V3 Nested Giant | `da3-nested-giant-fp16.onnx`, `da3-nested-giant.onnx` (own export) | CC-BY-NC 4.0 |
 
-The V3 files are community ONNX exports of the official weights. The operator reads the input and output layout from the model and accepts float32 NCHW input (ImageNet normalization is done on the GPU) as well as uint8 NHWC input from exports that normalize inside the graph, such as `da3-small.onnx`. Other exports with these layouts work too: the depth output may be called `depth` or `predicted_depth`, and `depth_conf`, `sky`, `intrinsics` and `extrinsics` outputs are used when present. The V3 Base export includes extrinsics, so `DepthAnything.CamReference` can publish the estimated camera; the Small export is depth-only. The Giant and Nested-Giant any-view checkpoints are CC-BY-NC 4.0 and have no public ONNX export; the model browser lists them as own-export entries.
+The V3 files are community ONNX exports of the official weights. The operator reads the input and output layout from the model and accepts float32 NCHW input (ImageNet normalization is done on the GPU) as well as uint8 NHWC input from exports that normalize inside the graph, such as `da3-small.onnx`. Other exports with these layouts work too: the depth output may be called `depth` or `predicted_depth`, and `depth_conf`, `sky`, `intrinsics` and `extrinsics` outputs are used when present. The single-view V3 Base export includes an `extrinsics` output, but it is the reference identity for every frame (a 30 deg camera rotation returns the same matrix as the anchor frame). Camera motion needs the two-view export (`V3 Base (camera tracking)`, see "Camera Reference"). The Giant and Nested-Giant any-view checkpoints are CC-BY-NC 4.0 and have no public ONNX export; the model browser lists them as own-export entries.
 
 Fixed-size exports (for example 504x504 or 504x378) dictate their input size; `InputResolution` only affects models with a dynamic input.
 
@@ -121,16 +122,18 @@ On `DrawPoints` enable `UsePointsScale`, set `PointSize` to about 5, and turn `E
 - `TemporalSmoothing` blends each point with the previous frame's buffer. 0 is raw and most responsive; 0.7-0.9 calms a still webcam, lower it when the camera or subject moves. It keeps a second point buffer, so the point memory doubles.
 - With the V3 Base confidence map, `ConfidenceThreshold` around 1.0 drops the flying-pixel streaks that cause long spikes; the useful value is model-dependent.
 - For spatial denoising, put `DepthFilter` between the depth output and `DepthToPoints`; `DepthAnything.Smoothing` blends the depth and its range before unprojection.
-- When the source aspect differs from the model's square input, scale the point object's X axis to the source aspect (or uncheck `MatchInputResolution` and feed a depth map with the source aspect).
+- When the source aspect differs from the model's square input, scale the point object's X axis to the source aspect (or enable `MatchInputAspect`, or install an aspect-matched export such as `da3-small-392x224-fp16.onnx`).
 - For true Gaussian splatting (learned scale, rotation, opacity and SH), DA3's Gaussian head lives only in the Giant/nested checkpoints, which are CC-BY-NC 4.0; `DepthToPoints` is an Apache-2.0-friendly approximation built from depth and color.
 
 See `Examples/DepthSplat.example.md` for the full node settings and two captures (front and rotated 35°).
 
 ## Camera Reference
 
-The V3 Base export predicts camera extrinsics and intrinsics. `DepthAnything.CamReference` publishes them as an `ICamera`: the position comes from the extrinsics, +Z is forward, the image-up axis comes from the camera, and the vertical FOV comes from the intrinsics. Connect it to camera-reference inputs such as `ApplyCamTransform.CamReference` or `SortPoints.CameraReference`.
+The community single-view exports predict camera intrinsics (a usable per-frame field of view), but their `extrinsics` output is the reference identity: a single view has no motion to measure. `DepthAnything.CamReference` publishes the camera: the FOV comes from the intrinsics, and the pose comes from the best source available (the `Status` output names it): the model's own extrinsics when they move, otherwise the depth-sequence tracker, otherwise the reference pose at the origin. Connect it to camera-reference inputs such as `ApplyCamTransform.CamReference` or `SortPoints.CameraReference`.
 
-The pose follows DA3's image frame. The depth splat is built in a y-up, +Z-forward frame, so a render camera driven directly by `CamReference` needs a Y flip (or use a `Camera` operator for the view). Models without an extrinsics output fall back to the reference pose at the origin; the Small export is depth-only, the Base export has the pose.
+The **V3 Base (camera tracking)** model is a two-view export of the official DA3 Base weights. The operator feeds it the previous and the current frame and reads the current frame's pose relative to the previous one, then chains these into a world pose that `CamReference` publishes (`Status` shows "multi-view"). The depth scale of each pair is arbitrary, so the previous frame's depth in the new pair is compared with its depth in the last pair and the world scale is carried along; the world units are those of the first pair. Rotation tracks well in synthetic tests; translation magnitude is relative and drifts over long sequences, and static input gives zero motion. Switching model or execution provider restarts the pose at the origin. The model costs about twice a single-view Base run.
+
+The pose follows DA3's image frame. The depth splat is built in a y-up, +Z-forward frame, so a render camera driven directly by `CamReference` needs a Y flip (or use a `Camera` operator for the view). With a single-view export and no usable depth tracking the pose stays at the reference pose at the origin.
 
 ## Examples
 

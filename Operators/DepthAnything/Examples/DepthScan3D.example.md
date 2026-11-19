@@ -17,7 +17,7 @@ and merges it into a voxel grid - scan an object by walking the camera around it
 ## Node Configuration
 
 ### DepthAnything
-- **ModelSize**: V3 Base (the one that estimates camera pose) or V3 Small for camera-space scans
+- **ModelSize**: V3 Base or V3 Small (the current exports' extrinsics output does not respond to camera motion, so the cloud builds in camera space either way; see the README)
 - **ExecutionProvider**: CUDA or DirectML
 
 ### DepthScan3D
@@ -43,5 +43,5 @@ and merges it into a voxel grid - scan an object by walking the camera around it
 ## Tips
 
 - VoxelSize is the min-distance knob: smaller = more detail, larger = stronger merge.
-- DA3's pose drifts over long hand scans; slow deliberate motion or a turntable gives the cleanest result.
+- The current export's pose output is inert, so camera motion is not fused into world space; a fixed camera with a turntable (single-viewpoint) is the reliable scanning setup.
 - Without CameraReference the cloud matches DepthScanBuffer's camera-space output.

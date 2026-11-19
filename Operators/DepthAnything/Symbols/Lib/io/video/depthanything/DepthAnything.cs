@@ -47,6 +47,9 @@ internal sealed class DepthEstimationResult
     public Vector3 CameraForward;
     public Vector3 CameraUp;
     public float InferenceMs;
+    /** CPU work after inference on the worker (copies, smoothing, pose tracking, range, colorize); part of the latency. */
+    public float PostMs;
+    public float PoseMs;
     public long CaptureTicks;
     public DepthAnything.DepthOutputFormat ColorFormat;
     public bool ColorEnhance;
@@ -54,6 +57,7 @@ internal sealed class DepthEstimationResult
     public bool FarIsLarge;
     public int Generation;
     public string? Error;
+    public string PoseSource = "";
 }
 
 [Guid("c8f7d6e5-4b3a-2c1d-9f8e-7a6b5c4d3e2f")]
@@ -118,6 +122,9 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
 
         /** uint8 NHWC input that the graph normalizes itself; otherwise float32 NCHW. */
         public bool InputIsBytes;
+
+        /** 2 for the multi-view export, which takes the previous and the current frame as one [1,2,3,H,W] input and predicts their relative pose. */
+        public int ViewCount = 1;
     }
 
     private readonly record struct ModelFile(string Name, bool IsMetric);
@@ -143,6 +150,31 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
         public bool HasRange;
         public float SmoothedMin;
         public float SmoothedMax;
+
+        public readonly DepthPoseTracker PoseTracker = new();
+
+        // Multi-view model: the previous input frame, the reusable pair tensor and the pose chained over all pairs so far
+        public float[]? PreviousInput;
+        public float[]? PairInput;
+        public int PreviousInputLength;
+        public bool HasPreviousView;
+        public readonly float[] WorldRotation = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+        public Vector3 WorldPosition;
+        public float WorldScale = 1f;
+        public readonly float[] KeyRotation = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+        public Vector3 KeyPosition;
+        public float KeyWorldDepth;
+        public readonly float[] LastRotation = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+        public Vector3 LastPosition;
+        public int JumpCount;
+        public readonly float[] MedianScratch = new float[MedianSamples];
+
+        // extrinsics-aliveness: the community exports publish an identity matrix every frame;
+        // when the model's own pose output actually moves we prefer it over depth tracking
+        public Vector3 LastExtPosition;
+        public Vector3 LastExtForward;
+        public bool HasLastExt;
+        public int InertFrames;
     }
 
     public DepthAnything()
@@ -197,8 +229,8 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
         var skyHandling = (SkyHandling)SkyHandlingParam.GetValue(context);
         var enhanceContrast = EnhanceContrast.GetValue(context);
         var invertDepth = InvertDepth.GetValue(context);
-        var matchRes = MatchInputResolution.GetValue(context);
-        _matchInputResolution = matchRes;
+        var matchRes = MatchInputAspect.GetValue(context);
+        _matchInputAspect = matchRes;
         _workerOutputFormat = outputFormat;
         _workerEnhanceContrast = enhanceContrast;
         _workerInvertDepth = invertDepth;
@@ -206,6 +238,21 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
         _workerStabilizeSky = skyHandling == SkyHandling.Stabilize;
         _workerSmoothing = Math.Clamp(Smoothing.GetValue(context), 0f, MaxSmoothing);
         _workerFieldOfViewDegrees = Math.Clamp(FieldOfView.GetValue(context), 1f, 179f);
+
+        // Ego-motion tracking costs tens of ms per frame on the worker; only pay it while something pulls the camera
+        _workerTrackPose = CamReference.DirtyFlag.FramesSinceLastUpdate < PoseConsumerTimeoutFrames;
+        _workerCameraMotion = (DepthCameraMotion)CameraMotion.GetValue(context);
+
+        // Normalization and sky handling are applied by the worker when producing a result.
+        // With a static input nothing else would re-run inference, so latch a recapture when
+        // either changes - a live video input re-runs inference anyway.
+        if (normalization != _lastNormalization || skyHandling != _lastSkyHandling)
+        {
+            _hasPendingInput = true;
+        }
+
+        _lastNormalization = normalization;
+        _lastSkyHandling = skyHandling;
 
         // Store values for UI dropdowns
         _uiOutputFormat = (int)outputFormat;
@@ -226,13 +273,32 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
 
         OutputTexture.Value = inputTexture;
 
-        if (_initFailed && (modelSize != _activeModelSize || provider != _activeProvider))
+        if (inputTexture != null && !inputTexture.IsDisposed)
+        {
+            var inputDescription = inputTexture.Description;
+            if (inputDescription.Height > 0)
+                _requestedInputAspectKey = AspectKey((float)inputDescription.Width / inputDescription.Height);
+        }
+
+        var inputSizeChanged = _requestedInputSize != _activeInputSize || _requestedInputAspectKey != _activeInputAspectKey;
+        if (_initFailed && (modelSize != _activeModelSize || provider != _activeProvider || inputSizeChanged))
         {
             _initFailed = false;
         }
 
-        if (!_initFailed && (_processingTask == null || _processingTask.IsCompleted || modelSize != _activeModelSize || provider != _activeProvider))
+        if (!_initFailed && (_processingTask == null || _processingTask.IsCompleted || modelSize != _activeModelSize || provider != _activeProvider
+                             || inputSizeChanged))
         {
+            InitializeWorker(debug, modelSize, provider);
+        }
+        else if (_initFailed
+                 && _initFailureMessage is { } failureMessage
+                 && failureMessage.StartsWith("Model not found", StringComparison.Ordinal)
+                 && modelSize == _activeModelSize && provider == _activeProvider
+                 && Stopwatch.GetTimestamp() - _lastInitAttemptTicks > ModelNotFoundRetryInterval.Ticks)
+        {
+            // The missing model may have just been downloaded into the store - retry without
+            // waiting for a settings change so a live graph recovers on its own
             InitializeWorker(debug, modelSize, provider);
         }
 
@@ -291,7 +357,8 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
                 InferenceMs.Value = result.InferenceMs;
                 LatencyMs.Value = (float)((Stopwatch.GetTimestamp() - result.CaptureTicks) * 1000.0 / Stopwatch.Frequency);
                 VerticalFov.Value = result.VerticalFovDegrees;
-                Status.Value = $"Processing {_updateCount}";
+                var poseNote = string.IsNullOrEmpty(result.PoseSource) ? "" : $" - {result.PoseSource}";
+                Status.Value = $"Processing {_updateCount}{poseNote} - infer {result.InferenceMs:0.0} ms, post {result.PostMs:0.0} ms (pose {result.PoseMs:0.0})";
             }
             else
             {
@@ -369,11 +436,12 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
         LastObjectToWorld = context.ObjectToWorld;
         SetCameraPose(position, forward, up, fov, aspect);
 
-        if (debug && !_loggedCameraPose)
+        // One line per new result, so the pose trajectory shows in the log while debugging
+        if (debug && result != null && !ReferenceEquals(result, _loggedPoseResult))
         {
-            _loggedCameraPose = true;
+            _loggedPoseResult = result;
             Log.Debug(hasPose
-                          ? $"[DepthAnything] CamReference pose pos={position} target={position + forward} up={up} fov={fov:F1}"
+                          ? $"[DepthAnything] CamReference pose pos={position} target={position + forward} up={up} fov={fov:F1} source={result.PoseSource}"
                           : "[DepthAnything] CamReference: model has no extrinsics output; using the reference pose", this);
         }
     }
@@ -443,12 +511,11 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
         float r21 = data[columns], r22 = data[columns + 1], r23 = data[columns + 2], ty = data[columns + 3];
         float r31 = data[2 * columns], r32 = data[2 * columns + 1], r33 = data[2 * columns + 2], tz = data[2 * columns + 3];
 
-        var position = new Vector3(
-            -(r11 * tx + r21 * ty + r31 * tz),
-            -(r12 * tx + r22 * ty + r32 * tz),
-            -(r13 * tx + r23 * ty + r33 * tz));
-        var forward = new Vector3(r31, r32, r33);
-        var up = new Vector3(-r21, -r22, -r23);
+        // DA3 extrinsics are camera-to-world: position is the camera center, forward and up
+        // are the OpenCV camera axes (z forward, y down) as world-space columns
+        var position = new Vector3(tx, ty, tz);
+        var forward = new Vector3(r13, r23, r33);
+        var up = new Vector3(-r12, -r22, -r32);
 
         if (!float.IsFinite(position.X) || !float.IsFinite(position.Y) || !float.IsFinite(position.Z)
             || !float.IsFinite(forward.X) || !float.IsFinite(forward.Y) || !float.IsFinite(forward.Z)
@@ -459,6 +526,204 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
     }
 
     private readonly record struct CameraPose(bool HasPose, Vector3 Position, Vector3 Forward, Vector3 Up);
+
+    private const float KeyframeMinFrameDifference = 0.045f;
+    private const float PoseJumpDegrees = 7f;
+    private const int PoseJumpPatience = 3;
+    private const float KeyframeRotationDegrees = 8f;
+    private const float KeyframeTranslationOverDepth = 0.15f;
+
+    /** Converts the model's OpenCV camera frame (y down, +Z forward) to TiXL's world (y up, -Z forward). */
+    private static readonly Quaternion OpenCvToWorld = Quaternion.CreateFromAxisAngle(Vector3.UnitX, MathF.PI);
+
+    /** Keyframe and current frame as one [1,2,3,H,W] tensor; the first frame pairs with itself, which anchors the world pose at zero motion. */
+    private static OrtValue CreatePairInput(WorkerContext workerContext, DepthEstimationRequest request)
+    {
+        var viewLength = 3 * request.Height * request.Width;
+        if (workerContext.PairInput == null || workerContext.PairInput.Length != 2 * viewLength)
+            workerContext.PairInput = new float[2 * viewLength];
+
+        if (workerContext.PreviousInput == null || workerContext.PreviousInputLength != viewLength)
+        {
+            workerContext.PreviousInput = new float[viewLength];
+            workerContext.PreviousInputLength = viewLength;
+            workerContext.HasPreviousView = false;
+        }
+
+        var current = request.InputData!;
+        var previous = workerContext.HasPreviousView ? workerContext.PreviousInput : current;
+        Array.Copy(previous, 0, workerContext.PairInput, 0, viewLength);
+        Array.Copy(current, 0, workerContext.PairInput, viewLength, viewLength);
+        return OrtValue.CreateTensorValueFromMemory(workerContext.PairInput, [1, 2, 3, request.Height, request.Width]);
+    }
+
+    /**
+     * The pair's last extrinsics map the keyframe's camera frame to the current one, in the pair's own
+     * depth units. Pairing against a keyframe instead of the previous frame stops per-pair noise from
+     * integrating while the camera is still. Each pair has its own arbitrary scale, so the keyframe's depth
+     * in this pair is compared with its world-unit depth to carry one world scale across the sequence.
+     * Returns true when the current frame should become the new keyframe.
+     */
+    private static bool AccumulateViewPose(WorkerContext workerContext, IReadOnlyList<OrtValue> outputs, int count, float[] currentInput)
+    {
+        // Near-identical frames have no baseline, so the model's relative pose is noise: hold the keyframe pose
+        if (workerContext.HasPreviousView && workerContext.PreviousInput != null)
+        {
+            var frameDifference = MeanAbsoluteDifference(workerContext.PreviousInput, currentInput, workerContext.PreviousInputLength);
+            if (frameDifference < KeyframeMinFrameDifference)
+            {
+                Array.Copy(workerContext.KeyRotation, workerContext.WorldRotation, 9);
+                workerContext.WorldPosition = workerContext.KeyPosition;
+                Array.Copy(workerContext.WorldRotation, workerContext.LastRotation, 9);
+                workerContext.LastPosition = workerContext.WorldPosition;
+                workerContext.JumpCount = 0;
+                return false;
+            }
+        }
+
+        if (workerContext.ExtrinsicsIndex < 0)
+            return false;
+
+        var extrinsicsValue = outputs[workerContext.ExtrinsicsIndex];
+        var info = extrinsicsValue.GetTensorTypeAndShape();
+        if (info.ElementDataType != TensorElementType.Float || info.Shape.Length < 2)
+            return false;
+
+        var rows = (int)info.Shape[^2];
+        var columns = (int)info.Shape[^1];
+        var extrinsics = extrinsicsValue.GetTensorDataAsSpan<float>();
+        var depth = outputs[workerContext.DepthIndex].GetTensorDataAsSpan<float>();
+        if (rows < 3 || columns < 4 || extrinsics.Length < 2 * rows * columns || depth.Length < 2 * count)
+            return false;
+
+        var currentDepth = MedianDepth(workerContext, depth.Slice(depth.Length - count, count));
+        var previousDepth = MedianDepth(workerContext, depth.Slice(depth.Length - 2 * count, count));
+        if (!(currentDepth > 0f) || !(previousDepth > 0f))
+            return false;
+
+        var scale = 1f;
+        if (workerContext.HasPreviousView && workerContext.KeyWorldDepth > 0f)
+            scale = Math.Clamp(workerContext.KeyWorldDepth / previousDepth, 0.25f, 4f);
+
+        // Row-major camera-to-world [R|t] of the current view in the previous view's frame (DA3 predicts c2w):
+        // the camera center is t and its orientation chains as world * R
+        var offset = extrinsics.Length - rows * columns;
+        Span<float> r = stackalloc float[9];
+        Span<float> t = stackalloc float[3];
+        for (int row = 0; row < 3; row++)
+        {
+            for (int column = 0; column < 3; column++)
+                r[row * 3 + column] = extrinsics[offset + row * columns + column];
+            t[row] = extrinsics[offset + row * columns + 3];
+        }
+
+        // Measured against a PTZ camera, chaining the pair's matrix as read turns the pose opposite to the real
+        // camera on both axes (pan left turns right, tilt up looks down), so chain its inverse
+        var tx = -(r[0] * t[0] + r[3] * t[1] + r[6] * t[2]);
+        var ty = -(r[1] * t[0] + r[4] * t[1] + r[7] * t[2]);
+        var tz = -(r[2] * t[0] + r[5] * t[1] + r[8] * t[2]);
+        (r[1], r[3]) = (r[3], r[1]);
+        (r[2], r[6]) = (r[6], r[2]);
+        (r[5], r[7]) = (r[7], r[5]);
+        t[0] = tx;
+        t[1] = ty;
+        t[2] = tz;
+
+        var motion = new Vector3(t[0], t[1], t[2]) * scale;
+        if (!float.IsFinite(motion.X) || !float.IsFinite(motion.Y) || !float.IsFinite(motion.Z))
+            return false;
+
+        var key = workerContext.KeyRotation;
+        workerContext.WorldPosition = workerContext.KeyPosition
+                                      + new Vector3(key[0] * motion.X + key[1] * motion.Y + key[2] * motion.Z,
+                                                    key[3] * motion.X + key[4] * motion.Y + key[5] * motion.Z,
+                                                    key[6] * motion.X + key[7] * motion.Y + key[8] * motion.Z);
+
+        // world = keyframe * R
+        var world = workerContext.WorldRotation;
+        Span<float> nextWorld = stackalloc float[9];
+        for (int row = 0; row < 3; row++)
+        {
+            for (int column = 0; column < 3; column++)
+                nextWorld[row * 3 + column] = key[row * 3] * r[column] + key[row * 3 + 1] * r[3 + column] + key[row * 3 + 2] * r[6 + column];
+        }
+
+        // One noisy pair must not throw the pose across the room: a jump is held back unless it persists
+        var last = workerContext.LastRotation;
+        var jumpTrace = 0f;
+        for (int i = 0; i < 9; i++)
+            jumpTrace += last[i] * nextWorld[i];
+
+        var jumpDegrees = MathF.Acos(Math.Clamp((jumpTrace - 1f) * 0.5f, -1f, 1f)) * 180f / MathF.PI;
+        if (jumpDegrees > PoseJumpDegrees && workerContext.HasPreviousView && workerContext.JumpCount < PoseJumpPatience)
+        {
+            workerContext.JumpCount++;
+            Array.Copy(last, world, 9);
+            workerContext.WorldPosition = workerContext.LastPosition;
+            return false;
+        }
+
+        workerContext.JumpCount = 0;
+        nextWorld.CopyTo(world);
+        Array.Copy(world, last, 9);
+        workerContext.LastPosition = workerContext.WorldPosition;
+
+        workerContext.WorldScale = scale;
+        var worldDepth = currentDepth * scale;
+        var trace = r[0] + r[4] + r[8];
+        var rotationDegrees = MathF.Acos(Math.Clamp((trace - 1f) * 0.5f, -1f, 1f)) * 180f / MathF.PI;
+        var promote = !workerContext.HasPreviousView
+                      || rotationDegrees > KeyframeRotationDegrees
+                      || new Vector3(t[0], t[1], t[2]).Length() > KeyframeTranslationOverDepth * currentDepth;
+        if (promote)
+        {
+            Array.Copy(world, key, 9);
+            workerContext.KeyPosition = workerContext.WorldPosition;
+            workerContext.KeyWorldDepth = worldDepth;
+        }
+
+        return promote;
+    }
+
+    private static float MeanAbsoluteDifference(float[] a, float[] b, int length)
+    {
+        const int step = 7;
+        var sum = 0f;
+        var n = 0;
+        for (int i = 0; i < length; i += step, n++)
+            sum += MathF.Abs(a[i] - b[i]);
+
+        return n == 0 ? 0f : sum / n;
+    }
+
+    /** Median of a strided sample of the finite positive depths; 0 when there are none. */
+    private static float MedianDepth(WorkerContext workerContext, ReadOnlySpan<float> plane)
+    {
+        var scratch = workerContext.MedianScratch;
+        var step = Math.Max(1, plane.Length / scratch.Length);
+        var n = 0;
+        for (int i = 0; i < plane.Length && n < scratch.Length; i += step)
+        {
+            var value = plane[i];
+            if (float.IsFinite(value) && value > 0f)
+                scratch[n++] = value;
+        }
+
+        if (n == 0)
+            return 0f;
+
+        Array.Sort(scratch, 0, n);
+        return scratch[n / 2];
+    }
+
+    private static float DegreesBetween(Vector3 a, Vector3 b)
+    {
+        var length = a.Length() * b.Length();
+        if (length < 1e-8f)
+            return 0f;
+        var dot = Vector3.Dot(a, b) / length;
+        return (float)(Math.Acos(Math.Clamp(dot, -1f, 1f)) * 180.0 / Math.PI);
+    }
 
     private void ReturnResultBuffers(DepthEstimationResult? result)
     {
@@ -589,7 +854,7 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
         return modelSize switch
         {
             ModelSize.Da3Small or ModelSize.Da3Base or ModelSize.Da3Large or ModelSize.Da3MonoLarge
-                or ModelSize.Da3MetricLarge or ModelSize.Da3Giant or ModelSize.Da3NestedGiant => 504,
+                or ModelSize.Da3MetricLarge or ModelSize.Da3Giant or ModelSize.Da3NestedGiant or ModelSize.Da3BaseTracked => 504,
             _ => DefaultInputSize
         };
     }
@@ -606,6 +871,9 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
     private const float MetricReferenceFocalPx = 300f;
     private const float MaxSmoothing = 0.95f;
 
+    /** Depth samples per view used to relate the depth scale of consecutive view pairs. */
+    private const int MedianSamples = 1024;
+
     // Published by the worker once its session is warm; null while loading or after a failure
     private volatile ModelInfo? _modelInfo;
 
@@ -616,6 +884,11 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
     private DepthEstimationResult? _currentResult;
     private readonly object _workerLock = new object();
     private ModelSize _activeModelSize;
+    private static readonly TimeSpan PreviousWorkerExitTimeout = TimeSpan.FromSeconds(3);
+    private static readonly TimeSpan ModelLoadSettleTime = TimeSpan.FromMilliseconds(750);
+    private int _activeInputSize;
+    private int _requestedInputAspectKey;
+    private int _activeInputAspectKey;
     private int _updateCount;
 
     private volatile bool _isInitializing;
@@ -629,9 +902,16 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
     private Texture2D? _lastInputTexture;
     private ExecutionProvider _activeProvider;
     private bool _appliedMatchRes;
+    private DepthNormalization _lastNormalization;
+    private SkyHandling _lastSkyHandling;
+
+    /** How often a "Model not found" failure re-checks the model store for an appeared file. */
+    private static readonly TimeSpan ModelNotFoundRetryInterval = TimeSpan.FromSeconds(2);
+
+    private long _lastInitAttemptTicks;
 
     // Volatile settings the worker reads when producing a result
-    private volatile bool _matchInputResolution;
+    private volatile bool _matchInputAspect;
     private volatile DepthOutputFormat _workerOutputFormat;
     private volatile bool _workerEnhanceContrast;
     private volatile bool _workerInvertDepth;
@@ -639,6 +919,9 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
     private volatile bool _workerStabilizeSky;
     private volatile float _workerSmoothing;
     private volatile float _workerFieldOfViewDegrees;
+    private volatile bool _workerTrackPose;
+    private volatile DepthCameraMotion _workerCameraMotion;
+    private const int PoseConsumerTimeoutFrames = 30;
 
     // Requested inference size from the Resolution input, 0 = auto
     private volatile int _requestedInputSize;
@@ -680,15 +963,18 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
 
     private void InitializeWorker(bool debug, ModelSize modelSize, ExecutionProvider provider)
     {
+        _lastInitAttemptTicks = Stopwatch.GetTimestamp();
         var previousTask = _processingTask;
         StopWorker(debug);
         _activeModelSize = modelSize;
         _activeProvider = provider;
+        _activeInputSize = _requestedInputSize;
+        _activeInputAspectKey = _requestedInputAspectKey;
         _initFailed = false;
         _initFailureMessage = null;
         _requestInFlight = false;
         _hasPendingInput = true;
-        _loggedCameraPose = false;
+        _loggedPoseResult = null;
 
         var modelFile = ResolveModelFile(modelSize, debug, out var modelPath);
         if (modelPath == null)
@@ -709,12 +995,13 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
         _processingTask = Task.Run(async () =>
         {
             // The previous worker releases its session only when its loop exits. Waiting here keeps the render
-            // thread free while preventing two models from holding GPU memory at the same time.
+            // thread free while preventing two models from holding GPU memory at the same time - but only briefly:
+            // a predecessor stuck in a TensorRT engine build would otherwise block a provider switch for minutes.
             if (previousTask != null)
             {
                 try
                 {
-                    await previousTask.ConfigureAwait(false);
+                    await Task.WhenAny(previousTask, Task.Delay(PreviousWorkerExitTimeout, token)).ConfigureAwait(false);
                 }
                 catch
                 {
@@ -724,6 +1011,17 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
 
             if (token.IsCancellationRequested)
                 return;
+
+            // Stepping through the model dropdown re-initializes per entry; a TensorRT engine build cannot be
+            // cancelled once started, so a choice must survive briefly before its session is created.
+            try
+            {
+                await Task.Delay(ModelLoadSettleTime, token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
 
             WorkerLoop(modelPath, modelFile, modelSize, provider, token, generation, debug);
         }, CancellationToken.None);
@@ -749,6 +1047,7 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
             ModelSize.Da3MetricLarge => ["da3-metric-large-fp16.onnx"],
             ModelSize.Da3Giant => ["da3-giant-fp16.onnx", "da3-giant.onnx"],
             ModelSize.Da3NestedGiant => ["da3-nested-giant-fp16.onnx", "da3-nested-giant.onnx"],
+            ModelSize.Da3BaseTracked => ["da3-base-mv2.onnx"],
             _ => ["da3-small-fp16.onnx", "da3-small.onnx", "da3-small-int8.onnx"]
         };
     }
@@ -762,9 +1061,60 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
         _ => modelSize
     };
 
+    /**
+     * Prepends the fixed-size exports for a requested input size ("da3-small-280-fp16.onnx" before "da3-small-fp16.onnx"):
+     * fixed-size exports ignore the requested size, so a smaller input needs its own file.
+     */
+    private static string[] WithSizeVariants(string[] candidates, int inputSize, int aspectKey)
+    {
+        var aspect = aspectKey / AspectKeyScale;
+        var matchAspect = aspect > 0 && MathF.Abs(aspect - 1f) > 0.02f;
+        if (inputSize <= 0 && !matchAspect)
+            return candidates;
+
+        // An export at the source's aspect ratio sees the frame undistorted: "da3-small-392x224-fp16.onnx" for 16:9
+        var longSide = inputSize > 0 ? inputSize : DefaultInputSize;
+        var result = new List<string>(candidates.Length * 3);
+        if (matchAspect)
+        {
+            var shortSide = Math.Max(PatchSize, (int)MathF.Round(longSide / MathF.Max(aspect, 1f / aspect) / PatchSize) * PatchSize);
+            var size = aspect > 1f ? $"{longSide}x{shortSide}" : $"{shortSide}x{longSide}";
+            foreach (var candidate in candidates)
+                result.Add(InsertSize(candidate, size));
+        }
+
+        if (inputSize > 0)
+        {
+            foreach (var candidate in candidates)
+                result.Add(InsertSize(candidate, inputSize.ToString()));
+        }
+
+        result.AddRange(candidates);
+        return result.ToArray();
+    }
+
+    /** "da3-small-fp16.onnx" + "392x224" -> "da3-small-392x224-fp16.onnx" */
+    private static string InsertSize(string candidate, string size)
+    {
+        var stem = candidate[..^".onnx".Length];
+        var precisionIndex = stem.LastIndexOf("-fp", StringComparison.Ordinal);
+        if (precisionIndex < 0)
+            precisionIndex = stem.LastIndexOf("-int8", StringComparison.Ordinal);
+
+        return precisionIndex < 0
+                   ? $"{stem}-{size}.onnx"
+                   : $"{stem[..precisionIndex]}-{size}{stem[precisionIndex..]}.onnx";
+    }
+
+    /** Aspect ratios compare as integers so float jitter in texture sizes cannot trigger a reload. */
+    private const float AspectKeyScale = 100f;
+
+    private static int AspectKey(float aspect) => (int)MathF.Round(aspect * AspectKeyScale);
+
     private ModelFile ResolveModelFile(ModelSize modelSize, bool debug, out string? modelPath)
     {
-        var candidates = GetModelCandidates(modelSize);
+        var plainCandidates = GetModelCandidates(modelSize);
+        var candidates = WithSizeVariants(plainCandidates, _activeInputSize, _activeInputAspectKey);
         foreach (var candidate in candidates)
         {
             var path = FindModelPath(candidate, debug);
@@ -775,7 +1125,8 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
             return new ModelFile(candidate, candidate.Contains("metric", StringComparison.Ordinal));
         }
 
-        var status = $"Model not found: {candidates[0]}";
+        // Name the file to install, not one of the optional size-matched exports tried first
+        var status = $"Model not found: {plainCandidates[0]}";
         if (debug) Log.Error($"[DepthAnything] {status}. Place it in the model store (Settings > AI Models) or the package's Assets/ folder.", this);
         Status.Value = status;
         // Update would otherwise overwrite this with a generic init-failure message on the same frame
@@ -838,6 +1189,12 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
         try
         {
             var modelInfo = InitializeSession(workerContext, modelFile, modelPath, provider, token, debug);
+
+            // Session creation can't be cancelled (a TensorRT engine build runs for minutes); a successor may
+            // already be running, so a cancelled worker only disposes its session and must not publish anything.
+            if (token.IsCancellationRequested)
+                return;
+
             if (modelInfo == null || workerContext.Session == null)
             {
                 failedToInit = true;
@@ -845,6 +1202,8 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
             else
             {
                 WarmUpSession(workerContext, modelInfo, modelSize, token, debug);
+                if (token.IsCancellationRequested)
+                    return;
 
                 // Published only after warm-up so request acceptance coincides with a usable session
                 _modelInfo = modelInfo;
@@ -951,9 +1310,10 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
         var dimensions = inputMetadata.Dimensions;
         var isFloatPlanar = inputMetadata.ElementType == typeof(float) && dimensions.Length == 4 && dimensions[1] == 3;
         var isBytePacked = inputMetadata.ElementType == typeof(byte) && dimensions.Length == 4 && dimensions[3] == 3;
-        if (!isFloatPlanar && !isBytePacked)
+        var isFloatPair = inputMetadata.ElementType == typeof(float) && dimensions.Length == 5 && dimensions[1] == 2 && dimensions[2] == 3;
+        if (!isFloatPlanar && !isBytePacked && !isFloatPair)
         {
-            _initFailureMessage = "Unsupported model input: expected float32 NCHW or uint8 NHWC RGB";
+            _initFailureMessage = "Unsupported model input: expected float32 NCHW, float32 [1,2,3,H,W] view pair or uint8 NHWC RGB";
             Log.Warning($"[DepthAnything] Unsupported input for {modelFile.Name}: {inputMetadata.ElementType.Name} [{string.Join(", ", dimensions)}]", this);
 
             // Leaving the session assigned would keep the worker loop alive forever while _modelInfo
@@ -972,14 +1332,15 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
         workerContext.ExtrinsicsIndex = AddOutput(outputNames, session.OutputMetadata, ["extrinsics"], false);
         workerContext.OutputNames = outputNames.ToArray();
 
-        // NCHW is [batch, 3, height, width]; NHWC is [batch, height, width, 3]
-        var heightIndex = isBytePacked ? 1 : 2;
+        // NCHW is [batch, 3, height, width]; NHWC is [batch, height, width, 3]; a view pair is [1, 2, 3, height, width]
+        var heightIndex = isBytePacked ? 1 : isFloatPair ? 3 : 2;
         return new ModelInfo
                    {
                        DeclaredHeight = dimensions[heightIndex] > 0 ? dimensions[heightIndex] : 0,
                        DeclaredWidth = dimensions[heightIndex + 1] > 0 ? dimensions[heightIndex + 1] : 0,
                        IsMetric = modelFile.IsMetric,
-                       InputIsBytes = isBytePacked
+                       InputIsBytes = isBytePacked,
+                       ViewCount = isFloatPair ? 2 : 1
                    };
     }
 
@@ -1028,9 +1389,11 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
                 width = height = GetEffectiveInputSize(_requestedInputSize, modelSize) / PatchSize * PatchSize;
             }
 
-            using var inputValue = modelInfo.InputIsBytes
-                                       ? OrtValue.CreateTensorValueFromMemory(new byte[3 * width * height], [1, height, width, 3])
-                                       : OrtValue.CreateTensorValueFromMemory(new float[3 * width * height], [1, 3, height, width]);
+            using var inputValue = modelInfo.ViewCount == 2
+                                       ? OrtValue.CreateTensorValueFromMemory(new float[2 * 3 * width * height], [1, 2, 3, height, width])
+                                       : modelInfo.InputIsBytes
+                                           ? OrtValue.CreateTensorValueFromMemory(new byte[3 * width * height], [1, height, width, 3])
+                                           : OrtValue.CreateTensorValueFromMemory(new float[3 * width * height], [1, 3, height, width]);
             workerContext.InputValues[0] = inputValue;
 
             var stopwatch = Stopwatch.StartNew();
@@ -1212,14 +1575,18 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
                                                 : "Input format mismatch: the model expects float NCHW");
             }
 
-            using var inputValue = request.InputBytes != null
-                                       ? OrtValue.CreateTensorValueFromMemory(request.InputBytes, [1, request.Height, request.Width, 3])
-                                       : OrtValue.CreateTensorValueFromMemory(request.InputData!, [1, 3, request.Height, request.Width]);
+            using var inputValue = modelInfo.ViewCount == 2
+                                       ? CreatePairInput(workerContext, request)
+                                       : request.InputBytes != null
+                                           ? OrtValue.CreateTensorValueFromMemory(request.InputBytes, [1, request.Height, request.Width, 3])
+                                           : OrtValue.CreateTensorValueFromMemory(request.InputData!, [1, 3, request.Height, request.Width]);
             workerContext.InputValues[0] = inputValue;
 
             var stopwatch = Stopwatch.StartNew();
             using var outputs = session.Run(workerContext.RunOptions, workerContext.InputNames, workerContext.InputValues!, workerContext.OutputNames);
             stopwatch.Stop();
+            var postStartTicks = Stopwatch.GetTimestamp();
+            long poseTicks = 0;
 
             var depthData = CopyPlane(outputs[workerContext.DepthIndex], out int outputWidth, out int outputHeight);
             if (depthData == null)
@@ -1243,6 +1610,25 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
             var verticalFov = ReadVerticalFov(workerContext, outputs, outputHeight, modelInfo, outputWidth);
             var cameraPose = ReadCameraPose(workerContext, outputs);
 
+            if (modelInfo.ViewCount == 2)
+            {
+                // Chain the pair's relative pose onto the world pose and bring this frame's depth into the same units
+                var promoteKeyframe = AccumulateViewPose(workerContext, outputs, count, request.InputData!);
+                if (workerContext.WorldScale != 1f)
+                {
+                    for (int i = 0; i < count; i++)
+                    {
+                        resultDepth[i] *= workerContext.WorldScale;
+                    }
+                }
+
+                if (promoteKeyframe || !workerContext.HasPreviousView)
+                {
+                    Array.Copy(request.InputData!, workerContext.PreviousInput!, workerContext.PreviousInputLength);
+                    workerContext.HasPreviousView = true;
+                }
+            }
+
             if (modelInfo.IsMetric)
             {
                 // The metric model predicts depth as seen by a 300 px reference camera; the real focal length turns it into meters
@@ -1256,6 +1642,55 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
 
             var smoothing = _workerSmoothing;
             SmoothDepth(workerContext, resultDepth, outputWidth, outputHeight, smoothing);
+
+            // Ego-motion from depth: the community exports' extrinsics stay at identity
+            // while the camera moves, so derive the trajectory from the depth sequence.
+            // A live extrinsics output overrides the tracker whenever it moves.
+            var intrinsicsSpan = workerContext.IntrinsicsIndex >= 0
+                                     ? outputs[workerContext.IntrinsicsIndex].GetTensorDataAsSpan<float>()
+                                     : ReadOnlySpan<float>.Empty;
+            float fx, fy, cx, cy;
+            if (intrinsicsSpan.Length >= 9 && intrinsicsSpan[4] > 0)
+            {
+                fx = intrinsicsSpan[0];
+                fy = intrinsicsSpan[4];
+                cx = intrinsicsSpan[2];
+                cy = intrinsicsSpan[5];
+            }
+            else
+            {
+                var fovRadians = _workerFieldOfViewDegrees * MathF.PI / 180f;
+                fy = 0.5f * outputHeight / MathF.Tan(fovRadians * 0.5f);
+
+                // FieldOfView is vertical. A model whose aspect differs from the source (a 16:9 frame squeezed into a
+                // square input) has non-square pixels, so fx follows the horizontal scale, not fy.
+                var pixelAspect = request.SourceWidth > 0 && request.SourceHeight > 0
+                                      ? (float)outputWidth / request.SourceWidth / ((float)outputHeight / request.SourceHeight)
+                                      : 1f;
+                fx = fy * pixelAspect;
+                cx = outputWidth * 0.5f;
+                cy = outputHeight * 0.5f;
+            }
+
+            if (modelInfo.ViewCount == 1 && !_workerTrackPose)
+            {
+                if (workerContext.PoseTracker.HasPose)
+                    workerContext.PoseTracker.Reset();
+            }
+            else if (modelInfo.ViewCount == 1)
+            {
+                var cameraMotion = _workerCameraMotion;
+                if (workerContext.PoseTracker.Motion != cameraMotion)
+                {
+                    workerContext.PoseTracker.Motion = cameraMotion;
+                    workerContext.PoseTracker.Reset();
+                }
+
+                var poseStartTicks = Stopwatch.GetTimestamp();
+                workerContext.PoseTracker.Update(resultDepth, resultConfidence, outputWidth, outputHeight, fx, fy, cx, cy);
+                poseTicks = Stopwatch.GetTimestamp() - poseStartTicks;
+            }
+
             ComputeDepthRange(resultDepth, resultSky, count, _workerStabilizeSky, _workerPercentileNormalization, out float min, out float max);
             if (smoothing > 0 && workerContext.HasRange)
             {
@@ -1282,12 +1717,15 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
             // used downstream, which skips all full-resolution CPU work per result
             int resultWidth = outputWidth;
             int resultHeight = outputHeight;
-            if (_matchInputResolution)
+            // Match the source's aspect ratio at model resolution: a square model's output is stretched back to the
+            // frame's shape (392x392 -> 392x220 for 16:9). Upscaling to the source's pixel size would only add CPU work.
+            if (_matchInputAspect && request.SourceWidth > 0 && request.SourceHeight > 0
+                && GetAspectMatchedSize(outputWidth, outputHeight, request.SourceWidth, request.SourceHeight, out var matchedWidth, out var matchedHeight))
             {
-                resultDepth = ResizePlane(depthData, outputWidth, outputHeight, request.SourceWidth, request.SourceHeight);
+                resultDepth = ResizePlane(depthData, outputWidth, outputHeight, matchedWidth, matchedHeight);
                 ReturnDepthBuffer(depthData);
-                resultWidth = request.SourceWidth;
-                resultHeight = request.SourceHeight;
+                resultWidth = matchedWidth;
+                resultHeight = matchedHeight;
 
                 if (resultConfidence != null)
                 {
@@ -1316,6 +1754,70 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
                 Log.Debug($"[DepthAnything] First inference ok: {outputWidth}x{outputHeight}, {stopwatch.ElapsedMilliseconds}ms", this);
             }
 
+            // Prefer the model's extrinsics whenever they actually move this frame; with the
+            // community exports they never do, so the depth-tracked pose is what gets published
+            var extrinsicsLive = false;
+            if (cameraPose.HasPose)
+            {
+                var positionMoved = !workerContext.HasLastExt
+                                    || Vector3.Distance(cameraPose.Position, workerContext.LastExtPosition) > 0.002f;
+                var forwardChanged = !workerContext.HasLastExt
+                                     || DegreesBetween(cameraPose.Forward, workerContext.LastExtForward) > 0.5f;
+                if (positionMoved || forwardChanged)
+                {
+                    extrinsicsLive = true;
+                    workerContext.InertFrames = 0;
+                }
+                else
+                {
+                    workerContext.InertFrames++;
+                }
+
+                workerContext.HasLastExt = true;
+                workerContext.LastExtPosition = cameraPose.Position;
+                workerContext.LastExtForward = cameraPose.Forward;
+            }
+
+            Vector3 posePosition;
+            Vector3 poseForward;
+            Vector3 poseUp;
+            string poseSource;
+            if (modelInfo.ViewCount == 2)
+            {
+                var worldRotation = workerContext.WorldRotation;
+                posePosition = workerContext.WorldPosition;
+                poseForward = new Vector3(worldRotation[2], worldRotation[5], worldRotation[8]);
+                poseUp = new Vector3(-worldRotation[1], -worldRotation[4], -worldRotation[7]);
+                poseSource = "multi-view";
+            }
+            else if (extrinsicsLive)
+            {
+                posePosition = cameraPose.Position;
+                poseForward = cameraPose.Forward;
+                poseUp = cameraPose.Up;
+                poseSource = "extrinsics";
+            }
+            else if (workerContext.PoseTracker.HasPose)
+            {
+                posePosition = workerContext.PoseTracker.Position;
+                poseForward = workerContext.PoseTracker.Forward;
+                poseUp = workerContext.PoseTracker.Up;
+                poseSource = workerContext.PoseTracker.Tracking ? "depth-tracking" : "re-anchored";
+            }
+            else
+            {
+                posePosition = Vector3.Zero;
+                poseForward = Vector3.UnitZ;
+                poseUp = -Vector3.UnitY;
+                poseSource = "reference";
+            }
+
+            // Every pose source lives in the model's OpenCV frame (y down, +Z forward); TiXL's world
+            // is y up looking along -Z, so the published camera flips over, matching AxisPtzCamera
+            posePosition = Vector3.Transform(posePosition, OpenCvToWorld);
+            poseForward = Vector3.Transform(poseForward, OpenCvToWorld);
+            poseUp = Vector3.Transform(poseUp, OpenCvToWorld);
+
             return new DepthEstimationResult
             {
                 DepthData = resultDepth,
@@ -1327,11 +1829,14 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
                 Min = min,
                 Max = max,
                 VerticalFovDegrees = verticalFov,
-                HasCameraPose = cameraPose.HasPose,
-                CameraPosition = cameraPose.Position,
-                CameraForward = cameraPose.Forward,
-                CameraUp = cameraPose.Up,
+                HasCameraPose = modelInfo.ViewCount == 2 || extrinsicsLive || workerContext.PoseTracker.HasPose,
+                CameraPosition = posePosition,
+                CameraForward = poseForward,
+                CameraUp = poseUp,
+                PoseSource = poseSource,
                 InferenceMs = (float)stopwatch.Elapsed.TotalMilliseconds,
+                PostMs = (float)((Stopwatch.GetTimestamp() - postStartTicks) * 1000.0 / Stopwatch.Frequency),
+                PoseMs = (float)(poseTicks * 1000.0 / Stopwatch.Frequency),
                 CaptureTicks = request.CaptureTicks,
                 ColorFormat = outputFormat,
                 ColorEnhance = enhanceContrast,
@@ -1396,7 +1901,8 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
             return null;
 
         var buffer = TakeDepthBuffer(width * height);
-        span.Slice(0, width * height).CopyTo(buffer);
+        // A multi-view output holds one plane per view; the current frame is the last one
+        span.Slice(span.Length - width * height, width * height).CopyTo(buffer);
         return buffer;
     }
 
@@ -1436,6 +1942,25 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
             Height = request.Height,
             Error = message
         };
+    }
+
+    /** The model-resolution size with the source's aspect ratio; false when the output already has it. */
+    private static bool GetAspectMatchedSize(int width, int height, int sourceWidth, int sourceHeight, out int matchedWidth, out int matchedHeight)
+    {
+        var sourceAspect = (float)sourceWidth / sourceHeight;
+        var longSide = Math.Max(width, height);
+        if (sourceAspect >= 1f)
+        {
+            matchedWidth = longSide;
+            matchedHeight = Math.Max(1, (int)MathF.Round(longSide / sourceAspect));
+        }
+        else
+        {
+            matchedHeight = longSide;
+            matchedWidth = Math.Max(1, (int)MathF.Round(longSide * sourceAspect));
+        }
+
+        return matchedWidth != width || matchedHeight != height;
     }
 
     private float[] ResizePlane(float[] sourceDepth, int sourceWidth, int sourceHeight, int targetWidth, int targetHeight)
@@ -1844,7 +2369,7 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
     public readonly InputSlot<int> ExecutionProviderParam = new((int)ExecutionProvider.Cuda);
 
     [Input(Guid = "234567cd-8912-9012-3456-6789012345ab")]
-    public readonly InputSlot<bool> MatchInputResolution = new(false);
+    public readonly InputSlot<bool> MatchInputAspect = new(false);
 
     [Input(Guid = "d5c7a0fc-9eab-4c6e-b058-a06e2c4d7fbd")]
     public readonly InputSlot<float> Smoothing = new(0.25f);
@@ -1870,6 +2395,13 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
     /// </summary>
     [Input(Guid = "d2e3f4a5-b6c7-4d8e-9f0a-1b2c3d4e5f60", MappedType = typeof(SkyHandling))]
     public readonly InputSlot<int> SkyHandlingParam = new((int)SkyHandling.Stabilize);
+
+    /// <summary>
+    /// How the physical camera moves. RotationOnly suits pan/tilt (PTZ) and tripod cameras: the camera pose may only
+    /// turn, so depth-scale wobble cannot drift its position. Static keeps the reference pose.
+    /// </summary>
+    [Input(Guid = "e4f1c2a7-5b3d-4c8e-9a6f-2d7b1e0c3f58", MappedType = typeof(DepthCameraMotion))]
+    public readonly InputSlot<int> CameraMotion = new((int)DepthCameraMotion.Free);
 
     [Input(Guid = "56789012-5678-5678-5678-567890123456")]
     public readonly InputSlot<bool> EnhanceContrast = new(false);
@@ -1902,7 +2434,8 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
         Da3MetricLarge,
         Da3Large,
         Da3Giant,
-        Da3NestedGiant
+        Da3NestedGiant,
+        Da3BaseTracked
     }
 
     /// <summary>
@@ -1968,6 +2501,7 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
         ("V3 Metric Large", ModelSize.Da3MetricLarge),
         ("V3 Giant", ModelSize.Da3Giant),
         ("V3 Nested Giant", ModelSize.Da3NestedGiant),
+        ("V3 Base (camera tracking)", ModelSize.Da3BaseTracked),
     };
 
     private static readonly string[] ResolutionNames = { "Auto", "196", "280", "392", "518", "504" };
@@ -2181,7 +2715,7 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
     public Matrix4x4 LastObjectToWorld { get; set; }
 
     private CameraDefinition _cameraDefinition = new();
-    private bool _loggedCameraPose;
+    private DepthEstimationResult? _loggedPoseResult;
 
     #endregion
 
