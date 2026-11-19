@@ -71,6 +71,10 @@
       "DefaultValue": 0.5
     },
     {
+      "Id": "8a4f0d63-2e91-4b57-a3c8-6f5d1e2b4c70"/*AutoScale*/,
+      "DefaultValue": true
+    },
+    {
       "Id": "6c269444-aaec-4359-9708-4eb2cfdd0487"/*SaveTrigger*/,
       "DefaultValue": false
     },

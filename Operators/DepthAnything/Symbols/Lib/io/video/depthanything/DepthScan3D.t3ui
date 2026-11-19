@@ -170,6 +170,14 @@
         "Y": 240.0
       },
       "Description": "PLY encoding: ASCII (readable, larger) or binary little-endian (compact)."
+    },
+    {
+      "InputId": "8a4f0d63-2e91-4b57-a3c8-6f5d1e2b4c70"/*AutoScale*/,
+      "Position": {
+        "X": -250.0,
+        "Y": 280.0
+      },
+      "Description": "Anchors each capture's depth scale against the points already merged, so relative depth wobble cannot stack repeated copies of the same surfaces at increasing range. Turn off for metric depth models."
     }
   ],
   "SymbolChildUis": [],

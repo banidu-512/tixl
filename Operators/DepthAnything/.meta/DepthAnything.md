@@ -9,7 +9,8 @@ Estimates depth from images with Depth Anything 3 through ONNX Runtime. The inpu
 - **ModelSize** - V3 Small, Base, Large, Mono Large, Metric Large, Giant, Nested Giant; legacy V2-era values run their DA3 equivalent
 - **Resolution** - Inference size for models with dynamic input. Fixed-size exports ignore it
 - **ExecutionProvider** - Only the providers this OS supports are offered: Windows CPU/DirectML/CUDA/TensorRT, Linux CPU/CUDA/TensorRT, macOS CPU/CoreML; a saved value the OS cannot run snaps to the closest one
-- **bool MatchInputResolution** - Resize outputs to the input size on the CPU (costs latency)
+- **bool MatchInputAspect** - Stretches a square model's output to the input's aspect ratio at model resolution; aspect-matched exports (e.g. da3-small-392x224-fp16.onnx for 16:9) need no resize
+- **int CameraMotion** - How the physical camera moves, for the CamReference pose: Free (hand-held), RotationOnly (pan/tilt or tripod - no position drift), Static (fixed reference pose)
 - **float Smoothing** - Temporal blend of depth and depth range
 - **float FieldOfView** - Horizontal field of view in degrees; used by the Metric model
 - **DepthOutputFormat OutputFormat** - Grayscale/Color/Rainbow visualization
@@ -48,4 +49,4 @@ Place in `Assets/`, or run `Scripts/download_models.py` (`.ps1` on Windows). The
 - CUDA is the fastest provider for the uint8 NHWC DA3 Small export: TensorRT's parser rejects the graph's uint8 `Transpose` and assigns it to CUDA. TensorRT is useful for float-NCHW exports such as DA3 Base; the operator still lets CUDA run the nodes TensorRT does not claim.
 - int8 exports are meant for the CPU; use fp16 or fp32 files with CUDA, DirectML or TensorRT.
 - Depth, filter, normal, position and parallax operators downstream stay on the GPU.
-- A laptop GPU running 518x518 inference continuously can reach its thermal limit and drop clocks; leave `MatchInputResolution` off so only the model-sized depth crosses back.
+- A laptop GPU running 518x518 inference continuously can reach its thermal limit and drop clocks; `MatchInputAspect` stays at model resolution, so only model-sized depth crosses back either way.

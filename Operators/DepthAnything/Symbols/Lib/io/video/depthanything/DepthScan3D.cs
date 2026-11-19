@@ -57,6 +57,13 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
     {
         HandleReset(context);
         HandleRecordTriggers(context);
+        if (_meshDone)
+        {
+            _meshDone = false;
+            SavedPath.Value = _meshResultPath;
+            SetStatus(_meshResultMessage, _meshResultPath.Length > 0 ? IStatusProvider.StatusLevel.Success : IStatusProvider.StatusLevel.Warning);
+        }
+
         HandleSave(context);
         Recording.Value = _recording;
 
@@ -99,26 +106,26 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
         if (lifetime > 0f && _points.Count > 0 && ExpirePoints(lifetime))
             return;
 
-        // Complete the previous capture's readback and merge it before starting a new one.
+        // Complete the previous capture's readback and merge it before starting a new one. All copies of a capture
+        // must be mapped before merging: the larger color frame often lands a frame after the depth, and merging
+        // without it left the points white. Each staging texture is mapped once and unmapped after the merge, since
+        // copying into a still-mapped texture fails and later captures read stale memory.
         if (_depthPending)
         {
-            if (!TryMapStaging(ref _depthPending, _depthStaging, ref _waitFrames))
+            if (_mappedDepth == null && !TryMapStaging(ref _depthPending, _depthStaging, ref _waitFrames))
                 return;
 
-            var confMapped = true;
-            if (_confPending && !TryMapStaging(ref _confPending, _confStaging, ref _confWaitFrames))
-                confMapped = false;
+            if (_confPending && _mappedConf == null && !TryMapStaging(ref _confPending, _confStaging, ref _confWaitFrames))
+                return;
 
-            var colorMapped = true;
-            if (_colorPending && !TryMapStaging(ref _colorPending, _colorStaging, ref _colorWaitFrames))
-                colorMapped = false;
+            if (_colorPending && _mappedColor == null && !TryMapStaging(ref _colorPending, _colorStaging, ref _colorWaitFrames))
+                return;
 
-            MergeScan(confMapped, colorMapped);
+            MergeScan(_mappedConf != null, _mappedColor != null);
+            UnmapStaging();
+            _depthPending = false;
             _confPending = false;
             _colorPending = false;
-            _mappedDepth = null;
-            _mappedConf = null;
-            _mappedColor = null;
 
             // Capture ended while the copy was in flight: the merge above was valid, now hold.
             if (!capture && !captureOnce && !_recording)
@@ -145,15 +152,16 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
             Log.Warning("[DepthScan3D] Confidence texture ignored; size or format differs from the depth map.", this);
         }
 
+        // The color map may be larger than the depth (the camera frame vs. the model's output) and BGRA (video
+        // decoders): it is sampled at each depth pixel's position, so only the channel layout has to be known.
         var colorTexture = ColorMap.GetValue(context);
-        var useColor = colorTexture is { IsDisposed: false }
-                       && colorTexture.Description.Format == Format.R8G8B8A8_UNorm
-                       && colorTexture.Description.Width == desc.Width
-                       && colorTexture.Description.Height == desc.Height;
+        var colorFormat = colorTexture is { IsDisposed: false } ? colorTexture.Description.Format : Format.Unknown;
+        var colorIsBgra = colorFormat is Format.B8G8R8A8_UNorm or Format.B8G8R8A8_UNorm_SRgb;
+        var useColor = colorIsBgra || colorFormat is Format.R8G8B8A8_UNorm or Format.R8G8B8A8_UNorm_SRgb;
         if (colorTexture is { IsDisposed: false } && !useColor && !_loggedColorMismatch)
         {
             _loggedColorMismatch = true;
-            Log.Warning("[DepthScan3D] ColorMap ignored; size or format differs from the depth map.", this);
+            Log.Warning($"[DepthScan3D] ColorMap ignored; {colorFormat} is not an 8-bit RGBA or BGRA format.", this);
         }
 
         GetOrCreateStaging(desc.Width, desc.Height);
@@ -171,6 +179,8 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
 
         if (useColor)
         {
+            GetOrCreateColorStaging(colorTexture!.Description.Width, colorTexture.Description.Height, colorFormat);
+            _pendingColorIsBgra = colorIsBgra;
             deviceContext.CopyResource(colorTexture, _colorStaging);
             _colorPending = true;
         }
@@ -184,6 +194,7 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
         _pendingVoxelSize = Math.Max(1e-5f, VoxelSize.GetValue(context));
         _pendingStride = Math.Clamp(PixelStride.GetValue(context), 1, 64);
         _pendingMaxPoints = Math.Max(1000, MaxPoints.GetValue(context));
+        _pendingAutoScale = AutoScale.GetValue(context);
         PrepareCamera(context, desc.Width, desc.Height);
         UpdateStatus();
     }
@@ -197,6 +208,7 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
     {
         _pendingCamToWorld = System.Numerics.Matrix4x4.Identity;
         _pendingCamIsPose = false;
+        _pendingSpherical = false;
         var tanHalfY = MathF.Tan(Math.Clamp(FieldOfView.GetValue(context), 1f, 179f) * MathF.PI / 360f);
         var aspect = Math.Max(width, 1) / (float)Math.Max(height, 1);
         _pendingTanHalfX = tanHalfY * aspect;
@@ -215,6 +227,9 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
                 _pendingTanHalfX = 1f / clip.M11;
                 _pendingTanHalfY = 1f / clip.M22;
                 _pendingCamIsPose = true;
+
+                // A camera that only rotates about the origin (a pan/tilt head) sees one surface per direction
+                _pendingSpherical = camToWorld.Translation.LengthSquared() < 1e-6f;
             }
         }
     }
@@ -247,11 +262,29 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
         MappedMemory mappedConf = hasConfidence ? _mappedConf.Value : default;
         MappedMemory mappedColor = hasColor ? _mappedColor.Value : default;
 
+        // Relative depth models wobble their scale from capture to capture; on a rotation-only scan that
+        // stacks repeated copies of the same surface at slightly increasing range. Pull each capture back
+        // onto the points already merged before inserting it.
+        var anchor = 1f;
+        var shift = 0f;
+        if (_pendingAutoScale && _points.Count >= MinAnchorPoints)
+        {
+            var estimate = EstimateAnchorScale(mapping, width, height, stride,
+                                               hasConfidence ? mappedConf : (MappedMemory?)null, threshold, out shift);
+            anchor = float.IsFinite(estimate) ? Math.Clamp(estimate, 0.25f, 4f) : _anchorScale;
+            if (!float.IsFinite(estimate))
+                shift = 0f;
+
+            _anchorScale = anchor;
+        }
+
         for (var y = 0; y < height; y += stride)
         {
             var row = (float*)((byte*)mapping.Data + (long)y * mapping.RowPitch);
+            var belowRow = y + stride < height ? (float*)((byte*)mapping.Data + (long)(y + stride) * mapping.RowPitch) : null;
             var confRow = hasConfidence ? (float*)((byte*)mappedConf.Data + (long)y * mappedConf.RowPitch) : null;
-            var colorRow = hasColor ? (byte*)((byte*)mappedColor.Data + (long)y * mappedColor.RowPitch) : null;
+            var colorY = hasColor ? Math.Min(_colorStagingHeight - 1, (int)((y + 0.5f) * _colorStagingHeight / height)) : 0;
+            var colorRow = hasColor ? (byte*)((byte*)mappedColor.Data + (long)colorY * mappedColor.RowPitch) : null;
             for (var x = 0; x < width; x += stride)
             {
                 var z = row[x];
@@ -261,37 +294,30 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
                 if (confRow != null && confRow[x] < threshold)
                     continue;
 
+                // Depth edges smear into flying pixels between the near and far surface
+                if (IsDepthEdge(z, x + stride < width ? row[x + stride] : z, belowRow != null ? belowRow[x] : z))
+                    continue;
+
                 var r = 1f;
                 var g = 1f;
                 var b = 1f;
                 if (colorRow != null)
                 {
-                    var c = colorRow + x * 4;
-                    r = c[0] / 255f;
+                    var colorX = Math.Min(_colorStagingWidth - 1, (int)((x + 0.5f) * _colorStagingWidth / width));
+                    var c = colorRow + colorX * 4;
+                    r = c[_pendingColorIsBgra ? 2 : 0] / 255f;
                     g = c[1] / 255f;
-                    b = c[2] / 255f;
+                    b = c[_pendingColorIsBgra ? 0 : 2] / 255f;
                 }
 
-                var u = (x + 0.5f) / width;
-                var v = (y + 0.5f) / height;
-                var ndcX = u * 2f - 1f;
-                var ndcY = 1f - v * 2f;
-                var tanX = _pendingTanHalfX;
-                var tanY = _pendingTanHalfY;
-                var depth = z * _pendingScale;
-                System.Numerics.Vector3 position;
-                if (_pendingCamIsPose)
-                {
-                    // RH camera space: the view direction is -Z, so flip the depth.
-                    var camPoint = new System.Numerics.Vector3(ndcX * tanX * depth, ndcY * tanY * depth, -depth);
-                    position = System.Numerics.Vector3.Transform(camPoint, _pendingCamToWorld);
-                }
-                else
-                {
-                    position = new System.Numerics.Vector3(ndcX * tanX * depth, ndcY * tanY * depth, depth);
-                }
+                var depth = MathF.Max(z * _pendingScale * anchor + shift, 1e-3f);
+                var position = UnprojectPoint(x, y, width, height, depth);
 
-                var inserted = InsertPoint(position, r, g, b, now);
+                // Frame centers are sharper and less distorted than the borders, so they count for more
+                var ndcX = (x + 0.5f) / width * 2f - 1f;
+                var ndcY = (y + 0.5f) / height * 2f - 1f;
+                var weight = MathF.Max(0.05f, (1f - 0.7f * ndcX * ndcX) * (1f - 0.7f * ndcY * ndcY));
+                var inserted = _pendingSpherical ? InsertSpherical(position, r, g, b, now, weight) : InsertPoint(position, r, g, b, now);
                 if (inserted == 1)
                     pointsAdded++;
                 else if (inserted == 2)
@@ -301,6 +327,7 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
 
         PointsAdded.Value = pointsAdded;
         _captures++;
+
         Captures.Value = _captures;
         RebuildOutput();
         if (_bufferFullLogged == false && skippedFull > 0)
@@ -309,6 +336,225 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
             SetStatus($"Point budget reached ({_points.Count} points); raise MaxPoints to keep scanning.", IStatusProvider.StatusLevel.Warning);
         }
         UpdateStatus();
+    }
+
+    /// <summary>
+    /// Unprojects one depth pixel to scan space: with a camera pose, through the camera into world
+    /// space, otherwise into DA3-style camera space (+Z forward, y up).
+    /// </summary>
+    private System.Numerics.Vector3 UnprojectPoint(float x, float y, float width, float height, float depth)
+    {
+        var ndcX = (x + 0.5f) / width * 2f - 1f;
+        var ndcY = 1f - (y + 0.5f) / height * 2f;
+        if (_pendingCamIsPose)
+        {
+            // RH camera space: the view direction is -Z, so flip the depth.
+            var camPoint = new System.Numerics.Vector3(ndcX * _pendingTanHalfX * depth, ndcY * _pendingTanHalfY * depth, -depth);
+            return System.Numerics.Vector3.Transform(camPoint, _pendingCamToWorld);
+        }
+
+        return new System.Numerics.Vector3(ndcX * _pendingTanHalfX * depth, ndcY * _pendingTanHalfY * depth, depth);
+    }
+
+    /// <summary>
+    /// DA3's relative depth has no absolute scale and wobbles from capture to capture; on a rotation-only
+    /// scan each capture then stacks another slightly-more-distant copy of the same surfaces. This samples
+    /// the incoming capture sparsely, matches samples against the nearest already-merged points, and returns
+    /// the median range ratio from the camera: the factor that pulls the capture onto the existing cloud.
+    /// Returns NaN when there is not enough overlap to trust an estimate.
+    /// </summary>
+    private unsafe float EstimateAnchorScale(MappedMemory mapping, int width, int height, int stride,
+                                             MappedMemory? conf, float threshold, out float shift)
+    {
+        shift = 0f;
+        Span<float> sampleNew = stackalloc float[AnchorSampleCap];
+        Span<float> sampleExisting = stackalloc float[AnchorSampleCap];
+        var cameraOrigin = _pendingCamIsPose ? _pendingCamToWorld.Translation : default;
+        Span<float> ratios = stackalloc float[AnchorSampleCap];
+        var count = 0;
+        var sampleStride = stride * 3;
+        for (var y = 0; y < height && count < AnchorSampleCap; y += sampleStride)
+        {
+            var row = (float*)((byte*)mapping.Data + (long)y * mapping.RowPitch);
+            var confRow = conf != null ? (float*)((byte*)conf.Value.Data + (long)y * conf.Value.RowPitch) : null;
+            for (var x = 0; x < width && count < AnchorSampleCap; x += sampleStride)
+            {
+                var z = row[x];
+                if (!float.IsFinite(z) || z <= 0f || (confRow != null && confRow[x] < threshold))
+                    continue;
+
+                var position = UnprojectPoint(x, y, width, height, z * _pendingScale);
+                var found = _pendingSpherical ? TryGetSphericalPoint(position, out var nearest) : TryGetNearestPoint(position, out nearest);
+                if (!found)
+                    continue;
+
+                var range = System.Numerics.Vector3.Distance(position, cameraOrigin);
+                if (range < _pendingVoxelSize)
+                    continue;
+
+                var existingRange = System.Numerics.Vector3.Distance(nearest, cameraOrigin);
+                sampleNew[count] = z * _pendingScale;
+                sampleExisting[count] = existingRange * z * _pendingScale / range;
+                ratios[count++] = Math.Clamp(existingRange / range, 0.25f, 4f);
+            }
+        }
+
+        if (count < MinAnchorMatches)
+            return float.NaN;
+
+        for (var i = 1; i < count; i++) // insertion sort: tiny fixed buffer
+        {
+            var value = ratios[i];
+            var j = i - 1;
+            while (j >= 0 && ratios[j] > value)
+            {
+                ratios[j + 1] = ratios[j];
+                j--;
+            }
+
+            ratios[j + 1] = value;
+        }
+
+        var scale = count % 2 == 1 ? ratios[count / 2] : 0.5f * (ratios[count / 2 - 1] + ratios[count / 2]);
+
+        // Relative depth is off by a shift as well as a scale: refit existing = a * new + b on the samples that already
+        // agree with the median scale, but only when the overlap spans enough depth to pin both down
+        double n = 0, sx = 0, sy = 0, sxx = 0, sxy = 0;
+        for (var i = 0; i < count; i++)
+        {
+            if (MathF.Abs(sampleExisting[i] - scale * sampleNew[i]) > 0.2f * sampleExisting[i])
+                continue;
+
+            n++;
+            sx += sampleNew[i];
+            sy += sampleExisting[i];
+            sxx += sampleNew[i] * sampleNew[i];
+            sxy += sampleNew[i] * sampleExisting[i];
+        }
+
+        if (n >= MinAnchorMatches * 2)
+        {
+            var meanX = sx / n;
+            var meanY = sy / n;
+            var variance = sxx / n - meanX * meanX;
+            if (variance > 0.01 * meanX * meanX)
+            {
+                var slope = (sxy / n - meanX * meanY) / variance;
+                var offset = meanY - slope * meanX;
+                if (slope is > 0.25 and < 4.0 && Math.Abs(offset) < 0.4 * meanY)
+                {
+                    shift = (float)offset;
+                    return (float)slope;
+                }
+            }
+        }
+
+        return scale;
+    }
+
+    private static bool IsDepthEdge(float z, float right, float below)
+    {
+        return (float.IsFinite(right) && right > 0f && MathF.Abs(right - z) > FlyingPixelRatio * z)
+               || (float.IsFinite(below) && below > 0f && MathF.Abs(below - z) > FlyingPixelRatio * z);
+    }
+
+    private static long SphericalKey(System.Numerics.Vector3 position, out float range)
+    {
+        range = position.Length();
+        if (range < 1e-5f)
+            return long.MinValue;
+
+        var elevation = MathF.Asin(Math.Clamp(position.Y / range, -1f, 1f));
+        var azimuth = MathF.Atan2(position.X, -position.Z);
+        var ix = (int)MathF.Floor((azimuth + MathF.PI) / SphericalCellRadians);
+        var iy = (int)MathF.Floor((elevation + 0.5f * MathF.PI) / SphericalCellRadians);
+        return PackVoxelKey(ix, iy, 0);
+    }
+
+    private bool TryGetSphericalPoint(System.Numerics.Vector3 position, out System.Numerics.Vector3 existing)
+    {
+        existing = default;
+        var key = SphericalKey(position, out _);
+        if (key == long.MinValue || !_voxelIndex.TryGetValue(key, out var index))
+            return false;
+
+        existing = _points[index].Position;
+        return true;
+    }
+
+    /// <summary>
+    /// Merges a sample into a direction-binned range map: one surface per viewing direction, so repeated and
+    /// slightly mis-scaled captures of a wall average into one sheet instead of stacking copies.
+    /// </summary>
+    private int InsertSpherical(System.Numerics.Vector3 position, float r, float g, float b, float now, float weight)
+    {
+        var key = SphericalKey(position, out var range);
+        if (key == long.MinValue)
+            return 0;
+
+        if (_voxelIndex.TryGetValue(key, out var index))
+        {
+            var sp = _points[index];
+            var ratio = range / MathF.Max(sp.Position.Length(), 1e-5f);
+            if (sp.Count >= 2 && (ratio < SphericalAgreeLow || ratio > SphericalAgreeHigh))
+                return 0;
+
+            sp.Count++;
+            sp.LastSeen = now;
+            if (_pendingMode == MergeMode.Average)
+            {
+                sp.Weight += weight;
+                var k = weight / sp.Weight;
+                sp.Position += (position - sp.Position) * k;
+                sp.Color += (new System.Numerics.Vector3(r, g, b) - sp.Color) * k;
+            }
+            else
+            {
+                sp.Position = position;
+                sp.Color = new System.Numerics.Vector3(r, g, b);
+            }
+
+            _points[index] = sp;
+            return 0;
+        }
+
+        if (_points.Count >= _pendingMaxPoints)
+            return 2;
+
+        _points.Add(new ScanPoint { Position = position, Color = new(r, g, b), Count = 1, Weight = weight, LastSeen = now });
+        _voxelIndex[key] = _points.Count - 1;
+        return 1;
+    }
+
+    /// <summary>Nearest merged point within the 3x3x3 voxel neighborhood of a position.</summary>
+    private bool TryGetNearestPoint(System.Numerics.Vector3 position, out System.Numerics.Vector3 nearest)
+    {
+        var vs = _pendingVoxelSize;
+        var vx = (int)MathF.Floor(position.X / vs);
+        var vy = (int)MathF.Floor(position.Y / vs);
+        var vz = (int)MathF.Floor(position.Z / vs);
+        var bestDistance = float.MaxValue;
+        nearest = default;
+        for (var dz = -1; dz <= 1; dz++)
+        {
+            for (var dy = -1; dy <= 1; dy++)
+            {
+                for (var dx = -1; dx <= 1; dx++)
+                {
+                    if (!_voxelIndex.TryGetValue(PackVoxelKey(vx + dx, vy + dy, vz + dz), out var index))
+                        continue;
+
+                    var distance = System.Numerics.Vector3.DistanceSquared(_points[index].Position, position);
+                    if (distance < bestDistance)
+                    {
+                        bestDistance = distance;
+                        nearest = _points[index].Position;
+                    }
+                }
+            }
+        }
+
+        return bestDistance != float.MaxValue;
     }
 
     /// <summary>
@@ -387,9 +633,11 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
             if (sp.LastSeen < deadline)
                 continue;
 
-            index[PackVoxelKey((int)MathF.Floor(sp.Position.X / _pendingVoxelSize),
-                               (int)MathF.Floor(sp.Position.Y / _pendingVoxelSize),
-                               (int)MathF.Floor(sp.Position.Z / _pendingVoxelSize))] = kept.Count;
+            index[_pendingSpherical
+                      ? SphericalKey(sp.Position, out _)
+                      : PackVoxelKey((int)MathF.Floor(sp.Position.X / _pendingVoxelSize),
+                                     (int)MathF.Floor(sp.Position.Y / _pendingVoxelSize),
+                                     (int)MathF.Floor(sp.Position.Z / _pendingVoxelSize))] = kept.Count;
             kept.Add(sp);
         }
 
@@ -412,10 +660,16 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
         }
 
         var points = new Point[count];
+        var kept = 0;
         for (var i = 0; i < count; i++)
         {
             var sp = _points[i];
-            points[i] = new Point
+
+            // A direction seen once is as likely noise as surface
+            if (_pendingSpherical && sp.Count < SphericalMinObservations)
+                continue;
+
+            points[kept++] = new Point
             {
                 Position = sp.Position,
                 Color = new System.Numerics.Vector4(sp.Color, 1f),
@@ -425,6 +679,17 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
                 F2 = 1,
             };
         }
+
+        count = kept;
+        if (count == 0)
+        {
+            Points.Value = null;
+            PointCount.Value = 0;
+            return;
+        }
+
+        if (kept < points.Length)
+            Array.Resize(ref points, kept);
 
         EnsurePointBuffer(points, count);
         Points.Value = _pointBuffer;
@@ -462,6 +727,7 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
         _captures = 0;
         _pointsAdded = 0;
         _bufferFullLogged = false;
+        _anchorScale = 1f;
         Points.Value = null;
         PointCount.Value = 0;
         Captures.Value = 0;
@@ -493,10 +759,26 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
             Usage = ResourceUsage.Staging, BindFlags = BindFlags.None,
             CpuAccessFlags = CpuAccessFlags.Read, OptionFlags = ResourceOptionFlags.None
         });
+        _colorStaging = null;
+    }
+
+    /** The color map keeps its own size and format, so its staging copy is sized independently of the depth. */
+    private void GetOrCreateColorStaging(int width, int height, Format format)
+    {
+        if (_colorStaging is { IsDisposed: false }
+            && _colorStaging.Description.Width == width
+            && _colorStaging.Description.Height == height
+            && _colorStaging.Description.Format == format)
+            return;
+
+        _colorPending = false;
+        _colorStaging?.Dispose();
+        _colorStagingWidth = width;
+        _colorStagingHeight = height;
         _colorStaging = new T3.Graphics.Compat.Texture2D(ResourceManager.Device, new Texture2DDescription
         {
             Width = width, Height = height, MipLevels = 1, ArraySize = 1,
-            Format = Format.R8G8B8A8_UNorm, SampleDescription = new SampleDescription(1, 0),
+            Format = format, SampleDescription = new SampleDescription(1, 0),
             Usage = ResourceUsage.Staging, BindFlags = BindFlags.None,
             CpuAccessFlags = CpuAccessFlags.Read, OptionFlags = ResourceOptionFlags.None
         });
@@ -532,6 +814,21 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
             _mappedColor = mapped;
         return true;
     }
+    private void UnmapStaging()
+    {
+        var context = ResourceManager.Device.ImmediateContext;
+        if (_mappedDepth != null && _depthStaging is { IsDisposed: false })
+            context.UnmapSubresource(_depthStaging, 0);
+        if (_mappedConf != null && _confStaging is { IsDisposed: false })
+            context.UnmapSubresource(_confStaging, 0);
+        if (_mappedColor != null && _colorStaging is { IsDisposed: false })
+            context.UnmapSubresource(_colorStaging, 0);
+
+        _mappedDepth = null;
+        _mappedConf = null;
+        _mappedColor = null;
+    }
+
     private static T3.Graphics.Compat.Texture2D CreateStagingTexture(int width, int height, Format format)
     {
         var description = new Texture2DDescription
@@ -591,7 +888,7 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
             return;
         }
 
-        var format = (PlyFormat)Math.Clamp(SaveFormatInput.GetValue(context), 0, 1);
+        var format = (PlyFormat)Math.Clamp(SaveFormatInput.GetValue(context), 0, 2);
         var relativePath = BuildRelativePath(SaveFolder.GetValue(context) ?? string.Empty,
                                              SaveFileName.GetValue(context) ?? string.Empty,
                                              ".ply");
@@ -610,9 +907,56 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
 
         try
         {
-            WritePly(absolutePath, format == PlyFormat.Ascii);
-            SavedPath.Value = relativePath;
-            SetStatus($"Saved {_points.Count} points ({_captures} captures) to {relativePath}", IStatusProvider.StatusLevel.Success);
+            var directory = Path.GetDirectoryName(absolutePath);
+            if (!string.IsNullOrEmpty(directory))
+                Directory.CreateDirectory(directory);
+
+            if (format == PlyFormat.Mesh)
+            {
+                if (!_pendingSpherical)
+                {
+                    SaveStatus(string.Empty, "Mesh export needs a camera that rotates about the origin (a PTZ scan).");
+                    return;
+                }
+
+                if (_meshBusy)
+                {
+                    SetStatus("A mesh is still being built.", IStatusProvider.StatusLevel.Warning);
+                    return;
+                }
+
+                // The meshing walks millions of cells: it runs on a snapshot off the editor thread
+                var snapshot = _points.ToArray();
+                _meshBusy = true;
+                SetStatus($"Building a mesh from {snapshot.Length} points...", IStatusProvider.StatusLevel.Notice);
+                System.Threading.Tasks.Task.Run(() =>
+                                                {
+                                                    try
+                                                    {
+                                                        var watch = System.Diagnostics.Stopwatch.StartNew();
+                                                        var (vertices, triangles) = WriteSphericalMesh(absolutePath, snapshot);
+                                                        _meshResultPath = relativePath;
+                                                        _meshResultMessage = $"Saved a mesh of {vertices} vertices and {triangles} triangles to {relativePath} ({watch.Elapsed.TotalSeconds:F1} s)";
+                                                    }
+                                                    catch (Exception e)
+                                                    {
+                                                        _meshResultPath = string.Empty;
+                                                        _meshResultMessage = $"Building the mesh failed: {e.Message}";
+                                                    }
+                                                    finally
+                                                    {
+                                                        _meshBusy = false;
+                                                        _meshDone = true;
+                                                    }
+                                                });
+                return;
+            }
+            else
+            {
+                WritePly(absolutePath, format == PlyFormat.Ascii);
+                SavedPath.Value = relativePath;
+                SetStatus($"Saved {_points.Count} points ({_captures} captures) to {relativePath}", IStatusProvider.StatusLevel.Success);
+            }
         }
         catch (Exception e)
         {
@@ -665,6 +1009,298 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
     /// Writes the scan as a PLY point cloud (ASCII or binary little-endian): float32 x/y/z plus
     /// uchar red/green/blue per vertex, openable in MeshLab/CloudCompare/blender.
     /// </summary>
+    /**
+     * Turns the spherical range map into a closed triangle mesh: sparse cells are dropped, the range grid is median
+     * filtered and small holes are filled, neighbouring cells become triangles unless a depth jump separates them
+     * (so surfaces never stretch across an edge), and the open rim at the lowest seen elevation is closed with a
+     * floor fan so the shell is solid. Faces point toward the camera.
+     */
+    private (int Vertices, int Triangles) WriteSphericalMesh(string absolutePath, ScanPoint[] scanPoints)
+    {
+        var width = (int)MathF.Ceiling(2f * MathF.PI / SphericalCellRadians);
+        var height = (int)MathF.Ceiling(MathF.PI / SphericalCellRadians) + 1;
+        var range = new float[width * height];
+        var color = new System.Numerics.Vector3[width * height];
+        Array.Fill(range, float.NaN);
+        foreach (var sp in scanPoints)
+        {
+            if (sp.Count < SphericalMinObservations)
+                continue;
+
+            var r = sp.Position.Length();
+            var e = MathF.Asin(Math.Clamp(sp.Position.Y / r, -1f, 1f));
+            var a = MathF.Atan2(sp.Position.X, -sp.Position.Z);
+            var ix = Math.Clamp((int)MathF.Floor((a + MathF.PI) / SphericalCellRadians), 0, width - 1);
+            var iy = Math.Clamp((int)MathF.Floor((0.5f * MathF.PI - e) / SphericalCellRadians), 0, height - 1);
+            range[iy * width + ix] = r;
+            color[iy * width + ix] = sp.Color;
+        }
+
+        MedianFilterRange(range, width, height);
+        FillSmallHoles(range, color, width, height, 6);
+
+        var vertexIndex = new int[width * height];
+        Array.Fill(vertexIndex, -1);
+        var positions = new List<System.Numerics.Vector3>();
+        var colors = new List<System.Numerics.Vector3>();
+        for (var y = 0; y < height; y++)
+        {
+            var elevation = 0.5f * MathF.PI - (y + 0.5f) * SphericalCellRadians;
+            for (var x = 0; x < width; x++)
+            {
+                var r = range[y * width + x];
+                if (float.IsNaN(r))
+                    continue;
+
+                var azimuth = (x + 0.5f) * SphericalCellRadians - MathF.PI;
+                var cosE = MathF.Cos(elevation);
+                vertexIndex[y * width + x] = positions.Count;
+                positions.Add(new System.Numerics.Vector3(r * cosE * MathF.Sin(azimuth), r * MathF.Sin(elevation), -r * cosE * MathF.Cos(azimuth)));
+                colors.Add(color[y * width + x]);
+            }
+        }
+
+        var faces = new List<int>();
+        void AddFace(int i0, int i1, int i2)
+        {
+            var normal = System.Numerics.Vector3.Cross(positions[i1] - positions[i0], positions[i2] - positions[i0]);
+            var centroid = positions[i0] + positions[i1] + positions[i2];
+            if (System.Numerics.Vector3.Dot(normal, centroid) > 0f)
+                (i1, i2) = (i2, i1);
+
+            faces.Add(i0);
+            faces.Add(i1);
+            faces.Add(i2);
+        }
+
+        for (var y = 0; y < height - 1; y++)
+        {
+            for (var x = 0; x < width; x++)
+            {
+                var x1 = (x + 1) % width;
+                var i00 = vertexIndex[y * width + x];
+                var i10 = vertexIndex[y * width + x1];
+                var i01 = vertexIndex[(y + 1) * width + x];
+                var i11 = vertexIndex[(y + 1) * width + x1];
+                if (i00 < 0 || i10 < 0 || i01 < 0 || i11 < 0)
+                    continue;
+
+                var r00 = range[y * width + x];
+                var r10 = range[y * width + x1];
+                var r01 = range[(y + 1) * width + x];
+                var r11 = range[(y + 1) * width + x1];
+                var lo = MathF.Min(MathF.Min(r00, r10), MathF.Min(r01, r11));
+                var hi = MathF.Max(MathF.Max(r00, r10), MathF.Max(r01, r11));
+                if (hi > lo * MeshDepthJumpRatio)
+                    continue;
+
+                AddFace(i00, i10, i01);
+                AddFace(i10, i11, i01);
+            }
+        }
+
+        CloseHoles(positions, colors, faces, AddFace);
+
+        using (var file = File.Create(absolutePath))
+        {
+            var header = "ply\nformat binary_little_endian 1.0\ncomment TiXL DepthScan3D mesh\n"
+                         + $"element vertex {positions.Count}\nproperty float x\nproperty float y\nproperty float z\n"
+                         + "property uchar red\nproperty uchar green\nproperty uchar blue\n"
+                         + $"element face {faces.Count / 3}\nproperty list uchar int vertex_indices\nend_header\n";
+            var headerBytes = System.Text.Encoding.ASCII.GetBytes(header);
+            file.Write(headerBytes, 0, headerBytes.Length);
+            using var writer = new BinaryWriter(file);
+            for (var i = 0; i < positions.Count; i++)
+            {
+                writer.Write(positions[i].X);
+                writer.Write(positions[i].Y);
+                writer.Write(positions[i].Z);
+                writer.Write(ToByte(colors[i].X));
+                writer.Write(ToByte(colors[i].Y));
+                writer.Write(ToByte(colors[i].Z));
+            }
+
+            for (var i = 0; i < faces.Count; i += 3)
+            {
+                writer.Write((byte)3);
+                writer.Write(faces[i]);
+                writer.Write(faces[i + 1]);
+                writer.Write(faces[i + 2]);
+            }
+        }
+
+        return (positions.Count, faces.Count / 3);
+    }
+
+    /**
+     * Fans over every boundary loop of the mesh so the shell is solid: gaps left by depth jumps and missing cells close on
+     * their centroid, and the large outer rim (the lowest elevation the camera could see) closes on a point at floor level.
+     */
+    private static void CloseHoles(List<System.Numerics.Vector3> positions, List<System.Numerics.Vector3> colors, List<int> faces,
+                                   Action<int, int, int> addFace)
+    {
+        // Tuple keys: a packed 64-bit key hashes to a ^ b, which piles neighbouring edges into a few buckets
+        var directed = new HashSet<(int, int)>();
+        for (var i = 0; i < faces.Count; i += 3)
+        {
+            for (var k = 0; k < 3; k++)
+                directed.Add((faces[i + k], faces[i + (k + 1) % 3]));
+        }
+
+        // Boundary edges, reversed so that walking them follows the open side
+        var outgoing = new Dictionary<int, List<int>>();
+        foreach (var (from, to) in directed)
+        {
+            if (directed.Contains((to, from)))
+                continue;
+
+            if (!outgoing.TryGetValue(to, out var list))
+                outgoing[to] = list = new List<int>(2);
+
+            list.Add(from);
+        }
+
+        var loop = new List<int>();
+        foreach (var start in new List<int>(outgoing.Keys))
+        {
+            while (outgoing[start].Count > 0)
+            {
+                loop.Clear();
+                var current = start;
+                var closed = false;
+                while (true)
+                {
+                    loop.Add(current);
+                    if (!outgoing.TryGetValue(current, out var options) || options.Count == 0)
+                        break;
+
+                    var following = options[^1];
+                    options.RemoveAt(options.Count - 1);
+                    current = following;
+                    if (current == start)
+                    {
+                        closed = true;
+                        break;
+                    }
+                }
+
+                if (!closed || loop.Count < 3)
+                    continue;
+
+                var center = System.Numerics.Vector3.Zero;
+                var color = System.Numerics.Vector3.Zero;
+                var lowest = float.MaxValue;
+                foreach (var vertex in loop)
+                {
+                    center += positions[vertex];
+                    color += colors[vertex];
+                    lowest = MathF.Min(lowest, positions[vertex].Y);
+                }
+
+                center /= loop.Count;
+                if (loop.Count > MeshRimLoopEdges)
+                {
+                    center.X = 0f;
+                    center.Z = 0f;
+                    center.Y = lowest;
+                    color = new System.Numerics.Vector3(0.5f, 0.5f, 0.5f) * loop.Count;
+                }
+
+                var centerIndex = positions.Count;
+                positions.Add(center);
+                colors.Add(color / loop.Count);
+                for (var i = 0; i < loop.Count; i++)
+                    addFace(loop[i], loop[(i + 1) % loop.Count], centerIndex);
+            }
+        }
+    }
+
+    /** 3x3 median of the range grid (azimuth wraps); cells with fewer than four filled neighbours are removed as specks. */
+    private static void MedianFilterRange(float[] range, int width, int height)
+    {
+        var result = new float[range.Length];
+        Array.Fill(result, float.NaN);
+        var window = new float[9];
+        for (var y = 0; y < height; y++)
+        {
+            for (var x = 0; x < width; x++)
+            {
+                if (float.IsNaN(range[y * width + x]))
+                    continue;
+
+                var n = 0;
+                for (var dy = -1; dy <= 1; dy++)
+                {
+                    var yy = y + dy;
+                    if (yy < 0 || yy >= height)
+                        continue;
+
+                    for (var dx = -1; dx <= 1; dx++)
+                    {
+                        var value = range[yy * width + (x + dx + width) % width];
+                        if (!float.IsNaN(value))
+                            window[n++] = value;
+                    }
+                }
+
+                if (n < 4)
+                    continue;
+
+                Array.Sort(window, 0, n);
+                result[y * width + x] = window[n / 2];
+            }
+        }
+
+        Array.Copy(result, range, range.Length);
+    }
+
+    /** Fills empty cells that have at least three filled 8-neighbours with their mean, a few passes deep. */
+    private static void FillSmallHoles(float[] range, System.Numerics.Vector3[] color, int width, int height, int passes)
+    {
+        var add = new List<(int Index, float Range, System.Numerics.Vector3 Color)>();
+        for (var pass = 0; pass < passes; pass++)
+        {
+            add.Clear();
+            for (var y = 1; y < height - 1; y++)
+            {
+                for (var x = 0; x < width; x++)
+                {
+                    if (!float.IsNaN(range[y * width + x]))
+                        continue;
+
+                    var n = 0;
+                    var sum = 0f;
+                    var colorSum = System.Numerics.Vector3.Zero;
+                    for (var dy = -1; dy <= 1; dy++)
+                    {
+                        for (var dx = -1; dx <= 1; dx++)
+                        {
+                            var index = (y + dy) * width + (x + dx + width) % width;
+                            if (float.IsNaN(range[index]))
+                                continue;
+
+                            n++;
+                            sum += range[index];
+                            colorSum += color[index];
+                        }
+                    }
+
+                    if (n >= 3)
+                        add.Add((y * width + x, sum / n, colorSum / n));
+                }
+            }
+
+            if (add.Count == 0)
+                break;
+
+            foreach (var item in add)
+            {
+                range[item.Index] = item.Range;
+                color[item.Index] = item.Color;
+            }
+        }
+    }
+
     private void WritePly(string absolutePath, bool ascii)
     {
         var count = _points.Count;
@@ -738,7 +1374,8 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
 
         var state = _recording ? "Recording" : "Holding";
         var camMode = _pendingCamIsPose ? "world space (DA3 camera pose)" : "camera space - connect CamReference for world space";
-        SetStatus($"{state} scan: {_points.Count} points, {_captures} captures, {camMode}.", IStatusProvider.StatusLevel.Success);
+        var anchorText = _pendingAutoScale && _anchorScale != 1f ? $", scale x{_anchorScale:0.###}" : string.Empty;
+        SetStatus($"{state} scan: {_points.Count} points, {_captures} captures{anchorText}, {camMode}.", IStatusProvider.StatusLevel.Success);
     }
 
     /// <summary>How overlapping voxel observations merge; values only ever appended.</summary>
@@ -753,6 +1390,7 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
     {
         Ascii,
         Binary,
+        Mesh,
     }
     private void SetStatus(string message, IStatusProvider.StatusLevel level)
     {
@@ -866,6 +1504,9 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
     [Input(Guid = "e805a254-7980-4bbe-b603-d58e3a010105")]
     public readonly InputSlot<float> ConfidenceThreshold = new(0.5f);
 
+    [Input(Guid = "8a4f0d63-2e91-4b57-a3c8-6f5d1e2b4c70")]
+    public readonly InputSlot<bool> AutoScale = new(true);
+
     [Input(Guid = "6c269444-aaec-4359-9708-4eb2cfdd0487")]
     public readonly InputSlot<bool> SaveTrigger = new(false);
 
@@ -887,10 +1528,21 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
         public System.Numerics.Vector3 Position;
         public System.Numerics.Vector3 Color;
         public int Count;
+        public float Weight;
         public float LastSeen;
     }
 
     private const int ReadbackTimeoutFrames = 60;
+    private const int AnchorSampleCap = 400;
+    private const int MinAnchorMatches = 12;
+    private const int MinAnchorPoints = 300;
+    private const float SphericalCellRadians = 0.25f * MathF.PI / 180f;
+    private const float SphericalAgreeLow = 0.92f;
+    private const float SphericalAgreeHigh = 1.08f;
+    private const int SphericalMinObservations = 2;
+    private const float FlyingPixelRatio = 0.08f;
+    private const float MeshDepthJumpRatio = 1.25f;
+    private const int MeshRimLoopEdges = 2000;
 
     private List<ScanPoint> _points = [];
     private Dictionary<long, int> _voxelIndex = [];
@@ -914,17 +1566,27 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
     private int _colorWaitFrames;
     private int _stagingWidth;
     private int _stagingHeight;
+    private int _colorStagingWidth;
+    private int _colorStagingHeight;
+    private bool _pendingColorIsBgra;
 
     private System.Numerics.Matrix4x4 _pendingCamToWorld;
     private float _pendingTanHalfX;
     private float _pendingTanHalfY;
     private bool _pendingCamIsPose;
+    private bool _pendingSpherical;
+    private volatile bool _meshBusy;
+    private volatile bool _meshDone;
+    private volatile string _meshResultPath = string.Empty;
+    private volatile string _meshResultMessage = string.Empty;
     private MergeMode _pendingMode;
     private float _pendingThreshold;
     private float _pendingScale;
     private float _pendingVoxelSize;
     private int _pendingStride;
     private int _pendingMaxPoints;
+    private bool _pendingAutoScale;
+    private float _anchorScale = 1f;
     private bool _captureOnceState;
     private bool _resetState;
     private bool _saveState;
@@ -941,7 +1603,7 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
     private int _uiSaveFormat;
 
     private static readonly string[] ModeNames = { "Average", "Replace" };
-    private static readonly string[] SaveFormatNames = { "PLY ASCII", "PLY binary" };
+    private static readonly string[] SaveFormatNames = { "PLY ASCII", "PLY binary", "PLY mesh (closed)" };
 
     #endregion
 

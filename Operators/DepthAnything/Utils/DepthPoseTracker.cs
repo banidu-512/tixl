@@ -41,8 +41,6 @@ internal sealed class DepthPoseTracker
 
     public DepthCameraMotion Motion { get; set; } = DepthCameraMotion.Free;
 
-    private readonly ImageRotationTracker _imageRotation = new();
-
     private Quaternion _worldRotation = Quaternion.Identity;
     private Vector3 _worldPosition = Vector3.Zero;
     private Quaternion _keyRotation = Quaternion.Identity;
@@ -61,9 +59,6 @@ internal sealed class DepthPoseTracker
 
     public bool HasPose { get; private set; }
     public bool Tracking { get; private set; }
-
-    /** How the last frame was tracked, for the pose log: image-based (features, intensity, predicted, lost) or depth. */
-    public string Source => Motion == DepthCameraMotion.RotationOnly ? $"image-{_imageRotation.LastSource}({_imageRotation.LastInliers})" : "depth";
     public Vector3 Position => _worldPosition;
     public Vector3 Forward => Vector3.Transform(Vector3.UnitZ, _worldRotation);
     public Vector3 Up => Vector3.Transform(-Vector3.UnitY, _worldRotation);
@@ -79,19 +74,8 @@ internal sealed class DepthPoseTracker
         _gridHeads.Clear();
         _seedRotation = Quaternion.Identity;
         _seedTranslation = Vector3.Zero;
-        _imageRotation.Reset();
         HasPose = false;
         Tracking = false;
-    }
-
-    /// <summary>Feeds one grayscale frame of a pan/tilt camera: the rotation comes from image features, not from depth.</summary>
-    public void UpdateFromImage(byte[] gray, int width, int height, float fx, float fy, float cx, float cy)
-    {
-        _imageRotation.Update(gray, width, height, fx, fy, cx, cy);
-        _worldRotation = _imageRotation.Rotation;
-        _worldPosition = Vector3.Zero;
-        HasPose = _imageRotation.HasPose;
-        Tracking = _imageRotation.Tracking;
     }
 
     /// <summary>Feeds one depth plane and updates the accumulated camToWorld pose.</summary>
