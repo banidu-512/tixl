@@ -538,6 +538,7 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
         {
             var sp = _points[index];
             var ratio = range / MathF.Max(sp.Position.Length(), 1e-5f);
+            RecordSeam(ratio);
             if (sp.Count >= 2 && (ratio < SphericalAgreeLow || ratio > SphericalAgreeHigh))
                 return 0;
 
@@ -699,6 +700,9 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
             return;
 
         _shellReady = false;
+        if (_shellFlat && TryGetSeamError(out var seamMedian, out var seamP90))
+            Log.Debug($"[DepthScan3D] Seam error: median {seamMedian * 100f:0.0}%, 90th percentile {seamP90 * 100f:0.0}% over {_seamSamples} overlapping samples", this);
+
         EnsurePointBuffer(shell, _shellCount);
         Points.Value = _pointBuffer;
         PointCount.Value = _points.Count;
@@ -898,6 +902,8 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
         Captures.Value = 0;
         PointsAdded.Value = 0;
         SavedPath.Value = string.Empty;
+        Array.Clear(_seamHistogram);
+        _seamSamples = 0;
     }
 
     /// <summary>One staging texture per source; replaced on size change so buffers don't accumulate.</summary>
@@ -2093,6 +2099,47 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
         return (byte)Math.Clamp((int)(value * 255f + 0.5f), 0, 255);
     }
 
+    private const int SeamBins = 200;
+    private const float SeamMaxLogRatio = 1f;
+    private readonly int[] _seamHistogram = new int[SeamBins];
+    private int _seamSamples;
+
+    /** How far each new sample lands from what earlier captures put in the same direction: the scan's own measure of how well it is assembled. */
+    private void RecordSeam(float ratio)
+    {
+        var deviation = MathF.Abs(MathF.Log(Math.Max(ratio, 1e-3f)));
+        _seamHistogram[Math.Min((int)(deviation / SeamMaxLogRatio * SeamBins), SeamBins - 1)]++;
+        _seamSamples++;
+    }
+
+    private bool TryGetSeamError(out float median, out float p90)
+    {
+        median = p90 = 0f;
+        if (_seamSamples < 500)
+            return false;
+
+        var seen = 0;
+        var gotMedian = false;
+        for (var i = 0; i < SeamBins; i++)
+        {
+            seen += _seamHistogram[i];
+            var value = (i + 1) * SeamMaxLogRatio / SeamBins;
+            if (!gotMedian && seen >= _seamSamples * 0.5f)
+            {
+                median = value;
+                gotMedian = true;
+            }
+
+            if (seen >= _seamSamples * 0.9f)
+            {
+                p90 = value;
+                return true;
+            }
+        }
+
+        return true;
+    }
+
     private void UpdateStatus()
     {
         if (_points.Count == 0)
@@ -2104,7 +2151,8 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
         var state = _recording ? "Recording" : "Holding";
         var camMode = _pendingCamIsPose ? "world space (DA3 camera pose)" : "camera space - connect CamReference for world space";
         var anchorText = _pendingAutoScale && _anchorScale != 1f ? $", scale x{_anchorScale:0.###}" : string.Empty;
-        SetStatus($"{state} scan: {_points.Count} points, {_captures} captures{anchorText}, {camMode}.", IStatusProvider.StatusLevel.Success);
+        var seamText = TryGetSeamError(out var seamMedian, out var seamP90) ? $", seam error {seamMedian * 100f:0}% (90th {seamP90 * 100f:0}%)" : string.Empty;
+        SetStatus($"{state} scan: {_points.Count} points, {_captures} captures{anchorText}{seamText}, {camMode}.", IStatusProvider.StatusLevel.Success);
     }
 
     /// <summary>How overlapping voxel observations merge; values only ever appended.</summary>
