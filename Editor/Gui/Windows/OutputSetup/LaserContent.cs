@@ -18,7 +18,6 @@ namespace T3.Editor.Gui.Windows.OutputSetup;
 internal static class LaserContent
 {
     public static readonly Guid LaserCameraSymbolId = new("2CCC2F86-FE71-42FF-B91D-812763F5C6CF");
-    public static readonly Guid LaserCameraOutputRefInput = new("E7A2C41D-9B58-4C0F-A3D6-8E41F2B7C5A9");
 
     public static IReadOnlyList<ILaserContentSupplier> Cameras => LaserContentRegistry.Suppliers;
 
@@ -69,14 +68,9 @@ internal static class LaserContent
     private static bool TryGetInput(Instance camera, out Symbol.Child.Input input)
     {
         input = null!;
-        var parent = camera.Parent;
-        if (parent == null || !parent.Symbol.Children.TryGetValue(camera.SymbolChildId, out var child))
-            return false;
 
-        if (!child.Inputs.TryGetValue(LaserCameraOutputRefInput, out var found))
-            return false;
-
-        input = found;
-        return true;
+        // The supplier declares its own routing input (each laser supplier op names its OutputRef
+        // input in its implementation), so the setup doesn't hard-code any op's input id here.
+        return camera is ILaserContentSupplier supplier && supplier.TryGetRoutingInput(out input);
     }
 }

@@ -37,6 +37,8 @@
     <ItemGroup>
         <!-- Self-contained operator helper: compiled in so its projection math is tested without loading the operator package. -->
         <Compile Include="..\Operators\Lib\Utils\LaserProjection.cs" Link="LaserProjection.cs" />
+        <!-- Self-contained laser vectorizer: compiled in so its CPU pipeline is tested without loading the operator package. -->
+        <Compile Include="..\Operators\Lib\Utils\LaserVectorize.cs" Link="LaserVectorize.cs" />
     </ItemGroup>
 
     <ItemGroup>

@@ -71,6 +71,26 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
 
     IInputSlot ILaserContentSupplier.UpdateInput => Update;
 
+    bool ILaserContentSupplier.TryGetRoutingInput(out Symbol.Child.Input input)
+    {
+        return TryGetSavedInput(RoutingInputId, out input);
+    }
+
+    /// <summary>Looks this op's symbol-child input up without evaluating it - the setup reads
+    /// routing and writes routing commands against the saved graph, not a live slot.</summary>
+    private bool TryGetSavedInput(Guid inputId, out Symbol.Child.Input input)
+    {
+        input = null!;
+        var parent = Parent;
+        if (parent == null || !parent.Symbol.Children.TryGetValue(SymbolChildId, out var child))
+            return false;
+
+        return child.Inputs.TryGetValue(inputId, out input);
+    }
+
+    /// <summary>The OutputRef input's id as declared in this symbol's definition.</summary>
+    private static readonly Guid RoutingInputId = new("E7A2C41D-9B58-4C0F-A3D6-8E41F2B7C5A9");
+
     IStatusProvider.StatusLevel IStatusProvider.GetStatusLevel()
     {
         if (_lastError != null)
