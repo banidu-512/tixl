@@ -80,7 +80,7 @@
     },
     {
       "Id": "d7a3f5c1-2b84-4e96-9c1d-6f0a8b3e5d72"/*GlobalAlign*/,
-      "DefaultValue": false
+      "DefaultValue": true
     },
     {
       "Id": "e9b4c7a3-6d15-4b82-a3f0-1c8d5e7b2a96"/*FlatSurfaces*/,
