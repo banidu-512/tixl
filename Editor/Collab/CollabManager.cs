@@ -274,10 +274,10 @@ internal sealed class CollabManager
     private static string TruncateAvatar(string url) => string.IsNullOrEmpty(url) ? "" : url.Length <= 220 ? url : url[..220];
 
     /// <summary>What the relay is told when opening or joining a room. UI thread: reads the settings.</summary>
-    private CollabRelayHello BuildRelayHello(bool hosting, string roomKey, string password)
+    private CollabRelayHello BuildRelayHello(bool hosting, string roomKey, string password, bool sendDiscordToken = true)
     {
         var config = UserSettings.Config;
-        var token = CollabDiscordAuth.GetValidAccessToken();
+        var token = sendDiscordToken ? CollabDiscordAuth.GetValidAccessToken() : "";
         if (!hosting)
             return new CollabRelayHello(Token: token, Name: _localIdentity.DisplayName, Lang: _localIdentity.Lang);
 
@@ -603,7 +603,7 @@ internal sealed class CollabManager
     }
 
     /// <summary>Joins a relay-hosted room by code.</summary>
-    public void JoinViaRelay(string relayHost, int relayPort, string roomCode, string password)
+    public void JoinViaRelay(string relayHost, int relayPort, string roomCode, string password, bool sendDiscordToken = true)
     {
         if (!_reconnectAttemptInFlight)
             CancelReconnect();
@@ -633,7 +633,7 @@ internal sealed class CollabManager
 
         var generation = ++_sessionGeneration;
         var passwordToUse = password ?? "";
-        var hello = BuildRelayHello(hosting: false, "", passwordToUse);
+        var hello = BuildRelayHello(hosting: false, "", passwordToUse, sendDiscordToken);
         var useWebRtc = UserSettings.Config.CollabWebRtcEnabled;
         _ = Task.Run(async () =>
                 {
@@ -4613,7 +4613,7 @@ internal sealed class CollabManager
     /// directory. A rooted path or a ".." segment would put the downloaded files anywhere this
     /// machine can write.
     /// </summary>
-    private static string? SafeProjectFolderName(string name)
+    internal static string? SafeProjectFolderName(string name)
     {
         name = (name ?? "").Trim();
         if (name.Length == 0 || name is "." or ".." || name.Contains(".."))

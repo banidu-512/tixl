@@ -1487,7 +1487,9 @@ internal sealed class BoygroupManager
 
         try
         {
-            var folder = Path.Combine(root, name);
+            var safeName = CollabManager.SafeProjectFolderName(name)
+                           ?? throw new IOException($"the master offered a project with an unusable folder name '{name}'");
+            var folder = Path.Combine(root, safeName);
             Directory.CreateDirectory(folder);
             if (!string.Equals(_bootstrapProjectFolder, folder, StringComparison.Ordinal))
             {
@@ -1579,7 +1581,7 @@ internal sealed class BoygroupManager
         try
         {
             var name = json["name"]?.Value<string>() ?? "";
-            if (name.Contains("..") || !name.EndsWith(Setup.FileSuffix, StringComparison.Ordinal))
+            if (CollabManager.SafeProjectFolderName(name) == null || !name.EndsWith(Setup.FileSuffix, StringComparison.Ordinal))
                 throw new IOException($"unsafe setup file name '{name}'");
 
             var setupsFolder = SetupFiles.FolderIn(projectFolder);
