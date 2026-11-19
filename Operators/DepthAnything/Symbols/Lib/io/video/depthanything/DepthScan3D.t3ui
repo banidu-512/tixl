@@ -178,6 +178,14 @@
         "Y": 280.0
       },
       "Description": "Anchors each capture's depth scale against the points already merged, so relative depth wobble cannot stack repeated copies of the same surfaces at increasing range. Turn off for metric depth models."
+    },
+    {
+      "InputId": "b4c8e1a2-5d37-4f90-8a6b-3e2f1c7d9a40"/*RegularizeRoom*/,
+      "Position": {
+        "X": -250.0,
+        "Y": 320.0
+      },
+      "Description": "For a camera that only rotates (a pan/tilt head): fit a box to the scan and snap walls, floor and ceiling to it. Only suits rectangular rooms; leave off for objects and irregular spaces."
     }
   ],
   "SymbolChildUis": [],

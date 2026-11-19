@@ -2,9 +2,19 @@
 
 Scans a whole room into one world-space point cloud with a pan/tilt (PTZ) network camera. The camera is driven
 through a stop-and-capture raster; the pose of every capture comes from the camera's own pan/tilt readout, so the
-cloud cannot drift and a full sweep closes into one consistent half-sphere around the camera.
+cloud cannot drift and a full sweep closes around the camera.
 
-Tested with an AXIS P5635-E (360 degrees pan, 180 degrees tilt) over ONVIF + VAPIX.
+**Ready-made composition:** `Examples.Lib.io.video.depthanything.PtzRoomScanExample` contains the whole chain below,
+preconfigured for an AXIS P5635-E. Set **Address** to your camera and leave **Run** on: the sweep starts by itself and the
+output draws the cloud as it fills in. Orbit the output view to look at the room from outside.
+
+Tested with an AXIS P5635-E (360 degrees pan, 180 degrees tilt) over ONVIF + VAPIX. The camera cannot look below its
+horizon, so a sweep covers 360 degrees of pan by 0 to 90 degrees up.
+
+A camera that only rotates sees one surface per direction, so DepthScan3D keeps one range per 0.25 degree direction
+(each capture's depth scale and shift are fitted against what is already merged, depth edges and single sightings are
+dropped). Turn **RegularizeRoom** on to snap walls, floor and ceiling to a fitted box; it only suits rectangular rooms.
+Save a closed triangle mesh with **SaveFormat** "PLY mesh".
 
 ## Composition Structure
 

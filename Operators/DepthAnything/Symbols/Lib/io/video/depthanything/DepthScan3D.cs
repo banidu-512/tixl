@@ -198,6 +198,7 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
         _pendingStride = Math.Clamp(PixelStride.GetValue(context), 1, 64);
         _pendingMaxPoints = Math.Max(1000, MaxPoints.GetValue(context));
         _pendingAutoScale = AutoScale.GetValue(context);
+        _pendingRegularize = RegularizeRoom.GetValue(context);
         PrepareCamera(context, desc.Width, desc.Height);
         UpdateStatus();
     }
@@ -661,12 +662,13 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
         _shellBusy = true;
         _shellCaptures = _captures;
         var snapshot = _points.ToArray();
+        var regularize = _pendingRegularize;
         var generation = _shellGeneration;
         System.Threading.Tasks.Task.Run(() =>
                                         {
                                             try
                                             {
-                                                BuildRoomShell(snapshot, out _, out _, out _, out var positions, out var colors, out _);
+                                                BuildRoomShell(snapshot, regularize, out _, out _, out _, out var positions, out var colors, out _);
                                                 var shell = new Point[positions.Count];
                                                 for (var i = 0; i < shell.Length; i++)
                                                 {
@@ -997,6 +999,7 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
 
                 // The meshing walks millions of cells: it runs on a snapshot off the editor thread
                 var snapshot = _points.ToArray();
+                var regularize = _pendingRegularize;
                 _meshBusy = true;
                 SetStatus($"Building a mesh from {snapshot.Length} points...", IStatusProvider.StatusLevel.Notice);
                 System.Threading.Tasks.Task.Run(() =>
@@ -1004,7 +1007,7 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
                                                     try
                                                     {
                                                         var watch = System.Diagnostics.Stopwatch.StartNew();
-                                                        var (vertices, triangles) = WriteSphericalMesh(absolutePath, snapshot);
+                                                        var (vertices, triangles) = WriteSphericalMesh(absolutePath, snapshot, regularize);
                                                         _meshResultPath = relativePath;
                                                         _meshResultMessage = $"Saved a mesh of {vertices} vertices and {triangles} triangles to {relativePath} ({watch.Elapsed.TotalSeconds:F1} s)";
                                                     }
@@ -1080,7 +1083,7 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
     /// uchar red/green/blue per vertex, openable in MeshLab/CloudCompare/blender.
     /// </summary>
     /** Bins the scan into a range map, fits the room box and returns the box-snapped shell as a half-degree vertex grid. */
-    private static void BuildRoomShell(ScanPoint[] scanPoints, out int w2, out int h2, out float[] gridRange,
+    private static void BuildRoomShell(ScanPoint[] scanPoints, bool regularize, out int w2, out int h2, out float[] gridRange,
                                        out List<System.Numerics.Vector3> positions, out List<System.Numerics.Vector3> colors,
                                        out int[] vertexIndex)
     {
@@ -1107,7 +1110,7 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
         FillSmallHoles(range, color, width, height, 6);
 
         // The depth of each capture carries its own scale, so surfaces wobble. A room is a box: fit one and snap the walls to it
-        var box = FitRoomBox(range, width, height);
+        var box = regularize ? FitRoomBox(range, width, height) : default;
 
         // Output grid at half the resolution; walls are flat, so the extra detail only matters for objects
         const int downsample = 2;
@@ -1127,7 +1130,7 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
                 var azimuth = (x + 0.5f) * SphericalCellRadians * downsample - MathF.PI;
                 var dx = cosE * MathF.Sin(azimuth);
                 var dz = -cosE * MathF.Cos(azimuth);
-                var boxRange = box.RangeAlong(dx, sinE, dz);
+                var boxRange = regularize ? box.RangeAlong(dx, sinE, dz) : float.MaxValue;
 
                 var sum = 0f;
                 var colorSum = System.Numerics.Vector3.Zero;
@@ -1146,15 +1149,22 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
                     }
                 }
 
-                // Walls and anything not clearly in front of them take the box; objects in front keep their own range
+                // Without a box only what was seen becomes geometry; with one, walls and anything not clearly in
+                // front of them take the box, and unseen directions are filled from it
                 var r = boxRange;
                 var cellColor = new System.Numerics.Vector3(0.4f, 0.4f, 0.4f);
                 if (n > 0)
                 {
                     cellColor = colorSum / n;
                     var observed = sum / n;
-                    if (observed < boxRange * RoomObjectRatio)
+                    if (!regularize || observed < boxRange * RoomObjectRatio)
                         r = observed;
+                }
+                else if (!regularize)
+                {
+                    gridRange[y * w2 + x] = float.NaN;
+                    vertexIndex[y * w2 + x] = -1;
+                    continue;
                 }
 
                 gridRange[y * w2 + x] = r;
@@ -1172,9 +1182,9 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
      * (so surfaces never stretch across an edge), and the open rim at the lowest seen elevation is closed with a
      * floor fan so the shell is solid. Faces point toward the camera.
      */
-    private (int Vertices, int Triangles) WriteSphericalMesh(string absolutePath, ScanPoint[] scanPoints)
+    private (int Vertices, int Triangles) WriteSphericalMesh(string absolutePath, ScanPoint[] scanPoints, bool regularize)
     {
-        BuildRoomShell(scanPoints, out var w2, out var h2, out var gridRange, out var positions, out var colors, out var vertexIndex);
+        BuildRoomShell(scanPoints, regularize, out var w2, out var h2, out var gridRange, out var positions, out var colors, out var vertexIndex);
 
         var faces = new List<int>();
         void AddFace(int i0, int i1, int i2)
@@ -1202,9 +1212,12 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
                 var r10 = gridRange[y * w2 + x1];
                 var r01 = gridRange[(y + 1) * w2 + x];
                 var r11 = gridRange[(y + 1) * w2 + x1];
+                if (i00 < 0 || i10 < 0 || i01 < 0 || i11 < 0)
+                    continue;
+
                 var lo = MathF.Min(MathF.Min(r00, r10), MathF.Min(r01, r11));
                 var hi = MathF.Max(MathF.Max(r00, r10), MathF.Max(r01, r11));
-                if (hi > lo * MeshDepthJumpRatio)
+                if (hi > lo * (regularize ? MeshDepthJumpRatio : MeshScanJumpRatio))
                     continue;
 
                 AddFace(i00, i10, i01);
@@ -1212,7 +1225,7 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
             }
         }
 
-        CloseHoles(positions, colors, faces, AddFace);
+        CloseHoles(positions, colors, faces, AddFace, regularize);
 
         using (var file = File.Create(absolutePath))
         {
@@ -1250,7 +1263,7 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
      * their centroid, and the large outer rim (the lowest elevation the camera could see) closes on a point at floor level.
      */
     private static void CloseHoles(List<System.Numerics.Vector3> positions, List<System.Numerics.Vector3> colors, List<int> faces,
-                                   Action<int, int, int> addFace)
+                                   Action<int, int, int> addFace, bool closeLargeLoops)
     {
         // Tuple keys: a packed 64-bit key hashes to a ^ b, which piles neighbouring edges into a few buckets
         var directed = new HashSet<(int, int)>();
@@ -1297,7 +1310,7 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
                     }
                 }
 
-                if (!closed || loop.Count < 3)
+                if (!closed || loop.Count < 3 || (!closeLargeLoops && loop.Count > MeshSmallHoleEdges))
                     continue;
 
                 var center = System.Numerics.Vector3.Zero;
@@ -1769,6 +1782,9 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
     [Input(Guid = "8a4f0d63-2e91-4b57-a3c8-6f5d1e2b4c70")]
     public readonly InputSlot<bool> AutoScale = new(true);
 
+    [Input(Guid = "b4c8e1a2-5d37-4f90-8a6b-3e2f1c7d9a40")]
+    public readonly InputSlot<bool> RegularizeRoom = new(false);
+
     [Input(Guid = "6c269444-aaec-4359-9708-4eb2cfdd0487")]
     public readonly InputSlot<bool> SaveTrigger = new(false);
 
@@ -1804,6 +1820,8 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
     private const int SphericalMinObservations = 2;
     private const float FlyingPixelRatio = 0.08f;
     private const float MeshDepthJumpRatio = 1.6f;
+    private const float MeshScanJumpRatio = 1.25f;
+    private const int MeshSmallHoleEdges = 400;
     private const float RoomObjectRatio = 0.75f;
     private const int MeshRimLoopEdges = 2000;
 
@@ -1854,6 +1872,7 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
     private int _pendingStride;
     private int _pendingMaxPoints;
     private bool _pendingAutoScale;
+    private bool _pendingRegularize;
     private float _anchorScale = 1f;
     private bool _captureOnceState;
     private bool _resetState;
@@ -1871,7 +1890,7 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
     private int _uiSaveFormat;
 
     private static readonly string[] ModeNames = { "Average", "Replace" };
-    private static readonly string[] SaveFormatNames = { "PLY ASCII", "PLY binary", "PLY mesh (room box)" };
+    private static readonly string[] SaveFormatNames = { "PLY ASCII", "PLY binary", "PLY mesh" };
 
     #endregion
 
