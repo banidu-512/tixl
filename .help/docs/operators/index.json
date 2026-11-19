@@ -880,6 +880,10 @@
       "url": "/operators/lib/io/dmx/obsolete/PointsToRGBList/",
       "summary": "Converts a buffer of 3D points into a flat list of RGB float values (0-255)."
     },
+    "Lib.io.file.AssimpExport": {
+      "url": "/operators/lib/io/file/AssimpExport/",
+      "summary": "Writes a mesh, a polygon geometry or a point cloud to a 3D file with Assimp."
+    },
     "Lib.io.file.FilesInFolder": {
       "url": "/operators/lib/io/file/FilesInFolder/",
       "summary": "Scans a folder for all existing files and creates a list that can be used with [PickFromStringList]"
@@ -1207,6 +1211,10 @@
     "Lib.mesh.draw.VisualizeUvMap": {
       "url": "/operators/lib/mesh/draw/VisualizeUvMap/",
       "summary": "A draw helper to check the UV maps of a given mesh"
+    },
+    "Lib.mesh.generate.AssimpImport": {
+      "url": "/operators/lib/mesh/generate/AssimpImport/",
+      "summary": "Loads a 3D model file with Assimp as mesh, points, polygon geometry and skeleton with animations."
     },
     "Lib.mesh.generate.CubeMesh": {
       "url": "/operators/lib/mesh/generate/CubeMesh/",
@@ -3450,6 +3458,14 @@
     ],
     "AsciiRender": [
       "Lib.image.fx.stylize.AsciiRender"
+    ],
+    "AssimpExport": [
+      "Lib.io.file.AssimpExport",
+      "Lib.io.file.AssimpExport"
+    ],
+    "AssimpImport": [
+      "Lib.mesh.generate.AssimpImport",
+      "Lib.mesh.generate.AssimpImport"
     ],
     "Atan2": [
       "Lib.numbers.float.trigonometry.Atan2"

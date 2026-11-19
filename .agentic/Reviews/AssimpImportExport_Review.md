@@ -240,3 +240,29 @@ Vulkan path fails to load `spirv-opt`. The Vulkan checks ran on arton-linux.
   parent were all checked: the parent keeps running and no child is left behind.
 - Editor pass on Windows (D3D11) and arton-linux (Vulkan): see the visual pass and the additional
   robustness checks above; the manual recipe is in `.tests-manual/assimp-import-export.md`.
+
+### Deployment-readiness pass (2026-11-19)
+
+Type-compatibility audit of both operators against the current branch (post 11-17 merge), plus a
+deploy-state check. No code changes needed; the ops, worker hosting and natives were already in sync.
+
+- **Type compatibility (all verified against current sources):** `MeshData` (MeshBuffers) → mesh
+  ops; `Geometry` (MeshGeometry, N-gons preserved) → geometry ops and [VolumeFromMesh];
+  `Points` (BufferWithViews of `Point` structs) → the GPU point ops (VisualizePoints, DrawPoints2,
+  DrawTubes, …); `Setup` (SceneSetup) → [DrawScene] (`Scene` input), [SampleGltfAnimation],
+  [PoseToSkinMatrices] for skinning/animations; `Material` → PbrMaterial with the additive RMO
+  contract (reader bakes factors into the RMO map and zeroes the params, matching the shader).
+  SDF/volume interop runs over [VolumeFromMesh] (takes MeshGeometry) → volume ops →
+  [VdbToSdfField]. The 11-17 merge added `SceneSetup.SceneMaterial.AuthoredRoughnessOffset/Metal`
+  for [LoadGltfScene] only; no shader or `PbrParameters` semantic change touches this path.
+- **Known interop gap (unchanged, repo-wide):** `VolumeFromPoints` wants CPU `StructuredList`
+  points; the import's Points output is the GPU point buffer. Mesh/geometry→volume works;
+  points→volume would need a GPU→CPU point converter op that doesn't exist yet.
+- **Deploy state:** `Editor/bin/Release` is bit-identical with the repo for both ops' .t3/.t3ui/.cs,
+  Lib.dll and AssimpImportHost.dll built 2026-11-19 06:14 (after the last source change), natives
+  present for all seven RIDs, `TiXL --assimp-host` probing verified previously. Docs: symbol and
+  input descriptions were already complete; the missing wiki pages (never exported) were generated
+  in exporter format via `Scripts/generate_assimp_help_pages.py` — 2 op pages + 2 README lines +
+  index.json entries (838 ops). Next editor "Export as WIKI" run will simply reproduce them.
+- **t3 defaults** re-verified against the C# initializers, all 10 inputs match (including the
+  enum-mapped PostProcessFlags=Basic, AxisConversionMode=None).
