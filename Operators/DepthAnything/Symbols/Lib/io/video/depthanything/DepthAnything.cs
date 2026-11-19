@@ -152,6 +152,7 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
         public float SmoothedMax;
 
         public readonly DepthPoseTracker PoseTracker = new();
+        public byte[]? GrayFrame;
 
         // Multi-view model: the previous input frame, the reusable pair tensor and the pose chained over all pairs so far
         public float[]? PreviousInput;
@@ -639,6 +640,42 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
             Array.Copy(request.InputData!, recycled, workerContext.RingViewLength);
             ring[^1] = recycled;
         }
+    }
+
+    /** The frame the model saw as 8-bit grayscale (null when its size differs from the output grid), for image-based rotation tracking. */
+    private static byte[]? TryGetGray(WorkerContext workerContext, DepthEstimationRequest request, int width, int height)
+    {
+        if (request.Width != width || request.Height != height)
+            return null;
+
+        var count = width * height;
+        if (workerContext.GrayFrame == null || workerContext.GrayFrame.Length != count)
+            workerContext.GrayFrame = new byte[count];
+
+        var gray = workerContext.GrayFrame;
+        if (request.InputBytes is { } bytes && bytes.Length >= count * 3)
+        {
+            for (var i = 0; i < count; i++)
+                gray[i] = (byte)(0.299f * bytes[i * 3] + 0.587f * bytes[i * 3 + 1] + 0.114f * bytes[i * 3 + 2]);
+
+            return gray;
+        }
+
+        if (request.InputData is { } data && data.Length >= count * 3)
+        {
+            // Planar ImageNet-normalized RGB: undo the normalization
+            for (var i = 0; i < count; i++)
+            {
+                var r = data[i] * 0.229f + 0.485f;
+                var g = data[count + i] * 0.224f + 0.456f;
+                var b = data[2 * count + i] * 0.225f + 0.406f;
+                gray[i] = (byte)Math.Clamp((int)((0.299f * r + 0.587f * g + 0.114f * b) * 255f + 0.5f), 0, 255);
+            }
+
+            return gray;
+        }
+
+        return null;
     }
 
     /** Keyframe and current frame as one [1,2,3,H,W] tensor; the first frame pairs with itself, which anchors the world pose at zero motion. */
@@ -1809,7 +1846,10 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
                 }
 
                 var poseStartTicks = Stopwatch.GetTimestamp();
-                workerContext.PoseTracker.Update(resultDepth, resultConfidence, outputWidth, outputHeight, fx, fy, cx, cy);
+                if (cameraMotion == DepthCameraMotion.RotationOnly && TryGetGray(workerContext, request, outputWidth, outputHeight) is { } gray)
+                    workerContext.PoseTracker.UpdateFromImage(gray, outputWidth, outputHeight, fx, fy, cx, cy);
+                else
+                    workerContext.PoseTracker.Update(resultDepth, resultConfidence, outputWidth, outputHeight, fx, fy, cx, cy);
                 poseTicks = Stopwatch.GetTimestamp() - poseStartTicks;
             }
 
