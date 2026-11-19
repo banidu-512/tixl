@@ -75,6 +75,10 @@
       "DefaultValue": true
     },
     {
+      "Id": "b4c8e1a2-5d37-4f90-8a6b-3e2f1c7d9a40"/*RegularizeRoom*/,
+      "DefaultValue": false
+    },
+    {
       "Id": "6c269444-aaec-4359-9708-4eb2cfdd0487"/*SaveTrigger*/,
       "DefaultValue": false
     },
