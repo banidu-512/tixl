@@ -658,6 +658,13 @@ internal static partial class SetupParameterView
             SetupUndo.RunUndoable("Assign output machine", setup, () => output.MachineName = value);
         }
 
+        if (output.Kind == OutputDefinition.Kinds.Laser)
+        {
+            DrawLaserOutputCard(setup, machineConfig, output);
+            FormInputs.Unindent(OutputCardExtraIndent);
+            return;
+        }
+
         // The canvas every route onto this output is measured in, and what its content is asked to render at:
         // an unset resolution upstream (a RenderTarget at 0×0) resolves to this, so it is the one place the
         // pixel size of a projector or a stream is decided.
