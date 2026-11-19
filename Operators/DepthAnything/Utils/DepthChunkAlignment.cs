@@ -337,23 +337,19 @@ internal readonly struct PlacedFrame
 /// <summary>
 /// Chains overlapping windows into one world frame the way DA3-Streaming does: the frames two windows share are
 /// unprojected in both, and a similarity transform fitted on those point pairs carries the new window onto the previous one.
+/// Rotation comes from the shared frames' camera poses (point clouds barely constrain it for a rotating camera); scale and
+/// translation come from the points.
 /// </summary>
 internal sealed class DepthChunkChain
 {
     private const int SampleStride = 8;
     private const float MinConfidence = 0.2f;
 
-    private readonly int _overlap;
     private int _chunkIndex;
     private Sim3 _previousToWorld = Sim3.Identity;
-    private List<Vector3>[]? _previousOverlapPoints;
-    private List<float>[]? _previousOverlapWeights;
-    private Quaternion[]? _previousOverlapRotations;
-
-    public DepthChunkChain(int overlap)
-    {
-        _overlap = overlap;
-    }
+    private List<Vector3>[]? _previousPoints;
+    private List<float>[]? _previousWeights;
+    private Quaternion[]? _previousRotations;
 
     public Sim3 LastChunkToWorld => _previousToWorld;
     public int LastPairCount { get; private set; }
@@ -366,57 +362,51 @@ internal sealed class DepthChunkChain
     private static float QuaternionAngle(Quaternion q) => 2f * MathF.Acos(Math.Clamp(MathF.Abs(q.W), 0f, 1f)) * 180f / MathF.PI;
 
     /**
-     * Places a window. The first <c>overlap</c> views are the last views of the previous window. Returns the frames to fuse:
-     * all of the first window, afterwards only the frames that are new. Null when the overlap cannot be fitted.
+     * Places a window that follows the previous one by <paramref name="shift"/> frames: view j of this window is view j + shift
+     * of the previous one. A shift of 0 means only the newest view changed. Returns the frames to use: all of the first
+     * window, afterwards the views that are new. Null when the shared frames cannot be fitted.
      */
-    public List<PlacedFrame>? Add(DepthChunk chunk)
+    public List<PlacedFrame>? Add(DepthChunk chunk, int shift)
     {
-        var first = _previousOverlapPoints == null;
+        var views = chunk.Views;
+        var first = _previousPoints == null;
+        var shared = shift == 0 ? views - 1 : views - shift;
         if (!first)
         {
             var src = new List<Vector3>();
             var dst = new List<Vector3>();
             var weight = new List<float>();
-            for (var o = 0; o < _overlap; o++)
+            var accumulated = new Quaternion(0, 0, 0, 0);
+            var reference = Quaternion.Identity;
+            for (var j = 0; j < shared; j++)
             {
                 var points = new List<Vector3>();
                 var weights = new List<float>();
-                chunk.SamplePoints(o, SampleStride, MinConfidence, points, weights);
+                chunk.SamplePoints(j, SampleStride, MinConfidence, points, weights);
+                var previousIndex = j + shift;
                 for (var i = 0; i < points.Count; i++)
                 {
-                    var w = MathF.Min(weights[i], _previousOverlapWeights![o][i]);
+                    var w = MathF.Min(weights[i], _previousWeights![previousIndex][i]);
                     if (w <= 0f)
                         continue;
 
                     src.Add(points[i]);
-                    dst.Add(_previousOverlapPoints![o][i]);
+                    dst.Add(_previousPoints![previousIndex][i]);
                     weight.Add(w);
                 }
-            }
 
-            LastPairCount = src.Count;
-
-            // Rotation from the camera poses of the shared frames: p_previous = Q * p_new, so Q = Q_previous_k * Q_new_k^-1
-            var accumulated = Quaternion.Identity;
-            var reference = Quaternion.Identity;
-            for (var o = 0; o < _overlap; o++)
-            {
-                chunk.CameraToWorld(o, out var newMatrix, out _);
-                var newQ = Quaternion.CreateFromRotationMatrix(newMatrix);
-                var q = _previousOverlapRotations![o] * Quaternion.Inverse(newQ);
-                if (o == 0)
-                {
+                // p_previous = Q * p_new, so Q = Q_previous * Q_new^-1 for this shared frame
+                chunk.CameraToWorld(j, out var newMatrix, out _);
+                var q = _previousRotations![previousIndex] * Quaternion.Inverse(Quaternion.CreateFromRotationMatrix(newMatrix));
+                if (j == 0)
                     reference = q;
-                    accumulated = q;
-                    continue;
-                }
-
-                if (Quaternion.Dot(reference, q) < 0f)
+                else if (Quaternion.Dot(reference, q) < 0f)
                     q = new Quaternion(-q.X, -q.Y, -q.Z, -q.W);
 
                 accumulated = new Quaternion(accumulated.X + q.X, accumulated.Y + q.Y, accumulated.Z + q.Z, accumulated.W + q.W);
             }
 
+            LastPairCount = src.Count;
             var poseRotation = Quaternion.Normalize(accumulated);
             if (Sim3Fit.Fit(src, dst, weight, out var pointFit))
                 LastPointRotationDegrees = QuaternionAngle(Quaternion.Concatenate(Quaternion.Inverse(poseRotation), pointFit.Rotation));
@@ -438,7 +428,7 @@ internal sealed class DepthChunkChain
         }
 
         var placed = new List<PlacedFrame>();
-        for (var view = first ? 0 : _overlap; view < chunk.Views; view++)
+        for (var view = first ? 0 : shared; view < views; view++)
         {
             chunk.CameraToWorld(view, out var rotation, out var position);
             var worldPosition = _previousToWorld.Apply(position);
@@ -446,17 +436,17 @@ internal sealed class DepthChunkChain
             placed.Add(new PlacedFrame(_chunkIndex, view, worldRotation, worldPosition, _previousToWorld.Scale));
         }
 
-        // The window's last views are the next window's first ones, expressed in this window's frame
-        _previousOverlapPoints = new List<Vector3>[_overlap];
-        _previousOverlapWeights = new List<float>[_overlap];
-        _previousOverlapRotations = new Quaternion[_overlap];
-        for (var o = 0; o < _overlap; o++)
+        // Every view of this window, in this window's frame, is a candidate shared frame for the next one
+        _previousPoints = new List<Vector3>[views];
+        _previousWeights = new List<float>[views];
+        _previousRotations = new Quaternion[views];
+        for (var view = 0; view < views; view++)
         {
-            chunk.CameraToWorld(chunk.Views - _overlap + o, out var overlapMatrix, out _);
-            _previousOverlapRotations[o] = Quaternion.CreateFromRotationMatrix(overlapMatrix);
-            _previousOverlapPoints[o] = new List<Vector3>();
-            _previousOverlapWeights[o] = new List<float>();
-            chunk.SamplePoints(chunk.Views - _overlap + o, SampleStride, MinConfidence, _previousOverlapPoints[o], _previousOverlapWeights[o]);
+            _previousPoints[view] = new List<Vector3>();
+            _previousWeights[view] = new List<float>();
+            chunk.SamplePoints(view, SampleStride, MinConfidence, _previousPoints[view], _previousWeights[view]);
+            chunk.CameraToWorld(view, out var matrix, out _);
+            _previousRotations[view] = Quaternion.CreateFromRotationMatrix(matrix);
         }
 
         _chunkIndex++;

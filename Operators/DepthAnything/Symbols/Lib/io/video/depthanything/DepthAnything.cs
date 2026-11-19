@@ -161,6 +161,17 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
         public readonly float[] WorldRotation = [1, 0, 0, 0, 1, 0, 0, 0, 1];
         public Vector3 WorldPosition;
         public float WorldScale = 1f;
+        // N-view window: the previous keyframes, the reusable window tensor and the chain that places each window
+        public float[][]? Ring;
+        public float[]? WindowInput;
+        public int RingViewLength;
+        public int ChunkShift;
+        public DepthChunkChain? Chain;
+        public float[]? ChunkDepth;
+        public float[]? ChunkConfidence;
+        public float[]? ChunkExtrinsics;
+        public float[]? ChunkIntrinsics;
+
         public readonly float[] KeyRotation = [1, 0, 0, 0, 1, 0, 0, 0, 1];
         public Vector3 KeyPosition;
         public float KeyWorldDepth;
@@ -536,6 +547,99 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
     /** Converts the model's OpenCV camera frame (y down, +Z forward) to TiXL's world (y up, -Z forward). */
     private static readonly Quaternion OpenCvToWorld = Quaternion.CreateFromAxisAngle(Vector3.UnitX, MathF.PI);
 
+    /**
+     * The last views-1 keyframes plus the current frame as one [1,N,3,H,W] window. The ring starts as copies of the first
+     * frame, so the first windows are identical views (identity poses) and the real ones follow as the camera moves. A frame
+     * that barely differs from the newest keyframe does not enter the ring (shift 0).
+     */
+    private static OrtValue CreateChunkInput(WorkerContext workerContext, DepthEstimationRequest request, int views)
+    {
+        var viewLength = 3 * request.Height * request.Width;
+        var current = request.InputData!;
+        if (workerContext.WindowInput == null || workerContext.WindowInput.Length != views * viewLength || workerContext.RingViewLength != viewLength)
+        {
+            workerContext.WindowInput = new float[views * viewLength];
+            workerContext.Ring = new float[views - 1][];
+            for (var i = 0; i < views - 1; i++)
+            {
+                workerContext.Ring[i] = new float[viewLength];
+                Array.Copy(current, workerContext.Ring[i], viewLength);
+            }
+
+            workerContext.RingViewLength = viewLength;
+            workerContext.Chain = null;
+        }
+
+        var ring = workerContext.Ring!;
+        workerContext.ChunkShift = MeanAbsoluteDifference(ring[views - 2], current, viewLength) >= KeyframeMinFrameDifference ? 1 : 0;
+        for (var i = 0; i < views - 1; i++)
+            Array.Copy(ring[i], 0, workerContext.WindowInput, i * viewLength, viewLength);
+
+        Array.Copy(current, 0, workerContext.WindowInput, (views - 1) * viewLength, viewLength);
+        return OrtValue.CreateTensorValueFromMemory(workerContext.WindowInput, [1, views, 3, request.Height, request.Width]);
+    }
+
+    /** Places the window in the world frame and publishes the newest frame's pose and depth scale. */
+    private static void AccumulateChunkPose(WorkerContext workerContext, IReadOnlyList<OrtValue> outputs, DepthEstimationRequest request, int views)
+    {
+        if (workerContext.ExtrinsicsIndex < 0 || workerContext.IntrinsicsIndex < 0 || workerContext.Ring == null || request.Width != request.Height)
+            return;
+
+        var size = request.Height;
+        var plane = size * size;
+        var depth = outputs[workerContext.DepthIndex].GetTensorDataAsSpan<float>();
+        var extrinsics = outputs[workerContext.ExtrinsicsIndex].GetTensorDataAsSpan<float>();
+        var intrinsics = outputs[workerContext.IntrinsicsIndex].GetTensorDataAsSpan<float>();
+        if (depth.Length < views * plane || extrinsics.Length < views * 12 || intrinsics.Length < views * 9)
+            return;
+
+        if (workerContext.ChunkDepth == null || workerContext.ChunkDepth.Length != views * plane)
+        {
+            workerContext.ChunkDepth = new float[views * plane];
+            workerContext.ChunkConfidence = new float[views * plane];
+            workerContext.ChunkExtrinsics = new float[views * 12];
+            workerContext.ChunkIntrinsics = new float[views * 9];
+        }
+
+        depth.Slice(0, views * plane).CopyTo(workerContext.ChunkDepth);
+        extrinsics.Slice(0, views * 12).CopyTo(workerContext.ChunkExtrinsics!);
+        intrinsics.Slice(0, views * 9).CopyTo(workerContext.ChunkIntrinsics!);
+        if (workerContext.ConfidenceIndex >= 0 && outputs[workerContext.ConfidenceIndex].GetTensorDataAsSpan<float>() is { Length: > 0 } confidence && confidence.Length >= views * plane)
+            confidence.Slice(0, views * plane).CopyTo(workerContext.ChunkConfidence!);
+        else
+            Array.Fill(workerContext.ChunkConfidence!, 1f);
+
+        var chunk = new DepthChunk(views, size, workerContext.ChunkDepth, workerContext.ChunkConfidence!, workerContext.ChunkExtrinsics!, workerContext.ChunkIntrinsics!);
+        workerContext.Chain ??= new DepthChunkChain();
+        var placed = workerContext.Chain.Add(chunk, workerContext.ChunkShift);
+        if (placed == null || placed.Count == 0)
+        {
+            // The shared frames could not be fitted: start a fresh world instead of publishing a guess
+            workerContext.Chain = null;
+            return;
+        }
+
+        var frame = placed[^1];
+        var m = frame.Rotation;
+        var world = workerContext.WorldRotation;
+        world[0] = m.M11; world[1] = m.M21; world[2] = m.M31;
+        world[3] = m.M12; world[4] = m.M22; world[5] = m.M32;
+        world[6] = m.M13; world[7] = m.M23; world[8] = m.M33;
+        workerContext.WorldPosition = frame.Position;
+        workerContext.WorldScale = frame.DepthScale;
+
+        if (workerContext.ChunkShift == 1)
+        {
+            var ring = workerContext.Ring;
+            var recycled = ring[0];
+            for (var i = 0; i < ring.Length - 1; i++)
+                ring[i] = ring[i + 1];
+
+            Array.Copy(request.InputData!, recycled, workerContext.RingViewLength);
+            ring[^1] = recycled;
+        }
+    }
+
     /** Keyframe and current frame as one [1,2,3,H,W] tensor; the first frame pairs with itself, which anchors the world pose at zero motion. */
     private static OrtValue CreatePairInput(WorkerContext workerContext, DepthEstimationRequest request)
     {
@@ -855,6 +959,7 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
         {
             ModelSize.Da3Small or ModelSize.Da3Base or ModelSize.Da3Large or ModelSize.Da3MonoLarge
                 or ModelSize.Da3MetricLarge or ModelSize.Da3Giant or ModelSize.Da3NestedGiant or ModelSize.Da3BaseTracked => 504,
+            ModelSize.Da3BaseStream => 392,
             _ => DefaultInputSize
         };
     }
@@ -1048,6 +1153,7 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
             ModelSize.Da3Giant => ["da3-giant-fp16.onnx", "da3-giant.onnx"],
             ModelSize.Da3NestedGiant => ["da3-nested-giant-fp16.onnx", "da3-nested-giant.onnx"],
             ModelSize.Da3BaseTracked => ["da3-base-mv2.onnx"],
+            ModelSize.Da3BaseStream => ["da3-base-mv6-392.onnx"],
             _ => ["da3-small-fp16.onnx", "da3-small.onnx", "da3-small-int8.onnx"]
         };
     }
@@ -1310,10 +1416,10 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
         var dimensions = inputMetadata.Dimensions;
         var isFloatPlanar = inputMetadata.ElementType == typeof(float) && dimensions.Length == 4 && dimensions[1] == 3;
         var isBytePacked = inputMetadata.ElementType == typeof(byte) && dimensions.Length == 4 && dimensions[3] == 3;
-        var isFloatPair = inputMetadata.ElementType == typeof(float) && dimensions.Length == 5 && dimensions[1] == 2 && dimensions[2] == 3;
+        var isFloatPair = inputMetadata.ElementType == typeof(float) && dimensions.Length == 5 && dimensions[1] >= 2 && dimensions[2] == 3;
         if (!isFloatPlanar && !isBytePacked && !isFloatPair)
         {
-            _initFailureMessage = "Unsupported model input: expected float32 NCHW, float32 [1,2,3,H,W] view pair or uint8 NHWC RGB";
+            _initFailureMessage = "Unsupported model input: expected float32 NCHW, float32 [1,N,3,H,W] views (N >= 2) or uint8 NHWC RGB";
             Log.Warning($"[DepthAnything] Unsupported input for {modelFile.Name}: {inputMetadata.ElementType.Name} [{string.Join(", ", dimensions)}]", this);
 
             // Leaving the session assigned would keep the worker loop alive forever while _modelInfo
@@ -1340,7 +1446,7 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
                        DeclaredWidth = dimensions[heightIndex + 1] > 0 ? dimensions[heightIndex + 1] : 0,
                        IsMetric = modelFile.IsMetric,
                        InputIsBytes = isBytePacked,
-                       ViewCount = isFloatPair ? 2 : 1
+                       ViewCount = isFloatPair ? (dimensions[1] > 1 ? (int)dimensions[1] : 2) : 1
                    };
     }
 
@@ -1389,8 +1495,8 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
                 width = height = GetEffectiveInputSize(_requestedInputSize, modelSize) / PatchSize * PatchSize;
             }
 
-            using var inputValue = modelInfo.ViewCount == 2
-                                       ? OrtValue.CreateTensorValueFromMemory(new float[2 * 3 * width * height], [1, 2, 3, height, width])
+            using var inputValue = modelInfo.ViewCount >= 2
+                                       ? OrtValue.CreateTensorValueFromMemory(new float[modelInfo.ViewCount * 3 * width * height], [1, modelInfo.ViewCount, 3, height, width])
                                        : modelInfo.InputIsBytes
                                            ? OrtValue.CreateTensorValueFromMemory(new byte[3 * width * height], [1, height, width, 3])
                                            : OrtValue.CreateTensorValueFromMemory(new float[3 * width * height], [1, 3, height, width]);
@@ -1577,7 +1683,9 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
 
             using var inputValue = modelInfo.ViewCount == 2
                                        ? CreatePairInput(workerContext, request)
-                                       : request.InputBytes != null
+                                       : modelInfo.ViewCount > 2
+                                           ? CreateChunkInput(workerContext, request, modelInfo.ViewCount)
+                                           : request.InputBytes != null
                                            ? OrtValue.CreateTensorValueFromMemory(request.InputBytes, [1, request.Height, request.Width, 3])
                                            : OrtValue.CreateTensorValueFromMemory(request.InputData!, [1, 3, request.Height, request.Width]);
             workerContext.InputValues[0] = inputValue;
@@ -1610,7 +1718,19 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
             var verticalFov = ReadVerticalFov(workerContext, outputs, outputHeight, modelInfo, outputWidth);
             var cameraPose = ReadCameraPose(workerContext, outputs);
 
-            if (modelInfo.ViewCount == 2)
+            if (modelInfo.ViewCount > 2)
+            {
+                // The window's views share one depth scale and consistent poses; chain the window onto the previous one
+                AccumulateChunkPose(workerContext, outputs, request, modelInfo.ViewCount);
+                if (workerContext.WorldScale != 1f)
+                {
+                    for (int i = 0; i < count; i++)
+                    {
+                        resultDepth[i] *= workerContext.WorldScale;
+                    }
+                }
+            }
+            else if (modelInfo.ViewCount == 2)
             {
                 // Chain the pair's relative pose onto the world pose and bring this frame's depth into the same units
                 var promoteKeyframe = AccumulateViewPose(workerContext, outputs, count, request.InputData!);
@@ -1782,7 +1902,7 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
             Vector3 poseForward;
             Vector3 poseUp;
             string poseSource;
-            if (modelInfo.ViewCount == 2)
+            if (modelInfo.ViewCount >= 2)
             {
                 var worldRotation = workerContext.WorldRotation;
                 posePosition = workerContext.WorldPosition;
@@ -1829,7 +1949,7 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
                 Min = min,
                 Max = max,
                 VerticalFovDegrees = verticalFov,
-                HasCameraPose = modelInfo.ViewCount == 2 || extrinsicsLive || workerContext.PoseTracker.HasPose,
+                HasCameraPose = modelInfo.ViewCount >= 2 || extrinsicsLive || workerContext.PoseTracker.HasPose,
                 CameraPosition = posePosition,
                 CameraForward = poseForward,
                 CameraUp = poseUp,
@@ -2435,7 +2555,8 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
         Da3Large,
         Da3Giant,
         Da3NestedGiant,
-        Da3BaseTracked
+        Da3BaseTracked,
+        Da3BaseStream
     }
 
     /// <summary>
@@ -2502,6 +2623,7 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
         ("V3 Giant", ModelSize.Da3Giant),
         ("V3 Nested Giant", ModelSize.Da3NestedGiant),
         ("V3 Base (camera tracking)", ModelSize.Da3BaseTracked),
+        ("V3 Base (6-view stream)", ModelSize.Da3BaseStream),
     };
 
     private static readonly string[] ResolutionNames = { "Auto", "196", "280", "392", "518", "504" };
