@@ -35,13 +35,14 @@ internal sealed class DepthInputPreprocessor : IDisposable
     /// Queues the resampling of <paramref name="source"/> to the model size and the copy of the result into a
     /// staging texture.
     /// </summary>
-    public bool TryBegin(Texture2D source, int modelWidth, int modelHeight, InputLayout layout)
+    public bool TryBegin(Texture2D source, int modelWidth, int modelHeight, InputLayout layout, int padRows = 0)
     {
         var parameters = new Parameters
                              {
                                  ModelWidth = (uint)modelWidth,
                                  ModelHeight = (uint)modelHeight,
                                  LinearSource = IsLinearEncoded(source.Description.Format) ? 1u : 0u,
+                                 Padding = layout == InputLayout.PackedBytes ? 0u : (uint)padRows,
                              };
 
         // The float planes are stacked into one texture: red, green, then blue, each ModelHeight rows
