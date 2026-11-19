@@ -140,3 +140,13 @@ Switch the mask back to **Blank inside** and drag its **level** field to 0.05, t
 - With level 0.05 the content inside the mask keeps scanning at a faint 5% brightness instead of going dark - the reduced-level audience-scanning mode; the safety status still counts the masked points.
 - With **Render shapes on the laser**, faint outlines appear on the real projection: the safe-zone rectangle in green, the enabled masks in orange, at the **Shape level** brightness. They follow a keystone change (they are drawn after the warp) and stay exactly over the regions they protect.
 - Raising the mask level back to 0 restores the hard blank.
+
+## Step: Color shift lines up diodes that react at different speeds
+
+**Action:**
+On a calibrated laser output streaming content with fast moving colored lines (a [LaserCamera] scene of lines whose colors change along the stroke), set **Color shift (R G B)** to 0, 3, 0 and watch the projection and the **Laser frame** preview. Then set it to 0, -3, 0, then drag a value past 32, then click the row's reset button.
+
+**Expected:**
+- At 0, 3, 0 the green component trails the beam by three points: the color boundaries along each stroke move with it, and the first green points of a stroke that had green right at its start go dark.
+- At 0, -3, 0 green leads instead and the boundaries move the other way; a blanked travel move between strokes never lights up under either setting.
+- Values clamp at 32 either way, are whole points, and undo/redo as one edit. The reset button returns all three to 0 and the frame to its unshifted look. The setting survives a project reload.

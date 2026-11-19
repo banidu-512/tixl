@@ -1860,7 +1860,40 @@ internal static partial class SetupParameterView
                              safety.ColorMinB = 0f;
                          }, setup);
 
+        Span<float> shifts =
+        [
+            safety.ColorShiftR, safety.ColorShiftG, safety.ColorShiftB,
+        ];
+        var shiftState = DrawFloatsRow("Color shift (R G B)", shifts,
+                                       "Per-channel time shift in points: how far a diode's color trails the beam position (negative = leads). Diodes react at different speeds, so without it a color edge fringes along the scan direction - tune it on a test pattern with fast moving colored lines. A shift never lights a blanked point.",
+                                       speed: 0.1f, format: "{0:0}", reserveRight: 22,
+                                       min: -LaserSafetyTransforms.MaxColorShiftPoints, max: LaserSafetyTransforms.MaxColorShiftPoints,
+                                       clampMin: true, clampMax: true);
+        BeginFieldUndo(setup, shiftState);
+        if ((shiftState & InputEditStateFlags.Modified) != 0)
+        {
+            safety.ColorShiftR = ToColorShiftPoints(shifts[0]);
+            safety.ColorShiftG = ToColorShiftPoints(shifts[1]);
+            safety.ColorShiftB = ToColorShiftPoints(shifts[2]);
+        }
+
+        CommitFieldUndo(setup, "Laser color shift", shiftState);
+        DrawRowReset("ResetColorShift", "color shift",
+                     () =>
+                         {
+                             safety.ColorShiftR = 0;
+                             safety.ColorShiftG = 0;
+                             safety.ColorShiftB = 0;
+                         }, setup);
+
         DrawLaserMasks(setup, safety);
+    }
+
+    private static int ToColorShiftPoints(float value)
+    {
+        return float.IsNaN(value)
+                   ? 0
+                   : (int)Math.Clamp(MathF.Round(value), -LaserSafetyTransforms.MaxColorShiftPoints, LaserSafetyTransforms.MaxColorShiftPoints);
     }
 
     /// <summary>

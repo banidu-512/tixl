@@ -1,16 +1,21 @@
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 
 namespace T3.Core.DataTypes;
 
 /// <summary>
 /// Point-data safety transforms for laser output, applied in a fixed order:
-/// blanking normalization → scan-field clamp → mask blanking → jump-distance limiting →
-/// static-dwell blanking → intensity ceiling → per-channel calibration → out-of-bounds audit.
+/// blanking normalization → scan-field clamp → color time shift → mask blanking →
+/// jump-distance limiting → static-dwell blanking → intensity ceiling → per-channel calibration →
+/// out-of-bounds audit.
 /// A later stage relies on the guarantees of the earlier ones, so the order must not be changed.
-/// Masks sit before the jump limiter so the approach into a masked region is already blanked
-/// travel for it; the calibration stage sits last among the shaping passes because it may lift
-/// levels back up and must not undo a protective stage.
+/// The time shift moves colors between points, so it runs before every stage that judges a
+/// point's color or level (masks dim by position, the ceiling caps by value) - a shifted color
+/// can never carry a level into a region that attenuates it. Masks sit before the jump limiter
+/// so the approach into a masked region is already blanked travel for it; the calibration stage
+/// sits last among the shaping passes because it may lift levels back up and must not undo a
+/// protective stage.
 ///
 /// These functions reduce the risk of unsafe content reaching a projector, but they
 /// are not a compliance certificate: audience scanning also requires a hardware
@@ -22,6 +27,12 @@ public static class LaserSafetyTransforms
     /// <summary>Symmetric ILDA 16-bit coordinate bounds.</summary>
     public const int FieldMin = -32767;
     public const int FieldMax = 32767;
+
+    /** Full scale of a point's R, G, B and I channels. */
+    private const int ColorMax = 65535;
+
+    /// <summary>Largest per-channel color time shift, in points (about 1 ms at 30 kpps).</summary>
+    public const int MaxColorShiftPoints = 32;
 
     /// <summary>Hard cap on list growth from jump subdivision, so a tiny MaxStepPerPoint
     /// against full-field jumps cannot balloon memory. Real points are never dropped,
@@ -64,6 +75,12 @@ public static class LaserSafetyTransforms
         /// Applied after the brightness ceiling; these shape the output, they do not protect.</summary>
         public float ColorGainR = 1f, ColorGainG = 1f, ColorGainB = 1f;
         public float ColorMinR, ColorMinG, ColorMinB;
+
+        /// <summary>Per-channel time shift in points: how many points a diode's color trails the
+        /// beam position (negative = leads), within ±<see cref="MaxColorShiftPoints"/>. Compensates
+        /// diodes that react at different speeds, so color edges land on the shape instead of
+        /// fringing along the scan direction.</summary>
+        public int ColorShiftR, ColorShiftG, ColorShiftB;
 
         /// <summary>Safety mask quads in ILDA 16-bit units: eight floats per mask (x1,y1 … x4,y4,
         /// corners in draw order), parallel to <see cref="MaskAllowOnlyInside"/> and
@@ -166,6 +183,7 @@ public static class LaserSafetyTransforms
 
         var safeConfig = Sanitize(in config);
         ClampToScanField(points, in safeConfig, ref stats);
+        ApplyColorTimeShift(points, in safeConfig);
         ApplyMasks(points, in safeConfig, ref stats);
         points = LimitJumpDistance(points, subdivisionScratch, in safeConfig, ref stats);
         LimitStaticDwell(points, in safeConfig, ref stats);
@@ -211,6 +229,9 @@ public static class LaserSafetyTransforms
         result.ColorMinR = Math.Clamp(float.IsFinite(result.ColorMinR) ? result.ColorMinR : 0f, 0f, 1f);
         result.ColorMinG = Math.Clamp(float.IsFinite(result.ColorMinG) ? result.ColorMinG : 0f, 0f, 1f);
         result.ColorMinB = Math.Clamp(float.IsFinite(result.ColorMinB) ? result.ColorMinB : 0f, 0f, 1f);
+        result.ColorShiftR = Math.Clamp(result.ColorShiftR, -MaxColorShiftPoints, MaxColorShiftPoints);
+        result.ColorShiftG = Math.Clamp(result.ColorShiftG, -MaxColorShiftPoints, MaxColorShiftPoints);
+        result.ColorShiftB = Math.Clamp(result.ColorShiftB, -MaxColorShiftPoints, MaxColorShiftPoints);
 
         // The dwell cap and the motion threshold are counts, not geometry: clamp them into
         // the range the stage can actually express instead of letting negative/overflow
@@ -541,6 +562,64 @@ public static class LaserSafetyTransforms
     }
 
     /// <summary>
+    /// Moves each diode's color along the point stream by its own number of points, so diodes
+    /// that react slower or faster than the others line up with the beam position. The frame is
+    /// not treated as a loop and colors shifted past either end are dropped. Only lit points
+    /// take part: a blanked point stays dark and the intensity gate never changes, so the mask,
+    /// dwell and brightness stages that run afterwards see the final colors and keep their
+    /// guarantees. A lit point whose colors all shift away goes dark instead of lingering
+    /// at I &gt; 0 on projectors that read the intensity channel. Default shifts leave the frame
+    /// untouched.
+    /// </summary>
+    public static void ApplyColorTimeShift(List<LaserPoint> points, in Config config)
+    {
+        var safeConfig = Sanitize(in config);
+        var shiftR = safeConfig.ColorShiftR;
+        var shiftG = safeConfig.ColorShiftG;
+        var shiftB = safeConfig.ColorShiftB;
+        if (shiftR == 0 && shiftG == 0 && shiftB == 0)
+            return;
+
+        var count = points.Count;
+        var original = ArrayPool<int>.Shared.Rent(count * 3);
+        try
+        {
+            for (var i = 0; i < count; i++)
+            {
+                var p = points[i];
+                original[i * 3] = Math.Max(p.R, 0);
+                original[i * 3 + 1] = Math.Max(p.G, 0);
+                original[i * 3 + 2] = Math.Max(p.B, 0);
+            }
+
+            for (var i = 0; i < count; i++)
+            {
+                var p = points[i];
+                if (p.I <= 0)
+                    continue;
+
+                var hadColor = original[i * 3] != 0 || original[i * 3 + 1] != 0 || original[i * 3 + 2] != 0;
+                var r = ShiftedChannel(original, count, 0, i - shiftR);
+                var g = ShiftedChannel(original, count, 1, i - shiftG);
+                var b = ShiftedChannel(original, count, 2, i - shiftB);
+                if (r == original[i * 3] && g == original[i * 3 + 1] && b == original[i * 3 + 2])
+                    continue;
+
+                points[i] = hadColor && r == 0 && g == 0 && b == 0
+                                ? LaserPoint.CreateBlanked(p.X, p.Y)
+                                : new LaserPoint(p.X, p.Y, r, g, b, p.I);
+            }
+        }
+        finally
+        {
+            ArrayPool<int>.Shared.Return(original);
+        }
+    }
+
+    private static int ShiftedChannel(int[] original, int count, int channel, int sourceIndex)
+        => (uint)sourceIndex < (uint)count ? original[sourceIndex * 3 + channel] : 0;
+
+    /// <summary>
     /// Per-channel projector calibration: gains shape each diode's level, minimums cut a diode
     /// off entirely below its threshold (a diode near its minimum voltage emits a faint
     /// unwanted glow on near-black content). Runs after the brightness ceiling; gains can lift
@@ -554,9 +633,9 @@ public static class LaserSafetyTransforms
             && safeConfig.ColorMinR == 0f && safeConfig.ColorMinG == 0f && safeConfig.ColorMinB == 0f)
             return;
 
-        var minR = safeConfig.ColorMinR * FieldMax;
-        var minG = safeConfig.ColorMinG * FieldMax;
-        var minB = safeConfig.ColorMinB * FieldMax;
+        var minR = safeConfig.ColorMinR * ColorMax;
+        var minG = safeConfig.ColorMinG * ColorMax;
+        var minB = safeConfig.ColorMinB * ColorMax;
 
         for (var i = 0; i < points.Count; i++)
         {
@@ -577,9 +656,9 @@ public static class LaserSafetyTransforms
             if (p.B < minB)
                 b = 0;
 
-            r = Math.Min(r, FieldMax);
-            g = Math.Min(g, FieldMax);
-            b = Math.Min(b, FieldMax);
+            r = Math.Min(r, ColorMax);
+            g = Math.Min(g, ColorMax);
+            b = Math.Min(b, ColorMax);
 
             if (r == p.R && g == p.G && b == p.B)
                 continue;
