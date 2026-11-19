@@ -699,7 +699,7 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
             return;
 
         _shellReady = false;
-        EnsurePointBuffer(shell, shell.Length);
+        EnsurePointBuffer(shell, _shellCount);
         Points.Value = _pointBuffer;
         PointCount.Value = _points.Count;
     }
@@ -719,7 +719,7 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
         if (!idle && _shellPoints != null && now - _lastShellTicks < ShellMinIntervalTicks)
             return;
 
-        if (_shellBusy || _points.Count < 3000 || (_captures == _shellCaptures && aligned == _shellAligned && RegularizeUnchanged() && _shellFlat == flatNow))
+        if (_shellBusy || _shellReady || _points.Count < 3000 || (_captures == _shellCaptures && aligned == _shellAligned && RegularizeUnchanged() && _shellFlat == flatNow))
             return;
 
         _shellBusy = true;
@@ -729,7 +729,21 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
         _shellRegularize = _pendingRegularize;
         _shellFlat = flatNow;
         var tiles = _pendingGlobalAlign && _tiles.Count >= MinTilesForAlignment ? _tiles.ToArray() : null;
-        var snapshot = tiles == null ? _points.ToArray() : null;
+
+        // The snapshot and the shell are reused between rebuilds: a fresh tens-of-megabytes array each time went to the large object
+        // heap and its collections stalled the editor more as the cloud grew
+        ScanPoint[]? snapshot = null;
+        var snapshotCount = 0;
+        if (tiles == null)
+        {
+            snapshotCount = _points.Count;
+            if (_snapshotBuffer.Length < snapshotCount)
+                _snapshotBuffer = new ScanPoint[snapshotCount + snapshotCount / 4 + 1024];
+
+            System.Runtime.InteropServices.CollectionsMarshal.AsSpan(_points).CopyTo(_snapshotBuffer);
+            snapshot = _snapshotBuffer;
+        }
+
         var regularize = _pendingRegularize;
         var flat = flatNow;
         var generation = _shellGeneration;
@@ -737,8 +751,12 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
                                         {
                                             try
                                             {
-                                                BuildRoomShell(snapshot ?? AlignTiles(tiles!), regularize, flat, out _, out _, out _, out var positions, out var colors, out _);
-                                                var shell = new Point[positions.Count];
+                                                var aligned = snapshot == null ? AlignTiles(tiles!) : null;
+                                                BuildRoomShell(snapshot ?? aligned!, snapshot != null ? snapshotCount : aligned!.Length, regularize, flat, out _, out _, out _, out var positions, out var colors, out _);
+                                                if (_shellBuffer.Length < positions.Count)
+                                                    _shellBuffer = new Point[positions.Count + positions.Count / 4 + 1024];
+
+                                                var shell = _shellBuffer;
                                                 for (var i = 0; i < shell.Length; i++)
                                                 {
                                                     shell[i] = new Point
@@ -755,6 +773,7 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
                                                 if (generation == _shellGeneration)
                                                 {
                                                     _shellPoints = shell;
+                                                    _shellCount = positions.Count;
                                                     _shellReady = true;
                                                 }
                                             }
@@ -842,13 +861,19 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
         if (_pointBuffer == null)
         {
             _pointBuffer = new BufferWithViews();
-            ResourceManager.SetupStructuredBuffer(points, bytesNeeded, Point.Stride, ref _pointBuffer.Buffer);
+            using (var data = new DataStream(bytesNeeded, true, true))
+            {
+                data.WriteRange(points, 0, count);
+                data.Position = 0;
+                ResourceManager.SetupStructuredBuffer(data, bytesNeeded, Point.Stride, ref _pointBuffer.Buffer);
+            }
+
             ResourceManager.CreateStructuredBufferSrv(_pointBuffer.Buffer, ref _pointBuffer.Srv);
             ResourceManager.CreateStructuredBufferUav(_pointBuffer.Buffer, UnorderedAccessViewBufferFlags.None, ref _pointBuffer.Uav);
             return;
         }
 
-        ResourceManager.Device.ImmediateContext.UpdateSubresource(points, _pointBuffer.Buffer!);
+        ResourceManager.Device.ImmediateContext.UpdateSubresource(_pointBuffer.Buffer!, 0, System.Runtime.InteropServices.MemoryMarshal.AsBytes(points.AsSpan(0, count)), 0, 0);
     }
 
     private void ResetScan()
@@ -1154,7 +1179,7 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
     /// uchar red/green/blue per vertex, openable in MeshLab/CloudCompare/blender.
     /// </summary>
     /** Bins the scan into a range map, fits the room box and returns the box-snapped shell as a half-degree vertex grid. */
-    private static void BuildRoomShell(ScanPoint[] scanPoints, bool regularize, bool flat, out int w2, out int h2, out float[] gridRange,
+    private static void BuildRoomShell(ScanPoint[] scanPoints, int scanCount, bool regularize, bool flat, out int w2, out int h2, out float[] gridRange,
                                        out List<System.Numerics.Vector3> positions, out List<System.Numerics.Vector3> colors,
                                        out int[] vertexIndex)
     {
@@ -1163,8 +1188,9 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
         var range = new float[width * height];
         var color = new System.Numerics.Vector3[width * height];
         Array.Fill(range, float.NaN);
-        foreach (var sp in scanPoints)
+        for (var scanIndex = 0; scanIndex < scanCount; scanIndex++)
         {
+            var sp = scanPoints[scanIndex];
             if (sp.Count < SphericalMinObservations)
                 continue;
 
@@ -1443,7 +1469,7 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
      */
     private (int Vertices, int Triangles) WriteSphericalMesh(string absolutePath, ScanPoint[] scanPoints, bool regularize, bool flat)
     {
-        BuildRoomShell(scanPoints, regularize, flat, out var w2, out var h2, out var gridRange, out var positions, out var colors, out var vertexIndex);
+        BuildRoomShell(scanPoints, scanPoints.Length, regularize, flat, out var w2, out var h2, out var gridRange, out var positions, out var colors, out var vertexIndex);
 
         var faces = new List<int>();
         void AddFace(int i0, int i1, int i2)
@@ -2296,6 +2322,9 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
     private float _pendingTanHalfY;
     private bool _pendingCamIsPose;
     private int _skippedLost;
+    private ScanPoint[] _snapshotBuffer = [];
+    private Point[] _shellBuffer = [];
+    private int _shellCount;
     private bool _pendingSpherical;
     /** One capture's raw samples on the spherical grid: the unit of the global scale alignment. */
     private sealed class ScanTile
