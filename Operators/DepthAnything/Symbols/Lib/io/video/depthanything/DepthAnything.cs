@@ -27,6 +27,8 @@ internal sealed class DepthEstimationRequest
     public int Height;
     public int SourceWidth;
     public int SourceHeight;
+    /** Black rows above and below the image in a letterboxed input; the depth planes are cropped back to the image rows. */
+    public int PadRows;
     public long CaptureTicks;
     public int Generation;
 }
@@ -655,7 +657,8 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
     /** The frame the model saw as 8-bit grayscale (null when its size differs from the output grid), for image-based rotation tracking. */
     private static byte[]? TryGetGray(WorkerContext workerContext, DepthEstimationRequest request, int width, int height)
     {
-        if (request.Width != width || request.Height != height)
+        var pad = request.PadRows;
+        if (request.Width != width || request.Height - 2 * pad != height)
             return null;
 
         var count = width * height;
@@ -671,14 +674,16 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
             return gray;
         }
 
-        if (request.InputData is { } data && data.Length >= count * 3)
+        if (request.InputData is { } data && data.Length >= request.Width * request.Height * 3)
         {
             // Planar ImageNet-normalized RGB: undo the normalization
+            var plane = request.Width * request.Height;
+            var first = pad * request.Width;
             for (var i = 0; i < count; i++)
             {
-                var r = data[i] * 0.229f + 0.485f;
-                var g = data[count + i] * 0.224f + 0.456f;
-                var b = data[2 * count + i] * 0.225f + 0.406f;
+                var r = data[first + i] * 0.229f + 0.485f;
+                var g = data[plane + first + i] * 0.224f + 0.456f;
+                var b = data[2 * plane + first + i] * 0.225f + 0.406f;
                 gray[i] = (byte)Math.Clamp((int)((0.299f * r + 0.587f * g + 0.114f * b) * 255f + 0.5f), 0, 255);
             }
 
@@ -912,7 +917,8 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
         }
 
         var layout = modelInfo.InputIsBytes ? DepthInputPreprocessor.InputLayout.PackedBytes : DepthInputPreprocessor.InputLayout.PlanarFloat;
-        if (!_preprocessor.TryBegin(inputTexture, width, height, layout))
+        var padRows = GetLetterboxRows(modelInfo, width, height, description.Width, description.Height);
+        if (!_preprocessor.TryBegin(inputTexture, width, height, layout, padRows))
         {
             if (!_loggedCaptureFailure)
             {
@@ -929,6 +935,7 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
         _captureHeight = height;
         _captureSourceWidth = description.Width;
         _captureSourceHeight = description.Height;
+        _capturePadRows = padRows;
         _captureTicks = Stopwatch.GetTimestamp();
         _captureIsBytes = modelInfo.InputIsBytes;
     }
@@ -958,6 +965,7 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
                                             Height = _captureHeight,
                                             SourceWidth = _captureSourceWidth,
                                             SourceHeight = _captureSourceHeight,
+                                            PadRows = _capturePadRows,
                                             CaptureTicks = _captureTicks,
                                             Generation = Volatile.Read(ref _workerGeneration)
                                         });
@@ -969,6 +977,30 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
                 _hasPendingInput = true;
                 break;
         }
+    }
+
+    /**
+     * The metric model has a fixed square input and reads depth from the apparent size of things, so squeezing a 16:9 frame into it
+     * skews distances differently along each axis. Its input is letterboxed instead: this is the black rows above and below the image.
+     */
+    private static int GetLetterboxRows(ModelInfo modelInfo, int width, int height, int sourceWidth, int sourceHeight)
+    {
+        if (!modelInfo.IsMetric || modelInfo.InputIsBytes || modelInfo.ViewCount != 1 || width != height || sourceWidth <= 0 || sourceHeight <= 0 || sourceWidth <= sourceHeight)
+            return 0;
+
+        var contentHeight = (int)MathF.Round(width * (float)sourceHeight / sourceWidth / 2f) * 2;
+        return Math.Clamp((height - contentHeight) / 2, 0, height / 4);
+    }
+
+    /** Drops the letterbox rows from a [height x width] plane in place and returns the image rows' height. */
+    private static int CropLetterbox(float[]? plane, int width, int height, int padRows)
+    {
+        if (plane == null || padRows <= 0)
+            return height;
+
+        var rows = height - 2 * padRows;
+        System.Buffer.BlockCopy(plane, padRows * width * sizeof(float), plane, 0, rows * width * sizeof(float));
+        return rows;
     }
 
     /** Dynamic-size models take the image's aspect with its long side at the requested size; fixed-size exports dictate their own. */
@@ -1065,6 +1097,7 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
 
     // Volatile settings the worker reads when producing a result
     private volatile bool _matchInputAspect;
+    private int _capturePadRows;
     private volatile DepthOutputFormat _workerOutputFormat;
     private volatile bool _workerEnhanceContrast;
     private volatile bool _workerInvertDepth;
@@ -1751,16 +1784,20 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
             }
 
             resultDepth = depthData;
+            var paddedHeight = outputHeight;
+            outputHeight = CropLetterbox(depthData, outputWidth, paddedHeight, request.PadRows);
             int count = outputWidth * outputHeight;
 
             if (workerContext.ConfidenceIndex >= 0)
             {
                 resultConfidence = CopyPlane(outputs[workerContext.ConfidenceIndex], out _, out _);
+                CropLetterbox(resultConfidence, outputWidth, paddedHeight, request.PadRows);
             }
 
             if (workerContext.SkyIndex >= 0)
             {
                 resultSky = CopyPlane(outputs[workerContext.SkyIndex], out _, out _);
+                CropLetterbox(resultSky, outputWidth, paddedHeight, request.PadRows);
             }
 
             var verticalFov = ReadVerticalFov(workerContext, outputs, outputHeight, modelInfo, outputWidth);

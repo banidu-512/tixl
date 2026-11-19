@@ -11,7 +11,7 @@ cbuffer Params : register(b0)
     uint ModelWidth;
     uint ModelHeight;
     uint LinearSource;
-    uint _padding;
+    uint PadRows;
 }
 
 static const float3 Mean = float3(0.485, 0.456, 0.406);
@@ -44,10 +44,23 @@ void main(uint3 id : SV_DispatchThreadID)
     if (id.x >= ModelWidth || id.y >= ModelHeight)
         return;
 
+    // Letterbox: the image keeps its aspect in the rows between the black bands, so a fixed square input does not squeeze it
+    if (id.y < PadRows || id.y >= ModelHeight - PadRows)
+    {
+        float3 black = (0.0 - Mean) / Std;
+        Planes[uint2(id.x, id.y)] = black.r;
+        Planes[uint2(id.x, id.y + ModelHeight)] = black.g;
+        Planes[uint2(id.x, id.y + ModelHeight * 2)] = black.b;
+        return;
+    }
+
+    uint contentHeight = ModelHeight - 2 * PadRows;
+    uint row = id.y - PadRows;
+
     uint sourceWidth, sourceHeight;
     Source.GetDimensions(sourceWidth, sourceHeight);
     int2 sourceSize = int2(sourceWidth, sourceHeight);
-    float2 scale = float2(sourceWidth, sourceHeight) / float2(ModelWidth, ModelHeight);
+    float2 scale = float2(sourceWidth, sourceHeight) / float2(ModelWidth, contentHeight);
 
     // Box filter over the source footprint of this texel; plain bilinear would alias when downscaling 1080p
     int2 taps = clamp((int2)ceil(scale), int2(1, 1), int2(MaxTapsPerAxis, MaxTapsPerAxis));
@@ -57,7 +70,7 @@ void main(uint3 id : SV_DispatchThreadID)
         for (int tapX = 0; tapX < taps.x; tapX++)
         {
             float2 offset = (float2(tapX, tapY) + 0.5) / taps;
-            sum += LoadBilinear((float2(id.xy) + offset) * scale, sourceSize);
+            sum += LoadBilinear((float2(id.x, row) + offset) * scale, sourceSize);
         }
     }
 
