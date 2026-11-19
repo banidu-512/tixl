@@ -359,6 +359,7 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
             _tileWeights.Clear();
         }
 
+        _lastMergeTicks = System.Diagnostics.Stopwatch.GetTimestamp();
         PointsAdded.Value = pointsAdded;
         _captures++;
 
@@ -700,18 +701,30 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
     private void MaybeStartShell()
     {
         var aligned = _pendingGlobalAlign && _tiles.Count >= MinTilesForAlignment;
-        if (_shellBusy || _points.Count < 3000 || (_captures == _shellCaptures && aligned == _shellAligned && RegularizeUnchanged() && _shellFlat == _pendingFlat))
+
+        // Plane flattening re-detects the planes from the data so far, which would move points that were already scanned: it waits for the sweep to rest
+        var now = System.Diagnostics.Stopwatch.GetTimestamp();
+        var idle = now - _lastMergeTicks > FlattenIdleTicks;
+        var flatNow = _pendingFlat && idle;
+
+        // Each rebuild allocates tens of megabytes and re-creates the GPU buffer when the point count changed, which stalls the editor for a second
+        // or more if it happens every few captures: while merging, rebuild at most every ShellMinIntervalTicks
+        if (!idle && _shellPoints != null && now - _lastShellTicks < ShellMinIntervalTicks)
+            return;
+
+        if (_shellBusy || _points.Count < 3000 || (_captures == _shellCaptures && aligned == _shellAligned && RegularizeUnchanged() && _shellFlat == flatNow))
             return;
 
         _shellBusy = true;
+        _lastShellTicks = now;
         _shellCaptures = _captures;
         _shellAligned = aligned;
         _shellRegularize = _pendingRegularize;
-        _shellFlat = _pendingFlat;
+        _shellFlat = flatNow;
         var tiles = _pendingGlobalAlign && _tiles.Count >= MinTilesForAlignment ? _tiles.ToArray() : null;
         var snapshot = tiles == null ? _points.ToArray() : null;
         var regularize = _pendingRegularize;
-        var flat = _pendingFlat;
+        var flat = flatNow;
         var generation = _shellGeneration;
         System.Threading.Tasks.Task.Run(() =>
                                         {
@@ -726,7 +739,7 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
                                                         Position = positions[i],
                                                         Color = new System.Numerics.Vector4(colors[i], 1f),
                                                         Orientation = System.Numerics.Quaternion.Identity,
-                                                        Scale = System.Numerics.Vector3.One,
+                                                        Scale = System.Numerics.Vector3.One * (positions[i].Length() * PointScalePerRange),
                                                         F1 = 1,
                                                         F2 = 1,
                                                     };
@@ -785,7 +798,7 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
                 Position = sp.Position,
                 Color = new System.Numerics.Vector4(sp.Color, 1f),
                 Orientation = System.Numerics.Quaternion.Identity,
-                Scale = System.Numerics.Vector3.One,
+                Scale = _pendingSpherical ? System.Numerics.Vector3.One * (sp.Position.Length() * PointScalePerRange * 0.5f) : System.Numerics.Vector3.One,
                 F1 = 1,
                 F2 = 1,
             };
@@ -2235,6 +2248,9 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
     private const float MeshDepthJumpRatio = 1.6f;
     private const float MeshScanJumpRatio = 1.25f;
     private const int TileStride = 3;
+
+    /** Neighbouring points of a rotation-only scan are an angle apart, so their spacing grows with range; a point drawn at this share of its range just covers it. DrawPoints' default PointSize of 0.1 turns the factor of ten back into 1:1. */
+    private const float PointScalePerRange = 2f * SphericalCellRadians * 1.35f * 10f;
     private const int MaxTiles = 4000;
     private const int MinTilesForAlignment = 8;
     private const int MeshSmallHoleEdges = 400;
@@ -2295,6 +2311,10 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
     private bool _shellAligned;
     private bool _shellRegularize;
     private bool _shellFlat;
+    private long _lastMergeTicks;
+    private long _lastShellTicks;
+    private static readonly long ShellMinIntervalTicks = 2 * System.Diagnostics.Stopwatch.Frequency;
+    private static readonly long FlattenIdleTicks = (long)(1.5 * System.Diagnostics.Stopwatch.Frequency);
 
     private bool RegularizeUnchanged() => _shellRegularize == _pendingRegularize;
     private volatile bool _meshDone;
