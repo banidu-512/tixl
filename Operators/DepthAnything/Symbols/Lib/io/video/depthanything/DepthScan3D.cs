@@ -737,7 +737,8 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
         }
 
         var state = _recording ? "Recording" : "Holding";
-        SetStatus($"{state} scan: {_points.Count} points, {_captures} captures (+{PointsAdded.Value} last).", IStatusProvider.StatusLevel.Success);
+        var camMode = _pendingCamIsPose ? "world space (DA3 camera pose)" : "camera space - connect CamReference for world space";
+        SetStatus($"{state} scan: {_points.Count} points, {_captures} captures, {camMode}.", IStatusProvider.StatusLevel.Success);
     }
 
     /// <summary>How overlapping voxel observations merge; values only ever appended.</summary>

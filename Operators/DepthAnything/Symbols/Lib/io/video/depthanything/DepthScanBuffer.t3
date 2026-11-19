@@ -93,6 +93,10 @@
     {
       "Id": "ac5db4c5-d6e7-4c5d-ae7f-8a9b0c1d2e3f"/*PointStability*/,
       "DefaultValue": 0.0
+    },
+    {
+      "Id": "c8d9e0f1-a2b3-4c5d-8e6f-7a8b9c0d1e2f"/*CameraReference*/,
+      "DefaultValue": null
     }
   ],
   "Children": [],

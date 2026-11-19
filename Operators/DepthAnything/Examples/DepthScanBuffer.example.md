@@ -26,7 +26,8 @@ held scan drives a point cloud you can orbit and save.
 - **PointGrid**: Hexagonal for an even splat spread; **PointStability**: 0.5-0.8 to calm a live scan
 - **DepthMap**: `DepthAnything.DepthTexture`
 - **ColorMap**: `DepthAnything.OutputTexture` (same size as the depth map)
-- **FieldOfView**: `DepthAnything.VerticalFov`
+- **CameraReference**: `DepthAnything.CamReference` (moves the cloud into world space; without it the cloud is camera-space)
+- **FieldOfView**: `DepthAnything.VerticalFov` (fallback when no camera is connected)
 - **Mode**: Average for a denoised still-camera scan, Latest for a moving camera
 - **Capture**: on while scanning; switch off to hold the scan
 - **MaxCaptures**: 30-60 for a still-camera scan, 0 (unlimited) for a moving camera
