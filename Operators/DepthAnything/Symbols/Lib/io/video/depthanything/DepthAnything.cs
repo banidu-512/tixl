@@ -252,7 +252,11 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
         _workerFieldOfViewDegrees = Math.Clamp(FieldOfView.GetValue(context), 1f, 179f);
 
         // Ego-motion tracking costs tens of ms per frame on the worker; only pay it while something pulls the camera
-        _workerTrackPose = CamReference.DirtyFlag.FramesSinceLastUpdate < PoseConsumerTimeoutFrames;
+        // Ego-motion tracking costs tens of ms per frame, so the depth tracker only runs while something pulls the camera. The
+        // image-based rotation tracker must follow the video continuously: a scan that reads the pose only while it captures would
+        // otherwise find it reset at every stop
+        _workerTrackPose = CamReference.DirtyFlag.FramesSinceLastUpdate < PoseConsumerTimeoutFrames
+                           || (DepthCameraMotion)CameraMotion.GetValue(context) == DepthCameraMotion.RotationOnly;
         _workerCameraMotion = (DepthCameraMotion)CameraMotion.GetValue(context);
 
         // Normalization and sky handling are applied by the worker when producing a result.
@@ -1964,7 +1968,9 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
                 posePosition = workerContext.PoseTracker.Position;
                 poseForward = workerContext.PoseTracker.Forward;
                 poseUp = workerContext.PoseTracker.Up;
-                poseSource = workerContext.PoseTracker.Tracking ? "depth-tracking" : "re-anchored";
+                poseSource = workerContext.PoseTracker.Motion == DepthCameraMotion.RotationOnly
+                                 ? workerContext.PoseTracker.Source
+                                 : workerContext.PoseTracker.Tracking ? "depth-tracking" : "re-anchored";
             }
             else
             {

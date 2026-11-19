@@ -61,6 +61,9 @@ internal sealed class DepthPoseTracker
 
     public bool HasPose { get; private set; }
     public bool Tracking { get; private set; }
+
+    /** How the last frame was tracked, for the pose log: image-based (features, intensity, predicted, lost) or depth. */
+    public string Source => Motion == DepthCameraMotion.RotationOnly ? $"image-{_imageRotation.LastSource}({_imageRotation.LastInliers})" : "depth";
     public Vector3 Position => _worldPosition;
     public Vector3 Forward => Vector3.Transform(Vector3.UnitZ, _worldRotation);
     public Vector3 Up => Vector3.Transform(-Vector3.UnitY, _worldRotation);
