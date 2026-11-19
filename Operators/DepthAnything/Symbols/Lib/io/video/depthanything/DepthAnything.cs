@@ -611,7 +611,8 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
 
         var chunk = new DepthChunk(views, size, workerContext.ChunkDepth, workerContext.ChunkConfidence!, workerContext.ChunkExtrinsics!, workerContext.ChunkIntrinsics!);
         workerContext.Chain ??= new DepthChunkChain();
-        var placed = workerContext.Chain.Add(chunk, workerContext.ChunkShift);
+        // The ring is the key window's last views-1 frames, so a window is always placed one frame past the key window
+        var placed = workerContext.Chain.Add(chunk, 1, workerContext.ChunkShift == 1);
         if (placed == null || placed.Count == 0)
         {
             // The shared frames could not be fitted: start a fresh world instead of publishing a guess
