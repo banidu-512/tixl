@@ -1777,7 +1777,10 @@ internal sealed class CollabWindow : Window
         if (room.Relay.Length > 0)
         {
             ParseJoinAddress(room.Relay, CollabProtocol.DefaultRelayPort, out var joinHost, out var joinPort);
-            manager.JoinViaRelay(joinHost, joinPort, room.Code, UserSettings.Config.CollabPassword ?? "");
+            // The relay address is chosen by the room's host; the Discord token goes only to a relay the user configured.
+            ParseRelayAddress(UserSettings.Config.CollabRelayAddress, out var trustedHost, out var trustedPort);
+            var trusted = string.Equals(joinHost, trustedHost, StringComparison.OrdinalIgnoreCase) && joinPort == trustedPort;
+            manager.JoinViaRelay(joinHost, joinPort, room.Code, UserSettings.Config.CollabPassword ?? "", trusted);
             return;
         }
 

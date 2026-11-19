@@ -271,7 +271,7 @@ function key_hash(string $key): string
 
 function key_matches(array $room, string $key): bool
 {
-    return $room['key_hash'] === key_hash($key) && $key !== '';
+    return $key !== '' && hash_equals((string)$room['key_hash'], key_hash($key));
 }
 
 function respond_ok(array $data = []): never
@@ -580,7 +580,7 @@ function op_whispers(array $input): void
 
     respond_ok(['whispers' => array_values(array_filter(
         $whispers,
-        fn($w) => $w['at'] > $since && ($w['from'] === $name || ($w['host'] === true && ($w['to'] ?? '') === $name))
+        fn($w) => $w['at'] > $since && ($w['host'] === true ? ($w['to'] ?? '') === $name : $w['from'] === $name)
     ))]);
 }
 

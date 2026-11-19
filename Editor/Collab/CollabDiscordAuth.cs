@@ -199,7 +199,7 @@ internal static class CollabDiscordAuth
             {
                 var title = rejection == null
                                 ? "Login complete &mdash; you can close this tab and return to TiXL."
-                                : $"Login failed &mdash; {rejection} You can close this tab.";
+                                : $"Login failed &mdash; {WebUtility.HtmlEncode(rejection)} You can close this tab.";
                 context.Response.ContentType = "text/html";
                 var responseBytes = Encoding.UTF8.GetBytes(
                                                             "<html><body style=\"font-family:sans-serif;background:#1a1a1e;color:#eee;display:flex;align-items:center;justify-content:center;height:100vh\">"

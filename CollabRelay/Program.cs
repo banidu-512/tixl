@@ -181,11 +181,16 @@ internal static class Program
                     }
 
                     var hostRoom = room;
+                    if (request.FramedControl)
+                        FramedControlHosts.AddOrUpdate(client, new object());
+
                     await WriteRawLineAsync(client, request.Extended
                                                         ? Json(w =>
                                                                {
                                                                    w.WriteBoolean("ok", true);
                                                                    w.WriteString("room", hostRoom.Code);
+                                                                   if (request.FramedControl)
+                                                                       w.WriteString("ctl", "frame");
                                                                    WriteIdentity(w, "you", identity);
                                                                })
                                                         : $"{{\"ok\":true,\"room\":\"{room.Code}\"}}");
@@ -240,7 +245,7 @@ internal static class Program
                 if (owner != null)
                 {
                     var memberSlot = slot;
-                    await WriteLineAsync(owner, announcedRoom.Extended
+                    await WriteControlToHostAsync(owner, announcedRoom.Extended
                                                     ? Json(w =>
                                                            {
                                                                w.WriteString("t", "member");
@@ -302,7 +307,7 @@ internal static class Program
 
         try
         {
-            await WriteLineAsync(owner, $"{{\"t\":\"left\",\"slot\":{slot}}}");
+            await WriteControlToHostAsync(owner, $"{{\"t\":\"left\",\"slot\":{slot}}}");
         }
         catch (Exception e) when (e is IOException or SocketException or ObjectDisposedException or OperationCanceledException)
         {
@@ -472,7 +477,7 @@ internal static class Program
                                  w.WriteString("text", request.Text);
                              });
         if (owner != null)
-            await WriteLineAsync(owner, forwarded);
+            await WriteControlToHostAsync(owner, forwarded);
 
         if (!request.Listen)
         {
@@ -711,6 +716,7 @@ internal static class Program
     {
         var stream = client.GetStream();
         var lengthBuffer = new byte[4];
+        var hostSendsControlLines = isHost && !HasFramedControl(client);
 
         // A peer that stops sending mid-frame is gone; without a read deadline its socket would
         // stay open (and its room slot occupied) until the process ends.
@@ -723,7 +729,7 @@ internal static class Program
 
             // On the host connection, a frame may be interleaved with control lines; a length
             // prefix can never start with '{', so read the discriminator byte first.
-            if (isHost)
+            if (hostSendsControlLines)
             {
                 if (!await TryReadExactAsync(stream, lengthBuffer.AsMemory(0, 1), token))
                     return;
@@ -871,6 +877,55 @@ internal static class Program
 
     private static SemaphoreSlim WriteGateOf(TcpClient client) => WriteGates.GetValue(client, _ => new SemaphoreSlim(1, 1));
 
+    // A little-endian length prefix can start with '{' (lengths 123, 379, ...), so a host that asked
+    // for "ctl":"frame" gets its control messages as frames on this slot instead of bare lines.
+    private const byte ControlSlot = 0xFE;
+    private static readonly ConditionalWeakTable<TcpClient, object> FramedControlHosts = new();
+
+    private static bool HasFramedControl(TcpClient host) => FramedControlHosts.TryGetValue(host, out _);
+
+    /// <summary>Sends a control message to a room's host: a frame when it negotiated framed control, else a line.</summary>
+    private static async Task WriteControlToHostAsync(TcpClient host, string line)
+    {
+        if (!HasFramedControl(host))
+        {
+            await WriteLineAsync(host, line);
+            return;
+        }
+
+        var json = Encoding.UTF8.GetBytes(line);
+        var frame = new byte[4 + 2 + json.Length];
+        BinaryPrimitives.WriteInt32LittleEndian(frame, 2 + json.Length);
+        frame[4] = ControlSlot;
+        frame[5] = 0;
+        json.CopyTo(frame, 6);
+
+        var gate = WriteGateOf(host);
+        using var timeout = new CancellationTokenSource(WriteTimeoutMs);
+        try
+        {
+            await gate.WaitAsync(timeout.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+
+        try
+        {
+            await host.GetStream().WriteAsync(frame, timeout.Token);
+        }
+        catch (Exception e) when (e is OperationCanceledException or IOException or SocketException)
+        {
+            host.Close();
+            throw;
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
     private static async Task<bool> TryReadExactAsync(NetworkStream stream, Memory<byte> buffer, CancellationToken token)
     {
         var offset = 0;
@@ -979,7 +1034,8 @@ internal static class Program
                                   string To,
                                   bool Listen,
                                   bool Public,
-                                  bool PasswordProtected);
+                                  bool PasswordProtected,
+                                  bool FramedControl);
 
     /// <summary>Who a peer is. Verified means Discord confirmed it for the token the peer sent;
     /// otherwise name and language are just what the peer claims.</summary>
@@ -1031,7 +1087,8 @@ internal static class Program
                                Text("to", 48),
                                Flag("listen"),
                                Flag("public"),
-                               Flag("pwd"));
+                               Flag("pwd"),
+                               extended && Text("ctl", 8) == "frame");
         }
         catch (Exception e) when (e is JsonException or InvalidOperationException or FormatException)
         {
