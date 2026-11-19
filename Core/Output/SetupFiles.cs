@@ -151,6 +151,12 @@ public static class SetupFiles
                 continue;
             }
 
+            if (output.Kind == OutputDefinition.Kinds.Laser)
+            {
+                output.ResolvedResolution = LaserResolution;
+                continue;
+            }
+
             var binding = machineConfig.FindBinding(output.Id);
             var resolution = resolutionOfBinding == null ? UnboundResolution : resolutionOfBinding(binding);
             output.ResolvedResolution = resolution.Width > 0 && resolution.Height > 0 ? resolution : UnboundResolution;
@@ -166,4 +172,7 @@ public static class SetupFiles
 
     /// <summary>What an output that follows its plug renders at while nothing is bound to it.</summary>
     public static readonly Int2 UnboundResolution = new(1920, 1080);
+
+    /// <summary>A laser's scan field is square, so a laser output that follows its plug gets a square canvas.</summary>
+    public static readonly Int2 LaserResolution = new(1024, 1024);
 }
