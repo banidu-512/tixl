@@ -58,7 +58,7 @@ Texture2D Input
 
 ## Performance Tips
 
-1. **Use a Small model** with CUDA or DirectML for real-time applications
+1. **Use a Small model** with CUDA for real-time applications
 2. **Enable EnhanceContrast** for better depth separation
 3. **Use bilateral filter** to reduce noise before normal generation
 4. **Cache results** if input doesn't change every frame

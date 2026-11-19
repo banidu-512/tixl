@@ -77,4 +77,3 @@ With the V3 Base model, `DepthAnything.CamReference` publishes the estimated cam
 2. Use `DrawPoints.EnableZWrite=false`; transparent splats should not occlude each other.
 3. Connect the white dot texture from `Lib:images/basic/white-dot-256px.png` to `DrawPoints.Texture_` for round splats instead of squares.
 4. When the source aspect differs from the model's square input, scale the point object's X axis to the source aspect.
-5. For V2 models, enable `DepthIsDisparity` on `DepthToPoints`.
