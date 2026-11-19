@@ -336,9 +336,12 @@ internal readonly struct PlacedFrame
 
 /// <summary>
 /// Chains overlapping windows into one world frame the way DA3-Streaming does: the frames two windows share are
-/// unprojected in both, and a similarity transform fitted on those point pairs carries the new window onto the previous one.
+/// unprojected in both, and a similarity transform fitted on those point pairs carries the new window onto the one before.
 /// Rotation comes from the shared frames' camera poses (point clouds barely constrain it for a rotating camera); scale and
 /// translation come from the points.
+/// <para>New windows are always placed on the last <i>key</i> window, the one that advanced the frame ring, never on the
+/// previous window: while the camera holds still the same ring is inferred again and again, and re-chaining each of those
+/// windows onto the one before would compound a small error every time.</para>
 /// </summary>
 internal sealed class DepthChunkChain
 {
@@ -346,12 +349,13 @@ internal sealed class DepthChunkChain
     private const float MinConfidence = 0.2f;
 
     private int _chunkIndex;
-    private Sim3 _previousToWorld = Sim3.Identity;
-    private List<Vector3>[]? _previousPoints;
-    private List<float>[]? _previousWeights;
-    private Quaternion[]? _previousRotations;
+    private bool _hasKey;
+    private Sim3 _keyToWorld = Sim3.Identity;
+    private List<Vector3>[]? _keyPoints;
+    private List<float>[]? _keyWeights;
+    private Quaternion[]? _keyRotations;
 
-    public Sim3 LastChunkToWorld => _previousToWorld;
+    public Sim3 LastChunkToWorld { get; private set; } = Sim3.Identity;
     public int LastPairCount { get; private set; }
     public float LastResidualBefore { get; private set; }
     public float LastResidualAfter { get; private set; }
@@ -362,16 +366,16 @@ internal sealed class DepthChunkChain
     private static float QuaternionAngle(Quaternion q) => 2f * MathF.Acos(Math.Clamp(MathF.Abs(q.W), 0f, 1f)) * 180f / MathF.PI;
 
     /**
-     * Places a window that follows the previous one by <paramref name="shift"/> frames: view j of this window is view j + shift
-     * of the previous one. A shift of 0 means only the newest view changed. Returns the frames to use: all of the first
-     * window, afterwards the views that are new. Null when the shared frames cannot be fitted.
+     * Places a window whose view j is view j + <paramref name="keyOffset"/> of the key window (1 for a window that slides
+     * one frame at a time). With <paramref name="advance"/> the window becomes the new key window. Returns the frames to use:
+     * all of the first window, afterwards the views that are new. Null when the shared frames cannot be fitted.
      */
-    public List<PlacedFrame>? Add(DepthChunk chunk, int shift)
+    public List<PlacedFrame>? Add(DepthChunk chunk, int keyOffset, bool advance)
     {
         var views = chunk.Views;
-        var first = _previousPoints == null;
-        var shared = shift == 0 ? views - 1 : views - shift;
-        if (!first)
+        var shared = views - keyOffset;
+        var chunkToWorld = Sim3.Identity;
+        if (_hasKey)
         {
             var src = new List<Vector3>();
             var dst = new List<Vector3>();
@@ -383,21 +387,21 @@ internal sealed class DepthChunkChain
                 var points = new List<Vector3>();
                 var weights = new List<float>();
                 chunk.SamplePoints(j, SampleStride, MinConfidence, points, weights);
-                var previousIndex = j + shift;
+                var keyIndex = j + keyOffset;
                 for (var i = 0; i < points.Count; i++)
                 {
-                    var w = MathF.Min(weights[i], _previousWeights![previousIndex][i]);
+                    var w = MathF.Min(weights[i], _keyWeights![keyIndex][i]);
                     if (w <= 0f)
                         continue;
 
                     src.Add(points[i]);
-                    dst.Add(_previousPoints![previousIndex][i]);
+                    dst.Add(_keyPoints![keyIndex][i]);
                     weight.Add(w);
                 }
 
-                // p_previous = Q * p_new, so Q = Q_previous * Q_new^-1 for this shared frame
+                // p_key = Q * p_new, so Q = Q_key * Q_new^-1 for this shared frame
                 chunk.CameraToWorld(j, out var newMatrix, out _);
-                var q = _previousRotations![previousIndex] * Quaternion.Inverse(Quaternion.CreateFromRotationMatrix(newMatrix));
+                var q = _keyRotations![keyIndex] * Quaternion.Inverse(Quaternion.CreateFromRotationMatrix(newMatrix));
                 if (j == 0)
                     reference = q;
                 else if (Quaternion.Dot(reference, q) < 0f)
@@ -411,7 +415,7 @@ internal sealed class DepthChunkChain
             if (Sim3Fit.Fit(src, dst, weight, out var pointFit))
                 LastPointRotationDegrees = QuaternionAngle(Quaternion.Concatenate(Quaternion.Inverse(poseRotation), pointFit.Rotation));
 
-            if (!Sim3Fit.FitWithRotation(src, dst, weight, poseRotation, out var newToPrevious))
+            if (!Sim3Fit.FitWithRotation(src, dst, weight, poseRotation, out var newToKey))
                 return null;
 
             var before = 0f;
@@ -419,34 +423,40 @@ internal sealed class DepthChunkChain
             for (var i = 0; i < src.Count; i++)
             {
                 before += Vector3.Distance(src[i], dst[i]);
-                after += Vector3.Distance(newToPrevious.Apply(src[i]), dst[i]);
+                after += Vector3.Distance(newToKey.Apply(src[i]), dst[i]);
             }
 
             LastResidualBefore = before / src.Count;
             LastResidualAfter = after / src.Count;
-            _previousToWorld = _previousToWorld.Compose(newToPrevious);
+            chunkToWorld = _keyToWorld.Compose(newToKey);
         }
 
+        LastChunkToWorld = chunkToWorld;
         var placed = new List<PlacedFrame>();
-        for (var view = first ? 0 : shared; view < views; view++)
+        for (var view = _hasKey ? shared : 0; view < views; view++)
         {
             chunk.CameraToWorld(view, out var rotation, out var position);
-            var worldPosition = _previousToWorld.Apply(position);
-            var worldRotation = rotation * Matrix4x4.CreateFromQuaternion(_previousToWorld.Rotation);
-            placed.Add(new PlacedFrame(_chunkIndex, view, worldRotation, worldPosition, _previousToWorld.Scale));
+            var worldPosition = chunkToWorld.Apply(position);
+            var worldRotation = rotation * Matrix4x4.CreateFromQuaternion(chunkToWorld.Rotation);
+            placed.Add(new PlacedFrame(_chunkIndex, view, worldRotation, worldPosition, chunkToWorld.Scale));
         }
 
-        // Every view of this window, in this window's frame, is a candidate shared frame for the next one
-        _previousPoints = new List<Vector3>[views];
-        _previousWeights = new List<float>[views];
-        _previousRotations = new Quaternion[views];
-        for (var view = 0; view < views; view++)
+        if (!_hasKey || advance)
         {
-            _previousPoints[view] = new List<Vector3>();
-            _previousWeights[view] = new List<float>();
-            chunk.SamplePoints(view, SampleStride, MinConfidence, _previousPoints[view], _previousWeights[view]);
-            chunk.CameraToWorld(view, out var matrix, out _);
-            _previousRotations[view] = Quaternion.CreateFromRotationMatrix(matrix);
+            _keyToWorld = chunkToWorld;
+            _keyPoints = new List<Vector3>[views];
+            _keyWeights = new List<float>[views];
+            _keyRotations = new Quaternion[views];
+            for (var view = 0; view < views; view++)
+            {
+                _keyPoints[view] = new List<Vector3>();
+                _keyWeights[view] = new List<float>();
+                chunk.SamplePoints(view, SampleStride, MinConfidence, _keyPoints[view], _keyWeights[view]);
+                chunk.CameraToWorld(view, out var matrix, out _);
+                _keyRotations[view] = Quaternion.CreateFromRotationMatrix(matrix);
+            }
+
+            _hasKey = true;
         }
 
         _chunkIndex++;
