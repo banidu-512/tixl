@@ -64,6 +64,9 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
             SetStatus(_meshResultMessage, _meshResultPath.Length > 0 ? IStatusProvider.StatusLevel.Success : IStatusProvider.StatusLevel.Warning);
         }
 
+        if (_pendingSpherical && _points.Count > 0)
+            MaybeStartShell();
+
         HandleSave(context);
         Recording.Value = _recording;
 
@@ -649,6 +652,52 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
     }
 
     /// <summary>Rebuilds and uploads the drawable point buffer from the scan store.</summary>
+    /** The live cloud of a rotation-only scan is the room shell, rebuilt off-thread whenever new captures arrived. */
+    private void MaybeStartShell()
+    {
+        if (_shellBusy || _points.Count < 3000 || _captures == _shellCaptures)
+            return;
+
+        _shellBusy = true;
+        _shellCaptures = _captures;
+        var snapshot = _points.ToArray();
+        var generation = _shellGeneration;
+        System.Threading.Tasks.Task.Run(() =>
+                                        {
+                                            try
+                                            {
+                                                BuildRoomShell(snapshot, out _, out _, out _, out var positions, out var colors, out _);
+                                                var shell = new Point[positions.Count];
+                                                for (var i = 0; i < shell.Length; i++)
+                                                {
+                                                    shell[i] = new Point
+                                                    {
+                                                        Position = positions[i],
+                                                        Color = new System.Numerics.Vector4(colors[i], 1f),
+                                                        Orientation = System.Numerics.Quaternion.Identity,
+                                                        Scale = System.Numerics.Vector3.One,
+                                                        F1 = 1,
+                                                        F2 = 1,
+                                                    };
+                                                }
+
+                                                if (generation == _shellGeneration)
+                                                {
+                                                    _shellPoints = shell;
+                                                    _shellReady = true;
+                                                }
+                                            }
+                                            catch (Exception e)
+                                            {
+                                                Log.Warning($"[DepthScan3D] Room shell failed: {e.Message}");
+                                            }
+                                            finally
+                                            {
+                                                _shellBusy = false;
+                                            }
+                                        });
+    }
+
     private void RebuildOutput()
     {
         var count = _points.Count;
@@ -657,6 +706,23 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
             Points.Value = null;
             PointCount.Value = 0;
             return;
+        }
+
+        if (_pendingSpherical)
+        {
+            MaybeStartShell();
+            if (_shellPoints != null)
+            {
+                if (_shellReady)
+                {
+                    _shellReady = false;
+                    EnsurePointBuffer(_shellPoints, _shellPoints.Length);
+                    Points.Value = _pointBuffer;
+                }
+
+                PointCount.Value = count;
+                return;
+            }
         }
 
         var points = new Point[count];
@@ -722,6 +788,10 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
 
     private void ResetScan()
     {
+        _shellGeneration++;
+        _shellPoints = null;
+        _shellReady = false;
+        _shellCaptures = 0;
         _points.Clear();
         _voxelIndex.Clear();
         _captures = 0;
@@ -1009,13 +1079,10 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
     /// Writes the scan as a PLY point cloud (ASCII or binary little-endian): float32 x/y/z plus
     /// uchar red/green/blue per vertex, openable in MeshLab/CloudCompare/blender.
     /// </summary>
-    /**
-     * Turns the spherical range map into a closed triangle mesh: sparse cells are dropped, the range grid is median
-     * filtered and small holes are filled, neighbouring cells become triangles unless a depth jump separates them
-     * (so surfaces never stretch across an edge), and the open rim at the lowest seen elevation is closed with a
-     * floor fan so the shell is solid. Faces point toward the camera.
-     */
-    private (int Vertices, int Triangles) WriteSphericalMesh(string absolutePath, ScanPoint[] scanPoints)
+    /** Bins the scan into a range map, fits the room box and returns the box-snapped shell as a half-degree vertex grid. */
+    private static void BuildRoomShell(ScanPoint[] scanPoints, out int w2, out int h2, out float[] gridRange,
+                                       out List<System.Numerics.Vector3> positions, out List<System.Numerics.Vector3> colors,
+                                       out int[] vertexIndex)
     {
         var width = (int)MathF.Ceiling(2f * MathF.PI / SphericalCellRadians);
         var height = (int)MathF.Ceiling(MathF.PI / SphericalCellRadians) + 1;
@@ -1039,26 +1106,75 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
         MedianFilterRange(range, width, height);
         FillSmallHoles(range, color, width, height, 6);
 
-        var vertexIndex = new int[width * height];
-        Array.Fill(vertexIndex, -1);
-        var positions = new List<System.Numerics.Vector3>();
-        var colors = new List<System.Numerics.Vector3>();
-        for (var y = 0; y < height; y++)
-        {
-            var elevation = 0.5f * MathF.PI - (y + 0.5f) * SphericalCellRadians;
-            for (var x = 0; x < width; x++)
-            {
-                var r = range[y * width + x];
-                if (float.IsNaN(r))
-                    continue;
+        // The depth of each capture carries its own scale, so surfaces wobble. A room is a box: fit one and snap the walls to it
+        var box = FitRoomBox(range, width, height);
 
-                var azimuth = (x + 0.5f) * SphericalCellRadians - MathF.PI;
-                var cosE = MathF.Cos(elevation);
-                vertexIndex[y * width + x] = positions.Count;
-                positions.Add(new System.Numerics.Vector3(r * cosE * MathF.Sin(azimuth), r * MathF.Sin(elevation), -r * cosE * MathF.Cos(azimuth)));
-                colors.Add(color[y * width + x]);
+        // Output grid at half the resolution; walls are flat, so the extra detail only matters for objects
+        const int downsample = 2;
+        w2 = width / downsample;
+        h2 = height / downsample;
+        vertexIndex = new int[w2 * h2];
+        gridRange = new float[w2 * h2];
+        positions = new List<System.Numerics.Vector3>();
+        colors = new List<System.Numerics.Vector3>();
+        for (var y = 0; y < h2; y++)
+        {
+            var elevation = 0.5f * MathF.PI - (y + 0.5f) * SphericalCellRadians * downsample;
+            var cosE = MathF.Cos(elevation);
+            var sinE = MathF.Sin(elevation);
+            for (var x = 0; x < w2; x++)
+            {
+                var azimuth = (x + 0.5f) * SphericalCellRadians * downsample - MathF.PI;
+                var dx = cosE * MathF.Sin(azimuth);
+                var dz = -cosE * MathF.Cos(azimuth);
+                var boxRange = box.RangeAlong(dx, sinE, dz);
+
+                var sum = 0f;
+                var colorSum = System.Numerics.Vector3.Zero;
+                var n = 0;
+                for (var by = 0; by < downsample; by++)
+                {
+                    for (var bx = 0; bx < downsample; bx++)
+                    {
+                        var index = (y * downsample + by) * width + x * downsample + bx;
+                        if (float.IsNaN(range[index]))
+                            continue;
+
+                        sum += range[index];
+                        colorSum += color[index];
+                        n++;
+                    }
+                }
+
+                // Walls and anything not clearly in front of them take the box; objects in front keep their own range
+                var r = boxRange;
+                var cellColor = new System.Numerics.Vector3(0.4f, 0.4f, 0.4f);
+                if (n > 0)
+                {
+                    cellColor = colorSum / n;
+                    var observed = sum / n;
+                    if (observed < boxRange * RoomObjectRatio)
+                        r = observed;
+                }
+
+                gridRange[y * w2 + x] = r;
+                vertexIndex[y * w2 + x] = positions.Count;
+                positions.Add(new System.Numerics.Vector3(r * dx, r * sinE, r * dz));
+                colors.Add(cellColor);
             }
         }
+
+    }
+
+    /**
+     * Turns the spherical range map into a closed triangle mesh: sparse cells are dropped, the range grid is median
+     * filtered and small holes are filled, neighbouring cells become triangles unless a depth jump separates them
+     * (so surfaces never stretch across an edge), and the open rim at the lowest seen elevation is closed with a
+     * floor fan so the shell is solid. Faces point toward the camera.
+     */
+    private (int Vertices, int Triangles) WriteSphericalMesh(string absolutePath, ScanPoint[] scanPoints)
+    {
+        BuildRoomShell(scanPoints, out var w2, out var h2, out var gridRange, out var positions, out var colors, out var vertexIndex);
 
         var faces = new List<int>();
         void AddFace(int i0, int i1, int i2)
@@ -1073,22 +1189,19 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
             faces.Add(i2);
         }
 
-        for (var y = 0; y < height - 1; y++)
+        for (var y = 0; y < h2 - 1; y++)
         {
-            for (var x = 0; x < width; x++)
+            for (var x = 0; x < w2; x++)
             {
-                var x1 = (x + 1) % width;
-                var i00 = vertexIndex[y * width + x];
-                var i10 = vertexIndex[y * width + x1];
-                var i01 = vertexIndex[(y + 1) * width + x];
-                var i11 = vertexIndex[(y + 1) * width + x1];
-                if (i00 < 0 || i10 < 0 || i01 < 0 || i11 < 0)
-                    continue;
-
-                var r00 = range[y * width + x];
-                var r10 = range[y * width + x1];
-                var r01 = range[(y + 1) * width + x];
-                var r11 = range[(y + 1) * width + x1];
+                var x1 = (x + 1) % w2;
+                var i00 = vertexIndex[y * w2 + x];
+                var i10 = vertexIndex[y * w2 + x1];
+                var i01 = vertexIndex[(y + 1) * w2 + x];
+                var i11 = vertexIndex[(y + 1) * w2 + x1];
+                var r00 = gridRange[y * w2 + x];
+                var r10 = gridRange[y * w2 + x1];
+                var r01 = gridRange[(y + 1) * w2 + x];
+                var r11 = gridRange[(y + 1) * w2 + x1];
                 var lo = MathF.Min(MathF.Min(r00, r10), MathF.Min(r01, r11));
                 var hi = MathF.Max(MathF.Max(r00, r10), MathF.Max(r01, r11));
                 if (hi > lo * MeshDepthJumpRatio)
@@ -1213,6 +1326,155 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
                     addFace(loop[i], loop[(i + 1) % loop.Count], centerIndex);
             }
         }
+    }
+
+    /** A room as a box rotated about the vertical axis; the camera sits inside it at the origin. */
+    private readonly struct RoomBox
+    {
+        public RoomBox(float yaw, float xp, float xn, float zp, float zn, float yp, float yn)
+        {
+            Yaw = yaw;
+            XP = xp;
+            XN = xn;
+            ZP = zp;
+            ZN = zn;
+            YP = yp;
+            YN = yn;
+            Cos = MathF.Cos(-yaw);
+            Sin = MathF.Sin(-yaw);
+        }
+
+        public readonly float Yaw, XP, XN, ZP, ZN, YP, YN, Cos, Sin;
+
+        public float RangeAlong(float dx, float dy, float dz)
+        {
+            var x = Cos * dx + Sin * dz;
+            var z = -Sin * dx + Cos * dz;
+            var best = float.MaxValue;
+            if (x > 1e-6f) best = MathF.Min(best, XP / x); else if (x < -1e-6f) best = MathF.Min(best, XN / -x);
+            if (z > 1e-6f) best = MathF.Min(best, ZP / z); else if (z < -1e-6f) best = MathF.Min(best, ZN / -z);
+            if (dy > 1e-6f) best = MathF.Min(best, YP / dy); else if (dy < -1e-6f) best = MathF.Min(best, YN / -dy);
+            return best;
+        }
+    }
+
+    /**
+     * Robust fit of a room box to the range map: a truncated log-range error, so furniture and the depth wobble between
+     * captures cannot pull the walls. Pattern search from several yaw and size starts.
+     */
+    private static RoomBox FitRoomBox(float[] range, int width, int height)
+    {
+        const int maxSamples = 6000;
+        var valid = 0;
+        for (var i = 0; i < range.Length; i++)
+        {
+            if (!float.IsNaN(range[i]))
+                valid++;
+        }
+
+        var step = Math.Max(1, valid / maxSamples);
+        var dirX = new List<float>();
+        var dirY = new List<float>();
+        var dirZ = new List<float>();
+        var logRange = new List<float>();
+        var seen = 0;
+        var rangeSum = 0f;
+        for (var y = 0; y < height; y++)
+        {
+            var elevation = 0.5f * MathF.PI - (y + 0.5f) * SphericalCellRadians;
+            for (var x = 0; x < width; x++)
+            {
+                var r = range[y * width + x];
+                if (float.IsNaN(r) || seen++ % step != 0)
+                    continue;
+
+                var azimuth = (x + 0.5f) * SphericalCellRadians - MathF.PI;
+                dirX.Add(MathF.Cos(elevation) * MathF.Sin(azimuth));
+                dirY.Add(MathF.Sin(elevation));
+                dirZ.Add(-MathF.Cos(elevation) * MathF.Cos(azimuth));
+                logRange.Add(MathF.Log(r));
+                rangeSum += r;
+            }
+        }
+
+        var count = logRange.Count;
+        if (count == 0)
+            return new RoomBox(0f, 2f, 2f, 2f, 2f, 1.3f, 1.3f);
+
+        var mean = rangeSum / count;
+        float Cost(float[] prm)
+        {
+            for (var k = 1; k < 7; k++)
+            {
+                if (prm[k] < 0.05f)
+                    return float.MaxValue;
+            }
+
+            var box = new RoomBox(prm[0], prm[1], prm[2], prm[3], prm[4], prm[5], prm[6]);
+            var total = 0f;
+            for (var i = 0; i < count; i++)
+            {
+                var e = MathF.Abs(logRange[i] - MathF.Log(box.RangeAlong(dirX[i], dirY[i], dirZ[i])));
+                total += MathF.Min(e, 0.3f);
+            }
+
+            return total / count;
+        }
+
+        var random = new Random(7);
+        var bestParams = new float[7];
+        var bestCost = float.MaxValue;
+        var current = new float[7];
+        var trial = new float[7];
+        for (var start = 0; start < 18; start++)
+        {
+            current[0] = (start % 6) * MathF.PI / 12f;
+            for (var k = 1; k < 7; k++)
+                current[k] = mean * (0.6f + 1.0f * (float)random.NextDouble());
+
+            var cost = Cost(current);
+            var stepSize = new float[7] { 0.15f, 0.25f * mean, 0.25f * mean, 0.25f * mean, 0.25f * mean, 0.25f * mean, 0.25f * mean };
+            for (var iteration = 0; iteration < 120; iteration++)
+            {
+                var improved = false;
+                for (var k = 0; k < 7; k++)
+                {
+                    for (var sign = -1; sign <= 1; sign += 2)
+                    {
+                        Array.Copy(current, trial, 7);
+                        trial[k] += sign * stepSize[k];
+                        var c = Cost(trial);
+                        if (c < cost)
+                        {
+                            cost = c;
+                            Array.Copy(trial, current, 7);
+                            improved = true;
+                        }
+                    }
+                }
+
+                if (!improved)
+                {
+                    var small = true;
+                    for (var k = 0; k < 7; k++)
+                    {
+                        stepSize[k] *= 0.5f;
+                        small &= stepSize[k] < (k == 0 ? 0.002f : 0.002f * mean);
+                    }
+
+                    if (small)
+                        break;
+                }
+            }
+
+            if (cost < bestCost)
+            {
+                bestCost = cost;
+                Array.Copy(current, bestParams, 7);
+            }
+        }
+
+        return new RoomBox(bestParams[0], bestParams[1], bestParams[2], bestParams[3], bestParams[4], bestParams[5], bestParams[6]);
     }
 
     /** 3x3 median of the range grid (azimuth wraps); cells with fewer than four filled neighbours are removed as specks. */
@@ -1541,7 +1803,8 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
     private const float SphericalAgreeHigh = 1.08f;
     private const int SphericalMinObservations = 2;
     private const float FlyingPixelRatio = 0.08f;
-    private const float MeshDepthJumpRatio = 1.25f;
+    private const float MeshDepthJumpRatio = 1.6f;
+    private const float RoomObjectRatio = 0.75f;
     private const int MeshRimLoopEdges = 2000;
 
     private List<ScanPoint> _points = [];
@@ -1576,6 +1839,11 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
     private bool _pendingCamIsPose;
     private bool _pendingSpherical;
     private volatile bool _meshBusy;
+    private volatile bool _shellBusy;
+    private volatile bool _shellReady;
+    private volatile int _shellGeneration;
+    private volatile Point[]? _shellPoints;
+    private int _shellCaptures;
     private volatile bool _meshDone;
     private volatile string _meshResultPath = string.Empty;
     private volatile string _meshResultMessage = string.Empty;
@@ -1603,7 +1871,7 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
     private int _uiSaveFormat;
 
     private static readonly string[] ModeNames = { "Average", "Replace" };
-    private static readonly string[] SaveFormatNames = { "PLY ASCII", "PLY binary", "PLY mesh (closed)" };
+    private static readonly string[] SaveFormatNames = { "PLY ASCII", "PLY binary", "PLY mesh (room box)" };
 
     #endregion
 
