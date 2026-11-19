@@ -757,7 +757,7 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
                                                     _shellBuffer = new Point[positions.Count + positions.Count / 4 + 1024];
 
                                                 var shell = _shellBuffer;
-                                                for (var i = 0; i < shell.Length; i++)
+                                                for (var i = 0; i < positions.Count; i++)
                                                 {
                                                     shell[i] = new Point
                                                     {
