@@ -64,8 +64,14 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
             SetStatus(_meshResultMessage, _meshResultPath.Length > 0 ? IStatusProvider.StatusLevel.Success : IStatusProvider.StatusLevel.Warning);
         }
 
+        _pendingGlobalAlign = GlobalAlign.GetValue(context);
+        _pendingFlat = FlatSurfaces.GetValue(context);
+        _pendingRegularize = RegularizeRoom.GetValue(context);
         if (_pendingSpherical && _points.Count > 0)
+        {
             MaybeStartShell();
+            ApplyShellIfReady();
+        }
 
         HandleSave(context);
         Recording.Value = _recording;
@@ -199,6 +205,8 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
         _pendingMaxPoints = Math.Max(1000, MaxPoints.GetValue(context));
         _pendingAutoScale = AutoScale.GetValue(context);
         _pendingRegularize = RegularizeRoom.GetValue(context);
+        _pendingGlobalAlign = GlobalAlign.GetValue(context);
+        _pendingFlat = FlatSurfaces.GetValue(context);
         PrepareCamera(context, desc.Width, desc.Height);
         UpdateStatus();
     }
@@ -321,12 +329,34 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
                 var ndcX = (x + 0.5f) / width * 2f - 1f;
                 var ndcY = (y + 0.5f) / height * 2f - 1f;
                 var weight = MathF.Max(0.05f, (1f - 0.7f * ndcX * ndcX) * (1f - 0.7f * ndcY * ndcY));
+                // Raw (unanchored) samples are kept so every capture's depth scale can be solved jointly afterwards
+                if (_pendingSpherical && _tiles.Count < MaxTiles && x % TileStride == 0 && y % TileStride == 0)
+                {
+                    var rawCell = SphericalCellIndex(UnprojectPoint(x, y, width, height, z * _pendingScale), out var rawRange);
+                    if (rawCell >= 0)
+                    {
+                        _tileCells.Add(rawCell);
+                        _tileLogRanges.Add(MathF.Log(rawRange));
+                        _tileColors.Add(PackColor(r, g, b));
+                        _tileWeights.Add(weight);
+                    }
+                }
+
                 var inserted = _pendingSpherical ? InsertSpherical(position, r, g, b, now, weight) : InsertPoint(position, r, g, b, now);
                 if (inserted == 1)
                     pointsAdded++;
                 else if (inserted == 2)
                     skippedFull++;
             }
+        }
+
+        if (_tileCells.Count > 0)
+        {
+            _tiles.Add(new ScanTile { Cell = _tileCells.ToArray(), LogRange = _tileLogRanges.ToArray(), Color = _tileColors.ToArray(), Weight = _tileWeights.ToArray() });
+            _tileCells.Clear();
+            _tileLogRanges.Clear();
+            _tileColors.Clear();
+            _tileWeights.Clear();
         }
 
         PointsAdded.Value = pointsAdded;
@@ -653,22 +683,41 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
     }
 
     /// <summary>Rebuilds and uploads the drawable point buffer from the scan store.</summary>
+    /** Uploads a freshly built shell to the point buffer; runs on the update thread, also after the last capture. */
+    private void ApplyShellIfReady()
+    {
+        var shell = _shellPoints;
+        if (!_shellReady || shell == null)
+            return;
+
+        _shellReady = false;
+        EnsurePointBuffer(shell, shell.Length);
+        Points.Value = _pointBuffer;
+        PointCount.Value = _points.Count;
+    }
+
     /** The live cloud of a rotation-only scan is the room shell, rebuilt off-thread whenever new captures arrived. */
     private void MaybeStartShell()
     {
-        if (_shellBusy || _points.Count < 3000 || _captures == _shellCaptures)
+        var aligned = _pendingGlobalAlign && _tiles.Count >= MinTilesForAlignment;
+        if (_shellBusy || _points.Count < 3000 || (_captures == _shellCaptures && aligned == _shellAligned && RegularizeUnchanged() && _shellFlat == _pendingFlat))
             return;
 
         _shellBusy = true;
         _shellCaptures = _captures;
-        var snapshot = _points.ToArray();
+        _shellAligned = aligned;
+        _shellRegularize = _pendingRegularize;
+        _shellFlat = _pendingFlat;
+        var tiles = _pendingGlobalAlign && _tiles.Count >= MinTilesForAlignment ? _tiles.ToArray() : null;
+        var snapshot = tiles == null ? _points.ToArray() : null;
         var regularize = _pendingRegularize;
+        var flat = _pendingFlat;
         var generation = _shellGeneration;
         System.Threading.Tasks.Task.Run(() =>
                                         {
                                             try
                                             {
-                                                BuildRoomShell(snapshot, regularize, out _, out _, out _, out var positions, out var colors, out _);
+                                                BuildRoomShell(snapshot ?? AlignTiles(tiles!), regularize, flat, out _, out _, out _, out var positions, out var colors, out _);
                                                 var shell = new Point[positions.Count];
                                                 for (var i = 0; i < shell.Length; i++)
                                                 {
@@ -715,13 +764,7 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
             MaybeStartShell();
             if (_shellPoints != null)
             {
-                if (_shellReady)
-                {
-                    _shellReady = false;
-                    EnsurePointBuffer(_shellPoints, _shellPoints.Length);
-                    Points.Value = _pointBuffer;
-                }
-
+                ApplyShellIfReady();
                 PointCount.Value = count;
                 return;
             }
@@ -790,6 +833,11 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
 
     private void ResetScan()
     {
+        _tiles.Clear();
+        _tileCells.Clear();
+        _tileLogRanges.Clear();
+        _tileColors.Clear();
+        _tileWeights.Clear();
         _shellGeneration++;
         _shellPoints = null;
         _shellReady = false;
@@ -998,16 +1046,18 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
                 }
 
                 // The meshing walks millions of cells: it runs on a snapshot off the editor thread
-                var snapshot = _points.ToArray();
+                var meshTiles = _pendingGlobalAlign && _tiles.Count >= MinTilesForAlignment ? _tiles.ToArray() : null;
+                var snapshot = meshTiles == null ? _points.ToArray() : null;
                 var regularize = _pendingRegularize;
+                var flat = _pendingFlat;
                 _meshBusy = true;
-                SetStatus($"Building a mesh from {snapshot.Length} points...", IStatusProvider.StatusLevel.Notice);
+                SetStatus($"Building a mesh from {snapshot?.Length ?? meshTiles!.Length} {(snapshot != null ? "points" : "captures")}...", IStatusProvider.StatusLevel.Notice);
                 System.Threading.Tasks.Task.Run(() =>
                                                 {
                                                     try
                                                     {
                                                         var watch = System.Diagnostics.Stopwatch.StartNew();
-                                                        var (vertices, triangles) = WriteSphericalMesh(absolutePath, snapshot, regularize);
+                                                        var (vertices, triangles) = WriteSphericalMesh(absolutePath, snapshot ?? AlignTiles(meshTiles!), regularize, flat);
                                                         _meshResultPath = relativePath;
                                                         _meshResultMessage = $"Saved a mesh of {vertices} vertices and {triangles} triangles to {relativePath} ({watch.Elapsed.TotalSeconds:F1} s)";
                                                     }
@@ -1083,7 +1133,7 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
     /// uchar red/green/blue per vertex, openable in MeshLab/CloudCompare/blender.
     /// </summary>
     /** Bins the scan into a range map, fits the room box and returns the box-snapped shell as a half-degree vertex grid. */
-    private static void BuildRoomShell(ScanPoint[] scanPoints, bool regularize, out int w2, out int h2, out float[] gridRange,
+    private static void BuildRoomShell(ScanPoint[] scanPoints, bool regularize, bool flat, out int w2, out int h2, out float[] gridRange,
                                        out List<System.Numerics.Vector3> positions, out List<System.Numerics.Vector3> colors,
                                        out int[] vertexIndex)
     {
@@ -1120,18 +1170,13 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
         gridRange = new float[w2 * h2];
         positions = new List<System.Numerics.Vector3>();
         colors = new List<System.Numerics.Vector3>();
+        // First pass: the observed range and colour of every output cell
+        var observedRange = new float[w2 * h2];
+        var observedColor = new System.Numerics.Vector3[w2 * h2];
         for (var y = 0; y < h2; y++)
         {
-            var elevation = 0.5f * MathF.PI - (y + 0.5f) * SphericalCellRadians * downsample;
-            var cosE = MathF.Cos(elevation);
-            var sinE = MathF.Sin(elevation);
             for (var x = 0; x < w2; x++)
             {
-                var azimuth = (x + 0.5f) * SphericalCellRadians * downsample - MathF.PI;
-                var dx = cosE * MathF.Sin(azimuth);
-                var dz = -cosE * MathF.Cos(azimuth);
-                var boxRange = regularize ? box.RangeAlong(dx, sinE, dz) : float.MaxValue;
-
                 var sum = 0f;
                 var colorSum = System.Numerics.Vector3.Zero;
                 var n = 0;
@@ -1149,14 +1194,34 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
                     }
                 }
 
+                observedRange[y * w2 + x] = n > 0 ? sum / n : float.NaN;
+                observedColor[y * w2 + x] = n > 0 ? colorSum / n : default;
+            }
+        }
+
+        if (flat && !regularize)
+            FlattenPlanes(observedRange, w2, h2);
+
+        for (var y = 0; y < h2; y++)
+        {
+            var elevation = 0.5f * MathF.PI - (y + 0.5f) * SphericalCellRadians * downsample;
+            var cosE = MathF.Cos(elevation);
+            var sinE = MathF.Sin(elevation);
+            for (var x = 0; x < w2; x++)
+            {
+                var azimuth = (x + 0.5f) * SphericalCellRadians * downsample - MathF.PI;
+                var dx = cosE * MathF.Sin(azimuth);
+                var dz = -cosE * MathF.Cos(azimuth);
+                var boxRange = regularize ? box.RangeAlong(dx, sinE, dz) : float.MaxValue;
+                var observed = observedRange[y * w2 + x];
+
                 // Without a box only what was seen becomes geometry; with one, walls and anything not clearly in
                 // front of them take the box, and unseen directions are filled from it
                 var r = boxRange;
                 var cellColor = new System.Numerics.Vector3(0.4f, 0.4f, 0.4f);
-                if (n > 0)
+                if (!float.IsNaN(observed))
                 {
-                    cellColor = colorSum / n;
-                    var observed = sum / n;
+                    cellColor = observedColor[y * w2 + x];
                     if (!regularize || observed < boxRange * RoomObjectRatio)
                         r = observed;
                 }
@@ -1173,7 +1238,180 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
                 colors.Add(cellColor);
             }
         }
+    }
 
+    private static readonly int GridWidth = (int)MathF.Ceiling(2f * MathF.PI / SphericalCellRadians);
+    private static readonly int GridHeight = (int)MathF.Ceiling(MathF.PI / SphericalCellRadians) + 1;
+
+    /** Alignment works on 0.5 degree cells, the resolution of the shell, so a few samples per capture reach every cell. */
+    private static readonly int CoarseWidth = GridWidth / 2;
+    private static readonly int CoarseHeight = (GridHeight + 1) / 2;
+
+    private static uint PackColor(float r, float g, float b) =>
+        ((uint)Math.Clamp((int)(r * 255f + 0.5f), 0, 255) << 16) | ((uint)Math.Clamp((int)(g * 255f + 0.5f), 0, 255) << 8) | (uint)Math.Clamp((int)(b * 255f + 0.5f), 0, 255);
+
+    /** Index of the 0.5 degree direction cell of a position seen from the origin; -1 when the position is the origin. */
+    private static int SphericalCellIndex(System.Numerics.Vector3 position, out float range)
+    {
+        range = position.Length();
+        if (range < 1e-5f)
+            return -1;
+
+        var elevation = MathF.Asin(Math.Clamp(position.Y / range, -1f, 1f));
+        var azimuth = MathF.Atan2(position.X, -position.Z);
+        var cell = 2f * SphericalCellRadians;
+        var ix = Math.Clamp((int)MathF.Floor((azimuth + MathF.PI) / cell), 0, CoarseWidth - 1);
+        var iy = Math.Clamp((int)MathF.Floor((0.5f * MathF.PI - elevation) / cell), 0, CoarseHeight - 1);
+        return iy * CoarseWidth + ix;
+    }
+
+    /**
+     * Solves one depth scale per capture from everywhere the captures overlap: every direction cell seen by several captures
+     * must have one range, so log s_tile + log range is pulled to the cell's consensus (alternating least squares with
+     * Huber weights, a weak prior toward the captured scale). Returns the map with every sample rescaled and averaged.
+     * Relative depth has no scale of its own, so the sequential per-capture anchor alone chains errors; this uses all overlaps at once.
+     */
+    private static ScanPoint[] AlignTiles(ScanTile[] tiles)
+    {
+        const int iterations = 25;
+        const float huber = 0.08f;
+        const float prior = 4f;
+
+        var total = 0;
+        foreach (var tile in tiles)
+            total += tile.Cell.Length;
+
+        // Group samples by cell
+        var cells = new int[total];
+        var tileOf = new int[total];
+        var logRange = new float[total];
+        var weight = new float[total];
+        var colorOf = new uint[total];
+        var n = 0;
+        for (var t = 0; t < tiles.Length; t++)
+        {
+            var tile = tiles[t];
+            for (var i = 0; i < tile.Cell.Length; i++, n++)
+            {
+                cells[n] = tile.Cell[i];
+                tileOf[n] = t;
+                logRange[n] = tile.LogRange[i];
+                weight[n] = tile.Weight[i];
+                colorOf[n] = tile.Color[i];
+            }
+        }
+
+        var order = new int[total];
+        for (var i = 0; i < total; i++)
+            order[i] = i;
+
+        Array.Sort(cells.AsSpan().ToArray(), order);
+        var sortedCells = new int[total];
+        for (var i = 0; i < total; i++)
+            sortedCells[i] = cells[order[i]];
+
+        // Cell group boundaries; only cells seen by more than one sample constrain the scales
+        var groupStart = new List<int>();
+        for (var i = 0; i < total; i++)
+        {
+            if (i == 0 || sortedCells[i] != sortedCells[i - 1])
+                groupStart.Add(i);
+        }
+
+        groupStart.Add(total);
+        var groups = groupStart.Count - 1;
+
+        var x = new float[tiles.Length];
+        var robust = new float[total];
+        for (var i = 0; i < total; i++)
+            robust[i] = 1f;
+
+        var tileNumerator = new double[tiles.Length];
+        var tileDenominator = new double[tiles.Length];
+        for (var iteration = 0; iteration < iterations; iteration++)
+        {
+            Array.Clear(tileNumerator);
+            Array.Clear(tileDenominator);
+            for (var g = 0; g < groups; g++)
+            {
+                var a = groupStart[g];
+                var b = groupStart[g + 1];
+                if (b - a < 2)
+                    continue;
+
+                double sum = 0, sumW = 0;
+                for (var k = a; k < b; k++)
+                {
+                    var o = order[k];
+                    var w = weight[o] * robust[o];
+                    sum += w * (x[tileOf[o]] + logRange[o]);
+                    sumW += w;
+                }
+
+                if (sumW < 1e-9)
+                    continue;
+
+                var consensus = sum / sumW;
+                for (var k = a; k < b; k++)
+                {
+                    var o = order[k];
+                    var w = weight[o] * robust[o];
+                    tileNumerator[tileOf[o]] += w * (consensus - logRange[o]);
+                    tileDenominator[tileOf[o]] += w;
+                    var residual = MathF.Abs((float)(x[tileOf[o]] + logRange[o] - consensus));
+                    robust[o] = residual <= huber ? 1f : huber / residual;
+                }
+            }
+
+            for (var t = 0; t < tiles.Length; t++)
+                x[t] = (float)(tileNumerator[t] / (tileDenominator[t] + prior));
+        }
+
+        // The aligned map: per cell the robust mean of the rescaled samples
+        var points = new List<ScanPoint>();
+        for (var g = 0; g < groups; g++)
+        {
+            var a = groupStart[g];
+            var b = groupStart[g + 1];
+            double sum = 0, sumW = 0, cr = 0, cg = 0, cb = 0;
+            for (var k = a; k < b; k++)
+            {
+                var o = order[k];
+                var w = weight[o] * robust[o];
+                sum += w * (x[tileOf[o]] + logRange[o]);
+                sumW += w;
+                cr += w * ((colorOf[o] >> 16) & 255);
+                cg += w * ((colorOf[o] >> 8) & 255);
+                cb += w * (colorOf[o] & 255);
+            }
+
+            if (sumW < 1e-9)
+                continue;
+
+            var coarse = sortedCells[a];
+            var range = (float)Math.Exp(sum / sumW);
+            var color = new System.Numerics.Vector3((float)(cr / sumW) / 255f, (float)(cg / sumW) / 255f, (float)(cb / sumW) / 255f);
+            for (var sy = 0; sy < 2; sy++)
+            {
+                for (var sx = 0; sx < 2; sx++)
+                {
+                    var fineX = (coarse % CoarseWidth) * 2 + sx;
+                    var fineY = Math.Min((coarse / CoarseWidth) * 2 + sy, GridHeight - 1);
+                    var elevation = 0.5f * MathF.PI - (fineY + 0.5f) * SphericalCellRadians;
+                    var azimuth = (fineX + 0.5f) * SphericalCellRadians - MathF.PI;
+                    var cosE = MathF.Cos(elevation);
+                    points.Add(new ScanPoint
+                    {
+                        Position = new System.Numerics.Vector3(range * cosE * MathF.Sin(azimuth), range * MathF.Sin(elevation), -range * cosE * MathF.Cos(azimuth)),
+                        Color = color,
+                        Count = b - a,
+                        Weight = (float)sumW,
+                    });
+                }
+            }
+        }
+
+        return points.ToArray();
     }
 
     /**
@@ -1182,9 +1420,9 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
      * (so surfaces never stretch across an edge), and the open rim at the lowest seen elevation is closed with a
      * floor fan so the shell is solid. Faces point toward the camera.
      */
-    private (int Vertices, int Triangles) WriteSphericalMesh(string absolutePath, ScanPoint[] scanPoints, bool regularize)
+    private (int Vertices, int Triangles) WriteSphericalMesh(string absolutePath, ScanPoint[] scanPoints, bool regularize, bool flat)
     {
-        BuildRoomShell(scanPoints, regularize, out var w2, out var h2, out var gridRange, out var positions, out var colors, out var vertexIndex);
+        BuildRoomShell(scanPoints, regularize, flat, out var w2, out var h2, out var gridRange, out var positions, out var colors, out var vertexIndex);
 
         var faces = new List<int>();
         void AddFace(int i0, int i1, int i2)
@@ -1339,6 +1577,175 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
                     addFace(loop[i], loop[(i + 1) % loop.Count], centerIndex);
             }
         }
+    }
+
+    /**
+     * Flattens the surfaces of a rotation-only scan onto planes found in the scan itself: no box and no right angles, so tilted
+     * ceilings, alcoves and desks work as well as walls. Surface normals come from the range grid; planes are found by
+     * RANSAC on (position, normal) pairs, largest first. Cells whose normal agrees with a plane and that lie within a generous
+     * band of it (relative depth makes one wall appear at several distances) are moved onto it along their viewing ray.
+     * Cells that fit no plane (clutter, edges) keep their range.
+     */
+    private static void FlattenPlanes(float[] range, int w, int h)
+    {
+        const float depthJump = 0.2f;
+        const float normalCos = 0.8f;          // ~37 degrees
+        const float ransacBand = 0.08f;        // fraction of range
+        const float assignBand = 0.25f;
+        const int candidates = 300;
+        const int sampleSize = 5000;
+        const int maxPlanes = 16;
+
+        var count = w * h;
+        var positions = new System.Numerics.Vector3[count];
+        var directions = new System.Numerics.Vector3[count];
+        for (var y = 0; y < h; y++)
+        {
+            var elevation = 0.5f * MathF.PI - (y + 0.5f) * 2f * SphericalCellRadians;
+            var cosE = MathF.Cos(elevation);
+            var sinE = MathF.Sin(elevation);
+            for (var x = 0; x < w; x++)
+            {
+                var azimuth = (x + 0.5f) * 2f * SphericalCellRadians - MathF.PI;
+                var d = new System.Numerics.Vector3(cosE * MathF.Sin(azimuth), sinE, -cosE * MathF.Cos(azimuth));
+                directions[y * w + x] = d;
+                if (!float.IsNaN(range[y * w + x]))
+                    positions[y * w + x] = d * range[y * w + x];
+            }
+        }
+
+        // Normals from central differences, facing the camera; edges (depth jumps) get none
+        var normals = new System.Numerics.Vector3[count];
+        var hasNormal = new bool[count];
+        var valid = new List<int>();
+        for (var y = 1; y < h - 1; y++)
+        {
+            for (var x = 0; x < w; x++)
+            {
+                var c = y * w + x;
+                var left = y * w + (x + w - 1) % w;
+                var right = y * w + (x + 1) % w;
+                var up = (y - 1) * w + x;
+                var down = (y + 1) * w + x;
+                var rc = range[c];
+                if (float.IsNaN(rc) || float.IsNaN(range[left]) || float.IsNaN(range[right]) || float.IsNaN(range[up]) || float.IsNaN(range[down]))
+                    continue;
+
+                if (MathF.Abs(range[left] - rc) > depthJump * rc || MathF.Abs(range[right] - rc) > depthJump * rc
+                    || MathF.Abs(range[up] - rc) > depthJump * rc || MathF.Abs(range[down] - rc) > depthJump * rc)
+                    continue;
+
+                var n = System.Numerics.Vector3.Cross(positions[right] - positions[left], positions[up] - positions[down]);
+                var length = n.Length();
+                if (length < 1e-9f)
+                    continue;
+
+                n /= length;
+                if (System.Numerics.Vector3.Dot(n, positions[c]) > 0f)
+                    n = -n;
+
+                normals[c] = n;
+                hasNormal[c] = true;
+                valid.Add(c);
+            }
+        }
+
+        if (valid.Count < 500)
+            return;
+
+        var random = new Random(11);
+        var remaining = new List<int>(valid);
+        var planeNormal = new List<System.Numerics.Vector3>();
+        var planeOffset = new List<float>();
+        var minSupport = Math.Max(150, valid.Count / 80);
+        for (var plane = 0; plane < maxPlanes && remaining.Count >= minSupport; plane++)
+        {
+            var sample = new int[Math.Min(sampleSize, remaining.Count)];
+            for (var i = 0; i < sample.Length; i++)
+                sample[i] = remaining[random.Next(remaining.Count)];
+
+            var bestScore = 0;
+            var bestNormal = System.Numerics.Vector3.Zero;
+            var bestOffset = 0f;
+            for (var k = 0; k < candidates; k++)
+            {
+                var seed = remaining[random.Next(remaining.Count)];
+                var n = normals[seed];
+                var d = -System.Numerics.Vector3.Dot(n, positions[seed]);
+                var score = 0;
+                for (var i = 0; i < sample.Length; i++)
+                {
+                    var j = sample[i];
+                    if (System.Numerics.Vector3.Dot(normals[j], n) < normalCos)
+                        continue;
+
+                    if (MathF.Abs(System.Numerics.Vector3.Dot(n, positions[j]) + d) < ransacBand * range[j])
+                        score++;
+                }
+
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    bestNormal = n;
+                    bestOffset = d;
+                }
+            }
+
+            if (bestScore * remaining.Count / sample.Length < minSupport)
+                break;
+
+            // Refine on every remaining cell that agrees, then drop them from the pool
+            var sumNormal = System.Numerics.Vector3.Zero;
+            var inliers = new List<int>();
+            foreach (var j in remaining)
+            {
+                if (System.Numerics.Vector3.Dot(normals[j], bestNormal) >= normalCos
+                    && MathF.Abs(System.Numerics.Vector3.Dot(bestNormal, positions[j]) + bestOffset) < 2f * ransacBand * range[j])
+                {
+                    inliers.Add(j);
+                    sumNormal += normals[j];
+                }
+            }
+
+            if (inliers.Count < minSupport || sumNormal.LengthSquared() < 1e-9f)
+                break;
+
+            var refined = System.Numerics.Vector3.Normalize(sumNormal);
+            var offset = 0f;
+            foreach (var j in inliers)
+                offset -= System.Numerics.Vector3.Dot(refined, positions[j]);
+
+            offset /= inliers.Count;
+            planeNormal.Add(refined);
+            planeOffset.Add(offset);
+            var inlierSet = new HashSet<int>(inliers);
+            remaining.RemoveAll(inlierSet.Contains);
+        }
+
+        // Every cell with a normal takes the largest plane it agrees with, within a generous band, along its own viewing ray
+        var flattened = (float[])range.Clone();
+        foreach (var c in valid)
+        {
+            for (var p = 0; p < planeNormal.Count; p++)
+            {
+                var n = planeNormal[p];
+                if (System.Numerics.Vector3.Dot(normals[c], n) < normalCos)
+                    continue;
+
+                var facing = System.Numerics.Vector3.Dot(n, directions[c]);
+                if (facing > -0.15f)
+                    continue;
+
+                var onPlane = -planeOffset[p] / facing;
+                if (onPlane > range[c] * (1f - assignBand) && onPlane < range[c] * (1f + assignBand))
+                {
+                    flattened[c] = onPlane;
+                    break;
+                }
+            }
+        }
+
+        Array.Copy(flattened, range, count);
     }
 
     /** A room as a box rotated about the vertical axis; the camera sits inside it at the origin. */
@@ -1785,6 +2192,12 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
     [Input(Guid = "b4c8e1a2-5d37-4f90-8a6b-3e2f1c7d9a40")]
     public readonly InputSlot<bool> RegularizeRoom = new(false);
 
+    [Input(Guid = "d7a3f5c1-2b84-4e96-9c1d-6f0a8b3e5d72")]
+    public readonly InputSlot<bool> GlobalAlign = new(false);
+
+    [Input(Guid = "e9b4c7a3-6d15-4b82-a3f0-1c8d5e7b2a96")]
+    public readonly InputSlot<bool> FlatSurfaces = new(true);
+
     [Input(Guid = "6c269444-aaec-4359-9708-4eb2cfdd0487")]
     public readonly InputSlot<bool> SaveTrigger = new(false);
 
@@ -1821,6 +2234,9 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
     private const float FlyingPixelRatio = 0.08f;
     private const float MeshDepthJumpRatio = 1.6f;
     private const float MeshScanJumpRatio = 1.25f;
+    private const int TileStride = 3;
+    private const int MaxTiles = 4000;
+    private const int MinTilesForAlignment = 8;
     private const int MeshSmallHoleEdges = 400;
     private const float RoomObjectRatio = 0.75f;
     private const int MeshRimLoopEdges = 2000;
@@ -1856,12 +2272,31 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
     private float _pendingTanHalfY;
     private bool _pendingCamIsPose;
     private bool _pendingSpherical;
+    /** One capture's raw samples on the spherical grid: the unit of the global scale alignment. */
+    private sealed class ScanTile
+    {
+        public int[] Cell = [];
+        public float[] LogRange = [];
+        public uint[] Color = [];
+        public float[] Weight = [];
+    }
+
+    private readonly List<ScanTile> _tiles = [];
+    private readonly List<int> _tileCells = [];
+    private readonly List<float> _tileLogRanges = [];
+    private readonly List<uint> _tileColors = [];
+    private readonly List<float> _tileWeights = [];
     private volatile bool _meshBusy;
     private volatile bool _shellBusy;
     private volatile bool _shellReady;
     private volatile int _shellGeneration;
     private volatile Point[]? _shellPoints;
     private int _shellCaptures;
+    private bool _shellAligned;
+    private bool _shellRegularize;
+    private bool _shellFlat;
+
+    private bool RegularizeUnchanged() => _shellRegularize == _pendingRegularize;
     private volatile bool _meshDone;
     private volatile string _meshResultPath = string.Empty;
     private volatile string _meshResultMessage = string.Empty;
@@ -1873,6 +2308,8 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
     private int _pendingMaxPoints;
     private bool _pendingAutoScale;
     private bool _pendingRegularize;
+    private bool _pendingGlobalAlign;
+    private bool _pendingFlat;
     private float _anchorScale = 1f;
     private bool _captureOnceState;
     private bool _resetState;

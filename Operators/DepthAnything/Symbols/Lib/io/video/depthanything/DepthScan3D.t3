@@ -79,6 +79,14 @@
       "DefaultValue": false
     },
     {
+      "Id": "d7a3f5c1-2b84-4e96-9c1d-6f0a8b3e5d72"/*GlobalAlign*/,
+      "DefaultValue": false
+    },
+    {
+      "Id": "e9b4c7a3-6d15-4b82-a3f0-1c8d5e7b2a96"/*FlatSurfaces*/,
+      "DefaultValue": true
+    },
+    {
       "Id": "6c269444-aaec-4359-9708-4eb2cfdd0487"/*SaveTrigger*/,
       "DefaultValue": false
     },

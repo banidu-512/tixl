@@ -14,6 +14,9 @@ horizon, so a sweep covers 360 degrees of pan by 0 to 90 degrees up.
 A camera that only rotates sees one surface per direction, so DepthScan3D keeps one range per 0.25 degree direction
 (each capture's depth scale and shift are fitted against what is already merged, depth edges and single sightings are
 dropped). Turn **RegularizeRoom** on to snap walls, floor and ceiling to a fitted box; it only suits rectangular rooms.
+**FlatSurfaces** (on by default) finds the planes in the scan (walls, floor, ceiling, tables, any orientation, no box and no
+right angles assumed) and moves the surfaces that lie on them onto flat planes; clutter that fits no plane keeps its shape.
+**GlobalAlign** (off by default, experimental) solves every capture's depth scale jointly from all the places the captures overlap.
 Save a closed triangle mesh with **SaveFormat** "PLY mesh".
 
 ## Composition Structure
