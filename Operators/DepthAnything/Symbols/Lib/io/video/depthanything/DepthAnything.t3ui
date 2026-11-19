@@ -1,7 +1,7 @@
 {
   "FormatVersion": 3,
   "Id": "c8f7d6e5-4b3a-2c1d-9f8e-7a6b5c4d3e2f"/*DepthAnything*/,
-  "Description": "Estimates a depth map from an image with Depth Anything 3 or 2 through ONNX Runtime.\n\nRuns the model on a background worker, so the graph never waits for inference. The image is resampled and normalized on the GPU and only the small model-sized input is read back, which keeps latency low for live input. Models are loaded from the package Assets folder; the scripts in the package Scripts folder download them.\n\nOutputs:\n- OutputTexture: The input texture, passed through.\n- DepthTexture: Raw model output as a single float channel. V3 models give depth (far is larger), V2 models give disparity (near is larger).\n- NormalizedDepthTexture: Depth normalized to 0..1 with near bright and visualized according to OutputFormat.\n- ConfidenceTexture: Per-pixel confidence, for models that predict it.\n- SkyTexture: Sky score, for models that predict it. Metric Large does.\n- UpdateCount: Increments each time a new depth frame was processed.\n- MinDepth, MaxDepth: Depth range of the latest frame, settled over time by Smoothing.\n- VerticalFov: Field of view in degrees estimated by the model, 0 when it gives none.\n- InferenceMs, LatencyMs: Model time and the time from capturing the input to receiving its result.\n- Status: Current model and execution provider state.\n\nTips:\n- Use CUDA or DirectML and a Small model for live input; the CPU is only practical for stills.\n- Feed VerticalFov and DepthTexture into DepthToPosition for a point-cloud style reconstruction.\n- A lower InputResolution trades depth detail for speed on models that accept it.\n\nAKA: depth estimation, depth anything, depth anything 3, da3, monocular depth, z-depth, ai",
+  "Description": "Estimates a depth map from an image with Depth Anything 3 through ONNX Runtime.\n\nRuns the model on a background worker, so the graph never waits for inference. The image is resampled and normalized on the GPU and only the small model-sized input is read back, which keeps latency low for live input. Models are managed in Settings > AI Models (download or custom export) and resolved from the model store first; a copy inside the package's Assets folder still works.\n\nOutputs:\n- OutputTexture: The input texture, passed through.\n- DepthTexture: Raw model output as a single float channel. DA3 predicts depth - far is larger.\n- NormalizedDepthTexture: Depth normalized to 0..1 with near bright and visualized according to OutputFormat.\n- ConfidenceTexture: Per-pixel confidence, for models that predict it.\n- SkyTexture: Sky score, for models that predict it.\n- UpdateCount: Increments each time a new depth frame was processed.\n- MinDepth, MaxDepth: Depth range of the latest frame, settled over time by Smoothing.\n- VerticalFov: Field of view in degrees estimated by the model (or from the FieldOfView input for the Metric model), 0 when it gives none.\n- InferenceMs, LatencyMs: Model time and the time from capturing the input to receiving its result.\n- Status: Current model and execution provider state.\n\nTips:\n- Use CUDA (or TensorRT for the lowest latency) and a Small model for live input; the CPU is only practical for stills.\n- Feed VerticalFov and DepthTexture into DepthToPosition for a point-cloud style reconstruction.\n- A lower InputResolution trades depth detail for speed on models that accept it.\n\nAKA: depth estimation, depth anything, depth anything 3, da3, monocular depth, z-depth, ai",
   "InputUis": [
     {
       "InputId": "012345ab-cdef-0123-4567-89abcdef0123"/*ExecutionProviderParam*/,
@@ -9,7 +9,7 @@
         "X": -250.0,
         "Y": -150.0
       },
-      "Description": "Hardware used for inference. The dropdown lists only the providers this operating system supports: Windows has DirectML, CUDA and TensorRT, Linux has CUDA and TensorRT, macOS has CoreML. A provider that cannot initialize falls back to the next one, ending at CPU."
+      "Description": "Hardware used for inference. The dropdown lists only the providers this operating system supports: Windows and Linux have CUDA and TensorRT, macOS has CoreML. A provider that cannot initialize falls back to the next one, ending at CPU."
     },
     {
       "InputId": "12345678-1234-1234-1234-123456789012"/*InputTexture*/,
@@ -41,7 +41,7 @@
         "X": -250.0,
         "Y": -250.0
       },
-      "Description": "Model variant. V3 is Depth Anything 3, V2 the previous generation. Larger models are more detailed and slower; Metric Large predicts depth in meters. A V3 choice falls back to the V2 model of similar size when no V3 file is installed."
+      "Description": "Model variant. All options are Depth Anything 3 models; larger models are more detailed and slower, Metric Large predicts depth in meters. Legacy V2-era selections load as their DA3 equivalent."
     },
     {
       "InputId": "45678901-4567-4567-4567-456789012345"/*OutputFormat*/,
@@ -97,7 +97,7 @@
         "X": -250.0,
         "Y": 0.0
       },
-      "Description": "Horizontal field of view of the source camera in degrees. Only the Metric model uses it, to convert its output to meters."
+      "Description": "Horizontal field of view of the source camera in degrees. The Metric model uses it to convert depth to meters; for the other models it is the fallback when the model reports no FOV."
     },
     {
       "InputId": "3f4a5b6c-7d8e-4f90-a1b2-c3d4e5f6a7b8"/*Normalization*/,

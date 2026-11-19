@@ -14,11 +14,6 @@
       "SymbolName": "Lib.io.video.depthanything.DepthAnything",
       "InputValues": [
         {
-          "Id": "012345ab-cdef-0123-4567-89abcdef0123"/*ExecutionProviderParam*/,
-          "Type": "System.Int32",
-          "Value": 1
-        },
-        {
           "Id": "34567890-3456-3456-3456-345678901234"/*ModelSizeParam*/,
           "Type": "System.Int32",
           "Value": 5

@@ -57,7 +57,7 @@ internal sealed class DepthEstimationResult
 }
 
 [Guid("c8f7d6e5-4b3a-2c1d-9f8e-7a6b5c4d3e2f")]
-[ExportDependencies("Microsoft.ML.OnnxRuntime.dll", "onnxruntime.dll", "DirectML.dll", "libonnxruntime*")]
+[ExportDependencies("Microsoft.ML.OnnxRuntime.dll", "onnxruntime.dll", "libonnxruntime*")]
 public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICamera, ICameraPropertiesProvider
 {
     #region Outputs
@@ -179,19 +179,10 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
         var modelSize = NormalizeModelSize((ModelSize)ModelSizeParam.GetValue(context));
         var provider = (ExecutionProvider)ExecutionProviderParam.GetValue(context);
 
-        // A provider that cannot run on this OS (a saved CoreML on Windows, DirectML on Linux...)
-        // snaps onto the closest one that can, so the dropdown and the label always show a real option.
+        // A provider that cannot run on this OS or with the shared ORT 1.30 build (saved DirectML,
+        // a CoreML on Windows/Linux...) snaps onto the closest one that can, so the dropdown and
+        // the label always show a real option.
         provider = NormalizeProviderForOs(provider);
-
-        // The AI settings' DirectML preference flips the default provider on Windows,
-        // e.g. for AMD/Intel machines without a usable CUDA stack. An explicit
-        // non-default choice is never overridden.
-        if (provider == ExecutionProvider.Cuda
-            && T3.Core.Settings.AiModelSettings.Config.PreferDirectMlForOnnx
-            && OperatingSystem.IsWindows())
-        {
-            provider = ExecutionProvider.DirectMl;
-        }
         _requestedInputSize = ((Resolution)InputResolution.GetValue(context)) switch
         {
             Resolution.R196 => 196,
@@ -1055,47 +1046,12 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
         }
     }
 
-    private static void LogGpuAdapters()
-    {
-        if (!OperatingSystem.IsWindows())
-            return;
-
-        try
-        {
-            LogDxgiAdapters();
-        }
-        catch
-        {
-            // Adapter enumeration is diagnostic only
-        }
-    }
-
-    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
-    private static void LogDxgiAdapters()
-    {
-        using var factory = new SharpDX.DXGI.Factory1();
-        foreach (var adapter in factory.Adapters)
-        {
-            Log.Info($"[DepthAnything] GPU adapter: {adapter.Description.Description}");
-            adapter.Dispose();
-        }
-    }
-
     private InferenceSession CreateSession(string modelPath, ExecutionProvider provider)
     {
-        if (provider == ExecutionProvider.DirectMl)
-        {
-            LogGpuAdapters();
-        }
-
-        // Windows has a CUDA and a DirectML ONNX Runtime native; the first request of the process binds one
-        var wantedBuild = provider == ExecutionProvider.DirectMl ? OnnxNativeSelector.Build.DirectMl : OnnxNativeSelector.Build.Gpu;
-        var build = OnnxNativeSelector.Select(typeof(InferenceSession).Assembly, wantedBuild);
-        if (OperatingSystem.IsWindows() && provider is ExecutionProvider.DirectMl or ExecutionProvider.Cuda or ExecutionProvider.TensorRt && build != wantedBuild)
-        {
-            Log.Warning($"[DepthAnything] {OnnxNativeSelector.Describe(wantedBuild)} needs its own ONNX Runtime build, but this session already loaded " +
-                        $"the {OnnxNativeSelector.Describe(build)} one - restart TiXL to switch.", this);
-        }
+        // Bind the package's GPU natives to this assembly's P/Invokes on first use. The version must match
+        // StreamDiffusion's: the first loaded native "onnxruntime.dll" module serves every provider import
+        // of the process, so a different version fails to initialize (Error 1114) and falls back to CPU.
+        OnnxNativeSelector.Select(typeof(InferenceSession).Assembly, OnnxNativeSelector.Build.Gpu);
 
         // Without a thread cap the CPU provider saturates all cores during inference
         // and starves the render thread
@@ -1104,7 +1060,7 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
         // Walk the chain and keep the first provider that initializes; CPU is always last and always works
         foreach (var candidate in GetProviderChain(provider))
         {
-            if (!IsProviderAvailableOnThisPlatform(candidate, build))
+            if (!IsProviderAvailableOnThisPlatform(candidate))
             {
                 continue;
             }
@@ -1145,12 +1101,6 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
 
                 switch (candidate)
                 {
-                    case ExecutionProvider.DirectMl:
-                        // Required by the DirectML provider: it neither plans memory ahead nor runs nodes in parallel
-                        options.EnableMemoryPattern = false;
-                        options.ExecutionMode = ExecutionMode.ORT_SEQUENTIAL;
-                        options.AppendExecutionProvider_DML(0);
-                        break;
                     case ExecutionProvider.Cuda:
                         // HEURISTIC avoids the exhaustive cuDNN autotune at session creation. The DA3 exports have
                         // fixed input sizes, so the algorithm is chosen once and stays.
@@ -1215,9 +1165,11 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
 
     private static ExecutionProvider[] GetProviderChain(ExecutionProvider requested)
     {
+        // DirectML requests land here only from saved projects; 1.28+ ORT has no DML build and the chain
+        // falls through to CUDA, so the graph keeps working with GPU speed instead of dying on CPU.
         return requested switch
         {
-            ExecutionProvider.DirectMl => [ExecutionProvider.DirectMl, ExecutionProvider.Cuda, ExecutionProvider.TensorRt, ExecutionProvider.CoreMl, ExecutionProvider.Cpu],
+            ExecutionProvider.DirectMl => [ExecutionProvider.Cuda, ExecutionProvider.TensorRt, ExecutionProvider.CoreMl, ExecutionProvider.Cpu],
             ExecutionProvider.Cuda => [ExecutionProvider.Cuda, ExecutionProvider.TensorRt, ExecutionProvider.CoreMl, ExecutionProvider.Cpu],
             ExecutionProvider.TensorRt => [ExecutionProvider.TensorRt, ExecutionProvider.Cuda, ExecutionProvider.CoreMl, ExecutionProvider.Cpu],
             ExecutionProvider.CoreMl => [ExecutionProvider.CoreMl, ExecutionProvider.Cpu],
@@ -1225,13 +1177,13 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
         };
     }
 
-    /** DirectML exists only in the Windows DirectML build, CUDA in the Windows GPU build and on Linux, CoreML only on macOS. */
-    private static bool IsProviderAvailableOnThisPlatform(ExecutionProvider provider, OnnxNativeSelector.Build build)
+    /** CUDA and TensorRT run on Windows and Linux, CoreML only on macOS; DirectML no longer ships (ORT 1.28+ dropped it). */
+    private static bool IsProviderAvailableOnThisPlatform(ExecutionProvider provider)
     {
         return provider switch
         {
-            ExecutionProvider.DirectMl => OperatingSystem.IsWindows() && build == OnnxNativeSelector.Build.DirectMl,
-            ExecutionProvider.Cuda or ExecutionProvider.TensorRt => (OperatingSystem.IsWindows() && build == OnnxNativeSelector.Build.Gpu) || OperatingSystem.IsLinux(),
+            ExecutionProvider.DirectMl => false,
+            ExecutionProvider.Cuda or ExecutionProvider.TensorRt => OperatingSystem.IsWindows() || OperatingSystem.IsLinux(),
             ExecutionProvider.CoreMl => OperatingSystem.IsMacOS(),
             _ => true
         };
@@ -1887,8 +1839,7 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
     [Input(Guid = "90123456-9012-9012-9012-901234567890", MappedType = typeof(Resolution))]
     public readonly InputSlot<int> InputResolution = new((int)Resolution.Auto);
 
-    /// <summary>Defaults to CUDA so all ONNX operators share one GPU native build; the DirectML
-    /// preference in the AI settings still flips it, and macOS normalizes CUDA onto CoreML.</summary>
+    /// <summary>Defaults to CUDA so all ONNX operators share one GPU native build; macOS normalizes CUDA onto CoreML.</summary>
     [Input(Guid = "012345ab-cdef-0123-4567-89abcdef0123", MappedType = typeof(ExecutionProvider))]
     public readonly InputSlot<int> ExecutionProviderParam = new((int)ExecutionProvider.Cuda);
 
@@ -2022,7 +1973,7 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
     private static readonly string[] ResolutionNames = { "Auto", "196", "280", "392", "518", "504" };
     /**
      * The dropdown only lists the execution providers this operating system can run:
-     * Windows: CPU, DirectML, CUDA, TensorRT - Linux: CPU, CUDA, TensorRT - macOS: CPU, CoreML.
+     * Windows/Linux: CPU, CUDA, TensorRT - macOS: CPU, CoreML.
      * The value maps onto the ExecutionProvider enum, so the order is free.
      */
     private static readonly (string Name, ExecutionProvider Provider)[] ExecutionProviderOptions = BuildExecutionProviderOptions();
@@ -2030,13 +1981,7 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
     private static (string, ExecutionProvider)[] BuildExecutionProviderOptions()
     {
         var options = new List<(string, ExecutionProvider)> { ("CPU", ExecutionProvider.Cpu) };
-        if (OperatingSystem.IsWindows())
-        {
-            options.Add(("DirectML", ExecutionProvider.DirectMl));
-            options.Add(("CUDA", ExecutionProvider.Cuda));
-            options.Add(("TensorRT", ExecutionProvider.TensorRt));
-        }
-        else if (OperatingSystem.IsLinux())
+        if (OperatingSystem.IsWindows() || OperatingSystem.IsLinux())
         {
             options.Add(("CUDA", ExecutionProvider.Cuda));
             options.Add(("TensorRT", ExecutionProvider.TensorRt));
@@ -2059,25 +2004,26 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
         _ => "CPU"
     };
 
-    /** Values that are impossible on this OS (a saved CoreML on Windows, DirectML on Linux...) snap onto the closest provider that works. */
+    /** Values that cannot run (saved DirectML anywhere, a CoreML on Windows/Linux) snap onto the closest provider that works. */
     private static ExecutionProvider NormalizeProviderForOs(ExecutionProvider provider)
     {
+        if (OperatingSystem.IsMacOS())
+        {
+            return provider == ExecutionProvider.Cpu ? ExecutionProvider.Cpu : ExecutionProvider.CoreMl;
+        }
+
+        if (provider == ExecutionProvider.DirectMl)
+        {
+            return ExecutionProvider.Cuda;
+        }
+
         if (OperatingSystem.IsWindows())
         {
-            return provider == ExecutionProvider.CoreMl ? ExecutionProvider.DirectMl : provider;
+            return provider == ExecutionProvider.CoreMl ? ExecutionProvider.Cuda : provider;
         }
 
-        if (OperatingSystem.IsLinux())
-        {
-            return provider switch
-            {
-                ExecutionProvider.DirectMl or ExecutionProvider.CoreMl => ExecutionProvider.Cuda,
-                _ => provider
-            };
-        }
-
-        // macOS: everything except CPU runs through CoreML
-        return provider == ExecutionProvider.Cpu ? ExecutionProvider.Cpu : ExecutionProvider.CoreMl;
+        // Linux: CoreML cannot run here
+        return provider == ExecutionProvider.CoreMl ? ExecutionProvider.Cuda : provider;
     }
 
     string ICustomDropdownHolder.GetValueForInput(Guid inputId)

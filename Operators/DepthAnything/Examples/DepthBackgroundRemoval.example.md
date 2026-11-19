@@ -15,7 +15,7 @@ This example shows how to use depth estimation to remove or replace backgrounds 
 ### Step 1: Depth Estimation
 **DepthAnything**
 - **InputTexture**: Connect to video source
-- **ModelSize**: Small (for real-time)
+- **ModelSize**: V3 Small (for real-time)
 - **OutputFormat**: Grayscale
 - **EnhanceContrast**: true
 - **InvertDepth**: false (foreground = closer)
@@ -74,8 +74,8 @@ This example shows how to use depth estimation to remove or replace backgrounds 
 
 ## Performance Considerations
 
-- Small model: 15-30ms per frame suitable for live video
-- For offline processing, use Base model for better quality
+- V3 Small: ~6 ms per frame on TensorRT (fp16) and ~30 ms on CUDA - suitable for live video
+- For offline processing, use V3 Base for better quality
 - Consider lower input resolution (720p instead of 1080p)
 
 ## Common Issues and Solutions

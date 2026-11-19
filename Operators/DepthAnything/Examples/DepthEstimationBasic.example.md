@@ -17,7 +17,7 @@ This example demonstrates the basic workflow for depth estimation using the Dept
 ### DepthAnything
 - **InputTexture**: Connect to video source
 - **Enabled**: true
-- **ModelSize**: Small (256px)
+- **ModelSize**: V3 Small
 - **OutputFormat**: Rainbow
 - **EnhanceContrast**: true
 - **InvertDepth**: false
