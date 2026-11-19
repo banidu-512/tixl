@@ -25,7 +25,7 @@ internal static class RgbaResize
     }
 
     /// <summary>
-    /// Stretch variant that writes into a caller-provided buffer: the MatchInputResolution path runs
+    /// Stretch variant that writes into a caller-provided buffer: the MatchInputAspect path runs
     /// every frame, and allocating the multi-megabyte target each frame starves the GC.
     /// </summary>
     internal static void ApplyInto(byte[] target, byte[] rgbaInput, int inputWidth, int inputHeight, int width, int height)

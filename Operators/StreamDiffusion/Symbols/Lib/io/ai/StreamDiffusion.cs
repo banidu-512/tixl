@@ -45,7 +45,7 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
         int Height,
         int ResizeMode,
         bool ResetStream,
-        bool MatchInputResolution,
+        bool MatchInputAspect,
         byte[]? InputData,
         int InputWidth,
         int InputHeight,
@@ -59,7 +59,7 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
         float Time,
         string? Error,
         int Generation = 0,
-        /** The resize target when MatchInputResolution pooled one; the render thread returns it after upload. */
+        /** The resize target when MatchInputAspect pooled one; the render thread returns it after upload. */
         byte[]? PooledBuffer = null);
 
     // Immutable so the render thread can read the failure state while a worker updates it
@@ -173,7 +173,7 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
     /// model itself always renders square - this undoes the fit stretch on the way out.
     /// </summary>
     [Input(Guid = "B4C5D6E7-C8D9-4E0F-A1B2-3C4D5E6F7A8B")]
-    public readonly InputSlot<bool> MatchInputResolution = new();
+    public readonly InputSlot<bool> MatchInputAspect = new();
 
     #endregion
 
@@ -274,6 +274,13 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
     private bool _resetPending;
     private long _lastEnqueueTicks;
     private long _cooldownUntilTicks;
+    private string? _typedPrompt;
+    private string? _settledPrompt;
+    private long _typedPromptChangedTicks;
+    private const float PromptSettleSec = 0.75f;
+    private float _typicalGenerationTime;
+    private const float ThrottledStepFactor = 2.5f;
+    private const float ThrottleCooldownSec = 0.25f;
     private int _updating;
     private int _lastSkipLogFrame;
     private int _updateFrameCounter;
@@ -318,7 +325,7 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
         try
         {
             var modelPath = Model.GetValue(context);
-            var prompt = Prompt.GetValue(context);
+            var prompt = SettlePrompt(Prompt.GetValue(context));
             var seed = Seed.GetValue(context);
             var strength = Math.Clamp(Strength.GetValue(context), 0f, 1f);
             var steps = Steps.GetValue(context);
@@ -346,7 +353,7 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
             var debug = Debug.GetValue(context);
             var fastDecode = FastDecode.GetValue(context);
             var feedback = Math.Clamp(Feedback.GetValue(context), 0f, 1f);
-            var matchInputResolution = MatchInputResolution.GetValue(context);
+            var matchInputAspect = MatchInputAspect.GetValue(context);
 
             if (MathUtils.WasTriggered(ResetStream.GetValue(context), ref _resetState))
             {
@@ -454,13 +461,6 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
             var targetFps = TargetFps.GetValue(context);
             var nowTicks = System.Diagnostics.Stopwatch.GetTimestamp();
 
-            // Thermal stability: laptop GPUs dip their clocks at ~87 C under sustained load, and a frame
-            // produced inside that dip costs 6-12x while heating the GPU further. After a throttled
-            // frame (>250 ms) hold new requests back briefly so the clocks recover; this trades a
-            // little average throughput for a consistent cadence instead of spike-and-stall.
-            if (_lastGenerationTime > 0.25f)
-                _cooldownUntilTicks = nowTicks + (long)(System.Diagnostics.Stopwatch.Frequency * 0.25f);
-
             var paced = (targetFps <= 0f
                          || nowTicks - _lastEnqueueTicks >= (long)(System.Diagnostics.Stopwatch.Frequency / targetFps))
                         && nowTicks >= _cooldownUntilTicks;
@@ -529,7 +529,7 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
                         height: fixedHeight,
                         resizeMode: resizeMode,
                         resetStream: resetPending,
-                        matchInputResolution: matchInputResolution,
+                        matchInputAspect: matchInputAspect,
                         inputData: data,
                         inputWidth: w,
                         inputHeight: h,
@@ -557,6 +557,22 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
                     _lastOutputSize = new Int2(newest.Width, newest.Height);
                     _lastGenerationTime = newest.Time;
                     _lastStatusMessage = null;
+
+                    // Thermal stability: laptop GPUs dip their clocks at ~87 C under sustained load, and a frame
+                    // produced inside that dip costs several times the usual step while heating the GPU further.
+                    // Armed once per result and relative to the typical step, so a model whose normal step is
+                    // slow is not held back permanently.
+                    var resultTicks = System.Diagnostics.Stopwatch.GetTimestamp();
+                    if (_typicalGenerationTime > 0f && newest.Time > _typicalGenerationTime * ThrottledStepFactor)
+                    {
+                        _cooldownUntilTicks = resultTicks + (long)(System.Diagnostics.Stopwatch.Frequency * ThrottleCooldownSec);
+                    }
+                    else
+                    {
+                        _typicalGenerationTime = _typicalGenerationTime > 0f
+                                                     ? _typicalGenerationTime + (newest.Time - _typicalGenerationTime) * 0.1f
+                                                     : newest.Time;
+                    }
                 }
                 else if (newest.Error != null)
                 {
@@ -591,7 +607,7 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
     }
 
     private void BuildAndEnqueueRequest(string prompt, int steps, float strength, int seed, int width, int height,
-                                        int resizeMode, bool resetStream, bool matchInputResolution,
+                                        int resizeMode, bool resetStream, bool matchInputAspect,
                                         byte[]? inputData, int inputWidth, int inputHeight, InputPixelFormat inputFormat)
     {
         // The V2 step count is the KV-cache batch size, so it is capped at 4
@@ -606,7 +622,7 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
 
         var request = new GenerationRequest(
             prompt, clampedSteps, strength, seed,
-            width, height, resizeMode, resetStream, matchInputResolution,
+            width, height, resizeMode, resetStream, matchInputAspect,
             inputData, inputWidth, inputHeight, inputFormat);
 
         // The request consumes the pending flag. Without this, a txt2img trigger (or an AutoGenerate
@@ -1014,18 +1030,23 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
             var outHeight = request.Height;
             byte[]? pooledBuffer = null;
 
-            // MatchInputResolution: stretch the baked-size output back over the input frame, restoring
-            // the source aspect ratio and pixel size for compositing (the model always renders square).
-            // The target buffer is pooled: a fresh multi-megabyte allocation per frame at 12+ fps made
-            // the GC stall the worker mid-step.
-            if (imageData != null && request.MatchInputResolution && request.InputWidth > 0 && request.InputHeight > 0
-                && (request.InputWidth != request.Width || request.InputHeight != request.Height))
+            // MatchInputAspect: stretch the square baked output back to the input frame's aspect ratio at model
+            // resolution (256x256 -> 455x256 for 16:9); the GPU sampler scales it further where it is used.
+            // The target buffer is pooled: a fresh allocation per frame at 12+ fps made the GC stall the worker mid-step.
+            if (imageData != null && request.MatchInputAspect && request.InputWidth > 0 && request.InputHeight > 0)
             {
-                pooledBuffer = RentOutputBuffer(request.InputWidth * request.InputHeight * 4);
-                RgbaResize.ApplyInto(pooledBuffer, imageData, request.Width, request.Height, request.InputWidth, request.InputHeight);
-                imageData = pooledBuffer;
-                outWidth = request.InputWidth;
-                outHeight = request.InputHeight;
+                var inputAspect = (float)request.InputWidth / request.InputHeight;
+                var shortSide = Math.Min(request.Width, request.Height);
+                var targetWidth = inputAspect >= 1f ? Math.Max(1, (int)MathF.Round(shortSide * inputAspect)) : shortSide;
+                var targetHeight = inputAspect >= 1f ? shortSide : Math.Max(1, (int)MathF.Round(shortSide / inputAspect));
+                if (targetWidth != request.Width || targetHeight != request.Height)
+                {
+                    pooledBuffer = RentOutputBuffer(targetWidth * targetHeight * 4);
+                    RgbaResize.ApplyInto(pooledBuffer, imageData, request.Width, request.Height, targetWidth, targetHeight);
+                    imageData = pooledBuffer;
+                    outWidth = targetWidth;
+                    outHeight = targetHeight;
+                }
             }
 
             return new GenerationResult(imageData, outWidth, outHeight, (float)sw.Elapsed.TotalSeconds, error, PooledBuffer: pooledBuffer);
@@ -1035,6 +1056,29 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
             Log.Error($"[StreamDiffusion] ProcessGenerationRequest failed: {ex.Message}", this);
             return new GenerationResult(null, request.Width, request.Height, 0, $"Error: {ex.Message}");
         }
+    }
+
+    /**
+     * Typing into the prompt field changes it per keystroke, and every change starts a multi-second text encode that
+     * blocks the next one. Only a prompt that stayed unchanged for <see cref="PromptSettleSec"/> is passed on.
+     */
+    private string SettlePrompt(string? prompt)
+    {
+        prompt ??= string.Empty;
+        var nowTicks = System.Diagnostics.Stopwatch.GetTimestamp();
+        if (!string.Equals(prompt, _typedPrompt, StringComparison.Ordinal))
+        {
+            _typedPrompt = prompt;
+            _typedPromptChangedTicks = nowTicks;
+        }
+
+        if (_settledPrompt == null
+            || nowTicks - _typedPromptChangedTicks >= (long)(System.Diagnostics.Stopwatch.Frequency * PromptSettleSec))
+        {
+            _settledPrompt = prompt;
+        }
+
+        return _settledPrompt;
     }
 
     private int ComputeFingerprint(GenerationRequest request, int promptVersion, int fingerprintSalt)
@@ -1324,7 +1368,7 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
         return _stagingTexture;
     }
 
-    /** Output buffers for the MatchInputResolution resize, pooled because a fresh multi-megabyte
+    /** Output buffers for the MatchInputAspect resize, pooled because a fresh multi-megabyte
      *  allocation per frame starves the GC and stalls the worker mid-inference. Returned from the
      *  render thread only after the upload consumed the buffer. */
     private readonly Stack<byte[]> _outputBufferPool = new();

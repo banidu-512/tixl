@@ -355,6 +355,15 @@ internal sealed class StreamDiffusionV2Pipeline : IDisposable
             _promptEmbeddings.Clear();
             DisposeStreamState();
             DisposeSessions();
+            _textEncoderReleaseTimer?.Dispose();
+            _textEncoderReleaseTimer = null;
+
+            // A running encode holds the gate and releases the encoder itself when it sees _disposed
+            if (_promptEncodeGate.Wait(0))
+            {
+                ReleaseTextEncoder();
+                _promptEncodeGate.Release();
+            }
         }
     }
 
@@ -685,7 +694,10 @@ internal sealed class StreamDiffusionV2Pipeline : IDisposable
             if (token.IsCancellationRequested)
                 return;
 
+            var encodeStopwatch = System.Diagnostics.Stopwatch.StartNew();
+            Log.Info($"[StreamDiffusion] V2 encoding prompt \"{prompt}\"");
             var embeddings = LoadPromptEmbeddings(prompt, modelDirectory, acquireGate: false, token);
+            var encodeSeconds = encodeStopwatch.Elapsed.TotalSeconds;
 
             // Release the encode gate BEFORE taking the stream lock. StreamStep holds the stream lock and can wait
             // on this gate (the synchronous first-prompt path after a provider re-initialization), so holding the
@@ -707,7 +719,7 @@ internal sealed class StreamDiffusionV2Pipeline : IDisposable
                 _promptPending = false;
                 _failedPrompt = null;
                 _promptFailureCount = 0;
-                Log.Info($"[StreamDiffusion] V2 prompt ready ({prompt.Length} chars)");
+                Log.Info($"[StreamDiffusion] V2 prompt ready after {encodeSeconds:F1} s: \"{prompt}\"");
             }
         }
         catch (OperationCanceledException)
@@ -783,16 +795,8 @@ internal sealed class StreamDiffusionV2Pipeline : IDisposable
                 maskTensor[0, index] = 1;
             }
 
-            // The encoder is about as large as the rest of the pipeline together, so it only lives for the duration of one prompt change.
-            // Optimizations stay off because constant folding would expand its bf16 weights to fp32 (twice the memory).
             token.ThrowIfCancellationRequested();
-            using var options = new SessionOptions
-            {
-                GraphOptimizationLevel = GraphOptimizationLevel.ORT_DISABLE_ALL,
-                // Prompt changes encode in the background; leave cores for the render thread instead of saturating the CPU
-                IntraOpNumThreads = Math.Max(2, Environment.ProcessorCount / 2),
-            };
-            using var textEncoder = new InferenceSession(Path.Combine(directory, "text_encoder.onnx"), options);
+            var textEncoder = AcquireTextEncoder(directory);
             using var encoded = textEncoder.Run(new[]
             {
                 NamedOnnxValue.CreateFromTensor("ids", idTensor),
@@ -810,8 +814,87 @@ internal sealed class StreamDiffusionV2Pipeline : IDisposable
         }
         finally
         {
+            // Called with the encode gate held: a pipeline disposed mid-encode left its encoder for this point
+            if (_disposed)
+            {
+                ReleaseTextEncoder();
+            }
+            else
+            {
+                ScheduleTextEncoderRelease();
+            }
+
             if (acquireGate)
                 _promptEncodeGate.Release();
+        }
+    }
+
+    /** The 8-bit export when present, else the bf16 original. */
+    private static string GetTextEncoderPath(string directory)
+    {
+        var quantized = Path.Combine(directory, QuantizedTextEncoderFileName);
+        return File.Exists(quantized) ? quantized : Path.Combine(directory, "text_encoder.onnx");
+    }
+
+    /**
+     * Returns the loaded encoder, loading it on first use. Must be called with the encode gate held. It stays loaded
+     * for <see cref="TextEncoderKeepAlive"/> after the last encode, so editing a prompt does not pay the load each time.
+     */
+    private InferenceSession AcquireTextEncoder(string directory)
+    {
+        var path = GetTextEncoderPath(directory);
+        if (_textEncoder != null && string.Equals(_textEncoderPath, path, StringComparison.OrdinalIgnoreCase))
+            return _textEncoder;
+
+        ReleaseTextEncoder();
+
+        // The bf16 original must not be optimized: constant folding would expand its weights to fp32 (twice the memory).
+        // The 8-bit export has no such casts left and needs the optimizer for its int8 kernels.
+        var quantized = path.EndsWith(QuantizedTextEncoderFileName, StringComparison.OrdinalIgnoreCase);
+        using var options = new SessionOptions
+        {
+            GraphOptimizationLevel = quantized ? GraphOptimizationLevel.ORT_ENABLE_ALL : GraphOptimizationLevel.ORT_DISABLE_ALL,
+            // Prompt changes encode in the background; leave cores for the render thread instead of saturating the CPU
+            IntraOpNumThreads = Math.Max(2, Environment.ProcessorCount / 2),
+        };
+        _textEncoder = new InferenceSession(path, options);
+        _textEncoderPath = path;
+        return _textEncoder;
+    }
+
+    private void ReleaseTextEncoder()
+    {
+        _textEncoder?.Dispose();
+        _textEncoder = null;
+        _textEncoderPath = null;
+    }
+
+    private void ScheduleTextEncoderRelease()
+    {
+        _textEncoderReleaseTimer ??= new Timer(_ => ReleaseIdleTextEncoder(), null, Timeout.Infinite, Timeout.Infinite);
+        _textEncoderReleaseTimer.Change(TextEncoderKeepAlive, Timeout.InfiniteTimeSpan);
+    }
+
+    private void ReleaseIdleTextEncoder()
+    {
+        try
+        {
+            // An encode in progress keeps it; that encode reschedules the release when it finishes
+            if (!_promptEncodeGate.Wait(0))
+                return;
+        }
+        catch (ObjectDisposedException)
+        {
+            return;
+        }
+
+        try
+        {
+            ReleaseTextEncoder();
+        }
+        finally
+        {
+            _promptEncodeGate.Release();
         }
     }
 
@@ -844,7 +927,7 @@ internal sealed class StreamDiffusionV2Pipeline : IDisposable
         var stamp = string.Empty;
         try
         {
-            var info = new FileInfo(Path.Combine(modelDirectory, "text_encoder.onnx"));
+            var info = new FileInfo(GetTextEncoderPath(modelDirectory));
             if (info.Exists)
                 stamp = $"{info.Length}:{info.LastWriteTimeUtc.Ticks}";
         }
@@ -1207,6 +1290,11 @@ internal sealed class StreamDiffusionV2Pipeline : IDisposable
     private readonly ConcurrentDictionary<string, float[]> _promptEmbeddings = new(StringComparer.Ordinal);
     private readonly ConcurrentQueue<string> _promptCacheOrder = new();
     private readonly SemaphoreSlim _promptEncodeGate = new(1, 1);
+    private const string QuantizedTextEncoderFileName = "text_encoder_q8.onnx";
+    private static readonly TimeSpan TextEncoderKeepAlive = TimeSpan.FromMinutes(2);
+    private InferenceSession? _textEncoder;
+    private string? _textEncoderPath;
+    private Timer? _textEncoderReleaseTimer;
     private CancellationTokenSource _disposeCts = new();
     private CancellationTokenSource? _promptCts;
     private string? _pendingPrompt;
