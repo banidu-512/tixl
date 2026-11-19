@@ -25,6 +25,14 @@ public interface ILaserContentSupplier
     /// <summary>The op input behind <see cref="GetUpdateEnabled"/>, so a host edits it through its own undoable
     /// input command rather than writing the slot directly.</summary>
     IInputSlot UpdateInput { get; }
+
+    /// <summary>
+    /// The supplier's output-setup routing input (the OutputRef input that names the laser output
+    /// this supplier feeds). The setup reads it without evaluating anything and writes it through
+    /// the supplier's own undoable input command; a supplier that declares no such input reports
+    /// false and routes nowhere.
+    /// </summary>
+    bool TryGetRoutingInput(out Symbol.Child.Input input);
 }
 
 /// <summary>

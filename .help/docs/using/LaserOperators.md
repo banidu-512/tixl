@@ -16,6 +16,7 @@ the [Output Setup](OutputSetup.md).
 |---|---|---|
 | **LaserCamera** | Camera + scene capture: frames any geometry into the laser's viewport | [doc](laser/LaserCamera.md) |
 | **MeshToLaserPoints** | Bakes triangle meshes into laser point streams | [doc](laser/MeshToLaserPoints.md) |
+| **ImageToLaserPoints** | Vectorizes a texture into laser shapes (Find Paths / Find Contours) | [doc](../operators/lib/laser/convert/ImageToLaserPoints.md) |
 | **LaserPointsToBuffer** | Bridges laser frames back into the graph (preview, re-projection) | [doc](../operators/lib/laser/convert/LaserPointsToBuffer.md) |
 | **PONKInput** | Receives PONK laser frames over UDP | [doc](laser/PONKInput.md) |
 
