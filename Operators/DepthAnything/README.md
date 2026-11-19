@@ -99,7 +99,7 @@ Fixed-size exports (for example 504x504 or 504x378) dictate their input size; `I
 
 ## Depth Semantics
 
-DA3 predicts depth (far is larger). `NormalizedDepthTexture` is near bright. The Metric model returns meters when `FieldOfView` matches the source camera.
+DA3 predicts depth (far is larger). `NormalizedDepthTexture` is near bright. The Metric model returns meters when `FieldOfView` matches the source camera; like everywhere else in this operator it is the vertical field of view in degrees. The metric export takes a fixed square 504 px input, so a 16:9 frame is squeezed to fit.
 
 ## Live Depth Splats
 

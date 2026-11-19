@@ -1752,8 +1752,9 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
 
             if (modelInfo.IsMetric)
             {
-                // The metric model predicts depth as seen by a 300 px reference camera; the real focal length turns it into meters
-                var focalPx = 0.5f * outputWidth / MathF.Tan(_workerFieldOfViewDegrees * MathF.PI / 360f);
+                // The metric model predicts depth as seen by a 300 px reference camera; the real focal length turns it into meters.
+                // FieldOfView is vertical, so the focal length is measured along the image height
+                var focalPx = 0.5f * outputHeight / MathF.Tan(_workerFieldOfViewDegrees * MathF.PI / 360f);
                 var scale = focalPx / MetricReferenceFocalPx;
                 for (int i = 0; i < count; i++)
                 {
@@ -1995,8 +1996,7 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
 
         if (modelInfo.IsMetric)
         {
-            var tanHalfHorizontal = MathF.Tan(_workerFieldOfViewDegrees * MathF.PI / 360f);
-            return 2f * MathF.Atan(tanHalfHorizontal * outputHeight / outputWidth) * 180f / MathF.PI;
+            return _workerFieldOfViewDegrees;
         }
 
         return 0f;
