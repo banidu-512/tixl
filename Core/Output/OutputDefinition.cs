@@ -475,6 +475,9 @@ public sealed class OutputDefinition
         writer.WriteString("Kind", Kind);
         writer.WriteInt2("CanvasResolution", CanvasResolution);
         writer.WriteValue("Send", IsSending);
+        if (Kind == Kinds.Laser)
+            writer.WriteValue("FrameMapping", (int)FrameMapping);
+
         if (!string.IsNullOrEmpty(MachineName))
             writer.WriteString("Machine", MachineName);
 
@@ -534,6 +537,7 @@ public sealed class OutputDefinition
                              Kind = token.ReadValueSafe("Kind", Kinds.Display) ?? Kinds.Display,
                              CanvasResolution = ClampResolution(OutputJson.ReadInt2(token["CanvasResolution"], new Int2(1920, 1080))),
                              IsSending = token.ReadValueSafe("Send", true),
+                             FrameMapping = (LaserFrameMappingMode)Math.Clamp(token.ReadValueSafe("FrameMapping", (int)LaserFrameMappingMode.Fit), 0, 3),
                              MachineName = token.ReadValueSafe("Machine", string.Empty) ?? string.Empty,
                              Patches = token.ReadListSafe("Patches", Patch.ReadFromJson),
                              ReferenceImageId = OutputJson.ReadGuid(token["ReferenceImage"]),

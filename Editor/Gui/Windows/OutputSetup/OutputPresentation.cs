@@ -61,13 +61,15 @@ internal static class OutputPresentation
             if (!string.IsNullOrEmpty(output.MachineName) && output.MachineName != Show.BoygroupManager.LocalNodeName)
                 continue;
 
-            var binding = machineConfig.FindBinding(output.Id);
-            if (binding == null)
+            // A laser output presents nothing here, whatever its bindings say: it has no canvas
+            // composite, its frame is vector content streamed by the laser driver. Checked on the
+            // output and not just on the binding, so a stale display binding on a laser output can
+            // never throw the input full-screen onto a wall, in any binding order.
+            if (output.Kind == OutputDefinition.Kinds.Laser || HasLaserBinding(machineConfig, output.Id))
                 continue;
 
-            // A laser binding on a canvas output presents nothing either: that frame streams from
-            // the laser driver.
-            if (binding.IsLaser)
+            var binding = machineConfig.FindBinding(output.Id);
+            if (binding == null)
                 continue;
 
             var startTimestamp = Stopwatch.GetTimestamp();
