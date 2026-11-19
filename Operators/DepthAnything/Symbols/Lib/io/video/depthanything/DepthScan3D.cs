@@ -150,6 +150,13 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
             return;
         }
 
+        if (CameraReference.GetValue(context) is DepthAnything { PoseTrusted: false })
+        {
+            _skippedLost++;
+            SetStatus($"Camera pose lost, capture skipped ({_skippedLost} so far); the held scan is untouched.", IStatusProvider.StatusLevel.Warning);
+            return;
+        }
+
         var confidence = Confidence.GetValue(context);
         var useConfidence = confidence is { IsDisposed: false }
                             && confidence.Description.Format == Format.R32_Float
@@ -986,6 +993,7 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
 
         Reset.SetTypedInputValue(false);
         _resetState = false;
+        _skippedLost = 0;
         ResetScan();
         SetStatus("The scan was cleared.", IStatusProvider.StatusLevel.Notice);
     }
@@ -2287,6 +2295,7 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
     private float _pendingTanHalfX;
     private float _pendingTanHalfY;
     private bool _pendingCamIsPose;
+    private int _skippedLost;
     private bool _pendingSpherical;
     /** One capture's raw samples on the spherical grid: the unit of the global scale alignment. */
     private sealed class ScanTile

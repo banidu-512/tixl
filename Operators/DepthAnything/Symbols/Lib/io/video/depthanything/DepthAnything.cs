@@ -43,6 +43,8 @@ internal sealed class DepthEstimationResult
     public float Max;
     public float VerticalFovDegrees;
     public bool HasCameraPose;
+    /** False while the pose tracker has lost the view (predicted or frozen pose); scans must not place new points then. */
+    public bool PoseTrusted = true;
     public Vector3 CameraPosition;
     public Vector3 CameraForward;
     public Vector3 CameraUp;
@@ -110,6 +112,9 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
     /// </summary>
     [Output(Guid = "5a3334ec-78c3-4001-8018-3d8aae7f870f", DirtyFlagTrigger = DirtyFlagTrigger.Animated)]
     public readonly Slot<Object> CamReference = new();
+
+    /** False while the image tracker of a pan/tilt camera has lost the view; DepthScan3D skips captures then. */
+    public bool PoseTrusted { get; private set; } = true;
 
     #endregion
 
@@ -450,6 +455,7 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
         var aspect = result is { Height: > 0 } ? (float)result.Width / result.Height : 1f;
 
         LastObjectToWorld = context.ObjectToWorld;
+        PoseTrusted = result?.PoseTrusted ?? true;
         SetCameraPose(position, forward, up, fov, aspect);
 
         // One line per new result, so the pose trajectory shows in the log while debugging
@@ -1998,6 +2004,7 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
                 Max = max,
                 VerticalFovDegrees = verticalFov,
                 HasCameraPose = modelInfo.ViewCount >= 2 || extrinsicsLive || workerContext.PoseTracker.HasPose,
+                PoseTrusted = modelInfo.ViewCount >= 2 || extrinsicsLive || workerContext.PoseTracker.Motion != DepthCameraMotion.RotationOnly || workerContext.PoseTracker.Tracking,
                 CameraPosition = posePosition,
                 CameraForward = poseForward,
                 CameraUp = poseUp,
