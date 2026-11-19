@@ -193,7 +193,23 @@
         "X": -250.0,
         "Y": 360.0
       },
-      "Description": "For a camera that only rotates: solves every capture's depth scale jointly from all the places the captures overlap, instead of chaining them one after another. Removes the stepped walls relative depth models produce between captures. Needs about eight captures. Experimental."
+      "Description": "For a camera that only rotates: solves every capture's depth scale jointly from all the places the captures overlap, instead of chaining them one after another. Removes the stepped walls relative depth models produce between captures. Needs about eight captures."
+    },
+    {
+      "InputId": "3c5e7a91-4d28-4f6b-8a13-7e9d2c4b6f01"/*KnownFloorSizeA*/,
+      "Position": {
+        "X": -250.0,
+        "Y": 440.0
+      },
+      "Description": "Optional, for a camera that only rotates: one floor dimension of the room in meters (0 = off). With both dimensions set, the scan's floor plan is stretched along its two best-fit axes to these sizes, because a rotating camera has no parallax to tell the depth model's scale error along each axis. Heights stay as measured."
+    },
+    {
+      "InputId": "9a1d3f57-6b82-4c04-b5e9-2f7a8c1d3e64"/*KnownFloorSizeB*/,
+      "Position": {
+        "X": -250.0,
+        "Y": 480.0
+      },
+      "Description": "The other floor dimension of the room in meters (0 = off); the order of the two does not matter."
     },
     {
       "InputId": "e9b4c7a3-6d15-4b82-a3f0-1c8d5e7b2a96"/*FlatSurfaces*/,
