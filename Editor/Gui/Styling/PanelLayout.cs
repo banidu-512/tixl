@@ -52,6 +52,81 @@ internal static class PanelLayout
         Space(SpaceS);
     }
 
+    /// <summary>
+    /// A card whose body folds away under its title. Returns whether the body is open; call
+    /// <see cref="EndSection"/> only in that case (a closed card has already closed itself).
+    /// </summary>
+    internal static bool BeginCollapsibleSection(string title, string? help = null, bool defaultOpen = false)
+    {
+        var scale = T3Ui.UiScaleFactor;
+
+        ImGui.PushID(title);
+        var storage = ImGui.GetStateStorage();
+        var openId = ImGui.GetID("##open");
+        var isOpen = storage.GetInt(openId, defaultOpen ? 1 : 0) != 0;
+
+        ImGui.PushStyleColor(ImGuiCol.ChildBg, UiColors.BackgroundButton.Rgba);
+        ImGui.PushStyleColor(ImGuiCol.Border, UiColors.ForegroundFull.Fade(0.06f).Rgba);
+        ImGui.PushStyleVar(ImGuiStyleVar.ChildRounding, 6 * scale);
+        ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(SpaceM, SpaceM) * scale);
+        ImGui.BeginChild("##section", Vector2.Zero,
+                         ImGuiChildFlags.AutoResizeY | ImGuiChildFlags.AlwaysUseWindowPadding | ImGuiChildFlags.Borders,
+                         ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse);
+        ImGui.PopStyleVar(2);
+        ImGui.PopStyleColor(2);
+
+        var dl = ImGui.GetWindowDrawList();
+        var lineHeight = ImGui.GetTextLineHeight();
+        var arrowSize = lineHeight * 0.4f;
+        var titleMin = ImGui.GetCursorScreenPos();
+        var arrowCenter = new Vector2(titleMin.X + arrowSize, titleMin.Y + lineHeight * 0.5f);
+        if (isOpen)
+        {
+            dl.AddTriangleFilled(arrowCenter + new Vector2(-arrowSize, -arrowSize * 0.5f),
+                                 arrowCenter + new Vector2(arrowSize, -arrowSize * 0.5f),
+                                 arrowCenter + new Vector2(0, arrowSize * 0.7f),
+                                 UiColors.TextMuted);
+        }
+        else
+        {
+            dl.AddTriangleFilled(arrowCenter + new Vector2(-arrowSize * 0.5f, -arrowSize),
+                                 arrowCenter + new Vector2(-arrowSize * 0.5f, arrowSize),
+                                 arrowCenter + new Vector2(arrowSize * 0.7f, 0),
+                                 UiColors.TextMuted);
+        }
+
+        ImGui.SetCursorPosX(ImGui.GetCursorPosX() + arrowSize * 3);
+        CustomComponents.StylizedText(title, Fonts.FontBold, UiColors.Text);
+        var titleHovered = ImGui.IsItemHovered();
+        ImGui.SetCursorScreenPos(titleMin);
+        ImGui.InvisibleButton("##toggle", new Vector2(ImGui.GetContentRegionAvail().X, lineHeight));
+        if (ImGui.IsItemClicked())
+        {
+            isOpen = !isOpen;
+            storage.SetInt(openId, isOpen ? 1 : 0);
+        }
+
+        if (titleHovered || ImGui.IsItemHovered())
+            ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
+
+        if (!isOpen)
+        {
+            ImGui.EndChild();
+            ImGui.PopID();
+            Space(SpaceL);
+            return false;
+        }
+
+        if (!string.IsNullOrEmpty(help))
+        {
+            Space(SpaceXS);
+            CustomComponents.HelpText(help);
+        }
+
+        Space(SpaceS);
+        return true;
+    }
+
     internal static void EndSection()
     {
         ImGui.EndChild();
