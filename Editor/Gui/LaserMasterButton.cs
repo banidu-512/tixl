@@ -80,7 +80,6 @@ internal static class LaserMasterButton
         if (!ImGui.IsItemClicked(ImGuiMouseButton.Left))
         {
             DrawTooltip(enabled);
-            DrawArmWarningDialog();
             return;
         }
 
@@ -100,21 +99,9 @@ internal static class LaserMasterButton
         else
         {
             // First arm (or the acknowledgement was declined): the safety warning gates the
-            // master. The dialog arms through DrawArmWarningDialog() when confirmed with OK.
+            // master. The dialog arms the master itself when confirmed with OK.
             T3Ui.LaserArmWarningDialog.ShowNextFrame();
         }
-
-        DrawArmWarningDialog();
-    }
-
-    private static void DrawArmWarningDialog()
-    {
-        _armWarningDialog.Draw();
-        if (!_armWarningDialog.Confirmed)
-            return;
-
-        _armWarningDialog.Confirmed = false;
-        Arm();
     }
 
     private static void Arm()
@@ -258,7 +245,6 @@ internal static class LaserMasterButton
     }
 
     private static readonly HashSet<Guid> _visited = new();
-    private static readonly LaserArmWarningDialog _armWarningDialog = new();
     private static bool _laserOpsDetected;
     private static bool _safetyPending;
     private static bool _faceMode;

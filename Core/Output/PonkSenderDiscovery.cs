@@ -26,12 +26,22 @@ public static class PonkSenderDiscovery
     private const int SenderNameBytes = 32;
 
     private static readonly ConcurrentDictionary<string, Sender> SendersByIp = new();
+    private static readonly ConcurrentDictionary<string, long> LastSeenByIp = new();
     private static UdpClient? _listener;
     private static int _started;
 
+    /// <summary>Senders that go silent drop out of the dropdown instead of accumulating.</summary>
+    private const int SenderLifetimeMs = 30_000;
+
+    private const int PruneIntervalMs = 2000;
+
     public static IReadOnlyCollection<Sender> Senders => SendersByIp.Values.OrderBy(s => s.Name).ToArray();
 
-    public static void ForgetSenders() => SendersByIp.Clear();
+    public static void ForgetSenders()
+    {
+        SendersByIp.Clear();
+        LastSeenByIp.Clear();
+    }
 
     /// <summary>Starts the shared listener once; safe to call from anywhere, any number of times.</summary>
     public static void EnsureStarted()
@@ -64,6 +74,8 @@ public static class PonkSenderDiscovery
         catch (Exception e)
         {
             Log.Debug($"PONK sender discovery not started ({e.Message})");
+            _listener?.Dispose();
+            _listener = null;
             _started = 0;
         }
     }
@@ -72,10 +84,18 @@ public static class PonkSenderDiscovery
     {
         var listener = _listener!;
         var remoteEndPoint = new IPEndPoint(IPAddress.Any, 0);
+        var lastPrune = Environment.TickCount64;
         while (true)
         {
             try
             {
+                // Steady traffic keeps the receive from ever timing out, so the sweep cannot hang off the timeout alone.
+                if (Environment.TickCount64 - lastPrune > PruneIntervalMs)
+                {
+                    lastPrune = Environment.TickCount64;
+                    PruneStaleSenders();
+                }
+
                 var bytes = listener.Receive(ref remoteEndPoint);
                 if (bytes.Length < SenderNameOffset + SenderNameBytes)
                     continue;
@@ -87,16 +107,24 @@ public static class PonkSenderDiscovery
                                | (bytes[10] << 8)
                                | (bytes[11] << 16)
                                | (bytes[12] << 24);
-                var name = Encoding.ASCII.GetString(bytes, SenderNameOffset, SenderNameBytes).TrimEnd('\0');
+                var name = Encoding.ASCII.GetString(bytes, SenderNameOffset, SenderNameBytes);
+                var terminator = name.IndexOf('\0');
+                if (terminator >= 0)
+                    name = name[..terminator];
+
                 var remoteIp = remoteEndPoint.Address;
                 if (remoteIp.IsIPv4MappedToIPv6)
                     remoteIp = remoteIp.MapToIPv4();
 
-                SendersByIp[remoteIp.ToString()] = new Sender(name, senderId, remoteIp.ToString());
+                var key = remoteIp.ToString();
+                SendersByIp[key] = new Sender(name, senderId, key);
+                LastSeenByIp[key] = Environment.TickCount64;
             }
             catch (SocketException ex) when (ex.SocketErrorCode == SocketError.TimedOut)
             {
-                // loop - the receive timeout just bounds the shutdown check
+                // loop - the receive timeout just bounds the shutdown check; it is also the
+                // heartbeat of the stale-sender sweep.
+                PruneStaleSenders();
             }
             catch (ObjectDisposedException)
             {
@@ -106,6 +134,19 @@ public static class PonkSenderDiscovery
             {
                 Thread.Sleep(100);
             }
+        }
+    }
+
+    private static void PruneStaleSenders()
+    {
+        var now = Environment.TickCount64;
+        foreach (var pair in SendersByIp)
+        {
+            if (LastSeenByIp.TryGetValue(pair.Key, out var seen) && now - seen <= SenderLifetimeMs)
+                continue;
+
+            if (SendersByIp.TryRemove(pair.Key, out _))
+                LastSeenByIp.TryRemove(pair.Key, out _);
         }
     }
 }

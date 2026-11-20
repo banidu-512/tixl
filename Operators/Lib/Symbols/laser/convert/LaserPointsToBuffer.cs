@@ -156,18 +156,34 @@ internal sealed class LaserPointsToBuffer : Instance<LaserPointsToBuffer>
                 }
 
                 ResourceManager.CreateStructuredBufferSrv(_buffer, ref _bufferWithViews.Srv);
-                ResourceManager.CreateStructuredBufferUav(_buffer, UnorderedAccessViewBufferFlags.None, ref _bufferWithViews.Uav);
-                if (_bufferWithViews.Srv == null || _bufferWithViews.Uav == null)
+                if (_bufferWithViews.Srv == null)
                 {
-                    Log.Error("Failed to create views for laser point buffer", this);
+                    Log.Error("Failed to create the SRV for the laser point buffer", this);
                     ReleaseBuffer();
                     return false;
+                }
+
+                // The UAV is optional: drawing only needs the SRV, and some graphics backends
+                // (and the newer resource layer) intentionally do not create a UAV for a
+                // draw-only structured buffer. Requiring it used to drop an otherwise valid
+                // frame on every evaluation.
+                try
+                {
+                    ResourceManager.CreateStructuredBufferUav(_buffer, UnorderedAccessViewBufferFlags.None, ref _bufferWithViews.Uav);
+                }
+                catch (Exception e)
+                {
+                    _bufferWithViews.Uav = null;
+                    Log.Debug($"Laser point buffer UAV unavailable ({e.Message}) - SRV-only buffer kept");
                 }
 
                 _bufferWithViews.Buffer = _buffer;
             }
 
-            ResourceManager.Device.ImmediateContext.UpdateSubresource(_points, _buffer);
+            // Upload only the written prefix. The array overload copies the whole capacity (which can be
+            // 64 MB after one burst) even when this frame produced a handful of points.
+            var bytes = System.Runtime.InteropServices.MemoryMarshal.AsBytes(_points.AsSpan(0, count));
+            ResourceManager.Device.ImmediateContext.UpdateSubresource(_buffer, 0, bytes, 0, 0);
             // Laser-frame data drawn back into a scene is a preview - mark the buffer so a
             // LaserCamera capturing that scene never captures its own output (feedback echo).
             T3.Core.Rendering.GeometryCapture.MarkExcludedFromCapture(_buffer);

@@ -98,6 +98,7 @@ internal sealed class DrawVdbBounds : Instance<DrawVdbBounds>
                               };
         using var data = new DataStream(ParamsSizeInBytes, true, true);
         _paramsBuffer = new Buffer(ResourceManager.Device, data, description);
+        _paramsData = new DataStream(ParamsSizeInBytes, true, true);
     }
 
     private void SetParams(Vector4 color, int level, int maxNodes, int capacity)
@@ -107,11 +108,11 @@ internal sealed class DrawVdbBounds : Instance<DrawVdbBounds>
         _params[0].MaxNodes = (uint)maxNodes;
         _params[0].Capacity = (uint)capacity;
 
-        using var data = new DataStream(ParamsSizeInBytes, true, true);
-        data.WriteRange(_params);
-        data.Position = 0;
+        _paramsData.Position = 0;
+        _paramsData.WriteRange(_params);
+        _paramsData.Position = 0;
 
-        var box = new DataBox(data.DataPointer, 0, 0);
+        var box = new DataBox(_paramsData.DataPointer, 0, 0);
         ResourceManager.Device.ImmediateContext.UpdateSubresource(box, _paramsBuffer, 0);
     }
 
@@ -122,6 +123,8 @@ internal sealed class DrawVdbBounds : Instance<DrawVdbBounds>
             _points.Dispose();
             _counter.Dispose();
             T3.Graphics.Compat.GraphicsUtilities.Dispose(ref _paramsBuffer);
+            _paramsData?.Dispose();
+            _paramsData = null;
         }
 
         base.Dispose(disposing);
@@ -147,6 +150,7 @@ internal sealed class DrawVdbBounds : Instance<DrawVdbBounds>
     private readonly BufferWithViews _points = new();
     private readonly BufferWithViews _counter = new();
     private Buffer _paramsBuffer;
+    private DataStream _paramsData;
 
     [Input(Guid = "37de5282-2685-49d4-814e-fb0d2ad2ac1d")]
     public readonly InputSlot<BufferWithViews> Grid = new();

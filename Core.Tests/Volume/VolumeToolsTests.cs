@@ -701,3 +701,63 @@ public class VdbVectorSamplerTests
         Assert.InRange(MathF.Abs(gradient.X), 0f, 0.1f);
     }
 }
+
+public class SdfSamplesTests
+{
+    /// <summary>A lattice of points carrying the distance to a sphere, as SampleFieldPoints would write it.</summary>
+    private static Point[] SphereSamples(int count, float spacing, Vector3 center, float radius, Vector3 origin)
+    {
+        var points = new Point[count * count * count];
+        for (var index = 0; index < points.Length; index++)
+        {
+            var position = origin + new Vector3(index % count, index / count % count, index / (count * count)) * spacing;
+            points[index] = new Point { Position = position, F1 = Vector3.Distance(position, center) - radius, F2 = 99f };
+        }
+
+        return points;
+    }
+
+    [Fact]
+    public void SpacingIsFoundFromTheLattice()
+    {
+        var points = SphereSamples(6, 0.25f, Vector3.Zero, 0.5f, new Vector3(-3.1f, 2f, 7f));
+        Assert.Equal(0.25f, SdfSamples.FindSpacing(points), 0.0001f);
+    }
+
+    [Fact]
+    public void SampledSphereMeshesToASphereWhereverTheLatticeSits()
+    {
+        var center = new Vector3(4.3f, -2.1f, 9.7f);
+        var points = SphereSamples(24, 0.125f, center, 1f, center - new Vector3(1.44f));
+        var grid = SdfSamples.ToGrid(points, 0f);
+        Assert.NotNull(grid);
+
+        var mesh = VolumeToMesh.Extract(grid!, 0f);
+        Assert.True(mesh.FaceCount > 500, $"{mesh.FaceCount} faces");
+        foreach (var position in mesh.Positions)
+            Assert.InRange(Vector3.Distance(position, center), 0.97f, 1.03f);
+    }
+
+    [Fact]
+    public void ShuffledSamplesGiveTheSameSurface()
+    {
+        var points = SphereSamples(16, 0.2f, Vector3.Zero, 1f, new Vector3(-1.5f));
+        var ordered = VolumeToMesh.Extract(SdfSamples.ToGrid(points, 0.2f)!, 0f).FaceCount;
+        new Random(3).Shuffle(points);
+        Assert.Equal(ordered, VolumeToMesh.Extract(SdfSamples.ToGrid(points, 0.2f)!, 0f).FaceCount);
+    }
+
+    [Fact]
+    public void BadSamplesAreLeftOutAndTooFewGiveNothing()
+    {
+        var points = SphereSamples(16, 0.2f, Vector3.Zero, 1f, new Vector3(-1.5f));
+        points[100].F1 = float.NaN;
+        points[200].Position = new Vector3(float.PositiveInfinity, 0, 0);
+        points[300].Position = new Vector3(1e30f, 0, 0);
+        Assert.True(VolumeToMesh.Extract(SdfSamples.ToGrid(points, 0.2f)!, 0f).FaceCount > 100);
+
+        Assert.Null(SdfSamples.ToGrid(points.AsSpan(0, 4), 0.2f));
+        Assert.Null(SdfSamples.ToGrid(new Point[64], 0f));
+        Assert.Equal(99f, SdfSamples.ToGrid(points, 0.2f, useF2: true)!.Tree.GetValue(new VdbCoord(0, 0, 0)));
+    }
+}

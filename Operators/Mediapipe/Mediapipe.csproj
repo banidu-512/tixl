@@ -148,6 +148,12 @@
          "open source" - it is never compiled (TixlAssemblyLoadContext skips it). Shipping the Utils/
          helpers in it made the editor warn once per file at every start ("defines no operator"). -->
     <PackageSourceCode Include="Symbols/**/*.cs" />
+    <!-- The package's shared helpers live outside Symbols/ (they define no operator), but a recompile of
+         the installed package globs SourceCode/** - so they have to ship with it. MediapipeNativeLibrary
+         is in particular not optional: its module initializer registers MediaPipeAcceleration as an input
+         slot type. -->
+    <PackageSourceCode Include="Utils/**/*.cs" />
+    <PackageSourceCode Include="MediapipeNativeLibrary.cs" />
     <PackageMeta Include=".meta/**/*" />
   </ItemGroup>
   <Target Name="CopyPackageContent" AfterTargets="AfterBuild" Condition="'$(Configuration)' == 'Release'">

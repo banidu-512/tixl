@@ -280,7 +280,7 @@ public class GestureRecognition : Instance<GestureRecognition>
         _activeMinHandPresenceConfidence = minHandPresenceConfidence;
 
         // Registry lookup and a cheap file check stay here; the native landmarker creation runs on the worker.
-        var modelFound = AssetRegistry.TryResolveAddress("Mediapipe:hand_landmarker.task", this, out var fullPath, out _, logWarnings: true);
+        var modelFound = MediaPipeModelResolver.TryResolve("hand_landmarker.task", this, out var fullPath);
         if (!modelFound)
         {
             // Not Debug-gated: a missing asset is the one failure a user has to act on, and the retry

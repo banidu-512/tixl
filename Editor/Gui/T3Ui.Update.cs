@@ -160,6 +160,7 @@ public static partial class T3Ui
         AboutDialog.Draw();
         ExitDialog.Draw();
         LaserArmWarningDialog.Draw();
+        AiModelSetupWizard.Draw();
         OperatorHelp.EditDescriptionDialog.Draw();
         SkillMapPopup.Draw();
 
@@ -202,6 +203,12 @@ public static partial class T3Ui
             {
                 _crashReportsChecked = true;
                 _sendCrashReportsDialog.ShowIfReportsArePending();
+            }
+            else if (!_aiModelSetupChecked && !IsAnyPopupOpen)
+            {
+                // Last in the startup chain: a fresh installation without AI models gets the setup once
+                _aiModelSetupChecked = true;
+                AiModelSetupWizard.ShowOnFirstStartIfNeeded();
             }
         }
 
@@ -258,6 +265,7 @@ public static partial class T3Ui
     private static bool _blockedProjectsChecked;
     private static bool _missingOperatorsChecked;
     private static bool _crashReportsChecked;
+    private static bool _aiModelSetupChecked;
 
     private static void UpdateModifiedProjects()
     {

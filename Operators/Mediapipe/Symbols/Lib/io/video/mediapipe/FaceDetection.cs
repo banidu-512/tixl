@@ -234,7 +234,7 @@ namespace Lib.io.video.mediapipe
             _activeConfidenceThreshold = confidence;
 
             // Registry lookup only - the native detector creation runs on the worker below.
-            var modelFound = AssetRegistry.TryResolveAddress("Mediapipe:blaze_face_short_range.tflite", this, out var fullPath, out _);
+            var modelFound = MediaPipeModelResolver.TryResolve("blaze_face_short_range.tflite", this, out var fullPath);
             if (!modelFound)
             {
                 // Not Debug-gated: a missing asset is the one failure a user has to fix, and the retry

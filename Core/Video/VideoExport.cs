@@ -1,4 +1,4 @@
-#nullable enable
+﻿#nullable enable
 using System;
 using System.Threading;
 
@@ -153,7 +153,6 @@ public enum VideoProxyRecommendation
 public readonly record struct VideoProxyAdvice(VideoProxyRecommendation Recommendation,
                                                double KeyframeIntervalSeconds, string Reason);
 
-/// <summary>Creates <see cref="IVideoFileWriter"/>s; implemented by the video assembly.</summary>
 /// <summary>FFmpeg-free settings for a live H.264 stream: no file, no container, no audio.</summary>
 public readonly record struct VideoLiveEncoderSettings
 {
@@ -220,6 +219,8 @@ public interface IVideoLiveDecoderFactory
     /// <summary>Returns null and an <paramref name="error"/> message when no H.264 decoder can be created.</summary>
     ILiveVideoDecoder? TryCreateLiveVideoDecoder(out string? error);
 }
+
+/// <summary>Creates <see cref="IVideoFileWriter"/>s; implemented by the video assembly.</summary>
 public interface IVideoEncoderFactory
 {
     /// <summary>Returns null and an <paramref name="error"/> message when no usable encoder can be created.</summary>

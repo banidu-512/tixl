@@ -22,8 +22,8 @@ The same content is also split into one page per area for review: [Volumes](volu
 | Volumes — convert | `VolumeToMesh`, `VolumeToPoints`, `VolumeToField`, `VolumeToTexture3D`, `VolumeToNanoVdb` |
 | Volumes — render | `NanoVdbRender`, `VolumeField` |
 | Volumes — I/O and analysis | `LoadVdb`, `SaveVdb`, `SaveNanoVdb`, `VolumeInfo` |
-| Physics | `PhysicsWorld`, `RigidBody`, `RigidJoint` |
-| AI video | `DepthAnything`, `DepthFilter`, `DepthThreshold`, `DepthToNormal`, `StreamDiffusion` |
+| Physics | `PhysicsWorld`, `RigidBody`, `RigidJoint`, `RigidBodyPoints`, `RigidForce`, `RigidBodyGeometry`, `MeshToGeometry` |
+| AI video | `DepthAnything`, `DepthFilter`, `DepthThreshold`, `DepthToNormal`, `DepthScanBuffer`, `DepthScan3D`, `StreamDiffusion` |
 | Laser | `LaserCamera`, `LaserPointsToBuffer`, `PONKInput` |
 | OMT | `OmtInput`, `OmtOutput` |
 | Video input | `VideoDeviceInput` (peer cameras) |
@@ -566,24 +566,35 @@ stopped — pump frames to see motion.
 
 ### RigidBody
 
-Describes one Bepu body: shape, kind, transform, size, mass and material parameters. The operator
-publishes the description; `PhysicsWorld` turns it into a Bepu body and keeps it in sync. The body id
-is fixed for the lifetime of this instance, so the world recognises the same body across evaluations.
+Describes Bepu bodies: shape, kind, transform, size, mass and material parameters. On its own it is
+one primitive body. Two optional inputs turn it into many:
 
-- `Shape` selects box, sphere, capsule, cylinder and the other supported primitives.
+- `Points` (a CPU point list): one body per point. GPU points go through `ReadPointsFromGpu` first.
+- `Geometry`: the bodies collide as the geometry. `Pieces` decides what its parts become:
+  **EachPartIsABody** (default) makes every part its own body, so `VoronoiFracture` → `RigidBody` is
+  a shattering object; **WholeObject** keeps all parts together as one body. A GPU mesh goes through
+  `MeshToGeometry` first.
+
+`Shape` picks the collider. **Auto** (the default) is a box without geometry; with geometry it is the
+exact triangles for static and kinematic bodies, and for dynamic bodies a convex hull per piece that
+is **split into several hulls where the piece is concave**: a torus keeps its hole. **ConvexHull**
+wraps every part in exactly one hull; **ConvexDecomposition** splits even mildly concave parts;
+**Mesh** uses the exact triangles.
+
+The split runs on a worker thread, from a copy of the geometry, so the frame never waits for it.
+**Mass:** `MassMode` Auto weighs bodies made from geometry by their collider volume times `Density`.
+
+- `Shape` selects Auto, box, sphere, capsule, cylinder, convex hull, convex decomposition or mesh.
 - `Kind` is dynamic, kinematic or static.
 - `Position`, `Rotation` place the body; `Size`, `Radius`, `Length` dimension it.
-- `Mass` sets the dynamic mass (kinematic/static ignore it).
+- `Mass` sets the dynamic mass (kinematic/static ignore it); `MassMode` and `Density` weigh
+  bodies by their volume instead.
 - `LinearVelocity` / `AngularVelocity` give it an initial push.
 - `Friction` and `Bounciness` are the contact material.
-- `LinearDamping` / `AngularDamping` bleed off motion.
 - `GravityScale` scales gravity for this body (0 = floaty, negative = inverted).
 - `Enabled` removes it from the simulation without deleting the operator.
 
 **Output:** `OutBody` — the description consumed by `PhysicsWorld` and by joints.
-
-*Tip:* render the bodies by connecting instances of the same mesh through `TransformMesh` to
-`DrawMeshAtPoints`, or draw a single mesh and let the buffer place it per body.
 
 ![RigidBody selected in the bouncing balls example](shots/RigidBody-ui.png)
 *One of the five ball descriptions.*
@@ -591,21 +602,25 @@ is fixed for the lifetime of this instance, so the world recognises the same bod
 ![RigidBody node](shots/RigidBody-graph.png)
 *A body wired into `PhysicsWorld`.*
 
-![The simulated balls](shots/example-PhysicsBouncingBallsExample.png)
-*Bodies rendered at the world's published poses.*
-
 ### RigidJoint
 
 Declares a constraint between two bodies: **BallSocket**, **Hinge**, **Weld** or **DistanceServo**.
+
+`Mode` decides what is linked when body A stands for many bodies: **Pair** (default, A to B
+instance by instance), **Chain** (consecutive instances of A — a rope from a line of points),
+**Nearby** (every two instances of A that start within `LinkDistance` — nets and clumps) and
+**World** (every instance of A is held where it starts). `AutoAnchor` puts the joint at body B's
+starting position so one joint fits every instance of B — four wheels on one chassis. `MotorSpeed`
+(Hinge) drives the pair around the hinge axis; `InstanceIndex` narrows Pair and World to one
+instance.
+
 Like `RigidBody` it is pure data — `PhysicsWorld` creates, updates and removes the Bepu constraint.
 Both bodies must be dynamic or kinematic; a static body cannot be an anchor, so use a kinematic body
 as the fixed point.
 
 - `BodyA` / `BodyB` are the two constrained bodies.
 - `JointType` selects the constraint.
-- `LocalOffsetA` / `LocalOffsetB` are the anchor points in each body's local space; for a ball socket
-  they are the same world point seen from each body.
-- `HingeAxisA` / `HingeAxisB` are the hinge axes in each body's local space.
+- `LocalOffsetA` / `LocalOffsetB` are the anchor points in each body's local space.
 - `Frequency` / `DampingRatio` tune the servo's spring.
 - `TargetDistance` is the rest length for the distance servo.
 - `Enabled` removes the constraint without deleting the operator.
@@ -617,6 +632,46 @@ as the fixed point.
 
 ![RigidJoint node](shots/RigidJoint-graph.png)
 *Joints linking the bridge segments.*
+
+### RigidBodyPoints
+
+The world publishes all its bodies in one point buffer, which a draw operator can only draw with one
+mesh. `RigidBodyPoints` takes the world's `OutBuffer` and one `RigidBody` and outputs a buffer with
+just that description's bodies, static and kinematic ones included. Use one per kind of body: chassis
+and wheels, paddle and balls, or each of several fractured objects.
+
+**Outputs:** `Points`, `Count`.
+
+### RigidForce
+
+Describes a force for the world's dynamic bodies. **Directional** pushes along `Direction`,
+**Radial** pulls towards `Position`, **Vortex** swirls around the axis through `Position`, and
+**Field** samples a connected `VectorField` at each body. `IsImpulse` applies the force once each
+time `Trigger` turns on, as a velocity change. **Output:** `OutForce`, for the `Forces` input of
+`PhysicsWorld`.
+
+### SDF fields as colliders
+
+Physics runs on the CPU and the SDF field graph runs on the GPU, so a field reaches physics by being
+sampled: `GridPoints` → `SampleFieldPoints` → `ReadPointsFromGpu` → `SdfPointsToGeometry` → the
+`Geometry` input of a static `RigidBody`. Any field works: `SphereSDF`, a `CombineSDF` of several
+shapes, or a volume through `VdbToSdfField`. See `PhysicsSdfFieldExample`.
+
+### MeshToGeometry
+
+Reads a GPU mesh back into a `MeshGeometry`, so meshes from `LoadGltf`, `CubeMesh` and the other mesh
+operators can feed the geometry operators and `RigidBody`. Every triangle becomes a face and every
+mesh chunk a part. `WeldPoints` joins vertices at the same position; the readback stalls the GPU
+briefly and only runs when the incoming mesh changes. It lives in `Lib.geometry`.
+
+### RigidBodyGeometry
+
+The way back from physics into the geometry operators: the simulated bodies of one `RigidBody` as
+geometry. A body made from geometry returns that same geometry with every part moved by its body; a
+primitive body returns a box, sphere, capsule or cylinder of its own size. `ShowColliders` draws
+bodies made from geometry as the convex hulls they collide as, to check how a concave shape was split.
+
+**Inputs:** `World` (the world's `OutBuffer`), `Body`, `ShowColliders`. **Outputs:** `Result`, `Count`.
 
 ![Rope bridge example](shots/example-PhysicsRopeBridgeExample.png)
 *The constraint chain holding the sagging bridge.*
@@ -792,6 +847,11 @@ through `LaserPoints`, routed to a laser output via `OutputRef`.
 - `OutputRef` selects which laser output the frame is routed to.
 - `MaxEdgeStep` is the maximum distance between samples along lines and mesh edges; smaller values
   trace smoother curves and cost more points.
+- `CreaseAngle` is the minimum angle between a mesh edge's faces for the edge to be drawn: seams
+  that fold less read as one surface. The default 1° drops a quad's triangle diagonal; higher
+  values sketch only the sharp folds and silhouette of a curved mesh, which also saves points.
+- `BackfaceCulling` drops mesh edges whose faces all face away from the camera — the hidden side
+  of a closed mesh. It needs consistent triangle winding.
 - `DotDwellPoints` is how many points an isolated dot gets on the scanner (its dwell time).
 - `Update` re-captures each frame; disable it for a still frame.
 - `UseRotation` / `Rotation` rotate the captured field.
@@ -805,6 +865,8 @@ through `LaserPoints`, routed to a laser output via `OutputRef`.
 *Tips:* each camera has its own viewpoint, so several cameras can capture different parts of a rig
 independently; the scene is captured once per laser pump and the pump budget is shared between
 cameras. If the frame bounds are empty, the scene is probably outside the camera's clip planes.
+When the scene needs more points than the budget, the op's status line warns that the excess is
+dropped.
 
 ![LaserCamera selected in the laser rig](shots/LaserCamera-ui.png)
 *Lens, output routing and point-encoding parameters, with several cameras in one rig.*
@@ -1040,13 +1102,17 @@ session is running.
 
 ## Notes on the screenshots
 
-- The volume screenshots come from the new built-in examples (`VolumeNanoVdbSmokeExample`,
+- The volume screenshots come from the earlier built-in example graphs (`VolumeNanoVdbSmokeExample`,
   `VolumeNanoVdbFireExample`, `VolumeNanoVdbLiquidExample`, `VolumeNanoVdbCsgExample`,
   `VolumeNanoVdbSaveExample`, `VolumeVdbFilesExample`, `VolumeMeshRoundtripExample`,
   `VolumeFilterExample`, `VolumeMorphologyExample`, `VolumeCsgExample`) and from
-  `OpenVdbBepuExamples`, the branch's comprehensive volume test project. The utility operators without
-  a dedicated example are shown there.
-- The physics screenshots come from `PhysicsBouncingBallsExample` and `PhysicsRopeBridgeExample`.
+  `OpenVdbBepuExamples`, the branch's comprehensive volume test project. Those examples were replaced
+  by the current generated set (`VolumePrimitiveExample`, `VolumeCsgExample`, `VolumeNoiseExample`,
+  `VolumeFromMeshExample`, `VolumeToPointsExample`, `NanoVdbRenderExample`, `LoadVdbExample`,
+  `VdbToSdfFieldExample`, `VolumeShakingWaterExample`). The utility operators without a dedicated
+  example are shown there.
+- The physics screenshots come from the earlier `PhysicsBouncingBallsExample` and
+  `PhysicsRopeBridgeExample` graphs, which the current generated example set replaced.
 - The depth screenshots use `depth-anything-v2-small-fp16.onnx` (downloaded with
   `Operators/DepthAnything/Scripts/download_models.py`) and the `frog2.jpg` example asset. The scratch
   chain is `LoadImage → DepthAnything → DepthFilter/DepthThreshold/DepthToNormal`.

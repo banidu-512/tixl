@@ -30,7 +30,10 @@ internal sealed class DrawInstancedIndirect: Instance<DrawInstancedIndirect>
         // unbind so the indirect read doesn't hazard. No Flush - the immediate context
         // already orders the dispatch before this draw, and a Flush stalls the queue.
         deviceContext.ComputeShader.SetUnorderedAccessViews(0, _nullUavs);
-        deviceContext.DrawInstancedIndirect(buffer, AlignedByteOffsetForArgs.GetValue(context));
+        // During a geometry capture pass the draw is replaced by its registration (below): the
+        // capture reads buffers, and rasterizing would paint into whatever target is bound.
+        if (!context.CaptureOnlyDraws)
+            deviceContext.DrawInstancedIndirect(buffer, AlignedByteOffsetForArgs.GetValue(context));
 
         // While a geometry capture pass is active (e.g. the laser camera rendering its scene),
         // register the geometry wired for capture - see Draw.cs for the same mechanism.
@@ -38,7 +41,11 @@ internal sealed class DrawInstancedIndirect: Instance<DrawInstancedIndirect>
         if (capture is { IsActive: true })
         {
             var captureVertices = CaptureVertices.GetValue(context);
-            if (captureVertices?.Buffer != null)
+            if (captureVertices?.Buffer != null
+                // Laser-frame data drawn back into the scene is a preview of the camera's own
+                // output; capturing it here would feed the camera its last frame (a feedback
+                // oscillation that flashes the laser between two states). Same guard as Draw.cs.
+                && !GeometryCapture.IsExcludedFromCapture(captureVertices.Buffer))
             {
                 var captureIndices = CaptureIndices.GetValue(context);
                 GeometryPrimitiveKind kind;

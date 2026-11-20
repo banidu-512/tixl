@@ -21,14 +21,48 @@ namespace T3.Editor.Gui.UiHelpers;
 ///  todo - make internal, make extendable by external packages
 public sealed class UserSettings : Settings<UserSettings.ConfigData>
 {
+    /// <summary>Sync-source values for <see cref="ConfigData.BoygroupClockSync"/>.</summary>
+    public const string SyncInternal = "Internal";
+    public const string SyncPtp = "PTP";
+
     internal UserSettings(bool saveOnQuit) : base("userSettings.json", saveOnQuit: saveOnQuit)
     {
         RemoveDuplicateProjectDirectories();
+        RemoveDuplicateBoygroupGroups();
     }
 
     protected override void OnBeforeSave()
     {
         RemoveDuplicateProjectDirectories();
+        RemoveDuplicateBoygroupGroups();
+    }
+
+    /// <summary>
+    /// Repeated server starts used to append the same group over and over, leaving the panel with a
+    /// column of identical "Main" rows. Strip duplicates and blanks on load and save.
+    /// </summary>
+    private static void RemoveDuplicateBoygroupGroups()
+    {
+        var groups = Config.BoygroupGroups;
+        if (groups == null || groups.Count < 2)
+            return;
+
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var keptCount = 0;
+        for (var index = 0; index < groups.Count; index++)
+        {
+            var name = groups[index].Trim();
+            if (name.Length == 0 || !seen.Add(name))
+                continue;
+
+            groups[keptCount++] = name;
+        }
+
+        if (keptCount < groups.Count)
+            groups.RemoveRange(keptCount, groups.Count - keptCount);
+
+        if (groups.Count == 0)
+            groups.Add("Main");
     }
 
     /// Duplicated entries make project loading fail on the next start, so they are stripped on load and save.
@@ -92,6 +126,18 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public bool EnableUsbProjectDetection = true;
         public bool ReopenLastProjectOnStartup = true;
 
+        /// <summary>Projects switched away from stay loaded for a quick return; older ones are unloaded.</summary>
+        public int KeepLoadedProjectCount = 3;
+
+        /// <summary>
+        /// Share of the GPU memory budget the driver grants TiXL. Above it, render targets nothing shows are
+        /// released; below it, nothing is, so a show that fits never pays for a rebuild.
+        /// </summary>
+        public int GpuMemoryLimitPercent = 90;
+
+        /// <summary>0 keeps them for as long as their project is loaded, which avoids rebuild hitches.</summary>
+        public int ReleaseUnusedRenderTargetsAfterSeconds = 0;
+
         /// <summary>
         /// Set when the user confirms the laser safety warning shown the first time the LASER
         /// master button is armed. While false, arming opens the warning dialog first.
@@ -108,6 +154,11 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public string StartupProjectFolder = "";
 
         /// <summary>Installs a per-user OS login entry (Windows Run key, Linux XDG autostart, macOS LaunchAgent).</summary>
+        /// <summary>Master switch for the Startup panel: project autoload, login autostart and
+        /// crash restart only act while this is on. Disabled by default: an editor is a plain
+        /// editor until startup automation is switched on.</summary>
+        public bool StartupEnabled = false;
+
         public bool AutostartWithSystem = false;
 
         /// <summary>Relaunch the editor automatically after a crash via a supervisor process.</summary>
@@ -127,6 +178,9 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         /// <summary>When true, the Welcome window opens automatically at startup. Toggled from that window.</summary>
         public bool ShowWelcomeOnStartup = true;
 
+        /// <summary>When true, a warning lists symbols with operators that could not be found, once after startup.</summary>
+        public bool ShowMissingSymbolsWarningOnStartup = true;
+
         /// <summary>Whether the next launch offers crashes that were never reported.</summary>
         public bool AskToSendCrashReports = true;
 
@@ -139,19 +193,21 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public bool SuspendRenderingWhenHidden = true;
         public bool UseVSync = true;
 
+        /// <summary>Caps the short side of outputs sized by their window ("Fill" and aspect presets), e.g. in focus mode on high-res displays.</summary>
+        [JsonConverter(typeof(StringEnumConverter))]
+        public WindowFillResolutionLimits MaxWindowFillResolution = WindowFillResolutionLimits.Unlimited;
+
         /** Frames per second to render at with vsync; 0 renders every refresh of the pacing display. */
         public int TargetFrameRate = 0;
 
         /** Frames the loop may run ahead of the display: 1 for the lowest input latency, 2 to absorb late frames. */
         public int FrameLatency = 1;
 
-        /** Windows' implementation of mirroring a display is extremely slow and can
-        * take up to 50% of the GPU time. Enabling this work around will copy the Main window
-        * SwapChain buffer into a texture that is used for the 2nd viewer window.
-        */
-        public bool MirrorUiOnSecondView = false;
-
         public bool EnableKeyboardShortCuts = true;
+
+        /** Whether a connected game controller drives operators like [Gamepad] or the editor (its camera). */
+        [JsonConverter(typeof(StringEnumConverter))]
+        public InputDeviceUsages GamepadUsage = InputDeviceUsages.Operators;
 
         public GraphStyles GraphStyle = GraphStyles.Magnetic;
 
@@ -229,56 +285,56 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public bool EnableAutoBackup = true;
         public bool MinimalBackup = true;
 
-        // Networking (shared by collaboration, boygrouping and failover)
-        /// <summary>Adapter name to bind sessions, discovery and failover heartbeats to.
-        /// Empty = automatic (all interfaces).</summary>
+        /// <summary>The network adapter TiXL binds to for hosting collaboration and boygrouping,
+        /// LAN discovery and failover heartbeats (Settings → Network). Empty = all interfaces.</summary>
         public string NetworkInterface = "";
 
         // Collaboration
-        /// <summary>Master switch: when off, no session is hosted or joined and nothing is discovered.</summary>
-        public bool CollabEnabled = true;
-
         /// <summary>Persistent participant id; also seeds the per-user accent color.</summary>
         public string CollabUserId = "";
 
-        /// <summary>The cursor color this user picked, as 0xRRGGBB. 0 uses the color derived from the user id.</summary>
-        public int CollabCursorColor = 0;
+        /// <summary>Display name override. Falls back to the Discord name, then the OS user name.</summary>
+        public string CollabDisplayName = "";
+
+        /// <summary>Master switch: collaboration sessions can be hosted or joined. When off, no
+        /// session is hosted or joined and nothing is discovered on the network. Disabled by default:
+        /// a show machine does nothing on the network until it is switched on.</summary>
+        public bool CollabEnabled = false;
 
         public int CollabPort = CollabProtocol.DefaultTcpPort;
         public bool CollabLanDiscovery = true;
         public string CollabPassword = "";
 
+        /// <summary>The participant's own cursor color as 0xRRGGBB. 0 = derive it from the user id.</summary>
+        public int CollabCursorColor = 0;
+
+        /// <summary>host:port of the relay used for room-code sessions. Empty = default relay.</summary>
+
+        public string CollabRelayAddress = "";
+
+        /// <summary>Relay room join anchor: rejoin after a restart (e.g. a project download)
+        /// comes back through the same room. Cleared on leave and by a direct-session join.</summary>
+        public string CollabLastRelayHost = "";
+        public string CollabLastRelayRoom = "";
+
+        /// <summary>Relay sessions authenticate over the relay, then try a direct WebRTC path between
+        /// the machines. Falls back to the relay when no direct path is possible.</summary>
+        public bool CollabWebRtcEnabled = true;
+
+        /// <summary>Streams the host's rendered output to the participants over the peer-to-peer
+        /// video track ("Share preview"). Applies to peers that join afterwards.</summary>
+        public bool CollabSharePreview = true;
+
+        /// <summary>Comma-separated STUN/TURN URLs for the direct path. Empty = a public STUN server.</summary>
+        public string CollabWebRtcIceServers = "";
+
+        /// <summary>Project folders participating in show-control features ("kind:folder" entries,
+        /// kind = boygroup | collab). The Hub lists them under "Network projects".</summary>
+        public List<string> NetworkProjectRefs = [];
+
         /// <summary>host:port of the last joined collab session — auto-rejoined on launch, which is
         /// what brings a client back after a project download restarted the editor.</summary>
         public string CollabLastSessionHost = "";
-
-        /// <summary>Relay address ("host:port") for online sessions, persisted so hosting and joining
-        /// use the same relay. Empty means a relay on this machine.</summary>
-        public string CollabRelayAddress = "";
-
-        /// <summary>Relay address of the last joined relay session, for auto-rejoin after a restart.</summary>
-        public string CollabLastRelayHost = "";
-
-        /// <summary>Room code of the last joined relay session, for auto-rejoin after a restart.</summary>
-        public string CollabLastRelayRoom = "";
-
-        /// <summary>
-        /// Comma-separated STUN/TURN URLs for the peer-to-peer data path of relay sessions. Empty
-        /// uses a public STUN server; peers that cannot connect fall back to the relay automatically.
-        /// </summary>
-        public string CollabWebRtcIceServers = "";
-
-        /// <summary>When false, relay sessions stay on the relay even if a direct path is possible.</summary>
-        public bool CollabWebRtcEnabled = true;
-
-        /// <summary>Whether a hosting member streams its rendered preview to the participants.</summary>
-        public bool CollabSharePreview = true;
-
-        /// <summary>
-        /// The project hosted when starting a session. Empty shares the focused project; a name opens
-        /// (and focuses) that project first, so a host can share a project without switching to it.
-        /// </summary>
-        public string CollabShareProject = "";
 
         public string CollabDiscordClientId = "";
         public string CollabDiscordClientSecret = "";
@@ -286,46 +342,105 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public string CollabDiscordUserName = "";
         public string CollabDiscordUserAvatar = "";
 
-        // Boygrouping (show distribution to render nodes)
-        public string BoygroupClientName = "";
+        /// <summary>Language tag of the Discord profile ("hu", "en-US"); shown next to the name in sessions.</summary>
+        public string CollabDiscordLocale = "";
 
-        /// <summary>Whether boygrouping starts with the editor (and stays available for discovery).</summary>
+        /// <summary>Keeps the Discord token in this file so the account stays confirmed to other
+        /// participants across restarts. Off: the token lives in memory only and a restart needs a new login.</summary>
+        public bool CollabDiscordStayLoggedIn = false;
+
+        public string CollabDiscordAccessToken = "";
+        public string CollabDiscordTokenExpiresUtc = "";
+
+        /// <summary>Title shown in the relay's session list when hosting.</summary>
+        public string CollabSessionTitle = "";
+
+        /// <summary>What the session is for (Jam, Show, Teaching, Help); shown in the session list.</summary>
+        public string CollabSessionPurpose = "Jam";
+
+        /// <summary>Lists a hosted relay session in the relay's session browser. Off: only people with the session ID find it.</summary>
+        public bool CollabListSession = false;
+
+        /// <summary>Bot token that lets this editor post and read session cards in a Discord lobby channel (serverless session browser).</summary>
+        public string CollabDiscordBotToken = "";
+
+        /// <summary>The Discord channel whose messages are the session browser (a forum post channel or a normal text channel).</summary>
+        public string CollabDiscordLobbyChannelId = "";
+
+        /// <summary>Base URL of a self-hosted collab backend (CollabBackend/api.php): the session browser, whispers and WebRTC signaling.</summary>
+        public string CollabBackendUrl = "";
+
+        /// <summary>Party form: Online (through the backend server) when true, Local (LAN) when false.</summary>
+        public bool CollabPartyOnline = true;
+
+        /// <summary>Party form: Controllable (participants may edit) when true, Spectating when false.</summary>
+        public bool CollabPartyControllable = true;
+
+        /// <summary>The backend party room this editor last joined, so a restart (e.g. after receiving
+        /// the host's project) rejoins the same party automatically.</summary>
+        public string CollabLastBackendRoom = "";
+
+        // Remote management (the Collab window's Remote tab). The installation keeps a device id
+        // and secret issued when the owner's 6-digit code was redeemed, so it needs no Discord
+        // login; the owner sees its computers through the backend instead of this file.
+        /// <summary>Name shown to the owner for this computer. Empty = the machine name.</summary>
+        public string CollabRemoteName = "";
+
+        /// <summary>Id of this installation in the remote registry (set by pairing).</summary>
+        public string CollabRemoteDeviceId = "";
+
+        /// <summary>Long-lived secret that authenticates this installation's heartbeats and reports.</summary>
+        public string CollabRemoteDeviceKey = "";
+
+        /// <summary>Display name of the Discord account this installation is paired with.</summary>
+        public string CollabRemoteOwner = "";
+
+        /// <summary>Local consent switch: the installation only heartbeats and accepts a managed
+        /// session while this is on. Pairing turns it on; it can be turned off at any time.</summary>
+        public bool CollabRemoteAllow = false;
+
+        // Boygrouping (show distribution to render nodes)
+        /// <summary>Master switch: this machine participates in boygrouping. When set, the role
+        /// below starts automatically shortly after launch — a show machine comes up in its role
+        /// without anyone clicking.</summary>
         public bool BoygroupEnabled = false;
 
-        /// <summary>Master shares its show; Slave waits to be added by a master on the network.</summary>
-        public Show.BoygroupRole BoygroupRole = Show.BoygroupRole.Master;
+        /// <summary>true = this machine is a master (server); false = slave (render node).</summary>
+        public bool BoygroupIsMaster = false;
 
+        public string BoygroupClientName = "";
         public int BoygroupPort = 44720;
+        public bool BoygroupAutoJoin = true;
+        public bool BoygroupDeployMirror = false;
+        /// <summary>The master deploys and syncs to a render node as soon as it joins the group,
+        /// so an added slave is current without anyone clicking Deploy &amp; Sync.</summary>
+        public bool BoygroupAutoDeployOnJoin = true;
 
-        /// <summary>
-        /// Render nodes a master has added, by node name. Remembered so a restart reconnects them as
-        /// soon as they are discovered instead of starting with an empty show.
-        /// </summary>
-        public List<string> BoygroupAddedNodes = [];
+        /// <summary>Where a render node takes its playback clock from. Internal = TiXL's own
+        /// NTP-style exchange over the session link (default, needs nothing). Ptp = the OS clock is
+        /// trusted because something else (a PTP daemon, e.g. linuxptp/phc2sys or w32time with a
+        /// PTP source) disciplines it — anchors then apply with near-zero offset error.</summary>
+        public string BoygroupClockSync = "Internal";
 
-        /// <summary>Per-node presentation delay in milliseconds, set by the master (positive = later).</summary>
-        public Dictionary<string, int> BoygroupNodeDelays = [];
+        /// <summary>Deploy-restart flood guard, persisted across the restarts it guards: if more
+        /// than four deploy restarts happen inside two minutes the client stops restarting for
+        /// five minutes and logs loudly, so a perpetually-diffing file can never loop a show
+        /// machine.</summary>
+        public int BoygroupDeployRestartCount = 0;
+        public long BoygroupDeployRestartWindowStartTicks = 0;
+        public long BoygroupDeployRestartBlockedUntilTicks = 0;
 
-        /// <summary>The master a slave last joined, by advertised name. A slave reconnects to it as
-        /// soon as it reappears on the network.</summary>
-        public string BoygroupMasterName = "";
+        public List<string> BoygroupGroups = ["Main"];
+        public string BoygroupLastServer = "";
+        public string BoygroupLastGroup = "";
 
         // Show failover (active/standby output arbitration)
         public bool FailoverEnabled = false;
         public string FailoverShowId = "tixl-show";
         public int FailoverPriority = 100;
-        public int FailoverHeartbeatMs = 100;
+        public int FailoverHeartbeatMs = 500;
         public int FailoverTimeoutFactor = 3;
         public bool FailoverPreempt = true;
-
-        /// <summary>How long this node may go without rendering a frame before it steps down as broken.</summary>
-        public int FailoverStallMs = 300;
-
-        /// <summary>Fence the outputs when the standby stops acknowledging: no two masters on a partition.</summary>
-        public bool FailoverFencing = true;
-
-        /// <summary>Lets the other TiXL clients of a collab, boygroup or failover session open this machine's cameras.</summary>
-        public bool ShareCamerasInSessions = true;
 
         public float GizmoSize = 100;
 
@@ -343,9 +458,21 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public float TimeRasterDensity = 1f;
 
         // Space mouse
-        public float SpaceMouseRotationSpeedFactor = 1f;
-        public float SpaceMouseMoveSpeedFactor = 1f;
-        public float SpaceMouseDamping = 0.5f;
+        public float SpaceMouseRotationSpeedFactor = 0.3f;
+        public float SpaceMouseMoveSpeedFactor = 0.2f;
+        public float SpaceMouseDamping = 0.95f;
+
+        /** Whether the SpaceMouse flies the camera (Editor) or drives operators like [SpaceMouse]. */
+        [JsonConverter(typeof(StringEnumConverter))]
+        public InputDeviceUsages SpaceMouseUsage = InputDeviceUsages.Editor;
+
+        // Game controller camera
+        /** Seconds the camera takes to follow the sticks; longer is calmer, e.g. for live demos. */
+        public float GamepadCameraSmoothing = 0.4f;
+
+        public float GamepadCameraMoveSpeed = 1f;
+        public float GamepadCameraLookSpeed = 1f;
+        public bool GamepadCameraInvertLook;
 
         // Migration-only: these load from existing userSettings.json to preserve
         // the user's last render path counters. Not written back.
@@ -420,6 +547,24 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
     {
         Legacy,
         Magnetic,
+    }
+
+    /** Values are the largest short side in pixels; 0 means no limit. */
+    public enum WindowFillResolutionLimits
+    {
+        Unlimited = 0,
+        Max720p = 720,
+        Max1080p = 1080,
+        Max1440p = 1440,
+        Max2160p = 2160,
+    }
+
+    /** Who an input device drives; Editor means the camera of the output. Stored by name. */
+    public enum InputDeviceUsages
+    {
+        Operators,
+        Editor,
+        Off,
     }
 
     internal static bool IsUserNameDefined()

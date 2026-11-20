@@ -18,13 +18,16 @@ Wireframe edge:  blank(e0) lit(s0) lit(s1) ... lit(e1)        -> isolated edge s
 
 ## Where it is produced
 
-[LaserCamera](LaserCamera.md) decides the primitive **automatically by which input is connected** - there is no mode switch:
+[LaserCamera](LaserCamera.md) decides the primitive **automatically from what is drawn in its Scene** - there is no mode switch:
 
-| Source content | LaserCamera input | Encoding |
-|----------------|-------------------|----------|
-| Point buffers (particles, DrawPoints-style clouds) | `PointBuffer` | Isolated dwell dots (blank + `DotDwellPoints` lit repeats) |
-| Line buffers (DrawLines-style strips, `PairPointsForLines` separators) | `LineBuffer` | Blank-separated line segments |
-| Meshes (`MeshBuffers`) | `Mesh` | Wireframe - each unique edge as an isolated lit run |
+| Source content | Scene draw | Encoding |
+|----------------|------------|----------|
+| Point clouds | point draw op ([DrawPoints2]-style) | Isolated dwell dots (blank + `DotDwellPoints` lit repeats) |
+| Line strips (with `PairPointsForLines` separators) | line draw op ([DrawLines]-style) | Blank-separated line segments |
+| Meshes (`MeshBuffers`) | [DrawMesh]-style op | Wireframe - each unique edge as an isolated lit run |
+
+The stock draw graphs register their buffer and primitive kind during the capture pass. Point clouds
+and line strips are told apart after readback: line strips carry separator points, clouds do not.
 
 ## Where it is respected
 

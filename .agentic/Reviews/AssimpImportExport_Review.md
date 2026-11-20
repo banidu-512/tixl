@@ -199,11 +199,29 @@ skinned/animated glTF and quad-cube OBJ+MTL variants).
   following draw could not bind the same buffer as a shader resource. The D3D11 backend now unbinds
   the compute UAV slots after every dispatch. Verified: the skinned arm bends at t=0.8 on D3D11;
   Vulkan already rendered it.
-- Still open: a broken file at an absolute path did not replace the previously loaded model in one
-  run (the missing-path case did clear it); needs a status-provider check.
+- **Broken file at an absolute path:** the earlier run looked like the old model survived, but that
+  was the 0.2 s "Loading…" window: polling the status provider shows Notice while loading, then
+  Error (`Failed loading broken.obj: Assimp could not read the file: OBJ-file is too small.`),
+  `Metadata` is cleared and the output buffers stay empty. Recovering with a valid path restores
+  24 vertices. The editor stays responsive throughout; the check used a new `getStatus` request in
+  the debug protocol.
 
 **Environment:** compute shaders need `TIXL_BACKEND=d3d11` on this Windows machine; its default
 Vulkan path fails to load `spirv-opt`. The Vulkan checks ran on arton-linux.
+
+**Additional robustness checks (2026-11-09)**
+
+- **Export fuzzing.** The isolated export path was driven directly (serializer → 
+  `AssimpIsolatedImport.Export`) with 7 deliberately malformed snapshots × 15 formats — obj, fbx,
+  collada, 3ds, 3mf, x3d, glb2, gltf2, stl, stlb, ply, plyb, assbin, assxml, assjson — 105 runs.
+  75 exports succeeded (valid, 1e30-scaled, 1e-30-scaled, all-zero and fully degenerate index
+  buffers); 30 were rejected in the worker with a readable error before the native exporter ran
+  (NaN and +Infinity positions: `Vertex 0 has an invalid position …`). Result: no hang, no native
+  crash, no orphaned child, and no leftover output file on any error path.
+- **macOS cross-build.** `Lib` plus the host launcher build for `osx-arm64`
+  (`dotnet build Operators/Lib/Lib.csproj -c Release -r osx-arm64`) with 0 errors; the output
+  contains `Lib.dll`, `AssimpImportHost/AssimpImportHost.dll` and `libassimp.dylib`. Not run on
+  macOS hardware.
 
 ### Verification
 
@@ -220,4 +238,31 @@ Vulkan path fails to load `spirv-opt`. The Vulkan checks ran on arton-linux.
 - Isolated imports produce results bit-identical to in-process ones; ~100-150 ms process overhead.
   A child that dereferences a bad pointer, one killed with SIGKILL, a cancelled import and a killed
   parent were all checked: the parent keeps running and no child is left behind.
-- Not yet run in the editor: see `.tests-manual/assimp-import-export.md`.
+- Editor pass on Windows (D3D11) and arton-linux (Vulkan): see the visual pass and the additional
+  robustness checks above; the manual recipe is in `.tests-manual/assimp-import-export.md`.
+
+### Deployment-readiness pass (2026-11-19)
+
+Type-compatibility audit of both operators against the current branch (post 11-17 merge), plus a
+deploy-state check. No code changes needed; the ops, worker hosting and natives were already in sync.
+
+- **Type compatibility (all verified against current sources):** `MeshData` (MeshBuffers) → mesh
+  ops; `Geometry` (MeshGeometry, N-gons preserved) → geometry ops and [VolumeFromMesh];
+  `Points` (BufferWithViews of `Point` structs) → the GPU point ops (VisualizePoints, DrawPoints2,
+  DrawTubes, …); `Setup` (SceneSetup) → [DrawScene] (`Scene` input), [SampleGltfAnimation],
+  [PoseToSkinMatrices] for skinning/animations; `Material` → PbrMaterial with the additive RMO
+  contract (reader bakes factors into the RMO map and zeroes the params, matching the shader).
+  SDF/volume interop runs over [VolumeFromMesh] (takes MeshGeometry) → volume ops →
+  [VdbToSdfField]. The 11-17 merge added `SceneSetup.SceneMaterial.AuthoredRoughnessOffset/Metal`
+  for [LoadGltfScene] only; no shader or `PbrParameters` semantic change touches this path.
+- **Known interop gap (unchanged, repo-wide):** `VolumeFromPoints` wants CPU `StructuredList`
+  points; the import's Points output is the GPU point buffer. Mesh/geometry→volume works;
+  points→volume would need a GPU→CPU point converter op that doesn't exist yet.
+- **Deploy state:** `Editor/bin/Release` is bit-identical with the repo for both ops' .t3/.t3ui/.cs,
+  Lib.dll and AssimpImportHost.dll built 2026-11-19 06:14 (after the last source change), natives
+  present for all seven RIDs, `TiXL --assimp-host` probing verified previously. Docs: symbol and
+  input descriptions were already complete; the missing wiki pages (never exported) were generated
+  in exporter format via `Scripts/generate_assimp_help_pages.py` — 2 op pages + 2 README lines +
+  index.json entries (838 ops). Next editor "Export as WIKI" run will simply reproduce them.
+- **t3 defaults** re-verified against the C# initializers, all 10 inputs match (including the
+  enum-mapped PostProcessFlags=Basic, AxisConversionMode=None).

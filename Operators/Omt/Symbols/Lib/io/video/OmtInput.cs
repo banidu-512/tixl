@@ -1,16 +1,11 @@
 #nullable enable
 using Lib.Utils;
-using libomtnet;
 using T3.Core.Utils;
 
 namespace Lib.io.video;
 
-/// <summary>
-/// Receives one OMT source and publishes it as a texture. Sources are found through OMT's DNS-SD discovery, so a
-/// sender that starts after the operator was set up is picked up by the library on its own.
-/// </summary>
 [Guid("608acba9-f310-4876-981b-ade0664c5c66")]
-[ExportDependencies("libomtnet.dll", "libvmx.dll", "libvmx.dylib", "libvmx.so")]
+[ExportDependencies("libomtnet.dll", "libvmx.dll", "libvmx.so", "libvmx.dylib")]
 public sealed class OmtInput : Instance<OmtInput>, IStatusProvider, ICustomDropdownHolder
 {
     [Output(Guid = "786f11e0-1e13-42f1-bcb0-1c07c8659be6", DirtyFlagTrigger = DirtyFlagTrigger.Animated)]
@@ -19,36 +14,26 @@ public sealed class OmtInput : Instance<OmtInput>, IStatusProvider, ICustomDropd
     public OmtInput()
     {
         Texture.UpdateAction += Update;
+
+        // Discovery binds the platform's DNS-SD service on its own thread; starting it now means the source
+        // list is filled by the time someone opens the dropdown.
+        OmtRuntime.EnsureDiscoveryStarted();
     }
 
     private void Update(EvaluationContext context)
     {
-        if (!OmtRuntime.IsAvailable)
-        {
-            Texture.Value = null;
-            return;
-        }
-
         var reconnectTriggered = MathUtils.WasTriggered(TriggerReconnect.GetValue(context), ref _reconnect);
         if (reconnectTriggered)
             TriggerReconnect.SetTypedInputValue(false);
 
         if (SourceName.DirtyFlag.IsDirty || reconnectTriggered)
-            Reconnect(SourceName.GetValue(context));
+        {
+            var sourceName = SourceName.GetValue(context);
+            _receiver.Connect(IsPlaceholder(sourceName) ? null : sourceName);
+        }
 
-        _receiver?.TryUpload(out _);
-        Texture.Value = _receiver?.Texture;
-    }
-
-    private void Reconnect(string? sourceName)
-    {
-        _receiver?.Dispose();
-        _receiver = null;
-
-        if (string.IsNullOrEmpty(sourceName))
-            return;
-
-        _receiver = new OmtVideoReceiver(sourceName);
+        _receiver.Update();
+        Texture.Value = _receiver.Texture;
     }
 
     protected override void Dispose(bool isDisposing)
@@ -56,10 +41,14 @@ public sealed class OmtInput : Instance<OmtInput>, IStatusProvider, ICustomDropd
         if (!isDisposing)
             return;
 
-        Log.Debug("Disposing OmtInput...", this);
-        _receiver?.Dispose();
-        _receiver = null;
+        // Returns at once: the receive thread frees its native receiver itself.
+        _receiver.Dispose();
         Texture.Value = null;
+    }
+
+    private static bool IsPlaceholder(string? sourceName)
+    {
+        return string.IsNullOrWhiteSpace(sourceName) || sourceName == PlaceholderText;
     }
 
     #region status provider
@@ -68,8 +57,10 @@ public sealed class OmtInput : Instance<OmtInput>, IStatusProvider, ICustomDropd
         if (!OmtRuntime.IsAvailable)
             return IStatusProvider.StatusLevel.Error;
 
-        var message = _receiver?.LastStatusMessage;
-        return string.IsNullOrEmpty(message) ? IStatusProvider.StatusLevel.Success : IStatusProvider.StatusLevel.Warning;
+        if (_receiver.SourceName == null || _receiver.IsConnected)
+            return IStatusProvider.StatusLevel.Success;
+
+        return IStatusProvider.StatusLevel.Warning;
     }
 
     string? IStatusProvider.GetStatusMessage()
@@ -77,23 +68,22 @@ public sealed class OmtInput : Instance<OmtInput>, IStatusProvider, ICustomDropd
         if (!OmtRuntime.IsAvailable)
             return OmtRuntime.MissingMessage;
 
-        return _receiver != null
-                   ? _receiver.LastStatusMessage
-                   : PlaceholderText;
+        if (_receiver.SourceName == null)
+            return OmtRuntime.DiscoveredSources.Count == 0 ? OmtRuntime.NoSourcesHint : PlaceholderText;
+
+        return _receiver.IsConnected ? null : _receiver.StatusMessage;
     }
     #endregion
 
-    #region device dropdown
+    #region source dropdown
     private const string PlaceholderText = "Select OMT source...";
 
     string ICustomDropdownHolder.GetValueForInput(Guid inputId)
     {
         var currentValue = SourceName.Value;
 
-        if (string.IsNullOrEmpty(currentValue))
-            return PlaceholderText;
-
-        return OmtSources().Contains(currentValue) ? currentValue : PlaceholderText;
+        // A typed omt://host:port address isn't announced but is a valid choice, so it is shown as is.
+        return IsPlaceholder(currentValue) ? PlaceholderText : currentValue;
     }
 
     IEnumerable<string> ICustomDropdownHolder.GetOptionsForInput(Guid inputId)
@@ -106,38 +96,21 @@ public sealed class OmtInput : Instance<OmtInput>, IStatusProvider, ICustomDropd
 
         yield return PlaceholderText;
 
-        foreach (var source in OmtSources())
-            yield return source;
+        var sources = OmtRuntime.DiscoveredSources;
+        for (var index = 0; index < sources.Count; index++)
+            yield return sources[index];
     }
 
     void ICustomDropdownHolder.HandleResultForInput(Guid inputId, string? selected, bool isAListItem)
     {
-        if (string.IsNullOrEmpty(selected) || selected == PlaceholderText)
-        {
-            SourceName.SetTypedInputValue(string.Empty);
-            Reconnect(null);
+        if (inputId != SourceName.Id)
             return;
-        }
 
-        SourceName.SetTypedInputValue(selected!);
-    }
-
-    /// <summary>The sources OMT currently discovers on the network, as "MACHINE (Source Name)".</summary>
-    private static string[] OmtSources()
-    {
-        try
-        {
-            return OMTDiscovery.GetInstance().GetAddresses();
-        }
-        catch (Exception e)
-        {
-            Log.Debug($"OMT source discovery failed: {e.Message}");
-            return [];
-        }
+        SourceName.SetTypedInputValue(IsPlaceholder(selected) ? string.Empty : selected!.Trim());
     }
     #endregion
 
-    private OmtVideoReceiver? _receiver;
+    private readonly OmtVideoReceiver _receiver = new();
     private bool _reconnect;
 
     [Input(Guid = "6988eb41-8866-43b8-a6aa-124e413cecc4")]

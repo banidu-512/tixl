@@ -7,8 +7,10 @@ using System.Threading.Tasks;
 using System.Net.Sockets;
 using Newtonsoft.Json.Linq;
 using T3.Core.Model;
+using T3.Editor.Compilation;
 using T3.Editor.Gui.UiHelpers;
 using T3.Editor.Gui.Window;
+using T3.Editor.Gui.Windows.Layouts;
 using T3.Editor.Show;
 using T3.Editor.UiModel;
 using T3.Editor.UiModel.Commands;
@@ -264,15 +266,18 @@ internal sealed class CollabManager
                        ["name"] = _localIdentity.DisplayName,
                        ["userId"] = _localIdentity.UserId,
                        ["lang"] = _localIdentity.Lang,
+                       ["avatar"] = TruncateAvatar(_localIdentity.AvatarUrl),
                        ["port"] = UserSettings.Config.CollabPort,
                    };
     }
 
+    private static string TruncateAvatar(string url) => string.IsNullOrEmpty(url) ? "" : url.Length <= 220 ? url : url[..220];
+
     /// <summary>What the relay is told when opening or joining a room. UI thread: reads the settings.</summary>
-    private CollabRelayHello BuildRelayHello(bool hosting, string roomKey, string password)
+    private CollabRelayHello BuildRelayHello(bool hosting, string roomKey, string password, bool sendDiscordToken = true)
     {
         var config = UserSettings.Config;
-        var token = CollabDiscordAuth.GetValidAccessToken();
+        var token = sendDiscordToken ? CollabDiscordAuth.GetValidAccessToken() : "";
         if (!hosting)
             return new CollabRelayHello(Token: token, Name: _localIdentity.DisplayName, Lang: _localIdentity.Lang);
 
@@ -373,9 +378,7 @@ internal sealed class CollabManager
                                  DisplayName = TruncateName(displayName),
                                  Source = string.IsNullOrEmpty(config.CollabDiscordUserId) ? "local" : "discord",
                                  Lang = string.IsNullOrEmpty(config.CollabDiscordUserId) ? "" : (config.CollabDiscordLocale ?? ""),
-                                 AvatarUrl = string.IsNullOrEmpty(config.CollabDiscordUserId)
-                                                 ? ""
-                                                 : $"https://cdn.discordapp.com/avatars/{config.CollabDiscordUserId}/{config.CollabDiscordUserAvatar}.png",
+                                 AvatarUrl = BuildAvatarUrl(config.CollabDiscordUserId, config.CollabDiscordUserAvatar),
                              };
     }
 
@@ -383,6 +386,19 @@ internal sealed class CollabManager
     {
         name = name?.Trim() ?? "";
         return name.Length <= 48 ? name : name[..48];
+    }
+
+    /// <summary>The Discord CDN avatar: the custom image when the account has one, otherwise one
+    /// of the default avatars Discord assigns by user id.</summary>
+    private static string BuildAvatarUrl(string userId, string avatarHash)
+    {
+        if (string.IsNullOrEmpty(userId))
+            return "";
+
+        if (string.IsNullOrEmpty(avatarHash))
+            return ulong.TryParse(userId, out var id) ? $"https://cdn.discordapp.com/embed/avatars/{id % 5}.png" : "";
+
+        return $"https://cdn.discordapp.com/avatars/{userId}/{avatarHash}.png";
     }
 
     public void StartHost(int tcpPort, string password, bool enableLanDiscovery, string? projectName = null)
@@ -429,6 +445,8 @@ internal sealed class CollabManager
                                                  interfaceName: UserSettings.Config.NetworkInterface);
             _transport.PeerDisconnected += OnPeerDisconnectedTransport;
             State = SessionState.Hosting;
+            ParticipantsCanEdit = UserSettings.Config.CollabPartyControllable;
+            _readOnlyNoticeShownFor.Clear();
             StatusText = $"Hosting on port {tcpPort}";
             Log.Info($"Collab: session started (host, port {tcpPort}, {(string.IsNullOrEmpty(_password) ? "open" : "password protected")})");
         }
@@ -518,6 +536,24 @@ internal sealed class CollabManager
         _roomKey = roomKey;
         _currentTarget = new SessionTarget(Hosting: true, Relay: true, relayHost, relayPort, RoomCode, password, roomKey);
         _localVerified = IsVerifiedByRelay(transport.RelayReply, "you");
+
+        // List the session in the web backend's browser too, when one is configured. It carries
+        // the relay address so the browser can hand a joiner straight to the room.
+        if (CollabWebLobby.IsConfigured)
+        {
+            var config = UserSettings.Config;
+            CollabWebLobby.Register(RoomCode, roomKey, $"{relayHost}:{relayPort}",
+                                    string.IsNullOrWhiteSpace(config.CollabSessionTitle)
+                                        ? $"{LocalIdentity.DisplayName}'s session"
+                                        : config.CollabSessionTitle.Trim(),
+                                    config.CollabSessionPurpose ?? "",
+                                    ProjectView.Focused?.OpenedProject.Package.DisplayName ?? "",
+                                    LocalIdentity.DisplayName, LocalIdentity.Lang,
+                                    !string.IsNullOrEmpty(password),
+                                    config.CollabListSession,
+                                    ParticipantsCanEdit);
+        }
+
         if (_reconnectTarget is { Hosting: true } reopened)
         {
             // Only a relay without room keys answers a taken code with a different one.
@@ -559,7 +595,7 @@ internal sealed class CollabManager
         }
 
         if (transport is CollabWebRtcHostTransport rtcHost)
-            _videoStreamer = new CollabVideoHostStreamer(rtcHost);
+            _videoStreamer = new CollabVideoHostStreamer(rtcHost, SharedFeedTexture);
 
         State = SessionState.Hosting;
         StatusText = $"Hosting via relay, room {RoomCode}";
@@ -567,7 +603,7 @@ internal sealed class CollabManager
     }
 
     /// <summary>Joins a relay-hosted room by code.</summary>
-    public void JoinViaRelay(string relayHost, int relayPort, string roomCode, string password)
+    public void JoinViaRelay(string relayHost, int relayPort, string roomCode, string password, bool sendDiscordToken = true)
     {
         if (!_reconnectAttemptInFlight)
             CancelReconnect();
@@ -597,7 +633,7 @@ internal sealed class CollabManager
 
         var generation = ++_sessionGeneration;
         var passwordToUse = password ?? "";
-        var hello = BuildRelayHello(hosting: false, "", passwordToUse);
+        var hello = BuildRelayHello(hosting: false, "", passwordToUse, sendDiscordToken);
         var useWebRtc = UserSettings.Config.CollabWebRtcEnabled;
         _ = Task.Run(async () =>
                 {
@@ -740,6 +776,327 @@ internal sealed class CollabManager
         }
     }
 
+    // ---------------------------------------------------------------------------------------
+    // Relay-free backend sessions: discovery and WebRTC signaling via the web backend, the
+    // session itself rides WebRTC data channels. No relay, no port forwarding.
+    // ---------------------------------------------------------------------------------------
+
+    /// <summary>The room-code alphabet the relay uses, so backend codes look the same.</summary>
+    private static string NewRoomCode()
+    {
+        const string alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+        Span<char> code = stackalloc char[6];
+        for (var i = 0; i < code.Length; i++)
+            code[i] = alphabet[Random.Shared.Next(0, alphabet.Length)];
+
+        return new string(code);
+    }
+
+    /// <summary>
+    /// Hosts a relay-free session: the web backend lists the room and carries the WebRTC
+    /// signaling, the session itself rides data channels. Requires a configured backend.
+    /// </summary>
+    public void StartHostViaBackend(string autoApproveClaim = "", bool listInBrowser = true)
+    {
+        if (!_reconnectAttemptInFlight)
+            CancelReconnect();
+
+        LeftManually = false;
+        ShowControlMode.Activate(ShowControlMode.Collab);
+
+        if (!IsEnabled)
+        {
+            ErrorText = "Collaboration is turned off in the settings.";
+            return;
+        }
+
+        if (!CollabWebLobby.IsConfigured)
+        {
+            ErrorText = "No party backend configured (Settings > Collaboration > Advanced).";
+            return;
+        }
+
+        if (State != SessionState.Off)
+            Leave();
+
+        ++_sessionGeneration;
+        ErrorText = "";
+
+        var room = NewRoomCode();
+        var key = Guid.NewGuid().ToString("N");
+        _password = UserSettings.Config.CollabPassword ?? "";
+        _sessionLog.Clear();
+        _sessionProjectName = ProjectView.Focused?.OpenedProject.Package.DisplayName ?? "";
+
+        try
+        {
+            var transport = new CollabBackendWire.CollabBackendHostTransport(room, key, autoApproveClaim);
+            transport.JoinRequested += OnJoinRequested;
+            _transport = transport;
+            _transport.PeerDisconnected += OnPeerDisconnectedTransport;
+            RoomCode = room;
+            _roomKey = key;
+            RelayEndpoint = CollabWebLobby.BackendUrl;
+            _currentTarget = new SessionTarget(Hosting: true, Relay: false, CollabWebLobby.BackendUrl, 0, room, _password, key);
+            State = SessionState.Hosting;
+            ParticipantsCanEdit = UserSettings.Config.CollabPartyControllable;
+            IsRemoteManagedSession = autoApproveClaim.Length > 0;
+
+            // Share the selected input operator's texture (a webcam, an NDI or Spout feed) with the
+            // party when the preview sharing is on; without a selected texture the streamer falls
+            // back to the main output.
+            if (transport is ICollabVideoSink sink && UserSettings.Config.CollabSharePreview)
+                _videoStreamer = new CollabVideoHostStreamer(sink, SharedFeedTexture);
+            _pendingJoinRequests.Clear();
+            _readOnlyNoticeShownFor.Clear();
+            StatusText = IsRemoteManagedSession
+                             ? $"Hosting a managed session, room {room}"
+                             : $"Hosting via the backend, room {room}";
+            Log.Info($"Collab: backend session started (room {room}{(IsRemoteManagedSession ? ", remote-managed" : "")})");
+
+            var config = UserSettings.Config;
+            CollabWebLobby.Register(room, key, "",
+                                    string.IsNullOrWhiteSpace(config.CollabSessionTitle)
+                                        ? $"{LocalIdentity.DisplayName}'s session"
+                                        : config.CollabSessionTitle.Trim(),
+                                    config.CollabSessionPurpose ?? "",
+                                    _sessionProjectName,
+                                    LocalIdentity.DisplayName, LocalIdentity.Lang,
+                                    !string.IsNullOrEmpty(_password),
+                                    listInBrowser && config.CollabListSession,
+                                    ParticipantsCanEdit);
+
+        }
+        catch (Exception e)
+        {
+            ErrorText = $"Backend hosting failed: {e.Message}";
+            CollabRemote.ReportFailure(e.Message);
+            StatusText = "Failed to host";
+            _transport?.Dispose();
+            _transport = null;
+            State = SessionState.Off;
+        }
+    }
+
+    /// <summary>Joins a backend-hosted room: a join ticket, a WebRTC handshake through the
+    /// backend, then the session runs on the data channel. Async; state Connecting meanwhile.</summary>
+    public void JoinViaBackend(string room, string claim = "")
+    {
+        if (!_reconnectAttemptInFlight)
+            CancelReconnect();
+
+        LeftManually = false;
+
+        if (!IsEnabled)
+        {
+            ErrorText = "Collaboration is turned off in the settings.";
+            return;
+        }
+
+        if (!CollabWebLobby.IsConfigured)
+        {
+            ErrorText = "No party backend configured (Settings > Collaboration > Advanced).";
+            return;
+        }
+
+        if (State != SessionState.Off)
+            Leave();
+
+        var generation = ++_sessionGeneration;
+        ErrorText = "";
+        _joinedHost = CollabWebLobby.BackendUrl;
+        State = SessionState.Connecting;
+        StatusText = $"Joining room {room} via the backend...";
+
+        _password = UserSettings.Config.CollabPassword ?? "";
+        _joinClaim = claim ?? "";
+        _sessionLog.Clear();
+        _currentTarget = new SessionTarget(Hosting: false, Relay: false, CollabWebLobby.BackendUrl, 0, room, _password, "");
+
+        _ = Task.Run(async () =>
+                         {
+                             try
+                             {
+                                 var transport = new CollabBackendWire.CollabBackendClientTransport(room, TruncateName(LocalIdentity.DisplayName), LocalIdentity.Lang, _joinClaim);
+                                 await transport.ConnectAsync(CancellationToken.None);
+                                 _uiThreadActions.Enqueue(() => CompleteBackendJoin(transport, generation, room));
+                             }
+                             catch (Exception e)
+                             {
+                                 var message = e.Message;
+                                 _uiThreadActions.Enqueue(() =>
+                                                          {
+                                                              if (generation != _sessionGeneration)
+                                                                  return;
+
+                                                              ErrorText = $"Join failed: {message}";
+                                                              StatusText = "Join failed";
+                                                              _transport?.Dispose();
+                                                              _transport = null;
+                                                              State = SessionState.Off;
+                                                          });
+                             }
+                         });
+    }
+
+    /// <summary>
+    /// The project a party should share. The focused view is unreliable right after a programmatic
+    /// open, so this also looks at opened projects and, last, every graph window.
+    /// </summary>
+    private static SymbolPackage? FindAnyOpenedProject()
+    {
+        if (ProjectView.Focused?.OpenedProject?.Package is { } focused)
+            return focused;
+
+        if (OpenedProject.OpenedProjects.Values.FirstOrDefault()?.Package is { } opened)
+            return opened;
+
+        return WindowManager.GetAllWindows()
+                            .OfType<T3.Editor.Gui.Window.GraphWindow>()
+                            .Select(w => w.ProjectView?.OpenedProject?.Package)
+                            .FirstOrDefault(p => p != null);
+    }
+
+    /// <summary>
+    /// The operator whose video the party streams (a webcam, NDI or Spout input). Chosen
+    /// explicitly - the graph selection is transient - and resolved by child id each frame.
+    /// </summary>
+    public string SharedFeedName { get; private set; } = "";
+
+    private Guid _sharedFeedChildId;
+
+    /// <summary>Host: shares the currently selected operator's texture output with the party.</summary>
+    public bool ShareSelectedOperatorAsFeed()
+    {
+        var view = FindFocusedOrAnyView();
+        var childId = view?.NodeSelection?.GetSelectionSymbolChildId();
+        if (view?.CompositionInstance == null || childId == null)
+            return false;
+
+        if (!view.CompositionInstance.Children.TryGetChildInstance(childId.Value, out var instance) || instance == null)
+            return false;
+
+        _sharedFeedChildId = childId.Value;
+        SharedFeedName = instance.Symbol.Name;
+        UserSettings.Config.CollabSharePreview = true;
+        UserSettings.Save();
+        AppendChat(null, $"Sharing {SharedFeedName} as the party video feed");
+        Log.Info($"Collab: sharing '{SharedFeedName}' ({childId}) as the video feed");
+        return true;
+    }
+
+    /// <summary>Host: shares one operator by child id (used by the debug bridge).</summary>
+    public bool ShareOperatorAsFeed(Guid childId)
+    {
+        var view = FindFocusedOrAnyView();
+        if (view?.CompositionInstance == null)
+            return false;
+
+        if (!view.CompositionInstance.Children.TryGetChildInstance(childId, out var instance) || instance == null)
+            return false;
+
+        _sharedFeedChildId = childId;
+        SharedFeedName = instance.Symbol.Name;
+        UserSettings.Config.CollabSharePreview = true;
+        UserSettings.Save();
+        AppendChat(null, $"Sharing {SharedFeedName} as the party video feed");
+        return true;
+    }
+
+    public void StopSharingFeed()
+    {
+        _sharedFeedChildId = Guid.Empty;
+        SharedFeedName = "";
+        AppendChat(null, "The party video feed is stopped");
+    }
+
+    private static ProjectView? FindFocusedOrAnyView()
+    {
+        var view = ProjectView.Focused;
+        if (view?.CompositionInstance != null)
+            return view;
+
+        return WindowManager.GetAllWindows()
+                            .OfType<T3.Editor.Gui.Window.GraphWindow>()
+                            .Select(w => w.ProjectView)
+                            .FirstOrDefault(v => v?.CompositionInstance != null);
+    }
+
+    /// <summary>The texture the party streams: the chosen operator's first Texture2D output.</summary>
+    private T3.Core.DataTypes.Texture2D? SharedFeedTexture()
+    {
+        if (_sharedFeedChildId == Guid.Empty)
+            return null;
+
+        var view = FindFocusedOrAnyView();
+        if (view?.CompositionInstance == null)
+            return null;
+
+        if (!view.CompositionInstance.Children.TryGetChildInstance(_sharedFeedChildId, out var instance) || instance == null)
+        {
+            DiagFeed($"child {_sharedFeedChildId} not in the focused instance");
+            return null;
+        }
+
+        foreach (var slot in instance.Outputs)
+        {
+            if (slot is T3.Core.Operator.Slots.Slot<T3.Core.DataTypes.Texture2D> textureSlot)
+            {
+                if (textureSlot.Value == null)
+                    DiagFeed($"{instance.Symbol.Name} texture output is null");
+                return textureSlot.Value;
+            }
+        }
+
+        DiagFeed($"{instance.Symbol.Name} outputs: {string.Join(",", instance.Outputs.Select(o => o.ValueType.Name))}");
+        return null;
+    }
+
+    private static long _lastFeedDiagTicks;
+
+    private static void DiagFeed(string message)
+    {
+        if (Environment.TickCount64 - _lastFeedDiagTicks < 3000)
+            return;
+
+        _lastFeedDiagTicks = Environment.TickCount64;
+        Log.Debug($"Collab feed: {message}");
+    }
+
+
+    private void CompleteBackendJoin(CollabBackendWire.CollabBackendClientTransport transport, int generation, string room)
+    {
+        // The user may have left or started another session while the handshake ran.
+        if (generation != _sessionGeneration)
+        {
+            transport.Dispose();
+            return;
+        }
+
+        _sessionLog.Clear();
+        _transport = transport;
+        _transport.PeerDisconnected += OnPeerDisconnectedTransport;
+        RoomCode = room;
+        RelayEndpoint = CollabWebLobby.BackendUrl;
+        _roomKey = "";
+        IsRemoteManagedSession = _joinClaim.Length > 0;
+
+        // The data channel is open: the hello goes out now and authentication runs on it.
+        // The state must stay Connecting until authOk (HandleClientAuthOk flips it to Connected);
+        // jumping ahead here made the guest drop its own authOk and stay unauthenticated.
+        if (transport is ICollabVideoSource videoSource)
+            _videoReceiver = new CollabVideoReceiver(videoSource);
+
+        transport.SendJson(transport.HostLink!, BuildHello());
+        State = SessionState.Connecting;
+        StatusText = "Connected, authenticating...";
+        Log.Info($"Collab: joined backend room {room} - authenticating");
+
+        // Remember the room so a restart (e.g. after a project download) rejoins it.
+        UserSettings.Config.CollabLastBackendRoom = room;
+        UserSettings.Save();
+    }
+
     /// <summary>
     /// Ends the session. <paramref name="manual"/> marks a leave the user asked for: the launch
     /// auto-rejoin then stays quiet instead of dragging the session back, which made Leave look
@@ -748,6 +1105,8 @@ internal sealed class CollabManager
     public void Leave(bool manual = false)
     {
         LeftManually = manual;
+        IsRemoteManagedSession = false;
+        _joinClaim = "";
 
         // Every leave except the one a dropped link causes ends the wish to be in the session.
         if (!_keepReconnectOnLeave)
@@ -758,6 +1117,16 @@ internal sealed class CollabManager
             // back to a session that is gone for good.
             if (State == SessionState.Hosting)
                 BroadcastSystemMessage(new { t = "sessionEnded" }, except: null);
+
+            // Delete entry: the listing goes away even though the room key is about to be cleared.
+            if (State == SessionState.Hosting && RoomCode.Length > 0 && _roomKey.Length > 0)
+                CollabWebLobby.Unregister(RoomCode, _roomKey);
+            _whisperSince = 0;
+            _pendingJoinRequests.Clear();
+            WindowManager.CollabJoinRequestWindow.Config.Visible = false;
+            ParticipantsCanEdit = true;
+            ReadOnlyForParticipants = false;
+            UserSettings.Config.CollabLastBackendRoom = "";
         }
 
         _currentTarget = null;
@@ -827,6 +1196,8 @@ internal sealed class CollabManager
         _roster.Clear();
         _rosterUserIds.Clear();
         _participants.Clear();
+        _rosterAvatars.Clear();
+        _peerPingMs.Clear();
         _localVerified = false;
         _roomKey = "";
         _latestPresenceByPeer.Clear();
@@ -866,6 +1237,11 @@ internal sealed class CollabManager
         var firstLoss = _reconnectTarget == null;
         var target = _reconnectTarget ?? _currentTarget;
         if (target == null || !IsEnabled)
+            return false;
+
+        // A backend session has no dial target to retry (the WebRTC handshake ran through the
+        // backend's tickets); a fresh join is the only way back. Ends cleanly instead.
+        if (target is { Relay: false, Port: 0 })
             return false;
 
         List<Guid>? editedCompositions = null;
@@ -1288,11 +1664,17 @@ internal sealed class CollabManager
         try
         {
             if (target.Hosting)
+            {
                 StartHostViaRelay(target.Host, target.Port, target.RoomCode, target.Password, target.RoomKey);
+            }
             else if (target.Relay)
+            {
                 JoinViaRelay(target.Host, target.Port, target.RoomCode, target.Password);
+            }
             else
+            {
                 JoinDirect(target.Host, target.Port, target.Password);
+            }
         }
         finally
         {
@@ -1375,6 +1757,105 @@ internal sealed class CollabManager
     /// <summary>Session participant names by session id, for display on hosts and clients alike.</summary>
     private readonly Dictionary<int, string> _roster = new();
     public IReadOnlyDictionary<int, string> Roster => _roster;
+
+    /// <summary>Discord avatar URLs by session id (empty when the participant is not logged in).</summary>
+    private readonly Dictionary<int, string> _rosterAvatars = new();
+
+    /// <summary>Last measured round-trip time to a peer, in milliseconds (0 = not measured yet).</summary>
+    private readonly Dictionary<int, int> _peerPingMs = new();
+    private long _nextPingTicks;
+
+    /// <summary>The participant's Discord avatar URL, or "" when they have none.</summary>
+    public string GetPeerAvatarUrl(int peerId)
+        => _rosterAvatars.TryGetValue(peerId, out var url) ? url : "";
+
+    /// <summary>My own Discord avatar URL, or "" when not logged in.</summary>
+    public string LocalAvatarUrl => _localIdentity.AvatarUrl;
+
+    /// <summary>The participant's Discord locale ("en-US"), or "" when unknown.</summary>
+    public string GetPeerLang(int peerId)
+        => _participants.TryGetValue(peerId, out var info) ? info.Lang : "";
+
+    /// <summary>Last measured round-trip time to a peer in milliseconds, or 0 when not measured yet.</summary>
+    public int GetPeerPingMs(int peerId)
+        => _peerPingMs.TryGetValue(peerId, out var ms) ? ms : 0;
+
+    /// <summary>
+    /// Pins a participant's work into my output window, rendering it locally from the synced
+    /// project — no video stream involved. Shows the composition they are working in, or their
+    /// selected operator when they have one.
+    /// </summary>
+    public bool PinPeerWork(int peerId)
+    {
+        if (GetPresence(peerId) is not { } presence || presence.CompositionId == Guid.Empty)
+        {
+            Log.Debug($"Collab pin: peer {peerId} has no presence with a composition");
+            return false;
+        }
+
+        if (!TryFindCompositionInstance(presence.CompositionId, out var compositionInstance, out var view))
+        {
+            Log.Debug($"Collab pin: composition {presence.CompositionId} not found in the local project");
+            return false;
+        }
+
+        var pinned = compositionInstance;
+        foreach (var selectedChildId in presence.SelectedChildIds)
+        {
+            if (compositionInstance.Children.TryGetChildInstance(selectedChildId, out var child, allowCreate: false) && child != null)
+            {
+                pinned = child;
+                break;
+            }
+        }
+
+        if (!T3.Editor.Gui.Windows.Output.OutputWindow.TryGetPrimaryOutputWindow(out var outputWindow))
+        {
+            Log.Debug("Collab pin: no output window is open to pin into");
+            return false;
+        }
+
+        outputWindow.Pinning.PinInstance(pinned, view);
+        Log.Debug($"Collab pin: pinned {pinned.Symbol.Name} for peer {peerId}");
+        return true;
+    }
+
+    /// <summary>Finds an instance of the given composition symbol among the open graphs, breadth-first.</summary>
+    private static bool TryFindCompositionInstance(Guid compositionId, out T3.Core.Operator.Instance found, out ProjectView? view)
+    {
+        found = null!;
+        view = null;
+        var queue = new Queue<(T3.Core.Operator.Instance Instance, ProjectView? View)>();
+        var visited = new HashSet<Guid>();
+
+        foreach (var window in WindowManager.GetAllWindows().OfType<T3.Editor.Gui.Window.GraphWindow>())
+        {
+            if (window.ProjectView?.CompositionInstance is { } compositionInstance)
+                queue.Enqueue((compositionInstance, window.ProjectView));
+        }
+
+        if (queue.Count == 0 && ProjectView.Focused?.CompositionInstance is { } focused)
+            queue.Enqueue((focused, ProjectView.Focused));
+
+        while (queue.Count > 0)
+        {
+            var (instance, projectView) = queue.Dequeue();
+            if (instance.Symbol.Id == compositionId)
+            {
+                found = instance;
+                view = projectView;
+                return true;
+            }
+
+            if (!visited.Add(instance.Symbol.Id))
+                continue; // recursive graphs would loop forever
+
+            foreach (var child in ((IReadOnlyDictionary<Guid, T3.Core.Operator.Instance>)instance.Children).Values)
+                queue.Enqueue((child, projectView));
+        }
+
+        return false;
+    }
 
     public string DescribePeerLink(CollabPeerConnection peer) => _transport?.DescribePeerLink(peer) ?? "";
 
@@ -1570,11 +2051,28 @@ internal sealed class CollabManager
         UpdatePendingHandoff();
         UpdateReconnect();
 
+        // The installation heartbeat runs in every state: an idle machine must still receive
+        // connect commands from its owner.
+        CollabRemote.Tick();
+
         if (State == SessionState.Off)
             return;
 
         ProcessPendingKicks();
         ProcessPendingDisconnects();
+
+        // Measure latency to every peer so the roster can show it.
+        if (Environment.TickCount64 > _nextPingTicks)
+        {
+            _nextPingTicks = Environment.TickCount64 + 2000;
+            foreach (var pingPeer in Peers)
+            {
+                if (!pingPeer.IsAuthenticated)
+                    continue;
+
+                SendJson(pingPeer, new { t = "ping", ts = Environment.TickCount64 });
+            }
+        }
 
         // A disconnect handled above can end the session (host loss, relay link death), and
         // Leave() disposes the transport — nothing below may run against it.
@@ -1600,7 +2098,65 @@ internal sealed class CollabManager
         SendStateHashes();
         SendLocalPresence();
         RefreshDiscoveredSessions();
+        UpdateBackendListing();
     }
+
+    /// <summary>
+    /// Heartbeats the web-backend listing and polls the whisper thread while hosting. Both run
+    /// on pool threads; results land on the UI thread through the usual queues.
+    /// </summary>
+    private void UpdateBackendListing()
+    {
+        if (State != SessionState.Hosting || !CollabWebLobby.IsConfigured || RoomCode.Length == 0 || _roomKey.Length == 0)
+            return;
+
+        var now = Environment.TickCount64;
+        if (now >= _nextBackendHeartbeatTicks)
+        {
+            _nextBackendHeartbeatTicks = now + BackendHeartbeatIntervalMs;
+            CollabWebLobby.Heartbeat(RoomCode, _roomKey, Peers.Count + 1, ParticipantsCanEdit);
+        }
+
+        if (now >= _nextWhisperPollTicks)
+        {
+            _nextWhisperPollTicks = now + WhisperPollIntervalMs;
+            var room = RoomCode;
+            var key = _roomKey;
+            var since = _whisperSince;
+            _ = Task.Run(async () =>
+                             {
+                                 try
+                                 {
+                                     var whispers = await CollabWebLobby.PollWhispersAsync(room, key, "", since, CancellationToken.None);
+                                     if (whispers.Count == 0)
+                                         return;
+
+                                     _uiThreadActions.Enqueue(() =>
+                                                              {
+                                                                  foreach (var (from, text, isHostReply, at) in whispers)
+                                                                  {
+                                                                      if (isHostReply)
+                                                                          continue; // own replies are appended at send time
+
+                                                                      _lobbyWhispers.Add(new LobbyWhisperEntry { From = from, Text = text });
+                                                                      AppendChat(null, $"{from} whispers: {text}");
+                                                                      _whisperSince = Math.Max(_whisperSince, at);
+                                                                  }
+                                                              });
+                                 }
+                                 catch (Exception e)
+                                 {
+                                     Log.Debug($"Collab backend: whisper poll failed: {e.Message}");
+                                 }
+                             });
+        }
+    }
+
+    private const int BackendHeartbeatIntervalMs = 30_000;
+    private const int WhisperPollIntervalMs = 5_000;
+    private long _nextBackendHeartbeatTicks;
+    private long _nextWhisperPollTicks;
+    private long _whisperSince;
 
     private long _rejoinCheckTicks;
     private bool _rejoinAttempted;
@@ -1635,6 +2191,14 @@ internal sealed class CollabManager
                 Log.Info($"Collab: auto-rejoining relay room {roomCode} at {relayHost}");
                 JoinViaRelay(relayHost[..relaySeparator], relayPort, roomCode, UserSettings.Config.CollabPassword ?? "");
             }
+        }
+
+        // ...and a backend party rejoins its room (the backend still knows it).
+        var backendRoom = UserSettings.Config.CollabLastBackendRoom;
+        if (!string.IsNullOrEmpty(backendRoom))
+        {
+            Log.Info($"Collab: auto-rejoining backend room {backendRoom}");
+            JoinViaBackend(backendRoom);
         }
     }
 
@@ -1891,6 +2455,10 @@ internal sealed class CollabManager
                 Leave();
                 break;
 
+            case "canEdit":
+                HandleCanEdit(peer, json);
+                break;
+
             case "op" when IsSessionActive:
                 HandleOp(peer, json);
                 break;
@@ -1995,6 +2563,7 @@ internal sealed class CollabManager
                     if (CollabProtocol.TryGetGuid(json, "userId", out var joinedUserId))
                         _rosterUserIds[joinedId] = joinedUserId;
 
+                    _rosterAvatars[joinedId] = CollabProtocol.GetString(json, "avatar");
                     _participants[joinedId] = ReadParticipantInfo(json);
                 }
 
@@ -2044,6 +2613,18 @@ internal sealed class CollabManager
                 AppendChat(sender, text);
                 if (State == SessionState.Hosting)
                     BroadcastSystemMessage(json, except: peer);
+                break;
+            }
+
+            case "ping" when IsSessionActive:
+                SendJson(peer, new { t = "pong", ts = json["ts"] });
+                break;
+
+            case "pong" when IsSessionActive:
+            {
+                if (CollabProtocol.TryGetLong(json, "ts", out var sentTs))
+                    _peerPingMs[peer.AssignedId] = (int)Math.Clamp(Environment.TickCount64 - sentTs, 0, 60_000);
+
                 break;
             }
 
@@ -2113,6 +2694,8 @@ internal sealed class CollabManager
         peer.ListenPort = CollabProtocol.TryGetInt(json, "port", out var listenPort) && listenPort is > 0 and < 65536
                               ? listenPort
                               : CollabProtocol.DefaultTcpPort;
+
+        _rosterAvatars[peer.AssignedId] = TruncateAvatar(CollabProtocol.GetString(json, "avatar"));
 
         if (!CollabProtocol.TryGetInt(json, "proto", out var peerProtocol) || peerProtocol != CollabProtocol.ProtocolVersion)
         {
@@ -2190,6 +2773,7 @@ internal sealed class CollabManager
                                      ["name"] = other.Name,
                                      ["lang"] = other.Lang,
                                      ["verified"] = other.IsVerified,
+                                     ["avatar"] = _rosterAvatars.TryGetValue(other.AssignedId, out var otherAvatar) ? otherAvatar : "",
                                      ["addr"] = other.RemoteAddress?.ToString() ?? "",
                                      ["port"] = other.ListenPort,
                                  });
@@ -2205,10 +2789,14 @@ internal sealed class CollabManager
                                hostUserId = _localIdentity.UserId,
                                hostLang = _localIdentity.Lang,
                                hostVerified = _localVerified,
-                               roomKey = _roomKey,
+                               // The key is only for re-opening a relay room after the host
+                               // disappears; backend and LAN participants must not receive it.
+                               roomKey = _currentTarget is { Relay: true } ? _roomKey : null,
                                peers = peersPayload,
                                logCount = _sessionLog.Count,
-                               project = _sessionProjectName,
+                               // Live: the host may open or switch the project after hosting
+                               // started, and joiners that came earlier than that still need it.
+                               project = FindAnyOpenedProject()?.DisplayName ?? _sessionProjectName,
                            });
 
         // The handshake runs on the relay first; only a fully authenticated peer may switch paths.
@@ -2222,6 +2810,7 @@ internal sealed class CollabManager
                                        name = peer.Name,
                                        lang = peer.Lang,
                                        verified = peer.IsVerified,
+                                       avatar = _rosterAvatars.TryGetValue(peer.AssignedId, out var joinedAvatar) ? joinedAvatar : "",
                                        addr = peer.RemoteAddress?.ToString() ?? "",
                                        port = peer.ListenPort,
                                    }, except: peer);
@@ -2290,7 +2879,18 @@ internal sealed class CollabManager
         {
             _roster[hostId] = CollabProtocol.GetString(json, "hostName", "host");
             if (CollabProtocol.TryGetGuid(json, "hostUserId", out var hostUserId))
+            {
                 _rosterUserIds[hostId] = hostUserId;
+
+                // The backend client's only transport peer IS the host: without its identity
+                // GetPresence treats the host as unknown and pinning has nothing to resolve.
+                var hostPeer = Peers.FirstOrDefault(p => p.AssignedId == hostId);
+                if (hostPeer != null)
+                {
+                    hostPeer.UserId = hostUserId;
+                    hostPeer.Name = _roster[hostId];
+                }
+            }
 
             // In a relay session the relay says who the host is; that cannot be made up by the
             // host. Otherwise the host's own word is all there is, and it counts as unverified.
@@ -2325,6 +2925,8 @@ internal sealed class CollabManager
             if (CollabProtocol.TryGetGuid(entry, "userId", out var rosterUserId))
                 _rosterUserIds[id] = rosterUserId;
 
+            _rosterAvatars[id] = CollabProtocol.GetString(entry, "avatar");
+
             _participants[id] = ReadParticipantInfo(entry);
             Log.Info($"Collab: {name} is in this session");
         }
@@ -2351,6 +2953,9 @@ internal sealed class CollabManager
     /// <summary>host:port of the session this client dialed into (persisted for auto-rejoin).</summary>
     private string _joinedHost = "";
 
+    /// <summary>Remote management: the claim this client presented when joining, empty otherwise.</summary>
+    private string _joinClaim = "";
+
     private string _sessionProjectName = "";
     private string _hostProjectName = "";
 
@@ -2361,9 +2966,9 @@ internal sealed class CollabManager
     /// </summary>
     private void EnsureHostProjectAvailable()
     {
-        // Only direct sessions: the persisted auto-rejoin target (`_joinedHost`) is a host:port, so
-        // a relay joiner that restarted for a download could not rejoin by room code.
-        if (string.IsNullOrEmpty(_hostProjectName) || _transport is not CollabClientTransport { HostPeer: { } host })
+        // Works over every client transport: the transfer rides the session's data channel, and
+        // the editor restarts into the downloaded project, rejoining automatically.
+        if (string.IsNullOrEmpty(_hostProjectName))
             return;
 
         if (TryOpenProjectByName(_hostProjectName))
@@ -2371,7 +2976,7 @@ internal sealed class CollabManager
 
         Log.Info($"Collab: requesting project '{_hostProjectName}' from host");
         StatusText = $"Downloading project '{ShortProjectName(_hostProjectName)}' from host...";
-        SendJson(host, new { t = "requestProject", project = _hostProjectName });
+        SendJson(HostLink!, new { t = "requestProject", project = _hostProjectName });
     }
 
     internal static string ShortProjectName(string displayName)
@@ -2384,6 +2989,9 @@ internal sealed class CollabManager
     /// <summary>Opens a local project by display name (short form accepted) into the visible graph window.</summary>
     internal static bool TryOpenProjectByName(string name)
     {
+        if (string.IsNullOrEmpty(name))
+            return false;
+
         // Shared with failover and boygrouping: every mode follows the active machine's project the
         // same way (in place, without a restart, when the project is installed).
         if (T3.Editor.Show.ProjectFollower.TrySwitchToName(name))
@@ -2443,6 +3051,20 @@ internal sealed class CollabManager
     {
         if (!peer.IsAuthenticated)
             return;
+
+        // Spectator mode: the host drops every graph op from participants while the toggle is
+        // off. Chat and presence are separate messages and keep flowing.
+        if (State == SessionState.Hosting && !ParticipantsCanEdit)
+        {
+            if (!_readOnlyNoticeShownFor.Contains(peer.AssignedId))
+            {
+                _readOnlyNoticeShownFor.Add(peer.AssignedId);
+                Log.Info($"Collab: dropped an op from {peer} (participants cannot edit)");
+                SendJson(peer, new { t = "canEdit", value = false });
+            }
+
+            return;
+        }
 
         if (json["op"] is not JObject op)
             return;
@@ -3286,6 +3908,24 @@ internal sealed class CollabManager
                     relayHost.SendPresenceTo(peer, buffer.AsSpan(0, size));
             }
         }
+        else if (_transport is CollabBackendWire.CollabBackendClientTransport backendClient)
+        {
+            if (backendClient.HostLink is { } hostLink)
+                backendClient.SendToPeer(hostLink, CollabProtocol.FrameType.Presence, payload);
+        }
+        else if (_transport is CollabBackendWire.CollabBackendHostTransport backendHost)
+        {
+            _localPresence.PeerId = 0;
+            size = _localPresence.Encode(buffer);
+            if (size <= 0)
+                return;
+
+            foreach (var peer in backendHost.Peers)
+            {
+                if (peer.IsAuthenticated)
+                    backendHost.SendToPeer(peer, CollabProtocol.FrameType.Presence, buffer.AsSpan(0, size));
+            }
+        }
     }
 
     // ---------------------------------------------------------------------------------------
@@ -3501,10 +4141,116 @@ internal sealed class CollabManager
                                  });
     }
 
+    // ---------------------------------------------------------------------------------------
+    // Spectator mode and join approval
+    // ---------------------------------------------------------------------------------------
+
+    /// <summary>Host toggle: when off, the host drops every graph op from participants (spectators
+    /// can watch and chat but not change anything). Broadcast as canEdit so guests can show it.</summary>
+    public bool ParticipantsCanEdit { get; private set; } = true;
+
+    /// <summary>True while this session was opened for remote management (either role): its room
+    /// is unlisted, the paired controller auto-approves, and the Remote tab shows it as active.</summary>
+    public bool IsRemoteManagedSession { get; private set; }
+
+    /// <summary>Guest view: the host runs the session in spectator mode.</summary>
+    public bool ReadOnlyForParticipants { get; private set; }
+
+    /// <summary>One waiting join request: who, which ticket, when.</summary>
+    public sealed class PendingJoinRequest
+    {
+        public string TicketId = "";
+        public string Name = "";
+        public string Lang = "";
+        public DateTime At = DateTime.Now;
+    }
+
+    private readonly List<PendingJoinRequest> _pendingJoinRequests = [];
+    private readonly HashSet<int> _readOnlyNoticeShownFor = [];
+
+    /// <summary>Join requests waiting for the host's decision. UI thread only.</summary>
+    public IReadOnlyList<PendingJoinRequest> PendingJoinRequests => _pendingJoinRequests;
+
+    /// <summary>Host: approves a join request; the negotiation starts right away.</summary>
+    public void ApproveJoin(string ticketId)
+    {
+        var request = _pendingJoinRequests.FirstOrDefault(r => r.TicketId == ticketId);
+        if (request != null)
+            _pendingJoinRequests.Remove(request);
+
+        AppendChat(null, $"{request?.Name ?? "A visitor"} was confirmed into the session");
+        (_transport as CollabBackendWire.CollabBackendHostTransport)?.ApproveTicket(ticketId);
+        WindowManager.CollabJoinRequestWindow.Config.Visible = false;
+    }
+
+    /// <summary>Host: declines a join request; blocked names are declined automatically from now on.</summary>
+    public void RejectJoin(string ticketId, bool block)
+    {
+        var request = _pendingJoinRequests.FirstOrDefault(r => r.TicketId == ticketId);
+        if (request != null)
+            _pendingJoinRequests.Remove(request);
+
+        if (request != null)
+            AppendChat(null, $"{request.Name}'s join request was declined{(block ? " (blocked)" : "")}");
+        (_transport as CollabBackendWire.CollabBackendHostTransport)?.RejectTicket(ticketId, block);
+        if (_pendingJoinRequests.Count == 0)
+            WindowManager.CollabJoinRequestWindow.Config.Visible = false;
+    }
+
+    /// <summary>Host: toggles spectator mode and tells everyone.</summary>
+    public void SetParticipantsCanEdit(bool value)
+    {
+        if (State != SessionState.Hosting || ParticipantsCanEdit == value)
+            return;
+
+        ParticipantsCanEdit = value;
+        _readOnlyNoticeShownFor.Clear();
+        _transport?.BroadcastJson(Peers, new { t = "canEdit", value });
+        AppendChat(null, value ? "Participants can edit again" : "Participants are spectators now (read-only)");
+        Log.Info($"Collab: participants can edit = {value}");
+
+        // Remember the choice so the next party starts in the same mode.
+        UserSettings.Config.CollabPartyControllable = value;
+        UserSettings.Save();
+
+        // The matching list's "type" column follows immediately, not on the next heartbeat.
+        if (State == SessionState.Hosting && RoomCode.Length > 0 && _roomKey.Length > 0 && CollabWebLobby.IsConfigured)
+        {
+            var config = UserSettings.Config;
+            CollabWebLobby.Update(RoomCode, _roomKey,
+                                  config.CollabSessionTitle, config.CollabSessionPurpose,
+                                  ProjectView.Focused?.OpenedProject.Package.DisplayName ?? "",
+                                  config.CollabListSession, value);
+        }
+    }
+
+    private void OnJoinRequested(string name, string ticketId)
+    {
+        _uiThreadActions.Enqueue(() =>
+                                 {
+                                     _pendingJoinRequests.Add(new PendingJoinRequest
+                                                                  {
+                                                                      TicketId = ticketId,
+                                                                      Name = name,
+                                                                  });
+                                     AppendChat(null, $"{name} requests to join the party");
+                                     WindowManager.CollabJoinRequestWindow.Config.Visible = true;
+                                     WindowManager.CollabJoinRequestWindow.RequestWindowFocus();
+                                 });
+    }
+
+    private void HandleCanEdit(CollabPeerConnection peer, JObject json)
+    {
+        ReadOnlyForParticipants = !(json["value"]?.Value<bool>() ?? true);
+        AppendChat(null, ReadOnlyForParticipants
+                             ? "The host made the session read-only: you can watch and chat"
+                             : "The host allows editing again");
+    }
+
     /// <summary>Host: answers a browser whisper. Fire-and-forget; failures land in the log.</summary>
     public void ReplyToLobbyWhisper(string to, string text)
     {
-        if (State != SessionState.Hosting || _currentTarget is not { Relay: true } target || text.Length == 0)
+        if (State != SessionState.Hosting || text.Length == 0)
             return;
 
         _lobbyWhispers.Add(new LobbyWhisperEntry
@@ -3516,54 +4262,70 @@ internal sealed class CollabManager
 
         var room = RoomCode;
         var key = _roomKey;
-        _ = Task.Run(async () =>
-                         {
-                             try
+
+        if (_currentTarget is { Relay: true } target)
+        {
+            _ = Task.Run(async () =>
                              {
-                                 var error = await CollabRelayWire.SendWhisperAsync(target.Host, target.Port, room,
-                                                                                    "", "", text, key, to);
-                                 if (error != null)
-                                     Log.Warning($"Collab: whisper reply failed: {error}");
-                             }
-                             catch (Exception e)
-                             {
-                                 Log.Warning($"Collab: whisper reply failed: {e.Message}");
-                             }
-                         });
+                                 try
+                                 {
+                                     var error = await CollabRelayWire.SendWhisperAsync(target.Host, target.Port, room,
+                                                                                        "", "", text, key, to);
+                                     if (error != null)
+                                         Log.Warning($"Collab: whisper reply failed: {error}");
+                                 }
+                                 catch (Exception e)
+                                 {
+                                     Log.Warning($"Collab: whisper reply failed: {e.Message}");
+                                 }
+                             });
+        }
+
+        if (CollabWebLobby.IsConfigured)
+            CollabWebLobby.ReplyWhisper(room, key, to, text);
     }
 
     /// <summary>
-    /// Host: updates the relay's listing of the running session (Change entry, Delete entry).
-    /// Fire-and-forget; a failure is logged and shown as the session error.
+    /// Host: updates the listing of the running session (Change entry, Delete entry) in the
+    /// web backend and, when the relay keeps its own list, there too.
     /// </summary>
     public void UpdateSessionListing(string title, string purpose, string project, bool listed)
     {
-        if (State != SessionState.Hosting || _currentTarget is not { Relay: true } target)
+        if (State != SessionState.Hosting)
             return;
 
         var room = RoomCode;
         var key = _roomKey;
-        _ = Task.Run(async () =>
-                         {
-                             try
+
+        if (_currentTarget is { Relay: true } target)
+        {
+            _ = Task.Run(async () =>
                              {
-                                 var error = await CollabRelayWire.UpdateListingAsync(target.Host, target.Port, room, key,
-                                                                                      title, purpose, project, listed,
-                                                                                      CancellationToken.None);
-                                 if (error != null)
+                                 try
                                  {
-                                     Log.Warning($"Collab: listing update failed: {error}");
-                                     _uiThreadActions.Enqueue(() => ErrorText = $"Updating the session listing failed: {error}");
+                                     var error = await CollabRelayWire.UpdateListingAsync(target.Host, target.Port, room, key,
+                                                                                          title, purpose, project, listed,
+                                                                                          CancellationToken.None);
+                                     if (error != null)
+                                     {
+                                         Log.Warning($"Collab: listing update failed: {error}");
+                                         _uiThreadActions.Enqueue(() => ErrorText = $"Updating the session listing failed: {error}");
+                                     }
                                  }
-                             }
-                             catch (Exception e)
-                             {
-                                 Log.Warning($"Collab: listing update failed: {e.Message}");
-                             }
-                         });
+                                 catch (Exception e)
+                                 {
+                                     Log.Warning($"Collab: listing update failed: {e.Message}");
+                                 }
+                             });
+        }
+
+        if (CollabWebLobby.IsConfigured)
+        {
+            CollabWebLobby.Update(room, key, title, purpose, project, listed);
+        }
     }
 
-    private void AppendChat(string? name, string text)
+    public void AppendChat(string? name, string text)
     {
         _chatLog.Add(new ChatEntry { Name = name, Text = text });
         if (_chatLog.Count > MaxChatEntries)
@@ -3851,7 +4613,7 @@ internal sealed class CollabManager
     /// directory. A rooted path or a ".." segment would put the downloaded files anywhere this
     /// machine can write.
     /// </summary>
-    private static string? SafeProjectFolderName(string name)
+    internal static string? SafeProjectFolderName(string name)
     {
         name = (name ?? "").Trim();
         if (name.Length == 0 || name is "." or ".." || name.Contains(".."))

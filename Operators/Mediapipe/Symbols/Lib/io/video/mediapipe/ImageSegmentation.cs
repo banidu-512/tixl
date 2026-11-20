@@ -233,7 +233,7 @@ public class ImageSegmentation : Instance<ImageSegmentation>
 
         // Registry lookup only - the native segmenter is created on the worker below, so a slow model
         // load never stalls the evaluation thread and a native failure surfaces off the frame path.
-        if (!AssetRegistry.TryResolveAddress($"Mediapipe:{modelName}", this, out var fullPath, out _, logWarnings: true))
+        if (!MediaPipeModelResolver.TryResolve(modelName, this, out var fullPath))
         {
             // Not Debug-gated: a missing asset is the one failure a user has to act on, and the retry
             // backoff keeps this to one message per backoff window.

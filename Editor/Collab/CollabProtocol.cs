@@ -33,9 +33,15 @@ namespace T3.Editor.Collab;
 /// </summary>
 internal static class CollabProtocol
 {
-    public const int ProtocolVersion = 1;
+    /// <summary>2: host-sequenced ops (seq/from/cid, echo to the sender, opNack) and stateHash.
+    /// Version 1 peers would apply their own echoed ops twice, so mixed sessions are refused.</summary>
+    public const int ProtocolVersion = 2;
     public const int DefaultTcpPort = 44700;
     public const int DefaultRelayPort = 44710;
+
+    /// <summary>Relay used when the relay address setting is empty. TiXLCollabRelay is expected to
+    /// run there; hosts and joiners must point at the same relay to see each other's rooms.</summary>
+    public const string DefaultRelayHost = "10.0.0.222";
 
     /// <summary>Hard upper bound for one reliable frame including the type byte.</summary>
     public const int MaxFrameSize = 4 * 1024 * 1024;
@@ -44,7 +50,8 @@ internal static class CollabProtocol
     public const int MaxJsonPayload = 1024 * 1024;
 
     /// <summary>Expected size of one presence datagram with a full selection list (connId, flags, guid, 2 floats, count, 15 guids).</summary>
-    public const int MaxPresencePayload = 2 + 16 + 8 + 1 + 15 * 16;
+    public const int MaxPresencePayload = 2 + 16 + 8 + 1 + 15 * 16 + 1 + 3 + 1 + MaxPressedKeysPerPresence;
+    public const int MaxPressedKeysPerPresence = 4;
 
     public const int MaxPeers = 16;
     public const int MaxSelectionIdsPerPresence = 15;
@@ -52,10 +59,12 @@ internal static class CollabProtocol
     /// while costing nothing measurable on a wired LAN.</summary>
     public const int HeartbeatIntervalMs = 500;
     public const int HeartbeatPingSize = 8;
-    /// <summary>Silence for more than ~6 × heartbeat means the peer is gone. TCP keepalive below
-    /// catches half-open links even faster. Show LAN budget; relay peers get
+    /// <summary>Silence for more than ~12 × heartbeat means the peer is gone. Heartbeats ride the
+    /// UI thread, so a peer that momentarily stalls (a snapshot apply, a project compile) must not
+    /// be declared dead: 6 s survives a multi-second stall while still feeling instant on a show
+    /// LAN. TCP keepalive below catches truly dead links as well; relay peers get
     /// <see cref="RelayPeerTimeoutMs"/>.</summary>
-    public const int PeerTimeoutMs = 3_000;
+    public const int PeerTimeoutMs = 6_000;
     /// <summary>Relay sessions ride the internet: a transient 3 s stall must not end a session,
     /// so relay-backed peers tolerate ~10 s of silence.</summary>
     public const int RelayPeerTimeoutMs = 10_000;
@@ -95,7 +104,11 @@ internal static class CollabProtocol
         Json = 1,
         Presence = 2,
         Heartbeat = 3,
+        Signal = 4,
     }
+
+    /// <summary>Hard upper bound for one WebRTC signaling frame.</summary>
+    public const int MaxSignalPayload = 64 * 1024;
 
     /// <summary>Opens a TCP connection, giving up after <see cref="ConnectTimeoutMs"/>. Throws on failure.</summary>
     public static TcpClient ConnectWithTimeout(IPEndPoint endPoint)
@@ -185,6 +198,14 @@ internal static class CollabProtocol
         return Encoding.UTF8.GetBytes(json);
     }
 
+    /// <summary>Whether a JSON frame is a kick — the one relay message that must survive an
+    /// active peer-to-peer data channel (see the WebRTC client's dispatch).</summary>
+    public static bool IsKickJson(ReadOnlySpan<byte> payload)
+    {
+        return TryDecodeJson(payload, out var json)
+               && string.Equals(GetString(json, "t"), "kicked", StringComparison.Ordinal);
+    }
+
     public static bool TryDecodeJson(ReadOnlySpan<byte> payload, out JObject json)
     {
         json = null!;
@@ -247,6 +268,43 @@ internal static class CollabProtocol
                 return true;
             case JTokenType.String:
                 return Guid.TryParse(value.Value<string>(), out guid);
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>
+    /// Round trip of a heartbeat this side sent: the echo carries our own TickCount64, so the age of
+    /// that stamp is the trip there and back. Out-of-range values (an echo from a previous session,
+    /// or a clock jump) are ignored instead of reported as a latency.
+    /// </summary>
+    public static int MeasureHeartbeatRtt(ReadOnlySpan<byte> echo)
+    {
+        if (echo.Length != HeartbeatPingSize + 1)
+            return -1;
+
+        var sent = BitConverter.ToInt64(echo);
+        var rtt = Environment.TickCount64 - sent;
+        return rtt is >= 0 and <= 10_000 ? (int)rtt : -1;
+    }
+
+    /// <summary>Long read for values that do not fit an int — TickCount64 stamps, for instance.</summary>
+    public static bool TryGetLong(JObject json, string property, out long value)
+    {
+        value = 0;
+        if (!json.TryGetValue(property, out var token))
+            return false;
+
+        switch (token.Type)
+        {
+            case JTokenType.Integer:
+                value = token.Value<long>();
+                return true;
+            case JTokenType.Float:
+                value = (long)token.Value<double>();
+                return true;
+            case JTokenType.String:
+                return long.TryParse(token.Value<string>(), out value);
             default:
                 return false;
         }
@@ -315,14 +373,35 @@ internal sealed class PresencePacket
     public Vector2 CursorOnCanvas;
     public Guid[] SelectedChildIds = [];
 
+    /// <summary>Decaying wheel-spin value (signed ticks), appended to the payload so peers can show
+    /// scrolling. Zero for peers on an older build that doesn't send it.</summary>
+    public sbyte WheelSpin;
+
+    /// <summary>The participant's chosen cursor color as 0xRRGGBB; 0 lets receivers derive one from the user id.</summary>
+    public int ColorRgb;
+
+    /// <summary>Key codes held right now, as the interaction overlay labels them.</summary>
+    public byte[] PressedKeys = [];
+
     public const byte FlagHoveringCanvas = 0x01;
+    public const byte FlagLeftButton = 0x02;
+    public const byte FlagRightButton = 0x04;
+    public const byte FlagMiddleButton = 0x08;
+    public const byte FlagDoubleClick = 0x10;
+    public const byte FlagAddingOperator = 0x20;
 
     public bool IsHoveringCanvas => (Flags & FlagHoveringCanvas) != 0;
+    public bool IsLeftButtonDown => (Flags & FlagLeftButton) != 0;
+    public bool IsRightButtonDown => (Flags & FlagRightButton) != 0;
+    public bool IsMiddleButtonDown => (Flags & FlagMiddleButton) != 0;
+    public bool IsDoubleClick => (Flags & FlagDoubleClick) != 0;
+    public bool IsAddingOperator => (Flags & FlagAddingOperator) != 0;
 
     public int Encode(Span<byte> target)
     {
         var selectionCount = Math.Min(SelectedChildIds.Length, CollabProtocol.MaxSelectionIdsPerPresence);
-        var size = 2 + 16 + 8 + 1 + selectionCount * 16;
+        var keyCount = Math.Min(PressedKeys.Length, CollabProtocol.MaxPressedKeysPerPresence);
+        var size = 2 + 16 + 8 + 1 + selectionCount * 16 + 1 + 3 + 1 + keyCount;
         if (target.Length < size)
             return 0;
 
@@ -336,6 +415,17 @@ internal sealed class PresencePacket
         {
             SelectedChildIds[i].TryWriteBytes(target.Slice(27 + i * 16, 16));
         }
+
+        // Everything after the selection list is appended rather than inserted: an older peer reads
+        // exactly the bytes it knows and ignores the rest, so mixed builds keep exchanging cursors.
+        var tail = 27 + selectionCount * 16;
+        target[tail] = unchecked((byte)WheelSpin);
+        target[tail + 1] = (byte)(ColorRgb >> 16);
+        target[tail + 2] = (byte)(ColorRgb >> 8);
+        target[tail + 3] = (byte)ColorRgb;
+        target[tail + 4] = (byte)keyCount;
+        for (var i = 0; i < keyCount; i++)
+            target[tail + 5 + i] = PressedKeys[i];
 
         return size;
     }
@@ -362,6 +452,16 @@ internal sealed class PresencePacket
                                                       BinaryPrimitives.ReadSingleLittleEndian(payload.Slice(22, 4))),
                          SelectedChildIds = new Guid[selectionCount],
                      };
+
+        var wheelOffset = 27 + selectionCount * 16;
+        packet.WheelSpin = payload.Length > wheelOffset ? unchecked((sbyte)payload[wheelOffset]) : (sbyte)0;
+
+        if (payload.Length >= wheelOffset + 5)
+        {
+            packet.ColorRgb = (payload[wheelOffset + 1] << 16) | (payload[wheelOffset + 2] << 8) | payload[wheelOffset + 3];
+            var keyCount = Math.Min((int)payload[wheelOffset + 4], Math.Min(CollabProtocol.MaxPressedKeysPerPresence, payload.Length - wheelOffset - 5));
+            packet.PressedKeys = payload.Slice(wheelOffset + 5, keyCount).ToArray();
+        }
 
         for (var i = 0; i < selectionCount; i++)
         {

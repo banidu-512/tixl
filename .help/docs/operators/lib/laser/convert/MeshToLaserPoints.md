@@ -4,9 +4,9 @@
 
 Converts a mesh into laser points — brings 3D mesh content into the laser pipeline as 2D vector graphics.
 
-**Wireframe** mode emits each unique triangle edge as an isolated lit run (blanked approach point, then straight-line samples at `MaxEdgeStep`), so each edge becomes its own shape. **Vertices** mode emits each vertex as an isolated dwell dot (blanked jump + dwell run, like [LaserCamera] in dots mode) so the mesh silhouette appears as a point cloud. Positions are projected through a Camera into ILDA 16-bit space; color comes from the vertex color multiplied by `Brightness`.
+**Wireframe** mode emits each unique triangle edge as an isolated lit run (blanked approach point, then straight-line samples at `MaxEdgeStep`), so each edge becomes its own shape. **Vertices** mode emits each vertex as an isolated dwell dot (blanked jump + dwell run, matching [LaserCamera]'s dot encoding) so the mesh silhouette appears as a point cloud. Positions are projected through a Camera into ILDA 16-bit space; color comes from the vertex color multiplied by `Brightness`.
 
-Consume the `LaserPoints` output through [LaserPointsToBuffer]: into a [LaserCamera]'s `PointBuffer` input to project it to a laser output, or into a point draw op for on-screen preview. Optimization and safety run in the output setup, not in this operator.
+Consume the `LaserPoints` output through [LaserPointsToBuffer] into a point or line draw op for on-screen preview. To put the generated frame on a laser, draw the mesh into a [LaserCamera]'s **Scene** instead: buffers from [LaserPointsToBuffer] are excluded from scene capture so a laser frame never echoes itself. Optimization and safety run in the output setup, not in this operator.
 
 ## Input Parameters
 | Name | Description |

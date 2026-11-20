@@ -42,6 +42,9 @@ internal static class CollabRelayWire
 {
     public const byte BroadcastSlot = 0xFF;
 
+    /// <summary>Slot of a relay-to-host frame that carries a JSON control message instead of member traffic.</summary>
+    public const byte ControlSlot = 0xFE;
+
     /// <summary>Longest control line accepted from the relay (identity fields make them longer than a bare slot number).</summary>
     public const int ControlLineLimit = 4096;
 
@@ -63,6 +66,13 @@ internal static class CollabRelayWire
                               ["room"] = (roomCode ?? "").Trim(),
                               ["v"] = 2,
                           };
+
+        // A little-endian length prefix can start with '{', so bare control lines on the host stream
+        // are ambiguous. Asking for framed control makes the relay send them as frames on ControlSlot;
+        // a relay that does not know the field keeps sending lines and says nothing in its reply.
+        if (role == "host")
+            request["ctl"] = "frame";
+
         if (hello != null)
         {
             void Add(string key, string value)
@@ -332,6 +342,9 @@ internal class CollabRelayHostTransport : CollabTransport
     private readonly CancellationTokenSource _cancellation = new();
     private readonly Timer _keepAliveTimer;
 
+    /// <summary>The relay agreed to send control messages as frames, so no byte value on the stream is a line marker.</summary>
+    private readonly bool _framedControl;
+
     /** The relay drops connections idle for 90 s; a host waiting for its first member sends nothing else. */
     private const int KeepAliveIntervalMs = 15_000;
 
@@ -343,6 +356,8 @@ internal class CollabRelayHostTransport : CollabTransport
         _relayClient = relayClient;
         _relayStream = relayClient.GetStream();
         AssignedRoomCode = assignedRoomCode;
+        _framedControl = CollabRelayWire.HandshakeReplies.TryGetValue(relayClient, out var reply)
+                         && reply["ctl"]?.Value<string>() == "frame";
         _keepAliveTimer = new Timer(_ => SendKeepAlive(), null, KeepAliveIntervalMs, KeepAliveIntervalMs);
     }
 
@@ -474,13 +489,14 @@ internal class CollabRelayHostTransport : CollabTransport
         {
             while (!cancellation.IsCancellationRequested)
             {
-                // Control lines and frames share the stream; a frame length prefix can never start
-                // with '{' (that would be a >2 GiB length), so the discriminator is unambiguous.
+                // With a legacy relay, control lines and frames share the stream and '{' marks a line.
+                // That is ambiguous (a little-endian length can start with 0x7B), which is why a relay
+                // that understands framed control sends its control messages as frames instead.
                 var first = _relayStream.ReadByte();
                 if (first < 0)
                     break;
 
-                if (first == '{')
+                if (!_framedControl && first == '{')
                 {
                     var line = await ReadRestOfLineAsync((byte)first, cancellation);
                     HandleControlLine(line);
@@ -501,6 +517,12 @@ internal class CollabRelayHostTransport : CollabTransport
 
                 if (!await CollabProtocol.TryReadExactAsync(_relayStream, buffer.AsMemory(0, length), cancellation))
                     break;
+
+                if (_framedControl && buffer[0] == CollabRelayWire.ControlSlot)
+                {
+                    HandleControlLine(Encoding.UTF8.GetString(buffer, 2, length - 2));
+                    continue;
+                }
 
                 DispatchRelayFrame(buffer.AsSpan(0, length));
             }

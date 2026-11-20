@@ -1,4 +1,4 @@
-#nullable enable
+﻿#nullable enable
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -237,6 +237,63 @@ public static class FailoverArbiter
 
                 var projectName = bestActive?.ProjectName;
                 return string.IsNullOrEmpty(projectName) ? null : projectName;
+            }
+        }
+    }
+
+    private static long _lastFrameTicks;
+
+    /// <summary>
+    /// Called once per presented frame. A node that comes back from a freeze longer than the stall
+    /// window demotes itself before the first output is evaluated, so a zombie master can never send
+    /// a frame while a standby has already taken over.
+    /// </summary>
+    public static void NotifyFrameAdvanced()
+    {
+        var now = Environment.TickCount64;
+        long previous;
+        lock (Gate)
+        {
+            previous = _lastFrameTicks;
+            _lastFrameTicks = now;
+        }
+
+        if (previous == 0)
+            return;
+
+        var stallWindow = (long)Math.Clamp(_config.HeartbeatMs * 3, 500, 30_000);
+        if (now - previous <= stallWindow || _role != NodeRole.Active)
+            return;
+
+        lock (Gate)
+        {
+            if (_role == NodeRole.Active)
+                Transition(NodeRole.Standby, $"Frame loop stalled for {now - previous} ms — yielding in case a standby took over");
+        }
+    }
+
+    /// <summary>Host name/address of the currently active peer (for NDI source-name matching);
+    /// null when failover is off or no active peer is heard from.</summary>
+    public static string? PeerHostName
+    {
+        get
+        {
+            lock (Gate)
+            {
+                var now = Environment.TickCount64;
+                var timeout = TimeoutMs;
+                PeerInfo? bestActive = null;
+                foreach (var peer in _peers.Values)
+                {
+                    if (now - peer.LastHeardTicks > timeout || !peer.AdvertisesActive)
+                        continue;
+
+                    if (bestActive == null || Beats(peer.Priority, peer.NodeId, bestActive.Priority, bestActive.NodeId))
+                        bestActive = peer;
+                }
+
+                var address = bestActive?.Address;
+                return string.IsNullOrEmpty(address) ? null : address;
             }
         }
     }
@@ -710,6 +767,20 @@ public static class FailoverArbiter
         _lastStateChangeTicks = Environment.TickCount64;
         RecordEvent($"{newRole}: {reason}");
         Log.Info($"Failover: {newRole} — {reason}");
+    }
+
+    /// <summary>
+    /// Called by output operators (Art-Net/sACN) when sending keeps failing on the active node.
+    /// The fault is recorded for the failover UI; repeated faults from the active node are the
+    /// signal a standby should take over.
+    /// </summary>
+    public static void ReportOutputFault(string reason)
+    {
+        lock (Gate)
+        {
+            RecordEvent($"Output fault ({_role}): {reason}");
+        }
+        Log.Warning($"Failover: output fault reported while {_role} - {reason}");
     }
 
     private static void RecordEvent(string message)

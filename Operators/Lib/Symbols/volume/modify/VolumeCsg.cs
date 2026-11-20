@@ -6,6 +6,7 @@ using T3.Core.DataTypes.Volume;
 using T3.Core.DataTypes.Volume.Tools;
 using T3.Core.DataTypes.Volume.IO;
 using T3.Core.Logging;
+using Lib.Utils;
 
 namespace Lib.volume.modify;
 
@@ -13,9 +14,10 @@ namespace Lib.volume.modify;
 [Guid("49449447-78bd-525f-96ad-83759321316d")]
 internal sealed class VolumeCsg : Instance<VolumeCsg>
 {
+    private readonly record struct Key(VdbVolume A, VdbVolume B, T3.Core.DataTypes.Volume.Tools.VolumeCsg.Operation Operation);
+
     [Output(Guid = "e7711aec-252e-5e6c-bcea-a772dbd93e2c")]
     public readonly Slot<VdbVolume> Volume = new();
-
 
     private enum Operations
     {
@@ -27,6 +29,7 @@ internal sealed class VolumeCsg : Instance<VolumeCsg>
     public VolumeCsg()
     {
         Volume.UpdateAction = Update;
+        _job = new BackgroundJob<Key, VdbVolume>(this, nameof(VolumeCsg), Compute, Volume);
     }
 
     private void Update(EvaluationContext context)
@@ -35,44 +38,30 @@ internal sealed class VolumeCsg : Instance<VolumeCsg>
         var b = VolumeB.GetValue(context);
         var operation = (T3.Core.DataTypes.Volume.Tools.VolumeCsg.Operation)Operation.GetValue(context);
 
-        var gridA = a?.GetFloatGrid();
-        var gridB = b?.GetFloatGrid();
-        if (gridA == null || gridB == null)
+        if (a?.GetFloatGrid() == null || b?.GetFloatGrid() == null)
         {
+            _job.Reset();
             Volume.Value = null;
-            _lastA = null;
-            _lastB = null;
             return;
         }
 
-        if (ReferenceEquals(a, _lastA) && ReferenceEquals(b, _lastB) && operation == _lastOp)
-            return;
-
-        try
+        var key = new Key(a, b, operation);
+        switch (_job.Poll(context, key, out var result))
         {
-            Volume.Value = new VdbVolume(T3.Core.DataTypes.Volume.Tools.VolumeCsg.Combine(gridA, gridB, operation));
-            _lastA = a;
-            _lastB = b;
-            _lastOp = operation;
-            _lastError = null;
-        }
-        catch (Exception e)
-        {
-            // An exception escaping an update is fatal to the editor, so a broken input volume
-            // must degrade to an empty output instead.
-            Volume.Value = null;
-            _lastA = null;
-            _lastB = null;
-            if (_lastError != e.Message)
-                Log.Warning($"VolumeCsg failed: {e.Message}", this);
-            _lastError = e.Message;
+            case BackgroundJobOutcome.Ready:
+                Volume.Value = result;
+                break;
+            case BackgroundJobOutcome.Failed:
+                // A broken input volume degrades to an empty output.
+                Volume.Value = null;
+                break;
         }
     }
 
-    private VdbVolume _lastA;
-    private VdbVolume _lastB;
-    private T3.Core.DataTypes.Volume.Tools.VolumeCsg.Operation _lastOp = (T3.Core.DataTypes.Volume.Tools.VolumeCsg.Operation)(-1);
-    private string _lastError;
+    private static VdbVolume Compute(Key key)
+        => new(T3.Core.DataTypes.Volume.Tools.VolumeCsg.Combine(key.A.GetFloatGrid(), key.B.GetFloatGrid(), key.Operation));
+
+    private readonly BackgroundJob<Key, VdbVolume> _job;
 
     [Input(Guid = "c8eda1a2-1379-572e-92d1-ea640a6b9e61")]
     public readonly InputSlot<VdbVolume> VolumeA = new();

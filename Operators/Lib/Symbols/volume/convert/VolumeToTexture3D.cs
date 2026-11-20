@@ -7,6 +7,8 @@ using T3.Core.DataTypes.Volume;
 using T3.Core.DataTypes.Volume.Tools;
 using T3.Core.DataTypes.Volume.IO;
 using T3.Core.Logging;
+using Lib.Utils;
+using T3.Core.Operator.Slots;
 using T3.Graphics.Compat;
 
 namespace Lib.volume.convert;
@@ -31,9 +33,18 @@ internal sealed class VolumeToTexture3D : Instance<VolumeToTexture3D>
         Texture.UpdateAction = Update;
         BoundsMin.UpdateAction = Update;
         BoundsMax.UpdateAction = Update;
+        _polledOutputs = [Texture, BoundsMin, BoundsMax];
     }
 
     private void Update(EvaluationContext context)
+    {
+        UpdateCore(context);
+        BackgroundPolling.Set(_extractTask != null, _polledOutputs);
+    }
+
+    private readonly ISlot[] _polledOutputs;
+
+    private void UpdateCore(EvaluationContext context)
     {
         var volume = Volume.GetValue(context);
         var maxResolution = Math.Clamp((int)MaxResolution.GetValue(context), 8, 2048);
@@ -136,6 +147,15 @@ internal sealed class VolumeToTexture3D : Instance<VolumeToTexture3D>
         if (maxResolution <= InlineBakeMaxResolution)
         {
             var denseInline = VolumeDense.ExtractDense(grid, maxResolution);
+            if (denseInline == null)
+            {
+                // An empty grid is a valid empty output, not a failed bake.
+                ReleaseTexture();
+                ClearOutputs();
+                _last = key;
+                return;
+            }
+
             if (!TryUpload(denseInline, grid))
                 _failedKey = key;
             else

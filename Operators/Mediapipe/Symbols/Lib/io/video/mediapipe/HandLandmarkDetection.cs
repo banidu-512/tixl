@@ -271,7 +271,7 @@ public class HandLandmarkDetection : Instance<HandLandmarkDetection>
         _activeMinTrackingConfidence = minTrackingConfidence;
 
         // Registry lookup only - the native landmarker creation runs on the worker below.
-        var modelFound = AssetRegistry.TryResolveAddress("Mediapipe:hand_landmarker.task", this, out var fullPath, out _, logWarnings: true);
+        var modelFound = MediaPipeModelResolver.TryResolve("hand_landmarker.task", this, out var fullPath);
         if (!modelFound)
         {
             // Not Debug-gated: a missing asset is the one failure a user has to act on, and the retry
@@ -901,6 +901,9 @@ public class HandLandmarkDetection : Instance<HandLandmarkDetection>
         // The reaper owns the native instance now; give a running inference a moment to
         // return, but never hang shutdown on a wedged native library.
         _reaper.WaitForPending(2000);
+
+        _debugTexture?.Dispose();
+        _debugTexture = null;
 
         _debugTexture?.Dispose();
         _debugTexture = null;

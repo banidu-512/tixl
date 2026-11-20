@@ -4,78 +4,54 @@
 
 **Universal geometry-to-laser converter and a standard TiXL camera in one.**
 
-LaserCamera combines the functionality of a regular Camera op with geometry capture for laser output:
-- It renders the scene connected to its `Scene` input through its own lens (camera dropdown, mouse control)
-- Every point/line/mesh drawn inside that scene is captured and encoded into the same laser frame
-- Dots, line segments, and mesh wireframes are merged with Group/transform scopes applied
+Like the common [Camera] op it has its own lens (selectable in the output window camera dropdown,
+mouse-drivable), and every point, line and mesh drawn inside the **Scene** connected to it is captured
+and encoded into a laser frame - dots, line segments and mesh wireframes merged, with the `Group` and
+transform scopes active at draw time applied.
 
-## Key Features
+Point-cloud content becomes isolated dwell dots, line strips become blank-separated segments, and
+meshes become wireframes of their unique edges. The projection is driven by the op's own aim
+(Position/Target or Use Rotation angles, FieldOfView) - or, with a camera wired into
+**CameraReference**, by that camera's view and lens, whose aim inputs then take over. **OutputRef**
+only routes the frame to a laser output of the output setup, whose driver streams it to the bound
+device.
 
-**Dual Purpose:**
-- **Camera functionality:** Renders scenes and provides standard camera operations (position, target, field of view, mouse dragging)
-- **Laser functionality:** Captures scene geometry and converts it to laser points for projection
+Like [SendToOutput] it is a supplier of the output setup: it registers itself, lists as CONTENT
+there, and can be frozen with **Update**. The **Output** command renders nothing - laser data
+leaves only through the **LaserPoints** chain, and the command path carries the gizmo. The scene is
+captured once per laser pump, not per rendered frame.
 
-**Flexible Inputs:**
-- Direct point, line, and mesh buffers work alongside scene capture
-- Older patches using Camera ops continue to work unchanged
-- Supports both laser output setup and legacy camera ops
+See the [LaserCamera guide](../../../../using/laser/LaserCamera.md) for the capture and encoding
+rules (dots, line segments, mesh wireframes, frame budget).
 
-**Laser Output:**
-- Projects captured geometry into laser coordinate system
-- Converts to 16-bit ILDA format (-32767..32767)
-- Supports individual colors per point/line/edge
-- Handles perspective projection from camera view
-- Compatible with EtherDream, PONK, and other laser outputs
+## Input Parameters
+| Name (Relevancy & Type) | Description |
+|---|---|
+| **Scene** (Command) | Subtree to capture. Everything drawn inside it merges into the laser frame. |
+| **CameraReference** (Object) | Reference output of another camera. Connected, that camera's view and lens drive the projection and this op's own aim inputs are ignored. |
+| **OutputRef** (Guid) | The laser output of the active setup this camera is routed to; empty means unrouted. |
+| **Update** (Boolean) | Off holds the last frame and stops evaluating the scene. |
+| **Position** (Vector3) | Camera position. Ignored while a CameraReference is connected. |
+| **Target** (Vector3) | Camera look-at target. Ignored while a CameraReference is connected. |
+| **Up** (Vector3) | Camera up vector. Ignored while a CameraReference is connected. |
+| **UseRotation** (Boolean) | Aim by Rotation angles around Position instead of Target. Ignored while a CameraReference is connected. |
+| **Rotation** (Vector3) | Pitch/Yaw/Roll in degrees for UseRotation. Ignored while a CameraReference is connected. |
+| **FieldOfView** (Single) | Vertical field of view in degrees. Ignored while a CameraReference is connected. |
+| **Roll** (Single) | Camera roll in degrees. Ignored while a CameraReference is connected. |
+| **AspectRatio** (Single) | -1 uses the square scanner field; an explicit value enables anamorphic framing. Ignored while a CameraReference is connected (the scanner field stays square). |
+| **ClipPlanes** (Vector2) | Near and far planes. Geometry outside them is dropped. Ignored while a CameraReference is connected. |
+| **DotDwellPoints** (Int32) | Lit repeats per isolated dot (1..64). Brighter/stabler dots cost frame budget. |
+| **MaxEdgeStep** (Single) | Sample spacing for lines and wireframe edges in 16-bit laser units. |
+| **PrintToLog** (Boolean) | Log per-source counts and projected bounds for diagnostics. |
 
-**Setup Integration:**
-- Uses output setup laser outputs to drive venue-aligned projection
-- Includes calibration solve when available
-- Supports manual look-at configuration in output setup
-- Automatically aligns laser frame with physical stage geometry
+## Outputs
+| Name | Type |
+|---|---|
+| **LaserPoints** | T3.Core.DataTypes.StructuredList |
+| **Output** | T3.Core.DataTypes.Command |
+| **Reference** | System.Object |
 
-## Usage
-
-**Basic Laser Projection:**
-```
-LaserCamera
-  → Scene (your scene to render and capture)
-  → OutputRef (laser output from output setup)
-```
-
-**Legacy Camera + Laser:**
-```
-LaserCamera
-  → Camera (optional external camera op)
-  → Scene
-  → OutputRef (for laser alignment)
-```
-
-**Laser-Only (Direct Inputs):**
-```
-LaserCamera
-  → PointBuffer (particle clouds)
-  → LineBuffer (stroke lines)
-  → Mesh (wireframe geometry)
-  → OutputRef (laser output for alignment)
-```
-
-## Output Types
-
-- **LaserPoints:** Structured list of laser points with X, Y coordinates and RGB colors (16-bit each)
-- **PointCount:** Number of points in the current laser frame
-- **SampleX/SampleY:** Up to 10 sample point positions for debugging
-- **Output:** Command output for pipeline control
-- **Reference:** Camera reference (for connection to external camera ops)
-
-## Notes
-
-- **Lighting efficiency:** Uses dot dwell repeats for brighter, more stable dots
-- **Projection quality:** Maintains perspective correction for accurate laser projection
-- **Performance:** Scene capture and rendering happen simultaneously in one pass
-- **Compatibility:** Works with existing patches using standard Camera ops
-- **Safety:** DotDwellPoints is clamped to 64 lit repeats to stay within laser output capabilities
-
-**See also:** [PONKInput](../input/PONKInput.md) and the laser outputs in the [Output Setup](../../../../using/OutputSetup.md)
+**See also:** [MeshToLaserPoints](../convert/MeshToLaserPoints.md), [PONKInput](../input/PONKInput.md) and the laser outputs in the [Output Setup](../../../../using/OutputSetup.md)
 
 ---
 *Generated from operator definition in Lib.laser.camera*

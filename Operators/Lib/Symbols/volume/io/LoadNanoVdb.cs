@@ -5,6 +5,8 @@ using T3.Core.DataTypes;
 using T3.Core.DataTypes.Volume;
 using T3.Core.DataTypes.Volume.IO;
 using T3.Core.Logging;
+using Lib.Utils;
+using T3.Core.Operator.Slots;
 using T3.Core.Resource;
 using T3.Graphics.Compat;
 
@@ -49,9 +51,18 @@ internal sealed class LoadNanoVdb : Instance<LoadNanoVdb>
         GridName.UpdateAction = Update;
         WorldMin.UpdateAction = Update;
         WorldMax.UpdateAction = Update;
+        _polledOutputs = [Buffer, ShaderResourceView, TreeOffsets, VoxelCount, VoxelSize, GridName, WorldMin, WorldMax];
     }
 
     private void Update(EvaluationContext context)
+    {
+        UpdateCore(context);
+        BackgroundPolling.Set(_loadTask != null, _polledOutputs);
+    }
+
+    private readonly ISlot[] _polledOutputs;
+
+    private void UpdateCore(EvaluationContext context)
     {
         var address = Path.GetValue(context)?.Trim();
 
@@ -129,6 +140,12 @@ internal sealed class LoadNanoVdb : Instance<LoadNanoVdb>
     {
         if (_prefetchTask is { IsCompleted: false } || ahead <= 0 || !VdbSequence.IsAnimated(address))
             return;
+
+        // Steady state re-evaluates the same displayed frame over and over; its followers are
+        // already in the cache, so schedule once per frame number instead of once per evaluation.
+        if (frame == _lastPrefetchFrame)
+            return;
+        _lastPrefetchFrame = frame;
 
         var budget = FrameCache.BudgetBytes;
         var upcoming = new List<string>();
@@ -340,6 +357,7 @@ internal sealed class LoadNanoVdb : Instance<LoadNanoVdb>
     private DateTime _lastWriteTime;
     private Task<LoadResult> _loadTask;
     private Task _prefetchTask;
+    private int _lastPrefetchFrame = -1;
     private readonly BufferWithViews _bufferWithViews = new();
 
     [Input(Guid = "69a0c6d6-243c-4cf2-b022-c557955660fd")]

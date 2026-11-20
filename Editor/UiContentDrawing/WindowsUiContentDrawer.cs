@@ -3,6 +3,7 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Threading;
 using ImGuiNET;
+using T3.Core.Animation;
 using T3.Graphics.Compat;
 using T3.Graphics;
 using System.Numerics;
@@ -17,6 +18,7 @@ using T3.Editor.Gui.Styling;
 using T3.Editor.Gui.UiHelpers;
 using T3.Editor.Gui.Windows;
 using T3.Editor.Gui.Windows.Analyze;
+using T3.Editor.Gui.Windows.Layouts;
 using T3.Editor.Gui.Windows.Output;
 using T3.Editor.SystemUi;
 using T3.Editor.UiModel.ProjectHandling;
@@ -143,7 +145,11 @@ internal sealed class WindowsUiContentDrawer : IUiContentDrawer<Device>
             ImGui.SetCurrentContext(_imguiContext);
             UiContentUpdate.SetupResourcesAndFontsWithScaling();
 
-            if (ProgramWindows.Main.IsMinimized && UserSettings.Config.SuspendRenderingWhenHidden)
+            // Playback and display-bound outputs are only evaluated by these frames: suspending them would
+            // leave audio streams running past their clip ends and freeze the outputs on other displays.
+            var isIdle = Playback.Current.PlaybackSpeed == 0
+                         && OutputWindowHandling.Presenting.Count == 0;
+            if (ProgramWindows.Main.IsMinimized && UserSettings.Config.SuspendRenderingWhenHidden && isIdle)
             {
                 // A minimized editor must keep the show alive: laser outputs stream from the
                 // setup, and skipping their pump stops fresh frames — the streams' frame
@@ -169,11 +175,11 @@ internal sealed class WindowsUiContentDrawer : IUiContentDrawer<Device>
 
             if (!string.IsNullOrEmpty(Program.NewImGuiLayoutDefinition))
             {
-                ImGui.LoadIniSettingsFromMemory(Program.NewImGuiLayoutDefinition);
+                ImGui.LoadIniSettingsFromMemory(LayoutHandling.FitImGuiLayoutToDockSpace(Program.NewImGuiLayoutDefinition));
                 Program.NewImGuiLayoutDefinition = string.Empty;
             }
 
-            // Release any modifier whose key-up we never saw (Alt+Tab between the main and viewer windows is
+            // Release any modifier whose key-up we never saw (Alt+Tab between the main and output windows is
             // the usual culprit) before it can strand canvas interaction for the whole frame.
             SdlImGuiInput.ReconcileStuckModifiers();
 
@@ -183,10 +189,11 @@ internal sealed class WindowsUiContentDrawer : IUiContentDrawer<Device>
             // step with the live send ops — both independent of which windows are open.
             OutputSetupHandling.UpdateFrame();
             ContentSourceSync.UpdateFrame();
+            LaserRoutingSync.UpdateFrame();
 
             // Drive projection-mapping outputs: renders each bound output's composite every frame
             // (so its content evaluates even when nothing shows it) and hands it to that output's
-            // display window. Must run before any viewer back buffer is bound below.
+            // display window. Must run before the output windows' back buffers are bound below.
             OutputPresentation.UpdatePresentation();
 
             // Laser outputs present no composite — their frame streams from the camera routed to
@@ -196,46 +203,6 @@ internal sealed class WindowsUiContentDrawer : IUiContentDrawer<Device>
                 LaserDriver.Update();
 
             DrawOutputWindows();
-
-            // Render 2nd view
-            ProgramWindows.Viewer.SetVisible(T3Ui.ShowSecondaryRenderWindow);
-
-            if (T3Ui.ShowSecondaryRenderWindow)
-            {
-                var viewer = ProgramWindows.Viewer;
-                ProgramWindows.Viewer.PrepareRenderingFrame();
-
-                ProgramWindows.SetVertexShader(SharedResources.FullScreenVertexShaderResource);
-                ProgramWindows.SetPixelShader(SharedResources.FullScreenPixelShaderResource);
-
-                if (UserSettings.Config.MirrorUiOnSecondView)
-                {
-                    if (ProgramWindows.UiCopyTextureSrv != null && !ProgramWindows.UiCopyTextureSrv.IsDisposed)
-                    {
-                        ProgramWindows.SetRasterizerState(SharedResources.ViewWindowRasterizerState);
-                        ProgramWindows.SetPixelShaderSRV(ProgramWindows.UiCopyTextureSrv);
-                        ProgramWindows.DrawTextureToSecondaryRenderOutput();
-                    }
-                }
-                else
-                {
-                    // No texture yet (bound output with nothing composited, or update paused) — the
-                    // window just stays cleared this frame. Not an error, so don't log per-frame.
-                    if (viewer.Texture is { IsDisposed: false })
-                    {
-                        if (_viewWindowBackgroundSrv == null ||
-                            _viewWindowBackgroundSrv.Resource.NativePointer != viewer.Texture.NativePointer)
-                        {
-                            _viewWindowBackgroundSrv?.Dispose();
-                            _viewWindowBackgroundSrv = new ShaderResourceView(Program.Device, viewer.Texture);
-                        }
-
-                        ProgramWindows.SetRasterizerState(SharedResources.ViewWindowRasterizerState);
-                        ProgramWindows.SetPixelShaderSRV(_viewWindowBackgroundSrv);
-                        ProgramWindows.DrawTextureToSecondaryRenderOutput();
-                    }
-                }
-            }
 
             ProgramWindows.Main.PrepareRenderingFrame();
 
@@ -276,7 +243,7 @@ internal sealed class WindowsUiContentDrawer : IUiContentDrawer<Device>
 
         T3Metrics.CpuFrameCompleted();
 
-        ProgramWindows.Present(T3Ui.UseVSync);
+        ProgramWindows.Present(T3Ui.IsPacedByDisplay);
     }
 
     /// <summary>Blits each display-bound output's composite into that display's own window.</summary>
@@ -299,7 +266,7 @@ internal sealed class WindowsUiContentDrawer : IUiContentDrawer<Device>
 
             displayWindow.Window.PrepareRenderingFrame();
             ProgramWindows.SetPixelShaderSRV(textureView);
-            ProgramWindows.DrawTextureToSecondaryRenderOutput();
+            ProgramWindows.DrawFullScreenTexture();
         }
     }
 
@@ -426,7 +393,19 @@ internal sealed class WindowsUiContentDrawer : IUiContentDrawer<Device>
                 var cmd = cmdList.CmdBuffer[cmdI];
                 if (cmd.UserCallback != IntPtr.Zero)
                 {
-                    throw new NotImplementedException();
+                    // Markers rather than functions: the sampler switch is the only callback the editor emits.
+                    if (cmd.UserCallback == PixelSamplingCallback)
+                    {
+                        _deviceContext.PixelShader.SetSampler(0, _pixelSampler);
+                    }
+                    else if (cmd.UserCallback == SmoothSamplingCallback)
+                    {
+                        _deviceContext.PixelShader.SetSampler(0, _imGuiSampler);
+                    }
+                    else
+                    {
+                        throw new NotImplementedException();
+                    }
                 }
                 else
                 {
@@ -487,11 +466,26 @@ internal sealed class WindowsUiContentDrawer : IUiContentDrawer<Device>
             lock (StallWatchdog.PresentLock)
             {
                 FontAtlasGenerator.CreateFontAtlasWithIcons(_device, _imguiContext, out _fontTextureView, out _imGuiSampler);
+                _pixelSampler ??= CreatePixelSampler(_device);
                 StallOverlay.SnapshotFonts();
             }
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// Images drawn after this, up to <see cref="EndPixelSampling"/>, show their pixels as sharp squares when
+    /// magnified, so a zoomed-in texture can be inspected pixel by pixel. Shrunk, they still filter smoothly.
+    /// </summary>
+    internal static void BeginPixelSampling(ImDrawListPtr drawList)
+    {
+        drawList.AddCallback(PixelSamplingCallback, IntPtr.Zero);
+    }
+
+    internal static void EndPixelSampling(ImDrawListPtr drawList)
+    {
+        drawList.AddCallback(SmoothSamplingCallback, IntPtr.Zero);
     }
 
     /// <summary>
@@ -513,6 +507,21 @@ internal sealed class WindowsUiContentDrawer : IUiContentDrawer<Device>
         context.OutputMerger.SetDepthStencilState(_depthStencilState, 0);
         context.Rasterizer.State = _rasterizerState;
         return true;
+    }
+
+    /** Point when magnified, linear across the mip chain when shrunk, clamped so the edges don't wrap. */
+    private static SamplerState CreatePixelSampler(Device device)
+    {
+        return new SamplerState(device, new SamplerStateDescription
+                                            {
+                                                Filter = Filter.MinLinearMagPointMipLinear,
+                                                AddressU = TextureAddressMode.Clamp,
+                                                AddressV = TextureAddressMode.Clamp,
+                                                AddressW = TextureAddressMode.Clamp,
+                                                ComparisonFunction = Comparison.Always,
+                                                MinimumLod = 0.0f,
+                                                MaximumLod = float.MaxValue,
+                                            });
     }
 
     private bool CreateShaders()
@@ -596,8 +605,9 @@ internal sealed class WindowsUiContentDrawer : IUiContentDrawer<Device>
         blendDesc.RenderTarget[0].SourceBlend = BlendOption.SourceAlpha;
         blendDesc.RenderTarget[0].DestinationBlend = BlendOption.InverseSourceAlpha;
         blendDesc.RenderTarget[0].BlendOperation = BlendOperation.Add;
-        blendDesc.RenderTarget[0].SourceAlphaBlend = BlendOption.InverseSourceAlpha;
-        blendDesc.RenderTarget[0].DestinationAlphaBlend = BlendOption.Zero;
+        // Alpha accumulates over the opaque clear and stays opaque, so the captured UI frame composites as a solid layer.
+        blendDesc.RenderTarget[0].SourceAlphaBlend = BlendOption.One;
+        blendDesc.RenderTarget[0].DestinationAlphaBlend = BlendOption.InverseSourceAlpha;
         blendDesc.RenderTarget[0].AlphaBlendOperation = BlendOperation.Add;
         blendDesc.RenderTarget[0].RenderTargetWriteMask = ColorWriteMaskFlags.All;
         _blendState = new BlendState(_device, blendDesc);
@@ -667,6 +677,7 @@ internal sealed class WindowsUiContentDrawer : IUiContentDrawer<Device>
             // So disabled for now
 
             DisposeObj(ref _imGuiSampler);
+            DisposeObj(ref _pixelSampler);
             DisposeObj(ref _fontTextureView);
             DisposeObj(ref _ib);
             DisposeObj(ref _vb);
@@ -698,6 +709,12 @@ internal sealed class WindowsUiContentDrawer : IUiContentDrawer<Device>
     private T3.Core.DataTypes.PixelShader _pixelShaderResource;
     private PixelShader _pixelShader;
     private SamplerState _imGuiSampler;
+    private SamplerState _pixelSampler;
+
+    // ImGui never calls a callback itself; it only hands the pointer back, so any value the renderer knows will do.
+    // ImGui reserves -8 for its own reset marker.
+    private static readonly IntPtr PixelSamplingCallback = new(-1);
+    private static readonly IntPtr SmoothSamplingCallback = new(-2);
     private ShaderResourceView _fontTextureView;
     private RasterizerState _rasterizerState;
     private BlendState _blendState;
@@ -706,7 +723,6 @@ internal sealed class WindowsUiContentDrawer : IUiContentDrawer<Device>
 
     private int _windowWidth;
     private int _windowHeight;
-    private static ShaderResourceView _viewWindowBackgroundSrv;
 
     private readonly Vector2 _scaleFactor = Vector2.One;
 }

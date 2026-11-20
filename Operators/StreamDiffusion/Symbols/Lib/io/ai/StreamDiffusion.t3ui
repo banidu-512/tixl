@@ -1,17 +1,16 @@
 {
   "FormatVersion": 3,
   "Id": "9a7b3c8d-4e2f-5a6b-7c8d-9e0f1a2b3c4d"/*StreamDiffusion*/,
-  "Description": "AI image generation using Stable Diffusion with ONNX Runtime. Supports text-to-image and image-to-image generation.\n\nThis operator runs SD 1.x / SD-Turbo models exported to ONNX. It can generate images from text prompts or transform existing images.\n\nTips:\n- Point `EnginePath` to a folder containing unet.onnx, text_encoder.onnx, vae_decoder.onnx and tokenizer files.\n- Add vae_encoder.onnx to enable img2img mode.\n- Use `TriggerGenerate` for manual generation or enable `AutoGenerate` for continuous output.\n- Adjust `Strength` in img2img mode to control how much the input influences the output.\n- Lower `Steps` = faster but lower quality; 1 step is good for SD Turbo models.\n- `Guidance` controls prompt adherence (1.0 = balanced, higher = stronger prompt).\n- Use `MatchInputSize` in img2img to preserve the input image dimensions.\n- `ResizeMode` controls how the input image fits the output size.\n- `PreserveDetails` blends the original input back into the result for structure retention.\n\nAKA: stable diffusion, ai, generation, diffusion, onnx, directml, streamdiffusion, txt2img, img2img",
+  "Description": "Realtime video-to-video diffusion with the StreamDiffusion V2 causal Wan2.1 model on ONNX Runtime. Every frame of the connected video or camera input is restyled with the prompt; the output size comes from the export.\n\nProduce the ONNX export once with the scripts in Operators/StreamDiffusion/tools/streamdiffusionv2; the checkpoint download in the model browser (Settings > AI Models) provides model.pt, the T5 text encoder and the tokenizer.\n\nTips:\n- Connect a video or camera to `InputImage` - the model is video-only and cannot generate from text alone.\n- `Model` picks the export from the model store (Auto = first valid); models are installed in Settings > AI Models.\n- `Steps` is the KV-cache batch size (1-4); every extra step doubles the cache.\n- `Strength` is how strongly each frame is re-noised: lower keeps more of the previous frame.\n- `FastDecode` decodes one latent instead of a three-latent window: faster, less temporal smoothing.\n- `Feedback` blends the previous output frame to smooth flicker.\n- Use a CUDA or TensorRT GPU; DirectML and CPU work but are far slower.\n\nAKA: ai, generation, diffusion, onnx, streamdiffusion, streamdiffusion v2, video diffusion, wan, video to video, restyle",
   "InputUis": [
     {
-      "InputId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"/*EnginePath*/,
+      "InputId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"/*Model*/,
       "Position": {
         "X": -250.0,
         "Y": -350.0
       },
-      "Description": "Path to the model folder containing unet.onnx, text_encoder.onnx, vae_decoder.onnx and tokenizer files. Add vae_encoder.onnx for img2img.",
-      "Usage": "FilePath",
-      "FileFilter": "onnx"
+      "Description": "Which export in the model store to run. Auto picks the first valid one; the dropdown lists everything Settings > AI Models has installed. Models are managed in the AI settings, never as paths here.",
+      "Usage": "CustomDropdown"
     },
     {
       "InputId": "a3b4c5d6-e7f8-9012-6789-123456789012"/*CudaDevice*/,
@@ -22,35 +21,6 @@
       "Description": "DirectML device index for multi-GPU systems. Shows available adapters in dropdown."
     },
     {
-      "InputId": "a4b5c6d7-e8f9-0123-4567-890123456789"/*StreamStrength*/,
-      "Position": {
-        "X": -250.0,
-        "Y": 600.0
-      },
-      "Description": "How strongly each frame is re-noised in Stream mode. Lower values keep more of the previous frame.",
-      "Min": 0.0,
-      "Max": 1.0
-    },
-    {
-      "InputId": "a7b8c9d0-e1f2-3456-0123-567890123456"/*Height*/,
-      "Position": {
-        "X": -250.0,
-        "Y": 50.0
-      },
-      "Description": "Output image height. Must match or be supported by the engine.",
-      "Min": 256,
-      "Max": 4096,
-      "ClampMin": true
-    },
-    {
-      "InputId": "b2c3d4e5-f6a7-8901-bcde-f12345678901"/*Mode*/,
-      "Position": {
-        "X": -250.0,
-        "Y": -300.0
-      },
-      "Description": "Generation mode: Text to Image creates from scratch, Image to Image transforms an input."
-    },
-    {
       "InputId": "b4c5d6e7-f8a9-0123-7890-234567890123"/*TriggerGenerate*/,
       "Position": {
         "X": -250.0,
@@ -59,14 +29,12 @@
       "Description": "Momentarily true to trigger a single generation when AutoGenerate is off."
     },
     {
-      "InputId": "b8c9d0e1-f2a3-4567-1234-678901234567"/*Guidance*/,
+      "InputId": "b7c8d9e0-f1a2-3456-7890-123456789012"/*FastDecode*/,
       "Position": {
         "X": -250.0,
-        "Y": 150.0
+        "Y": 525.0
       },
-      "Description": "Classifier-free guidance strength. Higher = more prompt adherence, lower = more creative/random.",
-      "Min": 0.5,
-      "Max": 15.0
+      "Description": "V2 only: decode one latent instead of a three-latent window. Saves about 20 ms per frame on TensorRT with slightly less temporal smoothing."
     },
     {
       "InputId": "c3d4e5f6-a7b8-9012-cdef-123456789012"/*Prompt*/,
@@ -91,7 +59,7 @@
         "X": -250.0,
         "Y": 550.0
       },
-      "Description": "Hardware used for inference. Providers that are not available on this platform fall back to the next one, ending at CPU."
+      "Description": "Hardware used for inference. The dropdown lists only the accelerations that can actually run this model on this operating system: Windows and Linux offer CUDA and TensorRT, macOS offers CoreML. DirectML cannot run the V2 model (its DiT/VAE 5D reshapes fail on the DML provider), and a saved DirectML choice snaps to CUDA. A provider that cannot initialize falls back to the next one, ending at CPU."
     },
     {
       "InputId": "c9d0e1f2-a3b4-5678-2345-789012345678"/*Strength*/,
@@ -109,18 +77,10 @@
         "X": -250.0,
         "Y": 200.0
       },
-      "Description": "Number of denoising steps. More = better quality but slower. SD Turbo models work well with 1 step.",
+      "Description": "The V2 step count is the KV-cache batch size: 1 is realtime, 2-4 add temporal context at twice the cache per step. Changing it restarts the stream.",
       "Min": 1,
       "Max": 50,
       "ClampMin": true
-    },
-    {
-      "InputId": "d1e2f3a4-b5c6-7890-1234-567890123456"/*MatchInputSize*/,
-      "Position": {
-        "X": -250.0,
-        "Y": 300.0
-      },
-      "Description": "When enabled, overrides Width/Height with the input image dimensions for 1:1 pixel mapping."
     },
     {
       "InputId": "d2e3f4a5-b6c7-8901-2345-678901234567"/*Debug*/,
@@ -131,21 +91,12 @@
       "Description": "Logs detailed timing and state information."
     },
     {
-      "InputId": "d4e5f6a7-b8c9-0123-def0-234567890123"/*NegativePrompt*/,
-      "Position": {
-        "X": -250.0,
-        "Y": -100.0
-      },
-      "Description": "Things to avoid in the generated image. Empty = no negative prompt.",
-      "Usage": "Default"
-    },
-    {
       "InputId": "e1f2a3b4-c5d6-7890-4567-901234567890"/*InputImage*/,
       "Position": {
         "X": -250.0,
         "Y": 250.0
       },
-      "Description": "Source image for img2img mode. Ignored in txt2img mode."
+      "Description": "Source image for img2img and Stream mode. Ignored in txt2img mode. Accepts RGBA images and float render targets; linear float values are encoded to sRGB before generation."
     },
     {
       "InputId": "e2f3a4b5-c6d7-8901-2345-678901234567"/*ResizeMode*/,
@@ -161,36 +112,31 @@
         "X": -250.0,
         "Y": -50.0
       },
-      "Description": "Random seed for generation. -1 = random, same value = reproducible output."
+      "Description": "A changed seed re-primes the stream with fresh noise. -1 keeps the current seed."
     },
     {
-      "InputId": "f2a3b4c5-d6e7-8901-5678-012345678901"/*ModelType*/,
+      "InputId": "e5a6d7c8-9f0b-4a1c-8b2d-3c4e5f6a7b8d",
       "Position": {
-        "X": -250.0,
-        "Y": -250.0
+        "X": 150.0,
+        "Y": 250.0
       },
-      "Description": "Model variant label (informational only). The actual model is defined by the ONNX files in EnginePath. This does not change runtime behavior."
+      "Description": "Momentarily true to drop the rolling KV cache and re-prime the stream from the next input frame - useful on scene cuts or when the style drifts over a long take."
     },
     {
-      "InputId": "f3a4b5c6-d7e8-9012-3456-789012345678"/*PreserveDetails*/,
+      "InputId": "c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e5f"/*TargetFps*/,
       "Position": {
-        "X": -250.0,
-        "Y": 400.0
+        "X": 150.0,
+        "Y": 300.0
       },
-      "Description": "Blend the original input back into the output to retain structure (0 = pure diffusion, 1 = exact input).",
-      "Min": 0.0,
-      "Max": 1.0
+      "Description": "Pace the stream at this many frames per second (default 16, matching capture and downstream). 0 runs as fast as the GPU allows; identical input frames cost nothing at any rate."
     },
     {
-      "InputId": "f6a7b8c9-d0e1-2345-f012-456789012345"/*Width*/,
+      "InputId": "b4c5d6e7-c8d9-4e0f-a1b2-3c4d5e6f7a8b"/*MatchInputResolution*/,
       "Position": {
-        "X": -250.0,
-        "Y": 0.0
+        "X": 150.0,
+        "Y": 350.0
       },
-      "Description": "Output image width. Must match or be supported by the engine.",
-      "Min": 256,
-      "Max": 4096,
-      "ClampMin": true
+      "Description": "Stretches the model output (e.g. 256x256) back over the input image dimensions, so the output matches the source aspect ratio and pixel size for compositing."
     }
   ],
   "SymbolChildUis": [],

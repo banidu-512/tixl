@@ -13,8 +13,17 @@ public enum PhysicsShapeType
     /// <summary>Convex hull of the connected geometry (one per geometry part). Falls back to Box without geometry.</summary>
     ConvexHull = 4,
 
-    /// <summary>Triangle mesh of the connected geometry. Static and kinematic bodies only; dynamic bodies use a hull.</summary>
+    /// <summary>Triangle mesh of the connected geometry. Static and kinematic bodies only; a dynamic Mesh body is simulated like <see cref="Auto"/>.</summary>
     Mesh = 5,
+
+    /// <summary>
+    /// Picks the collider from what is connected: a box without geometry; with geometry the exact triangles for static
+    /// and kinematic bodies, and for dynamic bodies a convex hull, split into several hulls where the shape is concave.
+    /// </summary>
+    Auto = 6,
+
+    /// <summary>Every geometry part is split into convex hulls that follow its concave shape, even where one hull would do.</summary>
+    ConvexDecomposition = 7,
 }
 
 public enum PhysicsBodyKind
@@ -36,15 +45,29 @@ public struct PhysicsBodyInstance
     public int HullIndex;
 }
 
-/// <summary>Collision geometry of one convex piece, in the space of the body it belongs to.</summary>
+/// <summary>
+/// Collision geometry of one piece of a body, in the space of the body it belongs to: a single convex hull, or a
+/// compound of several when the piece is concave or made of several geometry parts.
+/// </summary>
 public sealed class PhysicsHull
 {
-    /// <summary>Hull candidate points relative to <see cref="Pivot"/>.</summary>
+    /// <summary>Hull candidate points relative to <see cref="Pivot"/>: every point of the piece.</summary>
     public Vector3[] Points = [];
 
     /// <summary>Where the piece sits in its source geometry. The published pose is the pose of this pivot,
     /// which is what <c>GeometryToMeshChunks</c> expects for its chunks.</summary>
     public Vector3 Pivot;
+
+    /// <summary>
+    /// The convex hulls the piece is simulated as, each a point set relative to <see cref="Pivot"/>. Null or a single
+    /// entry means the piece is the one hull around <see cref="Points"/>.
+    /// </summary>
+    public Vector3[][] ConvexParts;
+
+    /// <summary>Enclosed volume at scale one, the sum over <see cref="ConvexParts"/>; 0 when unknown. Drives density-based mass.</summary>
+    public float Volume;
+
+    public bool IsCompound => ConvexParts is { Length: > 1 };
 }
 
 /// <summary>
@@ -76,6 +99,14 @@ public sealed class PhysicsBody
     public Vector3 AngularVelocity;
 
     public float Mass = 1f;
+
+    /// <summary>When set, a dynamic body weighs <see cref="Density"/> times its collider volume and <see cref="Mass"/> is only the fallback
+    /// for a collider without volume.</summary>
+    public bool MassFromDensity;
+
+    /// <summary>Mass per cubic unit, used with <see cref="MassFromDensity"/>.</summary>
+    public float Density = 1f;
+
     public float Friction = 0.5f;
     public float Bounciness;
     public float LinearDamping;
@@ -104,6 +135,15 @@ public sealed class PhysicsBody
     public bool IsInstanced => Instances != null;
 
     /// <summary>
+    /// The geometry the collision data was taken from, so the simulated bodies can be handed back as geometry.
+    /// Null for a primitive body.
+    /// </summary>
+    public MeshGeometry SourceGeometry;
+
+    /// <summary>True when every body is one part of <see cref="SourceGeometry"/>; false when every body is the whole of it.</summary>
+    public bool SourcePerPart;
+
+    /// <summary>
     /// Written by the world after each update: where this description's bodies are in the world's pose points
     /// (statics included). Lets an operator draw one description's bodies with their own mesh.
     /// </summary>
@@ -124,6 +164,8 @@ public sealed class PhysicsBody
         LinearVelocity = other.LinearVelocity;
         AngularVelocity = other.AngularVelocity;
         Mass = other.Mass;
+        MassFromDensity = other.MassFromDensity;
+        Density = other.Density;
         Friction = other.Friction;
         Bounciness = other.Bounciness;
         LinearDamping = other.LinearDamping;

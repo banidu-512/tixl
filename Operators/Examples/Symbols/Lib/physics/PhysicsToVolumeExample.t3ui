@@ -1,127 +1,167 @@
 {
   "FormatVersion": 3,
   "Id": "faa1fe57-3dd8-5136-93c3-fe9bdbeccd4d",
-  "Description": "40 balls fall into a pile, and a volume built from their positions wraps them in one skin.\n\nThe other direction: physics feeding a volume. [ReadPointsFromGpu] reads the poses of [PhysicsWorld] back every frame, [VolumeFromPoints] splats them into a density volume and [VolumeToMesh] extracts a surface from it.\n\nAKA: metaballs, blob, skin, liquid, points to volume, surface\n\nTips\n- This rebuilds a volume and a mesh every frame on the CPU. Keep the body count low and VoxelSize coarse.\n- Isovalue on [VolumeToMesh] is the density at which the skin sits: lower is fatter.\n- Radius on [VolumeFromPoints] should be larger than the ball radius so neighbouring balls merge.",
+  "Description": "Physics output feeds the volume operators too. The world's poses are read back with [ReadPointsFromGpu], [VolumeFromPoints] splats them into a density volume and [VolumeToMesh] extracts one blobby surface around all of them, every frame. Think of it as a metaball or liquid look on top of rigid bodies.\n\nNone of this holds up a frame: the read-back is asynchronous and both volume operators work on a background thread, so the skin trails the balls by a frame or two while playback stays smooth.\n\nAKA: metaballs, blobby, liquid, skin, splat, points to volume\n\nTips\n- Playback must run for the simulation to advance; press Reset on the World to start over.\n- A larger Radius on [VolumeFromPoints] melts the balls together; a smaller VoxelSize gives a smoother skin and costs more.",
   "InputUis": [],
   "SymbolChildUis": [
     {
-      "ChildId": "3144900b-bfab-59c6-acb3-8cde8a28af62",
+      "ChildId": "21fe8a8c-d797-5692-a7b7-2cdda0ddc144",
+      "SymbolName": "Lib.physics.RigidBody",
+      "Position": {
+        "X": 520.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "4a695499-2380-52df-b417-b14d80594b1e",
       "SymbolName": "Lib.geometry.ScatterPointsInVolume",
       "Position": {
         "X": 0.0,
-        "Y": 0.0
+        "Y": 110.0
       }
     },
     {
-      "ChildId": "111c3e59-74ef-56b7-baca-669ed4fbaf7e",
+      "ChildId": "00c3cd12-5e08-5e07-881d-b677e28e181c",
       "SymbolName": "Lib.physics.RigidBody",
       "Position": {
-        "X": 600.0,
-        "Y": 0.0
+        "X": 520.0,
+        "Y": 110.0
       }
     },
     {
-      "ChildId": "bc8911eb-a953-50d6-ac4e-bb9568b1e5f7",
+      "ChildId": "4037c77e-d5eb-566d-8e9d-9b94cdb60dc6",
       "SymbolName": "Lib.physics.PhysicsWorld",
       "Position": {
-        "X": 900.0,
-        "Y": 0.0
+        "X": 780.0,
+        "Y": 110.0
       }
     },
     {
-      "ChildId": "de0b7c86-3513-5e93-a1f7-5a6fa0c1670b",
+      "ChildId": "6de8c6bc-2f64-5fc6-a311-981a32d860a6",
       "SymbolName": "Lib.point.helper.ReadPointsFromGpu",
       "Position": {
-        "X": 1200.0,
-        "Y": 150.0
+        "X": 1300.0,
+        "Y": 220.0
       }
     },
     {
-      "ChildId": "2497f954-da30-5786-a3d4-c4620f0eb2e7",
+      "ChildId": "7752c5ac-b092-5535-bbaf-030b7abbb29a",
       "SymbolName": "Lib.volume.generate.VolumeFromPoints",
       "Position": {
-        "X": 1500.0,
-        "Y": 150.0
+        "X": 1560.0,
+        "Y": 220.0
       }
     },
     {
-      "ChildId": "98767a8b-38b0-50f9-a1df-2e6b25a7fe20",
+      "ChildId": "b1d042b6-0a08-56ed-840c-fee0dcdfa16d",
       "SymbolName": "Lib.volume.convert.VolumeToMesh",
       "Position": {
-        "X": 1500.0,
-        "Y": 300.0
+        "X": 1820.0,
+        "Y": 220.0
       }
     },
     {
-      "ChildId": "4047594d-c45b-5973-bee0-d8bd1548352b",
+      "ChildId": "2c249c3c-70df-54c2-969a-9f3becd7b9d5",
       "SymbolName": "Lib.geometry.GeometryToMesh",
       "Position": {
-        "X": 1800.0,
-        "Y": 300.0
+        "X": 2080.0,
+        "Y": 220.0
       }
     },
     {
-      "ChildId": "a4f7ee39-ec57-5d94-90e2-2e346b0dae81",
-      "SymbolName": "Lib.mesh.draw.DrawMeshUnlit",
+      "ChildId": "acd38d99-ed55-5ffc-bc77-653d81f6be96",
+      "SymbolName": "Lib.mesh.draw.DrawMeshWithShadow",
       "Position": {
-        "X": 1800.0,
-        "Y": 450.0
+        "X": 2340.0,
+        "Y": 220.0
       }
     },
     {
-      "ChildId": "50157f5f-4fe5-5c47-975a-7ab75bdbfe4c",
-      "SymbolName": "Lib.physics.RigidBody",
+      "ChildId": "7ad01e53-0027-5bd6-b8b7-2e96b17fc015",
+      "SymbolName": "Lib.physics.RigidBodyGeometry",
       "Position": {
-        "X": 600.0,
-        "Y": 600.0
-      }
-    },
-    {
-      "ChildId": "f7c85c40-2455-5235-b85e-20e68f33d13d",
-      "SymbolName": "Lib.mesh.generate.CubeMesh",
-      "Position": {
-        "X": 1200.0,
-        "Y": 750.0
-      }
-    },
-    {
-      "ChildId": "11a223a0-4f86-5b40-a548-5273507444d9",
-      "SymbolName": "Lib.mesh.modify.TransformMesh",
-      "Position": {
-        "X": 1500.0,
-        "Y": 750.0
-      }
-    },
-    {
-      "ChildId": "08fe9565-cb75-5ddd-8eeb-057214b4e6e8",
-      "SymbolName": "Lib.mesh.draw.DrawMeshUnlit",
-      "Position": {
-        "X": 1800.0,
-        "Y": 750.0
-      }
-    },
-    {
-      "ChildId": "450f18a4-bdec-5ee3-bd44-04a2efd36c43",
-      "SymbolName": "Lib.render.transform.Group",
-      "Position": {
-        "X": 2100.0,
+        "X": 1300.0,
         "Y": 0.0
       }
     },
     {
-      "ChildId": "e3d49447-ce97-53d7-9856-9bdf1c7923b4",
+      "ChildId": "34042595-5deb-5d55-af75-01e9de3e97e9",
+      "SymbolName": "Lib.geometry.GeometryToMesh",
+      "Position": {
+        "X": 1560.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "a8bae468-3c44-590e-847e-189dfb93be7c",
+      "SymbolName": "Lib.mesh.draw.DrawMeshWithShadow",
+      "Position": {
+        "X": 1820.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "78cded01-e283-5cd3-8c53-8de377e56096",
+      "SymbolName": "Lib.flow.Execute",
+      "Position": {
+        "X": 2860.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "14b4ef7f-56fb-57e0-af4c-dff221101dd9",
+      "SymbolName": "Lib.render.shading.SetShadow",
+      "Position": {
+        "X": 2860.0,
+        "Y": 110.0
+      }
+    },
+    {
+      "ChildId": "ef49ea7f-aaf7-5cf7-8ca7-1bdd42a7f413",
+      "SymbolName": "Lib.render.shading.PointLight",
+      "Position": {
+        "X": 2860.0,
+        "Y": 220.0
+      }
+    },
+    {
+      "ChildId": "4cd3c736-128e-5e07-a4c5-64683c63aef8",
+      "SymbolName": "Lib.render.shading.PointLight",
+      "Position": {
+        "X": 2860.0,
+        "Y": 330.0
+      }
+    },
+    {
+      "ChildId": "d1918a65-7ddc-5ca3-8978-ca3c3f77a1b0",
+      "SymbolName": "Lib.render.shading.SetFog",
+      "Position": {
+        "X": 2860.0,
+        "Y": 440.0
+      }
+    },
+    {
+      "ChildId": "44ecb34f-6066-5aef-9e5d-90724c166454",
       "SymbolName": "Lib.render.camera.Camera",
       "Position": {
-        "X": 2400.0,
-        "Y": 0.0
+        "X": 2860.0,
+        "Y": 550.0
       }
     },
     {
-      "ChildId": "da2dab2c-4e15-5d97-a749-ee59d66ed93f",
+      "ChildId": "daa548f9-fee5-51f0-a4ba-6c4bd3ca4db2",
       "SymbolName": "Lib.image.generate.basic.RenderTarget",
       "Position": {
-        "X": 2700.0,
-        "Y": 0.0
+        "X": 3120.0,
+        "Y": 550.0
+      }
+    },
+    {
+      "ChildId": "5532e983-0eca-5ed7-94fb-1c5558b8172c",
+      "SymbolName": "Lib.render.postfx.SSAO",
+      "Position": {
+        "X": 3380.0,
+        "Y": 550.0
       }
     }
   ],
@@ -129,9 +169,88 @@
     {
       "OutputId": "6aa0bc05-b707-559a-8862-7ddc3b359fa0",
       "Position": {
-        "X": 3000.0,
+        "X": 3640.0,
         "Y": 0.0
       }
+    }
+  ],
+  "Sections": [
+    {
+      "Id": "e026e8b6-46c3-56dd-a687-59b6b0c103d3",
+      "Title": "Render: light, shadow and camera",
+      "Color": {
+        "X": 0.4,
+        "Y": 0.4,
+        "Z": 0.45,
+        "W": 1.0
+      },
+      "Position": {
+        "X": 2820.0,
+        "Y": -70.0
+      },
+      "Size": {
+        "X": 800.0,
+        "Y": 720.0
+      }
+    },
+    {
+      "Id": "e0a4c807-a53b-5acf-9e5b-16b75f49d369",
+      "Title": "1  Falling balls",
+      "Color": {
+        "X": 0.65,
+        "Y": 0.45,
+        "Z": 0.25,
+        "W": 1.0
+      },
+      "Position": {
+        "X": -40.0,
+        "Y": -70.0
+      },
+      "Size": {
+        "X": 1060.0,
+        "Y": 280.0
+      }
+    },
+    {
+      "Id": "ef093492-56eb-5d08-b295-8c9ffaa31c46",
+      "Title": "2  Poses into a volume, volume into a skin",
+      "Color": {
+        "X": 0.3,
+        "Y": 0.55,
+        "Z": 0.4,
+        "W": 1.0
+      },
+      "Position": {
+        "X": 1260.0,
+        "Y": 150.0
+      },
+      "Size": {
+        "X": 1320.0,
+        "Y": 170.0
+      }
+    }
+  ],
+  "TourPoints": [
+    {
+      "Id": "9f71c2da-1181-54ce-ae22-73551c70bc46",
+      "ChildId": "6de8c6bc-2f64-5fc6-a311-981a32d860a6",
+      "Description": "The world's OutBuffer holds every body's pose. Async reads it back every frame without waiting for the GPU.",
+      "Style": "InfoFor",
+      "InputId": "B2A36AB5-5B81-4B72-9F40-9E66D3DCF94B"
+    },
+    {
+      "Id": "58588042-3bd1-5cba-a2fc-28a2cb5528bc",
+      "ChildId": "7752c5ac-b092-5535-bbaf-030b7abbb29a",
+      "Description": "[VolumeFromPoints] splats a sphere of density at every point.",
+      "Style": "InfoFor",
+      "InputId": "8a3c8412-7266-50ce-83ba-7841bb431863"
+    },
+    {
+      "Id": "4e71cca8-7bc4-5958-b1ce-f6805b0ae0c2",
+      "ChildId": "b1d042b6-0a08-56ed-840c-fee0dcdfa16d",
+      "Description": "One surface around all the balls: lower the Isovalue for a fatter skin.",
+      "Style": "InfoFor",
+      "InputId": "345f946b-8c36-5548-a569-4123e0544b8f"
     }
   ]
 }

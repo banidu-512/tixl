@@ -9,16 +9,20 @@ using T3.Editor.Gui.Dialogs;
 using T3.Editor.Gui.Interaction;
 using T3.Editor.Gui.Interaction.Keyboard;
 using T3.Editor.Gui.Interaction.Timing;
+using T3.Editor.Gui.MagGraph.Interaction.KeyboardEditing;
 using T3.Editor.Gui.Styling;
-using T3.Editor.Gui.Templates;
 using T3.Editor.Gui.UiHelpers;
+using T3.Editor.Gui.Window;
 using T3.Editor.Gui.Windows.Layouts;
 using T3.Editor.Gui.Windows.Output;
+using T3.Editor.Gui.Windows.RenderExport;
 using T3.Editor.UiModel;
 using T3.Editor.UiModel.Commands;
 using T3.Editor.UiModel.Helpers;
 using T3.Editor.UiModel.ProjectHandling;
 using T3.IoServices.Midi;
+
+using T3.Editor.Gui.Windows;
 
 namespace T3.Editor.Gui;
 
@@ -30,6 +34,8 @@ public static partial class T3Ui
 
         Playback.Current = DefaultTimelinePlayback;
         ThemeHandling.Initialize();
+        OperatorEditCommand.RegisterAsOperatorUndoHandler();
+        CameraSettingsDialog.RegisterAsOpenHandler();
     }
 
     internal static readonly Playback DefaultTimelinePlayback = new();
@@ -94,6 +100,46 @@ public static partial class T3Ui
         {
             UserSettings.Config.EnableIdleMotion = !UserSettings.Config.EnableIdleMotion;
             ActionToast.Show(UserSettings.Config.EnableIdleMotion ? "{Idle motion on}" : "{Idle motion off}");
+        }
+        else if (UserActions.FocusGraphWindow.Triggered())
+        {
+            FocusGraphWindowOfFocusedProject();
+        }
+    }
+
+    /// <summary>
+    /// Must run before the windows are drawn: an Esc press closes text inputs, popups and the parameter popover
+    /// within the same frame, so afterward it no longer shows that the key was already used.
+    /// </summary>
+    private static void CheckIfEscapeCouldCancelSomething()
+    {
+        _couldEscapeCancelSomething = ImGui.IsAnyItemActive()
+                                      || ImGui.IsPopupOpen(string.Empty, ImGuiPopupFlags.AnyPopupId | ImGuiPopupFlags.AnyPopupLevel)
+                                      || ParameterPopover.IsOpen;
+    }
+
+    /// <summary>
+    /// Brings the keyboard focus back to the graph from any other window, unless the shortcut was used to cancel
+    /// something there. Operators that capture the keyboard (like [Sketch]) keep the key, too.
+    /// </summary>
+    private static void FocusGraphWindowOfFocusedProject()
+    {
+        if (_couldEscapeCancelSomething || KeyActionHandling.IsEscapeKeyClaimed || ImGui.IsAnyMouseDown())
+            return;
+
+        var focusedProjectView = ProjectView.Focused;
+        if (focusedProjectView == null)
+            return;
+
+        foreach (var graphWindow in GraphWindow.GraphWindowInstances)
+        {
+            if (graphWindow.ProjectView != focusedProjectView)
+                continue;
+
+            if (Gui.Windows.Window.FocusedWindow != graphWindow)
+                graphWindow.RequestWindowFocus();
+
+            return;
         }
     }
 
@@ -161,7 +207,6 @@ public static partial class T3Ui
     internal static bool DragFieldHovered { private get; set; }
     internal static bool DragFieldWasHoveredLastFrame { get; private set; }
 
-    internal static bool ShowSecondaryRenderWindow => WindowManager.ShowSecondaryRenderWindow;
     internal const string FloatNumberFormat = "{0:F2}";
 
     // ReSharper disable once InconsistentlySynchronizedField
@@ -172,7 +217,6 @@ public static partial class T3Ui
     internal static readonly MidiDataRecording MidiDataRecording = new(DataRecording.ActiveRecordingSet);
     internal static readonly OscDataRecording OscDataRecording = new(DataRecording.ActiveRecordingSet);
 
-    internal static readonly CreateFromTemplateDialog CreateFromTemplateDialog = new();
     private static readonly UserNameDialog _userNameDialog = new();
     private static readonly CollabPasswordDialog _collabPasswordDialog = new();
     internal static readonly AboutDialog AboutDialog = new();
@@ -183,9 +227,12 @@ public static partial class T3Ui
     private static readonly CouldNotLoadProjectDialog _couldNotLoadProjectDialog = new();
     private static readonly MissingOperatorsDialog _missingOperatorsDialog = new();
     private static readonly SendCrashReportsDialog _sendCrashReportsDialog = new();
+    internal static readonly ShareSessionDialog ShareSessionDialog = new();
     internal static readonly ExitDialog ExitDialog = new();
     internal static readonly LaserArmWarningDialog LaserArmWarningDialog = new();
+    internal static readonly AiModelSetupWizard AiModelSetupWizard = new();
     private static readonly List<EditableSymbolProject> _modifiedProjects = new();
+    private static bool _couldEscapeCancelSomething;
 
     [Flags]
     public enum EditingFlags
@@ -203,4 +250,8 @@ public static partial class T3Ui
         get => UserSettings.Config.UseVSync;
         set => UserSettings.Config.UseVSync = value;
     }
+
+    /// <summary>Whether this frame waits for the display. <see cref="UseVSync"/> holds the user's setting; an export
+    /// that steps playback overrides it because waiting would only slow the file down.</summary>
+    internal static bool IsPacedByDisplay => UseVSync && !RenderProcess.IsSteppingPlayback;
 }

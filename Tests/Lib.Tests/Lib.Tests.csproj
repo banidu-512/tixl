@@ -11,7 +11,7 @@
         <!-- PhysicsSimulation.cs is shared with the Lib operator package, which compiles with
              nullable annotations disabled; the flow and annotation warnings only fire in this
              nullable-aware build (CS8765 is the untagged Equals(object) override). -->
-        <NoWarn>$(NoWarn);CS8602;CS8618;CS8625;CS8765</NoWarn>
+        <NoWarn>$(NoWarn);CS8600;CS8602;CS8603;CS8604;CS8618;CS8625;CS8765</NoWarn>
     </PropertyGroup>
 
     <ItemGroup>
@@ -28,6 +28,9 @@
         <!-- Operators are compiled in rather than referenced: the operator package is only loadable by the editor. -->
         <Compile Include="..\..\Operators\Lib\Utils\PhysicsSimulation.cs" Link="Utils\PhysicsSimulation.cs" />
         <Compile Include="..\..\Operators\Lib\Utils\PhysicsGeometry.cs" Link="Utils\PhysicsGeometry.cs" />
+        <Compile Include="..\..\Operators\Lib\Utils\PhysicsDecomposition.cs" Link="Utils\PhysicsDecomposition.cs" />
+        <Compile Include="..\..\Operators\Lib\Utils\MeshBuffersToGeometry.cs" Link="Utils\MeshBuffersToGeometry.cs" />
+        <Compile Include="..\..\Operators\Lib\Utils\BackgroundJob.cs" Link="Utils\BackgroundJob.cs" />
     </ItemGroup>
 
     <ItemGroup>

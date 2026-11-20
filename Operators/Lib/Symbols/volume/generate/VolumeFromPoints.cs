@@ -6,6 +6,7 @@ using T3.Core.DataTypes.Volume;
 using T3.Core.DataTypes.Volume.Tools;
 using T3.Core.DataTypes.Volume.IO;
 using T3.Core.Logging;
+using Lib.Utils;
 
 namespace Lib.volume.generate;
 
@@ -13,9 +14,19 @@ namespace Lib.volume.generate;
 [Guid("c698dc60-e135-5cc0-8346-31eb7ee77637")]
 internal sealed class VolumeFromPoints : Instance<VolumeFromPoints>
 {
+    /// <summary>Identifies the points by count and position hash; the copied positions are payload, not identity.</summary>
+    private readonly record struct Key(int Count, int PositionsHash, float VoxelSize, float Radius, float Density,
+                                       PointsToVolume.Falloff Falloff, Vector3[] Positions)
+    {
+        public bool Equals(Key other)
+            => Count == other.Count && PositionsHash == other.PositionsHash && VoxelSize.Equals(other.VoxelSize)
+               && Radius.Equals(other.Radius) && Density.Equals(other.Density) && Falloff == other.Falloff;
+
+        public override int GetHashCode() => HashCode.Combine(Count, PositionsHash, VoxelSize, Radius, Density, Falloff);
+    }
+
     [Output(Guid = "d6f70e3d-84d5-57da-b94d-ffc284fca668")]
     public readonly Slot<VdbVolume> Volume = new();
-
 
     private enum Falloffs
     {
@@ -27,6 +38,7 @@ internal sealed class VolumeFromPoints : Instance<VolumeFromPoints>
     public VolumeFromPoints()
     {
         Volume.UpdateAction = Update;
+        _job = new BackgroundJob<Key, VdbVolume>(this, nameof(VolumeFromPoints), Compute, Volume);
     }
 
     private void Update(EvaluationContext context)
@@ -37,64 +49,49 @@ internal sealed class VolumeFromPoints : Instance<VolumeFromPoints>
         var density = Density.GetValue(context);
         var falloff = (PointsToVolume.Falloff)Falloff.GetValue(context);
 
-        if (points == null || points.NumElements == 0)
+        if (points == null || points.NumElements == 0
+            || !(voxelSize > 0) || !float.IsFinite(voxelSize) || !float.IsFinite(radius) || !float.IsFinite(density))
         {
+            _job.Reset();
             Volume.Value = null;
-            _lastCount = -1;
             return;
         }
 
         // The list is reused in place by upstream operators, so identity alone cannot tell if the points moved.
+        var count = points.NumElements;
         var positionsHash = HashPositions(points);
-        if (points.NumElements == _lastCount
-            && positionsHash == _lastPositionsHash
-            && Math.Abs(voxelSize - _lastVoxelSize) < 1e-6f
-            && Math.Abs(radius - _lastRadius) < 1e-6f
-            && Math.Abs(density - _lastDensity) < 1e-6f
-            && falloff == _lastFalloff)
+        var key = new Key(count, positionsHash, voxelSize, radius, density, falloff, null);
+        if (_job.NeedsStart(context, key))
         {
-            return;
+            // The worker reads a copy: upstream may rewrite the list while the splat runs.
+            var positions = new Vector3[count];
+            var elements = points.TypedElements;
+            for (var i = 0; i < count; i++)
+                positions[i] = elements[i].Position;
+            key = key with { Positions = positions };
         }
 
-        var positions = new Vector3[points.NumElements];
-        for (var i = 0; i < points.NumElements; i++)
-            positions[i] = points.TypedElements[i].Position;
-
-        try
+        switch (_job.Poll(context, key, out var result))
         {
-            var grid = PointsToVolume.Splat(positions, null, voxelSize, radius, density, falloff, seed: 0);
-            Volume.Value = new VdbVolume(grid);
-            _lastPositionsHash = positionsHash;
-            _lastCount = points.NumElements;
-            _lastVoxelSize = voxelSize;
-            _lastRadius = radius;
-            _lastDensity = density;
-            _lastFalloff = falloff;
-            _lastError = null;
-        }
-        catch (Exception e)
-        {
-            Volume.Value = null;
-            if (_lastError != e.Message)
-                Log.Warning($"VolumeFromPoints failed: {e.Message}", this);
-            _lastError = e.Message;
-
-            // Remember the failing inputs so a bad radius does not retry (and log) every frame.
-            _lastPositionsHash = positionsHash;
-            _lastCount = points.NumElements;
-            _lastVoxelSize = voxelSize;
-            _lastRadius = radius;
-            _lastDensity = density;
-            _lastFalloff = falloff;
+            case BackgroundJobOutcome.Ready:
+                Volume.Value = result;
+                break;
+            case BackgroundJobOutcome.Failed:
+                Volume.Value = null;
+                break;
         }
     }
+
+    private static VdbVolume Compute(Key key)
+        => new(PointsToVolume.Splat(key.Positions, null, key.VoxelSize, key.Radius, key.Density, key.Falloff, seed: 0));
 
     private static int HashPositions(StructuredList<Point> points)
     {
         var hash = 17;
+        var elements = points.TypedElements;
         for (var i = 0; i < points.NumElements; i++)
         {
-            var position = points.TypedElements[i].Position;
+            var position = elements[i].Position;
             hash = hash * 31 + BitConverter.SingleToInt32Bits(position.X);
             hash = hash * 31 + BitConverter.SingleToInt32Bits(position.Y);
             hash = hash * 31 + BitConverter.SingleToInt32Bits(position.Z);
@@ -103,13 +100,7 @@ internal sealed class VolumeFromPoints : Instance<VolumeFromPoints>
         return hash;
     }
 
-    private int _lastPositionsHash;
-    private int _lastCount = -1;
-    private float _lastVoxelSize = -1;
-    private float _lastRadius = -1;
-    private float _lastDensity = -1;
-    private PointsToVolume.Falloff _lastFalloff = (PointsToVolume.Falloff)(-1);
-    private string _lastError;
+    private readonly BackgroundJob<Key, VdbVolume> _job;
 
     [Input(Guid = "51935275-be34-555d-a9dc-7fbc6a55db39")]
     public readonly InputSlot<StructuredList> Points = new();

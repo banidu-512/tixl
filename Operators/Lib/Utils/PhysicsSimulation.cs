@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.CompilerServices;
+using System.Threading.Tasks;
 using BepuPhysics;
 using BepuPhysics.Collidables;
 using BepuPhysics.CollisionDetection;
@@ -31,6 +32,12 @@ internal struct PhysicsWorldSettings
 
     /// <summary>Closing speed in m/s from which an impact is reported as a contact. 0 or less uses the default of 1.</summary>
     public float ContactSpeedThreshold;
+
+    /// <summary>
+    /// Build triangle-mesh colliders on a worker thread. Until one is ready its body is a tiny placeholder, so
+    /// leave this off where every frame must be exact: deterministic runs, rendering to a file, tests.
+    /// </summary>
+    public bool BuildMeshesInBackground;
 }
 
 /// <summary>One impact reported by the last <see cref="PhysicsSimulation.Update"/>.</summary>
@@ -115,6 +122,8 @@ internal sealed class PhysicsSimulation : IDisposable
         _frameBodies = bodies;
         _frameJoints = joints;
         _frameForces = forces;
+        _buildMeshesInBackground = settings.BuildMeshesInBackground;
+        _trackedKinematics.Clear();
 
         var contactStiffness = Math.Clamp(FiniteOr(settings.ContactStiffness, 30f), 5f, 120f);
         var rate = Math.Clamp(FiniteOr(settings.FixedRate, 60f), 10f, 240f);
@@ -151,6 +160,12 @@ internal sealed class PhysicsSimulation : IDisposable
         if (delta != 0)
             _contacts.Clear();
 
+        // The simulated time this frame will roughly cover; kinematic bodies driven by their position use it to
+        // turn the move into a velocity. Zero when nothing advances, so those bodies are placed directly.
+        _frameDelta = resetTriggered || _simulation == null || configChanged || timeJumped || settings.Paused
+                          ? 0f
+                          : (float)(Math.Clamp(delta, 0, MaxFrameDelta) * timeScale);
+
         if (resetTriggered || _simulation == null || configChanged || timeJumped)
         {
             RebuildSimulation(rate, substeps, iterations, settings.Multithreaded, settings.Deterministic);
@@ -172,6 +187,18 @@ internal sealed class PhysicsSimulation : IDisposable
 
         var dt = 1.0 / _fixedRate;
         var maxSteps = Math.Max(1, (int)MathF.Ceiling(MaxFrameDelta / (float)dt));
+
+        // Position-driven kinematic bodies get the velocity that reaches their target over exactly the steps
+        // this frame will take. With no step this frame they keep their velocity and are not moved anyway.
+        var plannedSteps = Math.Min((int)(_accumulator / dt), maxSteps);
+        if (plannedSteps > 0)
+        {
+            var simulated = (float)(plannedSteps * dt);
+            for (var index = 0; index < _trackedKinematics.Count; index++)
+                TrackKinematicPose(_trackedKinematics[index].Entry, _trackedKinematics[index].Target, simulated);
+        }
+
+        _trackedKinematics.Clear();
         var steps = 0;
         var stepStart = Stopwatch.GetTimestamp();
         while (_accumulator >= dt && steps < maxSteps)
@@ -328,6 +355,18 @@ internal sealed class PhysicsSimulation : IDisposable
         _pool?.Clear();
         _pool = null;
 
+        foreach (var shared in _sharedShapes.Values)
+            shared.OwnPool?.Clear();
+
+        // A build still running owns its pool until it finishes; release the pool then.
+        foreach (var build in _meshBuilds.Values)
+        {
+            var pool = build.Pool;
+            build.Task.ContinueWith(_ => pool.Clear(), TaskScheduler.Default);
+        }
+
+        _meshBuilds.Clear();
+
         _bodies.Clear();
         _joints.Clear();
         _renderOrder.Clear();
@@ -476,12 +515,62 @@ internal sealed class PhysicsSimulation : IDisposable
         return hulls[(uint)hullIndex < (uint)hulls.Length ? hullIndex : 0];
     }
 
-    /// <summary>A triangle mesh has no volume to give a dynamic body mass, so a dynamic Mesh body is simulated as a hull.</summary>
+    /// <summary>
+    /// The collider a description is built as. A triangle mesh has no volume to give a dynamic body mass, so a dynamic Mesh
+    /// body is simulated as its hulls; a decomposition is a hull body whose pieces carry several convex parts.
+    /// </summary>
     private static PhysicsShapeType EffectiveShape(PhysicsBody descriptor)
     {
-        return descriptor.Shape == PhysicsShapeType.Mesh && descriptor.Kind == PhysicsBodyKind.Dynamic
-                   ? PhysicsShapeType.ConvexHull
-                   : descriptor.Shape;
+        switch (descriptor.Shape)
+        {
+            case PhysicsShapeType.Mesh:
+                return descriptor.Kind == PhysicsBodyKind.Dynamic ? PhysicsShapeType.ConvexHull : PhysicsShapeType.Mesh;
+
+            case PhysicsShapeType.ConvexDecomposition:
+                return PhysicsShapeType.ConvexHull;
+
+            case PhysicsShapeType.Auto:
+                if (descriptor.Kind != PhysicsBodyKind.Dynamic && descriptor.MeshTriangles != null)
+                    return PhysicsShapeType.Mesh;
+
+                return descriptor.Hulls != null || descriptor.MeshTriangles != null ? PhysicsShapeType.ConvexHull : PhysicsShapeType.Box;
+
+            default:
+                return descriptor.Shape;
+        }
+    }
+
+    /// <summary>
+    /// The mass of a dynamic body: its density times the collider volume when it is asked to weigh by volume, otherwise
+    /// the fixed mass. A collider without volume, such as a flat hull that fell back to a box, keeps the fixed mass.
+    /// </summary>
+    private static float MassOf(PhysicsBody descriptor, float volume)
+    {
+        if (descriptor.MassFromDensity && float.IsFinite(descriptor.Density) && descriptor.Density > 0f && volume > 1e-9f)
+            return MathF.Max(0.0001f, descriptor.Density * volume);
+
+        return MathF.Max(0.0001f, descriptor.Mass);
+    }
+
+    /// <summary>Volume of a primitive collider; 0 for hulls and meshes, whose volume comes from their pieces.</summary>
+    private static float PrimitiveVolume(PhysicsBody descriptor)
+    {
+        var radius = MathF.Max(0.001f, descriptor.Radius);
+        var length = MathF.Max(0.001f, descriptor.Length);
+        switch (EffectiveShape(descriptor))
+        {
+            case PhysicsShapeType.Sphere:
+                return 4f / 3f * MathF.PI * radius * radius * radius;
+            case PhysicsShapeType.Capsule:
+                return MathF.PI * radius * radius * (length + 4f / 3f * radius);
+            case PhysicsShapeType.Cylinder:
+                return MathF.PI * radius * radius * length;
+            case PhysicsShapeType.Box:
+                var size = Vector3.Max(descriptor.Size, new Vector3(0.001f));
+                return size.X * size.Y * size.Z;
+            default:
+                return 0f;
+        }
     }
 
     private static Vector3 SanitizeScale(Vector3 scale)
@@ -515,7 +604,7 @@ internal sealed class PhysicsSimulation : IDisposable
     private BodyEntry UpdateBody(BodyEntry entry, PhysicsBody descriptor, Guid id, in InstanceInfo info)
     {
         var shapeKey = ShapeKey.From(descriptor, info);
-        if (!entry.ShapeKey.Equals(shapeKey))
+        if (!entry.ShapeKey.Equals(shapeKey) || IsPendingMeshReady(entry))
         {
             // Shape or mass changed: Bepu can't morph a collidable, so replace the body.
             RemoveBody(entry);
@@ -525,7 +614,21 @@ internal sealed class PhysicsSimulation : IDisposable
         var orientation = NormalizeOrientation(descriptor.Orientation);
         var descriptorPosition = descriptor.Position;
 
-        if (descriptorPosition != entry.LastInputPosition || orientation != entry.LastInputOrientation)
+        // A NaN from an animated input would poison the body and everything it touches; the body stays where it is.
+        var poseIsFinite = IsFinite(descriptorPosition) && float.IsFinite(orientation.X + orientation.Y + orientation.Z + orientation.W);
+        var tracksInputPose = poseIsFinite && entry.Kind == PhysicsBodyKind.Kinematic && !entry.IsStatic && _frameDelta > 0f
+                              && descriptor.LinearVelocity == Vector3.Zero && descriptor.AngularVelocity == Vector3.Zero;
+        if (tracksInputPose)
+        {
+            // A kinematic body animated through its Position or Rotation is moved there by velocity rather than
+            // placed: a teleported body has no speed, so what it runs into is only pushed out of the overlap and
+            // ends up embedded in it. Tracking the target every frame also corrects for steps the frame skipped.
+            var target = new RigidPose(descriptorPosition + Vector3.Transform(entry.LocalCenter, orientation), orientation);
+            _trackedKinematics.Add((entry, target));
+            entry.LastInputPosition = descriptorPosition;
+            entry.LastInputOrientation = orientation;
+        }
+        else if (poseIsFinite && (descriptorPosition != entry.LastInputPosition || orientation != entry.LastInputOrientation))
         {
             var pose = new RigidPose(descriptorPosition + Vector3.Transform(entry.LocalCenter, orientation), orientation);
             ApplyPose(entry, pose);
@@ -533,7 +636,7 @@ internal sealed class PhysicsSimulation : IDisposable
             entry.LastInputOrientation = orientation;
         }
 
-        if (!entry.IsStatic
+        if (!entry.IsStatic && IsFinite(descriptor.LinearVelocity) && IsFinite(descriptor.AngularVelocity)
             && (descriptor.LinearVelocity != entry.LastInputLinearVelocity
                 || descriptor.AngularVelocity != entry.LastInputAngularVelocity))
         {
@@ -588,6 +691,13 @@ internal sealed class PhysicsSimulation : IDisposable
                 if (TryCreateMeshBody(entry, descriptor, pose, info))
                     break;
 
+                if (entry.PendingMesh.HasValue)
+                {
+                    // Too small to touch anything; replaced by the mesh once its worker build is done.
+                    CreateBodyWithShape(entry, descriptor, pose, new Sphere(0.001f));
+                    break;
+                }
+
                 CreateBodyWithShape(entry, descriptor, pose, FallbackBox(descriptor, info));
                 break;
 
@@ -630,7 +740,7 @@ internal sealed class PhysicsSimulation : IDisposable
         var velocity = new BodyVelocity(descriptor.LinearVelocity, descriptor.AngularVelocity);
         var description = descriptor.Kind == PhysicsBodyKind.Kinematic
                               ? BodyDescription.CreateConvexKinematic(pose, velocity, _simulation.Shapes, shape)
-                              : BodyDescription.CreateConvexDynamic(pose, velocity, MathF.Max(0.0001f, descriptor.Mass), _simulation.Shapes, shape);
+                              : BodyDescription.CreateConvexDynamic(pose, velocity, MassOf(descriptor, PrimitiveVolume(descriptor)), _simulation.Shapes, shape);
 
         entry.Handle = _simulation.Bodies.Add(description);
         entry.ShapeIndex = description.Collidable.Shape;
@@ -648,6 +758,9 @@ internal sealed class PhysicsSimulation : IDisposable
     /// </summary>
     private bool TryCreateHullBody(BodyEntry entry, PhysicsBody descriptor, RigidPose pivotPose, in InstanceInfo info)
     {
+        if (info.Hull is { IsCompound: true } piece && TryCreateCompoundBody(entry, descriptor, pivotPose, info, piece))
+            return true;
+
         var points = info.Hull?.Points;
         object source = info.Hull;
         if (points == null && descriptor.MeshTriangles != null)
@@ -694,10 +807,90 @@ internal sealed class PhysicsSimulation : IDisposable
                              Center = center,
                              UnitInertia = hull.ComputeInertia(1f),
                              Activity = BodyDescription.GetDefaultActivity(hull),
+                             Volume = PhysicsDecomposition.HullVolume(scaled, _pool),
                          };
             _sharedShapes.Add(key, shared);
         }
 
+        return AddSharedHullBody(entry, descriptor, pivotPose, info, key, shared);
+    }
+
+    /// <summary>
+    /// Builds, or reuses, the compound of a piece's convex parts: a concave or multi-part object that moves as one body.
+    /// Every part weighs its share of the volume, so the centre of mass and the inertia follow the real shape.
+    /// </summary>
+    private bool TryCreateCompoundBody(BodyEntry entry, PhysicsBody descriptor, RigidPose pivotPose, in InstanceInfo info, PhysicsHull piece)
+    {
+        var key = new SharedShapeKey(piece, info.Scale, false);
+        if (!_sharedShapes.TryGetValue(key, out var shared))
+        {
+            var convexParts = piece.ConvexParts;
+            var hulls = new List<(ConvexHull Hull, Vector3 Center, float Volume)>(convexParts.Length);
+            var totalVolume = 0f;
+            foreach (var part in convexParts)
+            {
+                if (part == null || part.Length < 4)
+                    continue;
+
+                var scaled = new Vector3[part.Length];
+                var isValid = true;
+                for (var index = 0; index < part.Length && isValid; index++)
+                {
+                    scaled[index] = part[index] * info.Scale;
+                    isValid = IsFinite(scaled[index]);
+                }
+
+                if (!isValid || !EnclosesVolume(scaled))
+                    continue;
+
+                var volume = PhysicsDecomposition.HullVolume(scaled, _pool);
+                if (volume <= 0f)
+                    continue;
+
+                try
+                {
+                    var hull = new ConvexHull(scaled, _pool, out var center);
+                    hulls.Add((hull, center, volume));
+                    totalVolume += volume;
+                }
+                catch (Exception)
+                {
+                    // A part Bepu cannot wrap is dropped; the remaining parts still describe the object.
+                }
+            }
+
+            if (hulls.Count < 2 || totalVolume <= 0f)
+            {
+                foreach (var (hull, _, _) in hulls)
+                    hull.Dispose(_pool);
+
+                return false;
+            }
+
+            using var builder = new CompoundBuilder(_pool, _simulation.Shapes, hulls.Count);
+            foreach (var (hull, center, volume) in hulls)
+                builder.Add(hull, new RigidPose(center), volume / totalVolume);
+
+            builder.BuildDynamicCompound(out var children, out var unitInertia, out var compoundCenter);
+            var compound = new Compound(children);
+            shared = new SharedShape
+                         {
+                             Index = _simulation.Shapes.Add(compound),
+                             Center = compoundCenter,
+                             UnitInertia = unitInertia,
+                             Activity = new BodyActivityDescription(0.01f),
+                             Volume = totalVolume,
+                             IsCompound = true,
+                         };
+            _sharedShapes.Add(key, shared);
+        }
+
+        return AddSharedHullBody(entry, descriptor, pivotPose, info, key, shared);
+    }
+
+    /// <summary>Adds the body of a shared hull or compound shape at its centre of mass.</summary>
+    private bool AddSharedHullBody(BodyEntry entry, PhysicsBody descriptor, RigidPose pivotPose, in InstanceInfo info, SharedShapeKey key, SharedShape shared)
+    {
         shared.ReferenceCount++;
         entry.SharedShape = key;
         entry.ShapeIndex = shared.Index;
@@ -724,7 +917,7 @@ internal sealed class PhysicsSimulation : IDisposable
         }
 
         // Inertia scales linearly with mass, so the shared shape stores it for a mass of one.
-        var mass = MathF.Max(0.0001f, descriptor.Mass);
+        var mass = MassOf(descriptor, shared.Volume);
         var inertia = shared.UnitInertia;
         inertia.InverseMass /= mass;
         inertia.InverseInertiaTensor.XX /= mass;
@@ -747,33 +940,18 @@ internal sealed class PhysicsSimulation : IDisposable
         var key = new SharedShapeKey(triangles, info.Scale, true);
         if (!_sharedShapes.TryGetValue(key, out var shared))
         {
-            var triangleCount = triangles.Length / 3;
-            var valid = 0;
-            for (var index = 0; index < triangleCount; index++)
+            if (!TryGetMesh(key, triangles, info.Scale, out var mesh, out var ownPool))
             {
-                if (IsUsableTriangle(triangles[index * 3], triangles[index * 3 + 1], triangles[index * 3 + 2]))
-                    valid++;
-            }
-
-            if (valid == 0)
+                entry.PendingMesh = _meshBuilds.ContainsKey(key) ? key : null;
                 return false;
-
-            _pool.Take<Triangle>(valid * 2, out var buffer);
-            var write = 0;
-            for (var index = 0; index < triangleCount; index++)
-            {
-                var a = triangles[index * 3];
-                var b = triangles[index * 3 + 1];
-                var c = triangles[index * 3 + 2];
-                if (!IsUsableTriangle(a, b, c))
-                    continue;
-
-                buffer[write++] = new Triangle(a, b, c);
-                buffer[write++] = new Triangle(a, c, b);
             }
 
-            var mesh = new Mesh(buffer, info.Scale, _pool);
-            shared = new SharedShape { Index = _simulation.Shapes.Add(mesh), Activity = new BodyActivityDescription(0.01f) };
+            shared = new SharedShape
+                         {
+                             Index = _simulation.Shapes.Add(mesh),
+                             Activity = new BodyActivityDescription(0.01f),
+                             OwnPool = ownPool,
+                         };
             _sharedShapes.Add(key, shared);
         }
 
@@ -792,6 +970,80 @@ internal sealed class PhysicsSimulation : IDisposable
         var velocity = new BodyVelocity(descriptor.LinearVelocity, descriptor.AngularVelocity);
         entry.Handle = _simulation.Bodies.Add(BodyDescription.CreateKinematic(pose, velocity, new CollidableDescription(shared.Index), shared.Activity));
         return true;
+    }
+
+    /// <summary>
+    /// The Bepu mesh for these triangles: built right here, or in the background when the world allows it. A mesh of
+    /// a hundred thousand triangles takes tens of milliseconds to build its tree, too long for the frame. A background
+    /// build gets a buffer pool of its own, because the simulation's pool is not thread-safe; the shape keeps it.
+    /// </summary>
+    private bool TryGetMesh(SharedShapeKey key, Vector3[] triangles, Vector3 scale, out Mesh mesh, out BufferPool ownPool)
+    {
+        mesh = default;
+        ownPool = null;
+        if (!_buildMeshesInBackground)
+            return TryBuildMesh(triangles, scale, _pool, out mesh);
+
+        if (!_meshBuilds.TryGetValue(key, out var build))
+        {
+            var pool = new BufferPool();
+            build = new MeshBuild(pool, Task.Run(() => TryBuildMesh(triangles, scale, pool, out var built) ? built : (Mesh?)null));
+            _meshBuilds.Add(key, build);
+        }
+
+        if (!build.Task.IsCompleted)
+            return false;
+
+        _meshBuilds.Remove(key);
+        if (build.Task.Status != TaskStatus.RanToCompletion || build.Task.Result is not { } finished)
+        {
+            build.Pool.Clear();
+            return false;
+        }
+
+        mesh = finished;
+        ownPool = build.Pool;
+        return true;
+    }
+
+    /// <summary>Triangles are added with both windings, so either side of the surface collides.</summary>
+    private static bool TryBuildMesh(Vector3[] triangles, Vector3 scale, BufferPool pool, out Mesh mesh)
+    {
+        mesh = default;
+        var triangleCount = triangles.Length / 3;
+        var valid = 0;
+        for (var index = 0; index < triangleCount; index++)
+        {
+            if (IsUsableTriangle(triangles[index * 3], triangles[index * 3 + 1], triangles[index * 3 + 2]))
+                valid++;
+        }
+
+        if (valid == 0)
+            return false;
+
+        pool.Take<Triangle>(valid * 2, out var buffer);
+        var write = 0;
+        for (var index = 0; index < triangleCount; index++)
+        {
+            var a = triangles[index * 3];
+            var b = triangles[index * 3 + 1];
+            var c = triangles[index * 3 + 2];
+            if (!IsUsableTriangle(a, b, c))
+                continue;
+
+            buffer[write++] = new Triangle(a, b, c);
+            buffer[write++] = new Triangle(a, c, b);
+        }
+
+        mesh = new Mesh(buffer, scale, pool);
+        return true;
+    }
+
+    /** True for a placeholder body whose mesh has finished building, so the body is rebuilt with it. */
+    private bool IsPendingMeshReady(BodyEntry entry)
+    {
+        return entry.PendingMesh is { } key
+               && (!_meshBuilds.TryGetValue(key, out var build) || build.Task.IsCompleted);
     }
 
     private static bool IsUsableTriangle(Vector3 a, Vector3 b, Vector3 c)
@@ -1019,7 +1271,13 @@ internal sealed class PhysicsSimulation : IDisposable
         _seenJoints.Add(id);
         var hash = JointHash(descriptor, bodyA.Handle, bodyB.Handle);
         if (anchoring != JointAnchoring.Explicit)
-            hash = HashCode.Combine(hash, InputPose(bodyA), InputPose(bodyB), anchoring);
+        {
+            // Hashed by component: RigidPose is not IEquatable, so hashing it whole boxed both poses on every
+            // joint and every frame.
+            var poseA = InputPose(bodyA);
+            var poseB = InputPose(bodyB);
+            hash = HashCode.Combine(hash, poseA.Position, poseA.Orientation, poseB.Position, poseB.Orientation, anchoring);
+        }
 
         if (_joints.TryGetValue(id, out var existing))
         {
@@ -1038,9 +1296,6 @@ internal sealed class PhysicsSimulation : IDisposable
         _joints.Add(id, entry);
     }
 
-    /// <summary>
-    /// A motor or a swing limit is a second Bepu constraint on the same pair, around the same axes as the joint itself.
-    /// </summary>
     /// <summary>The joint axis in each body's local space, for the chosen anchoring.</summary>
     private static void JointAxes(PhysicsJoint descriptor, BodyEntry bodyA, BodyEntry bodyB, JointAnchoring anchoring,
                                   out Vector3 axisA, out Vector3 axisB)
@@ -1060,6 +1315,7 @@ internal sealed class PhysicsSimulation : IDisposable
             axisB = NormalizeAxis(Vector3.Transform(Vector3.Transform(axisA, InputPose(bodyA).Orientation), inverseB));
     }
 
+    /// <summary>A motor or a swing limit is a second Bepu constraint on the same pair, around the same axes as the joint itself.</summary>
     private void AddMotorOrLimit(PhysicsJoint descriptor, BodyEntry bodyA, BodyEntry bodyB, JointAnchoring anchoring, JointEntry entry)
     {
         JointAxes(descriptor, bodyA, bodyB, anchoring, out var axisA, out var axisB);
@@ -1097,7 +1353,7 @@ internal sealed class PhysicsSimulation : IDisposable
 
         _seenJoints.Add(id);
         var pose = InputPose(body);
-        var hash = HashCode.Combine(JointHash(descriptor, body.Handle, body.Handle), pose, 0x57_4F_52);
+        var hash = HashCode.Combine(JointHash(descriptor, body.Handle, body.Handle), pose.Position, pose.Orientation, 0x57_4F_52);
 
         if (_joints.TryGetValue(id, out var existing))
         {
@@ -1645,6 +1901,41 @@ internal sealed class PhysicsSimulation : IDisposable
         entry.Speed = reference.Velocity.Linear.Length();
     }
 
+    /// <summary>Sets a kinematic body's velocity so it reaches <paramref name="target"/> in <paramref name="seconds"/> of simulated time.</summary>
+    private void TrackKinematicPose(BodyEntry entry, RigidPose target, float seconds)
+    {
+        var reference = _simulation.Bodies[entry.Handle];
+        var current = reference.Pose;
+        var offset = target.Position - current.Position;
+
+        // A jump no body could make in one frame is a cut in the animation, not a motion: place the body instead.
+        if (offset.LengthSquared() > KinematicTeleportDistance * KinematicTeleportDistance)
+        {
+            reference.Velocity = default;
+            ApplyPose(entry, target);
+            return;
+        }
+
+        var turn = target.Orientation * Quaternion.Conjugate(current.Orientation);
+        if (turn.W < 0f)
+            turn = Quaternion.Negate(turn);
+
+        var angular = Vector3.Zero;
+        var sinHalf = new Vector3(turn.X, turn.Y, turn.Z).Length();
+        if (sinHalf > 1e-6f)
+        {
+            var angle = 2f * MathF.Atan2(sinHalf, turn.W);
+            angular = new Vector3(turn.X, turn.Y, turn.Z) / sinHalf * (angle / seconds);
+        }
+
+        var linear = offset / seconds;
+        if (linear == Vector3.Zero && angular == Vector3.Zero && reference.Velocity.Linear == Vector3.Zero && reference.Velocity.Angular == Vector3.Zero)
+            return;
+
+        reference.Velocity = new BodyVelocity(linear, angular);
+        reference.Awake = true;
+    }
+
     private void ApplyPose(BodyEntry entry, RigidPose pose)
     {
         if (entry.IsStatic)
@@ -1694,7 +1985,20 @@ internal sealed class PhysicsSimulation : IDisposable
             var key = entry.SharedShape.Value;
             if (_sharedShapes.TryGetValue(key, out var shared) && --shared.ReferenceCount <= 0)
             {
-                _simulation.Shapes.RemoveAndDispose(shared.Index, _pool);
+                if (shared.OwnPool != null)
+                {
+                    _simulation.Shapes.Remove(shared.Index);
+                    shared.OwnPool.Clear();
+                }
+                else if (shared.IsCompound)
+                {
+                    _simulation.Shapes.RecursivelyRemoveAndDispose(shared.Index, _pool);
+                }
+                else
+                {
+                    _simulation.Shapes.RemoveAndDispose(shared.Index, _pool);
+                }
+
                 _sharedShapes.Remove(key);
             }
 
@@ -1846,7 +2150,18 @@ internal sealed class PhysicsSimulation : IDisposable
         public BodyInertia UnitInertia;
         public BodyActivityDescription Activity;
         public int ReferenceCount;
+
+        /** Volume of the scaled shape, which density-based mass is taken from; 0 for meshes. */
+        public float Volume;
+
+        /** Compound children are separate shapes that have to be released with the compound. */
+        public bool IsCompound;
+
+        /** The pool a mesh built in the background was allocated from, released with the shape; null for the simulation's pool. */
+        public BufferPool OwnPool;
     }
+
+    private sealed record MeshBuild(BufferPool Pool, Task<Mesh?> Task);
 
     private sealed class NearbyLinks
     {
@@ -1888,6 +2203,7 @@ internal sealed class PhysicsSimulation : IDisposable
         private readonly float _radius;
         private readonly float _length;
         private readonly float _mass;
+        private readonly float _density;
 
         // Hull and mesh bodies: the geometry they were built from and the scale baked into the shape.
         private readonly object _geometry;
@@ -1901,6 +2217,7 @@ internal sealed class PhysicsSimulation : IDisposable
             _radius = descriptor.Radius;
             _length = descriptor.Length;
             _mass = descriptor.Kind == PhysicsBodyKind.Dynamic ? descriptor.Mass : 0f;
+            _density = descriptor.Kind == PhysicsBodyKind.Dynamic && descriptor.MassFromDensity ? descriptor.Density : 0f;
 
             switch (EffectiveShape(descriptor))
             {
@@ -1931,6 +2248,7 @@ internal sealed class PhysicsSimulation : IDisposable
                    && _radius.Equals(other._radius)
                    && _length.Equals(other._length)
                    && _mass.Equals(other._mass)
+                   && _density.Equals(other._density)
                    && ReferenceEquals(_geometry, other._geometry)
                    && _scale == other._scale;
         }
@@ -1942,6 +2260,9 @@ internal sealed class PhysicsSimulation : IDisposable
 
     private sealed class BodyEntry
     {
+        /** The mesh this placeholder body is waiting for; set while its collider builds in the background. */
+        public SharedShapeKey? PendingMesh;
+
         public Guid Id;
         public PhysicsBodyKind Kind;
         public bool IsStatic;
@@ -2218,6 +2539,9 @@ internal sealed class PhysicsSimulation : IDisposable
     private const float MaxTimeJump = 0.5f;
     private const float MaxFrameDelta = 0.1f;
 
+    /// <summary>Metres a position-driven kinematic body may move in one frame before the move counts as a cut and it is placed.</summary>
+    private const float KinematicTeleportDistance = 2f;
+
     /** Closing speed in m/s below which a bounce is skipped, so resting contacts do not jitter. */
     private const float MinBounceSpeed = 1f;
 
@@ -2240,6 +2564,10 @@ internal sealed class PhysicsSimulation : IDisposable
     private readonly object _logSource;
     private Simulation _simulation;
     private BufferPool _pool;
+    private float _frameDelta;
+    private bool _buildMeshesInBackground;
+    private readonly Dictionary<SharedShapeKey, MeshBuild> _meshBuilds = new();
+    private readonly List<(BodyEntry Entry, RigidPose Target)> _trackedKinematics = new();
     private ThreadDispatcher _dispatcher;
     private List<BounceRequest>[] _bounceRequests = [];
     private readonly List<BounceRequest> _pendingBounces = new();

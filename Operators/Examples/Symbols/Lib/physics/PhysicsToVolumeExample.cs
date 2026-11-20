@@ -1,7 +1,7 @@
 namespace Examples.Lib.physics;
 
 /// <summary>
-/// 40 balls fall into a pile, and a volume built from their positions wraps them in one skin.
+/// A pile of falling balls wrapped in one smooth skin through a volume.
 /// </summary>
 [Guid("faa1fe57-3dd8-5136-93c3-fe9bdbeccd4d")]
 internal sealed class PhysicsToVolumeExample : Instance<PhysicsToVolumeExample>

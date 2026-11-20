@@ -35,6 +35,10 @@
       "DefaultValue": 0.0
     },
     {
+      "Id": "32f597e7-eb25-45be-b37a-153214b1119e"/*CameraSettings*/,
+      "DefaultValue": ""
+    },
+    {
       "Id": "49019d29-873e-4b7c-a897-c575a384a650"/*ResolutionFpsType*/,
       "DefaultValue": 0
     },

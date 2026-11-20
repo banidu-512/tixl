@@ -15,6 +15,10 @@
       "DefaultValue": true
     },
     {
+      "Id": "10919c3d-5979-4499-a958-c347008f7c12"/*MassMode*/,
+      "DefaultValue": 0
+    },
+    {
       "Id": "1b9b7bbd-aba7-4a23-8f78-c1366f260f75"/*GravityScale*/,
       "DefaultValue": 1.0
     },
@@ -44,7 +48,7 @@
     },
     {
       "Id": "5f6cc54b-9221-42b9-87d7-a0f9669c64b2"/*Shape*/,
-      "DefaultValue": 0
+      "DefaultValue": 6
     },
     {
       "Id": "70f094d8-c499-40bf-ab28-0081297a5985"/*Kind*/,
@@ -87,8 +91,20 @@
       "DefaultValue": 0.5
     },
     {
+      "Id": "cf7c8302-520f-4a41-84ad-18d9f0b7148b"/*Density*/,
+      "DefaultValue": 1.0
+    },
+    {
       "Id": "d8d048f0-6517-497e-878d-24fc95ed8a64"/*Length*/,
       "DefaultValue": 1.0
+    },
+    {
+      "Id": "dba98aeb-66df-41eb-b3a2-e91acb71d0be"/*MaxHulls*/,
+      "DefaultValue": 8
+    },
+    {
+      "Id": "e13e2b87-7a04-4197-82a8-a11fab87d1f9"/*Pieces*/,
+      "DefaultValue": 0
     },
     {
       "Id": "e965e0ce-38ce-46da-a7ac-e730d7876d29"/*LinearVelocity*/,
