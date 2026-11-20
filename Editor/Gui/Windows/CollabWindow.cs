@@ -32,47 +32,6 @@ internal sealed class CollabWindow : Window
 
     internal override IReadOnlyList<Window> GetInstances() => [this];
 
-    // ---------------------------------------------------------------------------------------
-    // Small drawing helpers: a consistent, quieter look across all three tabs
-    // ---------------------------------------------------------------------------------------
-
-    /// <summary>A section title with an accent bar to its left and breathing room above it.</summary>
-    private static void SectionHeader(string title)
-    {
-        FormInputs.AddVerticalSpace(10);
-        var dl = ImGui.GetWindowDrawList();
-        var pos = ImGui.GetCursorScreenPos();
-        var size = ImGui.CalcTextSize(title);
-        var barWidth = 3f * T3Ui.UiScaleFactor;
-        dl.AddRectFilled(new Vector2(pos.X, pos.Y + 1), new Vector2(pos.X + barWidth, pos.Y + size.Y - 1),
-                         UiColors.StatusActivated.Fade(0.9f), 1.5f);
-        ImGui.SetCursorPosX(ImGui.GetCursorPosX() + barWidth + 6f * T3Ui.UiScaleFactor);
-        ImGui.TextUnformatted(title);
-        FormInputs.AddVerticalSpace(2);
-    }
-
-    /// <summary>A small rounded status pill (online/offline, controllable/spectating, ...).</summary>
-    private static void Badge(string text, Color color)
-    {
-        var dl = ImGui.GetWindowDrawList();
-        var padding = new Vector2(6, 1.5f) * T3Ui.UiScaleFactor;
-        var size = ImGui.CalcTextSize(text) + padding * 2;
-        var pos = ImGui.GetCursorScreenPos();
-        dl.AddRectFilled(pos, pos + size, color.Fade(0.18f), size.Y * 0.5f);
-        dl.AddText(pos + padding, color, text);
-        ImGui.Dummy(size);
-    }
-
-    /// <summary>Muted helper text with a small left indent, wrapped to the content width.</summary>
-    private static void Hint(string text)
-    {
-        ImGui.SetCursorPosX(ImGui.GetCursorPosX() + 4 * T3Ui.UiScaleFactor);
-        ImGui.PushStyleColor(ImGuiCol.Text, UiColors.TextMuted.Rgba);
-        ImGui.TextWrapped(text);
-        ImGui.PopStyleColor();
-    }
-
-
     /// <summary>The window's areas: chat, party matching, party management, remote and boygroup.</summary>
     private enum Tab
     {
@@ -129,7 +88,7 @@ internal sealed class CollabWindow : Window
         }
 
         DrawTabLine();
-        FormInputs.AddVerticalSpace(2);
+        PanelLayout.Space(PanelLayout.SpaceS);
 
         switch (_selectedTab)
         {
@@ -157,31 +116,16 @@ internal sealed class CollabWindow : Window
 
     private static readonly string[] _tabLabels = ["Chat", "Party matching", "Party management", "Remote", "Boygroup"];
     private static readonly Tab[] _tabs = [Tab.Chat, Tab.PartyMatching, Tab.PartyManagement, Tab.Remote, Tab.Boygroup];
-    private static readonly float[] _tabWidthBuffer = new float[8];
 
-    /// <summary>Five separate tabs in one line, spread evenly across the window width. The active
-    /// one is highlighted; a click switches the tab. SetCursorPosX takes window-LOCAL coordinates -
-    /// screen-space math here placed the row off-window.</summary>
+    /// <summary>The tabs in one left-aligned row with a fixed gap; the active one is highlighted.</summary>
     private static void DrawTabLine()
     {
-        var count = _tabs.Length;
-
-        var buttonsTotal = 0f;
-        for (var i = 0; i < count; i++)
+        ImGui.SetCursorPosX(ImGui.GetCursorPosX() + PanelLayout.SpaceS * T3Ui.UiScaleFactor);
+        for (var i = 0; i < _tabs.Length; i++)
         {
-            _tabWidthBuffer[i] = ImGui.CalcTextSize(_tabLabels[i]).X + ImGui.GetStyle().FramePadding.X * 2;
-            buttonsTotal += _tabWidthBuffer[i];
-        }
+            if (i > 0)
+                ImGui.SameLine(0, PanelLayout.SpaceS * T3Ui.UiScaleFactor);
 
-        var uiScale = T3Ui.UiScaleFactor;
-        var margin = 6f * uiScale;
-        var gap = Math.Max(4f * uiScale, (ImGui.GetWindowSize().X - margin * 2 - buttonsTotal) / (count - 1));
-
-        var rowY = ImGui.GetCursorPosY();
-        var x = margin;
-        for (var i = 0; i < count; i++)
-        {
-            ImGui.SetCursorPos(new Vector2(x, rowY));
             var isActive = _selectedTab == _tabs[i];
             if (isActive)
                 ImGui.PushStyleColor(ImGuiCol.Button, UiColors.StatusActivated.Rgba);
@@ -191,13 +135,7 @@ internal sealed class CollabWindow : Window
 
             if (isActive)
                 ImGui.PopStyleColor();
-
-            x += _tabWidthBuffer[i] + gap;
         }
-
-        // Park the cursor below the tab row for the content that follows.
-        ImGui.SetCursorPos(new Vector2(margin, rowY + ImGui.GetFrameHeight() + 4 * uiScale));
-        ImGui.Dummy(Vector2.Zero);
     }
 
     // ---------------------------------------------------------------------------------------
@@ -208,14 +146,15 @@ internal sealed class CollabWindow : Window
     {
         if (collab.State != CollabManager.SessionState.Off)
         {
+            PanelLayout.BeginSection("Current session");
             ImGui.TextWrapped(collab.StatusText);
-            FormInputs.AddVerticalSpace(4);
-            ImGui.TextDisabled("Leave the current session to browse and join another one.");
+            PanelLayout.Space(PanelLayout.SpaceXS);
+            CustomComponents.HelpText("Leave the current session to browse and join another one.");
+            PanelLayout.EndSection();
             return;
         }
 
         DrawHostControls(collab);
-        FormInputs.AddVerticalSpace(8);
         DrawSessionBrowser(collab);
     }
 
@@ -225,8 +164,7 @@ internal sealed class CollabWindow : Window
     {
         if (collab.State == CollabManager.SessionState.Off)
         {
-            ImGui.TextDisabled("No session is running. Host one on Party search");
-            ImGui.TextDisabled("or join a listed session there.");
+            CustomComponents.HelpText("No session is running. Host one on the Party matching tab or join a listed session there.");
             return;
         }
 
@@ -236,6 +174,7 @@ internal sealed class CollabWindow : Window
     private static void DrawHostControls(CollabManager collab)
     {
         var uiScale = T3Ui.UiScaleFactor;
+        PanelLayout.BeginSection("Host a party", "The party stays alive while you browse other projects, until you close the party, unload the project or exit TiXL.");
         var password = UserSettings.Config.CollabPassword ?? "";
         ImGui.SetNextItemWidth(-1);
         ImGui.InputTextWithHint("##collab-pwd", "Session password (optional)", ref password, 64);
@@ -246,8 +185,8 @@ internal sealed class CollabWindow : Window
         }
 
         // -- Type: Controllable (everyone edits) or Spectating (the host drops their changes).
-        FormInputs.AddVerticalSpace(6);
-        ImGui.TextDisabled("Type");
+        PanelLayout.Space(PanelLayout.SpaceM);
+        CustomComponents.SmallGroupHeader("Type");
         var isHosting = collab.State == CollabManager.SessionState.Hosting;
         var controllable = isHosting ? collab.ParticipantsCanEdit : UserSettings.Config.CollabPartyControllable;
 
@@ -259,7 +198,7 @@ internal sealed class CollabWindow : Window
                 collab.SetParticipantsCanEdit(true);
         }
 
-        ImGui.SameLine();
+        ImGui.SameLine(0, PanelLayout.SpaceL * uiScale);
         if (ImGui.RadioButton("Spectating", !controllable) && controllable)
         {
             UserSettings.Config.CollabPartyControllable = false;
@@ -275,19 +214,18 @@ internal sealed class CollabWindow : Window
                                             """);
 
         // -- Reach: Local (LAN) or Online (through the backend party server).
-        FormInputs.AddVerticalSpace(6);
-        ImGui.TextDisabled("Reach");
+        PanelLayout.Space(PanelLayout.SpaceM);
+        CustomComponents.SmallGroupHeader("Reach");
         var online = UserSettings.Config.CollabPartyOnline;
-        var local = !online;
 
-        if (ImGui.Checkbox("Local (same network)", ref local) && local)
+        if (ImGui.RadioButton("Local (same network)", !online) && online)
         {
             UserSettings.Config.CollabPartyOnline = false;
             UserSettings.Save();
         }
 
-        ImGui.SameLine();
-        if (ImGui.Checkbox("Online (through the server)", ref online) && online)
+        ImGui.SameLine(0, PanelLayout.SpaceL * uiScale);
+        if (ImGui.RadioButton("Online (through the server)", online) && !online)
         {
             UserSettings.Config.CollabPartyOnline = true;
             UserSettings.Save();
@@ -300,7 +238,7 @@ internal sealed class CollabWindow : Window
                                             """);
 
         // -- Form the party.
-        FormInputs.AddVerticalSpace(6);
+        PanelLayout.Space(PanelLayout.SpaceL);
         var wantOnline = UserSettings.Config.CollabPartyOnline;
         var canForm = !wantOnline || CollabWebLobby.IsConfigured;
         var projectName = ProjectView.Focused?.OpenedProject.Package.DisplayName ?? "";
@@ -331,10 +269,7 @@ internal sealed class CollabWindow : Window
             ImGui.TextDisabled("Set the Backend URL in Settings first");
         }
 
-        // The project context note: parties are formed for the open project and outlive browsing.
-        FormInputs.AddVerticalSpace(6);
-        ImGui.TextDisabled("The party stays alive while you browse other projects,");
-        ImGui.TextDisabled("until you close the party, unload the project or exit TiXL.");
+        PanelLayout.EndSection();
     }
 
     // ---------------------------------------------------------------------------------------
@@ -355,18 +290,19 @@ internal sealed class CollabWindow : Window
     {
         DrainRemoteUiActions();
         UpdateDeviceList();
+        PanelLayout.BeginSection("This computer");
         DrawThisComputer();
-        FormInputs.AddVerticalSpace(8);
-        ImGui.Separator();
-        FormInputs.AddVerticalSpace(8);
+        PanelLayout.EndSection();
+
+        PanelLayout.BeginSection("My computers");
         DrawMyComputers(collab);
+        PanelLayout.EndSection();
     }
 
     /// <summary>Installation side: pairing, consent and the name the owner sees.</summary>
     private static void DrawThisComputer()
     {
         var uiScale = T3Ui.UiScaleFactor;
-        SectionHeader("This computer");
 
         if (CollabRemote.IsPaired)
         {
@@ -396,7 +332,7 @@ internal sealed class CollabWindow : Window
             }
 
             ImGui.SameLine();
-            if (ImGui.Button("Forget Pairing"))
+            if (PanelLayout.DestructiveButton("Forget Pairing"))
                 CollabRemote.ForgetInstallation();
 
             if (CollabRemote.InstallationStatus.Length > 0)
@@ -441,7 +377,6 @@ internal sealed class CollabWindow : Window
     private static void DrawMyComputers(CollabManager collab)
     {
         var uiScale = T3Ui.UiScaleFactor;
-        SectionHeader("My computers");
 
         if (!CollabDiscordAuth.HasValidToken)
         {
@@ -477,7 +412,7 @@ internal sealed class CollabWindow : Window
             return;
         }
 
-        FormInputs.AddVerticalSpace(4);
+        PanelLayout.Space(PanelLayout.SpaceS);
         const ImGuiTableFlags flags = ImGuiTableFlags.BordersInnerH | ImGuiTableFlags.RowBg;
         if (!ImGui.BeginTable("##remoteDevices", 4, flags))
             return;
@@ -498,9 +433,9 @@ internal sealed class CollabWindow : Window
             ImGui.TextUnformatted(string.IsNullOrEmpty(device.Name) ? device.Id : device.Name);
             ImGui.SameLine();
             if (device.Online)
-                Badge("online", UiColors.StatusActivated);
+                PanelLayout.StatusPill("online", UiColors.StatusActivated);
             else
-                Badge(LastSeen(device.LastSeen), UiColors.TextMuted);
+                PanelLayout.StatusPill(LastSeen(device.LastSeen), UiColors.TextMuted);
 
             ImGui.TableNextColumn();
             ImGui.TextUnformatted(string.IsNullOrEmpty(device.Project) ? "--" : device.Project);
@@ -509,22 +444,22 @@ internal sealed class CollabWindow : Window
             ImGui.PushID(device.Id);
             if (device.Room.Length > 0)
             {
-                if (ImGui.SmallButton("Join Session"))
+                if (ImGui.Button("Join Session"))
                     collab.JoinViaBackend(device.Room);
 
                 ImGui.SameLine();
-                if (ImGui.SmallButton("Stop"))
+                if (PanelLayout.DestructiveButton("Stop"))
                     DisconnectFrom(device.Id);
             }
             else
             {
                 ImGui.BeginDisabled(!device.Online || !device.Enabled);
-                if (ImGui.SmallButton("Connect"))
+                if (ImGui.Button("Connect"))
                     ConnectTo(device);
                 ImGui.EndDisabled();
 
                 ImGui.SameLine();
-                if (ImGui.SmallButton("Rename"))
+                if (ImGui.Button("Rename"))
                     _renameDeviceId = device.Id;
             }
 
@@ -853,32 +788,27 @@ internal sealed class CollabWindow : Window
     {
         var boygroup = BoygroupManager.Instance;
         var config = UserSettings.Config;
-        SectionHeader("Boygrouping");
+        PanelLayout.BeginSection("Boygrouping");
 
         var state = boygroup.State;
         if (state == BoygroupManager.BoygroupState.Off)
         {
-            ImGui.TextDisabled("Boygrouping is not running on this machine.");
+            PanelLayout.StatusPill("Not running", UiColors.TextMuted);
+            PanelLayout.Space(PanelLayout.SpaceS);
 
             // The intended shape, summarized from the settings so the tab is worth a glance.
-            FormInputs.AddVerticalSpace(8);
-            FormInputs.DrawInputLabel("Role");
-            ImGui.TextUnformatted(config.BoygroupIsMaster ? "Master (server)" : "Render node (slave)");
+            PanelLayout.ValueRow("Role", config.BoygroupIsMaster ? "Master (server)" : "Render node (slave)");
+            PanelLayout.ValueRow("Port", $"{config.BoygroupPort}", UiColors.TextMuted);
+            PanelLayout.ValueRow("Groups", string.Join(", ", config.BoygroupGroups), UiColors.TextMuted);
 
-            FormInputs.DrawInputLabel("Port");
-            ImGui.TextDisabled($"{config.BoygroupPort}");
-
-            FormInputs.DrawInputLabel("Groups");
-            ImGui.TextDisabled(string.Join(", ", config.BoygroupGroups));
-
-            FormInputs.AddVerticalSpace(6);
+            PanelLayout.Space(PanelLayout.SpaceS);
             CustomComponents.HelpText("""
                                       Boygrouping distributes a show from this master to the render
                                       nodes of the installation. Node name, password, groups and
                                       discovery are configured in the settings.
                                       """);
 
-            FormInputs.AddVerticalSpace(4);
+            PanelLayout.Space(PanelLayout.SpaceS);
             if (ImGui.Button("Open Boygroup Settings"))
             {
                 var settings = WindowManager.SettingsWindow;
@@ -890,19 +820,11 @@ internal sealed class CollabWindow : Window
         {
             var isMaster = state == BoygroupManager.BoygroupState.Server;
 
-            FormInputs.DrawInputLabel("Role");
-            ImGui.PushStyleColor(ImGuiCol.Text, isMaster ? UiColors.StatusActivated.Rgba : UiColors.Text.Rgba);
-            ImGui.TextUnformatted(isMaster ? "Master" : "Render node");
-            ImGui.PopStyleColor();
-
-            FormInputs.DrawInputLabel("State");
-            ImGui.TextDisabled(boygroup.StatusText);
+            PanelLayout.ValueRow("Role", isMaster ? "Master" : "Render node", isMaster ? UiColors.StatusActivated : UiColors.Text);
+            PanelLayout.ValueRow("State", boygroup.StatusText, UiColors.TextMuted);
 
             if (!string.IsNullOrEmpty(boygroup.InputRelaySummary))
-            {
-                FormInputs.DrawInputLabel("Inputs");
-                ImGui.TextDisabled(boygroup.InputRelaySummary);
-            }
+                PanelLayout.ValueRow("Inputs", boygroup.InputRelaySummary, UiColors.TextMuted);
 
             if (isMaster)
             {
@@ -926,7 +848,7 @@ internal sealed class CollabWindow : Window
                 }
             }
 
-            FormInputs.AddVerticalSpace(8);
+            PanelLayout.Space(PanelLayout.SpaceM);
             if (ImGui.Button("Boygroup Settings"))
             {
                 var settings = WindowManager.SettingsWindow;
@@ -934,10 +856,12 @@ internal sealed class CollabWindow : Window
                 settings.TrySelectCategory("Boygroup");
             }
 
-            ImGui.SameLine();
-            if (ImGui.Button("Stop Boygrouping"))
+            ImGui.SameLine(0, PanelLayout.SpaceL * T3Ui.UiScaleFactor);
+            if (PanelLayout.DestructiveButton("Stop Boygrouping"))
                 boygroup.Leave(manual: true);
         }
+
+        PanelLayout.EndSection();
     }
 
     // ---------------------------------------------------------------------------------------
@@ -946,15 +870,17 @@ internal sealed class CollabWindow : Window
 
     private static void DrawSessionTab(CollabManager collab)
     {
+        PanelLayout.BeginSection(collab.State == CollabManager.SessionState.Hosting ? "Hosting" : "Session");
         DrawSessionHeader(collab);
-        DrawDivider();
 
         if (collab.State == CollabManager.SessionState.Off)
         {
-            ImGui.TextDisabled("No session is running. Host one on the Party tab");
-            ImGui.TextDisabled("or join a listed session there.");
+            CustomComponents.HelpText("No session is running. Host one on the Party matching tab or join a listed session there.");
+            PanelLayout.EndSection();
             return;
         }
+
+        PanelLayout.Space(PanelLayout.SpaceS);
 
         // Spectator state: the host toggles, guests see the badge.
         if (collab.State == CollabManager.SessionState.Hosting)
@@ -997,13 +923,13 @@ internal sealed class CollabWindow : Window
             ImGui.TextColored(UiColors.StatusWarning, "Read-only session: the host set participants to spectators.");
         }
 
+        PanelLayout.EndSection();
+
         DrawHostPreview(collab);
         DrawRoster(collab);
-        DrawDivider();
         DrawJoinRequests(collab);
         DrawListingControls(collab);
         DrawWhispers(collab);
-        DrawDivider();
         DrawLeaveButton(collab);
     }
 
@@ -1014,8 +940,7 @@ internal sealed class CollabWindow : Window
         if (requests.Count == 0 || collab.State != CollabManager.SessionState.Hosting)
             return;
 
-        FormInputs.AddSectionHeader("Join requests");
-        FormInputs.AddVerticalSpace(4);
+        PanelLayout.BeginSection("Join requests");
 
         // The button handlers remove from the list while this loop is iterating it.
         foreach (var request in requests.ToArray())
@@ -1033,12 +958,12 @@ internal sealed class CollabWindow : Window
             ImGui.PopID();
         }
 
-        FormInputs.AddVerticalSpace(4);
+        PanelLayout.EndSection();
     }
 
     private static void DrawLeaveButton(CollabManager collab)
     {
-        if (ImGui.Button("Leave Session"))
+        if (PanelLayout.DestructiveButton("Leave Session"))
             collab.Leave(manual: true);
     }
 
@@ -1051,8 +976,7 @@ internal sealed class CollabWindow : Window
             return;
 
         var config = UserSettings.Config;
-        FormInputs.AddSectionHeader("Session browser entry");
-        FormInputs.AddVerticalSpace(4);
+        PanelLayout.BeginSection("Session browser entry");
         FormInputs.AddCheckBox("Listed in session browser", ref config.CollabListSession,
                                """
                                On: the session shows up in other people's session browser with the
@@ -1064,7 +988,7 @@ internal sealed class CollabWindow : Window
                                   $"{collab.LocalIdentity.DisplayName}'s session",
                                   null, "What the session browser shows.");
         DrawPurposePicker(ref config.CollabSessionPurpose);
-        if (ImGui.SmallButton("Update Entry"))
+        if (ImGui.Button("Update Entry"))
         {
             collab.UpdateSessionListing(config.CollabSessionTitle, config.CollabSessionPurpose,
                                         ProjectView.Focused?.OpenedProject.Package.DisplayName ?? "",
@@ -1072,6 +996,7 @@ internal sealed class CollabWindow : Window
         }
 
         CustomComponents.TooltipForLastItem("Sends the title, purpose and visibility above to the backend or relay so other people's browsers see them.");
+        PanelLayout.EndSection();
     }
 
     /// <summary>The purpose combo, standalone (moved from the settings panel's shared form).</summary>
@@ -1095,12 +1020,11 @@ internal sealed class CollabWindow : Window
         if (collab.State != CollabManager.SessionState.Hosting)
             return;
 
-        FormInputs.AddSectionHeader("Whispers");
-        FormInputs.AddVerticalSpace(4);
+        PanelLayout.BeginSection("Whispers");
         var whispers = collab.LobbyWhispers;
         if (whispers.Count == 0)
         {
-            ImGui.TextDisabled("People can whisper you from the Party tab before they join.");
+            CustomComponents.HelpText("People can whisper you from the Party matching tab before they join.");
         }
         else
         {
@@ -1140,6 +1064,8 @@ internal sealed class CollabWindow : Window
 
             ImGui.EndDisabled();
         }
+
+        PanelLayout.EndSection();
     }
 
     // ---------------------------------------------------------------------------------------
@@ -1207,16 +1133,8 @@ internal sealed class CollabWindow : Window
     // Shared session pieces (header, preview, roster)
     // ---------------------------------------------------------------------------------------
 
-    private static void DrawDivider()
-    {
-        FormInputs.AddVerticalSpace(6);
-        ImGui.Separator();
-        FormInputs.AddVerticalSpace(6);
-    }
-
     private static void DrawSessionHeader(CollabManager collab)
     {
-        SectionHeader(collab.State == CollabManager.SessionState.Hosting ? "Hosting" : "Session");
         ImGui.TextWrapped(collab.StatusText);
 
         if (collab.State != CollabManager.SessionState.Off)
@@ -1238,7 +1156,7 @@ internal sealed class CollabWindow : Window
             || height <= 0)
             return;
 
-        FormInputs.AddSectionHeader("Host Preview");
+        PanelLayout.BeginSection("Host Preview");
         var available = ImGui.GetContentRegionAvail();
         var scale = available.X / width;
         var maxHeight = available.Y * 0.45f;
@@ -1246,12 +1164,12 @@ internal sealed class CollabWindow : Window
             scale = maxHeight / height;
 
         ImGui.Image((IntPtr)view.ImGuiTextureId, new Vector2(width * scale, height * scale));
-        FormInputs.AddVerticalSpace(4);
+        PanelLayout.EndSection();
     }
 
     private static void DrawRoster(CollabManager collab)
     {
-        SectionHeader($"Party ({collab.Roster.Count + 1})");
+        PanelLayout.BeginSection($"Party ({collab.Roster.Count + 1})");
 
         var dl = ImGui.GetWindowDrawList();
         var isHost = collab.State == CollabManager.SessionState.Hosting;
@@ -1268,6 +1186,7 @@ internal sealed class CollabWindow : Window
 
         DrawKickConfirmation(collab);
         DrawHostTransferConfirmation(collab);
+        PanelLayout.EndSection();
     }
 
     private static void DrawPartyRow(CollabManager collab, int? peerId, bool isHost)
@@ -1500,8 +1419,7 @@ internal sealed class CollabWindow : Window
 
     private static void DrawSessionBrowser(CollabManager collab)
     {
-        FormInputs.AddSectionHeader("Open sessions");
-        FormInputs.AddVerticalSpace(4);
+        PanelLayout.BeginSection("Open sessions");
 
         ParseRelayAddress(UserSettings.Config.CollabRelayAddress, out var relayHost, out var relayPort);
         var useBackend = CollabWebLobby.IsConfigured;
@@ -1636,8 +1554,8 @@ internal sealed class CollabWindow : Window
 
                 // Type: whether participants can edit (the host's spectator toggle).
                 ImGui.TableNextColumn();
-                Badge(room.Editable ? "Controllable" : "Spectating",
-                      room.Editable ? UiColors.StatusActivated : UiColors.StatusWarning);
+                PanelLayout.StatusPill(room.Editable ? "Controllable" : "Spectating",
+                                       room.Editable ? UiColors.StatusActivated : UiColors.StatusWarning);
 
                 // Race: the host's platform.
                 ImGui.TableNextColumn();
@@ -1741,10 +1659,11 @@ internal sealed class CollabWindow : Window
             }
 
             ImGui.EndDisabled();
-            ImGui.TextDisabled("Asks the host something before you join. They can answer on the Session tab.");
+            ImGui.TextDisabled("Asks the host something before you join. They can answer on the Party management tab.");
         }
 
         FormInputs.SetIndentToParameters();
+        PanelLayout.EndSection();
     }
 
     /// <summary>The first listed session that passes the current filters; null when none does.</summary>

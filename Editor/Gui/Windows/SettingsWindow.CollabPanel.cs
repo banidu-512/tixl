@@ -35,8 +35,7 @@ internal sealed partial class SettingsWindow
         // -------------------------------------------------------------------------------------
         // Identity
         // -------------------------------------------------------------------------------------
-        FormInputs.AddSectionSubHeader("Identity");
-        FormInputs.AddVerticalSpace();
+        PanelLayout.BeginSection("Identity", "How other participants see you in sessions and in the session browser.");
 
         DrawDiscordLoginButton();
 
@@ -52,8 +51,6 @@ internal sealed partial class SettingsWindow
             CollabDiscordAuth.ApplyStayLoggedIn();
         }
 
-        FormInputs.AddVerticalSpace();
-
         changed |= FormInputs.AddStringInput("Nickname",
                                              ref config.CollabDisplayName,
                                              null,
@@ -63,15 +60,11 @@ internal sealed partial class SettingsWindow
                                              Falls back to your OS user name when empty.
                                              """);
 
-        FormInputs.AddVerticalSpace();
+        PanelLayout.EndSection();
 
-        // -------------------------------------------------------------------------------------
-        // Hosting defaults: what sessions you host look like before one actually runs. While a
-        // session runs, the "Session browser entry" section in DrawActiveSession owns the listing
-        // (live Change entry); the pre-host controls here would only duplicate it.
-        // -------------------------------------------------------------------------------------
-        FormInputs.AddSectionSubHeader("Hosting defaults");
-        FormInputs.AddVerticalSpace();
+        // What sessions you host look like before one actually runs. While a session runs, the
+        // "Session browser entry" section in DrawActiveSession owns the listing.
+        PanelLayout.BeginSection("Hosting defaults", "Applied to the next session you host.");
 
         changed |= DrawSecretInput("Session password", ref config.CollabPassword,
                                    "Empty = anyone with the session ID can join. Recommended when the ID is shared widely.");
@@ -97,27 +90,23 @@ internal sealed partial class SettingsWindow
             }
         }
 
-        FormInputs.AddVerticalSpace();
+        PanelLayout.EndSection();
 
-        // -------------------------------------------------------------------------------------
-        // Current session: sessions run from the Collab window (Party / management / Chat tabs);
-        // this panel only points there and reflects the state.
-        // -------------------------------------------------------------------------------------
-        FormInputs.AddSectionSubHeader("Current session");
-        FormInputs.AddVerticalSpace();
+        // Sessions run from the Collab window; this panel only points there and reflects the state.
+        PanelLayout.BeginSection("Current session");
         if (manager.IsSessionActive)
         {
-            FormInputs.DrawInputLabel("State");
-            CustomComponents.StylizedText(manager.StatusText, Fonts.FontNormal, UiColors.StatusActivated);
+            PanelLayout.ValueRow("State", manager.StatusText, UiColors.StatusActivated);
             if (!string.IsNullOrEmpty(manager.ErrorText))
             {
-                FormInputs.AddVerticalSpace(2);
+                PanelLayout.Space(PanelLayout.SpaceXS);
                 ImGui.PushStyleColor(ImGuiCol.Text, UiColors.StatusWarning.Rgba);
                 ImGui.TextWrapped(manager.ErrorText);
                 ImGui.PopStyleColor();
             }
 
-            FormInputs.AddVerticalSpace(4);
+            PanelLayout.Space(PanelLayout.SpaceS);
+            FormInputs.SetCursorToParameterEdit();
             if (ImGui.Button("Open the Collab window"))
                 WindowManager.CollabWindow.Config.Visible = true;
 
@@ -127,9 +116,9 @@ internal sealed partial class SettingsWindow
         {
             if (manager.IsReconnecting)
             {
-                FormInputs.DrawInputLabel("State");
-                CustomComponents.StylizedText(manager.StatusText, Fonts.FontNormal, UiColors.StatusWarning);
-                if (ImGui.SmallButton("Stop Reconnecting"))
+                PanelLayout.ValueRow("State", manager.StatusText, UiColors.StatusWarning);
+                FormInputs.SetCursorToParameterEdit();
+                if (PanelLayout.DestructiveButton("Stop Reconnecting"))
                     manager.Leave(manual: true);
             }
             else
@@ -141,12 +130,13 @@ internal sealed partial class SettingsWindow
                                           """);
             }
 
-            FormInputs.AddVerticalSpace(4);
-            if (ImGui.Button("Open the Collab window"))
+            PanelLayout.Space(PanelLayout.SpaceS);
+            if (CustomComponents.DrawCtaButton("Open the Collab window", Icon.None, UiColors.ForegroundFull, UiColors.StatusActivated, Color.Transparent))
                 WindowManager.CollabWindow.Config.Visible = true;
         }
 
-        FormInputs.AddVerticalSpace();
+        PanelLayout.EndSection();
+
         DrawAdvancedConnectionSettings(manager, ref changed);
     }
 
@@ -199,12 +189,12 @@ internal sealed partial class SettingsWindow
     private static void DrawDiscoveredSessions(CollabManager manager)
     {
         var config = UserSettings.Config;
-        FormInputs.AddVerticalSpace();
+        PanelLayout.Space(PanelLayout.SpaceM);
         FormInputs.DrawInputLabel("Sessions on LAN");
 
         if (!_discoveryScannerActive)
         {
-            if (ImGui.SmallButton("Scan"))
+            if (ImGui.Button("Scan"))
             {
                 _discovered.Clear();
                 _discoveryScanner.Start(config.CollabPort + LanDiscoveryResponder.DiscoveryPortOffset, null, config.NetworkInterface);
@@ -282,7 +272,7 @@ internal sealed partial class SettingsWindow
 
             ImGui.SameLine();
             ImGui.PushID(session.Address + session.Port);
-            if (ImGui.SmallButton("Join"))
+            if (ImGui.Button("Join"))
             {
                 ShowControlMode.Activate(ShowControlMode.Collab);
                 manager.JoinDirect(session.Address, session.Port, UserSettings.Config.CollabPassword);
@@ -530,8 +520,8 @@ internal sealed partial class SettingsWindow
 
         var config = UserSettings.Config;
 
-        FormInputs.AddVerticalSpace(5);
-        FormInputs.AddSectionSubHeader("Relay");
+        PanelLayout.Space(PanelLayout.SpaceS);
+        PanelLayout.BeginSection("Relay");
         changed |= FormInputs.AddStringInput("Relay server",
                                              ref config.CollabRelayAddress,
                                              $"{CollabProtocol.DefaultRelayHost}:{CollabProtocol.DefaultRelayPort}",
@@ -541,8 +531,9 @@ internal sealed partial class SettingsWindow
                                              Hosts and joiners must use the same relay. Empty uses the default relay.
                                              """);
 
-        FormInputs.AddVerticalSpace();
-        FormInputs.AddSectionSubHeader("Peer-to-Peer");
+        PanelLayout.EndSection();
+
+        PanelLayout.BeginSection("Peer-to-Peer");
         changed |= FormInputs.AddCheckBox("Use peer-to-peer connections",
                                           ref config.CollabWebRtcEnabled,
                                           """
@@ -570,8 +561,9 @@ internal sealed partial class SettingsWindow
                                              between peers that cannot reach each other directly.
                                              """);
 
-        FormInputs.AddVerticalSpace();
-        FormInputs.AddSectionSubHeader("Direct and LAN");
+        PanelLayout.EndSection();
+
+        PanelLayout.BeginSection("Direct and LAN");
         changed |= FormInputs.AddInt("Port",
                                      ref config.CollabPort,
                                      1024, 65535, 1,
@@ -586,18 +578,19 @@ internal sealed partial class SettingsWindow
                                           """,
                                           true);
 
-        FormInputs.AddVerticalSpace();
+        PanelLayout.EndSection();
+
         DrawNetworkInterface(ref changed);
 
         if (manager.IsSessionActive)
             return;
 
-        FormInputs.AddVerticalSpace();
-        FormInputs.AddSectionSubHeader("Join by address");
+        PanelLayout.BeginSection("Join by address");
         _joinAddress ??= "";
         FormInputs.DrawInputLabel("Address");
         ImGui.PushID("##collabjoin");
-        ImGui.SetNextItemWidth(FormInputs.GetAvailableInputSize(null, false, true).X);
+        var connectWidth = ImGui.CalcTextSize("Connect").X + ImGui.GetStyle().FramePadding.X * 2;
+        ImGui.SetNextItemWidth(FormInputs.GetAvailableInputSize(null, false, true).X - connectWidth - ImGui.GetStyle().ItemSpacing.X);
         if (ImGui.InputText("##collabJoinAddress", ref _joinAddress, 256, ImGuiInputTextFlags.EnterReturnsTrue))
         {
             ShowControlMode.Activate(ShowControlMode.Collab);
@@ -615,7 +608,7 @@ internal sealed partial class SettingsWindow
 
         CustomComponents.TooltipForLastItem("Direct address of the host, e.g. 192.168.1.42 for LAN sessions or a public address / VPN IP for online sessions.");
 
-        FormInputs.AddVerticalSpace();
+        PanelLayout.Space(PanelLayout.SpaceM);
         FormInputs.SetCursorToParameterEdit();
         if (CustomComponents.DrawCtaButton("Host on LAN", Icon.None, UiColors.ForegroundFull, UiColors.StatusActivated, Color.Transparent))
         {
@@ -625,8 +618,8 @@ internal sealed partial class SettingsWindow
 
         CustomComponents.TooltipForLastItem("Start a session on this machine without a relay. Others join by LAN discovery or by your address.");
 
-        FormInputs.AddVerticalSpace();
         DrawDiscoveredSessions(manager);
+        PanelLayout.EndSection();
     }
 
     private static int _pendingKickPeerId = -1;
@@ -758,7 +751,7 @@ internal sealed partial class SettingsWindow
             ImGui.TextDisabled(CollabUserIdentity.FormatLang(UserSettings.Config.CollabDiscordLocale));
             CustomComponents.TooltipForLastItem("Language of your Discord profile. Shown next to your name in sessions and in the session browser.");
             ImGui.SameLine();
-            if (ImGui.SmallButton("Log Out"))
+            if (PanelLayout.DestructiveButton("Log Out"))
                 CollabDiscordAuth.LogOut();
 
             FormInputs.SetCursorToParameterEdit();
