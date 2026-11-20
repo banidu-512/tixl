@@ -15,8 +15,20 @@
       "DefaultValue": 256
     },
     {
+      "Id": "70ab0278-c054-4175-8025-d73771ef2fd8"/*InFade*/,
+      "DefaultValue": 0.0
+    },
+    {
+      "Id": "71b043c3-ae4f-4b33-a48c-93a33ddca3ca"/*OutFade*/,
+      "DefaultValue": 0.0
+    },
+    {
       "Id": "71c3e9a2-8d54-4b16-ae27-9c4f1b2d3e58"/*Denoise*/,
       "DefaultValue": 2
+    },
+    {
+      "Id": "80a65286-1404-437a-b421-baf62a8428c9"/*PathMaxLength*/,
+      "DefaultValue": 0.0
     },
     {
       "Id": "8c1e5b39-4a72-4d86-9e20-6b3f7c1a2d45"/*PointSpacing*/,
@@ -53,6 +65,14 @@
     {
       "Id": "f9a4d175-6e32-4b58-9d16-3c8e1b2a4c75"/*Update*/,
       "DefaultValue": true
+    },
+    {
+      "Id": "fd3cdd65-3155-4082-880a-ea24bfe5eab9"/*EndRepeat*/,
+      "DefaultValue": 2
+    },
+    {
+      "Id": "ff82f232-0a87-4eba-ae83-e69a803cb2a8"/*PathMinLength*/,
+      "DefaultValue": 0.0
     }
   ],
   "Children": [],

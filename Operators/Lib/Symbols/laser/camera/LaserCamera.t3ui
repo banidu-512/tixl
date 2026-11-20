@@ -1,7 +1,7 @@
 {
   "FormatVersion": 3,
   "Id": "2ccc2f86-fe71-42ff-b91d-812763f5c6cf"/*LaserCamera*/,
-  "Description": "Geometry-to-laser converter and a standard camera in one: it aims with its own lens (Position/Target or Use Rotation angles, FieldOfView — camera dropdown, mouse control, gizmo) or borrows the lens of a camera wired into CameraReference, and every point/line/mesh drawn inside the Scene connected to it is captured and encoded into a laser frame — dots, line segments and mesh wireframes merged, with Group/transform scopes applied.\n\nThe Command output renders NOTHING — the only thing it carries is the gizmo. Laser data leaves exclusively through LaserPoints: route it via OutputRef to a laser output of the active output setup, whose driver streams it to the bound device. Each camera keeps its own viewpoint, so multiple cameras stay separate, and the scene is captured once per laser pump on the pump's budget — never per rendered frame.\n\nAll positions are projected into ILDA 16-bit (depth/|NDC| culling), colors from the source geometry, 16-bit.\n\nMesh wireframes can be culled: CreaseAngle skips edges between faces that fold less than the angle, BackfaceCulling drops the mesh's hidden side. When the scene needs more points than the frame budget, the op's status line reports the drop.\n\nOptimization and safety settings are managed in the Output Setup; the app bar's LASER button is the master enable.\n\nLike SendToOutput it lists as content in the Output Setup, where Update freezes the camera on its last frame.",
+  "Description": "Geometry-to-laser converter and a standard camera in one: it aims with its own lens (Position/Target or Use Rotation angles, FieldOfView — camera dropdown, mouse control, gizmo) or borrows the lens of a camera wired into CameraReference, and every point/line/mesh drawn inside the Scene connected to it is captured and encoded into a laser frame — dots, line segments and mesh wireframes merged, with Group/transform scopes applied.\n\nThe Command output renders NOTHING — the only thing it carries is the gizmo. Laser data leaves exclusively through LaserPoints: route it via OutputRef to a laser output of the active output setup, whose driver streams it to the bound device. Each camera keeps its own viewpoint, so multiple cameras stay separate, and the scene is captured once per laser pump on the pump's budget — never per rendered frame.\n\nAll positions are projected into ILDA 16-bit (depth/|NDC| culling), colors from the source geometry, 16-bit.\n\nMesh wireframes can be culled: CreaseAngle skips edges between faces that fold less than the angle, BackfaceCulling drops the mesh's hidden side. When the scene needs more points than the frame budget, the op's status line reports the drop.\n\nOptimization and safety settings are managed in the Output Setup; the app bar's LASER button is the master enable.\n\nLike SendToOutput it lists as content in the Output Setup, where Update freezes the camera on its last frame.\n\nRaster content the vertex capture cannot see (raymarched fields, volumes, video textures) is handled by the optional vectorize stage (VectorizeMode): an offscreen render of the scene with the same lens is read back and run through the [ImageToLaserPoints] pipeline, and its shapes merge into the same frame under the transport budget - each shape is emitted whole, vectorized content yields to captured content. Costs one more scene evaluation per pump while enabled, one pump behind the render like the depth lift.",
   "InputUis": [
     {
       "InputId": "0bdac069-cad2-4f54-a600-5db4463121db"/*DepthLiftResolution*/,
@@ -93,6 +93,14 @@
       "Format": "{0:0}"
     },
     {
+      "InputId": "5498b950-55fa-41ed-b098-e8f89026b6c1"/*VectorizeMode*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 875.0
+      },
+      "Description": "How raster content (raymarched fields, volumes, video textures) that the vertex capture cannot see becomes laser shapes: Off keeps the camera to captured geometry and depth-lift dots. FindPaths vectorizes an offscreen render of the scene: bright strokes become lit centerlines, blobs wider than Threshold become region outlines, isolated bright pixels become dwell dots. FindContours traces the render's Canny edges as thin paths. Shapes merge into the laser frame under the transport budget; costs one more scene evaluation per pump while enabled."
+    },
+    {
       "InputId": "5544ec6e-0f90-4853-9af0-69da0f213c22"/*Roll*/,
       "Position": {
         "X": -200.0,
@@ -176,6 +184,46 @@
         "Y": 325.0
       },
       "Description": "Samples every Nth pixel of the depth-lift readback. Higher values trade dot density (and point budget) for fewer dots."
+    },
+    {
+      "InputId": "aeaaf98d-e98a-4b52-b675-6ba138db7381"/*VectorizeUseColor*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 1025.0
+      },
+      "Description": "When on, vectorized shapes take the rendered pixel's color; when off, they are white."
+    },
+    {
+      "InputId": "b1251dc5-c80f-412d-aad8-b269a303e275"/*VectorizeBrightness*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 1075.0
+      },
+      "Description": "Global color multiplier (0..1) on the vectorized points."
+    },
+    {
+      "InputId": "ccc53bdc-1fe1-4462-b759-cc6bc98b6546"/*VectorizeThreshold*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 925.0
+      },
+      "Description": "Brightness a rendered pixel needs to count as content (0..1). Compression noise sits above zero - raise until the background drops out. FindContours: how strong an edge must be."
+    },
+    {
+      "InputId": "d71f032b-5144-415a-8003-669af281129f"/*VectorizeResolution*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 1125.0
+      },
+      "Description": "Resolution of the square vectorize render (64..1024). Higher = finer detail in the vectorized shapes at the cost of the render, readback and vectorize."
+    },
+    {
+      "InputId": "e0a239e4-9c3a-4943-becf-f946239450c5"/*VectorizePointSpacing*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 975.0
+      },
+      "Description": "A lit sample every N working pixels along a vectorized stroke - smaller = smoother, brighter lines, more points."
     },
     {
       "InputId": "d62b1d2f-8b69-4f58-a8cb-9f9eb89a831d"/*AspectRatio*/,

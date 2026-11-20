@@ -46,6 +46,22 @@ dropped.
 ![LaserCamera node and its captured scene](shots/LaserCamera-graph.png)
 *Each camera captures the scene connected to its `Scene` input.*
 
+### Vectorize stage (raster content)
+
+Content the vertex capture cannot see - raymarched fields, volumes, video textures - is handled
+by an optional vectorize stage: an offscreen render of the scene with the same lens is read back
+and run through the `ImageToLaserPoints` pipeline, and its shapes merge into the same laser frame
+under the shared transport budget (each shape is emitted whole; vectorized content yields to
+captured content when the budget runs out).
+
+- `VectorizeMode` picks the detector: Off, FindPaths (threshold + skeleton centerlines / region
+  outlines), FindContours (Canny edges).
+- `VectorizeThreshold` is the brightness a rendered pixel needs to count as content.
+- `VectorizePointSpacing` is a lit sample every N working pixels along a vectorized stroke.
+- `VectorizeUseColor` takes the rendered pixel's color for the shapes; otherwise white.
+- `VectorizeBrightness` scales the vectorized points' color.
+- `VectorizeResolution` is the square offscreen render size (64..1024, default 256).
+
 ## LaserPointsToBuffer
 
 Uploads a laser point list to a GPU structured buffer for the laser driver, and reports the point

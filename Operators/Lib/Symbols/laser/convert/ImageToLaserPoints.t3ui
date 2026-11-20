@@ -28,12 +28,36 @@
       "Description": "Cap on shapes per frame - the guard against pathological content producing a 3-second frame. Excess shapes are dropped and counted in the stats."
     },
     {
+      "InputId": "70ab0278-c054-4175-8025-d73771ef2fd8"/*InFade*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 862.0
+      },
+      "Description": "Ramps each shape's first samples up from a dim level to full - the scanner is still accelerating when a path starts, which otherwise blooms the start point. 0 = off."
+    },
+    {
+      "InputId": "71b043c3-ae4f-4b33-a48c-93a33ddca3ca"/*OutFade*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 900.0
+      },
+      "Description": "Ramps the end-repeat samples down, so finishing a shape doesn't leave a bright pause dot of its own. 0 = the repeats hold at full brightness."
+    },
+    {
       "InputId": "71c3e9a2-8d54-4b16-ae27-9c4f1b2d3e58"/*Denoise*/,
       "Position": {
         "X": -200.0,
         "Y": 375.0
       },
       "Description": "Drop shapes shorter than this many working pixels - kills speckle noise from compressed sources. 0 keeps everything."
+    },
+    {
+      "InputId": "80a65286-1404-437a-b421-baf62a8428c9"/*PathMaxLength*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 1013.0
+      },
+      "Description": "Drops shapes longer than this percentage of the working image's larger dimension - runaway background strokes. 0 keeps everything."
     },
     {
       "InputId": "8c1e5b39-4a72-4d86-9e20-6b3f7c1a2d45"/*PointSpacing*/,
@@ -106,6 +130,22 @@
         "Y": 750.0
       },
       "Description": "Supplier freeze: when off, the last frame keeps streaming and nothing re-vectorizes - the supplier gate every laser content op carries."
+    },
+    {
+      "InputId": "fd3cdd65-3155-4082-880a-ea24bfe5eab9"/*EndRepeat*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 862.0
+      },
+      "Description": "Extra lit samples held at each shape's end position, so the scanner settles on the real endpoint instead of rounding it off. A dot's dwell time grows with it too - its point intensity."
+    },
+    {
+      "InputId": "ff82f232-0a87-4eba-ae83-e69a803cb2a8"/*PathMinLength*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 975.0
+      },
+      "Description": "Drops shapes shorter than this percentage of the working image's larger dimension - noise specks that would cost a blank jump each. 0 keeps everything."
     }
   ],
   "SymbolChildUis": [],

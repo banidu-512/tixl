@@ -58,6 +58,10 @@
       "DefaultValue": 4000.0
     },
     {
+      "Id": "5498b950-55fa-41ed-b098-e8f89026b6c1"/*VectorizeMode*/,
+      "DefaultValue": 0
+    },
+    {
       "Id": "5544ec6e-0f90-4853-9af0-69da0f213c22"/*Roll*/,
       "DefaultValue": 0.0
     },
@@ -96,6 +100,26 @@
     {
       "Id": "a942cb01-cb02-4487-83d3-71bfbfab012b"/*DepthLiftStride*/,
       "DefaultValue": 2
+    },
+    {
+      "Id": "aeaaf98d-e98a-4b52-b675-6ba138db7381"/*VectorizeUseColor*/,
+      "DefaultValue": false
+    },
+    {
+      "Id": "b1251dc5-c80f-412d-aad8-b269a303e275"/*VectorizeBrightness*/,
+      "DefaultValue": 1.0
+    },
+    {
+      "Id": "ccc53bdc-1fe1-4462-b759-cc6bc98b6546"/*VectorizeThreshold*/,
+      "DefaultValue": 0.2
+    },
+    {
+      "Id": "d71f032b-5144-415a-8003-669af281129f"/*VectorizeResolution*/,
+      "DefaultValue": 256
+    },
+    {
+      "Id": "e0a239e4-9c3a-4943-becf-f946239450c5"/*VectorizePointSpacing*/,
+      "DefaultValue": 4.0
     },
     {
       "Id": "d62b1d2f-8b69-4f58-a8cb-9f9eb89a831d"/*AspectRatio*/,

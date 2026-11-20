@@ -16,6 +16,19 @@ using static Lib.Utils.LaserProjection;
 
 namespace Lib.laser.camera;
 
+/// <summary>How the camera handles raster content (raymarched fields, volumes, video textures) that the vertex capture cannot see.</summary>
+public enum LaserCameraVectorizeMode
+{
+    /// <summary>Raster content is not vectorized: the camera streams captured geometry and depth-lift dots only.</summary>
+    Off = 0,
+
+    /// <summary>An offscreen render of the scene with the camera's lens is vectorized with the Find Paths detector: bright strokes become lit centerlines, blobs wider than Threshold switch to region outlines, isolated bright pixels become dwell dots.</summary>
+    FindPaths = 1,
+
+    /// <summary>The offscreen render is vectorized with the Find Contours detector: Canny edges of the render, traced as thin paths - outlines of everything with enough contrast, independent of fill.</summary>
+    FindContours = 2,
+}
+
 /// <summary>
 /// Universal geometry-to-laser converter and a standard TiXL camera in one: like the common
 /// Camera op it has its own lens (selectable in the output window camera dropdown, mouse-drivable),
@@ -23,6 +36,10 @@ namespace Lib.laser.camera;
 /// a laser frame - dots, line segments and mesh wireframes merged, with the Group/transform scopes
 /// active at draw time applied. Point cloud content becomes isolated dwell dots, line strips become
 /// blank-separated segments, meshes become wireframes of their unique edges.
+/// Raster content the vertex capture cannot see (raymarched fields, volumes, video textures) is
+/// handled by the optional vectorize stage: an offscreen render of the scene with the same lens is
+/// read back and run through the ImageToLaserPoints pipeline, and its shapes merge into the same
+/// frame under the transport budget. Costs one more scene evaluation per pump while enabled.
 /// The projection is driven either by the op's own aim (Position/Target or Use Rotation angles,
 /// FieldOfView) or, when a CameraReference is connected, by that camera's lens - its own aim inputs
 /// are then ignored. OutputRef only routes the frame to a laser output of the output setup, whose
@@ -127,7 +144,11 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
         if (OutputRef.Value == Guid.Empty)
             return "Not routed to a laser output. Drop it on one in the Output Setup.";
 
-        return Update.Value ? $"{_lastPointCount} points" : $"Frozen at {_lastPointCount} points";
+        return Update.Value
+                   ? _lastVectorizeMode != 0
+                         ? $"{_lastPointCount} points ({_vectorizeCount} vectorized)"
+                         : $"{_lastPointCount} points"
+                   : $"Frozen at {_lastPointCount} points";
     }
 
     /// <summary>
@@ -185,6 +206,11 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
         UpdateCameraDefinition(context);
         Reference.DirtyFlag.Clear();
 
+        var vectorizeMode = Math.Clamp(VectorizeMode.GetValue(context), 0, 2);
+        _lastVectorizeMode = vectorizeMode;
+        if (_lastVectorizeMode == 0)
+            _vectorizeCount = 0;
+
         CapturedScene? captured = null;
         if (Scene.HasInputConnections)
         {
@@ -198,6 +224,11 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
                 TryRunDepthLiftPass(context);
                 UpdateDepthLiftCache(context);
             }
+
+            // The vectorize stage runs its own offscreen render pass and caches its shapes for
+            // ConvertAndPublish to append under the transport budget.
+            if (_lastVectorizeMode != 0)
+                RunVectorizeStage(context);
         }
 
         ConvertAndPublish(context, captured);
@@ -314,6 +345,11 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
         // one pump behind the scene. Cap-limited like the captured sources.
         if (_depthLiftCount > 0)
             count = AppendDepthLiftDots(combined, dotDwell, cap, count);
+
+        // Vectorized shapes (raster content through the ImageToLaserPoints pipeline): appended
+        // whole, shape by shape, under the same transport budget.
+        if (_lastVectorizeMode != 0)
+            count = AppendVectorizedShapes(cap, count);
 
         if (PrintToLog.GetValue(context))
             LogDiagnostics(captured, count, stats);
@@ -1490,21 +1526,33 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
     /// readback copies. False on GPU failure - the pass is skipped for this pump.</summary>
     private bool TryRunDepthLiftPass(EvaluationContext context)
     {
-        var device = ResourceManager.Device;
-        var deviceContext = device.ImmediateContext;
         var resolution = DepthLiftResolution.GetValue(context).Clamp(32, 512);
         if (!TryEnsureDepthLiftTargets(resolution))
             return false;
 
         _depthLiftViewClip = WorldToCamera * CameraToClipSpace;
+        RunSceneRenderPass(context, _depthLiftRtv, _depthLiftDsv, _depthLiftRtvs, resolution, resolution, LaserClearColor);
+        return true;
+    }
 
+    /// <summary>
+    /// Renders the scene with this camera's lens into the given targets: rasterize, don't
+    /// register - the vertex capture already ran, and the draws must draw for real into OUR
+    /// targets. GeometryCapture stays off so Draw ops do not double-register their buffers;
+    /// CaptureOnlyDraws off so they rasterize. Commands re-run on every pull, so the scene draws
+    /// for real here even though the capture pass just evaluated it; data ops upstream stay
+    /// frozen by the dirty flags.
+    /// </summary>
+    private void RunSceneRenderPass(EvaluationContext context, RenderTargetView rtv, DepthStencilView dsv, RenderTargetView[] rtvs, int width, int height, Vector4 clearColor)
+    {
+        var deviceContext = ResourceManager.Device.ImmediateContext;
         deviceContext.PushState(StateGroups.Rasterizer | StateGroups.OutputMerger);
         try
         {
-            deviceContext.Rasterizer.SetViewport(new T3.Graphics.Viewport(0, 0, resolution, resolution, 0f, 1f));
-            deviceContext.OutputMerger.SetTargets(_depthLiftDsv, _depthLiftRtvs);
-            deviceContext.ClearRenderTargetView(_depthLiftRtv, DepthLiftClearColor);
-            deviceContext.ClearDepthStencilView(_depthLiftDsv, DepthStencilClearFlags.Depth, 1f, 0);
+            deviceContext.Rasterizer.SetViewport(new T3.Graphics.Viewport(0, 0, width, height, 0f, 1f));
+            deviceContext.OutputMerger.SetTargets(dsv, rtvs);
+            deviceContext.ClearRenderTargetView(rtv, clearColor);
+            deviceContext.ClearDepthStencilView(dsv, DepthStencilClearFlags.Depth, 1f, 0);
 
             // Rasterize, don't register: the vertex capture already ran, and the draws must draw
             // for real into OUR targets. GeometryCapture stays off so Draw ops do not double-
@@ -1529,8 +1577,6 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
         {
             deviceContext.PopState();
         }
-
-        return true;
     }
 
     /// <summary>Two staging textures with the capture staging pairs' pipelining: copy this pass,
@@ -1668,8 +1714,8 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
         {
             DisposeDepthLiftTargets();
             var device = ResourceManager.Device;
-            _depthLiftColor = CreateDepthLiftTexture(Format.R8G8B8A8_UNorm, BindFlags.RenderTarget | BindFlags.ShaderResource, resolution);
-            _depthLiftDepth = CreateDepthLiftTexture(Format.R32_Typeless, BindFlags.DepthStencil | BindFlags.ShaderResource, resolution);
+            _depthLiftColor = CreateLaserTargetTexture(Format.R8G8B8A8_UNorm, BindFlags.RenderTarget | BindFlags.ShaderResource, resolution);
+            _depthLiftDepth = CreateLaserTargetTexture(Format.R32_Typeless, BindFlags.DepthStencil | BindFlags.ShaderResource, resolution);
             _depthLiftRtv = new RenderTargetView(device, _depthLiftColor);
             _depthLiftDsv = new DepthStencilView(device, _depthLiftDepth,
                                                  new DepthStencilViewDescription
@@ -1690,7 +1736,7 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
     }
     /// <summary>The depth-lift textures' shared description: one helper for both, differing
     /// only in format and bind flags.</summary>
-    private static Texture2D CreateDepthLiftTexture(Format format, BindFlags bindFlags, int resolution)
+    private static Texture2D CreateLaserTargetTexture(Format format, BindFlags bindFlags, int resolution)
     {
         return Texture2D.CreateTexture2D(new Texture2DDescription
                                              {
@@ -1810,6 +1856,139 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
             ToColor(colors[i].X, colors[i].Y, colors[i].Z, 1f, out var r, out var g, out var b);
             for (var d = 0; d < dotDwell; d++)
                 _scratch[count++] = new LaserPoint(x, y, r, g, b);
+        }
+
+        return count;
+    }
+
+    #endregion
+
+    #region vectorize capture
+
+    /// <summary>
+    /// The vectorize stage: renders the scene offscreen with the camera's lens (the same
+    /// rasterize-don't-register pass the depth lift uses), reads the color back through a staged
+    /// ring buffer (one pump behind the render, which laser output tolerates), and runs the
+    /// ImageToLaserPoints pipeline on it. The emitted shapes are cached and appended by
+    /// ConvertAndPublish under the transport budget. A readback that is not ready keeps the
+    /// previous shapes, so vectorized content persists instead of flickering.
+    /// </summary>
+    private void RunVectorizeStage(EvaluationContext context)
+    {
+        var resolution = VectorizeResolution.GetValue(context).Clamp(64, 1024);
+        if (!TryEnsureVectorizeTargets(resolution))
+        {
+            _vectorizeCount = 0;
+            return;
+        }
+
+        RunSceneRenderPass(context, _vectorizeRtv, _vectorizeDsv, _vectorizeRtvs, resolution, resolution, LaserClearColor);
+        if (!_vectorizeColorStaging.TryReadBytes(_vectorizeColor, resolution, resolution, _vectorizeColorScratch))
+            return;
+
+        var width = _vectorizeColor.Description.Width;
+        var height = _vectorizeColor.Description.Height;
+
+        var cap = LaserContentRegistry.PointBudget;
+        if (cap <= 0 || cap > MaxOutputPoints)
+            cap = MaxOutputPoints;
+
+        if (!_vectorizeSession.BeginCopy(width, height, resolution))
+        {
+            _vectorizeCount = 0;
+            return;
+        }
+
+        _vectorizeSession.CopyFrame(_vectorizeColorScratch, width * 4, width, height, LaserVectorizeSession.FmtRgba8);
+        _vectorizeSession.Run(new LaserVectorizeSession.Params
+                              {
+                                  Mode = (LaserVectorizeSession.DetectMode)Math.Clamp(_lastVectorizeMode - 1, 0, 1),
+                                  Threshold = Math.Clamp(VectorizeThreshold.GetValue(context), 0f, 1f),
+                                  Thickness = 1,
+                                  BlurSize = 1,
+                                  Denoise = 2,
+                                  MaxPaths = 256,
+                                  PointSpacing = Math.Clamp(VectorizePointSpacing.GetValue(context), 0.5f, 64f),
+                                  UseColor = VectorizeUseColor.GetValue(context),
+                                  Brightness = Math.Clamp(VectorizeBrightness.GetValue(context), 0f, 1f),
+                                  PointCap = cap,
+                                  EndRepeat = 2,
+                                  InFade = 0f,
+                                  OutFade = 0f,
+                                  MinPathLengthPct = 0f,
+                                  MaxPathLengthPct = 0f,
+                              });
+
+        _vectorizeBuffer = _vectorizeSession.Buffer;
+        _vectorizeCount = _vectorizeSession.Count;
+    }
+
+    /// <summary>The vectorize stage's offscreen targets: color for the vectorizer, depth for
+    /// correct occlusion while rasterizing (the depth itself is not read back).</summary>
+    private bool TryEnsureVectorizeTargets(int resolution)
+    {
+        if (_vectorizeColor != null && !_vectorizeColor.IsDisposed && _vectorizeColor.Description.Width == resolution)
+            return true;
+
+        try
+        {
+            DisposeVectorizeTargets();
+            var device = ResourceManager.Device;
+            _vectorizeColor = CreateLaserTargetTexture(Format.R8G8B8A8_UNorm, BindFlags.RenderTarget | BindFlags.ShaderResource, resolution);
+            _vectorizeDepth = CreateLaserTargetTexture(Format.R32_Typeless, BindFlags.DepthStencil | BindFlags.ShaderResource, resolution);
+            _vectorizeRtv = new RenderTargetView(device, _vectorizeColor);
+            _vectorizeDsv = new DepthStencilView(device, _vectorizeDepth,
+                                                 new DepthStencilViewDescription
+                                                     {
+                                                         Format = Format.D32_Float,
+                                                         Dimension = DepthStencilViewDimension.Texture2D
+                                                     });
+            _vectorizeColorScratch = new byte[resolution * resolution * 4];
+            return true;
+        }
+        catch (Exception e)
+        {
+            Log.Error($"LaserCamera: vectorize targets failed - {e.Message}", this);
+            DisposeVectorizeTargets();
+            return false;
+        }
+    }
+
+    private void DisposeVectorizeTargets()
+    {
+        GraphicsUtilities.Dispose(ref _vectorizeRtv);
+        GraphicsUtilities.Dispose(ref _vectorizeDsv);
+        GraphicsUtilities.Dispose(ref _vectorizeColor);
+        GraphicsUtilities.Dispose(ref _vectorizeDepth);
+        _vectorizeRtvs[0] = null;
+        _vectorizeColorScratch = [];
+        _vectorizeCount = 0;
+    }
+
+    /// <summary>Appends the vectorize stage's shapes under the transport budget: every shape
+    /// starts at its blanked approach point and is emitted whole or not at all, like the captured
+    /// primitives - vectorized content yields to captured content on the shared budget.</summary>
+    private int AppendVectorizedShapes(int cap, int count)
+    {
+        var source = _vectorizeBuffer;
+        var vectorizedCount = _vectorizeCount;
+        if (source == null || vectorizedCount <= 0)
+            return count;
+
+        for (var i = 0; i < vectorizedCount; )
+        {
+            // A shape = blanked approach point + its lit samples up to the next blanked point.
+            var j = i + 1;
+            while (j < vectorizedCount && source[j].I != 0)
+                j++;
+
+            var shapeLength = j - i;
+            if (!Reserve(count, shapeLength, cap))
+                break;
+
+            Array.Copy(source, i, _scratch, count, shapeLength);
+            count += shapeLength;
+            i = j;
         }
 
         return count;
@@ -2044,6 +2223,8 @@ private readonly int[] _copyOffsetElements = new int[2];
             DisposeDepthLiftTargets();
             _depthLiftDepthStaging.Dispose();
             _depthLiftColorStaging.Dispose();
+            DisposeVectorizeTargets();
+            _vectorizeColorStaging.Dispose();
 
             for (var slot = 0; slot < _captureStaging.Length; slot++)
             {
@@ -2098,7 +2279,22 @@ private readonly int[] _copyOffsetElements = new int[2];
     private int _depthLiftCount;
     private Matrix4x4 _depthLiftViewClip;
 
-    private static readonly Vector4 DepthLiftClearColor = new(0f, 0f, 0f, 0f);
+    // Vectorize capture: offscreen targets, pipelined color readback and the vectorize session.
+    private Texture2D _vectorizeColor;
+    private Texture2D _vectorizeDepth;
+    private RenderTargetView _vectorizeRtv;
+    private DepthStencilView _vectorizeDsv;
+    private readonly RenderTargetView[] _vectorizeRtvs = new RenderTargetView[1];
+    private readonly StagingTexture _vectorizeColorStaging = new();
+    private byte[] _vectorizeColorScratch = [];
+    private readonly LaserVectorizeSession _vectorizeSession = new();
+    private LaserPoint[] _vectorizeBuffer;
+    private int _vectorizeCount;
+    private int _lastVectorizeMode;
+
+    /// <summary>Black clear color of both offscreen render passes: the vectorizer reads the
+    /// render's brightness, so the background must drop out of it.</summary>
+    private static readonly Vector4 LaserClearColor = new(0f, 0f, 0f, 0f);
 
     /// <summary>Per-capture edge table: welded edge plus its two adjacent face normals. Reused
     /// across captures (cleared, capacity kept) so a wireframe pass allocates no per-edge
@@ -2232,6 +2428,38 @@ private readonly int[] _copyOffsetElements = new int[2];
     /// density (and point budget) for fewer dots.</summary>
     [Input(Guid = "A942CB01-CB02-4487-83D3-71BFBFAB012B")]
     public readonly InputSlot<int> DepthLiftStride = new(2);
+
+    /// <summary>How raster content (raymarched fields, volumes, video textures) that the vertex
+    /// capture cannot see is vectorized: an offscreen render of the scene with this camera's lens
+    /// is read back and run through the ImageToLaserPoints pipeline, and its shapes merge into
+    /// the laser frame under the transport budget. Costs one more scene evaluation per pump.</summary>
+    [Input(Guid = "5498b950-55fa-41ed-b098-e8f89026b6c1", MappedType = typeof(LaserCameraVectorizeMode))]
+    public readonly InputSlot<int> VectorizeMode = new();
+
+    /// <summary>Brightness a rendered pixel needs to count as content (0..1). Compression noise
+    /// sits above zero - raise until the background drops out. FindContours: how strong an edge
+    /// must be.</summary>
+    [Input(Guid = "ccc53bdc-1fe1-4462-b759-cc6bc98b6546")]
+    public readonly InputSlot<float> VectorizeThreshold = new(0.2f);
+
+    /// <summary>A lit sample every N working pixels along a vectorized stroke - smaller =
+    /// smoother, brighter lines, more points.</summary>
+    [Input(Guid = "e0a239e4-9c3a-4943-becf-f946239450c5")]
+    public readonly InputSlot<float> VectorizePointSpacing = new(4f);
+
+    /// <summary>When on, vectorized shapes take the rendered pixel's color; when off, they are
+    /// white.</summary>
+    [Input(Guid = "aeaaf98d-e98a-4b52-b675-6ba138db7381")]
+    public readonly InputSlot<bool> VectorizeUseColor = new();
+
+    /// <summary>Global color multiplier (0..1) on the vectorized points.</summary>
+    [Input(Guid = "b1251dc5-c80f-412d-aad8-b269a303e275")]
+    public readonly InputSlot<float> VectorizeBrightness = new(1f);
+
+    /// <summary>Resolution of the square vectorize render (64..1024). Higher = finer detail in
+    /// the vectorized shapes at the cost of the render, readback and vectorize.</summary>
+    [Input(Guid = "d71f032b-5144-415a-8003-669af281129f")]
+    public readonly InputSlot<int> VectorizeResolution = new(256);
 
     [Input(Guid = "6475CA9C-6ED6-4659-87D2-A602813C823C")]
     public readonly InputSlot<Command> Scene = new();

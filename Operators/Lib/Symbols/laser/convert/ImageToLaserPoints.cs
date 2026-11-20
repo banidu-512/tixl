@@ -534,22 +534,27 @@ internal sealed class ImageToLaserPoints : Instance<ImageToLaserPoints>, ILaserC
 
     /// <summary>Extra lit samples held at each shape's end position, so the scanner settles on the
     /// real endpoint instead of rounding it off. A dot's dwell time grows with it too - its point intensity.</summary>
+    [Input(Guid = "fd3cdd65-3155-4082-880a-ea24bfe5eab9")]
     public readonly InputSlot<int> EndRepeat = new(2);
 
     /// <summary>Ramps each shape's first samples up from this dim level to full: the scanner is
     /// still accelerating when a path starts, which otherwise blooms the start point. 0 = off.</summary>
+    [Input(Guid = "70ab0278-c054-4175-8025-d73771ef2fd8")]
     public readonly InputSlot<float> InFade = new(0f);
 
     /// <summary>Ramps the end-repeat samples down, so finishing a shape doesn't leave a bright
     /// pause dot of its own. 0 = the repeats hold at full brightness.</summary>
+    [Input(Guid = "71b043c3-ae4f-4b33-a48c-93a33ddca3ca")]
     public readonly InputSlot<float> OutFade = new(0f);
 
     /// <summary>Drops shapes shorter than this percentage of the working image's larger dimension -
     /// noise specks that would cost a blank jump each. 0 keeps everything.</summary>
+    [Input(Guid = "ff82f232-0a87-4eba-ae83-e69a803cb2a8")]
     public readonly InputSlot<float> PathMinLength = new(0f);
 
     /// <summary>Drops shapes longer than this percentage of the working image's larger dimension -
     /// runaway background strokes. 0 keeps everything.</summary>
+    [Input(Guid = "80a65286-1404-437a-b421-baf62a8428c9")]
     public readonly InputSlot<float> PathMaxLength = new(0f);
 
     [Input(Guid = "F9A4D175-6E32-4B58-9D16-3C8E1B2A4C75")]
