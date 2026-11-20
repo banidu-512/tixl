@@ -67,9 +67,9 @@
       "Outputs": []
     },
     {
-      "Id": "16b397c0-21b5-4368-8b1c-5bf6113e5597"/*R03g_SceneinaScene*/,
+      "Id": "16b397c0-21b5-4368-8b1c-5bf6113e5597"/*R03g_SceneWithinScene*/,
       "SymbolId": "8b869a9e-1bf6-4291-b310-7ddc0a523e86",
-      "SymbolName": "Skills.Render.R03_Camera.R03g_SceneinaScene",
+      "SymbolName": "Skills.Render.R03_Camera.R03g_SceneWithinScene",
       "InputValues": [],
       "Outputs": []
     },
@@ -557,6 +557,13 @@
       "Outputs": []
     },
     {
+      "Id": "9e12c930-45ae-4a14-b855-024bb4f5be6c"/*ImageQuiz*/,
+      "SymbolId": "b1cb8864-0d51-4b7f-96eb-4c6267d4b216",
+      "SymbolName": "Lib.flow.skillQuest.ImageQuiz",
+      "InputValues": [],
+      "Outputs": []
+    },
+    {
       "Id": "a5fb3d31-4c0e-469a-a7c2-5c6673d30244"/*M03e_BooleanLogicAll*/,
       "SymbolId": "b3fe4803-fa91-45c4-ac77-e827edd78d76",
       "SymbolName": "Skills.Math.M03_BoolsAndAnims.M03e_BooleanLogicAll",
@@ -683,9 +690,9 @@
       "Outputs": []
     },
     {
-      "Id": "cb3d71a7-3b2a-44a4-9d5d-21a47891fbbd"/*R04b_From3Dto2D*/,
+      "Id": "cb3d71a7-3b2a-44a4-9d5d-21a47891fbbd"/*R04b_From3dTo2d*/,
       "SymbolId": "59333bff-6604-4e02-bcc5-05bfc2c68082",
-      "SymbolName": "Skills.Render.R04_RenderBasics.R04b_From3Dto2D",
+      "SymbolName": "Skills.Render.R04_RenderBasics.R04b_From3dTo2d",
       "InputValues": [],
       "Outputs": []
     },
@@ -802,6 +809,13 @@
       "Outputs": []
     },
     {
+      "Id": "e8d659ba-15bf-49ff-9174-e4d25110ef7f"/*ValueQuiz*/,
+      "SymbolId": "702f1f75-df90-44ca-b567-78ba9d1613b5",
+      "SymbolName": "Lib.flow.skillQuest.ValueQuiz",
+      "InputValues": [],
+      "Outputs": []
+    },
+    {
       "Id": "e9149715-8f07-4640-ab0d-4cf0a41095f0"/*I02l_Dot*/,
       "SymbolId": "ed153af2-a673-426c-83f6-31352ab3f6f3",
       "SymbolName": "Skills.Image.I02_Gradients.I02l_Dot",
@@ -812,6 +826,13 @@
       "Id": "ea79c9db-5797-416c-871b-728636add1a2"/*R01f_SimpleTransformations*/,
       "SymbolId": "511b9fd5-49e5-4506-9162-10a1e3c6e792",
       "SymbolName": "Skills.Render.R01_MovingThings.R01f_SimpleTransformations",
+      "InputValues": [],
+      "Outputs": []
+    },
+    {
+      "Id": "ef8995bf-2f8c-4acd-9c3f-5c40fde21311"/*I04f_VectorsScope*/,
+      "SymbolId": "d3efe797-8d15-42bc-82cf-12d3bae94ce0",
+      "SymbolName": "Skills.Image.I04_ColorCorrection.I04f_VectorsScope",
       "InputValues": [],
       "Outputs": []
     },

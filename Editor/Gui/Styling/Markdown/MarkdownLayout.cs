@@ -107,7 +107,7 @@ internal static class MarkdownLayout
                                     ? wrapWidthPx
                                     : contentLeft + 200f;
 
-            EmitLineRuns(doc, result, line, lineFont, opRefFont, lineHeight,
+            EmitLineRuns(doc, result, line, lineFont, opRefFont, opt.ColorOnlyInlineStyles, lineHeight,
                          contentLeft, effectiveWrap, ref y, scale);
 
             prevExisted = true;
@@ -120,7 +120,8 @@ internal static class MarkdownLayout
     }
 
     private static void EmitLineRuns(ParsedDoc doc, LayoutResult result, Line line,
-                                     ImFontPtr lineFont, ImFontPtr opRefFont, float lineHeight,
+                                     ImFontPtr lineFont, ImFontPtr opRefFont, bool colorOnlyInlineStyles,
+                                     float lineHeight,
                                      float contentLeft, float wrapWidth,
                                      ref float y, float scale)
     {
@@ -135,7 +136,7 @@ internal static class MarkdownLayout
             for (var ri = 0; ri < line.RunCount; ri++)
             {
                 var run = doc.Runs[line.RunStart + ri];
-                EmitRun(src, run, opRefFont, scale, ref penX, contentLeft, wrapWidth,
+                EmitRun(src, run, opRefFont, colorOnlyInlineStyles, scale, ref penX, contentLeft, wrapWidth,
                         result, line, lineHeight, ref y,
                         ref firstVisualLineOfLogical, ref fragmentStart);
             }
@@ -150,7 +151,8 @@ internal static class MarkdownLayout
                         ref firstVisualLineOfLogical, ref fragmentStart);
     }
 
-    private static void EmitRun(string src, Run run, ImFontPtr opRefFont, float scale, ref float penX,
+    private static void EmitRun(string src, Run run, ImFontPtr opRefFont, bool colorOnlyInlineStyles,
+                                float scale, ref float penX,
                                 float contentLeft, float wrapWidth,
                                 LayoutResult result, Line line, float lineHeight,
                                 ref float y, ref bool firstVisualLineOfLogical,
@@ -165,6 +167,10 @@ internal static class MarkdownLayout
             penX += MarkdownView.OpRefPaddingX * scale;
             ImGui.PushFont(opRefFont);
             pushed = true;
+        }
+        else if (colorOnlyInlineStyles)
+        {
+            // Bold and code keep the line font; the renderer marks them by color only.
         }
         else if ((run.Style & RunStyle.Bold) != 0 || (run.Style & RunStyle.Link) != 0)
         {

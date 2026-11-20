@@ -31,8 +31,10 @@ internal sealed partial class OutputWindow
 {
     /// <summary>Evaluates the shown op from its own output and draws it. Evaluation always starts at the shown op:
     /// a separate start op used to exist and left windows stuck on an op with no output.</summary>
-    private Type? UpdateAndDrawOutput(Instance? instance)
+    /// <param name="presentedType">What the drawn value is navigated as, see <see cref="IOutputUi.PresentedType"/>.</param>
+    private Type? UpdateAndDrawOutput(Instance? instance, out Type? presentedType)
     {
+        presentedType = null;
         _imageCanvas.SourceLabel = null;
         if (instance == null)
             return null;
@@ -61,7 +63,7 @@ internal sealed partial class OutputWindow
             _imageCanvas.SourceLabel = fallbackSend.SymbolChild.ReadableName;
 
         if (_imageCanvas.ViewMode != ImageOutputCanvas.Modes.Fitted
-            && evaluatedOutputUi is CommandOutputUi)
+            && evaluatedOutputUi.PresentedType == typeof(Command))
         {
             _imageCanvas.SetViewMode(ImageOutputCanvas.Modes.Fitted);
         }
@@ -133,13 +135,14 @@ internal sealed partial class OutputWindow
         // Render!
         evaluatedOutputUi.DrawValue(evalOutput, EvaluationContext, Config.Title, recompute: !reuse);
 
+        presentedType = evaluatedOutputUi.PresentedType;
+
         // Every camera view gizmo of the focused project - not just the selected op's, whose
         // gizmo would otherwise only exist while its output is part of the rendered chain. The
         // scope is the project ROOT, not the shown instance: a rig's cameras typically feed a
         // Group from the outside, so scoping by the pinned op hid every one of them.
         TransformGizmoHandling.DrawCameraOverlays(EvaluationContext, gizmoView, gizmoClip,
                                                   ProjectView.Focused?.RootInstance ?? instance);
-
         return evalOutput.ValueType;
     }
 

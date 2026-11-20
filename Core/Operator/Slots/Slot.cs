@@ -314,6 +314,9 @@ public class Slot<T> : ISlot, ITimeClipRemapTarget
         }
 
         ArrayUtils.InsertAtIndexOrEnd(ref InputConnections, (Slot<T>)sourceSlot, index);
+
+        // A multi-input that limits its invalidation walk would not notice the new connection by its version.
+        _dirtyFlag.ValueVersion = -1;
     }
 
     private Action<EvaluationContext>? _actionBeforeAddingConnecting;
@@ -331,6 +334,8 @@ public class Slot<T> : ISlot, ITimeClipRemapTarget
             {
                 Log.Error($"{Parent} trying to delete connection at index {index}, but {GetType()} only has {InputConnections.Length} connections");
             }
+
+            _dirtyFlag.ValueVersion = -1;
         }
 
         if (!HasInputConnections)
