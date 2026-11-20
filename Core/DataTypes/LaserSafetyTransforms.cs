@@ -76,6 +76,23 @@ public static class LaserSafetyTransforms
         public float ColorGainR = 1f, ColorGainG = 1f, ColorGainB = 1f;
         public float ColorMinR, ColorMinG, ColorMinB;
 
+        /// <summary>Per-channel gamma exponent applied in calibration: output = (input)^(1/gamma)
+        /// with gamma 1 = linear, 2.2 = the sRGB-style perceptual default, higher = mid-tones
+        /// compressed more. Compensates diode brightness curves so ramps look even; per-channel
+        /// values let mixed direct-diode/DPSS systems be tuned independently.</summary>
+        public float ColorGammaR = 1f, ColorGammaG = 1f, ColorGammaB = 1f;
+
+        /// <summary>TTL profile type: diodes without analog modulation are binary - input at or
+        /// above 50% outputs the channel's maximum, below 50% turns it off. Gains, minimums and
+        /// gamma are meaningless in this mode and are skipped.</summary>
+        public bool TtlMode;
+
+        /// <summary>Intensity cap (0..1) for beams that hold one position while lit: a full-power
+        /// stationary beam burns skin and ignites materials, so a holding beam is dimmed to this
+        /// fraction of its requested level. 1 disables the cap (venue-controlled, see the safety
+        /// guide's "Max non-moving beam intensity").</summary>
+        public float MaxStaticIntensity = 1f;
+
         /// <summary>Per-channel time shift in points: how many points a diode's color trails the
         /// beam position (negative = leads), within ±<see cref="MaxColorShiftPoints"/>. Compensates
         /// diodes that react at different speeds, so color edges land on the shape instead of
@@ -95,6 +112,11 @@ public static class LaserSafetyTransforms
         /// scanning. Only blank masks carry a level; allow masks blank outside unconditionally.</summary>
         public float[]? MaskLevels;
         public int MaskCount;
+
+        /// <summary>Mirror the output horizontally/vertically (geometry flip). Applied in the
+        /// zone clamp's coordinate space so clamps, masks and the out-of-bounds audit keep their
+        /// guarantees after the flip.</summary>
+        public bool FlipX, FlipY;
 
         public static Config Default => new()
         {
@@ -229,6 +251,13 @@ public static class LaserSafetyTransforms
         result.ColorMinR = Math.Clamp(float.IsFinite(result.ColorMinR) ? result.ColorMinR : 0f, 0f, 1f);
         result.ColorMinG = Math.Clamp(float.IsFinite(result.ColorMinG) ? result.ColorMinG : 0f, 0f, 1f);
         result.ColorMinB = Math.Clamp(float.IsFinite(result.ColorMinB) ? result.ColorMinB : 0f, 0f, 1f);
+        // Gamma shapes the output curve; a broken value folds to linear rather than boosting.
+        result.ColorGammaR = Math.Clamp(float.IsFinite(result.ColorGammaR) ? result.ColorGammaR : 1f, 0.1f, 8f);
+        result.ColorGammaG = Math.Clamp(float.IsFinite(result.ColorGammaG) ? result.ColorGammaG : 1f, 0.1f, 8f);
+        result.ColorGammaB = Math.Clamp(float.IsFinite(result.ColorGammaB) ? result.ColorGammaB : 1f, 0.1f, 8f);
+        // The static-beam hold power is a venue decision: clamp into 0..1 so a wild value can
+        // neither blank everything (negative) nor exceed full power (>1).
+        result.MaxStaticIntensity = Math.Clamp(float.IsFinite(result.MaxStaticIntensity) ? result.MaxStaticIntensity : 0f, 0f, 1f);
         result.ColorShiftR = Math.Clamp(result.ColorShiftR, -MaxColorShiftPoints, MaxColorShiftPoints);
         result.ColorShiftG = Math.Clamp(result.ColorShiftG, -MaxColorShiftPoints, MaxColorShiftPoints);
         result.ColorShiftB = Math.Clamp(result.ColorShiftB, -MaxColorShiftPoints, MaxColorShiftPoints);
@@ -276,14 +305,25 @@ public static class LaserSafetyTransforms
         if (minX > maxX) (minX, maxX) = (maxX, minX);
         if (minY > maxY) (minY, maxY) = (maxY, minY);
 
+        // Geometry flip around the field centre: applied inside the clamp so masks, the
+        // zone and the out-of-bounds audit keep their guarantees in flipped space too.
+        var flipX = safeConfig.FlipX;
+        var flipY = safeConfig.FlipY;
+
         for (var i = 0; i < points.Count; i++)
         {
             var p = points[i];
             var x = Math.Clamp(p.X, minX, maxX);
             var y = Math.Clamp(p.Y, minY, maxY);
-            if ((int)x != p.X || (int)y != p.Y)
+            if (flipX)
+                x = minX + maxX - x;
+            if (flipY)
+                y = minY + maxY - y;
+            var ix = (int)x;
+            var iy = (int)y;
+            if (ix != p.X || iy != p.Y)
             {
-                points[i] = new LaserPoint((int)x, (int)y, p.R, p.G, p.B, p.I);
+                points[i] = new LaserPoint(ix, iy, p.R, p.G, p.B, p.I);
                 stats.ClampedPoints++;
             }
         }
@@ -475,6 +515,13 @@ public static class LaserSafetyTransforms
         var thresholdSq = staticDistance * staticDistance;
         var maxStaticPoints = safeConfig.MaxStaticPoints;
 
+        // MadMapper's "max non-moving beam intensity": a stationary beam beyond the dwell limit is
+        // dimmed to this fraction of its level instead of blanked - a full-power beam that holds one
+        // position burns skin and ignites materials, and the venue decides how much hold power is
+        // acceptable. 1 keeps the strict blank (the scan-fail default); 0 blanks as well.
+        var staticIntensity = safeConfig.MaxStaticIntensity;
+        var dimInsteadOfBlank = staticIntensity < 1f;
+
         // Start right after a movement, so the run that wraps over the seam is counted in one pass.
         var start = -1;
         for (var i = 0; i < count; i++)
@@ -494,7 +541,7 @@ public static class LaserSafetyTransforms
                 if (p.I <= 0)
                     continue;
 
-                points[i] = LaserPoint.CreateBlanked(p.X, p.Y);
+                points[i] = DimOrBlank(p, staticIntensity, dimInsteadOfBlank);
                 stats.StaticBlanked++;
             }
 
@@ -515,10 +562,25 @@ public static class LaserSafetyTransforms
             run++;
             if (run > maxStaticPoints)
             {
-                points[i] = LaserPoint.CreateBlanked(p.X, p.Y);
+                points[i] = DimOrBlank(p, staticIntensity, dimInsteadOfBlank);
                 stats.StaticBlanked++;
             }
         }
+    }
+
+    /** A beam that has held past the dwell limit: dimmed to the venue's static-intensity fraction, or blanked. */
+    private static LaserPoint DimOrBlank(LaserPoint p, float staticIntensity, bool dimInsteadOfBlank)
+    {
+        if (!dimInsteadOfBlank || staticIntensity <= 0f)
+            return LaserPoint.CreateBlanked(p.X, p.Y);
+
+        var r = (int)(p.R * staticIntensity);
+        var g = (int)(p.G * staticIntensity);
+        var b = (int)(p.B * staticIntensity);
+        var i2 = (int)(p.I * staticIntensity);
+        return r + g + b + i2 > 0
+                   ? new LaserPoint(p.X, p.Y, r, g, b, i2)
+                   : LaserPoint.CreateBlanked(p.X, p.Y);
     }
 
     /** True when point <paramref name="index"/> is farther than the static threshold from the point before it in loop order. */
@@ -629,13 +691,47 @@ public static class LaserSafetyTransforms
     public static void ApplyColorLevels(List<LaserPoint> points, in Config config)
     {
         var safeConfig = Sanitize(in config);
-        if (safeConfig.ColorGainR == 1f && safeConfig.ColorGainG == 1f && safeConfig.ColorGainB == 1f
-            && safeConfig.ColorMinR == 0f && safeConfig.ColorMinG == 0f && safeConfig.ColorMinB == 0f)
+
+        // TTL diodes: binary on/off at the 50% line - gains, minimums and gamma are meaningless.
+        if (safeConfig.TtlMode)
+        {
+            var half = ColorMax / 2;
+            for (var i = 0; i < points.Count; i++)
+            {
+                var p = points[i];
+                var r = p.R >= half ? ColorMax : 0;
+                var g = p.G >= half ? ColorMax : 0;
+                var b = p.B >= half ? ColorMax : 0;
+                if (r == p.R && g == p.G && b == p.B)
+                    continue;
+
+                points[i] = r + g + b > 0
+                                ? new LaserPoint(p.X, p.Y, r, g, b, p.I)
+                                : LaserPoint.CreateBlanked(p.X, p.Y);
+            }
+
+            return;
+        }
+
+        var gains = safeConfig.ColorGainR == 1f && safeConfig.ColorGainG == 1f && safeConfig.ColorGainB == 1f;
+        var minimums = safeConfig.ColorMinR == 0f && safeConfig.ColorMinG == 0f && safeConfig.ColorMinB == 0f;
+        var gammaR = safeConfig.ColorGammaR;
+        var gammaG = safeConfig.ColorGammaG;
+        var gammaB = safeConfig.ColorGammaB;
+        var linear = gammaR == 1f && gammaG == 1f && gammaB == 1f;
+        if (gains && minimums && linear)
             return;
 
         var minR = safeConfig.ColorMinR * ColorMax;
         var minG = safeConfig.ColorMinG * ColorMax;
         var minB = safeConfig.ColorMinB * ColorMax;
+
+        // Gamma lookup tables, rebuilt lazily when the exponent changes (a calibration edit, not a
+        // per-frame event). Captured by reference outside the rebuild lock; a rebuild mid-frame at
+        // worst mixes old and new tables for one frame - a calibration change, not a safety stage.
+        var lutR = GetGammaLut(gammaR, ref _gammaLutR, ref _gammaLutBitsR);
+        var lutG = GetGammaLut(gammaG, ref _gammaLutG, ref _gammaLutBitsG);
+        var lutB = GetGammaLut(gammaB, ref _gammaLutB, ref _gammaLutBitsB);
 
         for (var i = 0; i < points.Count; i++)
         {
@@ -656,6 +752,13 @@ public static class LaserSafetyTransforms
             if (p.B < minB)
                 b = 0;
 
+            if (!linear)
+            {
+                r = lutR[Math.Clamp(r, 0, ColorMax)];
+                g = lutG[Math.Clamp(g, 0, ColorMax)];
+                b = lutB[Math.Clamp(b, 0, ColorMax)];
+            }
+
             r = Math.Min(r, ColorMax);
             g = Math.Min(g, ColorMax);
             b = Math.Min(b, ColorMax);
@@ -666,6 +769,40 @@ public static class LaserSafetyTransforms
             points[i] = p.I > 0 || r > 0 || g > 0 || b > 0
                             ? new LaserPoint(p.X, p.Y, r, g, b, p.I)
                             : LaserPoint.CreateBlanked(p.X, p.Y);
+        }
+    }
+
+    private static readonly object GammaLutLock = new();
+    private static ushort[] _gammaLutR = EmptyGammaLut();
+    private static ushort[] _gammaLutG = EmptyGammaLut();
+    private static ushort[] _gammaLutB = EmptyGammaLut();
+    private static float _gammaLutBitsR, _gammaLutBitsG, _gammaLutBitsB;
+
+    private static ushort[] EmptyGammaLut() => new ushort[ColorMax + 1];
+
+    /// <summary>
+    /// Returns the LUT for <paramref name="gamma"/> (out = in^(1/gamma)), rebuilding the cached
+    /// table when the exponent changed. LUT indices cover 0..65535 so lookup replaces Math.Pow
+    /// in the per-point path; exponent quantized to 1/1000 so slider noise does not rebuild.
+    /// </summary>
+    private static ushort[] GetGammaLut(float gamma, ref ushort[] cache, ref float cacheBits)
+    {
+        var quantized = MathF.Round(gamma * 1000f) / 1000f;
+        lock (GammaLutLock)
+        {
+            if (cacheBits == quantized)
+                return cache;
+
+            var lut = new ushort[ColorMax + 1];
+            var exponent = 1f / Math.Clamp(quantized, 0.1f, 8f);
+            for (var v = 0; v <= ColorMax; v++)
+            {
+                lut[v] = (ushort)Math.Clamp((int)MathF.Round(MathF.Pow(v / (float)ColorMax, exponent) * ColorMax), 0, ColorMax);
+            }
+
+            cache = lut;
+            cacheBits = quantized;
+            return lut;
         }
     }
 
