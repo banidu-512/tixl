@@ -22,8 +22,7 @@ internal sealed partial class SettingsWindow
     {
         var config = UserSettings.Config;
 
-        FormInputs.AddSectionSubHeader("Network");
-        FormInputs.AddVerticalSpace();
+        PanelLayout.BeginSection("Network");
 
         var interfaces = LanInterfaces.GetUsable();
         var selected = interfaces.FirstOrDefault(i => string.Equals(i.Name, config.NetworkInterface,
@@ -76,6 +75,7 @@ internal sealed partial class SettingsWindow
         }
 
         DrawPeerNetworkCheck(interfaces, ref changed);
+        PanelLayout.EndSection();
     }
 
     /// <summary>
