@@ -5,10 +5,10 @@
   "InputUis": [],
   "SymbolChildUis": [
     {
-      "ChildId": "d3eebc6f-26fb-4350-8081-bb4ba303fdc8",
-      "SymbolName": "Lib.mesh.generate.CubeMesh",
+      "ChildId": "24dbb5e9-211c-4f49-affc-b4a904860461",
+      "SymbolName": "Lib.field.render.RaymarchField",
       "Position": {
-        "X": 0.0,
+        "X": 610.0,
         "Y": 0.0
       }
     },
@@ -21,18 +21,18 @@
       }
     },
     {
-      "ChildId": "24dbb5e9-211c-4f49-affc-b4a904860461",
-      "SymbolName": "Lib.field.render.RaymarchField",
-      "Position": {
-        "X": 610.0,
-        "Y": 0.0
-      }
-    },
-    {
       "ChildId": "8694be43-9727-4dc1-913c-1099769143d4",
       "SymbolName": "Lib.render.camera.Camera",
       "Position": {
         "X": 870.0,
+        "Y": 0.0
+      }
+    },
+    {
+      "ChildId": "d3eebc6f-26fb-4350-8081-bb4ba303fdc8",
+      "SymbolName": "Lib.mesh.generate.CubeMesh",
+      "Position": {
+        "X": 0.0,
         "Y": 0.0
       }
     },

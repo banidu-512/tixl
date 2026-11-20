@@ -37,6 +37,17 @@ internal sealed class RigidBodyGeometry : Instance<RigidBodyGeometry>
             }
         }
 
+        // Ranges published on a description belong to the buffer pulled above; skip descriptions whose
+        // last publisher is another world, so a body feeding two worlds is never drawn with the wrong poses.
+        if (worldPoints != null)
+        {
+            for (var index = _bodies.Count - 1; index >= 0; index--)
+            {
+                if (_bodies[index].PublishedBuffer != worldPoints)
+                    _bodies.RemoveAt(index);
+            }
+        }
+
         var showColliders = ShowColliders.GetValue(context);
         var staticStamp = StaticStamp(showColliders);
         var count = 0;

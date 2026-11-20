@@ -16,7 +16,8 @@ public sealed class VdbTransform
 
     public VdbTransform(float voxelSize, Vector3 translation)
     {
-        VoxelSize = Math.Clamp(voxelSize, 1e-7f, 1e7f);
+        // Math.Clamp passes NaN straight through, so file-derived NaN voxel sizes need an explicit check.
+        VoxelSize = float.IsFinite(voxelSize) ? Math.Clamp(voxelSize, 1e-7f, 1e7f) : 0.1f;
         Translation = translation;
     }
 
@@ -80,16 +81,26 @@ public sealed class VdbTransform
             {
                 if (values.Length < 9)
                     return Identity;
+                // Anisotropic scales from real files must be rejected, not averaged into a voxel size —
+                // a uniform approximation would silently misplace every sample of the grid.
+                if (IsAnisotropic(values[3], values[4], values[5]))
+                    throw new NotSupportedException("non-uniform grid transform");
                 var t = new Vector3((float)values[0], (float)values[1], (float)values[2]);
-                var s = (float)((values[3] + values[4] + values[5]) / 3.0);
-                return new VdbTransform(s, t);
+                return new VdbTransform((float)values[3], t);
             }
             case "UniformScaleMap":
+            {
+                var s = values.Length >= 3 ? (float)values[0] : 0.1f;
+                return new VdbTransform(s, Vector3.Zero);
+            }
             case "ScaleMap":
             {
                 // layout: scale(3), voxelSize(3), inverse scale(3), invScaleSqr(3), invTwiceScale(3)
-                var s = values.Length >= 3 ? (float)values[0] : 0.1f;
-                return new VdbTransform(s, Vector3.Zero);
+                if (values.Length < 3)
+                    return Identity;
+                if (IsAnisotropic(values[0], values[1], values[2]))
+                    throw new NotSupportedException("non-uniform grid transform");
+                return new VdbTransform((float)values[0], Vector3.Zero);
             }
             case "AffineMap":
             case "UnitaryMap":
@@ -110,5 +121,13 @@ public sealed class VdbTransform
                 // UnitaryMap/AffineMap/NonlinearFrustumMap are not representable here; fall back to identity.
                 return Identity;
         }
+    }
+
+    /** OpenVDB maps carry per-axis scales; a non-uniform one cannot be represented here and must not be averaged. */
+    private static bool IsAnisotropic(double a, double b, double c)
+    {
+        var max = Math.Max(Math.Abs(a), Math.Max(Math.Abs(b), Math.Abs(c)));
+        var tolerance = Math.Max(max * 1e-4, 1e-9);
+        return Math.Abs(a - b) > tolerance || Math.Abs(a - c) > tolerance || Math.Abs(b - c) > tolerance;
     }
 }

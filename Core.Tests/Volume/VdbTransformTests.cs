@@ -1,4 +1,5 @@
 #nullable enable
+using System;
 using System.IO;
 using System.Numerics;
 using T3.Core.DataTypes.Volume;
@@ -52,5 +53,30 @@ public class VdbTransformTests
 
         Assert.Equal(grid.Transform.IndexToWorld(new VdbCoord(3, -2, 5)), loaded.Transform.IndexToWorld(new VdbCoord(3, -2, 5)));
         Assert.Equal(0.25f, loaded.Tree.GetValue(new VdbCoord(3, -2, 5)));
+    }
+
+    [Fact]
+    public void NonFiniteVoxelSizeFallsBackToDefault()
+    {
+        var transform = new VdbTransform(float.NaN, new Vector3(1f, 2f, 3f));
+
+        Assert.Equal(0.1f, transform.VoxelSize);
+        Assert.Equal(new Vector3(1f, 2f, 3f), transform.Translation);
+    }
+
+    [Fact]
+    public void AnisotropicMapsAreRejectedInsteadOfAveraged()
+    {
+        Assert.Throws<NotSupportedException>(() => VdbTransform.FromOpenVdbMap("ScaleTranslateMap", [0, 0, 0, 0.02, 0.05, 0.02, 0, 0, 0]));
+        Assert.Throws<NotSupportedException>(() => VdbTransform.FromOpenVdbMap("ScaleMap", [0.02, 0.05, 0.02]));
+    }
+
+    [Fact]
+    public void UniformPerAxisScalesStillLoad()
+    {
+        var transform = VdbTransform.FromOpenVdbMap("ScaleTranslateMap", [0, 0, 0, 0.02, 0.02, 0.02, 0, 0, 0]);
+
+        Assert.Equal(0.02f, transform.VoxelSize);
+        Assert.Equal(0.02f, VdbTransform.FromOpenVdbMap("ScaleMap", [0.02, 0.02, 0.02]).VoxelSize);
     }
 }

@@ -164,7 +164,7 @@ internal sealed class PhysicsWorld : Instance<PhysicsWorld>
             _allPoints = new Point[count];
 
         _simulation.WritePoints(_allPoints, true);
-        _simulation.PublishBodyRanges(_allPoints);
+        _simulation.PublishBodyRanges(_allPoints, OutBuffer.Value);
     }
 
     /// <summary>

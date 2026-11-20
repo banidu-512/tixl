@@ -85,18 +85,18 @@ public static class VdbFile
         }
 
         // Grid bodies.
-        var gridPos = (int)body.Position;
+        var gridPos = body.Position;
         for (var i = 0; i < grids.Count; i++)
         {
             var gridBody = BuildGridBody(grids[i], zipCompression);
             body.Write(gridBody, 0, gridBody.Length);
-            var endPos = (int)body.Position;
+            var endPos = body.Position;
             var blockPos = gridPos + GridBodyTopologyStart(gridBody);
 
             var offsets = offsetPositions[i];
-            PatchLong(body, (int)offsets[0], gridPos);
-            PatchLong(body, (int)offsets[1], blockPos);
-            PatchLong(body, (int)offsets[2], endPos);
+            PatchLong(body, offsets[0], gridPos);
+            PatchLong(body, offsets[1], blockPos);
+            PatchLong(body, offsets[2], endPos);
             gridPos = endPos;
         }
 
@@ -104,7 +104,7 @@ public static class VdbFile
         body.WriteTo(stream);
     }
 
-    private static void PatchLong(MemoryStream stream, int position, long value)
+    private static void PatchLong(MemoryStream stream, long position, long value)
     {
         Span<byte> bytes = stackalloc byte[8];
         BinaryPrimitives.WriteInt64LittleEndian(bytes, value);

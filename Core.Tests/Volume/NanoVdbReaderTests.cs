@@ -1,5 +1,6 @@
 #nullable enable
 using System;
+using System.IO;
 using System.Numerics;
 using T3.Core.DataTypes.Volume;
 using T3.Core.DataTypes.Volume.Tools;
@@ -54,6 +55,29 @@ public class NanoVdbReaderTests
         var bbox = grid.ActiveIndexBBox;
         Assert.Equal(bbox.Min.X, BitConverter.ToInt32(bytes, rootOffset));
         Assert.Equal(bbox.Max.Z, BitConverter.ToInt32(bytes, rootOffset + 20));
+    }
+
+    [Fact]
+    public void Vec3GridExportIsRejected()
+    {
+        var grid = new VdbGrid<Vector3>(Vector3.Zero, 0.1f, "vel", VdbGridClass.Staggered);
+        grid.Tree.SetValueOn(new VdbCoord(0, 0, 0), new Vector3(1f, 2f, 3f));
+
+        Assert.Throws<NotSupportedException>(() => NanoVdbBuffer.FromGrid(grid));
+    }
+
+    [Fact]
+    public void NonFloatGridTypesFailValidation()
+    {
+        var grid = VolumePrimitives.Create(VolumePrimitives.Shape.Sphere, new Vector3(1f, 1f, 1f), 0.1f, Vector3.Zero, 3);
+        var buffer = NanoVdbBuffer.FromGrid(grid);
+        using var ms = new MemoryStream();
+        buffer.Save(ms);
+        var bytes = ms.ToArray();
+        bytes[636] = 2; // GridType::Double - the shaders only decode float and vec3-float layouts
+
+        Assert.False(NanoVdbBuffer.LoadBytes(bytes).TryValidate(out var error));
+        Assert.Contains("unsupported grid value type", error);
     }
 
     private static void AssertAllVoxelsMatch(VdbGrid<float> grid)

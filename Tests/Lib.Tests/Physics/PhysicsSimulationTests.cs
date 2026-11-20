@@ -39,6 +39,28 @@ public class PhysicsSimulationTests
     }
 
     [Fact]
+    public void NonFiniteInputsCreateAPlaceholderInsteadOfPoisoningTheWorld()
+    {
+        using var harness = new Harness();
+        harness.Settings.Gravity = Vector3.Zero;
+        var broken = Box(Vector3.One, Vector3.One);
+        broken.Position = new Vector3(float.NaN, 3f, 0f);
+        broken.Size = new Vector3(float.NaN);
+        broken.Mass = float.NaN;
+        broken.Friction = float.NaN;
+        var healthy = harness.AddBody(Sphere(new Vector3(2f, 3f, 0f)));
+        harness.AddBody(broken);
+        harness.Step(0.5f);
+
+        // The NaN description must not poison the healthy body, and must itself be a finite
+        // placeholder instead of a NaN body nothing can collide with.
+        harness.Sim.TryGetBodyPosition(healthy.Id, out var healthyPosition);
+        Assert.True(float.IsFinite(healthyPosition.Y));
+        harness.Sim.TryGetBodyPosition(broken.Id, out var brokenPosition);
+        Assert.True(float.IsFinite(brokenPosition.Y));
+    }
+
+    [Fact]
     public void UnchangedDescriptorDoesNotTeleportBodyBack()
     {
         using var harness = new Harness();

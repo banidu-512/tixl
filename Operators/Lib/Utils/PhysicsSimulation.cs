@@ -87,13 +87,14 @@ internal sealed class PhysicsSimulation : IDisposable
     /// Tells every description of the last update where its bodies are in <paramref name="allPoints"/>, which must
     /// have been filled by <see cref="WritePoints"/> with statics included.
     /// </summary>
-    public void PublishBodyRanges(Point[] allPoints)
+    public void PublishBodyRanges(Point[] allPoints, BufferWithViews pointsBuffer)
     {
         foreach (var (descriptor, start, count) in _bodyRanges)
         {
             descriptor.PublishedPoints = allPoints;
             descriptor.PublishedStart = start;
             descriptor.PublishedCount = allPoints == null ? 0 : Math.Max(0, Math.Min(count, allPoints.Length - start));
+            descriptor.PublishedBuffer = pointsBuffer;
         }
     }
 
@@ -366,6 +367,7 @@ internal sealed class PhysicsSimulation : IDisposable
         }
 
         _meshBuilds.Clear();
+        _abandonedMeshes.Clear();
 
         _bodies.Clear();
         _joints.Clear();
@@ -453,6 +455,11 @@ internal sealed class PhysicsSimulation : IDisposable
     private void ReconcileBody(PhysicsBody descriptor, Guid id, in InstanceInfo info)
     {
         _seenBodies.Add(id);
+
+        // CreateBody and UpdateBody read pose, shape, mass and material fields raw; a NaN from an animated
+        // input would poison the created collider, mass or contact material with nothing to catch it. The
+        // fallbacks mirror the UpdateBody guards and keep the body a usable placeholder until it recovers.
+        descriptor = FiniteDescriptor(descriptor);
 
         if (!_bodies.TryGetValue(id, out var entry))
         {
@@ -549,7 +556,8 @@ internal sealed class PhysicsSimulation : IDisposable
         if (descriptor.MassFromDensity && float.IsFinite(descriptor.Density) && descriptor.Density > 0f && volume > 1e-9f)
             return MathF.Max(0.0001f, descriptor.Density * volume);
 
-        return MathF.Max(0.0001f, descriptor.Mass);
+        // A NaN mass would poison the solver for every body it touches; the default matches PhysicsBody.Mass.
+        return MathF.Max(0.0001f, FiniteOr(descriptor.Mass, 1f));
     }
 
     /// <summary>Volume of a primitive collider; 0 for hulls and meshes, whose volume comes from their pieces.</summary>
@@ -582,6 +590,51 @@ internal sealed class PhysicsSimulation : IDisposable
     private static float SanitizeScale(float value)
     {
         return float.IsFinite(value) && MathF.Abs(value) > 0.0001f ? MathF.Abs(value) : 1f;
+    }
+
+    /** True when every field the create/update paths read raw is finite; a NaN would poison the body. */
+    private static bool DescriptorIsFinite(PhysicsBody d)
+    {
+        return IsFinite(d.Position)
+               && float.IsFinite(d.Orientation.X + d.Orientation.Y + d.Orientation.Z + d.Orientation.W)
+               && IsFinite(d.Size) && float.IsFinite(d.Radius) && float.IsFinite(d.Length)
+               && float.IsFinite(d.Mass) && float.IsFinite(d.Density)
+               && IsFinite(d.LinearVelocity) && IsFinite(d.AngularVelocity)
+               && float.IsFinite(d.LinearDamping) && float.IsFinite(d.AngularDamping)
+               && float.IsFinite(d.Friction) && float.IsFinite(d.Bounciness) && float.IsFinite(d.GravityScale);
+    }
+
+    /// <summary>
+    /// Replaces non-finite pose, shape, mass and material inputs with placeholders the way UpdateBody does,
+    /// so a NaN from an animated input cannot poison the created collider, mass or contact material.
+    /// </summary>
+    private PhysicsBody FiniteDescriptor(PhysicsBody descriptor)
+    {
+        if (DescriptorIsFinite(descriptor))
+            return descriptor;
+
+        var clean = _finiteBody;
+        clean.CopyFrom(descriptor);
+        if (!IsFinite(clean.Position))
+            clean.Position = Vector3.Zero;
+        if (!float.IsFinite(clean.Orientation.X + clean.Orientation.Y + clean.Orientation.Z + clean.Orientation.W))
+            clean.Orientation = Quaternion.Identity;
+        if (!IsFinite(clean.Size))
+            clean.Size = Vector3.Zero;
+        clean.Radius = FiniteOr(clean.Radius, 0f);
+        clean.Length = FiniteOr(clean.Length, 0f);
+        clean.Mass = FiniteOr(clean.Mass, 1f);
+        clean.Density = FiniteOr(clean.Density, 1f);
+        if (!IsFinite(clean.LinearVelocity))
+            clean.LinearVelocity = Vector3.Zero;
+        if (!IsFinite(clean.AngularVelocity))
+            clean.AngularVelocity = Vector3.Zero;
+        clean.LinearDamping = MathF.Max(0f, FiniteOr(clean.LinearDamping, 0f));
+        clean.AngularDamping = MathF.Max(0f, FiniteOr(clean.AngularDamping, 0f));
+        clean.Friction = FiniteOr(clean.Friction, 0.5f);
+        clean.Bounciness = FiniteOr(clean.Bounciness, 0f);
+        clean.GravityScale = FiniteOr(clean.GravityScale, 1f);
+        return clean;
     }
 
     /// <summary>Stable id of one instance of an instanced description: the same index maps to the same body every frame.</summary>
@@ -986,6 +1039,11 @@ internal sealed class PhysicsSimulation : IDisposable
 
         if (!_meshBuilds.TryGetValue(key, out var build))
         {
+            // A mesh whose build failed repeatedly stays abandoned until the world rebuilds or the
+            // description publishes a new triangles array, which gets a new shape key.
+            if (_abandonedMeshes.Contains(key))
+                return false;
+
             var pool = new BufferPool();
             build = new MeshBuild(pool, Task.Run(() => TryBuildMesh(triangles, scale, pool, out var built) ? built : (Mesh?)null));
             _meshBuilds.Add(key, build);
@@ -997,7 +1055,19 @@ internal sealed class PhysicsSimulation : IDisposable
         _meshBuilds.Remove(key);
         if (build.Task.Status != TaskStatus.RanToCompletion || build.Task.Result is not { } finished)
         {
+            // A faulted build used to wedge the body as its fallback box forever with no warning. Retry a
+            // few times so a transient failure recovers, then abandon with a warning so bad data cannot loop.
             build.Pool.Clear();
+            if (build.Attempts < MaxMeshBuildAttempts)
+            {
+                var pool = new BufferPool();
+                _meshBuilds.Add(key, new MeshBuild(pool, Task.Run(() => TryBuildMesh(triangles, scale, pool, out var built) ? built : (Mesh?)null)) { Attempts = build.Attempts + 1 });
+                return false;
+            }
+
+            if (_abandonedMeshes.Add(key))
+                Log.Warning("PhysicsWorld: a body's triangle mesh failed to build three times; it keeps its fallback shape until its geometry changes", _logSource);
+
             return false;
         }
 
@@ -1291,7 +1361,7 @@ internal sealed class PhysicsSimulation : IDisposable
         var handle = anchoring != JointAnchoring.Explicit
                          ? AddAnchoredConstraint(descriptor, bodyA, bodyB, anchoring)
                          : AddConstraint(descriptor, bodyA.Handle, bodyB.Handle);
-        var entry = new JointEntry { Handle = handle, Hash = hash };
+        var entry = new JointEntry { Handle = handle, Hash = hash, BodyA = bodyA.Handle, BodyB = bodyB.Handle, HasBodyB = true };
         AddMotorOrLimit(descriptor, bodyA, bodyB, anchoring, entry);
         _joints.Add(id, entry);
     }
@@ -1368,6 +1438,7 @@ internal sealed class PhysicsSimulation : IDisposable
         var entry = new JointEntry
                         {
                             Hash = hash,
+                            BodyA = body.Handle,
                             Handle = _simulation.Solver.Add(body.Handle, new OneBodyLinearServo
                                                                              {
                                                                                  LocalOffset = descriptor.LocalOffsetA,
@@ -1639,6 +1710,7 @@ internal sealed class PhysicsSimulation : IDisposable
     private void PrepareForces(bool paused)
     {
         _continuousForces.Clear();
+        _impulseFrame++;
         if (_frameForces == null || _simulation == null)
             return;
 
@@ -1656,14 +1728,24 @@ internal sealed class PhysicsSimulation : IDisposable
             }
 
             var id = ResolveId(force);
-            var hasFired = _impulseCounts.TryGetValue(id, out var lastCount) && lastCount != force.TriggerCount;
-            if (_impulseCounts.Count > 4096)
-                _impulseCounts.Clear();
-
-            _impulseCounts[id] = force.TriggerCount;
+            var hasFired = _impulseCounts.TryGetValue(id, out var seen) && seen.TriggerCount != force.TriggerCount;
+            _impulseCounts[id] = (force.TriggerCount, _impulseFrame);
             if (hasFired && force.Enabled && !paused)
                 ApplyForce(force, 1f);
         }
+
+        // Entries of forces that left the frame would otherwise accumulate forever, and the old blanket
+        // Clear() past 4096 entries silenced every impulse once stale ids piled up. Drop what this frame did not see.
+        foreach (var pair in _impulseCounts)
+        {
+            if (pair.Value.LastFrame != _impulseFrame)
+                _staleImpulseIds.Add(pair.Key);
+        }
+
+        foreach (var id in _staleImpulseIds)
+            _impulseCounts.Remove(id);
+
+        _staleImpulseIds.Clear();
     }
 
     private void ApplyForces(float dt)
@@ -1960,13 +2042,26 @@ internal sealed class PhysicsSimulation : IDisposable
 
     private void RemoveBody(BodyEntry entry)
     {
-        // Constraints that survive the body removal would otherwise keep their old handles while
-        // _joints forgets them, and the next reconcile would add a second copy of each. Remove
-        // every constraint explicitly first; removing ones attached to this body is a no-op
-        // because Bepu would have done the same during Bodies.Remove.
-        foreach (var joint in _joints.Values)
-            RemoveJoint(joint);
-        _joints.Clear();
+        // Bodies.Remove removes every constraint attached to the body, which invalidates the handles
+        // cached in _joints: forget exactly the joints touching this body so the next reconcile re-adds
+        // them, and leave unrelated joints - and their warm-started solver state - untouched. Joints
+        // ignore static partners, so a static body has nothing to forget.
+        if (!entry.IsStatic)
+        {
+            foreach (var pair in _joints)
+            {
+                if (pair.Value.Touches(entry.Handle))
+                    _removeJoints.Add(pair.Key);
+            }
+
+            foreach (var id in _removeJoints)
+            {
+                RemoveJoint(_joints[id]);
+                _joints.Remove(id);
+            }
+
+            _removeJoints.Clear();
+        }
 
         if (entry.IsStatic)
         {
@@ -2048,7 +2143,7 @@ internal sealed class PhysicsSimulation : IDisposable
     private static Quaternion NormalizeOrientation(Quaternion orientation)
     {
         var lengthSquared = orientation.LengthSquared();
-        return lengthSquared < 1e-8f ? Quaternion.Identity : Quaternion.Normalize(orientation);
+        return !float.IsFinite(lengthSquared) || lengthSquared < 1e-8f ? Quaternion.Identity : Quaternion.Normalize(orientation);
     }
 
     private static Vector3 NormalizeAxis(Vector3 axis)
@@ -2161,7 +2256,11 @@ internal sealed class PhysicsSimulation : IDisposable
         public BufferPool OwnPool;
     }
 
-    private sealed record MeshBuild(BufferPool Pool, Task<Mesh?> Task);
+    private sealed record MeshBuild(BufferPool Pool, Task<Mesh?> Task)
+    {
+        /** How often this mesh build was re-queued after a fault. */
+        public int Attempts;
+    }
 
     private sealed class NearbyLinks
     {
@@ -2308,6 +2407,14 @@ internal sealed class PhysicsSimulation : IDisposable
 
         public bool HasSecondHandle;
         public int Hash;
+
+        /** The bodies the constraints were created against; RemoveBody tears down only joints touching the removed body. */
+        public BodyHandle BodyA;
+        public BodyHandle BodyB;
+        public bool HasBodyB;
+
+        /** True when one of the joint's constraints was created against this body handle. */
+        public bool Touches(BodyHandle handle) => BodyA.Value == handle.Value || HasBodyB && BodyB.Value == handle.Value;
     }
 
     private readonly struct PhysicsMaterial
@@ -2558,6 +2665,9 @@ internal sealed class PhysicsSimulation : IDisposable
 
     private const int MaxNearbyLinks = 50000;
 
+    /** Times a background mesh build may fault before the body is left on its fallback shape. */
+    private const int MaxMeshBuildAttempts = 3;
+
     /** Softness of a hinge motor: how readily it gives way under load instead of forcing its speed. */
     private const float MotorSoftness = 0.0001f;
 
@@ -2582,6 +2692,8 @@ internal sealed class PhysicsSimulation : IDisposable
     private readonly HashSet<Guid> _seenJoints = new();
     private readonly List<Guid> _removeBodies = new();
     private readonly List<Guid> _removeJoints = new();
+    private readonly List<Guid> _staleImpulseIds = new();
+    private readonly HashSet<SharedShapeKey> _abandonedMeshes = new();
     private List<PhysicsBody> _frameBodies;
     private List<PhysicsJoint> _frameJoints;
     private List<PhysicsForce> _frameForces;
@@ -2590,7 +2702,7 @@ internal sealed class PhysicsSimulation : IDisposable
     private readonly List<PhysicsContact> _contacts = new();
     private readonly List<PhysicsContact> _contactOrder = new();
     private readonly List<PhysicsForce> _continuousForces = new();
-    private readonly Dictionary<Guid, int> _impulseCounts = new();
+    private readonly Dictionary<Guid, (int TriggerCount, int LastFrame)> _impulseCounts = new();
     private readonly ConditionalWeakTable<PhysicsForce, IdBox> _implicitForceIds = new();
     private readonly Dictionary<SharedShapeKey, SharedShape> _sharedShapes = new();
     private readonly Dictionary<Guid, NearbyLinks> _nearbyLinks = new();
@@ -2599,6 +2711,9 @@ internal sealed class PhysicsSimulation : IDisposable
 
     /** Reused description for one instance of an instanced body; only valid inside ReconcileBodies. */
     private readonly PhysicsBody _instanceBody = new();
+
+    /** Reused sanitized copy for a description with non-finite inputs; only valid inside ReconcileBody. */
+    private readonly PhysicsBody _finiteBody = new();
     private readonly List<(PhysicsBody Descriptor, int Start, int Count)> _bodyRanges = new();
 
     private static readonly PhysicsBodyInstance[] SingleInstance =
@@ -2621,4 +2736,5 @@ internal sealed class PhysicsSimulation : IDisposable
     private int _dynamicRenderCount;
     private bool _hasLoggedStaticJointWarning;
     private bool _wasResetPressed;
+    private int _impulseFrame;
 }

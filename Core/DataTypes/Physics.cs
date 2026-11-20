@@ -152,6 +152,10 @@ public sealed class PhysicsBody
     public int PublishedStart;
     public int PublishedCount;
 
+    /// <summary>The world buffer the Published* fields were written against. Consumers compare it with the
+    /// world buffer they pulled, so a body feeding two worlds is never drawn with the other world's poses.</summary>
+    public BufferWithViews PublishedBuffer;
+
     public void CopyFrom(PhysicsBody other)
     {
         Shape = other.Shape;

@@ -304,7 +304,7 @@ public class PhysicsGeometryTests
         simulation.Update(settings, 0, [box, ball], []);
         var points = new Point[simulation.RenderCount(true)];
         simulation.WritePoints(points, true);
-        simulation.PublishBodyRanges(points);
+        simulation.PublishBodyRanges(points, new BufferWithViews());
 
         var joined = new MeshGeometry();
         var scratch = new List<PhysicsGeometry.PosedBody>();
@@ -365,7 +365,7 @@ public class PhysicsGeometryTests
 
         var points = new Point[simulation.RenderCount(true)];
         simulation.WritePoints(points, true);
-        simulation.PublishBodyRanges(points);
+        simulation.PublishBodyRanges(points, new BufferWithViews());
         return simulation;
     }
 

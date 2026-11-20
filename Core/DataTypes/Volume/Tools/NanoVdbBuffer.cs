@@ -65,8 +65,10 @@ public sealed class NanoVdbBuffer
 
     public static NanoVdbBuffer FromGrid(VdbGrid<Vector3> grid)
     {
-        var (buffer, sectionEnds) = Build(grid);
-        return new NanoVdbBuffer(buffer, VdbValueType.Vec3Float, grid.GridClass, sectionEnds);
+        // The internal-node slot tables are planned and written for the float layout, so a vec3 grid
+        // produces a buffer that fails its own size check. Saving the volume as .vdb works; keep the
+        // failure named instead of a size-mismatch throw.
+        throw new NotSupportedException("NanoVDB export of vec3 grids is not supported; save the volume as .vdb instead");
     }
 
     private static int AlignUp(int bytes) => (bytes + Alignment - 1) / Alignment * Alignment;
@@ -836,7 +838,10 @@ public sealed class NanoVdbBuffer
         {
             1 => VdbValueType.Float,
             6 => VdbValueType.Vec3Float,
-            _ => VdbValueType.Float,
+            2 => VdbValueType.Double,
+            4 => VdbValueType.Int32,
+            5 => VdbValueType.Int64,
+            _ => VdbValueType.Mask,
         };
         var gridClass = BinaryPrimitives.ReadUInt32LittleEndian(grid.AsSpan(632)) switch
         {
@@ -918,7 +923,10 @@ public sealed class NanoVdbBuffer
         {
             1 => VdbValueType.Float,
             6 => VdbValueType.Vec3Float,
-            _ => VdbValueType.Float,
+            2 => VdbValueType.Double,
+            4 => VdbValueType.Int32,
+            5 => VdbValueType.Int64,
+            _ => VdbValueType.Mask,
         };
         var gridClass = BinaryPrimitives.ReadUInt32LittleEndian(grid.AsSpan(632)) switch
         {
@@ -982,6 +990,14 @@ public sealed class NanoVdbBuffer
     public bool TryValidate(out string error)
     {
         error = null;
+
+        // A buffer from a Double/Int32/Int64 grid passes every offset check and would be decoded as
+        // floats by the shaders; validation must reject what this loader cannot read correctly.
+        if (ValueType is not (VdbValueType.Float or VdbValueType.Vec3Float))
+        {
+            error = $"unsupported grid value type {ValueType}; this loader reads float and vec3-float grids only";
+            return false;
+        }
 
         if (Buffer.Length < GridDataSize + TreeDataSize)
         {

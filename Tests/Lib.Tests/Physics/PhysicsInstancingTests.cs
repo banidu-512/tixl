@@ -730,7 +730,7 @@ public class PhysicsInstancingTests
 
         var all = new Point[harness.Sim.RenderCount(true)];
         harness.Sim.WritePoints(all, true);
-        harness.Sim.PublishBodyRanges(all);
+        harness.Sim.PublishBodyRanges(all, new BufferWithViews());
 
         Assert.Equal(7, all.Length);
         Assert.Same(all, beads.PublishedPoints);
@@ -746,7 +746,7 @@ public class PhysicsInstancingTests
         harness.Step(FrameSec);
         all = new Point[harness.Sim.RenderCount(true)];
         harness.Sim.WritePoints(all, true);
-        harness.Sim.PublishBodyRanges(all);
+        harness.Sim.PublishBodyRanges(all, new BufferWithViews());
         Assert.Equal((1, 2), (beads.PublishedStart, beads.PublishedCount));
         Assert.Equal((3, 1), (single.PublishedStart, single.PublishedCount));
     }

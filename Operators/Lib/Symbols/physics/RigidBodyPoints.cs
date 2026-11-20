@@ -29,7 +29,9 @@ internal sealed class RigidBodyPoints : Instance<RigidBodyPoints>
         var source = body?.PublishedPoints;
         var start = body?.PublishedStart ?? 0;
         var count = body?.PublishedCount ?? 0;
-        if (worldPoints == null || source == null || count <= 0 || start < 0 || start + count > source.Length
+        // The published ranges must belong to the buffer pulled above; a description feeding two worlds
+        // would otherwise be drawn with whichever world evaluated last.
+        if (worldPoints == null || body?.PublishedBuffer != worldPoints || source == null || count <= 0 || start < 0 || start + count > source.Length
             || ResourceManager.Device == null || !EnsureBuffer(count))
         {
             Points.Value = null;

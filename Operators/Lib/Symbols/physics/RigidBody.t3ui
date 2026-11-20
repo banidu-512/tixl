@@ -153,10 +153,10 @@
         "X": 0.0,
         "Y": 900.0
       },
+      "Description": "Mass per cubic unit when the mass comes from the volume. 1 gives a unit cube a mass of 1.",
       "Min": 0.01,
       "Max": 10.0,
-      "ClampMin": true,
-      "Description": "Mass per cubic unit when the mass comes from the volume. 1 gives a unit cube a mass of 1."
+      "ClampMin": true
     },
     {
       "InputId": "d8d048f0-6517-497e-878d-24fc95ed8a64"/*Length*/,
@@ -172,10 +172,10 @@
         "X": 0.0,
         "Y": 945.0
       },
+      "Description": "Most convex hulls one geometry part is split into by the Auto and ConvexDecomposition shapes. More hulls follow a concave shape closer and cost more to build and simulate; 1 turns the splitting off.",
       "Min": 1,
       "Max": 32,
-      "ClampMin": true,
-      "Description": "Most convex hulls one geometry part is split into by the Auto and ConvexDecomposition shapes. More hulls follow a concave shape closer and cost more to build and simulate; 1 turns the splitting off."
+      "ClampMin": true
     },
     {
       "InputId": "e13e2b87-7a04-4197-82a8-a11fab87d1f9"/*Pieces*/,
