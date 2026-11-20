@@ -10,19 +10,6 @@ using Newtonsoft.Json.Linq;
 namespace T3.Editor.Collab;
 
 /// <summary>
-/// Relay-side transports for online sessions where neither end is publicly reachable. Both talk to
-/// a standalone <c>TiXLCollabRelay</c> server:
-///
-/// - The host registers a room and receives member-join notifications as JSON control lines mixed
-///   into its frame stream (detectable unambiguously: frames always start with a length prefix
-///   whose first byte cannot be '{').
-/// - Each client gets its own relay stream; the relay tags frames between host and members with a
-///   slot byte so the host can demultiplex clients over its single relay connection.
-/// - Presence runs over the reliable channel here; the UDP path is a direct-connection optimization.
-///
-/// Handshake, authentication and ops are unchanged end-to-end — the relay only splices bytes.
-/// </summary>
-/// <summary>
 /// What a peer tells the relay about itself when it opens or joins a room. The token lets the relay
 /// confirm the Discord account; the rest describes the room for the session list. The key is the
 /// room's secret: whoever presents it may re-open the room after its host went silent.
@@ -489,9 +476,9 @@ internal class CollabRelayHostTransport : CollabTransport
         {
             while (!cancellation.IsCancellationRequested)
             {
-                // With a legacy relay, control lines and frames share the stream and '{' marks a line.
-                // That is ambiguous (a little-endian length can start with 0x7B), which is why a relay
-                // that understands framed control sends its control messages as frames instead.
+                // Without framed control, control lines and frames share the stream and '{' marks a
+                // line. That is ambiguous (a little-endian length can start with 0x7B), which is why
+                // a relay that understands framed control sends its control messages as frames.
                 var first = _relayStream.ReadByte();
                 if (first < 0)
                     break;

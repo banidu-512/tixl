@@ -326,11 +326,11 @@ internal abstract class CollabTransport : IDisposable
         }
     }
 
-    /// <summary>Removes a dead peer from this transport's list. Called from the network thread.</summary>
     /// <summary>Whether losing this peer ends the session (a host loss on a client does; relayed
     /// members of other clients do not).</summary>
     protected virtual bool ShouldReportLostPeer(CollabPeerConnection peer) => true;
 
+    /// <summary>Removes a dead peer from this transport's list. Called from the network thread.</summary>
     protected virtual void CleanupPeer(CollabPeerConnection peer)
     {
     }

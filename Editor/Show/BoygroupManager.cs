@@ -218,7 +218,7 @@ internal sealed class BoygroupManager
         {
             _password = password ?? "";
             GroupName = group;
-            _transport = new BoygroupServerTransport(port, UserSettings.Config.BoygroupGroups.Distinct().ToArray(), UserSettings.Config.NetworkInterface);
+            _transport = new BoygroupServerTransport(port, UserSettings.Config.BoygroupGroups.Distinct().ToArray(), UserSettings.Config.BoygroupInterface);
             _transport.PeerDisconnected += OnPeerDisconnected;
             State = BoygroupState.Server;
             StatusText = $"Serving group '{group}' on port {port}";
@@ -394,10 +394,22 @@ internal sealed class BoygroupManager
         var preferredGroup = config.BoygroupLastGroup is { Length: > 0 } last ? last : null;
 
         // Prefer a master that hosts the group we want; otherwise take the only / first one.
-        var candidate = preferredGroup != null
-                            ? _discoveredServers.FirstOrDefault(s => s.Groups.Contains(preferredGroup))
-                              ?? _discoveredServers.FirstOrDefault()
-                            : _discoveredServers.FirstOrDefault();
+        DiscoveredServer? candidate = null;
+        if (preferredGroup != null)
+        {
+            foreach (var server in _discoveredServers)
+            {
+                if (server.Groups.Contains(preferredGroup))
+                {
+                    candidate = server;
+                    break;
+                }
+            }
+        }
+
+        if (candidate == null && _discoveredServers.Count > 0)
+            candidate = _discoveredServers[0];
+
         if (candidate == null)
             return;
 
@@ -558,7 +570,7 @@ internal sealed class BoygroupManager
 
 
     // ---------------------------------------------------------------------------------------
-    // Input replication and video relay
+    // Input replication
     // ---------------------------------------------------------------------------------------
 
     private void PumpInputReplication()
@@ -586,12 +598,8 @@ internal sealed class BoygroupManager
             Log.Warning($"Boygroup: dropped {dropped} input events because the replication queue overflowed");
     }
 
-    /// <summary>
-    /// Master side: keeps one OMT sender per VideoDeviceInput, sends its frame and tells the render nodes
-    /// which source to receive. The source list is re-broadcast when it changes and again periodically so
-    /// a node that joins later picks it up.
-    /// </summary>
-
+    /// <summary>Client side: replays the master's replicated MIDI and OSC events through the same
+    /// graph-side input operators a local device would drive.</summary>
     private static void ApplyRemoteInput(JObject json)
     {
         if (!BoygroupInputWire.TryDecode(json, out var midi, out var osc))
@@ -631,13 +639,22 @@ internal sealed class BoygroupManager
         }
     }
 
-    /// <summary>Client side: applies the master's video input list to the remote camera bus.</summary>
     // Messages
     // ---------------------------------------------------------------------------------------
 
     private void HandleMessage(CollabPeerConnection peer, JObject json)
     {
         var type = CollabProtocol.GetString(json, "t");
+
+        // Only the handshake may arrive before a peer authenticated: everything else mutates
+        // machine state, binds displays or feeds the deploy pump, and a connection that never
+        // passed the master's password challenge must not drive any of that.
+        if (!peer.IsAuthenticated && type is not ("hello" or "auth" or "welcome" or "authOk" or "authFail"))
+        {
+            Log.Debug($"Boygroup: ignoring '{type}' from unauthenticated {peer}");
+            return;
+        }
+
         switch (type)
         {
             case "hello" when State == BoygroupState.Server:
@@ -658,6 +675,10 @@ internal sealed class BoygroupManager
 
             case "authOk":
                 StatusText = "Joined group";
+
+                // Mark the master connection as trusted so its messages pass the authentication gate.
+                if (_transport is BoygroupClientTransport clientTransport)
+                    clientTransport.ServerPeer.IsAuthenticated = true;
 
                 // The first report can go out before this node is authenticated on the server, where
                 // it is dropped; the dedup in MaybeSendBindings would then never send it again. Force
@@ -693,7 +714,7 @@ internal sealed class BoygroupManager
                 break;
 
             case "deployStart" when State == BoygroupState.Client:
-                _deployFilesTotal = json["count"]?.Value<int>() ?? 0;
+                _deployFilesTotal = CollabProtocol.TryGetInt(json, "count", out var filesTotal) ? filesTotal : 0;
                 _deployFilesDone = 0;
                 _deployErrors = 0;
                 _deployedRelativePaths.Clear();
@@ -754,11 +775,13 @@ internal sealed class BoygroupManager
             case "clockPing" when State == BoygroupState.Server:
                 // Timestamp both ends of the master's handling so the client can subtract its own
                 // processing; the two are the same instant here, but the shape keeps NTP semantics.
+                CollabProtocol.TryGetLong(json, "id", out var pingId);
+                CollabProtocol.TryGetLong(json, "c1", out var pingC1);
                 SendJson(peer, new
                                    {
                                        t = "clockPong",
-                                       id = json["id"]?.Value<long>() ?? 0,
-                                       c1 = json["c1"]?.Value<long>() ?? 0,
+                                       id = pingId,
+                                       c1 = pingC1,
                                        m2 = PreciseUtcNowTicks(),
                                        m3 = PreciseUtcNowTicks(),
                                    });
@@ -916,7 +939,7 @@ internal sealed class BoygroupManager
         if (_transport is not BoygroupClientTransport client)
             return;
 
-        var passwordRequired = json["pwd"]?.Value<bool>() ?? false;
+        CollabProtocol.TryGetBool(json, "pwd", out var passwordRequired);
         if (!passwordRequired)
             return;
 
@@ -1600,10 +1623,6 @@ internal sealed class BoygroupManager
     // Remote displays: what the nodes present, offered as binding targets on the master
     // ---------------------------------------------------------------------------------------
 
-    // ---------------------------------------------------------------------------------------
-    // Remote displays: what the nodes present, offered as binding targets on the master
-    // ---------------------------------------------------------------------------------------
-
     /// <summary>Master side: adopts a node's reported machine config and display list.</summary>
     private void HandleClientBindings(JObject json)
     {
@@ -1613,7 +1632,7 @@ internal sealed class BoygroupManager
         if (client == null)
             return;
 
-        var configJson = json["config"]?.Value<string>();
+        var configJson = CollabProtocol.GetString(json, "config");
         if (string.IsNullOrEmpty(configJson))
             return;
 
@@ -1637,14 +1656,18 @@ internal sealed class BoygroupManager
 
         foreach (var screen in array)
         {
-            var index = screen["index"]?.Value<int>() ?? screens.Count;
+            if (screen is not JObject screenObject)
+                continue;
+
+            var index = CollabProtocol.TryGetInt(screenObject, "index", out var parsedIndex) ? parsedIndex : screens.Count;
+            CollabProtocol.TryGetBool(screenObject, "primary", out var primary);
             screens.Add(new RemoteScreen(index,
-                                         screen.Value<string>("name") ?? $"Display {index + 1}",
-                                         screen["width"]?.Value<int>() ?? 0,
-                                         screen["height"]?.Value<int>() ?? 0,
-                                         screen["x"]?.Value<int>() ?? 0,
-                                         screen["y"]?.Value<int>() ?? 0,
-                                         screen["primary"]?.Value<bool>() ?? false));
+                                         CollabProtocol.GetString(screenObject, "name", $"Display {index + 1}"),
+                                         CollabProtocol.TryGetInt(screenObject, "width", out var width) ? width : 0,
+                                         CollabProtocol.TryGetInt(screenObject, "height", out var height) ? height : 0,
+                                         CollabProtocol.TryGetInt(screenObject, "x", out var x) ? x : 0,
+                                         CollabProtocol.TryGetInt(screenObject, "y", out var y) ? y : 0,
+                                         primary));
         }
 
         return screens;
@@ -1782,7 +1805,7 @@ internal sealed class BoygroupManager
         if (!Guid.TryParse(CollabProtocol.GetString(json, "output"), out var outputId))
             return;
 
-        var displayIndex = json["display"]?.Value<int>() ?? -1;
+        var displayIndex = CollabProtocol.TryGetInt(json, "display", out var displayValue) ? displayValue : -1;
         if (displayIndex < 0 || displayIndex >= EditorUi.Instance.AllScreens.Count)
             return;
 
@@ -1803,7 +1826,7 @@ internal sealed class BoygroupManager
 
     private void HandleDeployDone(JObject json)
     {
-        var shouldRestart = json["restart"]?.Value<bool>() ?? true;
+        var shouldRestart = CollabProtocol.TryGetBool(json, "restart", out var restartFlag) ? restartFlag : true;
         DeploySummary = $"Deployment complete ({_deployFilesDone} files" + (_deployErrors > 0 ? $", {_deployErrors} failed" : "") + ")";
 
         // A deploy that transferred no files (the node was already current) leaves this machine up:
@@ -2107,12 +2130,12 @@ internal sealed class BoygroupManager
 
     private void HandleClockPong(JObject json)
     {
-        if (json["id"]?.Value<long>() != _clockPingId)
+        if (!CollabProtocol.TryGetLong(json, "id", out var pongId) || pongId != _clockPingId)
             return;
 
-        var c1 = json["c1"]?.Value<long>() ?? 0;
-        var m2 = json["m2"]?.Value<long>() ?? 0;
-        var m3 = json["m3"]?.Value<long>() ?? 0;
+        CollabProtocol.TryGetLong(json, "c1", out var c1);
+        CollabProtocol.TryGetLong(json, "m2", out var m2);
+        CollabProtocol.TryGetLong(json, "m3", out var m3);
         var c4 = PreciseUtcNowTicks();
         if (c1 == 0 || m2 == 0 || m3 == 0)
             return;
@@ -2157,7 +2180,7 @@ internal sealed class BoygroupManager
     private void ApplyTimeSync(JObject json)
     {
         var playback = Playback.Current;
-        var masterUtc = json["at"]?.Value<long>() ?? 0;
+        CollabProtocol.TryGetLong(json, "at", out var masterUtc);
         if (playback == null || masterUtc == 0)
             return;
 
@@ -2167,9 +2190,10 @@ internal sealed class BoygroupManager
         var deltaSecs = (localUtc - DateTime.UtcNow.Ticks) / (double)TimeSpan.TicksPerSecond;
         _anchorLocalStopwatch = Stopwatch.GetTimestamp() + deltaSecs * Stopwatch.Frequency;
 
-        _anchorBars = json["bars"]?.Value<double>() ?? 0;
-        _anchorSpeed = json["speed"]?.Value<double>() ?? 0;
-        _anchorBpm = json["bpm"]?.Value<double>() ?? 120;
+        CollabProtocol.TryGetDouble(json, "bars", out _anchorBars);
+        CollabProtocol.TryGetDouble(json, "speed", out _anchorSpeed);
+        if (!CollabProtocol.TryGetDouble(json, "bpm", out _anchorBpm))
+            _anchorBpm = 120;
         _hasAnchor = true;
     }
 
@@ -2270,7 +2294,7 @@ internal sealed class BoygroupManager
                 directTargets = [resolved];
         }
 
-        _discoveryScanner.Start(UserSettings.Config.BoygroupPort + LanDiscoveryResponder.DiscoveryPortOffset, directTargets, UserSettings.Config.NetworkInterface);
+        _discoveryScanner.Start(UserSettings.Config.BoygroupPort + LanDiscoveryResponder.DiscoveryPortOffset, directTargets, UserSettings.Config.BoygroupInterface);
     }
 
     public void StopDiscovery()

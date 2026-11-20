@@ -63,7 +63,7 @@ internal static class CollabSpectator
         var rounding = size.Y * 0.5f;
 
         drawList.AddRectFilled(min, min + size, CollabColors.ToUint(new Vector4(accentColor.X, accentColor.Y, accentColor.Z, 0.92f)), rounding);
-        drawList.AddText(min + padding, CollabColors.ToUint(new Vector4(0.06f, 0.06f, 0.08f, 1f)), label);
+        drawList.AddText(min + padding, CollabColors.ToUint(CollabColors.Ink), label);
     }
 
     private const int NoPeer = -1;

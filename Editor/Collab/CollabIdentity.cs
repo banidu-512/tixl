@@ -77,6 +77,12 @@ internal static class CollabColors
         return (a << 24) | (b << 16) | (g << 8) | r;
     }
 
+    /// <summary>The near-black ink for text drawn on top of accent-filled pills and tags.</summary>
+    public static readonly Vector4 Ink = new(0.06f, 0.06f, 0.08f, 1f);
+
+    /// <summary>Black faded to the given alpha, for cursor shadows and rims.</summary>
+    public static uint Black(float alpha) => ToUint(new Vector4(0f, 0f, 0f, alpha));
+
     private static int StableHash(byte[] bytes)
     {
         unchecked

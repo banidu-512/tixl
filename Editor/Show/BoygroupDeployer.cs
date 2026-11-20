@@ -1,9 +1,9 @@
 #nullable enable
 using System.IO;
 using System.Security.Cryptography;
-using System.Security.Cryptography;
 using Newtonsoft.Json.Linq;
 using T3.Core.Logging;
+using T3.Editor.Collab;
 
 namespace T3.Editor.Show;
 
@@ -177,21 +177,21 @@ internal static class BoygroupDeployer
             inventory[relativePath] = new InventoryEntry
                                           {
                                               RelativePath = relativePath,
-                                              Size = entry["s"]?.Value<long>() ?? 0,
-                                              LastWriteTicks = entry["m"]?.Value<long>() ?? 0,
-                                              Hash = entry["h"]?.Value<string>(),
+                                              Size = CollabProtocol.TryGetLong(entry, "s", out var size) ? size : 0,
+                                              LastWriteTicks = CollabProtocol.TryGetLong(entry, "m", out var lastWrite) ? lastWrite : 0,
+                                              Hash = CollabProtocol.GetString(entry, "h"),
                                           };
         }
 
         return inventory;
     }
 
-    /// <summary>Files the client needs, in stable order (smallest first so most files land early).</summary>
     /// <summary>Timestamp comparison slack: a write time round-tripped through another filesystem
     /// (NTFS 100 ns vs ext4 ns) does not reproduce the master's ticks bit-exactly, so exact
     /// equality would re-send every transferred file on every deploy.</summary>
     public static readonly long MtimeToleranceTicks = TimeSpan.FromSeconds(2).Ticks;
 
+    /// <summary>Files the client needs, in stable order (smallest first so most files land early).</summary>
     public static List<string> ComputeMissingFiles(Dictionary<string, InventoryEntry> serverInventory,
                                                    Dictionary<string, InventoryEntry> clientInventory)
     {

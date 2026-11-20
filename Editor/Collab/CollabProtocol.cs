@@ -328,6 +328,27 @@ internal static class CollabProtocol
         }
     }
 
+    public static bool TryGetDouble(JObject json, string property, out double value)
+    {
+        value = 0;
+        if (!json.TryGetValue(property, out var token))
+            return false;
+
+        switch (token.Type)
+        {
+            case JTokenType.Integer:
+                value = token.Value<long>();
+                return true;
+            case JTokenType.Float:
+                value = token.Value<double>();
+                return true;
+            case JTokenType.String:
+                return double.TryParse(token.Value<string>(), out value);
+            default:
+                return false;
+        }
+    }
+
     /// <summary>
     /// Type-tolerant bool read for fields from UNTRUSTED senders (LAN discovery announcements): a
     /// string like "x" or an object token must be a miss, not a FormatException out of the frame loop.

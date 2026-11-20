@@ -19,7 +19,8 @@ public readonly record struct RemoteOscPacket(int Port, byte[] Packet);
 /// The master taps its MIDI and OSC managers here; a render node replays the events through the same
 /// graph-side input operators that a local device would drive (<c>SimulatedIoBus</c>), so filters,
 /// ranges and persisted values behave identically. Video input is carried separately by
-/// and the video relay that shares cameras, because it moves events rather than textures.
+/// <see cref="T3.Core.Video.RemoteVideoInputBus"/> and the video relay that shares cameras, because
+/// this bus moves events rather than textures.
 /// </para>
 /// <para>
 /// Capture is a no-op unless a master has at least one connected render node, so a normal session

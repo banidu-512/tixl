@@ -737,7 +737,17 @@ internal static class Program
                 if (lengthBuffer[0] == (byte)'{')
                 {
                     // Control lines are only ever sent TO the host; the host never sends them.
-                    // Drain and ignore (join announcements for already-known slots).
+                    // Drain the rest of the line and ignore it (join/left announcements) — without
+                    // this the line's remaining bytes would be parsed as the next frame length.
+                    while (true)
+                    {
+                        if (!await TryReadExactAsync(stream, lengthBuffer.AsMemory(0, 1), token))
+                            return;
+
+                        if (lengthBuffer[0] == (byte)'\n')
+                            break;
+                    }
+
                     continue;
                 }
 
@@ -1284,10 +1294,12 @@ internal static class Program
 
         public int MemberCount => Members.Count;
 
-        /// <summary>Next free slot in 1..254; the caller holds <see cref="Gate"/> and has checked capacity.</summary>
+        /// <summary>Next free slot in 1..254 except the control slot; the caller holds <see cref="Gate"/> and has checked capacity.</summary>
         public byte AllocateSlot()
         {
-            // Slots wrap after 254 joins; skip ones a long-lived member still holds.
+            // Slots wrap after 254 joins; skip ones a long-lived member still holds. 0xFE is the
+            // control slot on framed-control host links and must never carry a member, or the
+            // host reads that member's frames as control JSON and its uplink goes nowhere.
             while (true)
             {
                 var slot = _nextSlot;
@@ -1295,7 +1307,7 @@ internal static class Program
                 if (_nextSlot == 0)
                     _nextSlot = 1;
 
-                if (!Members.ContainsKey(slot))
+                if (slot != ControlSlot && !Members.ContainsKey(slot))
                     return slot;
             }
         }

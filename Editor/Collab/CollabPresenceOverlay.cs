@@ -79,13 +79,18 @@ internal static class CollabPresenceOverlay
         Guid[] selectionIds = [];
         if (projectView.NodeSelection is { } selection)
         {
-            var childUis = selection.GetSelectedChildUis();
-            if (childUis.Any())
+            // Sorted so the array is stable while dragging — otherwise every micro-selection
+            // change would flag presence as modified.
+            foreach (var childUi in selection.GetSelectedChildUis())
+                _selectionIdScratch.Add(childUi.Id);
+
+            if (_selectionIdScratch.Count > 0)
             {
-                // Sorted so the array is stable while dragging — otherwise every micro-selection
-                // change would flag presence as modified.
-                selectionIds = childUis.Select(c => c.Id).OrderBy(id => id).ToArray();
+                _selectionIdScratch.Sort();
+                selectionIds = [.. _selectionIdScratch];
             }
+
+            _selectionIdScratch.Clear();
         }
 
         if (hovering && ImGui.IsMouseDoubleClicked(ImGuiMouseButton.Left))
@@ -285,9 +290,10 @@ internal static class CollabPresenceOverlay
 
     private static readonly Dictionary<Guid, PeerVisual> _peerVisuals = new();
 
-    private static uint Tint(Vector4 color, float alpha) => CollabColors.ToUint(new Vector4(color.X, color.Y, color.Z, color.W * alpha));
+    /// <summary>Per-frame scratch for the sorted selection ids the presence packet carries.</summary>
+    private static readonly List<Guid> _selectionIdScratch = [];
 
-    private static uint Black(float alpha) => CollabColors.ToUint(new Vector4(0, 0, 0, alpha));
+    private static uint Tint(Vector4 color, float alpha) => CollabColors.ToUint(new Vector4(color.X, color.Y, color.Z, color.W * alpha));
 
     private static void DrawCursor(ImDrawListPtr drawList, ScalableCanvas canvas, PeerVisual visual, CollabManager.CollabPeerDisplay display, Vector4 color, string name)
     {
@@ -301,8 +307,8 @@ internal static class CollabPresenceOverlay
         // Pointer arrow: a head and a tail built from convex pieces, with a soft drop shadow and a thin
         // dark rim so it reads on both dark node bodies and the lighter graph background.
         var shadowOffset = new Vector2(1.2f, 1.8f) * scale;
-        DrawArrow(drawList, screenPos + shadowOffset, scale, Black(0.35f * alpha), Black(0.35f * alpha));
-        DrawArrow(drawList, screenPos, scale, Tint(color, alpha), Black(0.75f * alpha));
+        DrawArrow(drawList, screenPos + shadowOffset, scale, CollabColors.Black(0.35f * alpha), CollabColors.Black(0.35f * alpha));
+        DrawArrow(drawList, screenPos, scale, Tint(color, alpha), CollabColors.Black(0.75f * alpha));
 
         // Name tag: accent-filled pill with dark text, so it is legible whatever sits behind it.
         var textSize = ImGui.CalcTextSize(name);
@@ -310,9 +316,9 @@ internal static class CollabPresenceOverlay
         var tagMin = screenPos + new Vector2(13, 17) * scale;
         var tagMax = tagMin + textSize + padding * 2;
         var rounding = (tagMax.Y - tagMin.Y) * 0.5f;
-        drawList.AddRectFilled(tagMin + new Vector2(0, 1.5f * scale), tagMax + new Vector2(0, 1.5f * scale), Black(0.25f * alpha), rounding);
+        drawList.AddRectFilled(tagMin + new Vector2(0, 1.5f * scale), tagMax + new Vector2(0, 1.5f * scale), CollabColors.Black(0.25f * alpha), rounding);
         drawList.AddRectFilled(tagMin, tagMax, Tint(color, alpha), rounding);
-        drawList.AddText(tagMin + padding, Tint(new Vector4(0.06f, 0.06f, 0.08f, 1f), alpha), name);
+        drawList.AddText(tagMin + padding, Tint(CollabColors.Ink, alpha), name);
 
         if (display.IsAddingOperator)
             DrawAddingOperatorChip(drawList, new Vector2(tagMax.X + 6 * scale, tagMin.Y), tagMax.Y - tagMin.Y, color, alpha);
@@ -329,7 +335,7 @@ internal static class CollabPresenceOverlay
         const string label = "+ adding operator";
         var padding = new Vector2(7, 2.5f) * scale;
         var size = new Vector2(ImGui.CalcTextSize(label).X + padding.X * 2, height);
-        drawList.AddRectFilled(topLeft, topLeft + size, Black(0.7f * alpha), size.Y * 0.5f);
+        drawList.AddRectFilled(topLeft, topLeft + size, CollabColors.Black(0.7f * alpha), size.Y * 0.5f);
         drawList.AddRect(topLeft, topLeft + size, Tint(color, alpha), size.Y * 0.5f, 0, 1.2f * scale);
         drawList.AddText(topLeft + padding, Tint(color, alpha), label);
     }
@@ -370,7 +376,7 @@ internal static class CollabPresenceOverlay
         topLeft.Y += DrawPressedKeys(drawList, topLeft, visual, color, fade);
 
         var plateSize = new Vector2(MouseExtent * 2, MouseExtent * 2 - 6) * mouseScale;
-        drawList.AddRectFilled(topLeft, topLeft + plateSize, Black(0.6f * fade), 6 * uiScale);
+        drawList.AddRectFilled(topLeft, topLeft + plateSize, CollabColors.Black(0.6f * fade), 6 * uiScale);
 
         var center = topLeft + new Vector2(MouseExtent, MouseExtent - 3) * mouseScale;
         visual.Mouse.Draw(drawList, center, display.LeftButtonDown, display.RightButtonDown, display.MiddleButtonDown, color, fade, mouseScale);
@@ -398,7 +404,7 @@ internal static class CollabPresenceOverlay
 
             var size = ImGui.CalcTextSize(label) + new Vector2(8, 2) * uiScale;
             drawList.AddRectFilled(keyPos, keyPos + size, Tint(color, keyFade), 3 * uiScale);
-            drawList.AddText(keyPos + new Vector2(4, 0) * uiScale, Tint(new Vector4(0.06f, 0.06f, 0.08f, 1f), keyFade), label);
+            drawList.AddText(keyPos + new Vector2(4, 0) * uiScale, Tint(CollabColors.Ink, keyFade), label);
             keyPos.X += size.X + 3 * uiScale;
             rowHeight = MathF.Max(rowHeight, size.Y);
         }
@@ -451,7 +457,7 @@ internal static class CollabPresenceOverlay
             var tagSize = textSize + tagPadding * 2;
             var tagMin = new Vector2(min.X + rounding, min.Y - tagSize.Y + 1.5f * scale);
             drawList.AddRectFilled(tagMin, tagMin + tagSize, Tint(color, 0.95f), tagSize.Y * 0.5f);
-            drawList.AddText(tagMin + tagPadding, Tint(new Vector4(0.06f, 0.06f, 0.08f, 1f), 1f), name);
+            drawList.AddText(tagMin + tagPadding, Tint(CollabColors.Ink, 1f), name);
         }
     }
 
@@ -508,7 +514,7 @@ internal static class CollabPresenceOverlay
             var tagPadding = new Vector2(6, 1.5f) * scale;
             var tagSize = labelSize + tagPadding * 2;
             var tagMin = new Vector2(max.X - tagSize.X - 8 * scale, min.Y - tagSize.Y - 3 * scale);
-            drawList.AddRectFilled(tagMin, tagMin + tagSize, 0xE60E0E12, tagSize.Y * 0.5f);
+            drawList.AddRectFilled(tagMin, tagMin + tagSize, Tint(CollabColors.Ink, 0.9f), tagSize.Y * 0.5f);
             drawList.AddRect(tagMin, tagMin + tagSize, color, tagSize.Y * 0.5f, 0, 1f);
             drawList.AddText(tagMin + tagPadding, color, label);
         }

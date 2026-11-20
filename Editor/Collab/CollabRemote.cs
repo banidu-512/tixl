@@ -114,8 +114,9 @@ internal static class CollabRemote
                     InstallationStatus = "The owner asked to connect - starting a party...";
                     _pendingConnectAt = DateTime.UtcNow;
                     // Hosting with the claim lets the owner's controller join without an
-                    // approval round-trip.
-                    manager.StartHostViaBackend(result.Claim);
+                    // approval round-trip. StartHostViaBackend mutates the manager's UI-thread
+                    // state, so it is enqueued there instead of running on this pool thread.
+                    manager.RunOnUi(() => manager.StartHostViaBackend(result.Claim));
                     actedOnConnect = true;
                 }
 
@@ -123,8 +124,11 @@ internal static class CollabRemote
 
             case "disconnect":
                 InstallationStatus = "The owner disconnected";
-                if (manager.State != CollabManager.SessionState.Off)
-                    manager.Leave(manual: true);
+                manager.RunOnUi(() =>
+                                    {
+                                        if (manager.State != CollabManager.SessionState.Off)
+                                            manager.Leave(manual: true);
+                                    });
 
                 break;
         }

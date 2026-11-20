@@ -273,7 +273,9 @@ internal sealed class CollabManager
 
     private static string TruncateAvatar(string url) => string.IsNullOrEmpty(url) ? "" : url.Length <= 220 ? url : url[..220];
 
-    /// <summary>What the relay is told when opening or joining a room. UI thread: reads the settings.</summary>
+    /// <summary>What the relay is told when opening or joining a room. Hosting sends the Discord
+    /// token (the host operates the relay); a join does not — the relay link is plaintext, so a
+    /// joiner's token would end up with the relay operator. UI thread: reads the settings.</summary>
     private CollabRelayHello BuildRelayHello(bool hosting, string roomKey, string password, bool sendDiscordToken = true)
     {
         var config = UserSettings.Config;
@@ -336,6 +338,10 @@ internal sealed class CollabManager
     /// wins instead of being overwritten by a session nobody asked for.
     /// </summary>
     private readonly ConcurrentQueue<Action> _uiThreadActions = new();
+
+    /// <summary>Runs an action on the UI thread at the next manager update. For pool-thread
+    /// paths (e.g. the remote-management heartbeat) that must touch session state.</summary>
+    internal void RunOnUi(Action action) => _uiThreadActions.Enqueue(action);
 
     /// <summary>Bumped by every session start and Leave; stale asynchronous completions check it.</summary>
     private volatile int _sessionGeneration;
@@ -442,7 +448,7 @@ internal sealed class CollabManager
                                                                              ?? ProjectView.Focused?.OpenedProject.Package.DisplayName
                                                                              ?? "",
                                                            },
-                                                 interfaceName: UserSettings.Config.NetworkInterface);
+                                                 interfaceName: UserSettings.Config.CollabInterface);
             _transport.PeerDisconnected += OnPeerDisconnectedTransport;
             State = SessionState.Hosting;
             ParticipantsCanEdit = UserSettings.Config.CollabPartyControllable;
@@ -602,8 +608,11 @@ internal sealed class CollabManager
         Log.Info($"Collab: hosting via relay {relayHost}:{relayPort}, room {RoomCode}");
     }
 
-    /// <summary>Joins a relay-hosted room by code.</summary>
-    public void JoinViaRelay(string relayHost, int relayPort, string roomCode, string password, bool sendDiscordToken = true)
+    /// <summary>Joins a relay-hosted room by code. The Discord token is not sent: a join hands no
+    /// credential to a relay the user does not operate, and the relay link is plaintext. Hosting
+    /// still sends it — the host runs the relay — so relay-side verification and the
+    /// --require-discord gate keep working there.</summary>
+    public void JoinViaRelay(string relayHost, int relayPort, string roomCode, string password, bool sendDiscordToken = false)
     {
         if (!_reconnectAttemptInFlight)
             CancelReconnect();
@@ -1929,15 +1938,21 @@ internal sealed class CollabManager
     public CollabPeerDisplay? GetPresence(int peerId)
     {
         PresencePacket? presence = null;
-        Guid userId;
+        var userId = Guid.Empty;
+        var foundInTransport = false;
 
-        var transportPeer = Peers.FirstOrDefault(p => p.AssignedId == peerId);
-        if (transportPeer != null)
+        for (var i = 0; i < Peers.Count; i++)
         {
-            presence = transportPeer.LatestPresence;
-            userId = transportPeer.UserId;
+            if (Peers[i].AssignedId != peerId)
+                continue;
+
+            presence = Peers[i].LatestPresence;
+            userId = Peers[i].UserId;
+            foundInTransport = true;
+            break;
         }
-        else
+
+        if (!foundInTransport)
         {
             presence = _latestPresenceByPeer.TryGetValue(peerId, out var stored) ? stored : null;
             userId = _rosterUserIds.TryGetValue(peerId, out var id) ? id : Guid.Empty;
@@ -2840,7 +2855,7 @@ internal sealed class CollabManager
         if (State != SessionState.Connecting || HostLink is not { } host)
             return;
 
-        var passwordRequired = json["pwd"]?.Value<bool>() ?? false;
+        CollabProtocol.TryGetBool(json, "pwd", out var passwordRequired);
         if (!passwordRequired)
             return;
 
@@ -2870,7 +2885,7 @@ internal sealed class CollabManager
         }
 
         peer.IsAuthenticated = true;
-        var assignedId = json["yourId"]?.Value<int>() ?? 0;
+        CollabProtocol.TryGetInt(json, "yourId", out var assignedId);
         _localPresence = new PresencePacket { PeerId = (byte)assignedId };
         MyPeerId = assignedId;
 
@@ -3768,7 +3783,7 @@ internal sealed class CollabManager
     /// full session state (join, reconnect, missed ops).</param>
     private void SendSyncLog(CollabPeerConnection peer, JArray? requestedIds = null)
     {
-        // State sync (roadmap 5.1): instead of replaying the raw op log — which only converges when
+        // State sync: instead of replaying the raw op log — which only converges when
         // both sides started from identical projects — send full snapshots of every composition the
         // session touched, plus the host's current composition. apply_snapshot replaces the client's
         // copy of those compositions with the host's state.
@@ -4241,7 +4256,7 @@ internal sealed class CollabManager
 
     private void HandleCanEdit(CollabPeerConnection peer, JObject json)
     {
-        ReadOnlyForParticipants = !(json["value"]?.Value<bool>() ?? true);
+        ReadOnlyForParticipants = !(CollabProtocol.TryGetBool(json, "value", out var canEdit) ? canEdit : true);
         AppendChat(null, ReadOnlyForParticipants
                              ? "The host made the session read-only: you can watch and chat"
                              : "The host allows editing again");
@@ -4387,16 +4402,29 @@ internal sealed class CollabManager
         // A repeated request replaces the running transfer; its open file handle must go with it.
         DropProjectUpload(peer);
 
-        var inventory = BoygroupDeployer.BuildInventory(folder);
-        _projectUploads[peer] = new ProjectUpload
-                                    {
-                                        Peer = peer,
-                                        ProjectFolder = folder,
-                                        ProjectName = ShortProjectName(projectName),
-                                        PendingFiles = new Queue<string>(inventory.Keys),
-                                        TotalFiles = inventory.Count,
-                                    };
-        Log.Info($"Collab: sending project '{projectName}' ({inventory.Count} files) to {peer.Name}");
+        // Walking the project and hashing every file can take seconds on a real show project;
+        // the inventory runs on a worker so the render loop keeps up, and the upload state is
+        // built back on the UI thread like every other background completion.
+        var generation = _sessionGeneration;
+        _ = Task.Run(() =>
+                         {
+                             var inventory = BoygroupDeployer.BuildInventory(folder);
+                             _uiThreadActions.Enqueue(() =>
+                                                          {
+                                                              if (generation != _sessionGeneration)
+                                                                  return;
+
+                                                              _projectUploads[peer] = new ProjectUpload
+                                                                                          {
+                                                                                              Peer = peer,
+                                                                                              ProjectFolder = folder,
+                                                                                              ProjectName = ShortProjectName(projectName),
+                                                                                              PendingFiles = new Queue<string>(inventory.Keys),
+                                                                                              TotalFiles = inventory.Count,
+                                                                                          };
+                                                              Log.Info($"Collab: sending project '{projectName}' ({inventory.Count} files) to {peer.Name}");
+                                                          });
+                         });
     }
 
     /// <summary>Ends a pending upload for one peer and releases the file it had open.</summary>
@@ -4550,7 +4578,8 @@ internal sealed class CollabManager
                 _projectDownloadFolder = Path.Combine(UserSettings.Config.ProjectDirectories[0], name);
                 Directory.CreateDirectory(_projectDownloadFolder);
                 _projectDownload = new BoygroupDeployer.FileReceiver();
-                Log.Info($"Collab: receiving project '{name}' ({json["files"]?.Value<int>() ?? 0} files) into {_projectDownloadFolder}");
+                CollabProtocol.TryGetInt(json, "files", out var fileCount);
+                Log.Info($"Collab: receiving project '{name}' ({fileCount} files) into {_projectDownloadFolder}");
                 break;
             }
 

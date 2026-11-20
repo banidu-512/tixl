@@ -291,10 +291,7 @@ internal static class CollabWebLobby
                          {
                              var (_, error) = await PostAsync("whisper", payload, CancellationToken.None);
                              if (error != null)
-                             {
-                                 lock (_whisperGate)
-                                     _whisperErrors.Add(error);
-                             }
+                                 Log.Debug($"Collab backend: whisper failed: {error}");
                          });
     }
 
@@ -315,10 +312,7 @@ internal static class CollabWebLobby
                          {
                              var (_, error) = await PostAsync("whisper", payload, CancellationToken.None);
                              if (error != null)
-                             {
-                                 lock (_whisperGate)
-                                     _whisperErrors.Add(error);
-                             }
+                                 Log.Debug($"Collab backend: whisper reply failed: {error}");
                          });
     }
 
@@ -361,9 +355,6 @@ internal static class CollabWebLobby
 
         return result;
     }
-
-    private static readonly object _whisperGate = new();
-    private static readonly List<string> _whisperErrors = [];
 
     // ---------------------------------------------------------------------------------------
     // Join tickets: the relay-free session rendezvous
