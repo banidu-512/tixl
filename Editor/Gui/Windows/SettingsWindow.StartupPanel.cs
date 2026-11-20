@@ -19,6 +19,9 @@ internal sealed partial class SettingsWindow
     {
         var config = UserSettings.Config;
 
+        PanelLayout.BeginSection("Startup automation",
+                                 "For kiosk and show machines: open a project on launch, start with the computer and restart after crashes.");
+
         var enabled = config.StartupEnabled;
         if (FormInputs.AddCheckBox("Enable",
                                    ref enabled,
@@ -47,12 +50,12 @@ internal sealed partial class SettingsWindow
             changed = true;
         }
 
+        PanelLayout.EndSection();
+
         if (!config.StartupEnabled)
             return;
 
-        FormInputs.AddVerticalSpace();
-        FormInputs.AddSectionSubHeader("Project autoload");
-        FormInputs.AddVerticalSpace();
+        PanelLayout.BeginSection("Project autoload");
 
         var selected = config.StartupProjectFolder;
         var options = new List<string> { string.Empty };
@@ -71,9 +74,9 @@ internal sealed partial class SettingsWindow
             changed = true;
         }
 
-        FormInputs.AddVerticalSpace();
-        FormInputs.AddSectionSubHeader("Start with the computer");
-        FormInputs.AddVerticalSpace();
+        PanelLayout.EndSection();
+
+        PanelLayout.BeginSection("Start with the computer");
 
         var autostart = config.AutostartWithSystem;
         if (FormInputs.AddCheckBox("Start TiXL when you log in",
@@ -99,11 +102,11 @@ internal sealed partial class SettingsWindow
             changed = true;
         }
 
-        ImGui.TextDisabled("Entry: " + OsAutostart.DescribeEntry());
+        PanelLayout.ValueRow("Entry", OsAutostart.DescribeEntry(), UiColors.TextMuted);
 
-        FormInputs.AddVerticalSpace();
-        FormInputs.AddSectionSubHeader("Crash protection");
-        FormInputs.AddVerticalSpace();
+        PanelLayout.EndSection();
+
+        PanelLayout.BeginSection("Crash protection");
 
         changed |= FormInputs.AddCheckBox("Restart automatically after a crash",
                                           ref config.CrashAutoRestart,
@@ -115,9 +118,13 @@ internal sealed partial class SettingsWindow
                                           """,
                                           false);
 
-        ImGui.TextDisabled(CrashWatchdog.IsChildProcess
-                               ? "Watchdog active: this instance is supervised."
-                               : "Watchdog: becomes active on the next start.");
+        PanelLayout.ValueRow("Watchdog",
+                             CrashWatchdog.IsChildProcess
+                                 ? "Active: this instance is supervised."
+                                 : "Becomes active on the next start.",
+                             CrashWatchdog.IsChildProcess ? UiColors.StatusActivated : UiColors.TextMuted);
+
+        PanelLayout.EndSection();
     }
 
     /// <summary>Dropdown label for a project folder; empty shows the Hub, unknown folders stay visible.</summary>

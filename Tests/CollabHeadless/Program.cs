@@ -29,6 +29,7 @@ internal static class Program
         Run("framing.roundtrip", TestFramingRoundTrip);
         Run("framing.maxsize", TestFrameSizeLimit);
         Run("json.decode", TestJsonDecode);
+        Run("json.token-tolerance", TestJsonTokenTolerance);
         Run("presence.roundtrip", TestPresencePacket);
         Run("auth.mac", TestAuth);
         Run("heartbeat.answers-not-answered", TestHeartbeatAnswersAreNotAnswered);
@@ -36,6 +37,8 @@ internal static class Program
         Run("deploy.inventory", TestDeployInventoryDiff);
         Run("deploy.transfer", TestDeployFileTransfer);
         Run("deploy.pathsafety", TestDeployPathSafety);
+        Run("deploy.mtime-tolerance", TestDeployMtimeTolerance);
+        Run("deploy.hash-over-mtime", TestDeployHashOverMtime);
         Run("boygroup.discovery", TestBoygroupDiscovery);
         Run("failover.election", TestFailoverElection);
         Run("failover.no-dual-active", TestFailoverNoDualActive);
@@ -147,6 +150,37 @@ internal static class Program
     // ---------------------------------------------------------------------------------------
     // Presence packet (binary, little-endian)
     // ---------------------------------------------------------------------------------------
+
+    /// <summary>
+    /// Values cross the wire both as strings and as typed tokens (Guid, number). A reader that
+    /// assumes one kind throws InvalidCastException out of the frame loop - the editor crashed on a
+    /// Guid token in a snapshot op. Both accessors must accept either representation.
+    /// </summary>
+    private static void TestJsonTokenTolerance()
+    {
+        var guid = Guid.Parse("9081b6b1-0e6d-4a2b-944a-eff62b9f58ea");
+        var json = new JObject
+                       {
+                           ["asGuid"] = guid,
+                           ["asString"] = guid.ToString(),
+                           ["asNumber"] = 42,
+                           ["asNull"] = JValue.CreateNull(),
+                           ["asObject"] = new JObject { ["x"] = 1 },
+                       };
+
+        Check(CollabProtocol.TryGetGuid(json, "asGuid", out var fromGuid) && fromGuid == guid,
+              "TryGetGuid failed on a Guid token");
+        Check(CollabProtocol.TryGetGuid(json, "asString", out var fromString) && fromString == guid,
+              "TryGetGuid failed on a string token");
+        Check(!CollabProtocol.TryGetGuid(json, "asNumber", out _), "TryGetGuid accepted a number");
+        Check(!CollabProtocol.TryGetGuid(json, "asObject", out _), "TryGetGuid accepted an object");
+
+        Check(CollabProtocol.GetString(json, "asGuid") == guid.ToString(), "GetString failed on a Guid token");
+        Check(CollabProtocol.GetString(json, "asNumber") == "42", "GetString failed on a number");
+        Check(CollabProtocol.GetString(json, "asNull", "fallback") == "fallback", "GetString failed on null");
+        Check(CollabProtocol.GetString(json, "asObject", "fallback") == "fallback", "GetString failed on an object");
+        Check(CollabProtocol.GetString(json, "missing", "fallback") == "fallback", "GetString failed when missing");
+    }
 
     private static void TestPresencePacket()
     {
@@ -274,17 +308,18 @@ internal static class Program
     {
         var server = new Dictionary<string, BoygroupDeployer.InventoryEntry>(StringComparer.Ordinal)
                          {
-                             ["a.txt"] = new() { RelativePath = "a.txt", Size = 10, LastWriteTicks = 1000 },
-                             ["b.bin"] = new() { RelativePath = "b.bin", Size = 500_000, LastWriteTicks = 2000 },
-                             ["sub/c.txt"] = new() { RelativePath = "sub/c.txt", Size = 3, LastWriteTicks = 3000 },
-                             ["d.txt"] = new() { RelativePath = "d.txt", Size = 100, LastWriteTicks = 4000 },
+                             ["a.txt"] = new() { RelativePath = "a.txt", Size = 10, LastWriteTicks = 638_000_000_000_000_000 },
+                             ["b.bin"] = new() { RelativePath = "b.bin", Size = 500_000, LastWriteTicks = 638_000_000_000_000_000 },
+                             ["sub/c.txt"] = new() { RelativePath = "sub/c.txt", Size = 3, LastWriteTicks = 638_000_000_000_000_000 },
+                             ["d.txt"] = new() { RelativePath = "d.txt", Size = 100, LastWriteTicks = 638_000_000_000_000_000 },
                          };
         var client = new Dictionary<string, BoygroupDeployer.InventoryEntry>(StringComparer.Ordinal)
                          {
-                             // a.txt: identical. b.bin: size differs. c.txt: mtime differs. d.txt: server-only.
-                             ["a.txt"] = new() { RelativePath = "a.txt", Size = 10, LastWriteTicks = 1000 },
-                             ["b.bin"] = new() { RelativePath = "b.bin", Size = 400_000, LastWriteTicks = 2000 },
-                             ["sub/c.txt"] = new() { RelativePath = "sub/c.txt", Size = 3, LastWriteTicks = 9999 },
+                             // a.txt: identical. b.bin: size differs. sub/c.txt: 30 s older (beyond
+                             // the mtime tolerance, i.e. the server copy really is newer). d.txt: server-only.
+                             ["a.txt"] = new() { RelativePath = "a.txt", Size = 10, LastWriteTicks = 638_000_000_000_000_000 },
+                             ["b.bin"] = new() { RelativePath = "b.bin", Size = 400_000, LastWriteTicks = 638_000_000_000_000_000 },
+                             ["sub/c.txt"] = new() { RelativePath = "sub/c.txt", Size = 3, LastWriteTicks = 638_000_000_000_000_000 - 30_000_000 },
                              ["stale.txt"] = new() { RelativePath = "stale.txt", Size = 1, LastWriteTicks = 1 },
                          };
 
@@ -436,6 +471,66 @@ internal static class Program
         {
             scanner.Stop();
         }
+    }
+
+    /// <summary>
+    /// A write time round-tripped through another filesystem does not reproduce the master's ticks
+    /// bit-exactly; the deploy diff must tolerate the residue or every deploy re-sends every
+    /// transferred file, which reboot-looped auto-deploy-on-join machines.
+    /// </summary>
+    private static void TestDeployMtimeTolerance()
+    {
+        var server = new Dictionary<string, BoygroupDeployer.InventoryEntry>
+                         {
+                             ["a.txt"] = new() { RelativePath = "a.txt", Size = 10, LastWriteTicks = 638_000_000_000_000_000 },
+                             ["b.txt"] = new() { RelativePath = "b.txt", Size = 10, LastWriteTicks = 638_000_000_000_000_000 },
+                             ["c.txt"] = new() { RelativePath = "c.txt", Size = 10, LastWriteTicks = 638_000_000_000_000_000 },
+                             ["d.txt"] = new() { RelativePath = "d.txt", Size = 10, LastWriteTicks = 638_000_000_000_000_000 },
+                             ["e.txt"] = new() { RelativePath = "e.txt", Size = 10, LastWriteTicks = 638_000_000_000_000_000 },
+                         };
+        var client = new Dictionary<string, BoygroupDeployer.InventoryEntry>
+                         {
+                             // Same size, tick residue within tolerance: up to date.
+                             ["a.txt"] = new() { RelativePath = "a.txt", Size = 10, LastWriteTicks = 638_000_000_000_000_000 + 4_812 },
+                             // Same size, slightly older (clock skew inside tolerance): up to date.
+                             ["b.txt"] = new() { RelativePath = "b.txt", Size = 10, LastWriteTicks = 638_000_000_000_000_000 - 500_000 },
+                             // Same size, 30 s older: the server copy really is newer — missing.
+                             ["c.txt"] = new() { RelativePath = "c.txt", Size = 10, LastWriteTicks = 638_000_000_000_000_000 - 300_000_000 },
+                             // Different size: missing regardless of time.
+                             ["d.txt"] = new() { RelativePath = "d.txt", Size = 11, LastWriteTicks = 638_000_000_000_000_000 },
+                             // Not present at all: missing.
+                         };
+        var missing = BoygroupDeployer.ComputeMissingFiles(server, client);
+        Check(missing.Count == 3 && missing.Contains("c.txt") && missing.Contains("d.txt") && missing.Contains("e.txt"),
+              $"expected [c.txt, d.txt, e.txt] missing, got [{string.Join(", ", missing)}]");
+    }
+
+    /// <summary>
+    /// Identical content whose mtime moved (a render node re-saves an unchanged project file on
+    /// launch) must not be re-sent: the hash decides when size matches and time does not.
+    /// </summary>
+    private static void TestDeployHashOverMtime()
+    {
+        const long t0 = 638_000_000_000_000_000;
+        var server = new Dictionary<string, BoygroupDeployer.InventoryEntry>
+                         {
+                             ["same.txt"] = new() { RelativePath = "same.txt", Size = 10, LastWriteTicks = t0, Hash = "AAAA" },
+                             ["diff.txt"] = new() { RelativePath = "diff.txt", Size = 10, LastWriteTicks = t0, Hash = "BBBB" },
+                             ["unhashed.txt"] = new() { RelativePath = "unhashed.txt", Size = 10, LastWriteTicks = t0 },
+                         };
+        var client = new Dictionary<string, BoygroupDeployer.InventoryEntry>
+                         {
+                             // Same content, 30 s newer (the node rewrote it on launch): current.
+                             ["same.txt"] = new() { RelativePath = "same.txt", Size = 10, LastWriteTicks = t0 + 300_000_000, Hash = "AAAA" },
+                             // Different content, newer: missing.
+                             ["diff.txt"] = new() { RelativePath = "diff.txt", Size = 10, LastWriteTicks = t0 + 300_000_000, Hash = "CCCC" },
+                             // No hashes available (large file): time decides, so missing.
+                             ["unhashed.txt"] = new() { RelativePath = "unhashed.txt", Size = 10, LastWriteTicks = t0 + 300_000_000 },
+                         };
+
+        var missing = BoygroupDeployer.ComputeMissingFiles(server, client);
+        Check(missing.Count == 2 && missing.Contains("diff.txt") && missing.Contains("unhashed.txt"),
+              $"expected [diff.txt, unhashed.txt] missing, got [{string.Join(", ", missing)}]");
     }
 
     private static void TestDeployPathSafety()
