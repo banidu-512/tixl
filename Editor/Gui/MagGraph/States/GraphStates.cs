@@ -197,33 +197,20 @@ namespace T3.Editor.Gui.MagGraph.States
                                   // {
                                   //     Modifications.DeleteSelectedOps(context);
                                   // }
+
+                                  if (UserActions.CloseOperator.Triggered())
+                                  {
+                                      context.ProjectView.TrySetCompositionOpToParent();
+                                  }
+                                  else if (UserActions.OpenOperator.Triggered())
+                                  {
+                                      OpenSelectedOrHoveredOperator(context);
+                                  }
                               }
 
                               if (!context.View.IsHovered)
                                   return;
 
-                              // Open children or parent component with keyboard
-                              if (UserActions.CloseOperator.Triggered() && ProjectView.Focused != null)
-                              {
-                                  ProjectView.Focused.TrySetCompositionOpToParent();
-                              }
-
-                              if (UserActions.OpenOperator.Triggered() && ProjectView.Focused != null)
-                              {
-                                  var isWindowActive = ImGui.IsWindowFocused() || ImGui.IsWindowHovered(ImGuiHoveredFlags.AllowWhenBlockedByPopup);
-
-                                  // Check if we have either an active (selected) item or a hovered item
-                                  var itemToOpen = context.ActiveItem ?? context.HoveredItem;
-
-                                  if (isWindowActive && itemToOpen != null && itemToOpen.Variant == MagGraphItem.Variants.Operator)
-                                  {
-                                      Debug.Assert(itemToOpen.Instance != null);
-                                      if (itemToOpen.Instance.Children.Count > 0)
-                                      {
-                                          ProjectView.Focused.TrySetCompositionOpToChild(itemToOpen.Instance.SymbolChildId);
-                                      }
-                                  }
-                              }
                               // Mouse click
                               var clickedDown = ImGui.IsMouseClicked(ImGuiMouseButton.Left);
                               if (!clickedDown)

@@ -12,6 +12,7 @@ using T3.Core.Settings;
 using T3.Editor.Gui.UiHelpers;
 using T3.Editor.Migrations;
 using T3.Editor.UiModel;
+using T3.Editor.UiModel.ProjectHandling;
 
 namespace T3.Editor.Compilation;
 

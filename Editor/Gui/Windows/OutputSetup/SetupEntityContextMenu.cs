@@ -206,6 +206,11 @@ internal static class SetupEntityContextMenu
                 if (output == null)
                     break;
 
+                // A laser output has no canvas: it streams vector content from a [LaserCamera], so
+                // patches, splits and content rotation would only create routes nothing consumes.
+                if (output.Kind == OutputDefinition.Kinds.Laser)
+                    break;
+
                 if (CustomComponents.DrawMenuItem(7, "Add Patch"))
                     SetupActions.AddPatch(selection, setup, output);
 
@@ -265,13 +270,17 @@ internal static class SetupEntityContextMenu
                     var boundOutput = setup.FindOutput(binding.OutputId);
                     if (boundOutput != null && CustomComponents.DrawMenuItem(15, $"Unbind {SetupLabels.OutputLabel(boundOutput)}"))
                     {
-                        Plugs.UnbindOutput(plugMachineConfig, boundOutput.Id);
+                        // Per-plug: a multi-bound laser output keeps its other devices.
+                        Plugs.UnbindOutput(plugMachineConfig, boundOutput.Id, id);
                         break;
                     }
                 }
 
                 if (plugMachineConfig.FindStreamPlug(id) != null && CustomComponents.DrawMenuItem(16, "Remove stream"))
                     Plugs.RemoveStream(plugMachineConfig, id);
+
+                if (plugMachineConfig.FindLaserPlug(id) != null && CustomComponents.DrawMenuItem(19, "Remove laser"))
+                    Plugs.RemoveLaser(plugMachineConfig, id);
 
                 // Which display is which, and how they are arranged, is the OS's to answer — TiXL only lists
                 // what it finds. The row's tooltip shows the arrangement; this is where it is changed.
@@ -370,14 +379,14 @@ internal static class SetupEntityContextMenu
                 if (surface == null)
                     break;
 
-                // A pin can be taken off again: the surface then follows a same-named patch, or is simply unmapped.
+                // A pin can be taken off again. Its alignment is parked, so connecting the surface to that output restores it.
                 for (var m = 0; m < surface.OutputMappings.Count; m++)
                 {
                     var mapping = surface.OutputMappings[m];
                     var pinnedOutputId = mapping.OutputId;
                     var pinnedOutputName = setup.FindOutput(pinnedOutputId)?.Name ?? "Output";
                     if (CustomComponents.DrawMenuItem(400 + m, $"Unpin from {pinnedOutputName}"))
-                        SetupUndo.RunUndoable("Unpin surface", setup, () => surface.OutputMappings.RemoveAll(x => x.OutputId == pinnedOutputId));
+                        SetupUndo.RunUndoable("Unpin surface", setup, () => SetupActions.ParkMappings(surface, x => x.OutputId == pinnedOutputId));
 
                     // The way back to the whole canvas after a corner was dragged — how a display normally shows a surface.
                     if (!mapping.IsFilling && CustomComponents.DrawMenuItem(500 + m, $"Fill {pinnedOutputName}"))
