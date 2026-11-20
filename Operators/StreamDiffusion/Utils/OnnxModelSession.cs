@@ -12,7 +12,10 @@ internal enum ExecutionProvider
     DirectMl,
     Cuda,
     TensorRt,
-    CoreMl
+    CoreMl,
+
+    /** Resolved at session setup to the fastest engine this machine can actually run. */
+    Auto
 }
 
 /// <summary>

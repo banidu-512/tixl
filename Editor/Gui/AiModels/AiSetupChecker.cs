@@ -15,9 +15,15 @@ internal enum AiCheckResult { Ok, Fixable, Missing, Info }
 /** One row of the setup check shown under Settings > AI Models. */
 internal sealed class AiSetupCheckItem
 {
+    /** Which part of the setup a row describes; the settings page groups them (engines live on the "Your computer" card). */
+    public enum CheckKind { Engine, Model, Store }
+
     public required string Title;
     public AiCheckResult Result;
     public string Detail = "";
+
+    /** Which part of the setup this row describes. */
+    public CheckKind Kind = CheckKind.Model;
 
     /** Set when the one-click setup can resolve the item by downloading a model. */
     public ModelCatalogEntry? EntryToInstall;
@@ -81,6 +87,7 @@ internal static class AiSetupChecker
             items.Add(new AiSetupCheckItem
                           {
                               Title = "ML acceleration (CoreML)",
+                              Kind = AiSetupCheckItem.CheckKind.Engine,
                               Result = AiCheckResult.Info,
                               Detail = "macOS uses CoreML through the CPU ONNX Runtime build; no CUDA setup is needed.",
                           });
@@ -95,6 +102,7 @@ internal static class AiSetupChecker
         items.Add(new AiSetupCheckItem
                       {
                           Title = "CUDA 12 runtime (cuDNN 9)",
+                          Kind = AiSetupCheckItem.CheckKind.Engine,
                           Result = cudaOk ? AiCheckResult.Ok : AiCheckResult.Info,
                           Detail = cudaOk
                                        ? "GPU acceleration for ONNX models is available."
@@ -110,6 +118,7 @@ internal static class AiSetupChecker
         items.Add(new AiSetupCheckItem
                       {
                           Title = "TensorRT 10 runtime",
+                          Kind = AiSetupCheckItem.CheckKind.Engine,
                           Result = trtOk ? AiCheckResult.Ok : AiCheckResult.Info,
                           Detail = trtOk
                                        ? $"Found in {trtDirectory}. TensorRT engines are compiled on first use and cached."
@@ -122,6 +131,7 @@ internal static class AiSetupChecker
             items.Add(new AiSetupCheckItem
                           {
                               Title = "DirectML runtime",
+                              Kind = AiSetupCheckItem.CheckKind.Engine,
                               Result = directMlAvailable ? AiCheckResult.Ok : AiCheckResult.Info,
                               Detail = directMlAvailable
                                            ? "DirectML build is shipped; an operator selecting DirectML needs an editor restart to switch builds."
@@ -146,6 +156,7 @@ internal static class AiSetupChecker
         items.Add(new AiSetupCheckItem
                       {
                           Title = "Model store",
+                          Kind = AiSetupCheckItem.CheckKind.Store,
                           Result = AiCheckResult.Ok,
                           Detail = root,
                       });

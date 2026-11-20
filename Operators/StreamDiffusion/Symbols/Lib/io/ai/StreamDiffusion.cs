@@ -153,7 +153,7 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
     public readonly InputSlot<int> CudaDevice = new(0);
 
     [Input(Guid = "C7D8E9F0-A1B2-3456-7890-1234567890AB", MappedType = typeof(t3.streamdiffusion.Onnx.ExecutionProvider))]
-    public readonly InputSlot<int> ExecutionProvider = new((int)t3.streamdiffusion.Onnx.ExecutionProvider.Cuda);
+    public readonly InputSlot<int> ExecutionProvider = new((int)t3.streamdiffusion.Onnx.ExecutionProvider.Auto);
 
     /// <summary>V2 only: decode one latent instead of a three-latent window. Faster, with less temporal smoothing.</summary>
     [Input(Guid = "B7C8D9E0-F1A2-3456-7890-123456789012")]
@@ -190,37 +190,67 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
 
     private static readonly string[] ResizeModeNames = { "Stretch", "CenterCrop", "Pad" };
     /**
-     * The dropdown only lists the accelerations that can actually run this model on the current OS:
-     * Windows: CPU, CUDA, TensorRT - Linux: CPU, CUDA, TensorRT - macOS: CPU, CoreML.
-     * DirectML is excluded even on Windows: the Wan DiT/VAE graphs use 5D reshapes that the DML
-     * provider fails with an internal error, so it can never run this model. The value maps onto
+     * The dropdown lists "Auto (recommended)" plus the accelerations that can actually run this model on
+     * the current OS: Windows: Auto, CPU, CUDA, TensorRT - Linux: Auto, CPU, CUDA, TensorRT - macOS:
+     * Auto, CPU, CoreML. DirectML is excluded even on Windows: the Wan DiT/VAE graphs use 5D reshapes
+     * that the DML provider fails with an internal error, so it can never run this model. Auto resolves
+     * to the fastest engine at initialization; the explicit entries pin one engine. The value maps onto
      * the ExecutionProvider enum, so the order is free.
      */
     private static readonly (string Name, t3.streamdiffusion.Onnx.ExecutionProvider Provider)[] ExecutionProviderOptions = BuildExecutionProviderOptions();
 
     private static (string, t3.streamdiffusion.Onnx.ExecutionProvider)[] BuildExecutionProviderOptions()
     {
-        var options = new List<(string, t3.streamdiffusion.Onnx.ExecutionProvider)> { ("CPU", t3.streamdiffusion.Onnx.ExecutionProvider.Cpu) };
+        var options = new List<(string, t3.streamdiffusion.Onnx.ExecutionProvider)> { ("Auto (recommended)", t3.streamdiffusion.Onnx.ExecutionProvider.Auto) };
         if (OperatingSystem.IsWindows() || OperatingSystem.IsLinux())
         {
+            options.Add(("CPU", t3.streamdiffusion.Onnx.ExecutionProvider.Cpu));
             options.Add(("CUDA", t3.streamdiffusion.Onnx.ExecutionProvider.Cuda));
             options.Add(("TensorRT", t3.streamdiffusion.Onnx.ExecutionProvider.TensorRt));
         }
         else if (OperatingSystem.IsMacOS())
         {
+            options.Add(("CPU", t3.streamdiffusion.Onnx.ExecutionProvider.Cpu));
             options.Add(("CoreML", t3.streamdiffusion.Onnx.ExecutionProvider.CoreMl));
         }
 
         return options.ToArray();
     }
 
+    /** The engine "Auto" stands for on this machine, probed with the cached runtime checks. */
+    internal static t3.streamdiffusion.Onnx.ExecutionProvider ResolveAutoProvider()
+    {
+        if (OperatingSystem.IsMacOS())
+            return t3.streamdiffusion.Onnx.ExecutionProvider.CoreMl;
+
+        string reason;
+        var trtOk = OperatingSystem.IsWindows()
+                        ? WindowsCudaRuntime.TryPrepareTensorRt(out reason, out _)
+                        : LinuxCudaRuntime.TryPrepareTensorRt(out reason, out _);
+        if (trtOk)
+            return t3.streamdiffusion.Onnx.ExecutionProvider.TensorRt;
+
+        var cudaOk = OperatingSystem.IsWindows()
+                         ? WindowsCudaRuntime.TryPrepare(out reason)
+                         : LinuxCudaRuntime.TryPrepare(out reason);
+        if (cudaOk)
+            return t3.streamdiffusion.Onnx.ExecutionProvider.Cuda;
+
+        // DirectML cannot run the V2 graphs (the DiT's 5D reshapes fail), so the honest fallback is the CPU
+        return t3.streamdiffusion.Onnx.ExecutionProvider.Cpu;
+    }
+
     /**
      * Values that this OS (or this model) cannot run snap onto the closest provider that works:
-     * a saved CoreML on Windows, DirectML on Linux, and DirectML everywhere for the V2 model -
-     * its DiT/VAE 5D reshapes fail on the DML provider regardless of the machine.
+     * Auto resolves to the fastest engine available, a saved CoreML on Windows, DirectML on Linux,
+     * and DirectML everywhere for the V2 model - its DiT/VAE 5D reshapes fail on the DML provider
+     * regardless of the machine.
      */
     private static t3.streamdiffusion.Onnx.ExecutionProvider NormalizeProviderForOs(t3.streamdiffusion.Onnx.ExecutionProvider provider)
     {
+        if (provider == t3.streamdiffusion.Onnx.ExecutionProvider.Auto)
+            return ResolveAutoProvider();
+
         if (OperatingSystem.IsMacOS())
         {
             return provider == t3.streamdiffusion.Onnx.ExecutionProvider.Cpu ? t3.streamdiffusion.Onnx.ExecutionProvider.Cpu : t3.streamdiffusion.Onnx.ExecutionProvider.CoreMl;
@@ -314,6 +344,9 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
     private int _uiResizeMode;
     private int _uiExecutionProvider;
 
+    /** The provider input as saved (before the Auto resolution), so the dropdown can show what Auto picked. */
+    private int _uiRawExecutionProvider;
+
     #endregion
 
     public StreamDiffusion()
@@ -340,17 +373,9 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
 
             // A provider that cannot run on this OS (a saved CoreML on Windows, DirectML on Linux...)
             // snaps onto the closest one that can, so the dropdown and the label always show a real option.
+            // Auto resolves to the fastest engine this machine can run; DirectML never comes out of it,
+            // because the V2 graphs fail on the DML provider.
             provider = (int)NormalizeProviderForOs((t3.streamdiffusion.Onnx.ExecutionProvider)provider);
-
-            // The AI settings' DirectML preference flips the default provider on Windows,
-            // e.g. for AMD/Intel machines without a usable CUDA stack. An explicit
-            // non-default choice is never overridden.
-            if (provider == (int)t3.streamdiffusion.Onnx.ExecutionProvider.Cuda
-                && T3.Core.Settings.AiModelSettings.Config.PreferDirectMlForOnnx
-                && OperatingSystem.IsWindows())
-            {
-                provider = (int)t3.streamdiffusion.Onnx.ExecutionProvider.DirectMl;
-            }
 
             var triggerGenerate = TriggerGenerate.GetValue(context);
             var autoGenerate = AutoGenerate.GetValue(context);
@@ -392,6 +417,7 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
             }
 
             _uiResizeMode = resizeMode;
+            _uiRawExecutionProvider = ExecutionProvider.GetValue(context);
             _uiExecutionProvider = provider;
 
             var pipeline = _pipeline;
@@ -1512,6 +1538,14 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
 
         if (inputId == ExecutionProvider.Id)
         {
+            var raw = (t3.streamdiffusion.Onnx.ExecutionProvider)_uiRawExecutionProvider;
+            if (raw == t3.streamdiffusion.Onnx.ExecutionProvider.Auto)
+            {
+                var resolved = (t3.streamdiffusion.Onnx.ExecutionProvider)_uiExecutionProvider;
+                var resolvedName = ExecutionProviderOptions.FirstOrDefault(o => o.Provider == resolved).Name ?? "CPU";
+                return $"Auto ({resolvedName})";
+            }
+
             var provider = (t3.streamdiffusion.Onnx.ExecutionProvider)_uiExecutionProvider;
             return ExecutionProviderOptions.FirstOrDefault(o => o.Provider == provider).Name ?? "CPU";
         }

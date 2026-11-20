@@ -229,6 +229,7 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
         var debug = Debug.GetValue(context);
         var modelSize = NormalizeModelSize((ModelSize)ModelSizeParam.GetValue(context));
         var provider = (ExecutionProvider)ExecutionProviderParam.GetValue(context);
+        _uiRawExecutionProvider = (int)provider;
 
         // A provider that cannot run on this OS or with the shared ORT 1.30 build (saved DirectML,
         // a CoreML on Windows/Linux...) snaps onto the closest one that can, so the dropdown and
@@ -1146,6 +1147,9 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
     private int _uiModelSize;
     private int _uiInputResolution;
     private int _uiExecutionProvider;
+
+    /** The provider input as saved (before the Auto resolution), so the dropdown can show what Auto picked. */
+    private int _uiRawExecutionProvider;
 
     private void InitializeWorker(bool debug, ModelSize modelSize, ExecutionProvider provider)
     {
@@ -2577,7 +2581,7 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
 
     /// <summary>Defaults to CUDA so all ONNX operators share one GPU native build; macOS normalizes CUDA onto CoreML.</summary>
     [Input(Guid = "012345ab-cdef-0123-4567-89abcdef0123", MappedType = typeof(ExecutionProvider))]
-    public readonly InputSlot<int> ExecutionProviderParam = new((int)ExecutionProvider.Cuda);
+    public readonly InputSlot<int> ExecutionProviderParam = new((int)ExecutionProvider.Auto);
 
     [Input(Guid = "234567cd-8912-9012-3456-6789012345ab")]
     public readonly InputSlot<bool> MatchInputAspect = new(false);
@@ -2671,7 +2675,10 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
         DirectMl,
         Cuda,
         CoreMl,
-        TensorRt
+        TensorRt,
+
+        /** Resolved at session setup to the fastest engine this machine can actually run. */
+        Auto
     }
 
     public enum DepthOutputFormat
@@ -2727,18 +2734,43 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
 
     private static (string, ExecutionProvider)[] BuildExecutionProviderOptions()
     {
-        var options = new List<(string, ExecutionProvider)> { ("CPU", ExecutionProvider.Cpu) };
+        var options = new List<(string, ExecutionProvider)> { ("Auto (recommended)", ExecutionProvider.Auto) };
         if (OperatingSystem.IsWindows() || OperatingSystem.IsLinux())
         {
+            options.Add(("CPU", ExecutionProvider.Cpu));
             options.Add(("CUDA", ExecutionProvider.Cuda));
             options.Add(("TensorRT", ExecutionProvider.TensorRt));
         }
         else if (OperatingSystem.IsMacOS())
         {
+            options.Add(("CPU", ExecutionProvider.Cpu));
             options.Add(("CoreML", ExecutionProvider.CoreMl));
         }
 
         return options.ToArray();
+    }
+
+    /** The engine "Auto" stands for on this machine, probed with the cached runtime checks. */
+    internal static ExecutionProvider ResolveAutoProvider()
+    {
+        if (OperatingSystem.IsMacOS())
+            return ExecutionProvider.CoreMl;
+
+        string reason;
+        var trtOk = OperatingSystem.IsWindows()
+                        ? WindowsCudaRuntime.TryPrepareTensorRt(out reason, out _)
+                        : LinuxCudaRuntime.TryPrepareTensorRt(out reason, out _);
+        if (trtOk)
+            return ExecutionProvider.TensorRt;
+
+        var cudaOk = OperatingSystem.IsWindows()
+                         ? WindowsCudaRuntime.TryPrepare(out reason)
+                         : LinuxCudaRuntime.TryPrepare(out reason);
+        if (cudaOk)
+            return ExecutionProvider.Cuda;
+
+        // DirectML cannot run the DepthAnything session (the provider is not wired up for it), so the honest fallback is the CPU
+        return ExecutionProvider.Cpu;
     }
 
     /** Label for the session logs and the status line; the dropdowns read the option table instead. */
@@ -2751,9 +2783,12 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
         _ => "CPU"
     };
 
-    /** Values that cannot run (saved DirectML anywhere, a CoreML on Windows/Linux) snap onto the closest provider that works. */
+    /** Values that cannot run (saved DirectML anywhere, a CoreML on Windows/Linux) snap onto the closest provider that works; Auto resolves to the fastest engine available. */
     private static ExecutionProvider NormalizeProviderForOs(ExecutionProvider provider)
     {
+        if (provider == ExecutionProvider.Auto)
+            return ResolveAutoProvider();
+
         if (OperatingSystem.IsMacOS())
         {
             return provider == ExecutionProvider.Cpu ? ExecutionProvider.Cpu : ExecutionProvider.CoreMl;
@@ -2807,6 +2842,14 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
 
         if (inputId == ExecutionProviderParam.Id)
         {
+            var raw = (ExecutionProvider)_uiRawExecutionProvider;
+            if (raw == ExecutionProvider.Auto)
+            {
+                var resolved = (ExecutionProvider)_uiExecutionProvider;
+                var resolvedName = ExecutionProviderOptions.FirstOrDefault(o => o.Provider == resolved).Name ?? "CPU";
+                return $"Auto ({resolvedName})";
+            }
+
             var provider = (ExecutionProvider)_uiExecutionProvider;
             return ExecutionProviderOptions.FirstOrDefault(o => o.Provider == provider).Name ?? "CPU";
         }

@@ -8,7 +8,8 @@
       "Position": {
         "X": -250.0,
         "Y": -400.0
-      }
+      },
+      "Usage": "Default"
     },
     {
       "InputId": "16d839fb-c92e-4705-9b2a-f4378ac9e2b1"/*PollRate*/,
@@ -92,14 +93,16 @@
         "X": -250.0,
         "Y": 150.0
       },
-      "Description": "Camera host or base URL, e.g. 10.0.0.111."
+      "Description": "Camera host or base URL, e.g. 10.0.0.111.",
+      "Usage": "Default"
     },
     {
       "InputId": "f4b617d9-a70c-45e3-b908-d2156ea7c09f"/*User*/,
       "Position": {
         "X": -250.0,
         "Y": 200.0
-      }
+      },
+      "Usage": "Default"
     }
   ],
   "SymbolChildUis": [],

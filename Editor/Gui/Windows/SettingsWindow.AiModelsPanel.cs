@@ -30,14 +30,13 @@ internal sealed partial class SettingsWindow
     private static void DrawAiModelsPanel(ref bool changed)
     {
         var aiConfigChanged = false;
-        var directMlChanged = false;
 
-        DrawAiStoreSection(ref aiConfigChanged);
-        DrawAiModelBrowserSection();
+        DrawAiRecommendedSection();
         DrawAiSetupCheckSection();
-        DrawAiEnginesSection(ref aiConfigChanged, ref directMlChanged);
+        DrawAiModelBrowserSection();
+        DrawAiAdvancedSection(ref aiConfigChanged);
 
-        if (aiConfigChanged || directMlChanged)
+        if (aiConfigChanged)
         {
             changed = true;
             AiModelSettings.Save();
@@ -100,12 +99,66 @@ internal sealed partial class SettingsWindow
         PanelLayout.EndSection();
     }
 
+    // ---------------------------------------------------------------- your computer / engine recommendation
+
+    private static void DrawAiRecommendedSection()
+    {
+        PanelLayout.BeginSection("Your computer",
+                                 "The AI operators automatically use the fastest engine this machine can run: "
+                               + "TensorRT, CUDA, DirectML on AMD/Intel GPUs, CoreML on macOS, or the CPU. "
+                               + "This shows what is active and what would make it faster.");
+
+        var recommendation = AiEngineAdvisor.GetRecommendation();
+        var pillColor = recommendation.Engine == AiEngineAdvisor.Engine.Cpu ? UiColors.StatusWarning : UiColors.StatusControlled;
+        PanelLayout.StatusPill(recommendation.Title, pillColor);
+
+        var gpuNames = AiEngineAdvisor.GetGpuNames();
+        if (gpuNames.Length > 0)
+        {
+            ImGui.SameLine(0, 10 * T3Ui.UiScaleFactor);
+            ImGui.TextColored(UiColors.TextMuted, string.Join("  ·  ", gpuNames));
+        }
+
+        CustomComponents.TooltipForLastItem($"{recommendation.Title} - the engine the AI operators use on this machine",
+                                            recommendation.Summary);
+
+        PanelLayout.Space(PanelLayout.SpaceXS);
+        CustomComponents.HelpText(recommendation.Summary);
+
+        if (!string.IsNullOrEmpty(recommendation.Hint))
+        {
+            FormInputs.AddVerticalSpace(2);
+            CustomComponents.HelpText(recommendation.Hint);
+            if (recommendation.ActionUrl != null)
+            {
+                FormInputs.ApplyIndent();
+                if (ImGui.SmallButton("Show me…"))
+                    CoreUi.Instance.OpenWithDefaultApplication(recommendation.ActionUrl);
+
+                CustomComponents.TooltipForLastItem("Opens the download page in your browser.",
+                                                    recommendation.ActionUrl);
+            }
+        }
+
+        PanelLayout.Space(PanelLayout.SpaceM);
+
+        // The engine choice itself needs no user action: the operators resolve it per machine. The old
+        // DirectML preference checkbox is gone - the current model graphs cannot run through DirectML.
+        CustomComponents.HelpText("The operators pick this engine on their own when they start - no setup needed. "
+                                + "You can pin a specific engine in each AI operator's \"Execution provider\" dropdown "
+                                + "(the default \"Auto\" uses the fastest one available here).");
+
+        PanelLayout.EndSection();
+    }
+
     // ---------------------------------------------------------------- setup check / one-click
 
     private static void DrawAiSetupCheckSection()
     {
-        PanelLayout.BeginSection("Setup Check",
-                                 "Checks everything the AI operators need: CUDA/TensorRT runtimes, the model store and the models for DepthAnything and StreamDiffusion. \"Setup wizard\" lets you pick models with descriptions; \"Download defaults\" installs the fastest model of every family missing one. The MediaPipe tracking models ship bundled with TiXL and need no setup.");
+        PanelLayout.BeginSection("AI models",
+                                 "Everything the operators need beside the engine: a model per AI family. "
+                               + "\"Download missing models\" installs the fastest default of every family in one click; "
+                               + "the wizard lets you pick models individually. The MediaPipe tracking models ship bundled with TiXL and need no setup.");
 
         // Run once per session when the page is first opened, so the state of things is
         // visible without a click. Re-checking stays on the button.
@@ -121,14 +174,69 @@ internal sealed partial class SettingsWindow
             PanelLayout.Space(PanelLayout.SpaceS);
         }
 
-        FormInputs.ApplyIndent();
+        if (AiSetupChecker.LastCheckAt == DateTime.MinValue)
+        {
+            PanelLayout.Space(PanelLayout.SpaceS);
+            CustomComponents.HelpText("Not checked yet in this session.");
+            PanelLayout.EndSection();
+            return;
+        }
+
+        // Engine rows are covered by the "Your computer" section; the compact list shows only the store
+        // and model rows, with everything OK collapsed into a single line.
+        var modelRows = AiSetupChecker.LastResults.Where(i => i.Kind != AiSetupCheckItem.CheckKind.Engine).ToList();
+        var problemRows = modelRows.Where(i => i.Result is AiCheckResult.Fixable or AiCheckResult.Missing).ToList();
+
         var checking = AiSetupChecker.IsFixing;
+        if (problemRows.Count == 0)
+        {
+            DrawStatusLine(UiColors.StatusControlled, "All models ready");
+            CustomComponents.TooltipForLastItem("Model status",
+                                                string.Join("\n", modelRows.Select(i => $"{i.ResultText}: {i.Title} - {i.Detail}")));
+        }
+        else
+        {
+            foreach (var item in problemRows)
+            {
+                var color = item.Result == AiCheckResult.Missing ? UiColors.StatusAttention : UiColors.StatusWarning;
+                DrawStatusLine(color, item.Title);
+                CustomComponents.TooltipForLastItem(item.Title, item.Detail);
+
+                // The "what to do" guidance sits directly on the page, not in a tooltip
+                if (!string.IsNullOrWhiteSpace(item.Detail))
+                {
+                    ImGui.Indent();
+                    CustomComponents.HelpText(item.Detail);
+                    ImGui.Unindent();
+                }
+            }
+        }
+
+        PanelLayout.Space(PanelLayout.SpaceM);
+        FormInputs.ApplyIndent();
         if (checking)
         {
             ImGui.BeginDisabled();
         }
 
-        if (CustomComponents.DrawCtaButton("Setup wizard…", Icon.None, UiColors.ForegroundFull, UiColors.StatusActivated, Color.Transparent))
+        if (problemRows.Any(i => i.EntryToInstall != null))
+        {
+            var pendingSize = problemRows.Where(i => i.EntryToInstall != null)
+                                         .Sum(i => i.EntryToInstall!.RemainingDownloadBytes());
+            if (CustomComponents.DrawCtaButton("Download missing models", Icon.None, UiColors.ForegroundFull, UiColors.StatusActivated, Color.Transparent))
+            {
+                if (AiSetupChecker.LastCheckAt == DateTime.MinValue)
+                    AiSetupChecker.Run();
+
+                _ = AiSetupChecker.FixAllAsync();
+            }
+
+            CustomComponents.TooltipForLastItem("Downloads the fastest default model for every AI family that has none.",
+                                                $"About {AiModelCatalog.FormatSize(pendingSize)} into the model store - no restart needed.");
+            ImGui.SameLine(0, 8 * T3Ui.UiScaleFactor);
+        }
+
+        if (ImGui.Button("Setup wizard…"))
         {
             T3Ui.AiModelSetupWizard.ShowNextFrame();
         }
@@ -144,109 +252,31 @@ internal sealed partial class SettingsWindow
 
         CustomComponents.TooltipForLastItem("Probes the engine runtimes and checks which models are installed.",
                                             "Probing CUDA/TensorRT loads the runtime DLLs, exactly like the operators do later.");
-        ImGui.SameLine(0, 8 * T3Ui.UiScaleFactor);
 
-        if (ImGui.Button("Download defaults"))
-        {
-            if (AiSetupChecker.LastCheckAt == DateTime.MinValue)
-                AiSetupChecker.Run();
-
-            _ = AiSetupChecker.FixAllAsync();
-        }
-
-        CustomComponents.TooltipForLastItem("First checks the dependencies, then downloads the fastest basic default models for each AI operator family.",
-                                            "Downloads go into the model store, not into the TiXL installation or the git repository.");
         if (checking)
         {
             ImGui.EndDisabled();
         }
 
-        if (AiSetupChecker.LastCheckAt == DateTime.MinValue)
-        {
-            PanelLayout.Space(PanelLayout.SpaceS);
-            CustomComponents.HelpText("Not checked yet in this session.");
-            PanelLayout.EndSection();
-            return;
-        }
-
-        PanelLayout.Space(PanelLayout.SpaceM);
-        foreach (var item in AiSetupChecker.LastResults)
-        {
-            var color = item.Result switch
-                            {
-                                AiCheckResult.Ok      => UiColors.StatusControlled,
-                                AiCheckResult.Fixable => UiColors.StatusWarning,
-                                AiCheckResult.Missing => UiColors.StatusAttention,
-                                _                     => UiColors.TextMuted,
-                            };
-
-            DrawStatusLine(color, $"{item.ResultText}  {item.Title}");
-            CustomComponents.TooltipForLastItem(item.Title, item.Detail);
-
-            // Rows that need attention carry the "what to do" guidance directly on the page;
-            // OK rows keep it in the tooltip to keep the list compact.
-            if (item.Result is AiCheckResult.Fixable or AiCheckResult.Missing && !string.IsNullOrWhiteSpace(item.Detail))
-            {
-                ImGui.Indent();
-                CustomComponents.HelpText(item.Detail);
-                ImGui.Unindent();
-            }
-        }
-
         PanelLayout.EndSection();
     }
 
-    // ---------------------------------------------------------------- engines
+    // ---------------------------------------------------------------- advanced: folders and runtimes
 
-    private static void DrawAiEnginesSection(ref bool aiConfigChanged, ref bool directMlChanged)
+    private static void DrawAiAdvancedSection(ref bool aiConfigChanged)
     {
-        PanelLayout.BeginSection("Engine Runtimes",
-                                 "The ONNX operators run on CUDA, TensorRT or DirectML. Their runtimes are found automatically (PATH, TENSORRT_ROOT, the NVIDIA install folders). A folder set here wins over all of them, e.g. when the toolkit lives on another drive.");
+        if (!PanelLayout.BeginCollapsibleSection("Advanced: folders and runtimes",
+                                                 "The engine runtimes are found automatically (PATH, CUDA_PATH, TENSORRT_ROOT, the NVIDIA install folders, the shipped DirectML build). "
+                                               + "These options only matter when a runtime lives outside those places, or to place the model store on another drive.",
+                                                 defaultOpen: false))
+            return;
 
-        DrawEngineStatus("CUDA 12 runtime (cuDNN 9)", () => OperatingSystem.IsWindows()
-                                                            ? WindowsCudaRuntime.TryPrepare(out var reason)
-                                                            : LinuxCudaRuntime.TryPrepare(out reason),
-                                         () => AiModelSettings.Config.CudaRuntimeDirectory);
-
-        FormInputs.AddVerticalSpace();
-        DrawEngineStatus("TensorRT 10 runtime", () => OperatingSystem.IsWindows()
-                                                           ? WindowsCudaRuntime.TryPrepareTensorRt(out var reason, out _)
-                                                           : LinuxCudaRuntime.TryPrepareTensorRt(out reason, out _),
-                                         () => AiModelSettings.Config.TensorRtDirectory);
-
-        if (OperatingSystem.IsWindows())
-        {
-            FormInputs.AddVerticalSpace();
-
-            var directMlAvailable = File.Exists(Path.Combine(AppContext.BaseDirectory, "runtimes", "win-x64-directml", "native", "onnxruntime.dll"))
-                                    || File.Exists(Path.Combine(AiModelSettings.Config.DirectMlDirectory ?? "", "DirectML.dll"));
-            DrawStatusLine(directMlAvailable ? UiColors.StatusControlled : UiColors.TextMuted,
-                           directMlAvailable
-                               ? "DirectML runtime is shipped with TiXL"
-                               : "DirectML build is not shipped in this installation; CUDA is the GPU path");
-
-            directMlChanged |= FormInputs.AddCheckBox("Prefer DirectML for AI models",
-                                                      ref AiModelSettings.Config.PreferDirectMlForOnnx,
-                                                      """
-                                                      Runs the ONNX operators through DirectML instead of CUDA - for AMD/Intel GPUs
-                                                      without a CUDA stack. Operators pick it up when they initialize. If an AI operator
-                                                      already ran in this session, restart TiXL to switch the ONNX Runtime build.
-                                                      """,
-                                                      AiModelSettings.Defaults.PreferDirectMlForOnnx);
-
-            if (directMlChanged && OnnxNativeSelector.IsAnyNativeBound)
-            {
-                FormInputs.ApplyIndent();
-                if (CustomComponents.DrawCtaButton("Restart Editor", Icon.None, UiColors.ForegroundFull, UiColors.StatusActivated, Color.Transparent))
-                    EditorRestart.TryRestart();
-
-                CustomComponents.TooltipForLastItem("The ONNX Runtime build (CUDA vs DirectML) binds once per session.",
-                                                    "The switch takes effect on the next start.");
-            }
-        }
+        // ---- model store
+        DrawAiStoreSection(ref aiConfigChanged);
 
         FormInputs.AddVerticalSpace();
 
+        // ---- engine runtime folders: the auto-detection makes them optional
         aiConfigChanged |= FormInputs.AddFilePicker("CUDA runtime folder",
                                             ref AiModelSettings.Config.CudaRuntimeDirectory,
                                             "(search PATH and CUDA_PATH)",
@@ -279,25 +309,20 @@ internal sealed partial class SettingsWindow
         }
 
         CustomComponents.TooltipForLastItem("Re-probes CUDA and TensorRT after installing or moving a runtime.",
-                                            "Operators pick the change up on their next use without a restart.");
+                                            "Operators pick the change up on their next use without a restart. "
+                                          + "In automatic engine mode the recommendation follows the new probes immediately.");
 
         PanelLayout.EndSection();
-    }
-
-    private static void DrawEngineStatus(string title, Func<bool> probe, Func<string?> configuredFolder)
-    {
-        var ok = probe();
-        var configured = configuredFolder();
-        var note = string.IsNullOrEmpty(configured) ? "" : $"  (configured: {configured})";
-        DrawStatusLine(ok ? UiColors.StatusControlled : UiColors.TextMuted,
-                       $"{title}  -  {(ok ? "available" : "not found")}{note}");
     }
 
     // ---------------------------------------------------------------- browser
 
     private static void DrawAiModelBrowserSection()
     {
-        PanelLayout.BeginSection("Model Browser", "Compatible models for the AI operators. Downloads land in the model store; the operators find them automatically.");
+        if (!PanelLayout.BeginCollapsibleSection("All models",
+                                                 "Compatible models for the AI operators, grouped by family. Downloads land in the model store; the operators find them automatically.",
+                                                 defaultOpen: false))
+            return;
 
         CustomComponents.SegmentedButton(ref _aiBrowserFilter);
         PanelLayout.Space(PanelLayout.SpaceM);

@@ -34,11 +34,11 @@ public sealed class AiModelSettings : T3.Core.IO.Settings<AiModelSettings.Config
         /// <summary>Folder holding DirectML.dll. Preferred over the copy shipped with the DirectML build, once selected.</summary>
         public string DirectMlDirectory = "";
 
-        /// <summary>
-        /// Routes the ONNX operators through DirectML instead of CUDA by default (Windows, AMD/Intel GPUs).
-        /// Switching the native ONNX Runtime build only takes effect once no AI operator has run yet,
-        /// otherwise after a restart.
-        /// </summary>
+        /**
+         * Legacy DirectML preference of the pre-V2 packages. The current StreamDiffusion V2 graphs and
+         * DepthAnything cannot run through the DirectML provider (the DiT's 5D reshapes fail on it), so
+         * nothing reads this anymore; it is kept so existing aiModels.json files keep loading.
+         */
         public bool PreferDirectMlForOnnx = false;
 
         /// <summary>
@@ -102,6 +102,17 @@ public sealed class AiModelSettings : T3.Core.IO.Settings<AiModelSettings.Config
         {
             LinuxCudaRuntime.ResetProbes();
         }
+    }
+
+    /** True when the DirectML ONNX Runtime build is shipped with this installation or a DirectML.dll folder is configured. */
+    public static bool IsDirectMlBuildShipped()
+    {
+        var configured = Config.DirectMlDirectory;
+        if (!string.IsNullOrEmpty(configured) && File.Exists(Path.Combine(configured, "DirectML.dll")))
+            return true;
+
+        var baseDir = AppContext.BaseDirectory;
+        return File.Exists(Path.Combine(baseDir, "runtimes", "win-x64-directml", "native", "onnxruntime.dll"));
     }
 
     /**

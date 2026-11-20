@@ -12,8 +12,8 @@ related-help:
   - ../.help/docs/using/AiModels.md
 ---
 
-Verifies the *Settings → AI Models* page: the model store, the setup check with one-click
-defaults, the per-family model browser and the engine runtime detection with path overrides.
+Verifies the *Settings → AI Models* page: the machine's engine recommendation, the one-click
+model setup, the per-family model browser and the advanced folder overrides.
 Steps that download models are marked (network) in their titles.
 
 ## Step: Opening the AI Models page
@@ -22,13 +22,15 @@ Steps that download models are marked (network) in their titles.
 Open the settings and select the **AI Models** category.
 
 **Expected:**
-- The page shows the sections **Model Store**, **Model Browser**, **Setup Check** and **Engine Runtimes**, in that order; Setup Check offers **Setup wizard…**, **Run check** and **Download defaults**.
+- The page shows the sections **Your computer**, **AI models**, **All models** and **Advanced: folders and runtimes**, in that order; the last two are collapsed cards that open on click.
+- **Your computer** names the detected GPU(s) and the engine the AI operators use (TensorRT, CUDA, DirectML, CoreML or CPU) with a one-line summary.
+- **AI models** shows either a green **All models ready** line or one row per family that needs attention, and offers **Download missing models**, **Setup wizard…** and **Run check**.
 - No error is logged on first open, even with no models installed.
 
 ## Step: The store folder and Open folder
 
 **Action:**
-Read the **Store folder** path field, then press **Open folder**.
+Open **Advanced: folders and runtimes**, read the **Store folder** path field, then press **Open folder**.
 
 **Expected:**
 - The field shows the model store path (`%LOCALAPPDATA%\TiXL\Models` by default on Windows).
@@ -44,10 +46,10 @@ Press **Run check** under **Setup Check**.
 - Missing models come with a readable reason, e.g. that a `[DepthAnything]` operator shows an error until a depth model is downloaded.
 - The engine runtimes (CUDA, TensorRT, DirectML) are reported with readable reasons for what is not found.
 
-## Step: Download Defaults (network)
+## Step: Download missing models (network)
 
 **Action:**
-With at least one family reporting a missing model, press **Download Defaults**.
+With at least one family row on the **AI models** card, press **Download missing models**.
 
 **Expected:**
 - Each default model downloads with a visible progress indicator, one after the other.
@@ -82,19 +84,20 @@ Press **Remove** on the model installed in the previous step, confirm, then **Op
 - The entry is no longer marked as installed.
 - The model's files are gone from the store folder; other installed models are untouched.
 
-## Step: Engine runtime detection
+## Step: The engine recommendation on "Your computer"
 
 **Action:**
-Read the **Engine Runtimes** section, then press **Re-detect runtimes**.
+Read the **Your computer** card, then press **Re-detect runtimes** under **Advanced** and read the card again.
 
 **Expected:**
-- CUDA, TensorRT and DirectML are each reported as found or not found, with a readable reason where they are not (e.g. the shipped DirectML build or a missing CUDA runtime).
-- Re-detect re-probes without restarting the editor.
+- The card names the engine the operators pick on this machine: **TensorRT** when its runtime is present, **CUDA** when the CUDA stack is usable, otherwise **CPU** with a hint (the shipped DirectML build cannot run the current model graphs, so it is reported as not usable by the AI operators).
+- An NVIDIA GPU is listed by name; the hint for a CUDA-only machine points at installing TensorRT 10, with a **Show me…** button that opens the NVIDIA download page.
+- **Re-detect runtimes** re-probes without restarting the editor; the recommendation follows the new probe results immediately.
 
 ## Step: Runtime path override
 
 **Action:**
-Set the **TensorRT runtime folder** to an empty folder, press **Re-detect runtimes**, then clear the field and re-detect again.
+Open **Advanced: folders and runtimes**, set the **TensorRT runtime folder** to an empty folder, press **Re-detect runtimes**, then clear the field and re-detect again.
 
 **Expected:**
 - With the override set, TensorRT is reported as not found and the message points at the folder that was checked.

@@ -20,7 +20,7 @@
     },
     {
       "Id": "490b6c2e-fc5d-4a38-8e5d-276abd15f5e4"/*AspectRatio*/,
-      "DefaultValue": 1.7777777777777777
+      "DefaultValue": 1.7777778
     },
     {
       "Id": "5a1c7d3f-0d6e-4b49-9f6e-387bce2606f5"/*InvertPan*/,

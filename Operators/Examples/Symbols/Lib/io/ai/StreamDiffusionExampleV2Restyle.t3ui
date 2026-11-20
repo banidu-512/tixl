@@ -56,6 +56,14 @@
         "X": 100.0,
         "Y": 0.0
       }
+    },
+    {
+      "ChildId": "e7e3a015-848a-47cd-8930-8e03888dbd57",
+      "SymbolName": "Lib.io.video.VideoStreamInput",
+      "Position": {
+        "X": 14.597931,
+        "Y": 212.04901
+      }
     }
   ],
   "OutputUis": [

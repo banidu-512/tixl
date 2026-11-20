@@ -1,6 +1,6 @@
 # AI Models
 
-*Settings → AI Models* is where the models of the AI operators live: a store on disk, a browser to download them, a check that tells you what is missing, and the settings of the ONNX engine runtimes.
+*Settings → AI Models* is where the models of the AI operators live: a check that tells you what your machine can run and what is missing, a one-click setup, a browser to download models, and the advanced folder settings.
 
 ## AI Model Setup
 
@@ -13,34 +13,36 @@ The quickest way to get the AI operators running is **Help › AI Model Setup…
 
 On a fresh installation without any downloaded model the setup opens once on its own after startup.
 
-## Model Store
+## Your computer
 
-Models download into one subfolder per operator package in the **store folder**, by default `%LOCALAPPDATA%\TiXL\Models`. This keeps the multi-gigabyte models out of the TiXL installation and the git repository — the operators find their models there automatically.
+The **Your computer** card names the detected GPU(s) and the engine the AI operators use on this machine, in one plain sentence: **TensorRT** when its runtime is present (the fastest, several times faster than CUDA), **CUDA** when the CUDA stack is usable, **CoreML** on macOS, otherwise the **CPU** with a hint at what would unlock GPU acceleration (for example installing the latest NVIDIA driver or TensorRT 10 — the **Show me…** button opens the matching download page). The shipped DirectML build cannot run the current model graphs, so it is not offered as an engine.
 
-**Open folder** shows the store in the file browser, and the store's total size is shown next to it. Deleting a model's folder is equivalent to removing it on the page.
+The operators pick this engine on their own when they start: their **Execution provider** dropdowns default to **Auto**, which resolves to the fastest engine available on the machine. Pin a specific engine in the operator dropdown only when debugging.
 
-## Model Browser
+## AI Models
 
-The browser lists the models the AI operators can use, filtered by family tabs: **All** shows every entry grouped by family, and **Depth Anything** and **Stream Diffusion** list one family each. The MediaPipe tracking models ship bundled with TiXL and are not listed here. Every entry names what it is used for and which operator needs it, together with its size and whether it is installed.
+The **AI models** card shows one green **All models ready** line when every family has a model, or one row per family that needs attention with a readable reason.
 
-- **Download** streams the model into the store with a progress bar. Each file is verified against the size the server reports and only then moved into place; a dropped connection is retried and resumed automatically, and a stalled one is detected after 45 seconds, so **Cancel** always works.
-- **Remove** deletes an installed model from the store. Operators that need it afterwards report it as missing.
-- **Refresh** re-checks which entries are installed, for example after you added a file by hand.
+- **Download missing models** installs the fastest working default of every family that is missing one — a small Depth Anything model; the Stream Diffusion export is produced from the downloadable checkpoint with the bundled scripts. Downloads go into the model store, not into the TiXL installation.
+- **Setup wizard…** opens the installer-style setup.
+- **Run check** re-probes the runtimes and installed models.
 
-An entry can be marked as the family's default — the one that the one-click setup below installs.
+## Model Store and Engine Folders
 
-## Setup Check
-
-**Run check** probes the engine runtimes and which models are installed, and reports anything missing with a readable reason, for example that a [DepthAnything] operator shows an error until a depth model is downloaded.
-
-**Download Defaults** installs the fastest working model of every family that is missing one — a small Depth Anything model (the Stream Diffusion export is produced from the downloadable checkpoint with the bundled scripts). Downloads go into the model store, not into the TiXL installation.
-
-## Engine Runtimes
-
-The ONNX operators run on CUDA, TensorRT or DirectML. Their runtimes are detected automatically: the PATH, `TENSORRT_ROOT` and the standard NVIDIA install folders. A folder set on this page wins over all of them:
+Behind **Advanced: folders and runtimes**: the store folder (by default `%LOCALAPPDATA%\TiXL\Models`, kept out of the TiXL installation and the git repository — **Open folder** shows it in the file browser next to its total size) and the engine runtime folder overrides. The runtimes are detected automatically (`PATH`, `CUDA_PATH`, `TENSORRT_ROOT`, the standard NVIDIA install folders, the shipped DirectML build); a folder set here wins over all of them:
 
 - **CUDA runtime folder**
 - **TensorRT runtime folder** — the folder containing `nvinfer_10.dll`
 - **DirectML.dll folder**
 
-The **Prefer DirectML for AI models** switch takes effect on the next start. **Re-detect runtimes** re-probes CUDA and TensorRT after you installed or moved a runtime, without restarting the editor.
+**Re-detect runtimes** re-probes CUDA and TensorRT after you installed or moved a runtime, without restarting the editor — the *Your computer* card follows the new probe results immediately.
+
+## Model Browser
+
+Behind **All models**: the browser lists the models the AI operators can use, filtered by family tabs: **All** shows every entry grouped by family, and **Depth Anything** and **Stream Diffusion** list one family each. The MediaPipe tracking models ship bundled with TiXL and are not listed here. Every entry names what it is used for and which operator needs it, together with its size and whether it is installed.
+
+- **Download** streams the model into the store with a progress bar. Each file is verified against the size the server reports and only then moved into place; a dropped connection is retried and resumed automatically, and a stalled one is detected after 45 seconds, so **Cancel** always works.
+- **Remove** deletes an installed model from the store. Operators that need it afterwards report it as missing.
+- **Refresh** re-checks which entries are installed, for example after you added a file by hand.
+
+An entry can be marked as the family's default — the one that **Download missing models** installs.
