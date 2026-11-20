@@ -82,8 +82,16 @@ internal sealed class CollabWindow : Window
         DrainRemoteUiActions();
         if (!collab.IsEnabled)
         {
-            ImGui.TextDisabled("Collaboration is turned off.");
-            ImGui.TextDisabled("Enable it in Settings > Collaboration.");
+            PanelLayout.BeginSection("Collaboration is off",
+                                     "This window hosts parties, lists open sessions and carries the session chat. Turn collaboration on to use it.");
+            if (ImGui.Button("Open Collaboration Settings"))
+            {
+                var settings = WindowManager.SettingsWindow;
+                settings.Config.Visible = true;
+                settings.TrySelectCategory("Collaboration");
+            }
+
+            PanelLayout.EndSection();
             return;
         }
 
@@ -114,28 +122,16 @@ internal sealed class CollabWindow : Window
         }
     }
 
-    private static readonly string[] _tabLabels = ["Chat", "Party matching", "Party management", "Remote", "Boygroup"];
-    private static readonly Tab[] _tabs = [Tab.Chat, Tab.PartyMatching, Tab.PartyManagement, Tab.Remote, Tab.Boygroup];
+    /** The two host-form choices drawn as segmented pills instead of radio rows. */
+    private enum PartyType { Controllable, Spectating }
 
-    /// <summary>The tabs in one left-aligned row with a fixed gap; the active one is highlighted.</summary>
+    private enum PartyReach { Local, Online }
+
+    /// <summary>The tabs as one segmented control; the active option sits in its pill.</summary>
     private static void DrawTabLine()
     {
         ImGui.SetCursorPosX(ImGui.GetCursorPosX() + PanelLayout.SpaceS * T3Ui.UiScaleFactor);
-        for (var i = 0; i < _tabs.Length; i++)
-        {
-            if (i > 0)
-                ImGui.SameLine(0, PanelLayout.SpaceS * T3Ui.UiScaleFactor);
-
-            var isActive = _selectedTab == _tabs[i];
-            if (isActive)
-                ImGui.PushStyleColor(ImGuiCol.Button, UiColors.StatusActivated.Rgba);
-
-            if (ImGui.Button(_tabLabels[i]))
-                _selectedTab = _tabs[i];
-
-            if (isActive)
-                ImGui.PopStyleColor();
-        }
+        CustomComponents.SegmentedButton(ref _selectedTab);
     }
 
     // ---------------------------------------------------------------------------------------
@@ -146,10 +142,15 @@ internal sealed class CollabWindow : Window
     {
         if (collab.State != CollabManager.SessionState.Off)
         {
-            PanelLayout.BeginSection("Current session");
+            PanelLayout.BeginSection("In a session");
+            PanelLayout.StatusPill(collab.State == CollabManager.SessionState.Hosting ? "hosting" : "joined", UiColors.StatusActivated);
             ImGui.TextWrapped(collab.StatusText);
             PanelLayout.Space(PanelLayout.SpaceXS);
-            CustomComponents.HelpText("Leave the current session to browse and join another one.");
+            CustomComponents.HelpText("Leave the session on the Session tab to browse and join another party.");
+            PanelLayout.Space(PanelLayout.SpaceS);
+            if (ImGui.Button("Go to Session"))
+                _selectedTab = Tab.PartyManagement;
+
             PanelLayout.EndSection();
             return;
         }
@@ -165,6 +166,10 @@ internal sealed class CollabWindow : Window
         if (collab.State == CollabManager.SessionState.Off)
         {
             CustomComponents.HelpText("No session is running. Host one on the Party matching tab or join a listed session there.");
+            FormInputs.ApplyIndent();
+            if (ImGui.Button("Open Party matching"))
+                _selectedTab = Tab.PartyMatching;
+
             return;
         }
 
@@ -189,22 +194,13 @@ internal sealed class CollabWindow : Window
         CustomComponents.SmallGroupHeader("Type");
         var isHosting = collab.State == CollabManager.SessionState.Hosting;
         var controllable = isHosting ? collab.ParticipantsCanEdit : UserSettings.Config.CollabPartyControllable;
-
-        if (ImGui.RadioButton("Controllable", controllable) && !controllable)
+        var partyType = controllable ? PartyType.Controllable : PartyType.Spectating;
+        if (CustomComponents.SegmentedButton(ref partyType))
         {
-            UserSettings.Config.CollabPartyControllable = true;
+            UserSettings.Config.CollabPartyControllable = partyType == PartyType.Controllable;
             UserSettings.Save();
             if (isHosting)
-                collab.SetParticipantsCanEdit(true);
-        }
-
-        ImGui.SameLine(0, PanelLayout.SpaceL * uiScale);
-        if (ImGui.RadioButton("Spectating", !controllable) && controllable)
-        {
-            UserSettings.Config.CollabPartyControllable = false;
-            UserSettings.Save();
-            if (isHosting)
-                collab.SetParticipantsCanEdit(false);
+                collab.SetParticipantsCanEdit(partyType == PartyType.Controllable);
         }
 
         CustomComponents.TooltipForLastItem("""
@@ -217,17 +213,10 @@ internal sealed class CollabWindow : Window
         PanelLayout.Space(PanelLayout.SpaceM);
         CustomComponents.SmallGroupHeader("Reach");
         var online = UserSettings.Config.CollabPartyOnline;
-
-        if (ImGui.RadioButton("Local (same network)", !online) && online)
+        var reach = online ? PartyReach.Online : PartyReach.Local;
+        if (CustomComponents.SegmentedButton(ref reach))
         {
-            UserSettings.Config.CollabPartyOnline = false;
-            UserSettings.Save();
-        }
-
-        ImGui.SameLine(0, PanelLayout.SpaceL * uiScale);
-        if (ImGui.RadioButton("Online (through the server)", online) && !online)
-        {
-            UserSettings.Config.CollabPartyOnline = true;
+            UserSettings.Config.CollabPartyOnline = reach == PartyReach.Online;
             UserSettings.Save();
         }
 
@@ -244,7 +233,7 @@ internal sealed class CollabWindow : Window
         var projectName = ProjectView.Focused?.OpenedProject.Package.DisplayName ?? "";
 
         ImGui.BeginDisabled(!canForm);
-        if (ImGui.Button("Form Party", new Vector2(140 * uiScale, 0)))
+        if (CustomComponents.DrawCtaButton("Form Party", Icon.None, UiColors.ForegroundFull, UiColors.StatusActivated, Color.Transparent))
         {
             ShowControlMode.Activate(ShowControlMode.Collab);
             if (wantOnline)
@@ -941,6 +930,8 @@ internal sealed class CollabWindow : Window
             return;
 
         PanelLayout.BeginSection("Join requests");
+        PanelLayout.StatusPill($"{requests.Count} waiting", UiColors.StatusAttention);
+        PanelLayout.Space(PanelLayout.SpaceXS);
 
         // The button handlers remove from the list while this loop is iterating it.
         foreach (var request in requests.ToArray())
@@ -1080,7 +1071,11 @@ internal sealed class CollabWindow : Window
     {
         if (collab.State == CollabManager.SessionState.Off)
         {
-            ImGui.TextDisabled("Chat needs a session. Host or join one first.");
+            CustomComponents.HelpText("Chat needs a session. Host one or join a listed party on the Party matching tab.");
+            FormInputs.ApplyIndent();
+            if (ImGui.Button("Open Party matching"))
+                _selectedTab = Tab.PartyMatching;
+
             return;
         }
 
@@ -1102,16 +1097,23 @@ internal sealed class CollabWindow : Window
 
             foreach (var entry in log)
             {
+                // System lines (join/left) stay muted and smaller; messages carry a small
+                // timestamp and a stable per-participant name color.
                 if (entry.Name == null)
                 {
-                    ImGui.TextColored(UiColors.TextMuted, $"  {entry.Text}");
+                    ImGui.PushFont(Fonts.FontSmall);
+                    ImGui.TextColored(UiColors.TextMuted, $"{entry.Time:HH:mm}  {entry.Text}");
+                    ImGui.PopFont();
+                    continue;
                 }
-                else
-                {
-                    ImGui.TextColored(UiColors.StatusActivated, entry.Name);
-                    ImGui.SameLine();
-                    ImGui.TextWrapped(entry.Text);
-                }
+
+                ImGui.PushFont(Fonts.FontSmall);
+                ImGui.TextDisabled($"{entry.Time:HH:mm}");
+                ImGui.PopFont();
+                ImGui.SameLine(0, 6 * uiScale);
+                ImGui.TextColored(ChatNameColor(collab, entry.Name), entry.Name);
+                ImGui.SameLine();
+                ImGui.TextWrapped(entry.Text);
             }
         }
         ImGui.EndChild();
@@ -1129,12 +1131,38 @@ internal sealed class CollabWindow : Window
         }
     }
 
+    /** A stable color per participant: your own messages in the whisper green, everyone else hashed into a collab-friendly palette. */
+    private static Color ChatNameColor(CollabManager collab, string name)
+    {
+        if (name == collab.LocalIdentity.DisplayName)
+            return UiColors.WhisperOwn;
+
+        unchecked
+        {
+            var hash = 0;
+            foreach (var t in name)
+                hash = hash * 31 + t;
+
+            Color[] palette =
+                [
+                    UiColors.CollabAccent,
+                    new Color(0.46f, 0.76f, 0.62f, 1f),
+                    new Color(0.88f, 0.68f, 0.38f, 1f),
+                    new Color(0.52f, 0.72f, 0.9f, 1f),
+                    new Color(0.86f, 0.56f, 0.58f, 1f),
+                ];
+            return palette[(uint)hash % palette.Length];
+        }
+    }
+
     // ---------------------------------------------------------------------------------------
     // Shared session pieces (header, preview, roster)
     // ---------------------------------------------------------------------------------------
 
     private static void DrawSessionHeader(CollabManager collab)
     {
+        PanelLayout.StatusPill(collab.State == CollabManager.SessionState.Hosting ? "hosting" : "joined", UiColors.StatusActivated);
+        ImGui.SameLine();
         ImGui.TextWrapped(collab.StatusText);
 
         if (collab.State != CollabManager.SessionState.Off)
@@ -1515,7 +1543,7 @@ internal sealed class CollabWindow : Window
             ImGui.TableSetupScrollFreeze(0, 1);
             ImGui.TableSetupColumn("Party ID", ImGuiTableColumnFlags.WidthFixed, fontSize * 4.5f);
             ImGui.TableSetupColumn("Type", ImGuiTableColumnFlags.WidthFixed, fontSize * 6f);
-            ImGui.TableSetupColumn("Race", ImGuiTableColumnFlags.WidthFixed, fontSize * 3.2f);
+            ImGui.TableSetupColumn("Platform", ImGuiTableColumnFlags.WidthFixed, fontSize * 3.2f);
             ImGui.TableSetupColumn("Location", ImGuiTableColumnFlags.WidthFixed, fontSize * 4.2f);
             ImGui.TableSetupColumn("Name", ImGuiTableColumnFlags.WidthStretch, 0.28f);
             ImGui.TableSetupColumn("Title", ImGuiTableColumnFlags.WidthStretch, 0.46f);
@@ -1552,6 +1580,20 @@ internal sealed class CollabWindow : Window
                 if (isSelected)
                     selected = room;
 
+                // The row selector doubles as the tooltip anchor: everything that does not fit a
+                // column (purpose, project) lives here.
+                if (room.Purpose.Length > 0 || room.Project.Length > 0)
+                {
+                    CustomComponents.TooltipForLastItem($"Party {room.Code}",
+                                                        string.Join("\n",
+                                                                    new[]
+                                                                        {
+                                                                            room.Purpose.Length > 0 ? $"Purpose: {room.Purpose}" : "",
+                                                                            room.Project.Length > 0 ? $"Project: {room.Project}" : "",
+                                                                        }
+                                                                       .Where(s => s.Length > 0)));
+                }
+
                 // Type: whether participants can edit (the host's spectator toggle).
                 ImGui.TableNextColumn();
                 PanelLayout.StatusPill(room.Editable ? "Controllable" : "Spectating",
@@ -1577,9 +1619,23 @@ internal sealed class CollabWindow : Window
                     CustomComponents.TooltipForLastItem("This name is not confirmed by a Discord login.");
                 }
 
-                // Title, with a password marker and the project as a tooltip.
+                // Title, with a lock glyph for password-protected parties and the purpose beside it.
                 ImGui.TableNextColumn();
-                ImGui.TextUnformatted(room.PasswordProtected ? $"{room.Title}  (password)" : room.Title);
+                if (room.PasswordProtected)
+                {
+                    Icon.Locked.DrawAtCursor(UiColors.TextMuted);
+                    ImGui.SameLine(0, 3 * uiScale);
+                }
+
+                ImGui.TextUnformatted(room.Title);
+                if (room.Purpose.Length > 0)
+                {
+                    ImGui.SameLine(0, 8 * uiScale);
+                    ImGui.PushFont(Fonts.FontSmall);
+                    ImGui.TextDisabled(room.Purpose);
+                    ImGui.PopFont();
+                }
+
                 if (!string.IsNullOrEmpty(room.Project))
                     CustomComponents.TooltipForLastItem($"Project: {room.Project}");
 
@@ -1737,3 +1793,4 @@ internal sealed class CollabWindow : Window
         }
     }
 }
+// ZCODE-SENTINEL-1795206001
