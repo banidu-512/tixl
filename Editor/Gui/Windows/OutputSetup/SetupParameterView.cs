@@ -623,6 +623,70 @@ internal static partial class SetupParameterView
         CommitFieldUndo(setup, "Turn floor", rotationState);
     }
 
+    /// <summary>
+    /// The outputs an output-card edit fans out to: the primary plus every other selected output
+    /// of the same kind (ctrl/shift-extend in the outliner or on the board). Edits across a multi
+    /// selection apply to all of them as one undo step; per-device aim geometry (setup rect, warp
+    /// corners, masks) and identity stay on the primary - those are aimed per projector.
+    /// </summary>
+    private static List<OutputDefinition> CollectEditTargets(Setup setup, OutputDefinition primary)
+    {
+        var selection = GlobalSelectionHandling.SetupEntities;
+        if (selection.Count < 2)
+            return [primary];
+
+        List<OutputDefinition>? targets = null;
+        foreach (var target in selection.Targets)
+        {
+            if (target.Kind != SetupEntityKinds.Output)
+                continue;
+
+            var output = setup.FindOutput(target.EntityId);
+            if (output == null || output.Kind != primary.Kind)
+                continue;
+
+            targets ??= [];
+            targets.Add(output);
+        }
+
+        if (targets == null)
+            return [primary];
+
+        // The primary leads: first in the list, and always present even when its selection row
+        // was pruned mid-draw.
+        targets.Remove(primary);
+        targets.Insert(0, primary);
+        return targets;
+    }
+
+    /// <summary>An undoable output edit applied to every selected output of the primary's kind as one undo step.</summary>
+    private static void EditOutputs(Setup setup, string undoLabel, OutputDefinition primary, Action<OutputDefinition> edit)
+    {
+        SetupUndo.RunUndoable(undoLabel, setup, () =>
+        {
+            foreach (var target in CollectEditTargets(setup, primary))
+                edit(target);
+        });
+    }
+
+    /// <summary>Safety-settings fan-out: every target gets its own settings object created on demand.</summary>
+    private static void EditSafety(Setup setup, string undoLabel, OutputDefinition primary,
+                                   Action<LaserProcessingSettings.SafetySettings> edit)
+        => EditOutputs(setup, undoLabel, primary,
+                       output => edit((output.LaserProcessing ??= new LaserProcessingSettings()).Safety));
+
+    /// <summary>Path-optimizer fan-out, same as <see cref="EditSafety"/>.</summary>
+    private static void EditOptimizer(Setup setup, string undoLabel, OutputDefinition primary,
+                                      Action<LaserProcessingSettings.OptimizerSettings> edit)
+        => EditOutputs(setup, undoLabel, primary,
+                       output => edit((output.LaserProcessing ??= new LaserProcessingSettings()).Optimizer));
+
+    /// <summary>Scanner-motion fan-out, same as <see cref="EditSafety"/>.</summary>
+    private static void EditMotion(Setup setup, string undoLabel, OutputDefinition primary,
+                                   Action<LaserProcessingSettings.MotionSettings> edit)
+        => EditOutputs(setup, undoLabel, primary,
+                       output => edit((output.LaserProcessing ??= new LaserProcessingSettings()).Motion));
+
     private static void DrawOutputCard(Setup setup, MachineConfig machineConfig, Guid id)
     {
         var output = setup.FindOutput(id);
@@ -635,6 +699,13 @@ internal static partial class SetupParameterView
         var isLaser = output.Kind == OutputDefinition.Kinds.Laser;
         if (isLaser)
         {
+            var editTargetCount = CollectEditTargets(setup, output).Count;
+            if (editTargetCount > 1)
+            {
+                FormInputs.AddHint($"Editing {editTargetCount} laser outputs together - the shared settings below apply to all of them. "
+                                   + "Per-device aim (setup rect, warp corners, masks) stays on this one.");
+            }
+
             DrawLaserStatusStrip(machineConfig, output);
             PanelLayout.BeginSection("Output");
         }
@@ -646,7 +717,7 @@ internal static partial class SetupParameterView
                               ? "Streams this laser output. Unticked, its bound scanners get nothing while the device stays connected."
                               : "Pause presenting without dropping the display binding.";
         if (FormInputs.AddCheckBox("Send", ref send, sendTooltip))
-            SetupUndo.RunUndoable("Toggle send", setup, () => output.IsSending = send);
+            EditOutputs(setup, "Toggle send", output, o => o.IsSending = send);
 
         // Show distribution: which boygroup node presents this output. Empty = every machine (the
         // classic behavior), so single-machine setups need none of this.
@@ -1630,13 +1701,16 @@ internal static partial class SetupParameterView
             ImGui.PushID("ResetFeedName");
             if (CustomComponents.IconButton(Icon.Reset, Vector2.Zero))
             {
-                device.FeedName = "Laser Feed";
+                device.FeedName = string.Empty;
                 _laserTextBuffer = device.FeedName;
                 OutputSetupHandling.SaveActive();
             }
 
             ImGui.PopID();
-            CustomComponents.TooltipForLastItem("Reset feed name", "Restores the default value.");
+            CustomComponents.TooltipForLastItem("Reset feed name", "Empty - the feed follows the plug's name.");
+
+            // What the peer actually lists: the explicit name, or the plug's own.
+            FormInputs.AddHint($"\"{device.ResolveFeedName(plug.Name)} 0\" in the peer's feed list");
 
             Span<int> sourceKey = [(int)device.SourceKey];
             var keyState = DrawIntsRow("Source key", sourceKey, "CITP sender key; 0 = generate one at random per session.",
@@ -1740,7 +1814,7 @@ internal static partial class SetupParameterView
                                                    _ => "Off",
                                                }))
         {
-            SetupUndo.RunUndoable("Set laser frame mapping", setup, () => output.FrameMapping = frameMapping);
+            EditOutputs(setup, "Set laser frame mapping", output, o => o.FrameMapping = frameMapping);
         }
 
         // Keystone: four draggable corners in the frame preview above (clamped to the safe zone).
@@ -1750,28 +1824,29 @@ internal static partial class SetupParameterView
         if (FormInputs.AddCheckBox("Trapeze frame (4 corners)", ref frameWarp,
                                    "Warps the frame onto the four corners instead of the setup rectangle: drag the corners in the frame preview above (they stay inside the safe zone). While uncalibrated, the green alignment shape becomes the corner quad itself — trapeze it against a skewed screen. In calibrated mode the camera frame is mapped onto the quad (keystone), replacing the Frame mapping. Switching on adopts the setup rectangle's corners, so nothing moves until a corner is dragged."))
         {
-            SetupUndo.RunUndoable("Toggle laser frame warp", setup, () =>
-                                  {
-                                      safety.FrameWarp = frameWarp;
-                                      if (frameWarp)
-                                      {
-                                          // Start from the setup rect's corners: enabling changes nothing
-                                          // until a corner is dragged.
-                                          var halfW = safety.SetupWidth * 0.5f;
-                                          var halfH = safety.SetupHeight * 0.5f;
-                                          safety.WarpCorner1X = safety.SetupCenterX - halfW;
-                                          safety.WarpCorner1Y = safety.SetupCenterY + halfH;
-                                          safety.WarpCorner2X = safety.SetupCenterX + halfW;
-                                          safety.WarpCorner2Y = safety.SetupCenterY + halfH;
-                                          safety.WarpCorner3X = safety.SetupCenterX + halfW;
-                                          safety.WarpCorner3Y = safety.SetupCenterY - halfH;
-                                          safety.WarpCorner4X = safety.SetupCenterX - halfW;
-                                          safety.WarpCorner4Y = safety.SetupCenterY - halfH;
-                                      }
-                                  });
+            EditSafety(setup, "Toggle laser frame warp", output, s =>
+                       {
+                           s.FrameWarp = frameWarp;
+                           if (frameWarp)
+                           {
+                               // Start from each output's own setup rect's corners: enabling changes
+                               // nothing until a corner is dragged.
+                               var halfW = s.SetupWidth * 0.5f;
+                               var halfH = s.SetupHeight * 0.5f;
+                               s.WarpCorner1X = s.SetupCenterX - halfW;
+                               s.WarpCorner1Y = s.SetupCenterY + halfH;
+                               s.WarpCorner2X = s.SetupCenterX + halfW;
+                               s.WarpCorner2Y = s.SetupCenterY + halfH;
+                               s.WarpCorner3X = s.SetupCenterX + halfW;
+                               s.WarpCorner3Y = s.SetupCenterY - halfH;
+                               s.WarpCorner4X = s.SetupCenterX - halfW;
+                               s.WarpCorner4Y = s.SetupCenterY - halfH;
+                           }
+                       });
         }
 
-        DrawRowReset("ResetFrameWarp", "frame corners", () => safety.FrameWarp = false, setup);
+        DrawRowReset("ResetFrameWarp", "frame corners",
+                     () => EditSafety(setup, "Reset frame corners", output, s => s.FrameWarp = false), null);
 
         PanelLayout.EndSection();
 
@@ -1781,7 +1856,7 @@ internal static partial class SetupParameterView
         if (FormInputs.AddCheckBox("Calibrated", ref calibrated,
                                    "While off, upstream content is ignored and only the alignment rectangle below streams - aim it, then switch on for content. The app-bar laser button stays orange until every laser output is calibrated."))
         {
-            SetupUndo.RunUndoable("Toggle laser calibration", setup, () => safety.Calibrated = calibrated);
+            EditSafety(setup, "Toggle laser calibration", output, s => s.Calibrated = calibrated);
         }
 
         // Test screen: the aiming aid that works BEFORE calibration - rectangle + output name, so
@@ -1790,7 +1865,8 @@ internal static partial class SetupParameterView
         if (FormInputs.AddCheckBox("Test screen", ref testScreen,
                                    "Streams a test pattern - regardless of Calibrated - so you can aim and calibrate the projector. The frame preview shows it too. Master enable still gates the beam."))
         {
-            LaserDriver.SetTestScreen(output.Id, testScreen);
+            foreach (var target in CollectEditTargets(setup, output))
+                LaserDriver.SetTestScreen(target.Id, testScreen);
         }
 
         if (testScreen)
@@ -1842,15 +1918,14 @@ internal static partial class SetupParameterView
         var beamEnable = safety.BeamEnable;
         if (FormInputs.AddCheckBox("Beam enable", ref beamEnable, "Master beam switch for this output; off blanks every point but keeps the geometry."))
         {
-            SetupUndo.RunUndoable("Toggle laser beam", setup, () => safety.BeamEnable = beamEnable);
+            EditSafety(setup, "Toggle laser beam", output, s => s.BeamEnable = beamEnable);
         }
 
         var desiredFps = safety.DesiredFps;
         if (FormInputs.AddInt("Desired FPS", ref desiredFps, 1, 120, 1,
                               "Frames per second this output recomputes content at. Between updates the scanners loop the last frame at full scan rate, so the visible ILDA frame rate stays scan-rate / point count. Match a synced video's FPS; text stops blinking above ~45 FPS and blinking shows under ~35. Scanning faster than the hardware likes heats the scanners - lower is safer.", 60))
         {
-            SetupUndo.RunUndoable("Set laser desired FPS", setup,
-                                  () => safety.DesiredFps = Math.Clamp(desiredFps, 1, 120));
+            EditSafety(setup, "Set laser desired FPS", output, s => s.DesiredFps = Math.Clamp(desiredFps, 1, 120));
         }
 
         var (pointCount, scanRate, effectiveFps) = LaserDriver.GetScanStats(output);
@@ -1868,23 +1943,28 @@ internal static partial class SetupParameterView
         BeginFieldUndo(setup, zoneState);
         if ((zoneState & InputEditStateFlags.Modified) != 0)
         {
-            safety.SafeZoneCenterX = zone[0];
-            safety.SafeZoneCenterY = zone[1];
-            // MathF.Max propagates NaN, which would persist as "no safe zone" - treat a NaN
-            // edit as the smallest zone instead.
-            safety.SafeZoneWidth = float.IsNaN(zone[2]) ? 0f : MathF.Max(0f, zone[2]);
-            safety.SafeZoneHeight = float.IsNaN(zone[3]) ? 0f : MathF.Max(0f, zone[3]);
+            foreach (var target in CollectEditTargets(setup, output))
+            {
+                var s = (target.LaserProcessing ??= new LaserProcessingSettings()).Safety;
+                s.SafeZoneCenterX = zone[0];
+                s.SafeZoneCenterY = zone[1];
+                // MathF.Max propagates NaN, which would persist as "no safe zone" - treat a NaN
+                // edit as the smallest zone instead.
+                s.SafeZoneWidth = float.IsNaN(zone[2]) ? 0f : MathF.Max(0f, zone[2]);
+                s.SafeZoneHeight = float.IsNaN(zone[3]) ? 0f : MathF.Max(0f, zone[3]);
+            }
         }
 
         CommitFieldUndo(setup, "Laser safe zone", zoneState);
         DrawRowReset("ResetSafeZone", "safe zone",
-                     () =>
-                         {
-                             safety.SafeZoneCenterX = 0f;
-                             safety.SafeZoneCenterY = 0f;
-                             safety.SafeZoneWidth = 65534f;
-                             safety.SafeZoneHeight = 65534f;
-                         }, setup);
+                     () => EditSafety(setup, "Reset safe zone", output,
+                                      s =>
+                                          {
+                                              s.SafeZoneCenterX = 0f;
+                                              s.SafeZoneCenterY = 0f;
+                                              s.SafeZoneWidth = 65534f;
+                                              s.SafeZoneHeight = 65534f;
+                                          }), null);
 
         Span<float> limits =
         [
@@ -1896,21 +1976,26 @@ internal static partial class SetupParameterView
         BeginFieldUndo(setup, limitsState);
         if ((limitsState & InputEditStateFlags.Modified) != 0)
         {
-            // Same NaN hole as the zone: MathF.Max/Math.Clamp pass NaN through, and a NaN step
-            // limit disables the jump limiter downstream.
-            safety.MaxStepPerPoint = float.IsNaN(limits[0]) ? 4000f : MathF.Max(1f, limits[0]);
-            safety.MaxStaticPoints = Math.Clamp((int)limits[1], 1, 100000);
-            safety.MaxBrightness = float.IsNaN(limits[2]) ? 0f : Math.Clamp(limits[2], 0f, 1f);
+            foreach (var target in CollectEditTargets(setup, output))
+            {
+                var s = (target.LaserProcessing ??= new LaserProcessingSettings()).Safety;
+                // Same NaN hole as the zone: MathF.Max/Math.Clamp pass NaN through, and a NaN step
+                // limit disables the jump limiter downstream.
+                s.MaxStepPerPoint = float.IsNaN(limits[0]) ? 4000f : MathF.Max(1f, limits[0]);
+                s.MaxStaticPoints = Math.Clamp((int)limits[1], 1, 100000);
+                s.MaxBrightness = float.IsNaN(limits[2]) ? 0f : Math.Clamp(limits[2], 0f, 1f);
+            }
         }
 
         CommitFieldUndo(setup, "Laser safety limits", limitsState);
         DrawRowReset("ResetSafetyLimits", "safety limits",
-                     () =>
-                         {
-                             safety.MaxStepPerPoint = 4000f;
-                             safety.MaxStaticPoints = 64;
-                             safety.MaxBrightness = 1f;
-                         }, setup);
+                     () => EditSafety(setup, "Reset safety limits", output,
+                                      s =>
+                                          {
+                                              s.MaxStepPerPoint = 4000f;
+                                              s.MaxStaticPoints = 64;
+                                              s.MaxBrightness = 1f;
+                                          }), null);
 
         Span<float> gains =
         [
@@ -1922,20 +2007,25 @@ internal static partial class SetupParameterView
         BeginFieldUndo(setup, gainsState);
         if ((gainsState & InputEditStateFlags.Modified) != 0)
         {
-            // NaN through MathF.Max would persist as an unusable gain - fold it to neutral.
-            safety.ColorGainR = float.IsNaN(gains[0]) ? 1f : Math.Clamp(gains[0], 0f, 2f);
-            safety.ColorGainG = float.IsNaN(gains[1]) ? 1f : Math.Clamp(gains[1], 0f, 2f);
-            safety.ColorGainB = float.IsNaN(gains[2]) ? 1f : Math.Clamp(gains[2], 0f, 2f);
+            foreach (var target in CollectEditTargets(setup, output))
+            {
+                var s = (target.LaserProcessing ??= new LaserProcessingSettings()).Safety;
+                // NaN through MathF.Max would persist as an unusable gain - fold it to neutral.
+                s.ColorGainR = float.IsNaN(gains[0]) ? 1f : Math.Clamp(gains[0], 0f, 2f);
+                s.ColorGainG = float.IsNaN(gains[1]) ? 1f : Math.Clamp(gains[1], 0f, 2f);
+                s.ColorGainB = float.IsNaN(gains[2]) ? 1f : Math.Clamp(gains[2], 0f, 2f);
+            }
         }
 
         CommitFieldUndo(setup, "Laser color gains", gainsState);
         DrawRowReset("ResetColorGains", "color gains",
-                     () =>
-                         {
-                             safety.ColorGainR = 1f;
-                             safety.ColorGainG = 1f;
-                             safety.ColorGainB = 1f;
-                         }, setup);
+                     () => EditSafety(setup, "Reset color gains", output,
+                                      s =>
+                                          {
+                                              s.ColorGainR = 1f;
+                                              s.ColorGainG = 1f;
+                                              s.ColorGainB = 1f;
+                                          }), null);
 
         Span<float> minimums =
         [
@@ -1947,25 +2037,30 @@ internal static partial class SetupParameterView
         BeginFieldUndo(setup, minState);
         if ((minState & InputEditStateFlags.Modified) != 0)
         {
-            safety.ColorMinR = float.IsNaN(minimums[0]) ? 0f : Math.Clamp(minimums[0], 0f, 1f);
-            safety.ColorMinG = float.IsNaN(minimums[1]) ? 0f : Math.Clamp(minimums[1], 0f, 1f);
-            safety.ColorMinB = float.IsNaN(minimums[2]) ? 0f : Math.Clamp(minimums[2], 0f, 1f);
+            foreach (var target in CollectEditTargets(setup, output))
+            {
+                var s = (target.LaserProcessing ??= new LaserProcessingSettings()).Safety;
+                s.ColorMinR = float.IsNaN(minimums[0]) ? 0f : Math.Clamp(minimums[0], 0f, 1f);
+                s.ColorMinG = float.IsNaN(minimums[1]) ? 0f : Math.Clamp(minimums[1], 0f, 1f);
+                s.ColorMinB = float.IsNaN(minimums[2]) ? 0f : Math.Clamp(minimums[2], 0f, 1f);
+            }
         }
 
         CommitFieldUndo(setup, "Laser color minimums", minState);
         DrawRowReset("ResetColorMinimums", "color minimums",
-                     () =>
-                         {
-                             safety.ColorMinR = 0f;
-                             safety.ColorMinG = 0f;
-                             safety.ColorMinB = 0f;
-                         }, setup);
+                     () => EditSafety(setup, "Reset color minimums", output,
+                                      s =>
+                                          {
+                                              s.ColorMinR = 0f;
+                                              s.ColorMinG = 0f;
+                                              s.ColorMinB = 0f;
+                                          }), null);
 
         var ttlMode = safety.TtlMode;
         if (FormInputs.AddCheckBox("TTL laser", ref ttlMode,
                                    "Binary on/off diodes: at or above 50% the channel outputs its maximum, below it turns off. Color gains, minimums and gamma are skipped - only for lasers without analog modulation."))
         {
-            SetupUndo.RunUndoable("Toggle laser TTL mode", setup, () => safety.TtlMode = ttlMode);
+            EditSafety(setup, "Toggle laser TTL mode", output, s => s.TtlMode = ttlMode);
         }
 
         if (!safety.TtlMode)
@@ -1992,19 +2087,26 @@ internal static partial class SetupParameterView
                                  && (float.IsNaN(gammas[1]) || gammas[1].Equals(gammas[0]))
                                  && (float.IsNaN(gammas[2]) || gammas[2].Equals(gammas[0]));
                 var gamma = float.IsNaN(gammas[0]) ? 1f : Math.Clamp(gammas[0], 0.1f, 8f);
-                safety.ColorGammaR = gamma;
-                safety.ColorGammaG = linked ? gamma : float.IsNaN(gammas[1]) ? 1f : Math.Clamp(gammas[1], 0.1f, 8f);
-                safety.ColorGammaB = linked ? gamma : float.IsNaN(gammas[2]) ? 1f : Math.Clamp(gammas[2], 0.1f, 8f);
+                var gammaG = linked ? gamma : float.IsNaN(gammas[1]) ? 1f : Math.Clamp(gammas[1], 0.1f, 8f);
+                var gammaB = linked ? gamma : float.IsNaN(gammas[2]) ? 1f : Math.Clamp(gammas[2], 0.1f, 8f);
+                foreach (var target in CollectEditTargets(setup, output))
+                {
+                    var s = (target.LaserProcessing ??= new LaserProcessingSettings()).Safety;
+                    s.ColorGammaR = gamma;
+                    s.ColorGammaG = gammaG;
+                    s.ColorGammaB = gammaB;
+                }
             }
 
             CommitFieldUndo(setup, "Laser gamma", gammaState);
             DrawRowReset("ResetLaserGamma", "gamma",
-                         () =>
-                             {
-                                 safety.ColorGammaR = 1f;
-                                 safety.ColorGammaG = 1f;
-                                 safety.ColorGammaB = 1f;
-                             }, setup);
+                         () => EditSafety(setup, "Reset laser gamma", output,
+                                          s =>
+                                              {
+                                                  s.ColorGammaR = 1f;
+                                                  s.ColorGammaG = 1f;
+                                                  s.ColorGammaB = 1f;
+                                              }), null);
         }
 
         var staticPercent = safety.MaxStaticIntensity * 100f;
@@ -2012,7 +2114,9 @@ internal static partial class SetupParameterView
                                 clampMin: true, clampMax: true,
                                 tooltip: "Intensity fraction a stationary beam keeps after the dwell limit, instead of blanking - the venue-controlled equivalent of the safety guide's 'max non-moving beam intensity'. 0 = blank (scan-fail default). WARNING: raising this lets a holding beam output real power - be sure nobody and nothing could be burnt by the beam before changing it."))
         {
-            safety.MaxStaticIntensity = Math.Clamp(staticPercent / 100f, 0f, 1f);
+            foreach (var target in CollectEditTargets(setup, output))
+                (target.LaserProcessing ??= new LaserProcessingSettings()).Safety.MaxStaticIntensity =
+                    Math.Clamp(staticPercent / 100f, 0f, 1f);
         }
 
         Span<float> flips =
@@ -2025,8 +2129,12 @@ internal static partial class SetupParameterView
         BeginFieldUndo(setup, flipState);
         if ((flipState & InputEditStateFlags.Modified) != 0)
         {
-            safety.FlipX = flips[0] >= 0.5f;
-            safety.FlipY = flips[1] >= 0.5f;
+            foreach (var target in CollectEditTargets(setup, output))
+            {
+                var s = (target.LaserProcessing ??= new LaserProcessingSettings()).Safety;
+                s.FlipX = flips[0] >= 0.5f;
+                s.FlipY = flips[1] >= 0.5f;
+            }
         }
 
         CommitFieldUndo(setup, "Laser flip", flipState);
@@ -2043,19 +2151,27 @@ internal static partial class SetupParameterView
         BeginFieldUndo(setup, shiftState);
         if ((shiftState & InputEditStateFlags.Modified) != 0)
         {
-            safety.ColorShiftR = ToColorShiftPoints(shifts[0]);
-            safety.ColorShiftG = ToColorShiftPoints(shifts[1]);
-            safety.ColorShiftB = ToColorShiftPoints(shifts[2]);
+            var shiftR = ToColorShiftPoints(shifts[0]);
+            var shiftG = ToColorShiftPoints(shifts[1]);
+            var shiftB = ToColorShiftPoints(shifts[2]);
+            foreach (var target in CollectEditTargets(setup, output))
+            {
+                var s = (target.LaserProcessing ??= new LaserProcessingSettings()).Safety;
+                s.ColorShiftR = shiftR;
+                s.ColorShiftG = shiftG;
+                s.ColorShiftB = shiftB;
+            }
         }
 
         CommitFieldUndo(setup, "Laser color shift", shiftState);
         DrawRowReset("ResetColorShift", "color shift",
-                     () =>
-                         {
-                             safety.ColorShiftR = 0;
-                             safety.ColorShiftG = 0;
-                             safety.ColorShiftB = 0;
-                         }, setup);
+                     () => EditSafety(setup, "Reset color shift", output,
+                                      s =>
+                                          {
+                                              s.ColorShiftR = 0;
+                                              s.ColorShiftG = 0;
+                                              s.ColorShiftB = 0;
+                                          }), null);
 
         PanelLayout.EndSection();
 
@@ -2068,46 +2184,67 @@ internal static partial class SetupParameterView
             if (FormInputs.AddCheckBox("Reorder path", ref enableOptimization,
                                        "Greedy nearest-neighbour tour over the lit segments (reversing segments when closer). Off keeps the drawn order; blanking and corner dwelling always apply."))
             {
-                SetupUndo.RunUndoable("Toggle laser optimization", setup, () => optimizer.EnableOptimization = enableOptimization);
+                EditOptimizer(setup, "Toggle laser optimization", output, o => o.EnableOptimization = enableOptimization);
             }
 
-            DrawRowReset("ResetReorderPath", "reorder path", () => optimizer.EnableOptimization = true, setup);
+            DrawRowReset("ResetReorderPath", "reorder path",
+                         () => EditOptimizer(setup, "Reset reorder path", output, o => o.EnableOptimization = true), null);
 
             Span<float> jump = [optimizer.MaxJumpDistance];
             var jumpState = DrawFloatsRow("Max jump (units)", jump, "ILDA units per blanked-jump segment; the blank count between shapes scales with jump length.",
                                           reserveRight: 22);
             BeginFieldUndo(setup, jumpState);
             if ((jumpState & InputEditStateFlags.Modified) != 0)
-                optimizer.MaxJumpDistance = MathF.Max(1f, jump[0]);
+            {
+                foreach (var target in CollectEditTargets(setup, output))
+                    (target.LaserProcessing ??= new LaserProcessingSettings()).Optimizer.MaxJumpDistance = MathF.Max(1f, jump[0]);
+            }
+
             CommitFieldUndo(setup, "Laser optimization", jumpState);
-            DrawRowReset("ResetMaxJump", "max jump", () => optimizer.MaxJumpDistance = 5000f, setup);
+            DrawRowReset("ResetMaxJump", "max jump",
+                         () => EditOptimizer(setup, "Reset max jump", output, o => o.MaxJumpDistance = 5000f), null);
 
             Span<int> blanking = [optimizer.BlankingDelayPoints];
             var blankingState = DrawIntsRow("Blanking points", blanking, "Maximum blanked points inserted before a shape start (0..100).",
                                             reserveRight: 22);
             BeginFieldUndo(setup, blankingState);
             if ((blankingState & InputEditStateFlags.Modified) != 0)
-                optimizer.BlankingDelayPoints = Math.Clamp(blanking[0], 0, 100);
+            {
+                foreach (var target in CollectEditTargets(setup, output))
+                    (target.LaserProcessing ??= new LaserProcessingSettings()).Optimizer.BlankingDelayPoints = Math.Clamp(blanking[0], 0, 100);
+            }
+
             CommitFieldUndo(setup, "Laser optimization", blankingState);
-            DrawRowReset("ResetBlanking", "blanking points", () => optimizer.BlankingDelayPoints = 5, setup);
+            DrawRowReset("ResetBlanking", "blanking points",
+                         () => EditOptimizer(setup, "Reset blanking points", output, o => o.BlankingDelayPoints = 5), null);
 
             Span<float> corner = [optimizer.CornerAngleThreshold];
             var cornerState = DrawFloatsRow("Corner angle (°)", corner, "Corners sharper than this get dwell anchors.",
                                             reserveRight: 22);
             BeginFieldUndo(setup, cornerState);
             if ((cornerState & InputEditStateFlags.Modified) != 0)
-                optimizer.CornerAngleThreshold = MathF.Max(0f, corner[0]);
+            {
+                foreach (var target in CollectEditTargets(setup, output))
+                    (target.LaserProcessing ??= new LaserProcessingSettings()).Optimizer.CornerAngleThreshold = MathF.Max(0f, corner[0]);
+            }
+
             CommitFieldUndo(setup, "Laser optimization", cornerState);
-            DrawRowReset("ResetCornerAngle", "corner angle", () => optimizer.CornerAngleThreshold = 30f, setup);
+            DrawRowReset("ResetCornerAngle", "corner angle",
+                         () => EditOptimizer(setup, "Reset corner angle", output, o => o.CornerAngleThreshold = 30f), null);
 
             Span<int> anchors = [optimizer.CornerAnchorCount];
             var anchorsState = DrawIntsRow("Corner anchors", anchors, "Repeated points at a corner (1..10) - brighter, steadier corners.",
                                            reserveRight: 22);
             BeginFieldUndo(setup, anchorsState);
             if ((anchorsState & InputEditStateFlags.Modified) != 0)
-                optimizer.CornerAnchorCount = Math.Clamp(anchors[0], 1, 10);
+            {
+                foreach (var target in CollectEditTargets(setup, output))
+                    (target.LaserProcessing ??= new LaserProcessingSettings()).Optimizer.CornerAnchorCount = Math.Clamp(anchors[0], 1, 10);
+            }
+
             CommitFieldUndo(setup, "Laser optimization", anchorsState);
-            DrawRowReset("ResetCornerAnchors", "corner anchors", () => optimizer.CornerAnchorCount = 3, setup);
+            DrawRowReset("ResetCornerAnchors", "corner anchors",
+                         () => EditOptimizer(setup, "Reset corner anchors", output, o => o.CornerAnchorCount = 3), null);
 
             PanelLayout.EndSection();
         }
@@ -2121,9 +2258,14 @@ internal static partial class SetupParameterView
                                            reserveRight: 22);
             BeginFieldUndo(setup, speedState);
             if ((speedState & InputEditStateFlags.Modified) != 0)
-                motion.DrawingSpeedUs = Math.Clamp(drawingSpeed[0], 0f, 100f);
+            {
+                foreach (var target in CollectEditTargets(setup, output))
+                    (target.LaserProcessing ??= new LaserProcessingSettings()).Motion.DrawingSpeedUs = Math.Clamp(drawingSpeed[0], 0f, 100f);
+            }
+
             CommitFieldUndo(setup, "Laser scanner motion", speedState);
-            DrawRowReset("ResetDrawingSpeed", "drawing speed", () => motion.DrawingSpeedUs = 0f, setup);
+            DrawRowReset("ResetDrawingSpeed", "drawing speed",
+                         () => EditMotion(setup, "Reset drawing speed", output, m => m.DrawingSpeedUs = 0f), null);
 
             Span<float> motionResponse = [motion.MotionResponseUs];
             var responseState = DrawFloatsRow("Motion response (µs)", motionResponse,
@@ -2131,9 +2273,14 @@ internal static partial class SetupParameterView
                                               reserveRight: 22);
             BeginFieldUndo(setup, responseState);
             if ((responseState & InputEditStateFlags.Modified) != 0)
-                motion.MotionResponseUs = Math.Clamp(motionResponse[0], 0f, 2000f);
+            {
+                foreach (var target in CollectEditTargets(setup, output))
+                    (target.LaserProcessing ??= new LaserProcessingSettings()).Motion.MotionResponseUs = Math.Clamp(motionResponse[0], 0f, 2000f);
+            }
+
             CommitFieldUndo(setup, "Laser scanner motion", responseState);
-            DrawRowReset("ResetMotionResponse", "motion response", () => motion.MotionResponseUs = 0f, setup);
+            DrawRowReset("ResetMotionResponse", "motion response",
+                         () => EditMotion(setup, "Reset motion response", output, m => m.MotionResponseUs = 0f), null);
 
             Span<float> cornerSettle = [motion.CornerSettleUs];
             var settleState = DrawFloatsRow("Corner settle (µs)", cornerSettle,
@@ -2141,9 +2288,14 @@ internal static partial class SetupParameterView
                                             reserveRight: 22);
             BeginFieldUndo(setup, settleState);
             if ((settleState & InputEditStateFlags.Modified) != 0)
-                motion.CornerSettleUs = Math.Clamp(cornerSettle[0], 0f, 2000f);
+            {
+                foreach (var target in CollectEditTargets(setup, output))
+                    (target.LaserProcessing ??= new LaserProcessingSettings()).Motion.CornerSettleUs = Math.Clamp(cornerSettle[0], 0f, 2000f);
+            }
+
             CommitFieldUndo(setup, "Laser scanner motion", settleState);
-            DrawRowReset("ResetCornerSettle", "corner settle", () => motion.CornerSettleUs = 0f, setup);
+            DrawRowReset("ResetCornerSettle", "corner settle",
+                         () => EditMotion(setup, "Reset corner settle", output, m => m.CornerSettleUs = 0f), null);
 
             Span<float> transition = [motion.TransitionUs];
             var transitionState = DrawFloatsRow("Transitions (µs)", transition,
@@ -2151,9 +2303,14 @@ internal static partial class SetupParameterView
                                                 reserveRight: 22);
             BeginFieldUndo(setup, transitionState);
             if ((transitionState & InputEditStateFlags.Modified) != 0)
-                motion.TransitionUs = Math.Clamp(transition[0], 0f, 2000f);
+            {
+                foreach (var target in CollectEditTargets(setup, output))
+                    (target.LaserProcessing ??= new LaserProcessingSettings()).Motion.TransitionUs = Math.Clamp(transition[0], 0f, 2000f);
+            }
+
             CommitFieldUndo(setup, "Laser scanner motion", transitionState);
-            DrawRowReset("ResetTransitionUs", "transitions", () => motion.TransitionUs = 0f, setup);
+            DrawRowReset("ResetTransitionUs", "transitions",
+                         () => EditMotion(setup, "Reset transitions", output, m => m.TransitionUs = 0f), null);
 
             PanelLayout.EndSection();
         }
