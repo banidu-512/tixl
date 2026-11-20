@@ -4,6 +4,7 @@ using T3.Core.Animation;
 using T3.Core.DataTypes;
 using T3.Core.DataTypes.Vector;
 using T3.Core.Operator.Interfaces;
+using T3.Core.Output.Rendering;
 using T3.Core.Rendering;
 using T3.Core.Rendering.Material;
 using T3.Core.Utils;
@@ -53,8 +54,10 @@ public sealed class EvaluationContext
         IntVariables.Clear();
         ObjectVariables.Clear();
         StringVariables.Clear();
+        RenderPass = default;
             
         PbrContextSettings.SetDefaultToContext(this);
+        GeometryCapture = null;
     }
 
     /// <summary>
@@ -317,6 +320,26 @@ public sealed class EvaluationContext
     public int IteratedListIndex { get; set; }
     public bool BypassCameras { get; set; }
 
+    /// <summary>
+    /// State of the render pass being evaluated. A field, so writers can change one member in place; they save the
+    /// whole struct before and restore it after their subtree. See <see cref="RenderPassState"/>.
+    /// </summary>
+    public RenderPassState RenderPass;
+
     public LegacyParticleSystem LegacyParticleSystem;
     public ParticleSystem ParticleSystem;
+
+    /// <summary>
+    /// Set while a consumer (e.g. the laser camera) captures the geometry drawn inside its subtree.
+    /// Null when no capture pass is active, so draw ops can register through it with a cheap null check.
+    /// </summary>
+    public GeometryCapture GeometryCapture;
+
+    /// <summary>
+    /// Set for the duration of a capture pass: draw ops then REGISTER their geometry without
+    /// rasterizing it. Capture only needs the vertex/index buffers, and rasterizing would repaint
+    /// whatever render target happens to be bound - during the laser pump that is the visible
+    /// viewport, which made the scene flash between its own render and the capture pass's.
+    /// </summary>
+    public bool CaptureOnlyDraws { get; set; }
 }
