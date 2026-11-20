@@ -150,4 +150,5 @@ internal static class NavigationSidebar
         ImGui.PopStyleVar(2);
         ImGui.PopStyleColor();
     }
+
 }

@@ -124,7 +124,7 @@ internal static class StartupProjectLoader
         return null;
     }
 
-    // Prefer the visible graph window — hidden instances can exist while the Hub is shown.
+    /// <summary>Prefer the visible graph window — hidden instances can exist while the Hub is shown.</summary>
     private static GraphWindow? GetGraphWindow()
     {
         GraphWindow? graphWindow = null;

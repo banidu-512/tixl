@@ -60,7 +60,7 @@ dotnet run --project Tests/CollabHeadless             # console harness for the 
 
 ## Line Endings
 
-The repo has mixed line endings (most `.cs` files CRLF, some LF); there is no `.gitattributes` and `core.autocrlf` is `false`. Bulk-edit scripts must read and write files in binary mode and detect each file's existing ending per file -- text-mode reads silently strip `\r` and turn a small change into a whole-file diff. Sanity-check with `git diff --shortstat` before committing.
+The repo is LF-only: `.gitattributes` normalizes (`* text=auto eol=lf`) and `.editorconfig` enforces LF, matching `.agentic/AGENT_INSTRUCTIONS.md`. Bulk-edit scripts must write `\n` only — text-mode reads silently turn LF into CRLF on Windows and turn a small change into a whole-file diff. Sanity-check with `git diff --shortstat` before committing.
 
 ## Documentation, Tests, and Background
 

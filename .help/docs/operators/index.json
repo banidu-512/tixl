@@ -1,4 +1,4 @@
-{
+﻿{
   "by_fullpath": {
     "Lib.data.object.PickObject": {
       "url": "/operators/lib/data/object/PickObject/",
@@ -1074,11 +1074,11 @@
     },
     "Lib.io.video.VideoStreamInput": {
       "url": "/operators/lib/io/video/VideoStreamInput/",
-      "summary": "Receives a video stream from a network source."
+      "summary": "Receives a live video stream from the network or from a publisher and outputs it as a texture."
     },
     "Lib.io.video.WebcamInput": {
       "url": "/operators/lib/io/video/WebcamInput/",
-      "summary": "Captures live video from a connected device like a webcam, capture card, or NDI source."
+      "summary": "Captures live video from a connected device like a webcam or capture card."
     },
     "Lib.io.video.depthanything.DepthAnything": {
       "url": "/operators/lib/io/video/depthanything/DepthAnything/",
@@ -1138,7 +1138,7 @@
     },
     "Lib.io.video.mediapipe.GestureRecognition": {
       "url": "/operators/lib/io/video/mediapipe/GestureRecognition/",
-      "summary": "Recognizes hand gestures in an image using MediaPipe Gesture Recognition."
+      "summary": "Recognizes hand gestures in an image on top of MediaPipe hand landmark detection."
     },
     "Lib.io.video.mediapipe.HandLandmarkDetection": {
       "url": "/operators/lib/io/video/mediapipe/HandLandmarkDetection/",
