@@ -892,6 +892,28 @@ internal static class FormInputs
         ImGui.PopStyleVar(2);
     }
 
+    /// <summary>
+    /// A one-line hint: text past the region edge is clipped instead of wrapped. For live readouts
+    /// whose changing length would flip a wrapped hint between one and two lines - that resizes its
+    /// auto-resized section card a frame late, which clips the next card at the panel's max scroll.
+    /// </summary>
+    public static void AddHintSingleLine(string label)
+    {
+        if (string.IsNullOrEmpty(label))
+            return;
+
+        AddVerticalSpace(5);
+        ApplyIndent();
+        ImGui.PushStyleVar(ImGuiStyleVar.Alpha, 0.5f * ImGui.GetStyle().Alpha);
+        ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(10, 20));
+
+        AddIcon(Icon.Tip);
+
+        ImGui.SameLine();
+        ImGui.TextUnformatted(label);
+        ImGui.PopStyleVar(2);
+    }
+
     public static void AddVerticalSpace(float size = 10)
     {
         // This breaks ImGui.Indent for some reason so I commented it out and brought back the Dummy call

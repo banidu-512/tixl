@@ -118,6 +118,11 @@ internal static partial class SetupParameterView
             CustomComponents.StylizedText($"+{selection.Count - 1} more selected", Fonts.FontSmall, UiColors.TextMuted);
         }
 
+        // Scroll headroom: the section cards auto-resize a frame behind their content, and live
+        // readouts (scan stats, pump times) change that height while the show runs - without this
+        // spacer the card tail clips at the panel's max scroll.
+        FormInputs.AddVerticalSpace(20);
+
         ImGui.EndChild(); // ##setupEntityCard
         ImGui.EndChild(); // setupEntity
         return true;
@@ -922,7 +927,7 @@ internal static partial class SetupParameterView
         DrawWrappedSmallText(boundTo, UiColors.TextMuted);
 
         if (hasStream)
-            DrawWrappedSmallText(streamStatus, UiColors.TextMuted);
+            DrawWrappedSmallTextStable(streamStatus, UiColors.TextMuted, 3);
 
         PanelLayout.Space(PanelLayout.SpaceM);
     }
@@ -959,6 +964,28 @@ internal static partial class SetupParameterView
         ImGui.PushStyleColor(ImGuiCol.Text, color.Rgba);
         ImGui.TextWrapped(text);
         ImGui.PopStyleColor();
+        ImGui.PopFont();
+    }
+
+    /// <summary>
+    /// Wrapped small text inside a fixed line-count slot. Live timings (the pump stats in a
+    /// stream status) change the message length every frame, and a strip that resizes with them
+    /// shifts everything below one frame late - which clips the card tail at the panel's max
+    /// scroll. The slot keeps the height constant; longer text clips at the last line.
+    /// </summary>
+    private static void DrawWrappedSmallTextStable(string text, T3.Core.DataTypes.Vector.Color color, int lines)
+    {
+        ImGui.PushFont(Fonts.FontSmall);
+        var lineHeight = ImGui.GetTextLineHeight();
+        ImGui.PushStyleColor(ImGuiCol.Text, color.Rgba);
+        ImGui.TextWrapped(text);
+        ImGui.PopStyleColor();
+
+        var renderedLines = Math.Max(1, (int)MathF.Round(ImGui.GetItemRectSize().Y / lineHeight));
+        var missing = lines - renderedLines;
+        if (missing > 0)
+            ImGui.Dummy(new Vector2(1, missing * lineHeight));
+
         ImGui.PopFont();
     }
 
@@ -1919,9 +1946,9 @@ internal static partial class SetupParameterView
         }
 
         var (pointCount, scanRate, effectiveFps) = LaserDriver.GetScanStats(output);
-        FormInputs.AddHint(pointCount > 0
-                               ? $"{pointCount} points · {scanRate} pps · {effectiveFps} fps scanned"
-                               : "No frame computed yet - the readout fills in once the pump ran.");
+        FormInputs.AddHintSingleLine(pointCount > 0
+                                         ? $"{pointCount} points · {scanRate} pps · {effectiveFps} fps scanned"
+                                         : "No frame computed yet - the readout fills in once the pump ran.");
 
         Span<float> zone =
         [
