@@ -707,18 +707,16 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
     {
         if (IsCaptureThreadRunning()) return;
 
-        // A timed-out capture thread from a previous stop may still hold the device. Wait for it to wind
-        // down (it observes cancellation within ~100 ms) so two threads never fight over one camera.
-        foreach (var orphan in _orphanedThreads)
-        {
-            var waited = 0;
-            while (orphan.IsAlive && waited < 2000)
-            {
-                Thread.Sleep(50);
-                waited += 50;
-            }
-        }
+        // A timed-out capture thread from a previous stop may still hold the device. Waiting for it
+        // here would stall the evaluation thread for up to seconds per orphan; the thread observes
+        // cancellation within ~100 ms, so deferring the start to the next evaluation costs one or
+        // two frames instead - and the editor never blocks on a wedged driver call.
         _orphanedThreads.RemoveAll(t => !t.IsAlive);
+        if (_orphanedThreads.Count > 0)
+        {
+            SetStatus("Waiting for the previous capture to release the camera...");
+            return;
+        }
 
         var device = WebcamScan.Devices.FirstOrDefault(d => d.Index == _storeDeviceIndex);
         if (device == null)
@@ -744,11 +742,13 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
 
         _cancellationTokenSource?.Cancel();
 
-        if (!_captureThread!.Join(TimeSpan.FromSeconds(2)))
+        // A short join keeps the evaluation thread responsive: normal cancellation is observed
+        // within ~100 ms, so the common path still exits inline. A thread stuck in slow device
+        // teardown joins as an orphan instead of stalling the editor for seconds — the start path
+        // defers until it has released the camera, and disposing its token source under a running
+        // thread is the one way this op could ever take the editor down, so the orphan keeps it.
+        if (!_captureThread!.Join(CaptureThreadJoinMs))
         {
-            // The thread is stuck somewhere slow (device teardown, blocked driver call). It observes
-            // cancellation on its own and exits; keep its token source alive until then — disposing it
-            // under a running thread is the one way this op could ever take the editor down.
             Log.Debug("Video capture thread did not exit in time; leaving it to finish on its own.");
             _orphanedThreads.Add(_captureThread);
         }
@@ -760,6 +760,8 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
         _captureThread = null;
         _cancellationTokenSource = null;
     }
+
+    private const int CaptureThreadJoinMs = 100;
 
     private void CaptureLoop(CaptureThreadSettings settings, WebcamWithIndex device, CancellationToken token)
     {
