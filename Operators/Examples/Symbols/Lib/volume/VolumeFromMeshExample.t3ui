@@ -1,4 +1,4 @@
-{
+﻿{
   "FormatVersion": 3,
   "Id": "afe8d595-838b-5aa2-8411-57bba4355642"/*VolumeFromMeshExample*/,
   "Description": "Left: the word TiXL as geometry becomes a level set with [VolumeFromMesh], and [VolumeMorphology] dilates it into soft bubble letters. Middle: scattered points are splatted into a density volume with [VolumeFromPoints], a metaball cloud. Right: a noise field is sampled over a box with [FieldToVolume].\n\nWhatever goes in, what comes out is a volume, and every volume operator works on it.\n\nAKA: voxelize, mesh to sdf, points to volume, metaballs, splat, field to volume\n\nTips\n- Smaller VoxelSize means sharper surfaces and more memory and time; start coarse and refine.\n- Level sets store signed distance in world units (negative inside); fog volumes store density.\n- A density volume is meshed at a density Isovalue, not at 0.",
@@ -117,7 +117,7 @@
     },
     {
       "ChildId": "6b009f07-e022-5fd9-8309-e9d5d1548637",
-      "SymbolName": "Lib.geometry.TextToCurves",
+      "SymbolName": "Lib.geometry.StringToCurves",
       "SectionId": "a76a4e44-297a-5a91-bf6e-c919e7e929f2",
       "Position": {
         "X": 0.0,

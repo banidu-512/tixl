@@ -1,4 +1,4 @@
-{
+﻿{
   "FormatVersion": 3,
   "Id": "db613897-4f88-5c81-a321-c460456d3001"/*RigidBodyExample*/,
   "Inputs": [],
@@ -79,7 +79,7 @@
     {
       "Id": "2b0d20e1-34c4-5695-b534-42afe6156c90"/*Word*/,
       "SymbolId": "e2b7f4a1-3c69-4d58-8a1e-9f6c0d2b5e37",
-      "SymbolName": "Lib.geometry.TextToCurves",
+      "SymbolName": "Lib.geometry.StringToCurves",
       "Name": "Word",
       "InputValues": [
         {

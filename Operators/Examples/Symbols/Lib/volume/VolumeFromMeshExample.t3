@@ -1,4 +1,4 @@
-{
+﻿{
   "FormatVersion": 3,
   "Id": "afe8d595-838b-5aa2-8411-57bba4355642"/*VolumeFromMeshExample*/,
   "Inputs": [],
@@ -274,7 +274,7 @@
     {
       "Id": "6b009f07-e022-5fd9-8309-e9d5d1548637"/*Word*/,
       "SymbolId": "e2b7f4a1-3c69-4d58-8a1e-9f6c0d2b5e37",
-      "SymbolName": "Lib.geometry.TextToCurves",
+      "SymbolName": "Lib.geometry.StringToCurves",
       "Name": "Word",
       "InputValues": [
         {

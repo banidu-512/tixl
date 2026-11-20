@@ -1,4 +1,4 @@
-{
+﻿{
   "FormatVersion": 3,
   "Id": "db613897-4f88-5c81-a321-c460456d3001"/*RigidBodyExample*/,
   "Description": "[RigidBody] turns any geometry into a collider. Shape Auto splits concave geometry into several convex hulls, so the rings keep their holes and slide down the posts they land over, and the letters keep their counters.\n\nThe same word falls twice: on the left with Pieces EachPartIsABody, so every letter is a body of its own, and on the right with WholeObject, so the word stays rigid. Bodies made from geometry weigh their volume times Density.\n\nAKA: convex decomposition, compound body, concave collider, mesh collider, multi-part, ring toss\n\nTips\n- Playback must run for the simulation to advance; press Reset on the World to start over.\n- Set the Rings' Shape to ConvexHull and reset: every ring then fills its hole and rests on top of the posts.\n- Turn on ShowColliders on a [RigidBodyGeometry] to see the hulls.\n- MaxHulls trades accuracy against cost.",
@@ -42,7 +42,7 @@
     },
     {
       "ChildId": "2b0d20e1-34c4-5695-b534-42afe6156c90",
-      "SymbolName": "Lib.geometry.TextToCurves",
+      "SymbolName": "Lib.geometry.StringToCurves",
       "SectionId": "a434f90d-fe5d-586e-abe0-516775655270",
       "Position": {
         "X": 0.0,
