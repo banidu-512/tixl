@@ -1,4 +1,4 @@
-#nullable enable
+﻿#nullable enable
 using ImGuiNET;
 using T3.Core.Show;
 using T3.Editor.Gui.Input;
@@ -86,7 +86,7 @@ internal sealed partial class SettingsWindow
 
         PanelLayout.EndSection();
 
-        DrawNetworkInterface(ref changed);
+        DrawNetworkAdapterHint("Failover", ref UserSettings.Config.FailoverInterface, ref changed);
 
         PanelLayout.BeginSection("Setting up a redundant pair");
         CustomComponents.HelpText("""

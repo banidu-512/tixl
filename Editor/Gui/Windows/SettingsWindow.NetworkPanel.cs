@@ -1,6 +1,6 @@
 #nullable enable
 using System;
-using System.Linq;
+using System.Collections.Generic;
 using ImGuiNET;
 using T3.Core.Utils;
 using T3.Editor.Gui.Input;
@@ -12,83 +12,31 @@ namespace T3.Editor.Gui.Windows;
 
 internal sealed partial class SettingsWindow
 {
-    private const string AutomaticInterfaceLabel = "Automatic";
-
     /// <summary>
-    /// Shared by the Collaboration, Failover and Boygrouping panels: one adapter per machine keeps
-    /// sessions, discovery and failover heartbeats on the show network instead of a VPN or Wi-Fi.
+    /// The adapters for collaboration, boygrouping and failover are chosen on the Networking page,
+    /// next to the protocol bindings. These panels keep only the advice: when a linked machine sits
+    /// on another adapter's network, say so and offer the fix where the session is being configured.
     /// </summary>
-    private static void DrawNetworkInterface(ref bool changed)
+    private static void DrawNetworkAdapterHint(string serviceName, ref string adapterField, ref bool changed)
     {
-        var config = UserSettings.Config;
+        var interfaces = CachedUsableInterfaces();
+        DrawPeerNetworkCheck(interfaces, serviceName, ref adapterField, ref changed);
 
-        PanelLayout.BeginSection("Network");
-
-        var interfaces = LanInterfaces.GetUsable();
-        var selected = interfaces.FirstOrDefault(i => string.Equals(i.Name, config.NetworkInterface,
-                                                                     StringComparison.OrdinalIgnoreCase));
-        var preview = selected?.DisplayName
-                      ?? (string.IsNullOrWhiteSpace(config.NetworkInterface)
-                              ? AutomaticInterfaceLabel
-                              : $"{config.NetworkInterface} (not connected)");
-
-        const string tooltip = """
-                               The adapter TiXL binds to for hosting collaboration and boygrouping,
-                               LAN discovery and failover heartbeats.
-                               Automatic uses all interfaces and follows the OS route. Pick your show
-                               network adapter when the machine also has Wi-Fi, VPN or Hyper-V adapters.
-                               Takes effect the next time a session or server starts.
-                               """;
-
-        FormInputs.DrawInputLabel("Interface");
-        var inputSize = FormInputs.GetAvailableInputSize(tooltip, false, true);
-        ImGui.SetNextItemWidth(inputSize.X);
-        if (ImGui.BeginCombo("##networkinterface", preview, ImGuiComboFlags.HeightLarge))
-        {
-            if (ImGui.Selectable(AutomaticInterfaceLabel, string.IsNullOrWhiteSpace(config.NetworkInterface)))
-            {
-                config.NetworkInterface = "";
-                changed = true;
-            }
-
-            foreach (var lanInterface in interfaces)
-            {
-                if (!ImGui.Selectable(lanInterface.DisplayName, selected?.Name == lanInterface.Name))
-                    continue;
-
-                config.NetworkInterface = lanInterface.Name;
-                changed = true;
-            }
-
-            ImGui.EndCombo();
-        }
-
-        FormInputs.AppendTooltip(tooltip);
-
-        if (interfaces.Count == 0)
-        {
-            CustomComponents.HelpText("No active IPv4 network adapter was found. TiXL binds all interfaces until one is available.");
-        }
-        else if (selected == null && !string.IsNullOrWhiteSpace(config.NetworkInterface))
-        {
-            CustomComponents.HelpText($"The saved adapter '{config.NetworkInterface}' is not connected. TiXL binds all interfaces until it returns.");
-        }
-
-        DrawPeerNetworkCheck(interfaces, ref changed);
-        PanelLayout.EndSection();
+        FormInputs.SetCursorToParameterEdit();
+        ImGui.TextDisabled($"Network adapter for {serviceName}: chosen in Settings → Networking");
     }
 
     /// <summary>
     /// The adapter is stored per computer and never travels with a project or a deploy, so each machine
     /// checks itself against the machines it is linked to and offers the adapter that shares their network.
     /// </summary>
-    private static void DrawPeerNetworkCheck(IReadOnlyList<LanInterface> interfaces, ref bool changed)
+    private static void DrawPeerNetworkCheck(IReadOnlyList<LanInterface> interfaces, string serviceName, ref string adapterField, ref bool changed)
     {
         NetworkPeerCheck.CollectPeers(_networkPeers);
         if (_networkPeers.Count == 0)
             return;
 
-        NetworkPeerCheck.FindProblems(UserSettings.Config.NetworkInterface, interfaces, _networkPeers, _networkFindings);
+        NetworkPeerCheck.FindProblems(adapterField, interfaces, _networkPeers, _networkFindings);
         if (_networkFindings.Count == 0)
         {
             FormInputs.SetCursorToParameterEdit();
@@ -102,10 +50,10 @@ internal sealed partial class SettingsWindow
             var message = finding.Kind switch
                               {
                                   NetworkPeerCheck.Kind.WrongAdapter
-                                      => $"{finding.Peer.Source} {finding.Peer.Address} is on the network of {finding.Suggested.Name}, not of the selected adapter.",
+                                      => $"{finding.Peer.Source} {finding.Peer.Address} is on the network of {finding.Suggested.Name}, not of the selected {serviceName} adapter.",
                                   NetworkPeerCheck.Kind.SavedAdapterMissing
-                                      => $"{finding.Peer.Source} {finding.Peer.Address} is on the network of {finding.Suggested.Name}; the saved adapter does not exist on this machine.",
-                                  _ => $"{finding.Peer.Source} {finding.Peer.Address} is on the network of {finding.Suggested.Name}; this machine has several adapters and none is selected.",
+                                      => $"{finding.Peer.Source} {finding.Peer.Address} is on the network of {finding.Suggested.Name}; the saved {serviceName} adapter does not exist on this machine.",
+                                  _ => $"{finding.Peer.Source} {finding.Peer.Address} is on the network of {finding.Suggested.Name}; this machine has several adapters and none is selected for {serviceName}.",
                               };
 
             FormInputs.SetCursorToParameterEdit();
@@ -117,13 +65,32 @@ internal sealed partial class SettingsWindow
         FormInputs.SetCursorToParameterEdit();
         if (ImGui.Button($"Use {suggested.Name}"))
         {
-            UserSettings.Config.NetworkInterface = suggested.Name;
+            adapterField = suggested.Name;
+            UserSettings.Save();
             changed = true;
         }
 
-        CustomComponents.TooltipForLastItem("Selects the adapter that shares the network of the linked machine above. Takes effect the next time a session or server starts.");
+        CustomComponents.TooltipForLastItem($"Selects the {serviceName} adapter that shares the network of the linked machine above. Takes effect the next time the service starts.");
     }
 
     private static readonly List<NetworkPeer> _networkPeers = [];
     private static readonly List<NetworkPeerCheck.Finding> _networkFindings = [];
+
+    /// <summary>The usable adapter list, refreshed on a short interval: enumerating the OS
+    /// adapters every frame costs a system call and a pile of allocations in draw code.</summary>
+    private static List<LanInterface> CachedUsableInterfaces()
+    {
+        var now = Environment.TickCount64;
+        if (_usableInterfaces == null || now - _interfacesRefreshedTicks > InterfaceRefreshIntervalMs)
+        {
+            _usableInterfaces = LanInterfaces.GetUsable();
+            _interfacesRefreshedTicks = now;
+        }
+
+        return _usableInterfaces!;
+    }
+
+    private const int InterfaceRefreshIntervalMs = 5000;
+    private static List<LanInterface>? _usableInterfaces;
+    private static long _interfacesRefreshedTicks;
 }

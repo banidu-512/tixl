@@ -1,4 +1,4 @@
-#nullable enable
+﻿#nullable enable
 using ImGuiNET;
 using T3.Core.DataTypes.Vector;
 using T3.Editor.Collab;
@@ -238,7 +238,7 @@ internal sealed partial class SettingsWindow
 
         PanelLayout.EndSection();
 
-        DrawNetworkInterface(ref changed);
+        DrawNetworkAdapterHint("Boygrouping", ref UserSettings.Config.BoygroupInterface, ref changed);
     }
 
     private static string? _boygroupGroup;
@@ -280,15 +280,15 @@ internal sealed partial class SettingsWindow
         PanelLayout.EndSection();
 
         PanelLayout.BeginSection("Playback control");
-        if (ImGui.Button("Play all"))
+        if (ImGui.Button("Play All"))
             manager.SendPlayControl(true);
 
         ImGui.SameLine();
-        if (ImGui.Button("Pause all"))
+        if (ImGui.Button("Pause All"))
             manager.SendPlayControl(false);
 
         ImGui.SameLine();
-        if (ImGui.Button("Sync time now"))
+        if (ImGui.Button("Sync Time Now"))
             manager.SendTimeSyncNow();
 
         PanelLayout.Space(PanelLayout.SpaceXS);

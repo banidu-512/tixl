@@ -58,11 +58,9 @@ internal sealed partial class SettingsWindow
         PanelLayout.BeginSection("Project autoload");
 
         var selected = config.StartupProjectFolder;
-        var options = new List<string> { string.Empty };
-        options.AddRange(EditableSymbolProject.AllProjects.Select(p => p.Folder));
 
         if (FormInputs.AddDropdown(ref selected,
-                                   options,
+                                   CachedProjectOptions(),
                                    "Project at startup",
                                    GetProjectDisplayName,
                                    """
@@ -146,4 +144,26 @@ internal sealed partial class SettingsWindow
 
         return folder + "  (missing)";
     }
+
+    /// <summary>The dropdown options, cached so the draw path does not rebuild the list every
+    /// frame; refreshed when the project list instance changes (a project opened or closed).</summary>
+    private static List<string> CachedProjectOptions()
+    {
+        var allProjects = EditableSymbolProject.AllProjects;
+        var options = _projectOptions;
+        if (options == null || !ReferenceEquals(allProjects, _projectOptionsSource))
+        {
+            options = new List<string> { string.Empty };
+            foreach (var project in allProjects)
+                options.Add(project.Folder);
+
+            _projectOptions = options;
+            _projectOptionsSource = allProjects;
+        }
+
+        return options;
+    }
+
+    private static List<string>? _projectOptions;
+    private static IEnumerable<EditableSymbolProject>? _projectOptionsSource;
 }

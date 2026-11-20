@@ -1,10 +1,11 @@
-#nullable enable
+﻿#nullable enable
 using System.Diagnostics;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
+using T3.Core.Utils;
 
 namespace Lib.io.dmx
 {
@@ -90,7 +91,9 @@ namespace Lib.io.dmx
         private void Update(EvaluationContext context)
         {
             _printToLog = PrintToLog.GetValue(context);
-            var localIpString = LocalIpAddress.GetValue(context);
+            // Bind adapter comes from the Networking settings page (per machine, never part of the
+            // project): "0.0.0.0" keeps the resolver's substitute-an-adapter behavior for broadcast.
+            var localIpString = ProtocolInterfaces.ResolveAddressString(ProtocolInterfaces.Keys.ArtNet);
             var targetIpString = TargetIpAddress.GetValue(context);
 
             // The stored address may belong to another machine (a failover pair or boygroup shares one project),
@@ -685,72 +688,6 @@ namespace Lib.io.dmx
             return new IPAddress(broadcastBytes);
         }
 
-        private static readonly object _networkInterfacesLock = new();
-        private static List<NetworkAdapterInfo> _networkInterfaces = GetNetworkInterfaces();
-        private static int _isRefreshingInterfaces;
-
-        private static NetworkAdapterInfo? FindAdapter(IPAddress address)
-        {
-            lock (_networkInterfacesLock)
-            {
-                for (int i = 0; i < _networkInterfaces.Count; i++)
-                {
-                    if (_networkInterfaces[i].IpAddress.Equals(address))
-                        return _networkInterfaces[i];
-                }
-            }
-
-            return null;
-        }
-
-        /** Enumerating adapters can take tens of milliseconds, so it never runs on the frame thread. */
-        private static void RefreshNetworkInterfacesAsync()
-        {
-            if (Interlocked.CompareExchange(ref _isRefreshingInterfaces, 1, 0) != 0)
-                return;
-
-            Task.Run(() =>
-                     {
-                         try
-                         {
-                             var interfaces = GetNetworkInterfaces();
-                             lock (_networkInterfacesLock)
-                             {
-                                 _networkInterfaces = interfaces;
-                             }
-                         }
-                         finally
-                         {
-                             Volatile.Write(ref _isRefreshingInterfaces, 0);
-                         }
-                     });
-        }
-
-        private static List<NetworkAdapterInfo> GetNetworkInterfacesSnapshot()
-        {
-            lock (_networkInterfacesLock)
-            {
-                return _networkInterfaces;
-            }
-        }
-
-        private static List<NetworkAdapterInfo> GetNetworkInterfaces()
-        {
-            var list = new List<NetworkAdapterInfo> { new(IPAddress.Loopback, IPAddress.Parse("255.0.0.0"), "Localhost (127.0.0.1)") };
-            try
-            {
-                list.AddRange(from ni in NetworkInterface.GetAllNetworkInterfaces()
-                              where ni.OperationalStatus == OperationalStatus.Up && ni.NetworkInterfaceType != NetworkInterfaceType.Loopback
-                              from ip in ni.GetIPProperties().UnicastAddresses
-                              where ip.Address.AddressFamily == AddressFamily.InterNetwork
-                              select new NetworkAdapterInfo(ip.Address, ip.IPv4Mask, ni.Name));
-            }
-            catch { }
-            return list;
-        }
-
-        private sealed record NetworkAdapterInfo(IPAddress IpAddress, IPAddress SubnetMask, string Name) { public string DisplayName => $"{Name}: {IpAddress}"; }
-
         private sealed class ConnectionSettings
         {
             private string? _lastLocalIpStr;
@@ -790,13 +727,12 @@ namespace Lib.io.dmx
         public string? GetStatusMessage() => _lastErrorMessage;
         public void SetStatus(string m, IStatusProvider.StatusLevel l) { _lastErrorMessage = m; _lastStatusLevel = l; }
 
-        string ICustomDropdownHolder.GetValueForInput(Guid inputId) { if (inputId == LocalIpAddress.Id) return _adapterResolver.EffectiveIp ?? LocalIpAddress.Value ?? string.Empty; if (inputId == TargetIpAddress.Id) return TargetIpAddress.Value ?? string.Empty; return string.Empty; }
-        IEnumerable<string> ICustomDropdownHolder.GetOptionsForInput(Guid inputId) { if (inputId == LocalIpAddress.Id) { var interfaces = GetNetworkInterfaces(); lock (_networkInterfacesLock) { _networkInterfaces = interfaces; } foreach (var adapter in interfaces) yield return adapter.DisplayName; } else if (inputId == TargetIpAddress.Id) { if (!_isPolling && _discoveredNodes.IsEmpty) yield return "Enable 'Discover Nodes' to search..."; else if (_isPolling && _discoveredNodes.IsEmpty) yield return "Searching for nodes..."; else foreach (var nodeName in _discoveredNodes.Values.OrderBy(name => name)) yield return nodeName; } }
-        void ICustomDropdownHolder.HandleResultForInput(Guid inputId, string? selected, bool isAListItem) { if (string.IsNullOrEmpty(selected) || !isAListItem) return; if (inputId == LocalIpAddress.Id) { var foundAdapter = GetNetworkInterfacesSnapshot().FirstOrDefault(i => i.DisplayName == selected); if (foundAdapter == null) return; LocalIpAddress.SetTypedInputValue(foundAdapter.IpAddress.ToString()); _selectedSubnetMask = foundAdapter.SubnetMask; } else if (inputId == TargetIpAddress.Id) { var finalIp = selected; var match = Regex.Match(selected, @"\(([^)]*)\)"); if (match.Success) finalIp = match.Groups[1].Value; TargetIpAddress.SetTypedInputValue(finalIp); } }
+        string ICustomDropdownHolder.GetValueForInput(Guid inputId) { if (inputId == TargetIpAddress.Id) return TargetIpAddress.Value ?? string.Empty; return string.Empty; }
+        IEnumerable<string> ICustomDropdownHolder.GetOptionsForInput(Guid inputId) { if (inputId != TargetIpAddress.Id) yield break; if (!_isPolling && _discoveredNodes.IsEmpty) yield return "Enable 'Discover Nodes' to search..."; else if (_isPolling && _discoveredNodes.IsEmpty) yield return "Searching for nodes..."; else foreach (var nodeName in _discoveredNodes.Values.OrderBy(name => name)) yield return nodeName; }
+        void ICustomDropdownHolder.HandleResultForInput(Guid inputId, string? selected, bool isAListItem) { if (string.IsNullOrEmpty(selected) || !isAListItem || inputId != TargetIpAddress.Id) return; var finalIp = selected; var match = Regex.Match(selected, @"\(([^)]*)\)"); if (match.Success) finalIp = match.Groups[1].Value; TargetIpAddress.SetTypedInputValue(finalIp); }
 
         [Input(Guid = "F7520A37-C2D4-41FA-A6BA-A6ED0423A4EC")] public readonly MultiInputSlot<List<int>> InputsValues = new();
         [Input(Guid = "B2C3D4E5-F6A7-8901-BCDE-F234567890AB")] public readonly InputSlot<List<int>> UniverseChannels = new();
-        [Input(Guid = "fcbfe87b-b8aa-461c-a5ac-b22bb29ad36d")] public readonly InputSlot<string> LocalIpAddress = new();
         [Input(Guid = "168d0023-554f-46cd-9e62-8f3d1f564b8d")] public readonly InputSlot<bool> SendTrigger = new();
         [Input(Guid = "73babdb1-f88f-4e4d-aa3f-0536678b0793")] public readonly InputSlot<bool> Reconnect = new();
         [Input(Guid = "d293bb33-2fba-4048-99b8-86aa15a478f2")] public readonly InputSlot<bool> SendSync = new();

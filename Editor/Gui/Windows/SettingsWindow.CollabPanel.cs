@@ -1,4 +1,4 @@
-#nullable enable
+﻿#nullable enable
 using ImGuiNET;
 using Newtonsoft.Json.Linq;
 using T3.Core.DataTypes.Vector;
@@ -107,7 +107,7 @@ internal sealed partial class SettingsWindow
 
             PanelLayout.Space(PanelLayout.SpaceS);
             FormInputs.SetCursorToParameterEdit();
-            if (ImGui.Button("Open the Collab window"))
+            if (ImGui.Button("Open the Collab Window"))
                 WindowManager.CollabWindow.Config.Visible = true;
 
             CustomComponents.TooltipForLastItem("Participants, whispers, listing and chat live there now.");
@@ -131,7 +131,7 @@ internal sealed partial class SettingsWindow
             }
 
             PanelLayout.Space(PanelLayout.SpaceS);
-            if (CustomComponents.DrawCtaButton("Open the Collab window", Icon.None, UiColors.ForegroundFull, UiColors.StatusActivated, Color.Transparent))
+            if (CustomComponents.DrawCtaButton("Open the Collab Window", Icon.None, UiColors.ForegroundFull, UiColors.StatusActivated, Color.Transparent))
                 WindowManager.CollabWindow.Config.Visible = true;
         }
 
@@ -148,7 +148,11 @@ internal sealed partial class SettingsWindow
     private static string BuildInvite(CollabManager manager)
     {
         var relay = string.IsNullOrEmpty(manager.RelayEndpoint) ? RelayAddressOrDefault() : manager.RelayEndpoint;
-        return $"TiXL collab invite\nRelay: {relay}\nRoom: {manager.RoomCode}";
+        return $"""
+                TiXL collab invite
+                Relay: {relay}
+                Room: {manager.RoomCode}
+                """;
     }
 
     /// <summary>The configured relay, or the default relay when the field is empty.</summary>
@@ -353,7 +357,7 @@ internal sealed partial class SettingsWindow
             foreach (var (peerId, name) in roster)
             {
                 var presence = manager.GetPresence(peerId);
-                var color = presence?.AccentColor ?? new System.Numerics.Vector4(0.7f, 0.7f, 0.7f, 1f);
+                var color = presence?.AccentColor ?? UiColors.Gray.Rgba;
                 var activity = presence == null
                                    ? ""
                                    : presence.CompositionId == Guid.Empty
@@ -580,7 +584,7 @@ internal sealed partial class SettingsWindow
 
         PanelLayout.EndSection();
 
-        DrawNetworkInterface(ref changed);
+        DrawNetworkAdapterHint("Collaboration", ref UserSettings.Config.CollabInterface, ref changed);
 
         if (manager.IsSessionActive)
             return;

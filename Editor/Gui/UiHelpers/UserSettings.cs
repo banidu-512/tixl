@@ -27,6 +27,7 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
 
     internal UserSettings(bool saveOnQuit) : base("userSettings.json", saveOnQuit: saveOnQuit)
     {
+        MigrateSharedNetworkInterface();
         RemoveDuplicateProjectDirectories();
         RemoveDuplicateBoygroupGroups();
     }
@@ -35,6 +36,29 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
     {
         RemoveDuplicateProjectDirectories();
         RemoveDuplicateBoygroupGroups();
+    }
+
+    /// <summary>
+    /// One-time migration for setups configured before the session services got their own adapter
+    /// selectors: the shared NetworkInterface seeds the per-service fields and is cleared, so the
+    /// services keep their binding and empty (Automatic) stays a real choice afterwards.
+    /// </summary>
+    private static void MigrateSharedNetworkInterface()
+    {
+        if (string.IsNullOrWhiteSpace(Config.NetworkInterface))
+            return;
+
+        var shared = Config.NetworkInterface;
+        if (string.IsNullOrWhiteSpace(Config.BoygroupInterface))
+            Config.BoygroupInterface = shared;
+
+        if (string.IsNullOrWhiteSpace(Config.CollabInterface))
+            Config.CollabInterface = shared;
+
+        if (string.IsNullOrWhiteSpace(Config.FailoverInterface))
+            Config.FailoverInterface = shared;
+
+        Config.NetworkInterface = "";
     }
 
     /// <summary>
@@ -287,9 +311,21 @@ public sealed class UserSettings : Settings<UserSettings.ConfigData>
         public bool EnableAutoBackup = true;
         public bool MinimalBackup = true;
 
-        /// <summary>The network adapter TiXL binds to for hosting collaboration and boygrouping,
-        /// LAN discovery and failover heartbeats (Settings → Network). Empty = all interfaces.</summary>
+        /// <summary>The shared network adapter of setups configured before the per-service selectors;
+        /// migrated into the per-service fields on load and kept only so older files load cleanly.</summary>
         public string NetworkInterface = "";
+
+        /// <summary>The adapter boygroup hosting and LAN discovery bind to (Settings → Networking).
+        /// Empty = all interfaces.</summary>
+        public string BoygroupInterface = "";
+
+        /// <summary>The adapter collaboration hosting binds to (Settings → Networking).
+        /// Empty = all interfaces.</summary>
+        public string CollabInterface = "";
+
+        /// <summary>The adapter failover heartbeats bind to (Settings → Networking).
+        /// Empty = all interfaces.</summary>
+        public string FailoverInterface = "";
 
         // Collaboration
         /// <summary>Persistent participant id; also seeds the per-user accent color.</summary>

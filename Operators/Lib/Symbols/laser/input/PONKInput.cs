@@ -1,4 +1,4 @@
-#nullable enable
+﻿#nullable enable
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Diagnostics;
@@ -17,7 +17,7 @@ namespace Lib.laser.input;
 
 /// <summary>
 /// Receives laser frames from PONK-over-UDP senders (MadMapper, another TiXL instance, ...).
-/// A background listener binds <see cref="Port"/> on <see cref="LocalIpAddress"/> and joins the
+/// A background listener binds <see cref="Port"/> on the adapter chosen on the Networking settings page and joins the
 /// default multicast group; chunked frames are reassembled per sender, checksummed, decoded and
 /// republished as ILDA-style <see cref="LaserPoint"/>s. The listener is generation-owned and
 /// joined on stop so a settings change can never leave two threads feeding the same scratch.
@@ -60,9 +60,6 @@ internal sealed class PONKInput : Instance<PONKInput>, IStatusProvider, ICustomD
     #region Inputs
     [Input(Guid = "F1E2D3C4-B5A6-7890-ABCD-EF1234567801")]
     public readonly InputSlot<bool> Active = new(true);
-
-    [Input(Guid = "F1E2D3C4-B5A6-7890-ABCD-EF1234567802")]
-    public readonly InputSlot<string> LocalIpAddress = new();
 
     [Input(Guid = "F1E2D3C4-B5A6-7890-ABCD-EF1234567803")]
     public readonly InputSlot<int> Port = new(DefaultPort);
@@ -194,41 +191,6 @@ internal sealed class PONKInput : Instance<PONKInput>, IStatusProvider, ICustomD
     }
     #endregion
 
-    #region Network Interface Info
-    private static List<NetworkAdapterInfo> _networkInterfaces = GetNetworkInterfaces();
-
-    private sealed record NetworkAdapterInfo(IPAddress IpAddress, string Name)
-    {
-        public string DisplayName => $"{Name}: {IpAddress}";
-    }
-
-    private static List<NetworkAdapterInfo> GetNetworkInterfaces()
-    {
-        var list = new List<NetworkAdapterInfo>
-        {
-            new(IPAddress.Any, "All Interfaces (0.0.0.0)"),
-            new(IPAddress.Loopback, "Localhost (127.0.0.1)"),
-        };
-        try
-        {
-            foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
-            {
-                if (ni.OperationalStatus == OperationalStatus.Up &&
-                    ni.NetworkInterfaceType != NetworkInterfaceType.Loopback)
-                {
-                    foreach (var ip in ni.GetIPProperties().UnicastAddresses)
-                    {
-                        if (ip.Address.AddressFamily == AddressFamily.InterNetwork)
-                            list.Add(new NetworkAdapterInfo(ip.Address, ni.Name));
-                    }
-                }
-            }
-        }
-        catch { /* ignore */ }
-        return list;
-    }
-    #endregion
-
     #region Constructor & Dispose
     public PONKInput()
     {
@@ -263,20 +225,13 @@ internal sealed class PONKInput : Instance<PONKInput>, IStatusProvider, ICustomD
     #region ICustomDropdownHolder
     string ICustomDropdownHolder.GetValueForInput(Guid id)
     {
-        if (id == LocalIpAddress.Id) return LocalIpAddress.Value ?? string.Empty;
         if (id == FilterSenderName.Id) return FilterSenderName.Value ?? string.Empty;
         return string.Empty;
     }
 
     IEnumerable<string> ICustomDropdownHolder.GetOptionsForInput(Guid id)
     {
-        if (id == LocalIpAddress.Id)
-        {
-            _networkInterfaces = GetNetworkInterfaces();
-            foreach (var adapter in _networkInterfaces)
-                yield return adapter.DisplayName;
-        }
-        else if (id == FilterSenderName.Id)
+        if (id == FilterSenderName.Id)
         {
             if (_knownStreams.IsEmpty)
             {
@@ -293,12 +248,7 @@ internal sealed class PONKInput : Instance<PONKInput>, IStatusProvider, ICustomD
     void ICustomDropdownHolder.HandleResultForInput(Guid id, string? value, bool isListItem)
     {
         if (string.IsNullOrEmpty(value) || !isListItem) return;
-        if (id == LocalIpAddress.Id)
-        {
-            var parts = value.Split(": ");
-            if (parts.Length > 1) LocalIpAddress.SetTypedInputValue(parts[1]);
-        }
-        else if (id == FilterSenderName.Id)
+        if (id == FilterSenderName.Id)
         {
             // Entries look like "Name (ip)" - store just the name; "(any sender)" clears the filter
             if (value.StartsWith("(any", StringComparison.Ordinal))
@@ -323,7 +273,7 @@ internal sealed class PONKInput : Instance<PONKInput>, IStatusProvider, ICustomD
         {
             _printToLog = PrintToLog.GetValue(context);
             var active = Active.GetValue(context);
-            var localIp = LocalIpAddress.GetValue(context) ?? string.Empty;
+            var localIp = ProtocolInterfaces.ResolveAddressString(ProtocolInterfaces.Keys.Ponk);
             var port = Port.GetValue(context);
 
             // Snapshot the decode-time inputs for the listener thread

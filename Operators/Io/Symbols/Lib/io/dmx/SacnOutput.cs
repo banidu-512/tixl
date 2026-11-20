@@ -1,4 +1,4 @@
-#nullable enable
+﻿#nullable enable
 using System.Diagnostics;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
@@ -27,7 +27,6 @@ internal sealed class SacnOutput : Instance<SacnOutput>, IStatusProvider, ICusto
     private string? _lastErrorMessage;
     private IStatusProvider.StatusLevel _lastStatusLevel = IStatusProvider.StatusLevel.Notice;
     private readonly byte[] _cid = Guid.NewGuid().ToByteArray();
-    private double _lastNetworkRefreshTime;
     private double _lastRetryTime;
 
     // --- High-Performance Sending Resources ---
@@ -85,15 +84,11 @@ internal sealed class SacnOutput : Instance<SacnOutput>, IStatusProvider, ICusto
 
     private void Update(EvaluationContext context)
     {
-        var localIpString = LocalIpAddress.GetValue(context);
+        // Bind adapter comes from the Networking settings page (per machine, never part of the
+        // project). "0.0.0.0" keeps the resolver's substitute-an-adapter behavior for multicast.
+        var localIpString = ProtocolInterfaces.ResolveAddressString(ProtocolInterfaces.Keys.Sacn);
 
-        if (string.IsNullOrEmpty(localIpString) && context.LocalTime - _lastNetworkRefreshTime > 5.0)
-        {
-            _lastNetworkRefreshTime = context.LocalTime;
-            _networkInterfaces = GetNetworkInterfaces();
-        }
-
-        // The stored address may belong to another machine (a failover pair or boygroup shares one project).
+        // The resolved address may still belong to another machine (a failover pair or boygroup shares one project).
         _adapterResolver.Update(localIpString, TargetIpAddress.GetValue(context), context.LocalTime);
         localIpString = _adapterResolver.EffectiveIp;
 
@@ -566,24 +561,6 @@ internal sealed class SacnOutput : Instance<SacnOutput>, IStatusProvider, ICusto
     }
 
     private readonly T3.Core.Show.LocalAdapterResolver _adapterResolver = new();
-    private static List<NetworkAdapterInfo> _networkInterfaces = GetNetworkInterfaces();
-
-    private static List<NetworkAdapterInfo> GetNetworkInterfaces()
-    {
-        var list = new List<NetworkAdapterInfo> { new(IPAddress.Loopback, IPAddress.Parse("255.0.0.0"), "Localhost (127.0.0.1)") };
-        try
-        {
-            list.AddRange(from ni in NetworkInterface.GetAllNetworkInterfaces()
-                          where ni.OperationalStatus == OperationalStatus.Up && ni.NetworkInterfaceType != NetworkInterfaceType.Loopback
-                          from ip in ni.GetIPProperties().UnicastAddresses
-                          where ip.Address.AddressFamily == AddressFamily.InterNetwork
-                          select new NetworkAdapterInfo(ip.Address, ip.IPv4Mask, ni.Name));
-        }
-        catch { /* Ignore */ }
-        return list;
-    }
-
-    private sealed record NetworkAdapterInfo(IPAddress IpAddress, IPAddress SubnetMask, string Name) { public string DisplayName => $"{Name}: {IpAddress}"; }
     private struct SacnPacketOptions { public int MaxFps; public byte Priority; public string SourceName; public bool EnableSync; public ushort SyncUniverse; }
 
     private sealed class ConnectionSettings
@@ -612,19 +589,13 @@ internal sealed class SacnOutput : Instance<SacnOutput>, IStatusProvider, ICusto
     public void SetStatus(string m, IStatusProvider.StatusLevel l) { _lastErrorMessage = m; _lastStatusLevel = l; }
     string ICustomDropdownHolder.GetValueForInput(Guid inputId)
     {
-        if (inputId == LocalIpAddress.Id) return _adapterResolver.EffectiveIp ?? LocalIpAddress.Value ?? string.Empty;
         if (inputId == TargetIpAddress.Id) return TargetIpAddress.Value ?? string.Empty;
         return string.Empty;
     }
 
     IEnumerable<string> ICustomDropdownHolder.GetOptionsForInput(Guid inputId)
     {
-        if (inputId == LocalIpAddress.Id)
-        {
-            _networkInterfaces = GetNetworkInterfaces();
-            foreach (var adapter in _networkInterfaces) yield return adapter.DisplayName;
-        }
-        else if (inputId == TargetIpAddress.Id)
+        if (inputId == TargetIpAddress.Id)
         {
             if (!_isDiscovering && _discoveredSources.IsEmpty) yield return "Enable 'Discover Sources' to search...";
             else if (_isDiscovering && _discoveredSources.IsEmpty) yield return "Searching for sources...";
@@ -634,14 +605,7 @@ internal sealed class SacnOutput : Instance<SacnOutput>, IStatusProvider, ICusto
 
     void ICustomDropdownHolder.HandleResultForInput(Guid inputId, string? selected, bool isAListItem)
     {
-        if (string.IsNullOrEmpty(selected) || !isAListItem) return;
-        if (inputId == LocalIpAddress.Id)
-        {
-            var foundAdapter = _networkInterfaces.FirstOrDefault(i => i.DisplayName == selected);
-            if (foundAdapter == null) return;
-            LocalIpAddress.SetTypedInputValue(foundAdapter.IpAddress.ToString());
-        }
-        else if (inputId == TargetIpAddress.Id)
+        if (string.IsNullOrEmpty(selected) || !isAListItem || inputId != TargetIpAddress.Id) return;
         {
             var match = Regex.Match(selected, @"\(([^)]*)\)");
             TargetIpAddress.SetTypedInputValue(match.Success ? match.Groups[1].Value : selected);
@@ -652,7 +616,6 @@ internal sealed class SacnOutput : Instance<SacnOutput>, IStatusProvider, ICusto
     #region Inputs
     [Input(Guid = "2a8d39a3-5a41-477d-815a-8b8b9d8b1e4a")] public readonly MultiInputSlot<List<int>> InputsValues = new();
     [Input(Guid = "B2C3D4E5-F6A7-8901-BCDE-F234567890AB")] public readonly InputSlot<List<int>> UniverseChannels = new();
-    [Input(Guid = "f8a7e0c8-c6c7-4b53-9a3a-3e5f2a4f4e1c")] public readonly InputSlot<string> LocalIpAddress = new();
     [Input(Guid = "9c233633-959f-4447-b248-4d431c1b18e7")] public readonly InputSlot<bool> SendTrigger = new();
     [Input(Guid = "c2a9e3e3-a4e9-430b-9c6a-4e1a1e0b8e2e")] public readonly InputSlot<bool> Reconnect = new();
     [Input(Guid = "8c6c9a8d-29c5-489e-8c6b-9e4a3c1e2b6a")] public readonly InputSlot<bool> SendUnicast = new();

@@ -44,7 +44,7 @@ public static partial class T3Ui
         _failoverConfig.HeartbeatMs = UserSettings.Config.FailoverHeartbeatMs;
         _failoverConfig.TimeoutFactor = UserSettings.Config.FailoverTimeoutFactor;
         _failoverConfig.Preempt = UserSettings.Config.FailoverPreempt;
-        _failoverConfig.NetworkInterfaceName = UserSettings.Config.NetworkInterface;
+        _failoverConfig.NetworkInterfaceName = UserSettings.Config.FailoverInterface;
         // Advertised so the standby can open the same show; empty while the hub is shown.
         _failoverConfig.ProjectName = Show.ProjectFollower.OpenProjectName ?? "";
         T3.Core.Show.FailoverArbiter.ApplyConfig(_failoverConfig);

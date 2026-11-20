@@ -34,6 +34,7 @@ internal sealed partial class SettingsWindow : Window
     {
         Interface,
         Theme,
+        Networking,
         Projects,
         Startup,
         AiModels,
@@ -381,6 +382,10 @@ internal sealed partial class SettingsWindow : Window
                     FormInputs.AddVerticalSpace();
 
                     ColorThemeEditor.DrawEditor();
+                    break;
+
+                case Categories.Networking:
+                    DrawNetworkingPanel(ref changed);
                     break;
 
                 case Categories.Startup:
@@ -925,6 +930,7 @@ internal sealed partial class SettingsWindow : Window
                                                                     {
                                                                         Categories.Interface  => "User Interface",
                                                                         Categories.Theme      => "Color Theme",
+                                                                        Categories.Networking => "Networking",
                                                                         Categories.Projects   => "Project specific settings",
                                                                         Categories.Startup    => "Startup and Recovery",
                                                                         Categories.AiModels   => "AI Models",

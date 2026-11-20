@@ -1,4 +1,4 @@
-# PONKInput
+﻿# PONKInput
 
 `Operators/Lib/Symbols/laser/input/PONKInput.cs`
 
@@ -18,7 +18,6 @@ Receives laser frames from any PONK-compliant sender (e.g. MadMapper) and turns 
 | Input | Default | Purpose |
 |-------|---------|---------|
 | `Active` | on | Start/stop the listener |
-| `LocalIpAddress` | - | Interface to bind (dropdown lists IPv4 adapters); empty = all interfaces |
 | `Port` | 5583 | UDP port to listen on |
 | `Timeout` | 1.2 s | Age at which incomplete frames are discarded |
 | `ExpectedSenderId` | 0 | Accept only this sender id (0 = any) |

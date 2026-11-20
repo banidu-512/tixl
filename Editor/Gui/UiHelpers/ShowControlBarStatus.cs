@@ -1,4 +1,4 @@
-#nullable enable
+﻿#nullable enable
 using ImGuiNET;
 using System.Net;
 using System.Net.Sockets;
@@ -399,7 +399,7 @@ internal static class ShowControlBarStatus
         var boygroup = BoygroupManager.Instance;
         if (boygroup.State == BoygroupManager.BoygroupState.Server)
         {
-            var ip = LocalAddress(FirstAddress(boygroup.Clients)) ?? "any";
+            var ip = LocalAddress(FirstAddress(boygroup.Clients), UserSettings.Config.BoygroupInterface) ?? "any";
             var detail = new List<string>
                              {
                                  "Boygrouping — Master (server)",
@@ -448,7 +448,7 @@ internal static class ShowControlBarStatus
         {
             if (collab.State == CollabManager.SessionState.Hosting)
             {
-                var ip = LocalAddress(FirstAddress(collab.Peers)) ?? "any";
+                var ip = LocalAddress(FirstAddress(collab.Peers), UserSettings.Config.CollabInterface) ?? "any";
                 var detail = new List<string>
                                  {
                                      "Collaboration — Hosting",
@@ -496,13 +496,13 @@ internal static class ShowControlBarStatus
         clients.Count > 0 ? clients[0].Peer.RemoteAddress?.ToString() : null;
 
     /// <summary>
-    /// The address the serving side is reached on: the pinned adapter when set (Settings →
-    /// Network), otherwise the local interface a UDP probe toward the first connected peer would
+    /// The address the serving side is reached on: the adapter pinned for that service (Settings →
+    /// Networking), otherwise the local interface a UDP probe toward the first connected peer would
     /// use — the same route the real show traffic takes.
     /// </summary>
-    private static string? LocalAddress(string? towardAddress)
+    private static string? LocalAddress(string? towardAddress, string adapterName)
     {
-        var pinned = LanInterfaces.ResolveAddress(UserSettings.Config.NetworkInterface)?.ToString();
+        var pinned = LanInterfaces.ResolveAddress(adapterName)?.ToString();
         if (!string.IsNullOrEmpty(pinned))
             return pinned;
 
