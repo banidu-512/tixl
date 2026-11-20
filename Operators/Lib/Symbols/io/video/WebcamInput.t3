@@ -3,6 +3,10 @@
   "Id": "cd5a182e-254b-4e65-820b-ff754122614c"/*WebcamInput*/,
   "Inputs": [
     {
+      "Id": "06c894a8-fe69-4cf6-bf54-b9c155b8f035"/*ControlValue*/,
+      "DefaultValue": 0.0
+    },
+    {
       "Id": "11f7432d-31f1-44b9-8f75-b1569b314b13"/*CustomFps*/,
       "DefaultValue": 0
     },
@@ -66,6 +70,10 @@
       }
     },
     {
+      "Id": "84b6e3c9-1a52-4f7d-9e28-67d3f1a5b496"/*Exposure*/,
+      "DefaultValue": 0.0
+    },
+    {
       "Id": "8d2c28c7-1234-40e2-9388-75574519543d"/*OpenSettings*/,
       "DefaultValue": false
     },
@@ -76,6 +84,10 @@
     {
       "Id": "a57e815d-70c9-4d3b-998c-d13506b8f56e"/*FlipHorizontally*/,
       "DefaultValue": false
+    },
+    {
+      "Id": "a5f4d2b8-63e9-4c17-8d40-52b7e9c6f183"/*Focus*/,
+      "DefaultValue": 0.0
     },
     {
       "Id": "c9e1c1f6-3a18-4a1c-8a5e-4b4119965b6e"/*CustomResolution*/,

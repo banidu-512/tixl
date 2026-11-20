@@ -103,6 +103,7 @@
     <ProjectReference Include="..\..\Graphics\Graphics.csproj" Private="false" PrivateAssets="all" />
     <ProjectReference Include="..\..\Graphics.Compat\Graphics.Compat.csproj" Private="false" PrivateAssets="all" />
     <ProjectReference Include="..\..\Logging\Logging.csproj" Private="false" PrivateAssets="all" />
+    <ProjectReference Include="..\..\SystemUi\SystemUi.csproj" Private="false" PrivateAssets="all" />
     <!-- FFmpeg video services (decode + encode). -->
     <ProjectReference Include="..\..\VideoServices\VideoServices.csproj" />
   </ItemGroup>

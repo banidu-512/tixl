@@ -1,8 +1,10 @@
 #nullable enable
 using System.Threading;
 using Sdcb.FFmpeg.Utils;
+using T3.Core.Utils;
 using T3.Core.Video;
 using T3.Graphics.Compat;
+using T3.SystemUi;
 using T3.VideoServices;
 
 namespace Lib.io.video;
@@ -14,7 +16,7 @@ namespace Lib.io.video;
 /// native initialization and could not run on Linux at all.
 /// </summary>
 [Guid("34c2d58d-ae76-47b6-9713-02911a783341")]
-public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolder, IStatusProvider, IRemoteVideoInput
+public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolder, IStatusProvider, IRemoteVideoInput, ICameraSettingsHolder
 {
     // Output slots
     [Output(Guid = "1d0159cc-33d2-46b1-9c0c-7054aa560df5", DirtyFlagTrigger = DirtyFlagTrigger.Animated)]
@@ -94,6 +96,10 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
     [Input(Guid = "8D2C28C7-1234-40E2-9388-75574519543D")]
     public readonly InputSlot<bool> OpenSettings = new();
 
+    /// <summary>Values committed in the camera settings window, re-applied whenever the camera opens.</summary>
+    [Input(Guid = "32F597E7-EB25-45BE-B37A-153214B1119E")]
+    public readonly InputSlot<string> CameraSettings = new();
+
     [Input(Guid = "D91C4A7E-5B36-4E82-9F10-7C64A2D8E513")]
     public readonly InputSlot<float> Pan = new();
 
@@ -117,6 +123,27 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
 
     private CancellationTokenSource? _cancellationTokenSource;
     private Thread? _captureThread;
+
+    // Edge-trigger latches (MathUtils.WasTriggered): a connected input held at true must not restart the
+    // camera or re-open the settings window on every frame.
+    private bool _reconnectWasTrue;
+    private bool _openSettingsWasTrue;
+
+    // DeactivateWhenNotShowing, done like WebcamInput: an operator that stops being evaluated cannot be
+    // told about it, so the capture thread times the evaluation gap itself and releases the camera.
+    private volatile bool _deactivateWhenIdle;
+    private long _lastEvaluationTicks = Environment.TickCount64;
+
+    // Format the running capture thread was started with — a format change needs a device reopen, while
+    // flips / rotation / scale / reposition flow to the running thread through _sharedSettings.
+    private (ResolutionFpsTypeEnum Type, Int2 Resolution, int Fps)? _runningFormat;
+
+    // Latest CaptureThreadSettings snapshot, written by the evaluation thread and re-read by the capture
+    // thread per frame, so transform edits apply without a restart.
+    private volatile CaptureThreadSettings? _sharedSettings;
+
+    // Size frames actually arrive in, for the camera settings window.
+    private CameraMode _activeCameraMode;
 
     // Capture threads whose join timed out. They observe cancellation and exit on their own; the references
     // keep their token sources alive and let a restart wait for the device to be released.
@@ -258,6 +285,12 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
 
     private void Update(EvaluationContext context)
     {
+        // The capture thread watches this to honour DeactivateWhenNotShowing: an operator that stops being
+        // evaluated cannot be told about it, so the thread times the gap itself.
+        _lastEvaluationTicks = Environment.TickCount64;
+        var deactivateWhenNotShowing = DeactivateWhenNotShowing.GetValue(context);
+        _deactivateWhenIdle = deactivateWhenNotShowing;
+
         var configuredDevice = InputDeviceName.GetValue(context);
         var waitingForPeerMachine = ResolvePeerSelection(ref configuredDevice);
         if (!string.IsNullOrWhiteSpace(configuredDevice))
@@ -287,7 +320,8 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
             deviceName = WebcamScan.Devices[0].Name;
         }
 
-        var reconnectTriggered = Reconnect.GetValue(context);
+        // Edge-triggered: a connected input held at true must not restart the camera on every frame.
+        var reconnectTriggered = MathUtils.WasTriggered(Reconnect.GetValue(context), ref _reconnectWasTrue);
         if (reconnectTriggered)
         {
             Reconnect.SetTypedInputValue(false);
@@ -307,6 +341,9 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
                 var device = new WebcamWithIndex(deviceName!, reconnectedIndex);
                 worker.InvalidateHandles(device);
                 worker.EnqueueRefresh(device);
+
+                // Settings window values re-apply after the device's catalog refresh completes.
+                ApplyStoredCameraSettings(context, device);
             }
         }
 
@@ -350,14 +387,30 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
                 var selectedDevice = new WebcamWithIndex(deviceName!, selectedDeviceIndex);
                 worker.InvalidateHandles(selectedDevice);
                 worker.EnqueueRefresh(selectedDevice);
+
+                // Settings window values re-apply after the new device's catalog refresh completes.
+                ApplyStoredCameraSettings(context, selectedDevice);
             }
 
             ApplyBasicConfigs(context, deviceName!, selectedDeviceIndex);
 
             var deviceIsActive = Active.GetValue(context);
-            var deactivateWhenNotShowing = DeactivateWhenNotShowing.GetValue(context);
 
+            // One settings snapshot per evaluation: shared with the capture thread so flips / rotation /
+            // scale / reposition edits apply live, while format changes (needing a device reopen) restart.
+            var settings = new CaptureThreadSettings(this, context);
+            _sharedSettings = settings;
             bool shouldBeCapturing = deviceIsActive && (!deactivateWhenNotShowing || IsActiveInGraph());
+
+            if (shouldBeCapturing && IsCaptureThreadRunning())
+            {
+                var format = (settings.ResolutionFpsType, settings.CustomResolution, settings.CustomFps);
+                if (format != _runningFormat)
+                {
+                    SetStatus("Restarting capture for the new format...");
+                    StopCaptureThread();
+                }
+            }
 
             if (shouldBeCapturing)
             {
@@ -369,12 +422,15 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
                 if (!IsCaptureThreadRunning())
                 {
                     _storeDeviceIndex = selectedDeviceIndex;
-                    StartCaptureThread(context);
+                    StartCaptureThread(settings);
                 }
             }
             else
             {
+                var wasCapturing = IsCaptureThreadRunning();
                 StopCaptureThread();
+                if (wasCapturing)
+                    SetStatus("Stopped");
             }
 
             if (applyControlTriggered)
@@ -384,10 +440,20 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
             }
         }
 
-        if (OpenSettings.GetValue(context))
+        if (MathUtils.WasTriggered(OpenSettings.GetValue(context), ref _openSettingsWasTrue))
         {
-            OpenVideoSettings();
             OpenSettings.SetTypedInputValue(false);
+            var openDeviceName = InputDeviceName.Value;
+            if (!string.IsNullOrWhiteSpace(openDeviceName)
+                && WebcamScan.TryGetIndexForName(openDeviceName, out var openDeviceIndex))
+            {
+                // Populate the control catalog for the window; the read runs on the control worker.
+                var openDevice = new WebcamWithIndex(openDeviceName, openDeviceIndex);
+                GetOrCreateControlWorker().EnqueueRefresh(openDevice);
+            }
+
+            if (!CameraSettingsWindow.TryOpen(this))
+                SetStatus("Warning: The camera settings window is only available in the editor.");
         }
 
         // New frame? The camera delivers ~30 fps while the editor evaluates ~60 — uploading every update
@@ -414,10 +480,19 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
 
         if (hasNewFrame)
         {
-            UploadFrameToGpu(_uploadBuffer!, frameWidth, frameHeight);
-            Texture.Value = _gpuTexture!;
-            UpdateCount.Value++;
-            Resolution.Value = new Int2(frameWidth, frameHeight);
+            try
+            {
+                UploadFrameToGpu(_uploadBuffer!, frameWidth, frameHeight);
+                Texture.Value = _gpuTexture!;
+                UpdateCount.Value++;
+                Resolution.Value = new Int2(frameWidth, frameHeight);
+                _activeCameraMode = new CameraMode(frameWidth, frameHeight, 0);
+            }
+            catch (Exception e)
+            {
+                // A lost device must not escape the evaluation; keep showing the previous frame.
+                SetStatus($"Error: Uploading the camera frame failed - {e.Message}");
+            }
         }
 
         // Control-worker publications: a new control status message is copied into the op status once
@@ -616,9 +691,19 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
                                                 auto ? null : value, auto);
     }
 
-    private bool IsActiveInGraph() => true;
+    /// <summary>
+    /// True once DeactivateWhenNotShowing is on and no evaluation has run for a while — the only way an
+    /// operator can notice that nothing renders it, since an unrendered operator is never updated again.
+    /// </summary>
+    private bool IsPausedForIdleFrame()
+        => _deactivateWhenIdle && Environment.TickCount64 - _lastEvaluationTicks > DeactivateTimeoutMs;
 
-    private void StartCaptureThread(EvaluationContext context)
+    private bool IsActiveInGraph() => !IsPausedForIdleFrame();
+
+    private const int DeactivateTimeoutMs = 3000;
+    private const int IdlePollIntervalMs = 250;
+
+    private void StartCaptureThread(CaptureThreadSettings settings)
     {
         if (IsCaptureThreadRunning()) return;
 
@@ -639,7 +724,8 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
         if (device == null)
             return;
 
-        var settings = new CaptureThreadSettings(this, context);
+        _sharedSettings = settings;
+        _runningFormat = (settings.ResolutionFpsType, settings.CustomResolution, settings.CustomFps);
         _cancellationTokenSource = new CancellationTokenSource();
         var token = _cancellationTokenSource.Token;
 
@@ -679,6 +765,18 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
     {
         while (!token.IsCancellationRequested)
         {
+            // DeactivateWhenNotShowing: nothing evaluates this op any more, so stop holding the camera.
+            // The thread parks here instead of exiting, ready to reopen the moment evaluation resumes.
+            if (IsPausedForIdleFrame())
+            {
+                SetStatus("Paused (not rendered)");
+                for (var waited = 0; waited < 1000 && !token.IsCancellationRequested; waited += 100)
+                    Thread.Sleep(100);
+                continue;
+            }
+
+            // Transforms are re-read per attempt; the frame loop below re-reads them per frame.
+            settings = _sharedSettings ?? settings;
             var shouldRetry = TryCaptureFromDevice(settings, device, token);
             if (!shouldRetry)
                 return;
@@ -762,12 +860,18 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
 
             while (!token.IsCancellationRequested)
             {
+                // Pause exit: the thread ends and the camera is released; the next evaluation restarts it.
+                if (IsPausedForIdleFrame())
+                    return false;
+
                 if (!session.TryReadNextFrame(out _))
                 {
                     SetStatus($"Error: Lost camera '{device.Name}'.");
                     return true;
                 }
 
+                // Re-read the latest snapshot per frame: flip / warp edits apply while the camera runs.
+                var frameSettings = _sharedSettings ?? settings;
                 var rgba = converter.Convert(session.CurrentFrame, targetWidth, targetHeight);
                 var byteCount = rgba.Width * rgba.Height * converter.BytesPerPixel;
 
@@ -776,7 +880,7 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
                     if (_sharedRgba == null || _sharedRgba.Length < byteCount)
                         _sharedRgba = new byte[byteCount];
 
-                    CopyTransformedPixels(rgba, converter.BytesPerPixel, settings, _sharedRgba);
+                    CopyTransformedPixels(rgba, converter.BytesPerPixel, frameSettings, _sharedRgba);
                     _sharedWidth = rgba.Width;
                     _sharedHeight = rgba.Height;
                     _hasFrame = true;
@@ -1131,17 +1235,154 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
     }
 
     #region Device Configuration UI
-    private void OpenVideoSettings()
+    /// <summary>
+    /// Re-applies the values committed in the camera settings window (the <see cref="CameraSettings"/>
+    /// input) after a camera opens, reconnects or the device changes. The worker defers these applies
+    /// until the device's catalog snapshot exists, so they resolve against the right control set.
+    /// </summary>
+    private void ApplyStoredCameraSettings(EvaluationContext context, WebcamWithIndex device)
     {
-        // The DirectShow property-page dialog went away with the OpenCV backend; FFmpeg's dshow/v4l2
-        // demuxers expose no driver-settings UI.
-        SetStatus("Warning: Device settings dialogs are not supported by the FFmpeg capture backend.");
+        var stored = CameraSettings.GetValue(context);
+        if (string.IsNullOrWhiteSpace(stored))
+            return;
+
+        foreach (var line in stored.Split('\n'))
+        {
+            var parts = line.Split('\t');
+            if (parts.Length != 3 || !int.TryParse(parts[1], out var value))
+                continue;
+
+            var isAuto = string.Equals(parts[2], "auto", StringComparison.OrdinalIgnoreCase);
+            if (isAuto)
+                GetOrCreateControlWorker().EnqueueApply(device, parts[0], null, true);
+            else if (!string.Equals(parts[2], "off", StringComparison.OrdinalIgnoreCase))
+                GetOrCreateControlWorker().EnqueueApply(device, parts[0], value, null);
+            else
+                GetOrCreateControlWorker().EnqueueApply(device, parts[0], null, false);
+        }
     }
 
     public void OpenCrossbarSettings()
     {
         Log.Debug("Crossbar settings not implemented for this version.");
     }
+    #endregion
+
+    #region Camera settings window
+    string ICameraSettingsHolder.CameraSettingsDeviceName => InputDeviceName.Value ?? "";
+
+    string ICameraSettingsHolder.CameraSettingsStatus
+        => _controlWorker != null && _controlWorker.LastControlMessage.Length > 0
+               ? _controlWorker.LastControlMessage
+               : "Reading device controls...";
+
+    IReadOnlyList<CameraSetting> ICameraSettingsHolder.GetCameraSettings()
+    {
+        var catalog = _controlWorker?.CurrentCatalog;
+        if (catalog == null || catalog.Controls.Count == 0)
+            return [];
+
+        var settings = new List<CameraSetting>(catalog.Controls.Count);
+        foreach (var control in catalog.Controls)
+        {
+            settings.Add(new CameraSetting(
+                control.Name,
+                GroupForControl(control.Name),
+                control.Kind switch
+                {
+                    CameraControlKind.Integer => CameraSettingKind.Integer,
+                    CameraControlKind.Boolean => CameraSettingKind.Boolean,
+                    CameraControlKind.Menu or CameraControlKind.IntegerMenu => CameraSettingKind.Menu,
+                    _ => CameraSettingKind.Button,
+                },
+                control.Minimum,
+                control.Maximum,
+                control.Step,
+                control.DefaultValue,
+                control.CurrentValue,
+                !string.IsNullOrEmpty(control.AutoControlName),
+                control.CurrentIsAuto,
+                (control.States & CameraControlStates.ReadOnly) != 0,
+                control.Items.Select(item => new CameraSettingItem(item.Value, item.Label)).ToList(),
+                IsSupported: true));
+        }
+
+        return settings;
+    }
+
+    void ICameraSettingsHolder.ApplyCameraSetting(string name, int? value, bool? auto)
+    {
+        var deviceName = InputDeviceName.Value;
+        if (string.IsNullOrWhiteSpace(deviceName)
+            || !WebcamScan.TryGetIndexForName(deviceName, out var deviceIndex))
+        {
+            SetStatus($"Warning: Cannot apply '{name}' — no camera selected or the device list is stale.");
+            return;
+        }
+
+        GetOrCreateControlWorker().EnqueueApply(new WebcamWithIndex(deviceName, deviceIndex), name, value, auto);
+    }
+
+    Guid ICameraSettingsHolder.StoredCameraSettingsInputId => CameraSettings.Id;
+
+    /** Tab-separated lines: Name<TAB>Value<TAB>auto|manual|off. "off" = manual without a value. */
+    string ICameraSettingsHolder.SerializeCameraSettings(IReadOnlyDictionary<string, (int Value, bool IsAuto)> settings)
+        => string.Join("\n", settings.Select(kv => $"{kv.Key}\t{kv.Value.Value}\t{(kv.Value.IsAuto ? "auto" : "manual")}"));
+
+    IReadOnlyList<CameraMode> ICameraSettingsHolder.GetCameraModes()
+    {
+        // WebcamScan caches the capability sweep; a filter + order here is all that is left to do.
+        return WebcamScan.GetCapabilities(InputDeviceName.Value)
+                         .DistinctBy(c => (c.Width, c.Height, c.Fps))
+                         .OrderByDescending(c => c.Width * c.Height)
+                         .ThenByDescending(c => c.Fps)
+                         .Select(c => new CameraMode(c.Width, c.Height, (int)Math.Round(c.Fps)))
+                         .ToList();
+    }
+
+    CameraMode ICameraSettingsHolder.RequestedCameraMode
+        => (ResolutionFpsTypeEnum)ResolutionFpsType.Value == ResolutionFpsTypeEnum.Custom
+               ? new CameraMode(CustomResolution.Value.X, CustomResolution.Value.Y, CustomFps.Value)
+               : default;
+
+    CameraMode ICameraSettingsHolder.ActiveCameraMode => _activeCameraMode;
+
+    CameraFormatInputs ICameraSettingsHolder.FormatInputs
+        => new(ResolutionFpsType.Id, (int)ResolutionFpsTypeEnum.DeviceDefault, (int)ResolutionFpsTypeEnum.Custom,
+               CustomResolution.Id, CustomFps.Id);
+
+    /** Image vs camera vs driver-extra grouping for the settings window tabs. */
+    private static CameraSettingGroup GroupForControl(string name)
+    {
+        foreach (var imageControl in ImageControlNames)
+        {
+            if (string.Equals(name, imageControl, StringComparison.OrdinalIgnoreCase))
+                return CameraSettingGroup.Image;
+        }
+
+        foreach (var cameraControl in OpticsControlNames)
+        {
+            if (string.Equals(name, cameraControl, StringComparison.OrdinalIgnoreCase))
+                return CameraSettingGroup.Camera;
+        }
+
+        return CameraSettingGroup.Other;
+    }
+
+    private static readonly string[] ImageControlNames =
+        [
+            CameraControlNames.Brightness, CameraControlNames.Contrast, CameraControlNames.Hue,
+            CameraControlNames.Saturation, CameraControlNames.Sharpness, CameraControlNames.Gamma,
+            CameraControlNames.WhiteBalance, CameraControlNames.BacklightCompensation,
+            CameraControlNames.Gain, CameraControlNames.ColorEnable, CameraControlNames.PowerLineFrequency,
+        ];
+
+    private static readonly string[] OpticsControlNames =
+        [
+            CameraControlNames.Pan, CameraControlNames.Tilt, CameraControlNames.Roll,
+            CameraControlNames.Zoom, CameraControlNames.Focus, CameraControlNames.Iris,
+            CameraControlNames.Exposure,
+        ];
     #endregion
 
     #region Dropdown UI
