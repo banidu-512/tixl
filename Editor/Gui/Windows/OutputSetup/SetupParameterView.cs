@@ -1816,6 +1816,19 @@ internal static partial class SetupParameterView
             SetupUndo.RunUndoable("Toggle laser beam", setup, () => safety.BeamEnable = beamEnable);
         }
 
+        var desiredFps = safety.DesiredFps;
+        if (FormInputs.AddInt("Desired FPS", ref desiredFps, 1, 120, 1,
+                              "Frames per second this output recomputes content at. Between updates the scanners loop the last frame at full scan rate, so the visible ILDA frame rate stays scan-rate / point count. Match a synced video's FPS; text stops blinking above ~45 FPS and blinking shows under ~35. Scanning faster than the hardware likes heats the scanners - lower is safer.", 60))
+        {
+            SetupUndo.RunUndoable("Set laser desired FPS", setup,
+                                  () => safety.DesiredFps = Math.Clamp(desiredFps, 1, 120));
+        }
+
+        var (pointCount, scanRate, effectiveFps) = LaserDriver.GetScanStats(output);
+        FormInputs.AddHint(pointCount > 0
+                               ? $"{pointCount} points · {scanRate} pps · {effectiveFps} fps scanned"
+                               : "No frame computed yet - the readout fills in once the pump ran.");
+
         Span<float> zone =
         [
             safety.SafeZoneCenterX, safety.SafeZoneCenterY, safety.SafeZoneWidth, safety.SafeZoneHeight,
@@ -2094,6 +2107,31 @@ internal static partial class SetupParameterView
             if ((levelState & InputEditStateFlags.Modified) != 0)
                 safety.RenderShapesLevel = float.IsNaN(shapeLevel[0]) ? 0.1f : Math.Clamp(shapeLevel[0], 0f, 1f);
             CommitFieldUndo(setup, "Laser safety shape level", levelState);
+
+            var customColor = safety.RenderShapesUseCustomColor;
+            if (FormInputs.AddCheckBox("Custom shape color", ref customColor,
+                                       "Draw the outlines in the color below instead of the semantic defaults (green = safe zone, orange = masks) - for matching a show's look or a dim red in dark venues."))
+            {
+                SetupUndo.RunUndoable("Toggle laser shape color", setup,
+                                      () => safety.RenderShapesUseCustomColor = customColor);
+            }
+
+            if (customColor)
+            {
+                Span<float> shapeColor = [safety.RenderShapesColorR, safety.RenderShapesColorG, safety.RenderShapesColorB];
+                var colorState = DrawFloatsRow("Shape color (R G B)", shapeColor,
+                                               "Outline color for the safe zone and masks, 0..1 per channel.",
+                                               reserveRight: 22);
+                BeginFieldUndo(setup, colorState);
+                if ((colorState & InputEditStateFlags.Modified) != 0)
+                {
+                    safety.RenderShapesColorR = float.IsNaN(shapeColor[0]) ? 1f : Math.Clamp(shapeColor[0], 0f, 1f);
+                    safety.RenderShapesColorG = float.IsNaN(shapeColor[1]) ? 0f : Math.Clamp(shapeColor[1], 0f, 1f);
+                    safety.RenderShapesColorB = float.IsNaN(shapeColor[2]) ? 0f : Math.Clamp(shapeColor[2], 0f, 1f);
+                }
+
+                CommitFieldUndo(setup, "Laser safety shape color", colorState);
+            }
         }
 
         if (safety.Masks.Count == 0)

@@ -293,6 +293,16 @@ internal static class LaserDriver
         var sending = output.IsSending;
         var now = Stopwatch.GetTimestamp();
 
+        // Desired-FPS pacing: between recomputes the streams loop the last submitted frame at
+        // scan rate, so skipping computes only lowers the content refresh rate. Gate on sending -
+        // a muted output must keep blanking every pump, not loop its last lit frame. The frame
+        // cache's timestamp doubles as the last-compute clock; no extra state per output.
+        var desiredFps = Math.Clamp(output.LaserProcessing?.Safety.DesiredFps ?? 60, 1, 120);
+        var minInterval = Stopwatch.Frequency / desiredFps;
+        if (sending && _frameCache.TryGetValue(output.Id, out var paced)
+                    && now - paced.Timestamp < minInterval)
+            return;
+
         // The first compute of a pump always runs - even a camera heavier than the whole budget
         // must get its turn instead of starving (checked against the hard wall only, which is
         // false at the start of a pump). Every later output reuses that pump's scene capture
@@ -405,6 +415,38 @@ internal static class LaserDriver
         }
 
         return Array.Empty<LaserPoint>();
+    }
+
+    /// <summary>Scanning readout for the setup UI: the last computed frame's point count, the
+    /// bound plug's scan rate (0 = the shared 30 kpps default), and the ILDA frame rate the
+    /// scanner actually achieves (PPS / points — 30k / 500 = 60). Zeros when nothing was
+    /// computed or no plug is bound. UI-thread only: the pump swaps the cache atomically, so a
+    /// concurrent read never tears.</summary>
+    public static (int PointCount, int ScanRate, int EffectiveFps) GetScanStats(OutputDefinition output)
+    {
+        var pointCount = _frameCache.TryGetValue(output.Id, out var cached) ? cached.Frame.Count : 0;
+
+        var machine = ActiveSetup.Machine;
+        var binding = machine?.FindBinding(output.Id);
+        var plug = binding is { IsLaser: true } ? machine!.FindLaserPlug(binding.PlugId) : null;
+        if (plug == null)
+            return (pointCount, 0, 0);
+
+        var scanRate = ResolvePlugScanRate(plug);
+        return (pointCount, scanRate, LaserProcessingSettings.SafetySettings.EffectiveFrameRate(scanRate, pointCount));
+    }
+
+    /// <summary>The plug's configured scan rate; 0 for the transports without a rate setting
+    /// (PONK streams at the receiver's rate) resolves to the shared 30 kpps default.</summary>
+    public static int ResolvePlugScanRate(LaserPlug plug)
+    {
+        var rate = plug.Kind switch
+                       {
+                           LaserPlug.Kinds.EtherDream => plug.EtherDream?.ScanRate ?? 0,
+                           LaserPlug.Kinds.ShowNet => plug.ShowNet?.ScanRate ?? 0,
+                           _ => 0,
+                       };
+        return rate == 0 ? 30000 : rate;
     }
 
     /// <summary>The live status of the stream serving this output — connection, buffer, watchdog.</summary>
@@ -805,6 +847,10 @@ internal static class LaserDriver
             }
 
             _frameCache.TryGetValue(output.Id, out var cached);
+            var diagPlug = machine.FindLaserBindings(output.Id)
+                                .Select(b => machine.FindLaserPlug(b.PlugId))
+                                .FirstOrDefault(p => p != null);
+            var diagScanRate = diagPlug == null ? 0 : ResolvePlugScanRate(diagPlug);
             yield return new
                              {
                                  name = output.Name,
@@ -812,6 +858,10 @@ internal static class LaserDriver
                                  testScreen = _testScreenOutputs.ContainsKey(output.Id),
                                  calibrated = output.LaserProcessing?.Safety.Calibrated ?? false,
                                  framePoints = cached.Frame.Count,
+                                 desiredFps = Math.Clamp(output.LaserProcessing?.Safety.DesiredFps ?? 60, 1, 120),
+                                 scanRatePps = diagScanRate,
+                                 effectiveFps = diagPlug == null ? 0
+                                                    : LaserProcessingSettings.SafetySettings.EffectiveFrameRate(diagScanRate, cached.Frame.Count),
                                  bindings,
                              };
         }

@@ -63,6 +63,11 @@ public sealed class LaserProcessingSettings
         writer.WriteValue("ColorShiftB", Safety.ColorShiftB);
         writer.WriteValue("RenderSafetyShapes", Safety.RenderSafetyShapes);
         writer.WriteValue("RenderShapesLevel", Safety.RenderShapesLevel);
+        writer.WriteValue("RenderShapesUseCustomColor", Safety.RenderShapesUseCustomColor);
+        writer.WriteValue("RenderShapesColorR", Safety.RenderShapesColorR);
+        writer.WriteValue("RenderShapesColorG", Safety.RenderShapesColorG);
+        writer.WriteValue("RenderShapesColorB", Safety.RenderShapesColorB);
+        writer.WriteValue("DesiredFps", Safety.DesiredFps);
         writer.WriteValue("SetupCenterX", Safety.SetupCenterX);
         writer.WriteValue("SetupCenterY", Safety.SetupCenterY);
         writer.WriteValue("SetupWidth", Safety.SetupWidth);
@@ -154,6 +159,11 @@ public sealed class LaserProcessingSettings
                                       ColorShiftB = safety.ReadValueSafe("ColorShiftB", 0),
                                       RenderSafetyShapes = safety.ReadValueSafe("RenderSafetyShapes", false),
                                       RenderShapesLevel = safety.ReadValueSafe("RenderShapesLevel", 0.1f),
+                                      RenderShapesUseCustomColor = safety.ReadValueSafe("RenderShapesUseCustomColor", false),
+                                      RenderShapesColorR = safety.ReadValueSafe("RenderShapesColorR", 1f),
+                                      RenderShapesColorG = safety.ReadValueSafe("RenderShapesColorG", 0f),
+                                      RenderShapesColorB = safety.ReadValueSafe("RenderShapesColorB", 0f),
+                                      DesiredFps = safety.ReadValueSafe("DesiredFps", 60),
                                       SetupCenterX = safety.ReadValueSafe("SetupCenterX", 0f),
                                       SetupCenterY = safety.ReadValueSafe("SetupCenterY", 0f),
                                       SetupWidth = safety.ReadValueSafe("SetupWidth", 0.04f),
@@ -307,6 +317,30 @@ public sealed class LaserProcessingSettings
         /// <summary>Brightness (0..1) of the rendered safety shapes. Kept low on purpose: the
         /// outline is an aiming aid, not content.</summary>
         public float RenderShapesLevel = 0.1f;
+
+        /// <summary>Draw the safety shapes in the custom color below instead of the semantic
+        /// defaults (safe zone green, masks orange) — for matching a show's look or a dim red.</summary>
+        public bool RenderShapesUseCustomColor;
+
+        /// <summary>Custom outline color for safety zone and masks, 0..1 per channel.</summary>
+        public float RenderShapesColorR = 1f;
+        public float RenderShapesColorG;
+        public float RenderShapesColorB;
+
+        /// <summary>
+        /// Target content refresh rate for this output (frames per second the pump recomputes and
+        /// submits new geometry). The scanner loops the last frame between updates, so the actual
+        /// ILDA frame rate stays PPS / point count — this paces the updates and, with the point
+        /// budget readout (PPS / desired FPS), tells whether the content fits the rate. Match it to
+        /// a synced video's FPS; above ~45 FPS the scan is invisible, under ~35 the blinking shows.
+        /// Scanning faster than the hardware likes hurts the scanners, so lower is safer.
+        /// </summary>
+        public int DesiredFps = 60;
+
+        /// <summary>The ILDA frame rate a device actually achieves: its scan rate over the points
+        /// in a frame (30 kpps / 500 points = 60 FPS). 0 for an empty frame.</summary>
+        public static int EffectiveFrameRate(int pointsPerSecond, int pointCount)
+            => pointCount > 0 ? Math.Clamp(pointsPerSecond, 0, 100000) / pointCount : 0;
 
         private int _masksVersion;
         private int _configuredMasksVersion = -1;

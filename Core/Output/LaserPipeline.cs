@@ -319,8 +319,9 @@ public static class LaserPipeline
 
     /// <summary>
     /// The safety shapes streamed as faint outlines when an output's Render Safety Shapes is on:
-    /// the safe-zone rectangle (green) and every enabled mask (orange), so the protected regions
-    /// can be checked against the real venue while aiming. Appended after the safety stage on
+    /// the safe-zone rectangle and every enabled mask, so the protected regions
+    /// can be checked against the real venue while aiming. Default colors are green (zone) and
+    /// orange (masks); a custom color replaces both. Appended after the safety stage on
     /// purpose - the shapes sit inside the safe zone by construction and must not be blanked by
     /// the very masks they draw. Returns the written point count.
     /// </summary>
@@ -333,11 +334,21 @@ public static class LaserPipeline
         const float field = 32767f;
         var n = 0;
 
+        // Custom shape color when enabled (a show look, or a dim red for dark venues); otherwise
+        // the semantic defaults: green = safe zone, orange = mask.
+        var useCustom = safety.RenderShapesUseCustomColor;
+        var cr = useCustom ? (int)(Math.Clamp(safety.RenderShapesColorR, 0f, 1f) * 65535) : 0;
+        var cg = useCustom ? (int)(Math.Clamp(safety.RenderShapesColorG, 0f, 1f) * 65535) : 65535;
+        var cb = useCustom ? (int)(Math.Clamp(safety.RenderShapesColorB, 0f, 1f) * 65535) : 0;
+        var mr = useCustom ? cr : 65535;
+        var mg = useCustom ? cg : 32000;
+        var mb = useCustom ? cb : 0;
+
         RectFromSafety(safety, out var zcx, out var zcy, out var zhw, out var zhh);
         n = WriteQuadOutline(target, n,
                              zcx - zhw, zcy - zhh, zcx + zhw, zcy - zhh,
                              zcx + zhw, zcy + zhh, zcx - zhw, zcy + zhh,
-                             0, 65535, 0, level);
+                             cr, cg, cb, level);
 
         for (var i = 0; i < safety.Masks.Count && n < target.Length; i++)
         {
@@ -350,7 +361,7 @@ public static class LaserPipeline
                                  Math.Clamp(mask.X2, -1f, 1f) * field, Math.Clamp(mask.Y2, -1f, 1f) * field,
                                  Math.Clamp(mask.X3, -1f, 1f) * field, Math.Clamp(mask.Y3, -1f, 1f) * field,
                                  Math.Clamp(mask.X4, -1f, 1f) * field, Math.Clamp(mask.Y4, -1f, 1f) * field,
-                                 65535, 32000, 0, level);
+                                 mr, mg, mb, level);
         }
 
         return n;
