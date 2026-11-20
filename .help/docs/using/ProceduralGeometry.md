@@ -46,7 +46,7 @@ Animating **Width** is cheap on simple shapes — the geometry rebuilds in real 
 - [TransformGeometry] scales, rotates and translates geometry while it is still in CPU form. Use it before a bevel: beveling happens after the transform and adapts to stretched shapes.
 - [CenterGeometry] moves geometry so a pivot inside its bounding box lands on the origin. Pivot `(0,-0.5,0)` puts the bottom on the ground plane — useful for imported files that aren't centered.
 - [TriangulateGeometry] converts all faces into triangles. Rendering does this automatically, so you only need it when a later operation expects triangles.
-- [GetGeometryStats] reports counts, bounds, volume and whether the shape is watertight. The output window also shows these stats when you view a geometry output directly.
+- [GetGeometryStats] reports counts, bounds, volume and whether the shape is watertight. The output window renders geometry and curve outputs directly, and its **Stats** view shows these numbers.
 
 ## Importing geometry
 
@@ -78,10 +78,10 @@ Fields describe a value that varies through space. Build one, optionally reshape
 The curve operators turn fonts into 3D text:
 
 ```
-[TextToCurves] -> [CurvesToGeometry] -> [GeometryToMesh] -> [DrawMesh]
+[StringToCurves] -> [CurvesToGeometry] -> [GeometryToMesh] -> [DrawMesh]
 ```
 
-- [TextToCurves] lays out text with a TrueType or OpenType font and outputs each glyph as a curve part. Variable fonts respond to **Weight** and one additional axis. **LetterSpacing** adds tracking relative to the size, and **Position** (with a move gizmo) places the text block.
+- [StringToCurves] lays out text with a TrueType or OpenType font and outputs each glyph as a curve part. Variable fonts respond to **Weight** and one additional axis. **LetterSpacing** adds tracking relative to the size, and **Position** (with a move gizmo) places the text block.
 - [CurvesToGeometry] fills the outlines. With **Depth** above 0 it extrudes them into solid letters; **Bevel** and **BevelSegments** round or chamfer the edges. Keep the bevel below half the thinnest stroke, otherwise the surface folds over itself.
 - [SubdivideCurves] splits long segments into shorter ones without changing the shape — useful before deforming outlines.
 - [OffsetCurves] grows or shrinks outlines by a distance. Sharp corners stay closed with a miter, round or bevel join, and holes shrink while outlines grow.

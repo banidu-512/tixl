@@ -1,4 +1,4 @@
-#nullable enable
+﻿#nullable enable
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -40,7 +40,7 @@ public static class GeometryAttributeNames
     public const string IsSide = "IsSide";
 }
 
-/// <summary>Attribute names produced by text layout ([TextToCurves]); all on the Part (glyph) domain.</summary>
+/// <summary>Attribute names produced by text layout ([StringToCurves]); all on the Part (glyph) domain.</summary>
 public static class CurveAttributeNames
 {
     public const string CodePoint = "CodePoint";
@@ -155,7 +155,7 @@ public sealed class GeometryAttributes : IEnumerable<GeometryAttribute>
     public void Clear() => _attributes.Clear();
     public int Count => _attributes.Count;
 
-    /// <summary>Indexed access, for per-frame code: enumerating with foreach boxes the list's enumerator.</summary>
+    /// <summary>Allocation-free access for per-frame readers; <c>foreach</c> boxes the enumerator.</summary>
     public GeometryAttribute this[int index] => _attributes[index];
 
     public IEnumerator<GeometryAttribute> GetEnumerator() => _attributes.GetEnumerator();
