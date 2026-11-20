@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework><Nullable>enable</Nullable><ImplicitUsings>disable</ImplicitUsings></PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\..\Operators\DepthAnything\Utils\ImageRotationTracker.cs" />
+    <Compile Include="..\..\Operators\DepthAnything\Utils\DepthChunkAlignment.cs" />
+    <Reference Include="OpenCvSharp"><HintPath>D:\CrossTixlClaude\Editor\bin\Release\net10.0\Operators\DepthAnything\OpenCvSharp.dll</HintPath></Reference>
+    <None Include="D:\CrossTixlClaude\Editor\bin\Release\net10.0\Operators\Lib\runtimes\win-x64\native\*.dll" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>
