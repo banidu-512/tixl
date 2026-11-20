@@ -161,6 +161,15 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
     private CameraControlWorker? _controlWorker;
     private string _lastSeenControlMessage = "";
 
+    // The settings dialog reads GetCameraModes/GetCameraSettings every frame and caches derived lists
+    // by reference (ICameraSettingsHolder promises the same instance until something changes), so the
+    // projections are rebuilt only when their source instance changes.
+    private IReadOnlyList<CameraSetting> _cachedSettings = [];
+    private CameraControlCatalog? _cachedSettingsCatalog;
+    private IReadOnlyList<(int Width, int Height, double Fps)>? _cachedModesSource;
+    private string? _cachedModesDevice;
+    private IReadOnlyList<CameraMode> _cachedModesResult = [];
+
     // The most recent frame as packed RGBA, shared between the capture thread and the render thread.
     private byte[]? _sharedRgba;
     private int _sharedWidth;
@@ -749,7 +758,7 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
         // thread is the one way this op could ever take the editor down, so the orphan keeps it.
         if (!_captureThread!.Join(CaptureThreadJoinMs))
         {
-            Log.Debug("Video capture thread did not exit in time; leaving it to finish on its own.");
+            Log.Debug("Video capture thread did not exit in time; leaving it to finish on its own.", this);
             _orphanedThreads.Add(_captureThread);
         }
         else
@@ -816,7 +825,7 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
                 if (_lastLoggedOpenError != error)
                 {
                     _lastLoggedOpenError = error;
-                    Log.Warning($"VideoDeviceInput: Could not open '{device.Name}': {error}");
+                    Log.Warning($"VideoDeviceInput: Could not open '{device.Name}': {error}", this);
                 }
 
                 return true;
@@ -900,7 +909,7 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
         catch (Exception e)
         {
             SetStatus($"Error: Capture failed - {e.Message}");
-            Log.Debug($"Video capture thread failed: {e}");
+            Log.Debug($"Video capture thread failed: {e}", this);
             return true;
         }
         finally
@@ -1266,7 +1275,7 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
 
     public void OpenCrossbarSettings()
     {
-        Log.Debug("Crossbar settings not implemented for this version.");
+        Log.Debug("Crossbar settings not implemented for this version.", this);
     }
     #endregion
 
@@ -1284,6 +1293,21 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
         if (catalog == null || catalog.Controls.Count == 0)
             return [];
 
+        // The settings dialog reads this every frame and caches derived lists by reference
+        // (ICameraSettingsHolder promises the same instance until something changes) — rebuild
+        // only when the worker publishes a new catalog.
+        if (!ReferenceEquals(catalog, _cachedSettingsCatalog))
+        {
+            _cachedSettingsCatalog = catalog;
+            _cachedSettings = BuildCameraSettingsList(catalog);
+        }
+
+        return _cachedSettings;
+    }
+
+    /** Flattens the control worker's catalog into the settings dialog's row model. */
+    private static IReadOnlyList<CameraSetting> BuildCameraSettingsList(CameraControlCatalog catalog)
+    {
         var settings = new List<CameraSetting>(catalog.Controls.Count);
         foreach (var control in catalog.Controls)
         {
@@ -1333,13 +1357,28 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
 
     IReadOnlyList<CameraMode> ICameraSettingsHolder.GetCameraModes()
     {
-        // WebcamScan caches the capability sweep; a filter + order here is all that is left to do.
-        return WebcamScan.GetCapabilities(InputDeviceName.Value)
-                         .DistinctBy(c => (c.Width, c.Height, c.Fps))
-                         .OrderByDescending(c => c.Width * c.Height)
-                         .ThenByDescending(c => c.Fps)
-                         .Select(c => new CameraMode(c.Width, c.Height, (int)Math.Round(c.Fps)))
-                         .ToList();
+        // WebcamScan caches the capability sweep; the dialog reads this per frame and caches derived
+        // lists by reference, so rebuild only when the capabilities instance changes (hot-plug rescan)
+        // or the selected device changes.
+        var device = InputDeviceName.Value;
+        var capabilities = WebcamScan.GetCapabilities(device);
+        if (capabilities.Count == 0)
+            return [];
+
+        if (!ReferenceEquals(capabilities, _cachedModesSource)
+            || !string.Equals(device, _cachedModesDevice, StringComparison.Ordinal))
+        {
+            _cachedModesSource = capabilities;
+            _cachedModesDevice = device;
+            _cachedModesResult = capabilities
+                                 .DistinctBy(c => (c.Width, c.Height, c.Fps))
+                                 .OrderByDescending(c => c.Width * c.Height)
+                                 .ThenByDescending(c => c.Fps)
+                                 .Select(c => new CameraMode(c.Width, c.Height, (int)Math.Round(c.Fps)))
+                                 .ToList();
+        }
+
+        return _cachedModesResult;
     }
 
     CameraMode ICameraSettingsHolder.RequestedCameraMode

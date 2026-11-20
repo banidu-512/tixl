@@ -25,20 +25,39 @@ public class WebcamInput : Instance<WebcamInput>, ICustomDropdownHolder, IStatus
     [Output(Guid = "f23112d1-2f77-4afe-813d-c6a51ab1f6a4", DirtyFlagTrigger = DirtyFlagTrigger.Animated)]
     public readonly Slot<string> ControlsCatalog = new();
 
+    [Input(Guid = "f5b900ec-ee17-123e-9972-cdd0580c104e")]
+    public readonly InputSlot<string> InputDeviceName = new();
+
     [Input(Guid = "236D4C5C-0022-4416-A22C-D6DF73C306E2")]
     public readonly InputSlot<bool> Active = new();
 
-    [Input(Guid = "3022DE8A-5D88-4A37-9799-780F2A838A6E")]
-    public readonly InputSlot<float> ApplyRotationData = new();
-
-    [Input(Guid = "11F7432D-31F1-44B9-8F75-B1569B314B13")]
-    public readonly InputSlot<int> CustomFps = new();
+    [Input(Guid = "49019D29-873E-4B7C-A897-C575A384A650", MappedType = typeof(ResolutionFpsTypeEnum))]
+    public readonly InputSlot<int> ResolutionFpsType = new();
 
     [Input(Guid = "C9E1C1F6-3A18-4A1C-8A5E-4B4119965B6E")]
     public readonly InputSlot<Int2> CustomResolution = new();
 
+    [Input(Guid = "11F7432D-31F1-44B9-8F75-B1569B314B13")]
+    public readonly InputSlot<int> CustomFps = new();
+
+    [Input(Guid = "8D2C28C7-1234-40E2-9388-75574519543D")]
+    public readonly InputSlot<bool> OpenSettings = new();
+
+    /// <summary>Values committed in the camera settings window, re-applied whenever the camera opens.</summary>
+    [Input(Guid = "4e15a154-74ee-4fa7-9a31-62f23e8f5d61")]
+    public readonly InputSlot<string> CameraSettings = new();
+
+    [Input(Guid = "67E149A5-F7B6-47BC-B147-3B9B11C19C29")]
+    public readonly InputSlot<bool> Reconnect = new();
+
     [Input(Guid = "22513B82-E77A-417A-8A46-24E677F072D4")]
     public readonly InputSlot<bool> DeactivateWhenNotShowing = new();
+
+    [Input(Guid = "F187A997-7E4A-48C6-81F9-2A27F150A68A")]
+    public readonly InputSlot<Vector2> Reposition = new();
+
+    [Input(Guid = "805602D5-52B2-4A73-A337-12E00C3C91F2")]
+    public readonly InputSlot<Vector2> Scale = new();
 
     [Input(Guid = "A57E815D-70C9-4D3B-998C-D13506B8F56E")]
     public readonly InputSlot<bool> FlipHorizontally = new();
@@ -46,23 +65,8 @@ public class WebcamInput : Instance<WebcamInput>, ICustomDropdownHolder, IStatus
     [Input(Guid = "3022DE8A-5D88-4A37-9799-780F2A838A5F")]
     public readonly InputSlot<bool> FlipVertically = new();
 
-    [Input(Guid = "f5b900ec-ee17-123e-9972-cdd0580c104e")]
-    public readonly InputSlot<string> InputDeviceName = new();
-
-    [Input(Guid = "8D2C28C7-1234-40E2-9388-75574519543D")]
-    public readonly InputSlot<bool> OpenSettings = new();
-
-    [Input(Guid = "67E149A5-F7B6-47BC-B147-3B9B11C19C29")]
-    public readonly InputSlot<bool> Reconnect = new();
-
-    [Input(Guid = "F187A997-7E4A-48C6-81F9-2A27F150A68A")]
-    public readonly InputSlot<Vector2> Reposition = new();
-
-    [Input(Guid = "49019D29-873E-4B7C-A897-C575A384A650", MappedType = typeof(ResolutionFpsTypeEnum))]
-    public readonly InputSlot<int> ResolutionFpsType = new();
-
-    [Input(Guid = "805602D5-52B2-4A73-A337-12E00C3C91F2")]
-    public readonly InputSlot<Vector2> Scale = new();
+    [Input(Guid = "3022DE8A-5D88-4A37-9799-780F2A838A6E")]
+    public readonly InputSlot<float> ApplyRotationData = new();
 
     /// <summary>When on, Control1..4 values are 0..1 over each control's range; otherwise device units.</summary>
     [Input(Guid = "13553eca-d106-4eb6-afe9-095425b19b98")]
@@ -91,10 +95,6 @@ public class WebcamInput : Instance<WebcamInput>, ICustomDropdownHolder, IStatus
 
     [Input(Guid = "1ad30e74-ec75-43da-8e1c-4f9b55f14977")]
     public readonly InputSlot<float> Control4Value = new();
-
-    /// <summary>Values committed in the camera settings window, re-applied whenever the camera opens.</summary>
-    [Input(Guid = "4e15a154-74ee-4fa7-9a31-62f23e8f5d61")]
-    public readonly InputSlot<string> CameraSettings = new();
 
     public WebcamInput()
     {

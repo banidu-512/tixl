@@ -233,9 +233,7 @@ internal static class CameraSettingsDialog
         ImGui.AlignTextToFramePadding();
         ImGui.SetCursorPosX(rowStartX + MathF.Max(labelWidth - labelSize.X, 0));
         var labelColor = setting.IsReadOnly ? UiColors.TextMuted : UiColors.Text;
-        ImGui.PushStyleColor(ImGuiCol.Text, labelColor.Rgba);
-        ImGui.TextUnformatted(label);
-        ImGui.PopStyleColor();
+        CustomComponents.StylizedText(label, Fonts.FontNormal, labelColor);
 
         ImGui.SameLine(rowStartX + labelWidth + spacing);
         var controlsWidth = availableWidth - labelWidth - spacing - autoColumnWidth;
@@ -347,9 +345,7 @@ internal static class CameraSettingsDialog
         var label = GetDisplayLabel(setting.Name);
         ImGui.AlignTextToFramePadding();
         ImGui.SetCursorPosX(rowStartX + MathF.Max(labelWidth - ImGui.CalcTextSize(label).X, 0));
-        ImGui.PushStyleColor(ImGuiCol.Text, UiColors.TextDisabled.Rgba);
-        ImGui.TextUnformatted(label);
-        ImGui.PopStyleColor();
+        CustomComponents.StylizedText(label, Fonts.FontNormal, UiColors.TextDisabled);
 
         ImGui.BeginDisabled();
         ImGui.SameLine(rowStartX + labelWidth + spacing);

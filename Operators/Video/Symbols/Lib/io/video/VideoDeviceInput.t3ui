@@ -1,7 +1,7 @@
-{
+﻿{
   "FormatVersion": 3,
   "Id": "34c2d58d-ae76-47b6-9713-02911a783341"/*VideoDeviceInput*/,
-  "Description": "Captures live video from a connected device like a webcam or capture card, with the basic camera hardware configs built in: Pan, Tilt, Zoom, Focus, Exposure and Brightness are applied to the camera automatically whenever their input changes — several settings at once, and each can be patched/animated.\n\nBeyond the fixed config inputs, a generic control surface reaches every control the device actually exposes — the replacement for the old DirectShow capture-filter dialog: `ControlName` offers the discovered controls as a dropdown, `ControlValue` carries the value in device units (for menu controls it picks one of the item values its dropdown lists), `ControlAuto` is a strict two-way switch (true = engage the control's auto mode, value ignored; false = apply the value as manual, which disengages auto), and `ApplyControl` sends the combination to the camera. The `ControlsCatalog` output lists everything the device reports — kind, range, step, default, current value and auto/inactive state. On platforms without a camera-control backend, both report controls as unavailable.\n\nDevices are opened through FFmpeg — DirectShow on Windows, V4L2 on Linux, AVFoundation on macOS. You can select the device, resolution, and frame rate; the capture runs on its own thread and automatically retries when a device is unplugged and returns. Basic image manipulation like flipping, rotation, scaling and repositioning is done in software.\n\nTips:\n- To save system resources, enable `DeactivateWhenNotShowing`. This will pause the capture when the operator is not being rendered.\n- The config inputs only touch the camera when their value changes, and only if the camera actually implements the control. Values are in device units (Zoom 100 = 1x, Pan/Tilt in 1/64°); `Status` shows the supported range after an apply. All control traffic runs on a background worker, so success notes, clamping and unsupported warnings land one evaluation after the change, and an animated input coalesces into one pending write.\n- The resolution and frame-rate dropdowns list the combinations the device reports (on macOS the device doesn't expose them, so only defaults are offered); with `ResolutionFpsType` set to `Custom`, any value can be typed — the driver negotiates the closest match and the image is resized in software when the device can't deliver the requested size.\n- On macOS the camera is gated by privacy: if the editor is denied camera access, no devices appear — allow it under System Settings → Privacy & Security → Camera, then trigger `Reconnect`.\n- A `Reconnect` trigger also rescans the device list, so cameras plugged in after startup become selectable, and refreshes the control catalog of the (possibly replaced) camera.\n- The `Status` output provides useful information for troubleshooting connection issues.\n\nAKA: webcam, camera, capture card, ptz, pan, tilt, zoom, video input",
+  "Description": "Captures live video from a connected device like a webcam or capture card, with the basic camera hardware configs built in: Pan, Tilt, Zoom, Focus, Exposure and Brightness are applied to the camera automatically whenever their input changes — several settings at once, and each can be patched/animated.\n\nBeyond the fixed config inputs, a generic control surface reaches every control the device actually exposes — the replacement for the old DirectShow capture-filter dialog: `ControlName` offers the discovered controls as a dropdown, `ControlValue` carries the value in device units (for menu controls it picks one of the item values its dropdown lists), `ControlAuto` is a strict two-way switch (true = engage the control's auto mode, value ignored; false = apply the value as manual, which disengages auto), and `ApplyControl` sends the combination to the camera. The `ControlsCatalog` output lists everything the device reports — kind, range, step, default, current value and auto/inactive state. On platforms without a camera-control backend, both report controls as unavailable.\n\nDevices are opened through FFmpeg — DirectShow on Windows, V4L2 on Linux, AVFoundation on macOS. The device, resolution, and frame rate can be selected; the capture runs on its own thread and automatically retries when a device is unplugged and returns. Basic image manipulation like flipping, rotation, scaling and repositioning is done in software.\n\nTips:\n- To save system resources, enable `DeactivateWhenNotShowing`. This will pause the capture when the operator is not being rendered.\n- The config inputs only touch the camera when their value changes, and only if the camera actually implements the control. Values are in device units (Zoom 100 = 1x, Pan/Tilt in 1/64°); `Status` shows the supported range after an apply. All control traffic runs on a background worker, so success notes, clamping and unsupported warnings land one evaluation after the change, and an animated input coalesces into one pending write.\n- The resolution and frame-rate dropdowns list the combinations the device reports (on macOS the device doesn't expose them, so only defaults are offered); with `ResolutionFpsType` set to `Custom`, any value can be typed — the driver negotiates the closest match and the image is resized in software when the device can't deliver the requested size.\n- On macOS the camera is gated by privacy: if the editor is denied camera access, no devices appear — allow it under System Settings → Privacy & Security → Camera, then trigger `Reconnect`.\n- A `Reconnect` trigger also rescans the device list, so cameras plugged in after startup become selectable, and refreshes the control catalog of the (possibly replaced) camera.\n- The `Status` output provides useful information for troubleshooting connection issues.\n\nAKA: webcam, camera, capture card, ptz, pan, tilt, zoom, video input",
   "InputUis": [
     {
       "InputId": "06c894a8-fe69-4cf6-bf54-b9c155b8f035"/*ControlValue*/,
@@ -68,11 +68,20 @@
       "Description": "Applies a rotation to the video image in degrees. This is used for correcting orientation."
     },
     {
+      "InputId": "32f597e7-eb25-45be-b37a-153214b1119e"/*CameraSettings*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 750.0
+      },
+      "Usage": "Default"
+    },
+    {
       "InputId": "49019d29-873e-4b7c-a897-c575a384a650"/*ResolutionFpsType*/,
       "Position": {
         "X": -200.0,
         "Y": 225.0
       },
+      "GroupTitle": "Format",
       "Description": "Selects how resolution and FPS are determined. 'Custom' allows manual input, otherwise device defaults are used."
     },
     {
@@ -106,6 +115,7 @@
         "X": -200.0,
         "Y": 1650.0
       },
+      "GroupTitle": "Camera Controls",
       "Description": "Trigger that sends the ControlName/ControlValue/ControlAuto combination to the camera and self-clears. Control traffic runs on a background worker — `Status` reports the result (clamping, unsupported controls) one evaluation later."
     },
     {
@@ -130,6 +140,7 @@
         "X": -200.0,
         "Y": 675.0
       },
+      "GroupTitle": "Settings & Status",
       "Description": "A trigger to open the video device's native driver settings dialog, if available."
     },
     {
@@ -178,6 +189,7 @@
         "X": -200.0,
         "Y": 750.0
       },
+      "GroupTitle": "Framing",
       "Description": "Applies a 2D translation (X,Y) to the video image. Part of the transformation."
     },
     {
