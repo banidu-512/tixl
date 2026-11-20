@@ -8,7 +8,7 @@
     },
     {
       "Id": "9d2f4b18-3e57-4c86-b2a9-1f60d3c47e25"/*Mode*/,
-      "DefaultValue": "FindPaths"
+      "DefaultValue": 0
     },
     {
       "Id": "c5e8a273-1b94-4f02-8d36-7a91b4c2e5f8"/*Threshold*/,
@@ -40,7 +40,7 @@
     },
     {
       "Id": "d3b7a164-5e28-4c93-af06-1b9c2d3e4f57"/*MaxRes*/,
-      "DefaultValue": "Res512"
+      "DefaultValue": 1
     },
     {
       "Id": "b6e2c948-7d13-4a65-8c04-2f1a5b6c7d84"/*Brightness*/,
