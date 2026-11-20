@@ -204,6 +204,11 @@ internal sealed class ImageToLaserPoints : Instance<ImageToLaserPoints>, ILaserC
                             UseColor = _useColor,
                             Brightness = _brightness,
                             PointCap = cap,
+                            EndRepeat = _endRepeat,
+                            InFade = _inFade,
+                            OutFade = _outFade,
+                            MinPathLengthPct = _pathMinLengthPct,
+                            MaxPathLengthPct = _pathMaxLengthPct,
                         });
 
         LaserPoints.Value = Finish(Session.Count, Session.Buffer);
@@ -228,6 +233,11 @@ internal sealed class ImageToLaserPoints : Instance<ImageToLaserPoints>, ILaserC
         _pointSpacing = Math.Clamp(PointSpacing.GetValue(context), 0.5f, 64f);
         _useColor = UseColor.GetValue(context);
         _brightness = Math.Clamp(Brightness.GetValue(context), 0f, 1f);
+        _endRepeat = Math.Clamp((int)EndRepeat.GetValue(context), 0, 16);
+        _inFade = Math.Clamp(InFade.GetValue(context), 0f, 1f);
+        _outFade = Math.Clamp(OutFade.GetValue(context), 0f, 1f);
+        _pathMinLengthPct = Math.Clamp(PathMinLength.GetValue(context), 0f, 100f);
+        _pathMaxLengthPct = Math.Clamp(PathMaxLength.GetValue(context), 0f, 2000f);
         var maxRes = Math.Clamp((int)MaxRes.GetValue(context), 0, 3);
 
         if (_lastMaxRes != maxRes)
@@ -250,7 +260,12 @@ internal sealed class ImageToLaserPoints : Instance<ImageToLaserPoints>, ILaserC
                       || _maxPaths != _lastMaxPaths
                       || !_pointSpacing.Equals(_lastPointSpacing)
                       || _useColor != _lastUseColor
-                      || !_brightness.Equals(_lastBrightness);
+                      || !_brightness.Equals(_lastBrightness)
+                      || _endRepeat != _lastEndRepeat
+                      || !_inFade.Equals(_lastInFade)
+                      || !_outFade.Equals(_lastOutFade)
+                      || !_pathMinLengthPct.Equals(_lastPathMinLengthPct)
+                      || !_pathMaxLengthPct.Equals(_lastPathMaxLengthPct);
 
         _lastMode = _mode;
         _lastThreshold = _threshold;
@@ -261,6 +276,11 @@ internal sealed class ImageToLaserPoints : Instance<ImageToLaserPoints>, ILaserC
         _lastPointSpacing = _pointSpacing;
         _lastUseColor = _useColor;
         _lastBrightness = _brightness;
+        _lastEndRepeat = _endRepeat;
+        _lastInFade = _inFade;
+        _lastOutFade = _outFade;
+        _lastPathMinLengthPct = _pathMinLengthPct;
+        _lastPathMaxLengthPct = _pathMaxLengthPct;
         return changed;
     }
 
@@ -461,6 +481,16 @@ internal sealed class ImageToLaserPoints : Instance<ImageToLaserPoints>, ILaserC
     private int _lastDenoise = -1;
     private int _lastMaxPaths = -1;
     private float _lastPointSpacing = -1;
+    private int _lastEndRepeat = -1;
+    private float _lastInFade = -1f;
+    private float _lastOutFade = -1f;
+    private int _endRepeat;
+    private float _inFade;
+    private float _outFade;
+    private float _lastPathMinLengthPct = -1f;
+    private float _lastPathMaxLengthPct = -1f;
+    private float _pathMinLengthPct;
+    private float _pathMaxLengthPct;
     private float _lastBrightness = -1;
 
     private static readonly int[] _maxResValues = [256, 512, 1024, 2048];
@@ -501,6 +531,26 @@ internal sealed class ImageToLaserPoints : Instance<ImageToLaserPoints>, ILaserC
 
     [Input(Guid = "B6E2C948-7D13-4A65-8C04-2F1A5B6C7D84")]
     public readonly InputSlot<float> Brightness = new(1f);
+
+    /// <summary>Extra lit samples held at each shape's end position, so the scanner settles on the
+    /// real endpoint instead of rounding it off. A dot's dwell time grows with it too - its point intensity.</summary>
+    public readonly InputSlot<int> EndRepeat = new(2);
+
+    /// <summary>Ramps each shape's first samples up from this dim level to full: the scanner is
+    /// still accelerating when a path starts, which otherwise blooms the start point. 0 = off.</summary>
+    public readonly InputSlot<float> InFade = new(0f);
+
+    /// <summary>Ramps the end-repeat samples down, so finishing a shape doesn't leave a bright
+    /// pause dot of its own. 0 = the repeats hold at full brightness.</summary>
+    public readonly InputSlot<float> OutFade = new(0f);
+
+    /// <summary>Drops shapes shorter than this percentage of the working image's larger dimension -
+    /// noise specks that would cost a blank jump each. 0 keeps everything.</summary>
+    public readonly InputSlot<float> PathMinLength = new(0f);
+
+    /// <summary>Drops shapes longer than this percentage of the working image's larger dimension -
+    /// runaway background strokes. 0 keeps everything.</summary>
+    public readonly InputSlot<float> PathMaxLength = new(0f);
 
     [Input(Guid = "F9A4D175-6E32-4B58-9D16-3C8E1B2A4C75")]
     public readonly InputSlot<bool> Update = new(true);

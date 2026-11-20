@@ -83,11 +83,17 @@ internal abstract class Window
         if (!_wasVisible)
         {
             var size = WindowSizeOverride * T3Ui.UiScaleFactor;
+
+            // A size larger than the viewport puts the window's bottom rows permanently outside
+            // the visible area - scrolling reaches its max while the last rows stay cut (the
+            // Settings window shipped 1000px tall). Clamp to what the screen can show.
+            var viewport = ImGui.GetMainViewport();
+            var maxSize = Vector2.Max(new Vector2(320, 240), viewport.WorkSize - new Vector2(24, 24));
+            size = Vector2.Clamp(size, new Vector2(320, 240), maxSize);
             ImGui.SetNextWindowSize(size);
 
             if (CenterOnAppearing)
             {
-                var viewport = ImGui.GetMainViewport();
                 ImGui.SetNextWindowPos(viewport.GetCenter() - size * 0.5f);
             }
 

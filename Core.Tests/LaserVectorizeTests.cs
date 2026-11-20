@@ -95,6 +95,104 @@ public sealed class LaserVectorizeTests
         return (session, points);
     }
 
+    [Fact]
+    public void EndRepeat_ExtendsShapeTail()
+    {
+        var w = 128;
+        var h = 64;
+        var img = Image(w, h);
+        Line(img, w, 32, 8, 119);
+        var (_, baseline) = RunImage(img, w, h, LaserVectorizeSession.DetectMode.FindPaths, maxRes: 64);
+
+        var session = new LaserVectorizeSession();
+        Assert.True(session.BeginCopy(w, h, 64));
+        session.CopyFrame(img, w * 4, w, h, LaserVectorizeSession.FmtBgra8);
+        session.Run(new LaserVectorizeSession.Params
+                        {
+                            Mode = LaserVectorizeSession.DetectMode.FindPaths,
+                            Threshold = 0.2f,
+                            BlurSize = 1,
+                            MaxPaths = 512,
+                            PointSpacing = 4f,
+                            Brightness = 1f,
+                            PointCap = 1 << 17,
+                            EndRepeat = 4,
+                        });
+        var repeated = new LaserPoint[session.Count];
+        Array.Copy(session.Buffer, repeated, session.Count);
+
+        Assert.Equal(baseline.Length + 4, repeated.Length);
+        // The tail holds the same endpoint four extra samples.
+        Assert.Equal(baseline[^1], repeated[^1]);
+        Assert.Equal(repeated[^2], repeated[^1]);
+    }
+
+    [Fact]
+    public void InFade_DimsTheFirstSamples()
+    {
+        var w = 128;
+        var h = 64;
+        var img = Image(w, h);
+        Line(img, w, 32, 8, 119);
+        var session = new LaserVectorizeSession();
+        Assert.True(session.BeginCopy(w, h, 64));
+        session.CopyFrame(img, w * 4, w, h, LaserVectorizeSession.FmtBgra8);
+        session.Run(new LaserVectorizeSession.Params
+                        {
+                            Mode = LaserVectorizeSession.DetectMode.FindPaths,
+                            Threshold = 0.2f,
+                            BlurSize = 1,
+                            MaxPaths = 512,
+                            PointSpacing = 4f,
+                            Brightness = 1f,
+                            PointCap = 1 << 17,
+                            InFade = 0.5f,
+                        });
+        var points = new LaserPoint[session.Count];
+        Array.Copy(session.Buffer, points, session.Count);
+
+        // The first lit sample (right after the blanked approach) is dimmed; a later one is full.
+        var firstLit = points[1];
+        Assert.True(firstLit.I > 0);
+        Assert.True(firstLit.R < 65535, "the in-faded start sample must be dimmer than full");
+    }
+
+    [Fact]
+    public void PathFiltering_DropsShortAndLongShapes()
+    {
+        var w = 128;
+        var h = 64;
+        var img = Image(w, h);
+        Line(img, w, 16, 8, 119);   // long horizontal line (~87% of the width)
+        Dot(img, w, 10, 48);        // isolated dot (zero length)
+
+        var (_, baseline) = RunImage(img, w, h, LaserVectorizeSession.DetectMode.FindPaths, denoise: 0, maxRes: 64);
+        Assert.True(CountShapes(baseline) >= 1);
+
+        // Min length 20% of the 64px working width = ~13px: the dot survives as a dwell dot but
+        // shorter strokes would drop; a max length of 50% must drop the long line.
+        var session = new LaserVectorizeSession();
+        Assert.True(session.BeginCopy(w, h, 64));
+        session.CopyFrame(img, w * 4, w, h, LaserVectorizeSession.FmtBgra8);
+        session.Run(new LaserVectorizeSession.Params
+                        {
+                            Mode = LaserVectorizeSession.DetectMode.FindPaths,
+                            Threshold = 0.2f,
+                            BlurSize = 1,
+                            MaxPaths = 512,
+                            PointSpacing = 4f,
+                            Brightness = 1f,
+                            PointCap = 1 << 17,
+                            MinPathLengthPct = 5f,
+                            MaxPathLengthPct = 50f,
+                        });
+        var points = new LaserPoint[session.Count];
+        Array.Copy(session.Buffer, points, session.Count);
+
+        Assert.Equal(0, CountShapes(points));
+        Assert.True(session.Stats.ShapesDropped >= 2, "the over-long line and the dot must both drop");
+    }
+
     private static int CountShapes(LaserPoint[] points)
     {
         // Shapes = lit runs separated by blanked separators.

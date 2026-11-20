@@ -73,6 +73,30 @@ public sealed class LaserVectorizeSession
         public bool UseColor;
         public float Brightness;   // 0..1 multiplier on the emitted color
         public int PointCap;       // hard cap for the emitted frame (transport budget)
+
+        /// <summary>Extra lit samples at each shape's end position, so the scanner settles on the
+        /// real endpoint instead of rounding it off (the scanner never knows where a frame ends).</summary>
+        public int EndRepeat;
+
+        /// <summary>0..1: ramps the shape's first samples up from this dim level to full - the
+        /// scanner is still catching up when a path starts, which otherwise blooms the start point.</summary>
+        public float InFade;
+
+        /// <summary>0..1: ramps the end-repeat samples down, so finishing a shape doesn't leave
+        /// another bright dot where the beam pauses.</summary>
+        public float OutFade;
+
+        /// <summary>The working image's larger dimension - the base the path-length filter's
+        /// percentages are taken of (the MadLaser guide's Path Filtering convention).</summary>
+        public float WorkingMaxDimension;
+
+        /// <summary>Shapes shorter than this percentage of the working image's larger dimension
+        /// are dropped (noise specks that would cost a blank jump each). 0 = off.</summary>
+        public float MinPathLengthPct;
+
+        /// <summary>Shapes longer than this percentage are dropped (runaway background strokes).
+        /// 0 = off.</summary>
+        public float MaxPathLengthPct;
     }
 
     /// <summary>The emitted frame — valid up to <see cref="Count"/> after <see cref="Run"/>.</summary>
@@ -290,6 +314,8 @@ public sealed class LaserVectorizeSession
         cap = Math.Min(cap, DefaultPointCap);
         EnsureOut(cap);
         _params = p;
+        // The path-length filter's percentages base on the working image's larger dimension.
+        _params.WorkingMaxDimension = Math.Max(_workW, _workH);
 
         switch (p.Mode)
         {
@@ -884,6 +910,18 @@ public sealed class LaserVectorizeSession
             return;
         }
 
+        // Path filtering: percent of the working image's larger dimension, the guide's convention.
+        if (p.WorkingMaxDimension > 0f)
+        {
+            var lengthPct = length / p.WorkingMaxDimension * 100f;
+            if (p.MinPathLengthPct > 0f && lengthPct < p.MinPathLengthPct
+                || p.MaxPathLengthPct > 0f && lengthPct > p.MaxPathLengthPct)
+            {
+                Stats.ShapesDropped++;
+                return;
+            }
+        }
+
         if (_shapes >= p.MaxPaths)
         {
             Stats.ShapesClipped++;
@@ -894,7 +932,10 @@ public sealed class LaserVectorizeSession
 
         var spacing = MathF.Max(0.5f, p.PointSpacing);
         var steps = Math.Max(1, (int)MathF.Round(length / spacing));
-        EnsureOut(_outCount + steps + 2);
+        // In-fade ramps over the shape's first quarter, at least one sample; end repeats follow the last sample.
+        var fadeSamples = Math.Clamp((int)MathF.Ceiling(steps * 0.25f), 1, steps);
+        var endRepeat = Math.Clamp(p.EndRepeat, 0, 16);
+        EnsureOut(_outCount + steps + 2 + endRepeat);
 
         // Blanked approach point at the polyline start.
         MapPixel(pairs[0], pairs[1], out var sx, out var sy);
@@ -909,6 +950,7 @@ public sealed class LaserVectorizeSession
         var bY = pairs[3];
         var segLen = SegmentLen(aX, aY, bX, bY);
         var segConsumed = 0f;
+        float endX = 0f, endY = 0f;
 
         for (var s = 0; s <= steps; s++)
         {
@@ -928,15 +970,37 @@ public sealed class LaserVectorizeSession
             var segT = segLen > 1e-6f ? (target - segConsumed) / segLen : 0f;
             var px = aX + segT * (bX - aX);
             var py = aY + segT * (bY - aY);
-            EmitLit(px, py);
+            // In fade: the scanner is still accelerating at a path's start, so a full-brightness
+            // first sample blooms. Ramp from the configured dim level up to full.
+            var level = s < fadeSamples && p.InFade > 0f
+                            ? float.Lerp(Math.Clamp(p.InFade, 0f, 1f), 1f, (s + 1) / (float)(fadeSamples + 1))
+                            : 1f;
+            EmitLit(px, py, level);
+            endX = px;
+            endY = py;
+        }
+
+        // End repeats: the scanner never sees the frame's end, so hold the endpoint for a few
+        // samples to make sure the shape is fully drawn. Out fade dims them so the hold doesn't
+        // leave a bright dot of its own.
+        if (endRepeat > 0)
+        {
+            var outFade = Math.Clamp(p.OutFade, 0f, 1f);
+            for (var r = 1; r <= endRepeat; r++)
+            {
+                var level = outFade > 0f ? float.Lerp(1f, 1f - outFade, r / (float)(endRepeat + 1)) : 1f;
+                EmitLit(endX, endY, level);
+            }
         }
     }
 
     private static float SegmentLen(float aX, float aY, float bX, float bY)
         => MathF.Sqrt((bX - aX) * (bX - aX) + (bY - aY) * (bY - aY));
 
-    /// <summary>One lit sample: color from the nearest working pixel, mapped into the field.</summary>
-    private void EmitLit(float x, float y)
+    /// <summary>One lit sample: color from the nearest working pixel, mapped into the field.
+    /// <paramref name="level"/> is an extra 0..1 multiplier on top of Brightness - the in/out
+    /// fade ramps pass their ramp position here.</summary>
+    private void EmitLit(float x, float y, float level = 1f)
     {
         var p = _params;
         if (_outCount >= _out.Length)
@@ -945,9 +1009,10 @@ public sealed class LaserVectorizeSession
         MapPixel(x, y, out var sx, out var sy);
         var nearest = PixelIndex(x, y);
         var packed = _color[nearest];
-        var r = (int)((packed >> 16 & 0xFF) * 257f * p.Brightness);
-        var g = (int)((packed >> 8 & 0xFF) * 257f * p.Brightness);
-        var b = (int)((packed & 0xFF) * 257f * p.Brightness);
+        var level_ = Math.Clamp(level, 0f, 1f);
+        var r = (int)((packed >> 16 & 0xFF) * 257f * p.Brightness * level_);
+        var g = (int)((packed >> 8 & 0xFF) * 257f * p.Brightness * level_);
+        var b = (int)((packed & 0xFF) * 257f * p.Brightness * level_);
         _out[_outCount++] = new LaserPoint(sx, sy, r, g, b, 65535);
     }
 
@@ -955,9 +1020,10 @@ public sealed class LaserVectorizeSession
     private void EmitDot(float x, float y)
     {
         var p = _params;
-        if (p.Denoise >= 1)
+        if (p.Denoise >= 1 || p.MinPathLengthPct > 0f)
         {
-            // A dot has zero length: shorter than any denoise threshold >= 1.
+            // A dot has zero length: shorter than any denoise threshold >= 1, and shorter than
+            // any positive min-length filter.
             Stats.ShapesDropped++;
             return;
         }
@@ -979,7 +1045,12 @@ public sealed class LaserVectorizeSession
         var r = (int)((packed >> 16 & 0xFF) * 257f * p.Brightness);
         var g = (int)((packed >> 8 & 0xFF) * 257f * p.Brightness);
         var b = (int)((packed & 0xFF) * 257f * p.Brightness);
-        _out[_outCount++] = new LaserPoint(sx, sy, r, g, b, 65535);
+        // A dot is a zero-length path: the end repeats ARE its point intensity - how long the
+        // beam holds on it.
+        var dwell = 1 + Math.Clamp(p.EndRepeat, 0, 16);
+        EnsureOut(_outCount + dwell);
+        for (var d = 0; d < dwell && _outCount < _out.Length; d++)
+            _out[_outCount++] = new LaserPoint(sx, sy, r, g, b, 65535);
     }
 
     /// <summary>Working pixel coordinate → ILDA field point: aspect-fit into the square field,

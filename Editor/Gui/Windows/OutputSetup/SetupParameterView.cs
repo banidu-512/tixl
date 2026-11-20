@@ -783,6 +783,9 @@ internal static partial class SetupParameterView
     /** Matches how FormInputs fades a field that holds its default value. */
     private const float DefaultValueAlpha = 0.7f;
 
+    /** Pure UI state: whether the gamma row drives all three channels with one value. */
+    private static bool _linkGammaChannels;
+
     private static void DrawCardDivider()
     {
         FormInputs.AddVerticalSpace(8);
@@ -1966,20 +1969,31 @@ internal static partial class SetupParameterView
 
         if (!safety.TtlMode)
         {
+            var linkGamma = _linkGammaChannels;
+            if (FormInputs.AddCheckBox("Link gamma channels", ref linkGamma,
+                                       "Drive all three channels' gamma with one value - the usual setup; untick to tune a channel separately."))
+                _linkGammaChannels = linkGamma;
+
             Span<float> gammas =
             [
                 safety.ColorGammaR, safety.ColorGammaG, safety.ColorGammaB,
             ];
-            var gammaState = DrawFloatsRow("Gamma (R G B)", gammas,
+            var gammaState = DrawFloatsRow(_linkGammaChannels ? "Gamma (linked)" : "Gamma (R G B)", gammas,
                                            "Per-channel gamma exponent: out = in^(1/gamma). 1 = linear, 2.2 = the sRGB-style perceptual default (mid-tones compressed), higher compresses more - tune on the Gamma ramp test pattern so brightness rows look evenly spaced. Per-channel values fix mixed direct-diode/DPSS systems.",
                                            speed: 0.01f, format: "{0:0.00}", reserveRight: 22,
                                            min: 0.1f, max: 8f, clampMin: true, clampMax: true);
             BeginFieldUndo(setup, gammaState);
             if ((gammaState & InputEditStateFlags.Modified) != 0)
             {
-                safety.ColorGammaR = float.IsNaN(gammas[0]) ? 1f : Math.Clamp(gammas[0], 0.1f, 8f);
-                safety.ColorGammaG = float.IsNaN(gammas[1]) ? 1f : Math.Clamp(gammas[1], 0.1f, 8f);
-                safety.ColorGammaB = float.IsNaN(gammas[2]) ? 1f : Math.Clamp(gammas[2], 0.1f, 8f);
+                // Linked mode: any channel edit drives all three with its value.
+                var linked = _linkGammaChannels
+                                 && !float.IsNaN(gammas[0])
+                                 && (float.IsNaN(gammas[1]) || gammas[1].Equals(gammas[0]))
+                                 && (float.IsNaN(gammas[2]) || gammas[2].Equals(gammas[0]));
+                var gamma = float.IsNaN(gammas[0]) ? 1f : Math.Clamp(gammas[0], 0.1f, 8f);
+                safety.ColorGammaR = gamma;
+                safety.ColorGammaG = linked ? gamma : float.IsNaN(gammas[1]) ? 1f : Math.Clamp(gammas[1], 0.1f, 8f);
+                safety.ColorGammaB = linked ? gamma : float.IsNaN(gammas[2]) ? 1f : Math.Clamp(gammas[2], 0.1f, 8f);
             }
 
             CommitFieldUndo(setup, "Laser gamma", gammaState);
@@ -2867,6 +2881,98 @@ internal static partial class SetupParameterView
             SetInputUndoable(instance, supplier.UpdateInput, update);
 
         PanelLayout.EndSection();
+
+        DrawLaserRenderSection(instance);
+    }
+
+    /// <summary>
+    /// The content side of the MadLaser split: the output card owns device and safety, the routed
+    /// content op owns how the content becomes points. Surfaces the render knobs the routed op
+    /// declares - by input name, so [ImageToLaserPoints] and [LaserCamera] both work without type
+    /// coupling. Missing knobs are simply absent (each op lists what it has).
+    /// </summary>
+    private static void DrawLaserRenderSection(Instance instance)
+    {
+        PanelLayout.Space(PanelLayout.SpaceM);
+        PanelLayout.BeginSection("Laser Render",
+                                 "How this content turns into laser points - the per-source render settings. "
+                                 + "Everything device-side (scan rate, blanking, color calibration, safety) lives on the output's card.");
+
+        var drewAny = false;
+        drewAny |= DrawRenderFloat(instance, "PointSpacing", "Point spacing", 0.5f, 64f, 0.25f,
+                                   "Working pixels between lit samples along a path - the density dial. Lower = more points (denser, brighter, heavier); higher = fewer points (lighter on the scanner budget).");
+        drewAny |= DrawRenderInt(instance, "DotDwellPoints", "Dot dwell points", 0, 64,
+                                 "Samples held on isolated dots - their point intensity. More = brighter beams that stay put.");
+        drewAny |= DrawRenderInt(instance, "EndRepeat", "End repeat", 0, 16,
+                                 "Extra samples held at each shape's end position, so the scanner settles on the real endpoint instead of rounding it off. A dot's dwell grows with it too.");
+        drewAny |= DrawRenderFloat(instance, "InFade", "In fade", 0f, 1f, 0.01f,
+                                   "Ramps each shape's first samples up from this dim level to full: the scanner is still accelerating at a path's start, which otherwise blooms the start point. 0 = off.");
+        drewAny |= DrawRenderFloat(instance, "OutFade", "Out fade", 0f, 1f, 0.01f,
+                                   "Ramps the end-repeat samples down, so finishing a shape doesn't leave a bright pause dot of its own. 0 = repeats hold at full brightness.");
+        if (DrawRenderFloat(instance, "PathMinLength", "Path min length %", 0f, 100f, 0.5f,
+                            "Drops shapes shorter than this percentage of the working image's larger dimension - noise specks that would cost a blank jump each. 0 keeps everything."))
+        {
+            DrawRenderFloat(instance, "PathMaxLength", "Path max length %", 0f, 2000f, 5f,
+                            "Drops shapes longer than this percentage of the working image's larger dimension - runaway background strokes. 0 keeps everything.");
+            drewAny = true;
+        }
+
+        if (!drewAny)
+            FormInputs.AddHint("This content op has no render knobs - its parameters live on the op in the graph.");
+
+        PanelLayout.EndSection();
+    }
+
+    private static bool DrawRenderFloat(Instance instance, string inputName, string label,
+                                        float min, float max, float speed, string tooltip)
+    {
+        if (!TryGetInstanceInput(instance, inputName, out var slot)
+            || slot.Input.Value is not InputValue<float> value)
+            return false;
+
+        var v = value.Value;
+        if (FormInputs.AddFloat(label, ref v, min, max, speed, clampMin: true, clampMax: true, tooltip: tooltip))
+            SetInputUndoable(instance, slot, v);
+
+        return true;
+    }
+
+    private static bool DrawRenderInt(Instance instance, string inputName, string label,
+                                      int min, int max, string tooltip)
+    {
+        if (!TryGetInstanceInput(instance, inputName, out var slot)
+            || slot.Input.Value is not InputValue<int> value)
+            return false;
+
+        var v = value.Value;
+        if (FormInputs.AddInt(label, ref v, min, max, 1, tooltip))
+            SetInputUndoable(instance, slot, v);
+
+        return true;
+    }
+
+    /// <summary>Finds an instance input slot by its definition name (the parameter-panel name).</summary>
+    private static bool TryGetInstanceInput(Instance instance, string inputName, out IInputSlot slot)
+    {
+        foreach (var def in instance.Symbol.InputDefinitions)
+        {
+            if (!string.Equals(def.Name, inputName, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            foreach (var candidate in instance.Inputs)
+            {
+                if (candidate.Id == def.Id)
+                {
+                    slot = candidate;
+                    return true;
+                }
+            }
+
+            break;
+        }
+
+        slot = null;
+        return false;
     }
 
     private static void DrawSliceCard(Setup setup, Guid id)
