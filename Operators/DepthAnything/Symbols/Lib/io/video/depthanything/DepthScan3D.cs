@@ -67,6 +67,8 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
         _pendingGlobalAlign = GlobalAlign.GetValue(context);
         _pendingFlat = FlatSurfaces.GetValue(context);
         _pendingRegularize = RegularizeRoom.GetValue(context);
+        _pendingFloorA = Math.Max(0f, KnownFloorSizeA.GetValue(context));
+        _pendingFloorB = Math.Max(0f, KnownFloorSizeB.GetValue(context));
         if (_pendingSpherical && _points.Count > 0)
         {
             MaybeStartShell();
@@ -214,6 +216,8 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
         _pendingRegularize = RegularizeRoom.GetValue(context);
         _pendingGlobalAlign = GlobalAlign.GetValue(context);
         _pendingFlat = FlatSurfaces.GetValue(context);
+        _pendingFloorA = Math.Max(0f, KnownFloorSizeA.GetValue(context));
+        _pendingFloorB = Math.Max(0f, KnownFloorSizeB.GetValue(context));
         PrepareCamera(context, desc.Width, desc.Height);
         UpdateStatus();
     }
@@ -731,6 +735,8 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
         _shellCaptures = _captures;
         _shellAligned = aligned;
         _shellRegularize = _pendingRegularize;
+        _shellFloorA = _pendingFloorA;
+        _shellFloorB = _pendingFloorB;
         _shellFlat = flatNow;
         var tiles = _pendingGlobalAlign && _tiles.Count >= MinTilesForAlignment ? _tiles.ToArray() : null;
 
@@ -749,6 +755,8 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
         }
 
         var regularize = _pendingRegularize;
+        var floorA = _pendingFloorA;
+        var floorB = _pendingFloorB;
         var flat = flatNow;
         var generation = _shellGeneration;
         System.Threading.Tasks.Task.Run(() =>
@@ -756,7 +764,7 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
                                             try
                                             {
                                                 var aligned = snapshot == null ? AlignTiles(tiles!) : null;
-                                                BuildRoomShell(snapshot ?? aligned!, snapshot != null ? snapshotCount : aligned!.Length, regularize, flat, out _, out _, out _, out var positions, out var colors, out _);
+                                                BuildRoomShell(snapshot ?? aligned!, snapshot != null ? snapshotCount : aligned!.Length, regularize, flat, floorA, floorB, out _, out _, out _, out var positions, out var colors, out _);
                                                 if (_shellBuffer.Length < positions.Count)
                                                     _shellBuffer = new Point[positions.Count + positions.Count / 4 + 1024];
 
@@ -1102,6 +1110,8 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
                 var snapshot = meshTiles == null ? _points.ToArray() : null;
                 var regularize = _pendingRegularize;
                 var flat = _pendingFlat;
+                var floorA = _pendingFloorA;
+                var floorB = _pendingFloorB;
                 _meshBusy = true;
                 SetStatus($"Building a mesh from {snapshot?.Length ?? meshTiles!.Length} {(snapshot != null ? "points" : "captures")}...", IStatusProvider.StatusLevel.Notice);
                 System.Threading.Tasks.Task.Run(() =>
@@ -1109,7 +1119,7 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
                                                     try
                                                     {
                                                         var watch = System.Diagnostics.Stopwatch.StartNew();
-                                                        var (vertices, triangles) = WriteSphericalMesh(absolutePath, snapshot ?? AlignTiles(meshTiles!), regularize, flat);
+                                                        var (vertices, triangles) = WriteSphericalMesh(absolutePath, snapshot ?? AlignTiles(meshTiles!), regularize, flat, floorA, floorB);
                                                         _meshResultPath = relativePath;
                                                         _meshResultMessage = $"Saved a mesh of {vertices} vertices and {triangles} triangles to {relativePath} ({watch.Elapsed.TotalSeconds:F1} s)";
                                                     }
@@ -1185,7 +1195,7 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
     /// uchar red/green/blue per vertex, openable in MeshLab/CloudCompare/blender.
     /// </summary>
     /** Bins the scan into a range map, fits the room box and returns the box-snapped shell as a half-degree vertex grid. */
-    private static void BuildRoomShell(ScanPoint[] scanPoints, int scanCount, bool regularize, bool flat, out int w2, out int h2, out float[] gridRange,
+    private static void BuildRoomShell(ScanPoint[] scanPoints, int scanCount, bool regularize, bool flat, float floorA, float floorB, out int w2, out int h2, out float[] gridRange,
                                        out List<System.Numerics.Vector3> positions, out List<System.Numerics.Vector3> colors,
                                        out int[] vertexIndex)
     {
@@ -1290,6 +1300,82 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
                 positions.Add(new System.Numerics.Vector3(r * dx, r * sinE, r * dz));
                 colors.Add(cellColor);
             }
+        }
+
+        if (floorA > 0f && floorB > 0f && !regularize)
+            StretchFloorPlan(positions, floorA, floorB);
+    }
+
+    /**
+     * Stretches the floor plan to a known room size. The depth model's scale differs along the room's two axes, and with one rotating camera
+     * there is no parallax to tell, so the measured wall-to-wall spans (trimmed, on the band just above the horizon) are mapped to the given
+     * dimensions along the best-fit axes. Heights are untouched, so floors, ceilings and vertical walls stay level and vertical.
+     */
+    private static void StretchFloorPlan(List<System.Numerics.Vector3> positions, float sizeA, float sizeB)
+    {
+        var band = new List<System.Numerics.Vector2>();
+        foreach (var p in positions)
+        {
+            var length = p.Length();
+            if (length > 1e-4f && p.Y / length is > 0f and < 0.5f)
+                band.Add(new System.Numerics.Vector2(p.X, p.Z));
+        }
+
+        if (band.Count < 500)
+            return;
+
+        var step = Math.Max(1, band.Count / 20000);
+        var sample = new List<System.Numerics.Vector2>();
+        for (var i = 0; i < band.Count; i += step)
+            sample.Add(band[i]);
+
+        var u = new float[sample.Count];
+        var v = new float[sample.Count];
+        var bestArea = float.MaxValue;
+        var bestAngle = 0f;
+        var bestSpanU = 0f;
+        var bestSpanV = 0f;
+        for (var degrees = 0; degrees < 90; degrees++)
+        {
+            var angle = degrees * MathF.PI / 180f;
+            var c = MathF.Cos(angle);
+            var s = MathF.Sin(angle);
+            for (var i = 0; i < sample.Count; i++)
+            {
+                u[i] = sample[i].X * c - sample[i].Y * s;
+                v[i] = sample[i].X * s + sample[i].Y * c;
+            }
+
+            Array.Sort(u);
+            Array.Sort(v);
+            var lowIndex = (int)(sample.Count * 0.03f);
+            var highIndex = (int)(sample.Count * 0.97f);
+            var spanU = u[highIndex] - u[lowIndex];
+            var spanV = v[highIndex] - v[lowIndex];
+            if (spanU * spanV < bestArea)
+            {
+                bestArea = spanU * spanV;
+                bestAngle = angle;
+                bestSpanU = spanU;
+                bestSpanV = spanV;
+            }
+        }
+
+        if (bestSpanU < 0.5f || bestSpanV < 0.5f)
+            return;
+
+        var large = Math.Max(sizeA, sizeB);
+        var small = Math.Min(sizeA, sizeB);
+        var scaleU = bestSpanU >= bestSpanV ? large / bestSpanU : small / bestSpanU;
+        var scaleV = bestSpanU >= bestSpanV ? small / bestSpanV : large / bestSpanV;
+        var cosA = MathF.Cos(bestAngle);
+        var sinA = MathF.Sin(bestAngle);
+        for (var i = 0; i < positions.Count; i++)
+        {
+            var p = positions[i];
+            var pu = (p.X * cosA - p.Z * sinA) * scaleU;
+            var pv = (p.X * sinA + p.Z * cosA) * scaleV;
+            positions[i] = new System.Numerics.Vector3(pu * cosA + pv * sinA, p.Y, -pu * sinA + pv * cosA);
         }
     }
 
@@ -1473,9 +1559,9 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
      * (so surfaces never stretch across an edge), and the open rim at the lowest seen elevation is closed with a
      * floor fan so the shell is solid. Faces point toward the camera.
      */
-    private (int Vertices, int Triangles) WriteSphericalMesh(string absolutePath, ScanPoint[] scanPoints, bool regularize, bool flat)
+    private (int Vertices, int Triangles) WriteSphericalMesh(string absolutePath, ScanPoint[] scanPoints, bool regularize, bool flat, float floorA, float floorB)
     {
-        BuildRoomShell(scanPoints, scanPoints.Length, regularize, flat, out var w2, out var h2, out var gridRange, out var positions, out var colors, out var vertexIndex);
+        BuildRoomShell(scanPoints, scanPoints.Length, regularize, flat, floorA, floorB, out var w2, out var h2, out var gridRange, out var positions, out var colors, out var vertexIndex);
 
         var faces = new List<int>();
         void AddFace(int i0, int i1, int i2)
@@ -2293,6 +2379,12 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
     [Input(Guid = "e9b4c7a3-6d15-4b82-a3f0-1c8d5e7b2a96")]
     public readonly InputSlot<bool> FlatSurfaces = new(true);
 
+    [Input(Guid = "3c5e7a91-4d28-4f6b-8a13-7e9d2c4b6f01")]
+    public readonly InputSlot<float> KnownFloorSizeA = new(0f);
+
+    [Input(Guid = "9a1d3f57-6b82-4c04-b5e9-2f7a8c1d3e64")]
+    public readonly InputSlot<float> KnownFloorSizeB = new(0f);
+
     [Input(Guid = "6c269444-aaec-4359-9708-4eb2cfdd0487")]
     public readonly InputSlot<bool> SaveTrigger = new(false);
 
@@ -2402,7 +2494,7 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
     private static readonly long ShellMinIntervalTicks = 2 * System.Diagnostics.Stopwatch.Frequency;
     private static readonly long FlattenIdleTicks = (long)(1.5 * System.Diagnostics.Stopwatch.Frequency);
 
-    private bool RegularizeUnchanged() => _shellRegularize == _pendingRegularize;
+    private bool RegularizeUnchanged() => _shellRegularize == _pendingRegularize && _shellFloorA == _pendingFloorA && _shellFloorB == _pendingFloorB;
     private volatile bool _meshDone;
     private volatile string _meshResultPath = string.Empty;
     private volatile string _meshResultMessage = string.Empty;
@@ -2415,6 +2507,10 @@ public sealed class DepthScan3D : Instance<DepthScan3D>, IStatusProvider, ICusto
     private bool _pendingAutoScale;
     private bool _pendingRegularize;
     private bool _pendingGlobalAlign;
+    private float _pendingFloorA;
+    private float _pendingFloorB;
+    private float _shellFloorA;
+    private float _shellFloorB;
     private bool _pendingFlat;
     private float _anchorScale = 1f;
     private bool _captureOnceState;

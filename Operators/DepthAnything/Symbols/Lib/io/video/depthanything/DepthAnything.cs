@@ -45,6 +45,8 @@ internal sealed class DepthEstimationResult
     public float Max;
     public float VerticalFovDegrees;
     public bool HasCameraPose;
+    /** False while the pose tracker has lost the view (predicted or frozen pose); scans must not place new points then. */
+    public bool PoseTrusted = true;
     public Vector3 CameraPosition;
     public Vector3 CameraForward;
     public Vector3 CameraUp;
@@ -112,6 +114,9 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
     /// </summary>
     [Output(Guid = "5a3334ec-78c3-4001-8018-3d8aae7f870f", DirtyFlagTrigger = DirtyFlagTrigger.Animated)]
     public readonly Slot<Object> CamReference = new();
+
+    /** False while the image tracker of a pan/tilt camera has lost the view; DepthScan3D skips captures then. */
+    public bool PoseTrusted { get; private set; } = true;
 
     #endregion
 
@@ -254,7 +259,11 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
         _workerFieldOfViewDegrees = Math.Clamp(FieldOfView.GetValue(context), 1f, 179f);
 
         // Ego-motion tracking costs tens of ms per frame on the worker; only pay it while something pulls the camera
-        _workerTrackPose = CamReference.DirtyFlag.FramesSinceLastUpdate < PoseConsumerTimeoutFrames;
+        // Ego-motion tracking costs tens of ms per frame, so the depth tracker only runs while something pulls the camera. The
+        // image-based rotation tracker must follow the video continuously: a scan that reads the pose only while it captures would
+        // otherwise find it reset at every stop
+        _workerTrackPose = CamReference.DirtyFlag.FramesSinceLastUpdate < PoseConsumerTimeoutFrames
+                           || (DepthCameraMotion)CameraMotion.GetValue(context) == DepthCameraMotion.RotationOnly;
         _workerCameraMotion = (DepthCameraMotion)CameraMotion.GetValue(context);
 
         // Normalization and sky handling are applied by the worker when producing a result.
@@ -448,6 +457,7 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
         var aspect = result is { Height: > 0 } ? (float)result.Width / result.Height : 1f;
 
         LastObjectToWorld = context.ObjectToWorld;
+        PoseTrusted = result?.PoseTrusted ?? true;
         SetCameraPose(position, forward, up, fov, aspect);
 
         // One line per new result, so the pose trajectory shows in the log while debugging
@@ -2001,7 +2011,9 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
                 posePosition = workerContext.PoseTracker.Position;
                 poseForward = workerContext.PoseTracker.Forward;
                 poseUp = workerContext.PoseTracker.Up;
-                poseSource = workerContext.PoseTracker.Tracking ? "depth-tracking" : "re-anchored";
+                poseSource = workerContext.PoseTracker.Motion == DepthCameraMotion.RotationOnly
+                                 ? workerContext.PoseTracker.Source
+                                 : workerContext.PoseTracker.Tracking ? "depth-tracking" : "re-anchored";
             }
             else
             {
@@ -2029,6 +2041,7 @@ public class DepthAnything : Instance<DepthAnything>, ICustomDropdownHolder, ICa
                 Max = max,
                 VerticalFovDegrees = verticalFov,
                 HasCameraPose = modelInfo.ViewCount >= 2 || extrinsicsLive || workerContext.PoseTracker.HasPose,
+                PoseTrusted = modelInfo.ViewCount >= 2 || extrinsicsLive || workerContext.PoseTracker.Motion != DepthCameraMotion.RotationOnly || workerContext.PoseTracker.Tracking,
                 CameraPosition = posePosition,
                 CameraForward = poseForward,
                 CameraUp = poseUp,

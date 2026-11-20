@@ -87,6 +87,14 @@
       "DefaultValue": true
     },
     {
+      "Id": "3c5e7a91-4d28-4f6b-8a13-7e9d2c4b6f01"/*KnownFloorSizeA*/,
+      "DefaultValue": 0.0
+    },
+    {
+      "Id": "9a1d3f57-6b82-4c04-b5e9-2f7a8c1d3e64"/*KnownFloorSizeB*/,
+      "DefaultValue": 0.0
+    },
+    {
       "Id": "6c269444-aaec-4359-9708-4eb2cfdd0487"/*SaveTrigger*/,
       "DefaultValue": false
     },
