@@ -202,7 +202,8 @@ public sealed class CitpDeviceSettings
     /// as distinct feeds in the capture without any per-plug setup.</summary>
     public string FeedName = string.Empty;
 
-    /// <summary>CITP sender key (uint32); 0 = generate one at random per session.</summary>
+    /// <summary>Kept so saved setups load; the shared CITP source generates one sender key per
+    /// lifetime and no longer reads this per-plug value.</summary>
     public uint SourceKey;
 
     /// <summary>The feed name the stream advertises for this plug: the explicit name, or - when

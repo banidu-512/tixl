@@ -1709,19 +1709,9 @@ internal static partial class SetupParameterView
             ImGui.PopID();
             CustomComponents.TooltipForLastItem("Reset feed name", "Empty - the feed follows the plug's name.");
 
-            // What the peer actually lists: the explicit name, or the plug's own.
-            FormInputs.AddHint($"\"{device.ResolveFeedName(plug.Name)} 0\" in the peer's feed list");
-
-            Span<int> sourceKey = [(int)device.SourceKey];
-            var keyState = DrawIntsRow("Source key", sourceKey, "CITP sender key; 0 = generate one at random per session.",
-                                       reserveRight: 22);
-            if ((keyState & InputEditStateFlags.Modified) != 0)
-            {
-                device.SourceKey = (uint)Math.Clamp(sourceKey[0], 0, int.MaxValue);
-                OutputSetupHandling.SaveActive();
-            }
-
-            DrawRowReset("ResetSourceKey", "source key", () => device.SourceKey = 0, null);
+            // What the peer actually lists: every plug is one feed of the machine's single "TiXL"
+            // source, numbered by feed order ("Physical Output" in Capture).
+            FormInputs.AddHint($"\"{device.ResolveFeedName(plug.Name)}\" as a feed of the TiXL source");
 
             var citpKeepalive = device.Keepalive;
             if (FormInputs.AddCheckBox("Keepalive", ref citpKeepalive,
