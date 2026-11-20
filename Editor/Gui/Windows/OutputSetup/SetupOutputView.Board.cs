@@ -2183,6 +2183,14 @@ internal sealed partial class SetupOutputView
         foreach (var output in setup.Outputs)
         {
             var binding = machineConfig.FindBinding(output.Id);
+            if (output.Kind == OutputDefinition.Kinds.Laser)
+            {
+                // A laser output has no pixel canvas; what matters on its card is whether it streams.
+                var state = SetupLabels.LaserOutputState(output, binding != null, out _);
+                _boardMeta[output.Id] = binding == null ? state : $"{state} → {Plugs.BindingLabel(machineConfig, binding)}";
+                continue;
+            }
+
             _boardMeta[output.Id] = binding == null
                                         ? $"{output.ResolvedResolution.Width}×{output.ResolvedResolution.Height}"
                                         : $"{output.ResolvedResolution.Width}×{output.ResolvedResolution.Height} → {Plugs.BindingLabel(machineConfig, binding)}";

@@ -627,13 +627,21 @@ internal sealed class SetupFlowOutliner
                 _collapsedOutputs.Remove(output.Id);
 
             var isExpanded = !_collapsedOutputs.Contains(output.Id);
+            var isLaserOutput = output.Kind == OutputDefinition.Kinds.Laser;
+            var laserNeedsAttention = false;
+            var laserState = isLaserOutput
+                                 ? SetupLabels.LaserOutputState(output, machineConfig.FindBinding(output.Id) != null, out laserNeedsAttention)
+                                 : "";
             var args = new OutlinerItem.Args
                            {
                                Kind = SetupEntityKinds.Output,
                                Id = output.Id,
                                Name = SetupLabels.OutputLabel(output),
                                // Nothing presents it yet — said in words, where the plug connection would otherwise start.
-                               Status = machineConfig.FindBinding(output.Id) == null ? "unbound" : null,
+                               Status = isLaserOutput
+                                                ? laserState
+                                                : machineConfig.FindBinding(output.Id) == null ? "unbound" : null,
+                               StatusColor = isLaserOutput && laserNeedsAttention ? UiColors.StatusAttention : null,
                                IsExpanded = hasPatches ? isExpanded : null,
                                KeepsExpanderColumn = true,
                                // A paused output (Send off) reads the same as a non-rendering surface.
