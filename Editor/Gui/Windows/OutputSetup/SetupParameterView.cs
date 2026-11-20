@@ -1719,6 +1719,7 @@ internal static partial class SetupParameterView
         var processing = output.LaserProcessing ??= new LaserProcessingSettings();
         var optimizer = processing.Optimizer;
         var safety = processing.Safety;
+        var motion = processing.Motion;
 
         PanelLayout.BeginSection("Frame",
                                  "The projection is the aim of the routed [LaserCamera] (edit it on the op). A new camera attaches to a free laser output; drop a camera onto this output to route a specific one. The frame streams to the bound plug while the master laser is on.");
@@ -2107,6 +2108,52 @@ internal static partial class SetupParameterView
                 optimizer.CornerAnchorCount = Math.Clamp(anchors[0], 1, 10);
             CommitFieldUndo(setup, "Laser optimization", anchorsState);
             DrawRowReset("ResetCornerAnchors", "corner anchors", () => optimizer.CornerAnchorCount = 3, setup);
+
+            PanelLayout.EndSection();
+        }
+
+        if (PanelLayout.BeginCollapsibleSection("Scanner Motion",
+                                                "The scanners' time budgets in µs, converted to dwell and sample counts at the bound plug's scan rate. All zero keeps the content's own point spacing in charge."))
+        {
+            Span<float> drawingSpeed = [motion.DrawingSpeedUs];
+            var speedState = DrawFloatsRow("Drawing speed (µs)", drawingSpeed,
+                                           "Slowest the beam may draw, in µs per 1000 ILDA units - drawn segments are stretched with interpolated samples so the scanners can track them (0 = the content's point spacing decides; typical galvos 6-12).",
+                                           reserveRight: 22);
+            BeginFieldUndo(setup, speedState);
+            if ((speedState & InputEditStateFlags.Modified) != 0)
+                motion.DrawingSpeedUs = Math.Clamp(drawingSpeed[0], 0f, 100f);
+            CommitFieldUndo(setup, "Laser scanner motion", speedState);
+            DrawRowReset("ResetDrawingSpeed", "drawing speed", () => motion.DrawingSpeedUs = 0f, setup);
+
+            Span<float> motionResponse = [motion.MotionResponseUs];
+            var responseState = DrawFloatsRow("Motion response (µs)", motionResponse,
+                                              "Dwell at every shape's first sample - the settle time the scanners need after a jump before the beam opens (0 = off; typical 50-300).",
+                                              reserveRight: 22);
+            BeginFieldUndo(setup, responseState);
+            if ((responseState & InputEditStateFlags.Modified) != 0)
+                motion.MotionResponseUs = Math.Clamp(motionResponse[0], 0f, 2000f);
+            CommitFieldUndo(setup, "Laser scanner motion", responseState);
+            DrawRowReset("ResetMotionResponse", "motion response", () => motion.MotionResponseUs = 0f, setup);
+
+            Span<float> cornerSettle = [motion.CornerSettleUs];
+            var settleState = DrawFloatsRow("Corner settle (µs)", cornerSettle,
+                                            "Extra dwell at sharp corners, on top of the corner anchors above, so corners render sharp instead of rounded off (0 = off; typical 50-200).",
+                                            reserveRight: 22);
+            BeginFieldUndo(setup, settleState);
+            if ((settleState & InputEditStateFlags.Modified) != 0)
+                motion.CornerSettleUs = Math.Clamp(cornerSettle[0], 0f, 2000f);
+            CommitFieldUndo(setup, "Laser scanner motion", settleState);
+            DrawRowReset("ResetCornerSettle", "corner settle", () => motion.CornerSettleUs = 0f, setup);
+
+            Span<float> transition = [motion.TransitionUs];
+            var transitionState = DrawFloatsRow("Transitions (µs)", transition,
+                                                "Extra blanked hold at each shape entry - the time between shapes the scanners get before the beam opens (0 = off; typical 100-500).",
+                                                reserveRight: 22);
+            BeginFieldUndo(setup, transitionState);
+            if ((transitionState & InputEditStateFlags.Modified) != 0)
+                motion.TransitionUs = Math.Clamp(transition[0], 0f, 2000f);
+            CommitFieldUndo(setup, "Laser scanner motion", transitionState);
+            DrawRowReset("ResetTransitionUs", "transitions", () => motion.TransitionUs = 0f, setup);
 
             PanelLayout.EndSection();
         }

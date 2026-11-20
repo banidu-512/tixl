@@ -648,7 +648,20 @@ internal static class LaserDriver
             input = LaserPipeline.MapFrameIntoZone(input, count, settings.Safety, output.FrameMapping, session.GetMappedBuffer(count));
 
         var pipelineStart = Stopwatch.GetTimestamp();
-        var result = session.Apply(settings, input, count, out var frameCount);
+
+        // The µs motion budgets (drawing speed, motion response, corner settle, transitions)
+        // convert to point counts at the bound plug's scan rate - the same resolution the scan
+        // readout uses. No plug bound: the shared 30 kpps default.
+        var scanRatePps = 30000;
+        var motionBinding = machine?.FindBinding(output.Id);
+        if (motionBinding is { IsLaser: true })
+        {
+            var motionPlug = machine!.FindLaserPlug(motionBinding.PlugId);
+            if (motionPlug != null)
+                scanRatePps = ResolvePlugScanRate(motionPlug);
+        }
+
+        var result = session.Apply(settings, input, count, out var frameCount, scanRatePps);
         if (settings.Safety.Calibrated && settings.Safety.RenderSafetyShapes)
             result = session.AppendSafetyShapes(settings.Safety, result, frameCount, out frameCount);
         _lastPipelineTotalMs += (Stopwatch.GetTimestamp() - pipelineStart) * 1000.0 / Stopwatch.Frequency;

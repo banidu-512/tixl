@@ -18,6 +18,7 @@ public sealed class LaserProcessingSettings
 {
     public OptimizerSettings Optimizer = new();
     public SafetySettings Safety = new();
+    public MotionSettings Motion = new();
 
     public static LaserProcessingSettings Default => new();
 
@@ -32,6 +33,14 @@ public sealed class LaserProcessingSettings
         writer.WriteValue("BlankingDelayPoints", Optimizer.BlankingDelayPoints);
         writer.WriteValue("CornerAngleThreshold", Optimizer.CornerAngleThreshold);
         writer.WriteValue("CornerAnchorCount", Optimizer.CornerAnchorCount);
+        writer.WriteEndObject();
+
+        writer.WritePropertyName("Motion");
+        writer.WriteStartObject();
+        writer.WriteValue("DrawingSpeedUs", Motion.DrawingSpeedUs);
+        writer.WriteValue("MotionResponseUs", Motion.MotionResponseUs);
+        writer.WriteValue("CornerSettleUs", Motion.CornerSettleUs);
+        writer.WriteValue("TransitionUs", Motion.TransitionUs);
         writer.WriteEndObject();
 
         writer.WritePropertyName("Safety");
@@ -126,6 +135,18 @@ public sealed class LaserProcessingSettings
                                      };
         }
 
+        var motion = token["Motion"];
+        if (motion != null)
+        {
+            settings.Motion = new MotionSettings
+                                  {
+                                      DrawingSpeedUs = motion.ReadValueSafe("DrawingSpeedUs", 0f),
+                                      MotionResponseUs = motion.ReadValueSafe("MotionResponseUs", 0f),
+                                      CornerSettleUs = motion.ReadValueSafe("CornerSettleUs", 0f),
+                                      TransitionUs = motion.ReadValueSafe("TransitionUs", 0f),
+                                  };
+        }
+
         var safety = token["Safety"];
         if (safety != null)
         {
@@ -212,14 +233,50 @@ public sealed class LaserProcessingSettings
         public float CornerAngleThreshold = 30f;
         public int CornerAnchorCount = 3;
 
-        public LaserOptimizerTransforms.Config ToConfig() => new()
-                                                                 {
-                                                                     EnableOptimization = EnableOptimization,
-                                                                     MaxJumpDistance = MaxJumpDistance,
-                                                                     BlankingDelayPoints = BlankingDelayPoints,
-                                                                     CornerAngleThreshold = CornerAngleThreshold,
-                                                                     CornerAnchorCount = CornerAnchorCount,
-                                                                 };
+        public LaserOptimizerTransforms.Config ToConfig() => ToConfig(null, 0);
+
+        /// <summary>The optimizer config plus the µs motion budgets converted at the bound
+        /// plug's scan rate: a rate of 0 (unknown) keeps the dwell knobs off rather than
+        /// guessing a device the output may not be bound to.</summary>
+        public LaserOptimizerTransforms.Config ToConfig(MotionSettings? motion, int scanRatePps) => new()
+                                                                                                     {
+                                                                                                         EnableOptimization = EnableOptimization,
+                                                                                                         MaxJumpDistance = MaxJumpDistance,
+                                                                                                         BlankingDelayPoints = BlankingDelayPoints,
+                                                                                                         CornerAngleThreshold = CornerAngleThreshold,
+                                                                                                         CornerAnchorCount = CornerAnchorCount,
+                                                                                                         MotionResponseUs = motion?.MotionResponseUs ?? 0f,
+                                                                                                         CornerSettleUs = motion?.CornerSettleUs ?? 0f,
+                                                                                                         TransitionUs = motion?.TransitionUs ?? 0f,
+                                                                                                         PointsPerSecond = scanRatePps,
+                                                                                                     };
+    }
+
+    /// <summary>
+    /// The µs-based scanner motion budgets, edited in the Output Setup's Scanner Motion section
+    /// and converted to dwell/resample point counts at the output's scan rate. All zero = off,
+    /// which keeps the frame byte-identical to the pre-motion pipeline. These are per-output
+    /// device settings (the scanners' physics), not per-content render knobs.
+    /// </summary>
+    public sealed class MotionSettings
+    {
+        /// <summary>Drawing speed in µs per 1000 ILDA units of drawn path (0 = off): the beam
+        /// may not cross a segment faster than this budget - shorter segments are stretched
+        /// with interpolated samples so the scanners can track them. Typical galvo budget is
+        /// 6-12 µs per 1000 units; the default leaves the content's own point spacing in charge.</summary>
+        public float DrawingSpeedUs;
+
+        /// <summary>µs of lit dwell at every shape's first sample: the time the scanners need
+        /// to settle after a jump before the beam opens. Typical 50-300 µs.</summary>
+        public float MotionResponseUs;
+
+        /// <summary>µs of extra dwell at sharp corners (on top of the corner anchors), so the
+        /// corner renders sharp instead of rounded-off. Typical 50-200 µs.</summary>
+        public float CornerSettleUs;
+
+        /// <summary>µs of extra blanked hold at each shape entry (the transition between
+        /// shapes), appended to the blanking ramp's settle. Typical 100-500 µs.</summary>
+        public float TransitionUs;
     }
 
     /// <summary>Safety stage; <see cref="Calibrated"/>

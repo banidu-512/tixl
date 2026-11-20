@@ -27,11 +27,28 @@ public static class LaserOptimizerTransforms
         /// <summary>Maximum blanked points inserted before a shape start (0..100).</summary>
         public int BlankingDelayPoints;
 
-        /// <summary>Corners sharper than this angle (degrees) get dwell anchors.</summary>
+        /// <summary>Corners sharper than this angle at which the beam lingers.</summary>
         public float CornerAngleThreshold;
 
         /// <summary>Repeated points at a corner (1..10).</summary>
         public int CornerAnchorCount;
+
+        /// <summary>µs of lit dwell at every shape's first sample (the scanner's motion
+        /// response after a jump - the beam pauses before drawing). 0 = off. Converted to
+        /// points at <see cref="PointsPerSecond"/>, on top of the blanking's own settle.</summary>
+        public float MotionResponseUs;
+
+        /// <summary>µs of extra dwell at sharp corners (the scanner's settle time there),
+        /// added on top of <see cref="CornerAnchorCount"/>. 0 = off.</summary>
+        public float CornerSettleUs;
+
+        /// <summary>µs of extra blanked settle at shape entries (the transition hold between
+        /// shapes), appended to the blanking ramp's own settle. 0 = off.</summary>
+        public float TransitionUs;
+
+        /// <summary>Scan rate (points per second) the µs budgets convert at; 0 skips the µs passes.
+        /// Defaults to the classic 30 kpps when the caller doesn't resolve the rate.</summary>
+        public int PointsPerSecond;
 
         public static Config Default => new()
                                            {
@@ -40,6 +57,7 @@ public static class LaserOptimizerTransforms
                                                BlankingDelayPoints = 5,
                                                CornerAngleThreshold = 30f,
                                                CornerAnchorCount = 3,
+                                               PointsPerSecond = 30000,
                                            };
     }
 
@@ -112,7 +130,11 @@ public static class LaserOptimizerTransforms
             return scratch.Output;
 
         var blankingDelay = Math.Clamp(config.BlankingDelayPoints, 0, 100);
-        var cornerAnchors = Math.Clamp(config.CornerAnchorCount, 1, 10);
+        var pps = config.PointsPerSecond;
+        var motionResponsePoints = PointsFromUs(config.MotionResponseUs, pps, MaxMotionResponsePoints);
+        var transitionPoints = PointsFromUs(config.TransitionUs, pps, MaxTransitionPoints);
+        var settlePoints = PointsFromUs(config.CornerSettleUs, pps, MaxCornerSettlePoints);
+        var cornerAnchors = Math.Clamp(config.CornerAnchorCount + settlePoints, 1, MaxCornerAnchors);
         var maxJumpDistance = float.IsFinite(config.MaxJumpDistance) && config.MaxJumpDistance > 0f
                                   ? config.MaxJumpDistance
                                   : Config.Default.MaxJumpDistance;
@@ -120,23 +142,39 @@ public static class LaserOptimizerTransforms
                                        ? config.CornerAngleThreshold
                                        : Config.Default.CornerAngleThreshold;
 
-        var resultSize = EstimateResultSize(count, blankingDelay, cornerAnchors);
+        var resultSize = EstimateResultSize(count, blankingDelay + transitionPoints + motionResponsePoints, cornerAnchors);
         if (scratch.Output.Length < resultSize)
             scratch.Output = new LaserPoint[resultSize];
 
         if (config.EnableOptimization)
         {
             OptimizePath(input, count, scratch.Output, maxJumpDistance, blankingDelay,
-                         cornerAngleThreshold, cornerAnchors, scratch, out outputCount);
+                         cornerAngleThreshold, cornerAnchors, motionResponsePoints, transitionPoints, scratch, out outputCount);
         }
         else
         {
             ApplyCornerDwellingAndBlanking(input, count, scratch.Output, maxJumpDistance, blankingDelay,
-                                           cornerAngleThreshold, cornerAnchors, out outputCount);
+                                           cornerAngleThreshold, cornerAnchors, motionResponsePoints, transitionPoints, out outputCount);
         }
 
         return scratch.Output;
     }
+
+    /// <summary>µs converted to dwell points at the frame's scan rate: ceil(µs · PPS / 10⁶),
+    /// clamped so one knob cannot explode the frame. 0 (or an unknown rate) stays off.</summary>
+    private static int PointsFromUs(float us, int pointsPerSecond, int maxPoints)
+    {
+        if (us <= 0f || pointsPerSecond <= 0)
+            return 0;
+
+        var points = (int)MathF.Ceiling(us * pointsPerSecond / 1_000_000f);
+        return Math.Clamp(points, 0, maxPoints);
+    }
+
+    private const int MaxMotionResponsePoints = 64;
+    private const int MaxTransitionPoints = 128;
+    private const int MaxCornerSettlePoints = 64;
+    private const int MaxCornerAnchors = 40;
 
     private static LaserPoint[] CopyExact(LaserPoint[] buffer, int outputCount)
     {
@@ -175,6 +213,7 @@ public static class LaserOptimizerTransforms
         LaserPoint[] input, int inputCount,
         LaserPoint[] output,
         float maxJumpDistance, int blankingDelayPoints, float cornerAngleThreshold, int cornerAnchorCount,
+        int motionResponsePoints, int transitionPoints,
         Scratch scratch, out int outputCount)
     {
         outputCount = 0;
@@ -243,7 +282,7 @@ public static class LaserOptimizerTransforms
         if (!useGrid && segmentCount > MaxSequentialTourSegments)
         {
             ApplyCornerDwellingAndBlanking(input, inputCount, output, maxJumpDistance, blankingDelayPoints,
-                                           cornerAngleThreshold, cornerAnchorCount, out outputCount);
+                                           cornerAngleThreshold, cornerAnchorCount, motionResponsePoints, transitionPoints, out outputCount);
             return;
         }
 
@@ -290,7 +329,16 @@ public static class LaserOptimizerTransforms
             // and then opening the beam across the whole segment is exactly the maximal-acceleration
             // lit jump the blanked ramps exist to prevent.
             var entrySample = bestReverse ? segEnd : segStart;
-            InsertBlankingIfNeeded(output, ref outputCount, emitX, emitY, input[entrySample].X, input[entrySample].Y, maxJumpDistance, blankingDelayPoints);
+            InsertBlankingIfNeeded(output, ref outputCount, emitX, emitY, input[entrySample].X, input[entrySample].Y, maxJumpDistance, blankingDelayPoints, transitionPoints);
+
+            // Motion response: the beam pauses at a shape's first sample after the jump - the
+            // scanners need the time the µs budget grants before the shape is drawn.
+            if (motionResponsePoints > 0)
+            {
+                var entryPoint = input[entrySample];
+                for (var d = 0; d < motionResponsePoints && outputCount < output.Length; d++)
+                    output[outputCount++] = entryPoint;
+            }
 
             if (bestReverse)
             {
@@ -670,6 +718,7 @@ public static class LaserOptimizerTransforms
         LaserPoint[] input, int inputCount,
         LaserPoint[] output,
         float maxJumpDistance, int blankingDelayPoints, float cornerAngleThreshold, int cornerAnchorCount,
+        int motionResponsePoints, int transitionPoints,
         out int outputCount)
     {
         outputCount = 0;
@@ -686,10 +735,17 @@ public static class LaserOptimizerTransforms
             // every drawn line into a dotted one.
             var isShapeEntry = input[i].I > 0 && (i == 0 || input[i - 1].I <= 0);
             if (isShapeEntry)
-                InsertBlankingIfNeeded(output, ref outputCount, currentX, currentY, input[i].X, input[i].Y, maxJumpDistance, blankingDelayPoints);
+                InsertBlankingIfNeeded(output, ref outputCount, currentX, currentY, input[i].X, input[i].Y, maxJumpDistance, blankingDelayPoints, transitionPoints);
 
             if (!TryAddPoint(output, ref outputCount, input[i]))
                 break;
+
+            // Motion response: the beam pauses at a shape's first sample after the jump.
+            if (isShapeEntry && motionResponsePoints > 0)
+            {
+                for (var d = 0; d < motionResponsePoints && outputCount < output.Length; d++)
+                    output[outputCount++] = input[i];
+            }
 
             currentX = input[i].X;
             currentY = input[i].Y;
@@ -773,7 +829,7 @@ public static class LaserOptimizerTransforms
     private static void InsertBlankingIfNeeded(
         LaserPoint[] output, ref int outputCount,
         int fromX, int fromY, int toX, int toY,
-        float maxJumpDistance, int blankingDelayPoints)
+        float maxJumpDistance, int blankingDelayPoints, int transitionPoints)
     {
         if (outputCount == 0)
             return;
@@ -808,6 +864,12 @@ public static class LaserOptimizerTransforms
         }
 
         for (var s = 0; s < settleCount && outputCount < output.Length; s++)
+            output[outputCount++] = LaserPoint.CreateBlanked(toX, toY);
+
+        // The transition hold: extra blanked samples parked on the shape's entry point - the
+        // time the scanners get for the jump before the beam opens, independent of the
+        // distance-scaled ramp above.
+        for (var t = 0; t < transitionPoints && outputCount < output.Length; t++)
             output[outputCount++] = LaserPoint.CreateBlanked(toX, toY);
     }
 

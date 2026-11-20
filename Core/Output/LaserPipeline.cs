@@ -36,6 +36,7 @@ public static class LaserPipeline
     public sealed class Session
     {
         private readonly LaserOptimizerTransforms.Scratch _optimizerScratch = new();
+        private LaserPoint[] _motionBuffer = [];
         private readonly List<LaserPoint> _safetyWorkList = new(4096);
         private readonly List<LaserPoint> _safetySpareList = new(4096);
         private LaserPoint[] _mapped = [];
@@ -103,8 +104,10 @@ public static class LaserPipeline
         private LaserProcessingSettings? _lastSettings;
         private LaserSafetyTransforms.Stats _lastStats;
 
-        /// <summary>Same as the status overload, without building the status line.</summary>
-        public LaserPoint[] Apply(LaserProcessingSettings settings, LaserPoint[]? input, int count, out int frameCount)
+        /// <summary>Same as the status overload, without building the status line.
+        /// <paramref name="scanRatePps"/> is the bound plug's scan rate: the µs motion budgets
+        /// convert to point counts at it. 0 falls back to the classic 30 kpps default.</summary>
+        public LaserPoint[] Apply(LaserProcessingSettings settings, LaserPoint[]? input, int count, out int frameCount, int scanRatePps = 30000)
         {
             _lastSettings = settings;
             if (settings == null)
@@ -151,7 +154,28 @@ public static class LaserPipeline
                 return [];
             }
 
-            var optimized = LaserOptimizerTransforms.ApplyIntoBuffer(input, count, settings.Optimizer.ToConfig(),
+            // Drawing speed runs before the optimizer: it stretches the drawn intervals with
+            // interpolated samples so the beam cannot cross a path faster than the µs budget
+            // allows; the optimizer then tours, blanks and dwells the resampled frame. With the
+            // budget at 0 the pass is a pure passthrough and the buffer is untouched.
+            var motion = settings.Motion;
+            var optimizerInput = input;
+            var optimizerCount = count;
+            if (motion.DrawingSpeedUs > 0f)
+            {
+                var ppsForResample = scanRatePps > 0 ? scanRatePps : 30000;
+                optimizerInput = LaserMotionTransforms.Apply(input, count,
+                                                             new LaserMotionTransforms.Config
+                                                                 {
+                                                                     DrawingSpeedUs = motion.DrawingSpeedUs,
+                                                                     PointsPerSecond = ppsForResample,
+                                                                 },
+                                                             _motionBuffer, out optimizerCount);
+                _motionBuffer = optimizerInput;
+            }
+
+            var optimizerConfig = settings.Optimizer.ToConfig(motion, scanRatePps);
+            var optimized = LaserOptimizerTransforms.ApplyIntoBuffer(optimizerInput, optimizerCount, optimizerConfig,
                                                                      _optimizerScratch, out var optimizedCount);
 
             _safetyWorkList.Clear();
