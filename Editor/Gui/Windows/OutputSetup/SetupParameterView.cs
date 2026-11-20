@@ -1759,9 +1759,26 @@ internal static partial class SetupParameterView
         // the projector on the wall can be told apart from its siblings. Transient show state.
         var testScreen = LaserDriver.IsTestScreen(output.Id);
         if (FormInputs.AddCheckBox("Test screen", ref testScreen,
-                                   "Streams the alignment rectangle with this output's name scanned inside it - regardless of Calibrated - so you can tell which projector is which. The frame preview shows it too. Master enable still gates the beam."))
+                                   "Streams a test pattern - regardless of Calibrated - so you can aim and calibrate the projector. The frame preview shows it too. Master enable still gates the beam."))
         {
             LaserDriver.SetTestScreen(output.Id, testScreen);
+        }
+
+        if (testScreen)
+        {
+            var patternNames = new[]
+                                   {
+                                       "Name frame", "Color shift", "Diode threshold", "White balance",
+                                       "Gamma ramp", "Scan area grid", "Circle", "ILDA test pattern",
+                                   };
+            var selectedPattern = patternNames[(int)LaserDriver.TestScreenPattern];
+            if (FormInputs.AddDropdown(ref selectedPattern, patternNames, "Test pattern",
+                                       "The calibration pattern to stream: color shift tunes the per-channel color timing, diode threshold and white balance the per-channel voltages, gamma ramp the brightness curve, the grid shows the scan area, the circle checks motion smoothness, and the ILDA pattern verifies the whole field."))
+            {
+                var index = Array.IndexOf(patternNames, selectedPattern);
+                if (index >= 0)
+                    LaserDriver.TestScreenPattern = (LaserTestFrame.Pattern)index;
+            }
         }
 
         if (!calibrated)
@@ -1901,6 +1918,65 @@ internal static partial class SetupParameterView
                              safety.ColorMinG = 0f;
                              safety.ColorMinB = 0f;
                          }, setup);
+
+        var ttlMode = safety.TtlMode;
+        if (FormInputs.AddCheckBox("TTL laser", ref ttlMode,
+                                   "Binary on/off diodes: at or above 50% the channel outputs its maximum, below it turns off. Color gains, minimums and gamma are skipped - only for lasers without analog modulation."))
+        {
+            SetupUndo.RunUndoable("Toggle laser TTL mode", setup, () => safety.TtlMode = ttlMode);
+        }
+
+        if (!safety.TtlMode)
+        {
+            Span<float> gammas =
+            [
+                safety.ColorGammaR, safety.ColorGammaG, safety.ColorGammaB,
+            ];
+            var gammaState = DrawFloatsRow("Gamma (R G B)", gammas,
+                                           "Per-channel gamma exponent: out = in^(1/gamma). 1 = linear, 2.2 = the sRGB-style perceptual default (mid-tones compressed), higher compresses more - tune on the Gamma ramp test pattern so brightness rows look evenly spaced. Per-channel values fix mixed direct-diode/DPSS systems.",
+                                           speed: 0.01f, format: "{0:0.00}", reserveRight: 22,
+                                           min: 0.1f, max: 8f, clampMin: true, clampMax: true);
+            BeginFieldUndo(setup, gammaState);
+            if ((gammaState & InputEditStateFlags.Modified) != 0)
+            {
+                safety.ColorGammaR = float.IsNaN(gammas[0]) ? 1f : Math.Clamp(gammas[0], 0.1f, 8f);
+                safety.ColorGammaG = float.IsNaN(gammas[1]) ? 1f : Math.Clamp(gammas[1], 0.1f, 8f);
+                safety.ColorGammaB = float.IsNaN(gammas[2]) ? 1f : Math.Clamp(gammas[2], 0.1f, 8f);
+            }
+
+            CommitFieldUndo(setup, "Laser gamma", gammaState);
+            DrawRowReset("ResetLaserGamma", "gamma",
+                         () =>
+                             {
+                                 safety.ColorGammaR = 1f;
+                                 safety.ColorGammaG = 1f;
+                                 safety.ColorGammaB = 1f;
+                             }, setup);
+        }
+
+        var staticPercent = safety.MaxStaticIntensity * 100f;
+        if (FormInputs.AddFloat("Max static beam %", ref staticPercent, 0f, 100f, 0.5f,
+                                clampMin: true, clampMax: true,
+                                tooltip: "Intensity fraction a stationary beam keeps after the dwell limit, instead of blanking - the venue-controlled equivalent of the safety guide's 'max non-moving beam intensity'. 0 = blank (scan-fail default). WARNING: raising this lets a holding beam output real power - be sure nobody and nothing could be burnt by the beam before changing it."))
+        {
+            safety.MaxStaticIntensity = Math.Clamp(staticPercent / 100f, 0f, 1f);
+        }
+
+        Span<float> flips =
+        [
+            safety.FlipX ? 1f : 0f, safety.FlipY ? 1f : 0f,
+        ];
+        var flipState = DrawFloatsRow("Flip (X Y)", flips,
+                                      "Mirror the output horizontally / vertically on the projector (0/1). Applied inside the safe-zone clamp so masks and the bounds audit keep their guarantees.",
+                                      format: "{0:0}", reserveRight: 22);
+        BeginFieldUndo(setup, flipState);
+        if ((flipState & InputEditStateFlags.Modified) != 0)
+        {
+            safety.FlipX = flips[0] >= 0.5f;
+            safety.FlipY = flips[1] >= 0.5f;
+        }
+
+        CommitFieldUndo(setup, "Laser flip", flipState);
 
         Span<float> shifts =
         [

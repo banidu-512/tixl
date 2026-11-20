@@ -721,24 +721,30 @@ internal static class LaserDriver
     /// drag on a plug card fires every frame and must reconnect once, not once per frame.</summary>
     private static readonly long RecreateSettleTicks = Stopwatch.Frequency / 4;
 
-    /// <summary>The test screen only changes with the output's name or its aimed rectangle, so it is
-    /// built once and replayed - it is pumped every interval while shown.</summary>
+    /// <summary>The test screen only changes with the output's name, its aimed rectangle or the
+    /// selected pattern, so it is built once and replayed - it is pumped every interval while shown.</summary>
     private static LaserPoint[] GetTestFrame(OutputDefinition output, int cx, int cy, int halfWidth, int halfHeight)
     {
-        var key = (output.Name, cx, cy, halfWidth, halfHeight);
+        var key = (output.Name, cx, cy, halfWidth, halfHeight, TestScreenPattern);
         if (_testFrames.TryGetValue(output.Id, out var cached) && cached.Key == key)
             return cached.Frame;
 
-        var frame = LaserTestFrame.Build(output.Name, cx, cy, halfWidth, halfHeight);
+        var frame = TestScreenPattern == LaserTestFrame.Pattern.NameFrame
+                        ? LaserTestFrame.Build(output.Name, cx, cy, halfWidth, halfHeight)
+                        : LaserTestFrame.BuildPattern(TestScreenPattern, cx, cy, halfWidth, halfHeight);
         _testFrames[output.Id] = (key, frame);
         return frame;
     }
 
-    private static readonly Dictionary<Guid, ((string Name, int Cx, int Cy, int HalfWidth, int HalfHeight) Key, LaserPoint[] Frame)> _testFrames = [];
+    private static readonly Dictionary<Guid, ((string Name, int Cx, int Cy, int HalfWidth, int HalfHeight, LaserTestFrame.Pattern Pattern) Key, LaserPoint[] Frame)> _testFrames = [];
 
     /// <summary>Outputs currently streaming the test screen (rectangle + output name); transient
     /// show state, never saved. Concurrent: toggled from the UI, read by the debug server.</summary>
     private static readonly ConcurrentDictionary<Guid, byte> _testScreenOutputs = [];
+
+    /// <summary>The pattern every shown test screen streams (one shared picker: calibration is a
+    /// one-person activity, and a per-output picker would desync the wizard flow).</summary>
+    public static LaserTestFrame.Pattern TestScreenPattern { get; set; } = LaserTestFrame.Pattern.NameFrame;
 
     /// <summary>Streams to fan this pump's frame out to - scratch, rebuilt per output. Compute
     /// happens once per output, after the (cheap) stream bookkeeping, so an output with no
