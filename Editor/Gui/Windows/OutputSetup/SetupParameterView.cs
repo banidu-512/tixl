@@ -2046,7 +2046,7 @@ internal static partial class SetupParameterView
             }
 
             ImGui.SameLine();
-            if (ImGui.SmallButton(mask.AllowOnlyInside ? "Allow inside" : "Blank inside"))
+            if (ImGui.Button(mask.AllowOnlyInside ? "Allow inside" : "Blank inside"))
             {
                 var captured = i;
                 SetupUndo.RunUndoable("Switch laser mask mode", setup, () =>
@@ -2081,14 +2081,14 @@ internal static partial class SetupParameterView
 
             ImGui.SameLine();
             var selected = _laserMaskSelected == i;
-            if (ImGui.SmallButton(selected ? "Editing" : "Edit"))
+            if (ImGui.Button(selected ? "Editing" : "Edit"))
                 _laserMaskSelected = selected ? -1 : i;
 
             if (ImGui.IsItemHovered())
                 ImGui.SetTooltip("Drag this mask's four corners in the frame preview above.");
 
             ImGui.SameLine();
-            if (ImGui.SmallButton("Remove"))
+            if (PanelLayout.DestructiveButton("Remove"))
             {
                 if (_laserMaskSelected == i)
                     _laserMaskSelected = -1;
@@ -2104,7 +2104,7 @@ internal static partial class SetupParameterView
             ImGui.PopID();
         }
 
-        if (ImGui.SmallButton("Add mask"))
+        if (ImGui.Button("Add mask"))
         {
             SetupUndo.RunUndoable("Add laser mask", setup, () =>
                                                                {
