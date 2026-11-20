@@ -6,6 +6,12 @@ using System.Runtime.InteropServices;
 
 namespace Examples.Lib.io.ai;
 
+/// <summary>
+/// Restyles an input image with a text prompt using Stream Diffusion V2. Strength sets how far the
+/// result moves away from the source (0 keeps the image, 1 replaces it), the seed keeps runs
+/// repeatable, and ModelPath points at a Stream Diffusion V2 ONNX export folder from the model store.
+/// Feed the result into a draw operator and pump frames - the restyle updates live while the prompt holds.
+/// </summary>
 [Guid("d9057671-ba90-47c5-bfaa-c9c53b3abf90")]
 internal sealed class StreamDiffusionExampleImg2ImgRestyle : Instance<StreamDiffusionExampleImg2ImgRestyle>
 {
