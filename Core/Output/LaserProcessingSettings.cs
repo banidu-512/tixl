@@ -51,6 +51,13 @@ public sealed class LaserProcessingSettings
         writer.WriteValue("ColorMinR", Safety.ColorMinR);
         writer.WriteValue("ColorMinG", Safety.ColorMinG);
         writer.WriteValue("ColorMinB", Safety.ColorMinB);
+        writer.WriteValue("ColorGammaR", Safety.ColorGammaR);
+        writer.WriteValue("ColorGammaG", Safety.ColorGammaG);
+        writer.WriteValue("ColorGammaB", Safety.ColorGammaB);
+        writer.WriteValue("TtlMode", Safety.TtlMode);
+        writer.WriteValue("MaxStaticIntensity", Safety.MaxStaticIntensity);
+        writer.WriteValue("FlipX", Safety.FlipX);
+        writer.WriteValue("FlipY", Safety.FlipY);
         writer.WriteValue("ColorShiftR", Safety.ColorShiftR);
         writer.WriteValue("ColorShiftG", Safety.ColorShiftG);
         writer.WriteValue("ColorShiftB", Safety.ColorShiftB);
@@ -135,6 +142,13 @@ public sealed class LaserProcessingSettings
                                       ColorMinR = safety.ReadValueSafe("ColorMinR", 0f),
                                       ColorMinG = safety.ReadValueSafe("ColorMinG", 0f),
                                       ColorMinB = safety.ReadValueSafe("ColorMinB", 0f),
+                                      ColorGammaR = safety.ReadValueSafe("ColorGammaR", 1f),
+                                      ColorGammaG = safety.ReadValueSafe("ColorGammaG", 1f),
+                                      ColorGammaB = safety.ReadValueSafe("ColorGammaB", 1f),
+                                      TtlMode = safety.ReadValueSafe("TtlMode", false),
+                                      MaxStaticIntensity = safety.ReadValueSafe("MaxStaticIntensity", 1f),
+                                      FlipX = safety.ReadValueSafe("FlipX", false),
+                                      FlipY = safety.ReadValueSafe("FlipY", false),
                                       ColorShiftR = safety.ReadValueSafe("ColorShiftR", 0),
                                       ColorShiftG = safety.ReadValueSafe("ColorShiftG", 0),
                                       ColorShiftB = safety.ReadValueSafe("ColorShiftB", 0),
@@ -227,6 +241,27 @@ public sealed class LaserProcessingSettings
         public float ColorMinG;
         public float ColorMinB;
 
+        /// <summary>Per-channel gamma exponent (1 = linear, 2.2 = sRGB-style perceptual default);
+        /// output = input^(1/gamma). Compensates diode brightness curves; per-channel values tune
+        /// mixed direct-diode/DPSS systems. Calibration, not protection.</summary>
+        public float ColorGammaR = 1f;
+        public float ColorGammaG = 1f;
+        public float ColorGammaB = 1f;
+
+        /// <summary>TTL profile type: diodes without analog modulation are binary - at or above
+        /// 50% the channel outputs its maximum, below it turns off. Gains/minimums/gamma are
+        /// skipped in this mode.</summary>
+        public bool TtlMode;
+
+        /// <summary>Intensity fraction (0..1) a stationary beam is dimmed to after the dwell
+        /// limit, instead of blanking - the venue-controlled "max non-moving beam intensity".
+        /// 1 keeps the strict blank (the scan-fail default).</summary>
+        public float MaxStaticIntensity = 1f;
+
+        /// <summary>Output geometry flip (mirrors the frame on the projector).</summary>
+        public bool FlipX;
+        public bool FlipY;
+
         /// <summary>Per-channel time shift in points (negative = the color leads the beam),
         /// for diodes that react at different speeds. Calibration, like the gains.</summary>
         public int ColorShiftR;
@@ -305,6 +340,13 @@ public sealed class LaserProcessingSettings
                            ColorMinR = ColorMinR,
                            ColorMinG = ColorMinG,
                            ColorMinB = ColorMinB,
+                           ColorGammaR = ColorGammaR,
+                           ColorGammaG = ColorGammaG,
+                           ColorGammaB = ColorGammaB,
+                           TtlMode = TtlMode,
+                           MaxStaticIntensity = MaxStaticIntensity,
+                           FlipX = FlipX,
+                           FlipY = FlipY,
                            ColorShiftR = ColorShiftR,
                            ColorShiftG = ColorShiftG,
                            ColorShiftB = ColorShiftB,
