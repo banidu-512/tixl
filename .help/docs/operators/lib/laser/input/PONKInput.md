@@ -1,4 +1,4 @@
-# PONKInput
+﻿# PONKInput
 
 *in [Lib.laser.input](README.md)*
 
@@ -34,7 +34,6 @@ A background listener binds to the configured Port (default 5583) and joins the 
 | Name | Description |
 |---|---|
 | **Active** (Boolean) | Starts/stops the UDP listener; auto-restarts on socket error |
-| **LocalIpAddress** (String) | Interface to bind (empty = all interfaces) |
 | **Port** (Int32) | UDP port to listen on (default 5583) |
 | **PrintToLog** (Boolean) | Enable verbose bind/join/CRC/parse logging |
 | **Timeout** (Float) | Seconds after which incomplete frames are discarded (default 1.2) |

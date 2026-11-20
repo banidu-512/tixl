@@ -4,6 +4,7 @@ using System.Net.Sockets;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Threading;
+using T3.Core.Utils;
 using System.Xml.Linq;
 using OpenCvSharp;
 using T3.Graphics.Compat;
@@ -40,17 +41,7 @@ namespace Lib.io.ptz
         {
             _printToLog = PrintToLog.GetValue(context);
 
-            // --- Network Interface Management ---
-            var localIpString = LocalIpAddress.GetValue(context);
-            
-            if (string.IsNullOrEmpty(localIpString))
-            {
-                if (Playback.RunTimeInSecs - _lastNetworkRefreshTime > 5.0)
-                {
-                    _lastNetworkRefreshTime = Playback.RunTimeInSecs;
-                    _networkInterfaces = GetNetworkInterfaces();
-                }
-            }
+            var localIpString = ProtocolInterfaces.ResolveAddressString(ProtocolInterfaces.Keys.Onvif);
 
             var address = Address.GetValue(context);
             var username = Username.GetValue(context);
@@ -908,37 +899,8 @@ namespace Lib.io.ptz
         #endregion
         #endregion
 
-        #region Network Interface Logic
-        private static List<NetworkAdapterInfo> _networkInterfaces = new();
 
-        private static List<NetworkAdapterInfo> GetNetworkInterfaces()
-        {
-            var list = new List<NetworkAdapterInfo>();
-            list.Add(new NetworkAdapterInfo(IPAddress.Any, IPAddress.Any, "Any"));
-            list.Add(new NetworkAdapterInfo(IPAddress.Loopback, IPAddress.Parse("255.0.0.0"), "Localhost"));
-            
-            try
-            {
-                list.AddRange(from ni in NetworkInterface.GetAllNetworkInterfaces()
-                              where ni.OperationalStatus == OperationalStatus.Up && ni.NetworkInterfaceType != NetworkInterfaceType.Loopback
-                              from ip in ni.GetIPProperties().UnicastAddresses
-                              where ip.Address.AddressFamily == AddressFamily.InterNetwork
-                              select new NetworkAdapterInfo(ip.Address, ip.IPv4Mask, ni.Name));
-            }
-            catch (Exception e)
-            {
-                Log.Warning("Could not enumerate network interfaces: " + e.Message);
-            }
-            return list;
-        }
-
-        private sealed record NetworkAdapterInfo(IPAddress IpAddress, IPAddress SubnetMask, string Name)
-        {
-            public string DisplayName => $"{Name} ({IpAddress})";
-        }
-        #endregion
-
-        #region IStatusProvider & ICustomDropdownHolder
+        #region IStatusProvider & address dropdown
         public IStatusProvider.StatusLevel GetStatusLevel() => _lastStatusMessage.StartsWith("Error") ? IStatusProvider.StatusLevel.Error : IStatusProvider.StatusLevel.Success;
         public string GetStatusMessage() => _lastStatusMessage;
         private void SetStatus(string message) => _lastStatusMessage = message;
@@ -946,19 +908,13 @@ namespace Lib.io.ptz
 
         string ICustomDropdownHolder.GetValueForInput(Guid inputId)
         {
-            if (inputId == LocalIpAddress.Id) return LocalIpAddress.Value ?? string.Empty;
             if (inputId == Address.Id) return Address.Value ?? string.Empty;
             return string.Empty;
         }
 
         IEnumerable<string> ICustomDropdownHolder.GetOptionsForInput(Guid inputId)
         {
-            if (inputId == LocalIpAddress.Id)
-            {
-                _networkInterfaces = GetNetworkInterfaces();
-                foreach (var adapter in _networkInterfaces) yield return adapter.DisplayName;
-            }
-            else if (inputId == Address.Id)
+            if (inputId == Address.Id)
             {
                 if (_discoveredDevices.IsEmpty) yield return _isDiscovering ? "Searching..." : "Enable 'Discover' to search...";
                 
@@ -970,12 +926,7 @@ namespace Lib.io.ptz
         void ICustomDropdownHolder.HandleResultForInput(Guid inputId, string selected, bool isAListItem)
         {
             if (string.IsNullOrEmpty(selected) || !isAListItem) return;
-            if (inputId == LocalIpAddress.Id)
-            {
-                var foundAdapter = _networkInterfaces.FirstOrDefault(i => i.DisplayName == selected);
-                if (foundAdapter != null) LocalIpAddress.SetTypedInputValue(foundAdapter.IpAddress.ToString());
-            }
-            else if (inputId == Address.Id)
+            if (inputId == Address.Id)
             {
                 // Ignore status messages
                 if (selected.StartsWith("Enable 'Discover'") || selected.StartsWith("Searching")) return;
@@ -1036,9 +987,6 @@ namespace Lib.io.ptz
         
         private CancellationTokenSource _disposeCts;
         private volatile bool _isSendingPtz;
-        
-        [Input(Guid = "74185692-2982-4895-8963-125478963214")]
-        public readonly InputSlot<string> LocalIpAddress = new();
         
         [Input(Guid = "8451268E-3156-4F5C-8932-156842356842")]
         public readonly InputSlot<bool> Discover = new();
