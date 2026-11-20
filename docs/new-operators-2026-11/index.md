@@ -10,7 +10,7 @@ operator has two or three screenshots:
 The screenshots were captured from the running Debug editor through its TCP debug bridge, from the
 built-in example compositions and from the branch's test projects. Images live in [`shots/`](shots).
 The same content is also split into one page per area for review: [Volumes](volume.md),
-[Physics](physics.md), [AI video](depth-ai.md), [Laser](laser.md), [OMT](omt.md),
+[Physics](physics.md), [AI video](depth-ai.md), [MediaPipe](mediapipe.md), [Laser](laser.md), [OMT](omt.md),
 [Video input](video-input.md), [Utilities](utilities.md), [Feature panels](feature-panels.md).
 
 ## At a glance

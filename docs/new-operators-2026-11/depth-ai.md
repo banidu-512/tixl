@@ -147,3 +147,20 @@ frame).
 
 ![StreamDiffusion node](shots/StreamDiffusion-graph.png)
 *The image input wired from the example image.*
+
+## Examples
+
+| Example | Shows |
+| --- | --- |
+| `DepthAnythingExample` | The op on a test image with its core inputs (model, resolution) at their defaults |
+| `DepthAnythingExampleNormalSurface` | `DepthToNormal` over the depth result, lit as a surface |
+| `DepthAnythingExampleParallaxMove` | `DepthParallax` driving a camera move from the depth layers |
+| `DepthAnythingLiveExample` | The op on a live `VideoDeviceInput` feed instead of a file |
+| `DepthAnythingSplatExample` | Depth-gated splat rendering over an RTSP stream |
+| `StreamDiffusionExample` | Text-to-image streaming with the operator's pacing inputs |
+| `StreamDiffusionExampleImg2ImgRestyle` | An input image restyled by a prompt; Strength rides the balance |
+| `StreamDiffusionExampleV2Restyle` | The V2 pipeline restyling a live source |
+| `PtzRoomScanExample` | `DepthScanBuffer` + `PtzScanPath` scanning a room with the PTZ rig |
+
+> The StreamDiffusion and PtzRoomScan examples need model files from the local model store
+> (`EnginePath` / `ModelPath`) — without them they show their graceful "waiting for model" state.
