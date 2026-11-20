@@ -2689,7 +2689,7 @@ private void HandleConnectionStateChanged(bool isConnected)
         public CitpStream(LaserPlug plug)
         {
             var device = plug.CitpSettings;
-            _feedName = ResolveFeedName(plug, device.FeedName);
+            _feedName = device.ResolveFeedName(plug.Name);
             _sourceKey = device.SourceKey != 0 ? device.SourceKey : (uint)Random.Shared.Next();
             _maxBrightness = Math.Clamp(device.MaxBrightness, 0f, 1f);
             _swapColorChannels = device.SwapColorChannels;
@@ -2773,7 +2773,7 @@ private void HandleConnectionStateChanged(bool isConnected)
         public string? DescribeMismatch(LaserPlug plug)
         {
             var device = plug.CitpSettings;
-            var feedName = ResolveFeedName(plug, device.FeedName);
+            var feedName = device.ResolveFeedName(plug.Name);
             var directPort = plug.Port > 0 ? plug.Port : 0;
 
             // SourceKey is generated per session when the plug leaves it at 0, so it is not part of
@@ -2913,17 +2913,6 @@ private void HandleConnectionStateChanged(bool isConnected)
 
         /** Host and port both set on the plug: connect there and ignore PLoc announcements. */
         private bool IsDirectConnect => _directPort > 0 && !string.IsNullOrWhiteSpace(_directHost);
-
-        /// <summary>An empty feed name resolves to the plug's name ("Laser 3"), so several TiXL
-        /// laser outputs appear as distinct feeds in Capture instead of a pile of identical
-        /// "Laser Feed"s that cannot be told apart or addressed separately.</summary>
-        private static string ResolveFeedName(LaserPlug plug, string? feedName)
-        {
-            if (!string.IsNullOrWhiteSpace(feedName))
-                return feedName.Trim();
-
-            return string.IsNullOrWhiteSpace(plug.Name) ? "Laser Feed" : plug.Name.Trim();
-        }
 
         /// <summary>
         /// Keeps the control session up: connects to the current target and reconnects after the

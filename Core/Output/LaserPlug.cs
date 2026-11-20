@@ -197,11 +197,24 @@ public sealed class PonkDeviceSettings
 /// <summary>CITP laser feed device settings.</summary>
 public sealed class CitpDeviceSettings
 {
-    /// <summary>Feed names sent to the capture ("FeedName i" per connected feed).</summary>
-    public string FeedName = "Laser Feed";
+    /// <summary>Feed name sent to the capture ("FeedName i" per connected feed). Empty - or the
+    /// pre-4.4 default "Laser Feed" - follows the plug's name, so several TiXL laser outputs appear
+    /// as distinct feeds in the capture without any per-plug setup.</summary>
+    public string FeedName = string.Empty;
 
     /// <summary>CITP sender key (uint32); 0 = generate one at random per session.</summary>
     public uint SourceKey;
+
+    /// <summary>The feed name the stream advertises for this plug: the explicit name, or - when
+    /// empty or left at the pre-4.4 default "Laser Feed" - the plug's own name, so several TiXL
+    /// laser outputs appear as distinct feeds in the capture without per-plug setup.</summary>
+    public string ResolveFeedName(string plugName)
+    {
+        if (!string.IsNullOrWhiteSpace(FeedName) && FeedName.Trim() != "Laser Feed")
+            return FeedName.Trim();
+
+        return string.IsNullOrWhiteSpace(plugName) ? "Laser Feed" : plugName.Trim();
+    }
 
     public float MaxBrightness = 1f;
     public bool SwapColorChannels;
@@ -226,7 +239,7 @@ public sealed class CitpDeviceSettings
     {
         return new CitpDeviceSettings
                    {
-                       FeedName = token.ReadValueSafe("FeedName", "Laser Feed") ?? "Laser Feed",
+                       FeedName = token.ReadValueSafe("FeedName", string.Empty)?.Trim() ?? string.Empty,
                        SourceKey = token.ReadValueSafe("SourceKey", 0u),
                        MaxBrightness = token.ReadValueSafe("MaxBrightness", 1f),
                        SwapColorChannels = token.ReadValueSafe("SwapColorChannels", false),

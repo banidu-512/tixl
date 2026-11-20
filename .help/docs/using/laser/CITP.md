@@ -15,7 +15,7 @@ The transport lives in the Output Setup: add a **CITP capture** under *Add laser
 | `Address` | - | The capture host for a direct connection. Empty = PLoc multicast discovery |
 | `Port` | 0 | Direct TCP port. 0 (with an address) or empty address keeps PLoc discovery |
 | `Local interface` | any | Interface for discovery and streaming |
-| `Feed name` | "Laser Feed" | Name advertised in the peer's feed list |
+| `Feed name` | plug name | Name advertised in the peer's feed list; empty follows the plug's name, so several TiXL outputs appear as distinct feeds |
 | `Source key` | 0 | Sender identity in CAEX messages; 0 = random per session |
 | `Brightness ceiling` | 1.0 | Final intensity ceiling (0..1) applied to every point right before encoding |
 | `Swap color channels` | off | For peers that interpret the packed color as BGR |
