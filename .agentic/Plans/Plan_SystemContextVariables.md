@@ -7,6 +7,66 @@ it around its scene, `[GetRenderPassState]` (`flow/context`, `Select` dropdown, 
 Bridge check 2026-11-15: `KeepPreviousPointBuffer` runs once per frame with `WithVelocityBuffer` on and not at all with
 it off; velocity on moving instances unchanged; no shader or log errors.
 
+**Phase 2 implemented 2026-11-15, untested by a human:** `RenderPassState.RepeatPass`, `CubeFace` and
+`IsRepeatOfFrame` (either > 0). All ten C# readers use `IsRepeatOfFrame`; `EvaluationHistory` keys by
+`RepeatPass * 6 + CubeFace`, so cube maps inside motion blur no longer collide. Compatibility instead of new graph ops
+for now: `[Loop]` sets `RepeatPass` when its index variable is named `RenderPassState.LegacyRepeatPassVariable`
+(`"__MotionBlurPass"`) and restores it after the loop; `[RenderToCubeMap]` sets `CubeFace` and still writes the legacy
+`"CubeFace"` variable, but no longer adds the face to the pass number. Side fix: `[Loop]` never restored its variable,
+so stateful ops evaluated after `[RenderWithMotionBlur]` in the same frame saw the last pass and stopped advancing; the
+typed state is restored. `[RepeatFrame]` (replacing the named loop in the two motion blur graphs) is still open.
+
+Repeat-pass audit (2026-11-15, user noticed `[DampVec3]` getting snappier with more motion blur passes): stateful ops
+that never checked the repeat pass advanced once per pass. Now skipping repeats: `[DampVec3]`, `[DampVec2]`,
+`[DampAngle]`, `[DampFloatList]`, `[DampPeakDecay]`, `[OrbitCamera]` (damping). `[ActionCamera]` was already safe (it
+advances on `Playback.FrameCount`). Still to decide, they count or detect changes and would see one change per
+subframe: `[CountInt]`, `[HasValueChanged]`, `[HasIntChanged]`, `[HasVec2Changed]`, `[HasVec3Changed]`,
+`[DeltaSinceLastFrame]`, `[WasTrigger]`, `[PeakLevel]`, `[DetectPulse]`, `[DuckAudioLevel]`, `_DetectBeatOffset`.
+
+**Phase 2b done 2026-11-15 (user-tested: "works really well"): `[RepeatFrame]` with subframe steps.** Skipping repeats
+made damped values constant across motion blur subframes (no blur). Instead of interpolating, stateful ops now advance
+in smaller steps:
+- `RenderPassState.IsSubframe`, `SubframeStepSec`, `GetStepDurationSec(frameDurationSec)` (subframe share; 0 for further
+  cube faces and other repeats; otherwise the whole frame). `DampFunctions` overloads take the step duration.
+- `[RepeatFrame]` (`render/utils`): `Passes`, `Shutter` (window as part of the last frame, clamped to 0–1 because state
+  from before the previous frame is gone). Subframes run in time order and end at the frame time; the first step covers
+  the time since the previous frame, the rest split the window, so the steps add up to one frame.
+- `[RenderWithMotionBlur]` and `[RepeatWithMotionBlur]` use it instead of `[Loop]` + `[SetTime]` + `__MotionBlurPass`
+  (also fixes `[RepeatWithMotionBlur]` setting the pass via `[SetIntVar]`, which typed readers didn't see). `Strength`
+  is now the shutter; values above 1 act as 1.
+- Damping (`[Damp]`, `[DampVec2]`, `[DampVec3]`, `[DampAngle]`, `[DampFloatList]`, `[OrbitCamera]`) steps by
+  `GetStepDurationSec`. `[Spring]`/`[SpringVec2]`/`[SpringVec3]` became time-based (60 Hz steps split into partial steps
+  of at most one frame; identical at 60 fps). `[Ease]`/`[EaseVec2]`/`[EaseVec3]` start a new animation only on the
+  frame's first pass but evaluate the curve at each subframe's time. `[DampPeakDecay]` still advances once per frame
+  (it uses global time).
+- Result: damped motion is blurred and its speed doesn't depend on the pass count.
+
+**Phase 3 implemented 2026-11-15, untested by a human.** No code or graph uses `__IsShadowPassId`,
+`_TXAA_JitterOffset` or `OverrideMotionBlurSamples` anymore.
+- `RenderPassState`: `IsShadowPass`, `JitterOffset` (pixels), `SubframeCount` (set by `[RepeatFrame]`, for the
+  accumulation weight inside the subframes; a `[RepeatFrame]` output would make a graph cycle), `SubframeCountOverride`
+  (set by the editor's output window during export, > 0 only, like the export setting).
+- New `[SetRenderPassState]` (`flow/context`): `Select` (IsShadowPass, JitterOffset), `Value`, `Offset`; `SubGraph`
+  connected = scoped, unconnected = rest of the frame (like `[Set*Var]`). `[GetRenderPassState]` gained RepeatPass,
+  CubeFace, IsShadowPass, SubframeCount (appended).
+- Core `CameraJitter` reads `RenderPass.JitterOffset`; `[RepeatFrame]` applies the override and sets `SubframeCount`.
+- Graphs changed in place (same child ids and positions): `[SetShadow]` (2×), `[TXAA]` → `[SetRenderPassState]`;
+  `[DrawMeshWithShadow]`, `[DrawMeshChunksAtPoints]`, both motion blur graphs → `[GetRenderPassState]`; `Passes` goes
+  straight into `[RepeatFrame]`.
+- Not moved, by user decision: `SpeedFactorA/B` (Core `AnimMath`), `__TriggerA/B` (`[WasTrigger]`, VJ examples),
+  `_normalizedTime` (`[TimeClip]`), `_PlayModeProgress` (editor skill levels), `iterator` (obsolete ops) stay user
+  variables, documented in `.help/docs/advanced/ContextVariables.md` (with the legacy `__MotionBlurPass` / `CubeFace`).
+
+**Phase 4 done 2026-11-15:** help page `.help/docs/advanced/ContextVariables.md` (variables, scoping, loops, render pass
+state, conventional names, C# usage) and the rule "Engine state is typed, not a named context variable" in
+`AGENT_INSTRUCTIONS.md`. The legacy readers stay: `[Loop]` still maps an index variable named `__MotionBlurPass` to the
+repeat pass, `[RenderToCubeMap]` still writes `CubeFace`.
+
+Change detectors in repeat passes (2026-11-15): `[HasValueChanged]`, `[HasIntChanged]`, `[HasVec2Changed]`,
+`[HasVec3Changed]`, `[CountInt]`, `[DeltaSinceLastFrame]`, `[WasTrigger]`, `[PeakLevel]`, `[DetectPulse]`,
+`[DuckAudioLevel]`, `_DetectBeatOffset` return early when `IsRepeatOfFrame`, keeping the first pass's outputs. Before,
+time-gated ones compared against the previous subframe, and wall-clock-gated ones (10 ms) re-ran when subframes took longer.
+
 ## Goal
 
 Ops talk to each other through context variables with magic names (`"__MotionBlurPass"`, `"__IsShadowPassId"`,

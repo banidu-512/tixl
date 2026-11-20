@@ -15,7 +15,6 @@ internal static class TestAssets
         if (dir == null)
             throw new DirectoryNotFoundException("Could not locate repo root (t3.sln) from " + AppContext.BaseDirectory);
 
-        // Case matters on Linux: the package folder is "Examples" (aligned in d1156f259).
         return Path.Combine(dir, "Operators", "Examples", "Assets", "videos", fileName);
     }
 }

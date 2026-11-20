@@ -21,12 +21,17 @@ namespace T3.Editor.Gui.Windows.OutputSetup;
 /// </summary>
 internal static class SetupActions
 {
+    /// <summary>
+    /// Adds a slice as a visible cut — a centred quarter of the source. An unnamed full frame is the source's
+    /// implicit slice and is folded away in the views (<see cref="SetupRelations.TryGetImplicitSlice"/>), so a
+    /// slice added by hand has to be something you can see and drag.
+    /// </summary>
     internal static void AddSlice(SetupEntitySelection selection, Setup setup, ContentSource source)
     {
         SetupUndo.RunUndoable("Add slice", setup, () =>
                                                   {
                                                       // Left unnamed: the label is derived from the source, so it stays right when the op is later renamed.
-                                                      var slice = new Slice { SourceId = source.Id };
+                                                      var slice = new Slice { SourceId = source.Id, UvRect = new Vector4(0.25f, 0.25f, 0.75f, 0.75f) };
                                                       setup.Slices.Add(slice);
                                                       selection.Select(SetupEntityKinds.Slice, slice.Id);
                                                   });
@@ -45,9 +50,9 @@ internal static class SetupActions
                                                       var min = new Vector2(0.25f, 0.25f);
                                                       var max = new Vector2(0.75f, 0.75f);
 
-                                                      // Left unnamed: the label is derived from its position (see SetupLabels.PatchLabel).
                                                       var patch = new OutputDefinition.Patch
                                                                       {
+                                                                          Name = NextPatchName(output),
                                                                           Quad = [min, new Vector2(max.X, min.Y), max, new Vector2(min.X, max.Y)],
                                                                       };
                                                       output.Patches.Add(patch);
@@ -55,10 +60,27 @@ internal static class SetupActions
                                                   });
     }
 
+    /** A name that stays with the patch when the list is reordered, and that no other patch of the output carries. */
+    private static string NextPatchName(OutputDefinition output)
+    {
+        for (var ordinal = SetupRelations.CountListedPatches(output) + 1;; ordinal++)
+        {
+            var name = $"Patch {ordinal}";
+            var isTaken = false;
+            foreach (var other in output.Patches)
+            {
+                isTaken |= SetupLabels.PatchLabel(output, other) == name;
+            }
+
+            if (!isTaken)
+                return name;
+        }
+    }
+
     /// <summary>A full-canvas patch fed by a slice; the caller places it on an output and owns the undo step.</summary>
     internal static OutputDefinition.Patch CreateFullCanvasPatch(Guid sliceId)
     {
-        // Left unnamed: the label is derived from its position (see SetupLabels.PatchLabel).
+        // Left unnamed, which is what makes it the output's implicit patch (SetupRelations.TryGetImplicitPatch).
         return new OutputDefinition.Patch { SliceId = sliceId, Quad = OutputDefinition.FullCanvasQuad() };
     }
 
@@ -118,27 +140,9 @@ internal static class SetupActions
         if (selected.Count < 2)
             return;
 
-        // Walls first, plan by plan and edge by edge around each; then whatever is left, west to east.
+        // The same order a wallpaper layout cuts its strip in, so the Board row reads like the strip.
         var ordered = new List<Surface>(selected.Count);
-        foreach (var plan in setup.FloorPlans)
-        {
-            for (var segment = 0; segment < plan.SegmentCount; segment++)
-            {
-                var wall = setup.FindSurface(plan.WallOf(segment));
-                if (wall != null && selected.Contains(wall) && !ordered.Contains(wall))
-                    ordered.Add(wall);
-            }
-        }
-
-        var rest = new List<Surface>();
-        foreach (var surface in selected)
-        {
-            if (!ordered.Contains(surface))
-                rest.Add(surface);
-        }
-
-        rest.Sort((a, b) => LeftEdgeOf(a).CompareTo(LeftEdgeOf(b)));
-        ordered.AddRange(rest);
+        WallpaperLayout.OrderAroundRoom(setup, selected, ordered, out _);
 
         // The row starts where the selection already is, so an arrange doesn't fling the cards across the Board.
         var left = float.MaxValue;
@@ -175,14 +179,14 @@ internal static class SetupActions
     /** Enough of a seam to tell two walls apart, far less than a wall's own width. */
     private const float ArrangeGapInMeters = 0.1f;
 
-    internal static void AddProp(SetupEntitySelection selection, Vector2? boardPosition = null)
+    internal static void AddProp(SetupEntitySelection selection, PersonImages.Image image, Vector2? boardPosition = null)
     {
         if (!OutputSetupHandling.TryGetActiveSetup(out var setup, out _))
             return;
 
-        SetupUndo.RunUndoable("Add prop", setup, () =>
+        SetupUndo.RunUndoable("Add person", setup, () =>
                                                  {
-                                                     var prop = new Prop();
+                                                     var prop = new Prop { ImagePath = image.RelativePath, HeightInMeters = image.HeightInMeters };
                                                      if (boardPosition != null)
                                                          prop.Position = new Vector3(boardPosition.Value.X, boardPosition.Value.Y, prop.Position.Z);
 
@@ -216,10 +220,6 @@ internal static class SetupActions
                                                                                                                     ? FloorPlanSync.StartFromFloor(setup, surface)
                                                                                                                     : FloorPlanSync.StartFromWall(setup, surface);
                                                                                                      selection.Select(SetupEntityKinds.FloorPlan, plan.Id);
-
-                                                                                                     // A run started from a wall wants its next wall right away.
-                                                                                                     if (!asFloor)
-                                                                                                         SetupOutputView.PendingPlanDrawId = plan.Id;
                                                                                                  });
     }
 
@@ -304,11 +304,6 @@ internal static class SetupActions
                                                                             Kind = kind,
                                                                         };
 
-                                                       // A laser output is driven by its scanner camera from the
-                                                       // start — the manual look-at is how it is aimed before a solve.
-                                                       if (kind == OutputDefinition.Kinds.Laser && output.Camera == null)
-                                                           output.Camera = new OutputDefinition.ProjectorCamera();
-
                                                        setup.Outputs.Add(output);
                                                        selection.Select(SetupEntityKinds.Output, output.Id);
                                                    });
@@ -321,7 +316,45 @@ internal static class SetupActions
     /// </summary>
     internal static void AddMapping(Surface surface, OutputDefinition output)
     {
-        surface.OutputMappings.Add(Surface.OutputMapping.CreateFilling(output.Id));
+        surface.OutputMappings.Add(TakeParkedMapping(surface, output.Id) ?? Surface.OutputMapping.CreateFilling(output.Id));
+    }
+
+    /// <summary>
+    /// Takes the mappings that <paramref name="match"/> picks off the surface's outputs, parking each with its
+    /// alignment instead of discarding it. Appended outside any undo step, the caller's.
+    /// </summary>
+    internal static void ParkMappings(Surface surface, Predicate<Surface.OutputMapping> match)
+    {
+        for (var i = surface.OutputMappings.Count - 1; i >= 0; i--)
+        {
+            var mapping = surface.OutputMappings[i];
+            if (!match(mapping))
+                continue;
+
+            surface.OutputMappings.RemoveAt(i);
+            surface.ParkedMappings.RemoveAll(parked => parked.OutputId == mapping.OutputId);
+            surface.ParkedMappings.Add(mapping);
+        }
+    }
+
+    /// <summary>
+    /// The alignment parked for this output, removed from the parked list, or null. It comes back as a direct
+    /// mapping: whatever patch it followed before was disconnected along with it.
+    /// </summary>
+    private static Surface.OutputMapping? TakeParkedMapping(Surface surface, Guid outputId)
+    {
+        for (var i = 0; i < surface.ParkedMappings.Count; i++)
+        {
+            var parked = surface.ParkedMappings[i];
+            if (parked.OutputId != outputId)
+                continue;
+
+            surface.ParkedMappings.RemoveAt(i);
+            parked.PatchId = Guid.Empty;
+            return parked;
+        }
+
+        return null;
     }
 
     /// <summary>Gives the surface the whole canvas on this output again, dropping the corners it was dragged to.</summary>
@@ -519,6 +552,7 @@ internal static class SetupActions
                                                                              var max = new Vector2((column + 1) / (float)columns, (row + 1) / (float)rows);
                                                                              output.Patches.Add(new OutputDefinition.Patch
                                                                                                     {
+                                                                                                        Name = NextPatchName(output),
                                                                                                         SliceId = feed,
                                                                                                         QuarterTurns = turns,
                                                                                                         Quad = [min, new Vector2(max.X, min.Y), max, new Vector2(min.X, max.Y)],
@@ -543,7 +577,7 @@ internal static class SetupActions
         if (surface == null || !HasOwnPin(surface))
             return;
 
-        SetupUndo.RunUndoable("Follow parent's pin", setup, () => surface.OutputMappings.Clear());
+        SetupUndo.RunUndoable("Follow parent's pin", setup, () => ParkMappings(surface, static _ => true));
     }
 
     /// <summary>
@@ -670,43 +704,135 @@ internal static class SetupActions
         return copy;
     }
 
-    /// <summary>Whether anything feeds the output: a surface mapped onto it, or a patch on its canvas.</summary>
+    /// <summary>Whether anything feeds the output directly: a surface mapped onto it, or content on its folded-away
+    /// patch. Listed patches have inputs of their own.</summary>
     internal static bool OutputHasInputs(Setup setup, OutputDefinition output)
     {
-        if (output.Patches.Count > 0)
+        if (SetupRelations.TryGetImplicitPatch(output, out var implicitPatch) && implicitPatch!.SliceId != Guid.Empty)
             return true;
 
         foreach (var surface in setup.Surfaces)
         {
-            if (SetupRelations.IsMappedTo(surface, output.Id))
-                return true;
+            foreach (var mapping in surface.OutputMappings)
+            {
+                if (IsDirectMappingOnto(setup, mapping, output))
+                    return true;
+            }
         }
 
         return false;
     }
 
     /// <summary>
-    /// Disconnects everything from an output: every surface's mapping onto it and all of its patches go. The
-    /// surfaces, their slices and the output itself stay — only the routes into this canvas are cut.
+    /// Disconnects what feeds an output directly: surface mappings onto it and the content on its folded-away
+    /// patch. Listed patches keep their place and whatever feeds them, including surfaces pinned onto them.
     /// </summary>
     internal static void ClearOutputInputs(Setup setup, OutputDefinition output)
     {
-        SetupUndo.RunUndoable("Clear output inputs", setup, () =>
-                                                            {
-                                                                foreach (var surface in setup.Surfaces)
-                                                                    surface.OutputMappings.RemoveAll(m => m.OutputId == output.Id);
+        SetupUndo.RunUndoable("Clear output inputs", setup, () => ClearOutputInputsInternal(setup, output));
+    }
 
-                                                                output.Patches.Clear();
-                                                            });
+    /// <summary>Whether the selection holds any kind of item that has inputs to clear.</summary>
+    internal static bool CanClearInputs(SetupEntitySelection selection)
+    {
+        for (var i = 0; i < selection.Targets.Count; i++)
+        {
+            if (selection.Targets[i].Kind is SetupEntityKinds.Output or SetupEntityKinds.Patch or SetupEntityKinds.Surface)
+                return true;
+        }
+
+        return false;
+    }
+
+    internal static bool SelectionHasInputs(Setup setup, SetupEntitySelection selection)
+    {
+        for (var i = 0; i < selection.Targets.Count; i++)
+        {
+            var target = selection.Targets[i];
+            var hasInputs = target.Kind switch
+                                {
+                                    SetupEntityKinds.Output  => setup.FindOutput(target.EntityId) is { } output && OutputHasInputs(setup, output),
+                                    SetupEntityKinds.Patch   => setup.FindPatch(target.EntityId, out _) is { } patch && PatchHasInputs(setup, patch),
+                                    SetupEntityKinds.Surface => setup.FindSurface(target.EntityId) is { } surface && surface.SliceId != Guid.Empty,
+                                    _                        => false,
+                                };
+            if (hasInputs)
+                return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>Clears the inputs of every selected output, patch and surface in one undo step. The other kinds
+    /// have no inputs of their own, so a mixed selection simply skips them.</summary>
+    internal static void ClearSelectionInputs(Setup setup, SetupEntitySelection selection)
+    {
+        SetupUndo.RunUndoable("Clear inputs", setup, () =>
+                                                     {
+                                                         for (var i = 0; i < selection.Targets.Count; i++)
+                                                         {
+                                                             var target = selection.Targets[i];
+                                                             switch (target.Kind)
+                                                             {
+                                                                 case SetupEntityKinds.Output:
+                                                                     if (setup.FindOutput(target.EntityId) is { } output)
+                                                                         ClearOutputInputsInternal(setup, output);
+
+                                                                     break;
+
+                                                                 case SetupEntityKinds.Patch:
+                                                                     if (setup.FindPatch(target.EntityId, out _) is { } patch)
+                                                                         ClearPatchInputInternal(setup, patch);
+
+                                                                     break;
+
+                                                                 case SetupEntityKinds.Surface:
+                                                                     if (setup.FindSurface(target.EntityId) is { } surface)
+                                                                         surface.SliceId = Guid.Empty;
+
+                                                                     break;
+                                                             }
+                                                         }
+                                                     });
     }
 
     /// <summary>
     /// Stops a patch showing its slice. The patch stays where it is — a traced pixel-map area keeps its place and
     /// can be fed again — only the route into it is cut.
     /// </summary>
+    /// <summary>Gives the patch the whole canvas again, dropping the corners it was dragged to. An unnamed first
+    /// patch folds back into its output, so the output takes over the selection.</summary>
+    internal static void FillOutputWithPatch(SetupEntitySelection selection, Setup setup, OutputDefinition output, OutputDefinition.Patch patch)
+    {
+        SetupUndo.RunUndoable("Fill output", setup, () =>
+                                                    {
+                                                        patch.Quad = OutputDefinition.FullCanvasQuad();
+                                                        if (SetupRelations.IsImplicitPatch(output, patch))
+                                                            selection.Select(SetupEntityKinds.Output, output.Id);
+                                                    });
+    }
+
     internal static void ClearPatchInput(Setup setup, OutputDefinition.Patch patch)
     {
-        SetupUndo.RunUndoable("Clear patch input", setup, () => patch.SliceId = Guid.Empty);
+        SetupUndo.RunUndoable("Clear patch input", setup, () => ClearPatchInputInternal(setup, patch));
+    }
+
+    /// <summary>Whether anything feeds the patch: a slice, or a surface pinned exactly onto it.</summary>
+    internal static bool PatchHasInputs(Setup setup, OutputDefinition.Patch patch)
+    {
+        if (patch.SliceId != Guid.Empty)
+            return true;
+
+        foreach (var surface in setup.Surfaces)
+        {
+            foreach (var mapping in surface.OutputMappings)
+            {
+                if (SetupRelations.LinkedPatchOf(setup, mapping) == patch.Id)
+                    return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -731,7 +857,7 @@ internal static class SetupActions
     /// are named by the OS — see <see cref="CanRenamePlug"/>).</summary>
     internal static bool CanRename(SetupEntityKinds kind) => SetupEntityKindInfo.Of(kind).CanRename;
 
-    internal static bool CanRenamePlug(Guid plugId) => !Plugs.TryGetDisplayIndex(plugId, out _);
+    internal static bool CanRenamePlug(Guid plugId) => !Plugs.TryGetDisplayIndex(plugId, out _) && !Plugs.IsRemoteDisplay(plugId);
 
     /// <summary>Renames an entity by kind. A content source has no name of its own — renaming it renames its
     /// op (already undoable as a graph command), which flows back through the sync.</summary>
@@ -739,7 +865,17 @@ internal static class SetupActions
     {
         if (kind == SetupEntityKinds.ContentSource)
         {
-            ContentSourceSync.RenameContentSourceOp(id, newName);
+            // The editor UI has no op, so its name is setup state like any other.
+            var uiSource = EditorUiContent.IsEditorUi(id) ? setup.FindSourceByChildId(id) : null;
+            if (uiSource != null)
+            {
+                SetupUndo.RunUndoable("Rename", setup, () => uiSource.Name = newName);
+            }
+            else
+            {
+                ContentSourceSync.RenameContentSourceOp(id, newName);
+            }
+
             return;
         }
 
@@ -756,8 +892,12 @@ internal static class SetupActions
 
     // ---- Delete ------------------------------------------------------------------------------------
 
-    /// <summary>A content source is a graph op (delete the op instead); everything else deletes here.</summary>
-    internal static bool CanDeleteDirectly(SetupEntityKinds kind) => SetupEntityKindInfo.Of(kind).CanDelete;
+    /// <summary>A content source is a graph op (delete the op instead) unless it is the editor UI, which has none;
+    /// everything else deletes here.</summary>
+    internal static bool CanDeleteDirectly(SetupEntityKinds kind, Guid id)
+    {
+        return SetupEntityKindInfo.Of(kind).CanDelete || (kind == SetupEntityKinds.ContentSource && EditorUiContent.IsEditorUi(id));
+    }
 
     /// <summary>
     /// How many of the selected entities can actually be deleted here. A content source is a graph op and a
@@ -768,7 +908,9 @@ internal static class SetupActions
         var count = 0;
         for (var i = 0; i < selection.Targets.Count; i++)
         {
-            if (CanDeleteDirectly(selection.Targets[i].Kind))
+            var kind = selection.Targets[i].Kind;
+            var id = selection.Targets[i].EntityId;
+            if (CanDeleteDirectly(kind, id) || (kind == SetupEntityKinds.ContentSource && (ContentSourceSync.HasSendOp(id) || ContentSourceSync.IsSendOpMissing(id))))
                 count++;
         }
 
@@ -787,6 +929,16 @@ internal static class SetupActions
     /// </summary>
     internal static void DeleteSelection(SetupEntitySelection selection, Setup setup)
     {
+        // Content is a graph op, so its undo step has to carry a graph edit along with the setup's.
+        for (var i = 0; i < selection.Targets.Count; i++)
+        {
+            if (selection.Targets[i].Kind != SetupEntityKinds.ContentSource)
+                continue;
+
+            ContentSourceSync.DeleteSelectionWithSendOps(selection, setup);
+            return;
+        }
+
         SetupUndo.RunUndoable("Delete selection", setup, () =>
                                                          {
                                                              _deleteBuffer.Clear();
@@ -843,7 +995,7 @@ internal static class SetupActions
     }
 
     /// <summary>The delete cascades, one per kind, side by side.</summary>
-    private static void DeleteEntityInternal(Setup setup, SetupEntityKinds kind, Guid id)
+    internal static void DeleteEntityInternal(Setup setup, SetupEntityKinds kind, Guid id)
     {
         switch (kind)
         {
@@ -886,10 +1038,30 @@ internal static class SetupActions
                     owner!.Patches.RemoveAll(p => p.Id == id);
 
                 break;
+
+            case SetupEntityKinds.ContentSource:
+                // Only the editor UI's source deletes here; a send's goes with its op.
+                var uiSource = EditorUiContent.IsEditorUi(id) ? setup.FindSourceByChildId(id) : null;
+                if (uiSource != null)
+                    RemoveContentSource(setup, uiSource);
+
+                break;
         }
     }
 
     /// <summary>Deleting a slice clears it from anything showing it — the reference would mean nothing.</summary>
+    /// <summary>Drops a content source and its slices, and with them every route that showed them.</summary>
+    internal static void RemoveContentSource(Setup setup, ContentSource source)
+    {
+        for (var s = setup.Slices.Count - 1; s >= 0; s--)
+        {
+            if (setup.Slices[s].SourceId == source.Id)
+                DeleteSliceInternal(setup, setup.Slices[s].Id);
+        }
+
+        setup.ContentSources.Remove(source);
+    }
+
     private static void DeleteSliceInternal(Setup setup, Guid sliceId)
     {
         foreach (var surface in setup.Surfaces)
@@ -936,17 +1108,29 @@ internal static class SetupActions
         }
     }
 
-    // Deleting an output cascades: drop every surface's mapping onto it, unbind the display, and stop
-    // presenting it. Surfaces left without a mapping simply have no output — not lost. (The display binding
-    // lives in the per-machine config outside the setup file, so an undo restores the output unbound.)
+    // Deleting an output cascades: drop every surface's mapping onto it, unbind the display, release
+    // cameras routed to it (their OutputRef would dangle forever — cleared so the routing sync can
+    // attach them to another laser output), and stop presenting it. Surfaces left without a mapping
+    // simply have no output — not lost. (The display binding lives in the per-machine config outside
+    // the setup file, so an undo restores the output unbound.)
     private static void DeleteOutputInternal(Setup setup, MachineConfig machineConfig, Guid outputId)
     {
         setup.Outputs.RemoveAll(o => o.Id == outputId);
         OutputPresentation.ReleaseOutput(outputId);
         foreach (var surface in setup.Surfaces)
+        {
             surface.OutputMappings.RemoveAll(m => m.OutputId == outputId);
+            surface.ParkedMappings.RemoveAll(m => m.OutputId == outputId);
+        }
 
         machineConfig.Unbind(outputId);
+
+        var cameras = LaserContent.Cameras;
+        for (var i = 0; i < cameras.Count; i++)
+        {
+            if (cameras[i] is T3.Core.Operator.Instance instance && LaserContent.OutputRefOf(instance) == outputId)
+                LaserContent.SetOutputRef(instance, Guid.Empty);
+        }
     }
 
     /// <summary>The duplicate cascades, one per kind, side by side.</summary>
@@ -1055,8 +1239,7 @@ internal static class SetupActions
 
                 // Same place on the canvas: the copy is meant to be re-fed or moved, not hidden under the original.
                 copy.Id = Guid.NewGuid();
-                if (!string.IsNullOrEmpty(copy.Name))
-                    copy.Name += " copy";
+                copy.Name = string.IsNullOrEmpty(copy.Name) ? NextPatchName(owner) : copy.Name + " copy";
 
                 owner.Patches.Add(copy);
                 selection.Select(SetupEntityKinds.Patch, copy.Id);
@@ -1089,7 +1272,9 @@ internal static class SetupActions
                 if (mapping.IsFilling)
                     continue;
 
-                // A nudge of the canvas rather than a pixel count, so it reads the same at any resolution.
+                // A nudge of the canvas rather than a pixel count, so it reads the same at any resolution. It leaves
+                // the patch, which stays the original's.
+                mapping.PatchId = Guid.Empty;
                 for (var i = 0; i < mapping.Quad.Length; i++)
                     mapping.Quad[i] += new Vector2(0.0125f, 0.0125f);
             }
@@ -1124,6 +1309,7 @@ internal static class SetupActions
         var copy = CloneViaJson(source.WriteToJson, Surface.ReadFromJson) ?? new Surface();
         copy.Id = Guid.NewGuid();
         copy.SliceId = Guid.Empty;
+        copy.ParkedMappings.Clear(); // the original's projector history; restoring one would stack the copy on it
 
         foreach (var annotation in copy.Annotations)
         {
@@ -1138,6 +1324,42 @@ internal static class SetupActions
         }
 
         return copy;
+    }
+
+    private static bool IsDirectMappingOnto(Setup setup, Surface.OutputMapping mapping, OutputDefinition output)
+    {
+        return mapping.OutputId == output.Id && SetupRelations.LinkedPatchOf(setup, mapping) == Guid.Empty;
+    }
+
+    /// <summary>Disconnects what feeds an output or a patch, outside any undo step, the caller's. Other kinds are left alone.</summary>
+    internal static void ClearInputsInternal(Setup setup, SetupEntityKinds kind, Guid id)
+    {
+        if (kind == SetupEntityKinds.Output && setup.FindOutput(id) is { } output)
+        {
+            ClearOutputInputsInternal(setup, output);
+        }
+        else if (kind == SetupEntityKinds.Patch && setup.FindPatch(id, out _) is { } patch)
+        {
+            ClearPatchInputInternal(setup, patch);
+        }
+    }
+
+    private static void ClearPatchInputInternal(Setup setup, OutputDefinition.Patch patch)
+    {
+        foreach (var surface in setup.Surfaces)
+            ParkMappings(surface, m => SetupRelations.LinkedPatchOf(setup, m) == patch.Id);
+
+        patch.SliceId = Guid.Empty;
+    }
+
+    private static void ClearOutputInputsInternal(Setup setup, OutputDefinition output)
+    {
+        foreach (var surface in setup.Surfaces)
+            ParkMappings(surface, m => IsDirectMappingOnto(setup, m, output));
+
+        // The folded-away patch has no place of its own to keep: it only exists to carry the route.
+        if (SetupRelations.TryGetImplicitPatch(output, out var implicitPatch))
+            output.Patches.Remove(implicitPatch!);
     }
 
     private static int CountProjectorOutputs(Setup setup)

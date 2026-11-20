@@ -11,7 +11,9 @@ using T3.Core.Utils;
 using T3.Editor.Collab;
 using T3.Editor.Gui.Windows.Layouts;
 using T3.Editor.Compilation;
+using T3.Editor.Gui.Help;
 using T3.Editor.Gui.Window;
+using T3.Editor.Gui.Windows.Layouts;
 using T3.Editor.Gui.Input;
 using T3.Editor.Gui.Styling;
 using T3.Editor.Gui.UiHelpers;
@@ -31,6 +33,7 @@ internal static class ProjectsPanel
         ContentPanel.Begin("Projects", null, DrawProjectTools, -heightForSkillQuest);
 
         FormInputs.AddVerticalSpace(20);
+        DrawMissingProjectDirectoriesWarning();
 
         ImGui.BeginChild("content", new Vector2(0, 0), ImGuiChildFlags.Borders, ImGuiWindowFlags.NoBackground);
         {
@@ -39,13 +42,45 @@ internal static class ProjectsPanel
             // 0. Live collaboration sessions — join straight from the hub.
             DrawCollabSessions();
 
-            FormInputs.AddSectionHeader("Local projects");
-            _drawnProjectFolders.Clear();
+            // Show-control projects (boygroup deploy targets, collab downloads) get their own
+            // group so an operator sees which projects belong to the distributed show.
+            var networkKinds = new Dictionary<string, string>();
+            foreach (var (kind, folder) in NetworkProjectRegistry.All())
+                networkKinds[folder] = kind;
+
+            FormInputs.AddSectionHeader("Network projects");
+            var hasNetworkProjects = false;
             foreach (var package in EditableSymbolProject.AllProjects)
             {
-                // The card's ImGui ID comes from the folder, so a same-folder duplicate would
-                // draw twice with conflicting IDs - the assert the hub must never trigger.
-                if (!_drawnProjectFolders.Add(package.Folder))
+                var kind = networkKinds.GetValueOrDefault(package.Folder);
+                if (kind == null)
+                    continue;
+
+                hasNetworkProjects = true;
+                DrawProjectItem(window, package);
+                DrawNetworkBadge(kind);
+            }
+
+            foreach (var (kind, folder) in NetworkProjectRegistry.All())
+            {
+                if (EditableSymbolProject.AllProjects.Any(p => p.Folder == folder))
+                    continue;
+
+                hasNetworkProjects = true;
+                ImGui.Bullet();
+                ImGui.TextUnformatted(Path.GetFileName(folder.TrimEnd(Path.DirectorySeparatorChar)));
+                ImGui.SameLine();
+                ImGui.TextDisabled("not loaded - starts with the show");
+            }
+
+            if (!hasNetworkProjects)
+                ImGui.TextDisabled("none yet - a boygroup deploy or a collab download adds this machine's show projects here");
+
+            ImGui.Separator();
+            FormInputs.AddSectionHeader("Local projects");
+            foreach (var package in EditableSymbolProject.AllProjects)
+            {
+                if (networkKinds.ContainsKey(package.Folder))
                     continue;
 
                 DrawProjectItem(window, package);
@@ -91,9 +126,6 @@ internal static class ProjectsPanel
     private static void DrawCollabSessions()
     {
         var collab = CollabManager.Instance;
-        if (!collab.IsEnabled)
-            return;
-
         collab.RefreshDiscoveryFromHub();
 
         var hasOwnSession = collab.State != CollabManager.SessionState.Off;
@@ -118,10 +150,10 @@ internal static class ProjectsPanel
             var title = string.IsNullOrEmpty(session.Name) ? $"{session.Address}:{session.Port}" : session.Name;
             var subtitle = session.PasswordProtected ? $"{session.Address}:{session.Port}  (password protected)"
                                                      : $"{session.Address}:{session.Port}";
-            var clicked = DrawSessionRow($"collab-{session.Address}:{session.Port}",
-                                         title,
+            var clicked = DrawSessionRow(title,
                                          subtitle,
                                          session.Project is { Length: > 0 } p ? p : null,
+                                         null,
                                          null,
                                          isActive: false,
                                          locked: false);
@@ -261,15 +293,76 @@ internal static class ProjectsPanel
     private static void DrawProjectTools()
     {
         var addProject = "Add Project...";
-        var size = CustomComponents.GetCtaButtonSize(addProject);
+        var ctaSize = CustomComponents.GetCtaButtonSize(addProject);
+        var iconSize = new Vector2(ctaSize.Y, ctaSize.Y);
+        var spacing = ImGui.GetStyle().ItemSpacing.X;
         var state = EditableSymbolProject.AllProjects.Any()
                         ? CustomComponents.ButtonStates.Default
                         : CustomComponents.ButtonStates.Activated;
-        CustomComponents.RightAlign(size.X + 10 * T3Ui.UiScaleFactor);
+        CustomComponents.RightAlign(ctaSize.X + 2 * (spacing + iconSize.X) + 10 * T3Ui.UiScaleFactor);
         if (CustomComponents.DrawCtaButton(addProject, Icon.None, state))
         {
             T3Ui.NewProjectDialog.ShowNextFrame();
         }
+
+        ImGui.SameLine();
+        if (CustomComponents.IconButton(Icon.Settings2, iconSize))
+            WindowManager.SettingsWindow.ShowProjectsCategory();
+        CustomComponents.TooltipForLastItem("Settings for All Projects", "Project folders, USB detection and how many projects stay loaded.");
+
+        ImGui.SameLine();
+        DocumentationButton.Draw(HelpDocId, HelpUrl, iconSize);
+    }
+
+    /// <summary>
+    /// One warning line for configured project folders that don't exist (e.g. an unplugged drive); their
+    /// projects are silently skipped at startup. Clicking it opens the settings to fix the list.
+    /// </summary>
+    private static void DrawMissingProjectDirectoriesWarning()
+    {
+        RefreshMissingProjectDirectories();
+        if (_missingProjectDirectories.Count == 0)
+            return;
+
+        ImGui.BeginGroup();
+        Icon.Warning.DrawAtCursor(UiColors.StatusAttention);
+        ImGui.SameLine(0, 4 * T3Ui.UiScaleFactor);
+        CustomComponents.StylizedText(_missingDirectoriesLabel, Fonts.FontNormal, UiColors.StatusAttention);
+        ImGui.EndGroup();
+
+        if (ImGui.IsItemClicked())
+            WindowManager.SettingsWindow.ShowProjectsCategory();
+
+        CustomComponents.TooltipForLastItem(_missingDirectoriesTooltip, "Click to edit the project folders in the settings.");
+        FormInputs.AddVerticalSpace(5);
+    }
+
+    /** Directory.Exists can stall on network or removable drives, so the check runs only every few seconds. */
+    private static void RefreshMissingProjectDirectories()
+    {
+        var now = ImGui.GetTime();
+        if (now - _missingDirectoriesCheckTime < 3)
+            return;
+
+        _missingDirectoriesCheckTime = now;
+        _missingProjectDirectories.Clear();
+        var projectDirectories = UserSettings.Config.ProjectDirectories;
+        if (projectDirectories == null)
+            return;
+
+        foreach (var directory in projectDirectories)
+        {
+            if (!string.IsNullOrWhiteSpace(directory) && !Directory.Exists(directory))
+                _missingProjectDirectories.Add(directory);
+        }
+
+        if (_missingProjectDirectories.Count == 0)
+            return;
+
+        _missingDirectoriesLabel = _missingProjectDirectories.Count == 1
+                                       ? "Project folder not found: " + _missingProjectDirectories[0]
+                                       : $"{_missingProjectDirectories.Count} project folders not found";
+        _missingDirectoriesTooltip = string.Join("\n", _missingProjectDirectories);
     }
 
     /// <summary>Draws one project row. Returns true when a click loaded the project into the given window.</summary>
@@ -396,11 +489,7 @@ internal static class ProjectsPanel
             // Collab: host a session that shares exactly this project (pick the project first,
             // then share it — instead of sharing whatever happens to be focused).
             var collab = CollabManager.Instance;
-            if (!collab.IsEnabled)
-            {
-                // Collaboration is off in the settings: no host or join entries.
-            }
-            else if (collab.State == CollabManager.SessionState.Off)
+            if (collab.State == CollabManager.SessionState.Off)
             {
                 if (CustomComponents.DrawMenuItem(_hostSessionId, "Host Collaboration Session", reserveIconColumn: false))
                 {
@@ -417,7 +506,7 @@ internal static class ProjectsPanel
                 if (CustomComponents.DrawMenuItem(_leaveSessionId, $"Leave Collaboration Session ({collab.StatusText})",
                                                   reserveIconColumn: false))
                 {
-                    collab.Leave(manual: true);
+                    collab.Leave();
                     ImGui.CloseCurrentPopup();
                 }
             }
@@ -462,6 +551,16 @@ internal static class ProjectsPanel
 
         ImGui.PopID();
         return wasOpened;
+    }
+
+    /// <summary>A small kind tag after a network project row (boygroup / collab).</summary>
+    private static void DrawNetworkBadge(string kind)
+    {
+        ImGui.SameLine();
+        var color = kind == NetworkProjectRegistry.CollabKind ? UiColors.StatusActivated : UiColors.StatusOkay;
+        ImGui.PushStyleColor(ImGuiCol.Text, color.Rgba);
+        ImGui.TextUnformatted($"[{kind}]");
+        ImGui.PopStyleColor();
     }
 
     private static void DrawArchivedItem(ProjectSetup.ArchivedProjectInfo archivedProject)
@@ -844,12 +943,19 @@ internal static class ProjectsPanel
 
     private readonly record struct BackupContentStats(int Operators, int Connections);
 
+    private const string HelpDocId = "ProjectPanel";
+    private const string HelpUrl = "https://help.tixl.app/using/";
+
     private static readonly Dictionary<string, (double LastUpdate, string Label)> _savedInfoLabels = new();
     private static readonly List<(string Label, AutoBackup.AutoBackup.BackupEntry Entry)> _backupMenuItems = new();
     private static readonly Dictionary<string, int> _backupSymbolCountsByPath = new();
     private static readonly ConcurrentDictionary<string, BackupContentStats> _backupContentStats = new();
     private static readonly HashSet<string> _contentStatsQueued = new();
     private static string? _backupMenuFolder;
+    private static readonly List<string> _missingProjectDirectories = new();
+    private static string _missingDirectoriesLabel = string.Empty;
+    private static string _missingDirectoriesTooltip = string.Empty;
+    private static double _missingDirectoriesCheckTime = double.NegativeInfinity;
     private static double _backupMenuUpdateTime;
 
     private static readonly int _revealInExplorerId = nameof(_revealInExplorerId).GetHashCode();

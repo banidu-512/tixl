@@ -1,6 +1,8 @@
 # Plan: Implicit Render Defaults (camera, depth, normal for post effects)
 
 Status: **not started**, written 2026-11-13 on `main` (bd30fd200). Nothing built or run; findings come from reading.
+**Direction changed 2026-11-15:** buffers and camera travel as a render bundle on the color texture of a new
+`[RenderScene]` (Design §2), replacing the texture tag, the resolver and the buffer request mechanism.
 Code checks and editor tests done 2026-11-14 (see "Research Findings").
 **M0 implemented 2026-11-14, untested by a human** (test set `.tests-manual/moving-points-repeated-evaluation.md`):
 `Operators/Lib/Utils/EvaluationHistory.cs` keys history by (context, `__MotionBlurPass`, call index within that pass);
@@ -89,6 +91,10 @@ breaks in four ways:
 
 ### 1. Recording: the innermost camera wins, scoped by the render target
 
+**Update 2026-11-15:** `RenderedCamera` and `RenderedCameraSerial` become members of `RenderPassState`
+(`Core/Rendering/RenderPassState.cs`) instead of separate `EvaluationContext` fields; render ops already save and
+restore that struct. The recorded camera ends up in `RenderBundle.Camera` (§2).
+
 - `EvaluationContext` gets `RenderedCamera` (`ICameraPropertiesProvider?`) and `RenderedCameraSerial` (`int`). These
   are plain fields, so nothing allocates.
 - Every camera writer, after `Command.GetValue(context)`:
@@ -118,53 +124,88 @@ matrices into GPU constants records it. This is exact for mixed scenes, but ther
 `GetScreenPos` and others read `context.WorldToCamera` directly. A single camera chain gives the same answer both
 ways, so start with the camera-level rule and switch only if mixed scenes matter in practice.
 
-### 2. Tagging: the texture remembers how it was rendered
+### 2. Render bundles (decided 2026-11-15; replaces the earlier texture tag, resolver and buffer requests)
 
-- `Texture2D` gets `RenderSource`. Extend the existing `RenderTargetReference` (`Core/DataTypes/RenderTargetReference.cs`,
-  already holds `ColorTexture`, `DepthTexture`, `NormalTexture`) with `Camera` (`ICameraPropertiesProvider?`) instead of
-  adding a new class. Today `[RenderTarget]` only fills a reference you connect to its `TextureReference` input; it
-  would additionally own one of its own for the tag. `[UseTextureReference]` keeps working unchanged. `[RenderTarget]` owns one instance per op and updates its fields after
-  each render. That's an allocation per op, not per frame.
-- `[RenderTarget]` sets `ColorBuffer.Value.RenderSource` to its instance. `Depth` / `Normal` are filled only when
-  those buffers are enabled.
-- This survives caching (a cached texture is the same object) and works across contexts. It also follows the real
-  connection, so pull order doesn't matter.
-- When `[RenderTarget]` recreates its textures (resize, format change), the new texture must get the tag again.
+A render op's main output stays an ordinary `Texture2D` (the color image), but its value carries the other buffers.
 
-### 3. Resolving: one internal op inside each consumer
-
-New `[_ResolveRenderSource]` in `render/postfx/_/`:
-
-- Inputs: `Image`, `CameraReference`, `DepthMap`, `NormalMap`, wired to the composite's own inputs.
-- Outputs: resolved `Camera` (Object), `Depth`, `Normal`.
-- Order for each output: **connected value** (non-null), then **`Image.RenderSource`**, then nothing (status
-  warning).
-- Inside a composite, the inner op's inputs are always connected to the parent's inputs. So check for a **null
-  value**, not `HasInputConnections`.
-- Implements `IStatusProvider`: "Camera: auto from [Camera] 'Main'", or "No camera: connect CameraReference".
-- SSL, GodRays, TXAA and MotionBlur get rewired through it. Each keeps its own `_TransformsCBufferFromCam`. Its
-  `PreviousBuffer` only works with a single consumer, so the resolver must sit before it, not replace it.
-
-### 4. Propagation through image filters (later)
-
-`[Blur]` and friends produce new textures, so the tag is lost after the first filter:
-`RenderTarget → Blur → SSL` finds nothing. Option: `_ImageFxShaderSetupStatic` (used by 48 symbols) copies
-`RenderSource` from its input to its output. That's one central place, though `.cs` image ops won't be covered.
-Measure how often post effects sit behind filters before doing this.
+- **`Texture2D.Bundle`** (`RenderBundle?`, Core): `Depth`, `Normal`, `Velocity` (`Texture2D?`) and `Camera`
+  (`ICameraPropertiesProvider?`). The declared slot type stays `Texture2D`, so connections, type color, snapping,
+  placeholders and previews work unchanged. The editor matches types by exact equality (`MagItemMovement.cs:1263`,
+  `PlaceholderCreation.cs:487`, `ConnectionHovering.cs:290`), so a declared subtype would not connect to existing image
+  ops; `Texture2D` is also `sealed`.
+- **Trade-off, accepted by the user:** the connection shows one value but carries more. The UI must make that visible:
+  the output window and texture output UIs show the bundle next to resolution and format, e.g.
+  `1920×1080 RGBA16F +DNV` (Depth, Normal, Velocity; maybe `C` for camera). Parameter windows of bundle-aware ops show
+  "from bundle" for unconnected buffer inputs.
+- **`[RenderScene]`** (new op, for shaded scenes): always renders color, depth, normals and velocity, records the camera
+  (§1, innermost camera wins), and outputs the color texture with its bundle. No request mechanism: everything it renders
+  is always there. Toggles to drop buffers only if the cost shows up. `[RenderTarget]` stays the low-level op with
+  individual buffers and no bundle.
+- **`[HandleTextureBundle]`** (helper inside post effects, similar in spirit to `[GetRequestedResolution]`): inputs
+  `Image`, `DepthMap`, `NormalMap`, `VelocityMap`, `CameraReference`; outputs the resolved buffers and camera. An
+  explicitly connected input wins (override, and old graphs keep working); otherwise the buffer comes from
+  `Image.Bundle`; otherwise nothing, with a status message. Inside a composite the inner inputs are always connected to
+  the parent's, so check for a null value, not `HasInputConnections`.
+- **Passing the bundle on:** ops that only change color keep the scene's geometry, so their output carries the input's
+  bundle: `[RenderScene]` → `[ScreenSpaceLighting]` → `[ColorGrade]` → `[TXAA]` keeps working. SSL and TXAA forward it
+  via `[HandleTextureBundle]`; the simple image filters through `_ImageFxShaderSetupStatic` (used by ~48 symbols).
+  Ops that move pixels (warp, crop, tile, transform) don't forward; their consumers need explicit inputs.
+- **Lifetime:** each `[RenderScene]` owns one `RenderBundle` and updates its fields after each render (no per-frame
+  allocation). A resize recreates the textures; the bundle object stays, its fields point to the new textures.
 
 ## Phases
 
-1. **Record + tag.** `EvaluationContext` fields, the serial rule in the camera writers, scoping in `RenderTarget` /
-   `RenderToCubeMap`, `Texture2D.RenderSource`. No user-visible change yet. Verify with the debug bridge: read the
-   tag of a `RenderTarget` output for `mesh → cam2 → cam1 → RenderTarget` and confirm it is cam2.
-2. **Resolve in `[ScreenSpaceLighting]`.** Add `_ResolveRenderSource`, rewire SSL, and check by eye against the
-   explicitly wired version in `testing/PbrTests`.
-3. **Roll out** to GodRays, TXAA and MotionBlur. TXAA and MotionBlur need previous-frame matrices: check that the
-   auto camera keeps `PreviousBuffer` correct over several frames.
-4. **UI.** The parameter window shows an unconnected `CameraReference` / `DepthMap` / `NormalMap` as
-   "auto ← [Camera] 'Main'", with click-to-select. Add a test set under `.tests-manual/`.
-5. **Optional:** propagation through `_ImageFxShaderSetupStatic`; switch to draw-time recording if mixed scenes need
-   it.
+1. **Core:** `RenderBundle`, `Texture2D.Bundle`; camera recording (§1) in the camera ops, scoped by render ops.
+2. **`[RenderScene]`:** color + depth + normal + velocity, bundle on the output. Output window and texture output UI show
+   the `+DNV` suffix.
+3. **`[HandleTextureBundle]`** and rewire `[ScreenSpaceLighting]`; compare with the explicitly wired version in
+   `testing/PbrTests`.
+4. **Roll out** to `[TXAA]`, `[GodRays]`, `[MotionBlur]`; bundle forwarding in SSL/TXAA and `_ImageFxShaderSetupStatic`.
+5. **UI:** "from bundle" on unconnected buffer inputs; test set under `.tests-manual/`; help page for `[RenderScene]`
+   and bundles.
+
+**Phases 1–2 implemented 2026-11-15, untested by a human:**
+- Core: `Core/Rendering/RenderBundle.cs` (`Depth`, `Normal`, `Velocity`, `Camera`, `Label` from a fixed table, no
+  allocation), `Texture2D.Bundle`; `RenderPassState.RenderedCamera`, `RenderedCameraSerial`, `RecordCamera()`.
+- Camera ops record themselves after their subtree (innermost wins): `[Camera]`, `[CameraWithRotation]`,
+  `[OrbitCamera]`, `[OrthographicCamera]`, `[BlendCameras]`; `[ReuseCamera]`/`[ReuseCamera2]` record the reused
+  camera. `[UseProjectorCam]` sets matrices without a provider object and records nothing (an outer camera may claim).
+- `[RenderTarget]` clears `RenderedCamera` before its subtree and keeps the recorded one. It attaches the bundle only
+  with its `AttachBundle` input (default off; phase 3): image effects render through internal render targets whose
+  depth means nothing downstream, and attaching unconditionally would overwrite a bundle forwarded onto them. `[RenderScene]`
+  (`render/basic`) is a composite of `[RenderTarget]` with depth, normals and velocity always on, `Multisampling` 1 by
+  default, and the buffers also as separate outputs for effects that aren't bundle-aware yet. No duplicated render code.
+- Output window caption: `ImageOutputCanvas` appends `RenderBundle.Label`, e.g. `1920x1080 RGBA16F +DNV`.
+
+**Phase 3 implemented 2026-11-15, untested by a human:**
+- `[RenderTarget].AttachBundle` (bool, default false); `[RenderScene]` sets it.
+- `[HandleTextureBundle]` (`render/postfx`, visible): outputs `Depth`, `Normal`, `Velocity`, `Camera`; a non-null input
+  wins, else the bundle. Warning status when depth or camera is missing.
+- `[AttachTextureBundle]` (`render/postfx`): copies `BundleFrom.Bundle` onto `Texture`. Separate from
+  `[HandleTextureBundle]` because the effect's result depends on the resolved buffers; one op doing both would be a
+  cycle. This is the forwarding mechanism: stacked effects relay the incoming bundle to ops further down.
+- `[ScreenSpaceLighting]`: the parent's `DepthMap`/`NormalMap`/`VelocityMap`/`CameraReference` go through the helper
+  into AO, reflections and TXAA; the output passes through `[AttachTextureBundle]` with the input image's bundle. The
+  secondary outputs (AO, reflections) carry no bundle.
+- Tested by the user 2026-11-15: works.
+- Phase 4 partly done (2026-11-15, untested): `[ScreenSpaceAO]`, `[ScreenSpaceReflections]` and `[TXAA]` resolve their
+  inputs with `[HandleTextureBundle]` and forward the bundle on their main output. Remaining: `[GodRays]`,
+  `[MotionBlur]`, `_ImageFxShaderSetupStatic`.
+- `[DrawPointsShaded]` now intersects a ray with the sphere per pixel (the camera-facing disc was wrong away from the
+  view center) and writes velocity from `[KeepPreviousPointBuffer]`, like `[DrawMeshAtPoints]`. The sphere radius
+  follows `Scale.x` only.
+- AO ghosting on still surfaces after an occluder moved: disagreement is now measured against the noise of the 3x3
+  mean, and the shared frame limit interpolates geometrically, so `BlendFactor` controls how fast such shadows fade.
+- Caveat: forwarding mutates the effect's output texture. If an effect passes its input texture through unchanged, the
+  bundle is the same anyway. Two consumers forwarding different bundles onto the same texture would overwrite each
+  other; not possible with the current ops.
+
+## Naming
+
+- New op: **`[RenderScene]`**.
+- Open (user, 2026-11-15): rename `[RenderTarget]` to something simpler (`[Render]`, `[RenderToImage]`). Saved graphs
+  reference symbols by id, so files survive a rename, but search, docs, examples and habits don't. Decide together with
+  `Plan_OperatorVersioning.md` (rename aliases / search synonyms).
 
 ## Motion Vectors
 
@@ -299,9 +340,22 @@ M0 is independent and can ship first. M1 and later come after Phase 3 above; the
     order, so an `SV_Depth` member became color output 2 (the velocity slot). Removed in `DrawPointsShaded.hlsl` and
     `mesh-Draw.hlsl`; still present but harmless (color/normal only) in `mesh-DrawAtPoints.hlsl` and
     `mesh-CustomDraw-template.hlsl`. Any shader that adds SV_Target2 or SV_Depth must drop it.
-- **M5. MotionBlur** reads the same velocity target. Velocity is displacement per *frame*, which is what TXAA needs
+- **Point draws (2026-11-15, untested):** `[DrawPoints]`, `[DrawBillboards]`, `[DrawMovingPoints]`,
+  `[DrawMeshAtPoints2]` and `[DrawMeshChunksAtPoints]` write velocity like `[DrawMeshAtPoints]` (previous points from
+  `[KeepPreviousPointBuffer]` only when velocity is requested). Sprites reuse this frame's corner offset around the
+  previous center; meshes at points also use the previous rotation. `PreviousClipUnlessJumped` (velocity-functions)
+  reports unknown motion when a center moves more than a quarter of the screen in one frame (respawned particles).
+  Color-only sprite shaders write an empty normal with alpha 0, so blended sprites keep the normals behind them.
+- **M5. MotionBlur** reads the same velocity target. A velocity-based blur needs one render pass instead of
+  `[RepeatFrame]`'s subframes (which since 2026-11-15 blur damped motion correctly too, via subframe steps). Velocity is displacement per *frame*, which is what TXAA needs
   (its history is one frame old), but it follows frame-duration jitter: motion blur must scale it by
   shutter time / `Playback.LastFrameDuration`, or blur length jumps with frame timing (seen 2026-11-15).
+  **Implemented 2026-11-15, untested:** `[MotionBlur]` rewritten as a tile-based reconstruction filter (McGuire 2012,
+  jittered as in Jimenez 2014). Same symbol id; `Image`/`DepthMap`/`CameraReference`/`SampleCount` kept, `VelocityMap`,
+  `Shutter` (0.5 = 180°), `MaxBlur` (pixels) new; `Strength`/`ClampEffect`/`VelocityOffset` removed (stale values
+  stripped from the examples). Resolves inputs with `[HandleTextureBundle]` and forwards the bundle. The passes run in
+  `_ExecuteMotionBlurPasses` (C#, like `_ExecuteFastBlurPasses`) because two of them run at tile resolution. Pixels
+  without velocity fall back to camera reprojection. Tile size = max(16, MaxBlur).
 
 ## Research Findings (2026-11-14)
 

@@ -19,7 +19,7 @@
 - Feature parity. Legacy, experimental and hard-to-port ops and packages may be missing (see
   [Scope for v5.0](#scope-for-v50)).
 - macOS and the Microsoft Store.
-- NDI, Spout, Mediapipe, webcams, screen capture, SpaceMouse, Ableton Link, OpenCV-based ops.
+- NDI, Spout, Mediapipe, screen capture, SpaceMouse, Ableton Link, OpenCV-based ops.
 - Upgrading ImGui (Hexa.NET.ImGui / ImGui 1.92), ImGui multi-viewport, HDR output.
 - Beating D3D11's CPU overhead on Windows. The bar is: no visible slowdown and no hitches.
 
@@ -305,9 +305,7 @@ In:
 
 Out (v5.x or never): macOS, Microsoft Store, NDI, Spout, Mediapipe, screen
 capture, SpaceMouse (unless SDL HID makes it trivial), Ableton Link, OpenCV ops, the legacy graph,
-Hexa.NET.ImGui / ImGui 1.92, multi-viewport, HDR. Webcams were in this list, but landed early
-(2026-10-08): `[VideoDeviceInput]` captures via FFmpeg V4L2 on Linux / dshow on Windows; SDL3's camera
-API may still replace that in v5.x.
+Hexa.NET.ImGui / ImGui 1.92, multi-viewport, HDR.
 
 Windows users lose Spout and NDI in v5.0 until they return in v5.x. Keep v4.x available and say so in
 the release notes.
@@ -514,10 +512,10 @@ Estimate: 25–50 commits, 50–120 agent hours.
 ### After v5.0 (v5.x)
 
 - macOS through MoltenVK, plus bundle, signing and notarization (roughly 40–120 agent hours).
-- Packages coming back: NDI, SDL3 camera input, Spout through Vulkan external memory, Syphon on macOS.
+- Packages coming back: NDI, Spout through Vulkan external memory, Syphon on macOS.
 - The Microsoft Store.
 - Hexa.NET.ImGui and ImGui 1.92.
-- Multi-viewport on SDL3, replacing the Win32 approach in [Plan_MultiViewport](Plan_MultiViewport.md).
+- Multi-viewport on SDL3, replacing the Win32 approach in [Plan_MultiViewport](archive/Plan_MultiViewport.md).
 - HDR.
 - Vulkan-only shader features for users (subgroup operations, 16-bit types).
 
@@ -588,10 +586,9 @@ Estimate: 25–50 commits, 50–120 agent hours.
   safe-start mode.
 - [Plan_PlayerExportCleanup](Plan_PlayerExportCleanup.md): its startup dialog moves off WinForms in
   Phase 2.
-- [Plan_MultiViewport](Plan_MultiViewport.md): rebuild on SDL3 after v5.0 instead of Win32.
-- [Plan_VideoDeviceInput](Plan_VideoDeviceInput.md): RESOLVED 2026-10-08 — FFmpeg dshow/v4l2 port; SDL3
-  camera input may still supersede it in v5.x.
-- [Plan_FfmpegEncode](Plan_FfmpegEncode.md): render export on Linux needs matching FFmpeg builds.
+- [Plan_MultiViewport](archive/Plan_MultiViewport.md): rebuild on SDL3 after v5.0 instead of Win32.
+- [Plan_VideoDeviceInput](archive/Plan_VideoDeviceInput.md): replaced; `[WebcamInput]` now captures through SDL3's camera API.
+- [Plan_FfmpegEncode](archive/Plan_FfmpegEncode.md): render export on Linux needs matching FFmpeg builds.
 
 ## Open questions
 
