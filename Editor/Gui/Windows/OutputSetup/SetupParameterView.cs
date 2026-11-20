@@ -863,6 +863,20 @@ internal static partial class SetupParameterView
     private static void DrawLaserOutputCard(Setup setup, OutputDefinition output)
     {
         DrawLaserProcessing(setup, output);
+
+        // The projector card's venue map, same rows: an image to place the safe zone, masks and
+        // warp corners against while aiming. Lasers have no patches, so nothing follows it here.
+        var routedContent = LaserContent.Cameras
+                                        .OfType<Instance>()
+                                        .Where(c => LaserContent.OutputRefOf(c) == output.Id)
+                                        .Select(c => c.Symbol.Name)
+                                        .ToList();
+        FormInputs.AddHint(routedContent.Count > 0
+                               ? $"Content: {string.Join(", ", routedContent)}"
+                               : "Content: nothing routed yet - set the routed camera op's Output reference to this output.");
+
+        DrawCardDivider();
+        DrawReferenceLayoutRows(setup, output);
     }
 
     private static void DrawWrappedSmallText(string text, T3.Core.DataTypes.Vector.Color color)
@@ -883,6 +897,17 @@ internal static partial class SetupParameterView
         var previewMax = new Vector2(previewMin.X + previewSize, previewMin.Y + previewSize);
         var previewDl = ImGui.GetWindowDrawList();
         previewDl.AddRectFilled(previewMin, previewMax, UiColors.BackgroundPopup.Fade(0.6f));
+
+        // The venue map (Reference Layout) under the points, the way the board draws it over the
+        // cards - so the safe zone and masks are aimed against the room, not a black square.
+        var reference = setup.FindReferenceImage(output.ReferenceImageId);
+        if (reference != null && output.ReferenceOpacity > 0f
+                               && SetupOutputView.TryGetReferenceSrv(reference) is { IsDisposed: false } mapSrv)
+        {
+            previewDl.AddImage((IntPtr)mapSrv.ImGuiTextureId, previewMin, previewMax, Vector2.Zero, Vector2.One,
+                               UiColors.ForegroundFull.Fade(output.ReferenceOpacity));
+        }
+
         LaserOutputPreview.DrawFrame(previewDl, previewMin, previewMax, LaserOutputPreview.GetFrame(output));
 
         // Safe-zone outline and, with frame warp on, the four draggable keystone corners.

@@ -2637,7 +2637,7 @@ internal sealed partial class SetupOutputView
 
     // Card metadata strings by entity id, rebuilt per structure change.
     private readonly Dictionary<Guid, string> _boardMeta = new();
-    private int _boardMetaVersion = -1;
+    private static int _boardMetaVersion = -1; // shared: the reference-texture sync invalidates it from static context
 
     /** The lifted walls' gap labels, formatted only when an elevation changes — the Board draws per frame. */
     private readonly Dictionary<Guid, (float Elevation, string Label)> _wallElevationLabels = new();
