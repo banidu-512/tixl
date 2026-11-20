@@ -1,4 +1,4 @@
-using System.Reflection;
+﻿using System.Reflection;
 using System.Runtime.Serialization;
 using Xunit;
 
@@ -53,10 +53,13 @@ public class FeedbackBlendTests : IDisposable
         Invoke(new byte[] { 100, 100, 100, 255 }, 1, 1, 0.5f);
 
         var flash = Invoke(new byte[] { 255, 255, 255, 255 }, 1, 1, 0.5f); // ~178
+        // The blend writes in place into the shared history buffer and returns it, so the flash
+        // value must be read before the next call overwrites it with the decayed frame.
+        var flashValue = flash[0];
         var after = Invoke(new byte[] { 0, 0, 0, 255 }, 1, 1, 0.5f);      // decays, not zero
 
         Assert.Equal(89, after[0]);
-        Assert.True(flash[0] is > 150 and < 200);
+        Assert.True(flashValue is > 150 and < 200);
     }
 
     [Fact]
@@ -69,4 +72,5 @@ public class FeedbackBlendTests : IDisposable
         Assert.Equal(200, second[0]);
         Assert.Equal(200, second[4]);
     }
+
 }
