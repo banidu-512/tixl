@@ -280,44 +280,58 @@ internal sealed class ImageToLaserPoints : Instance<ImageToLaserPoints>, ILaserC
             return;
         }
 
-        // Nested map inside TextureReadAccess.Update's bracket - the pattern the other
-        // TextureReadAccess consumer in Lib uses; the outer bracket unmaps after us.
-        ResourceManager.Device.ImmediateContext.MapSubresource(texture, 0, 0, MapMode.Read, MapFlags.None, out var sourceStream);
+        // This callback runs inside TextureReadAccess.Update: an exception here would propagate
+        // out with the request already consumed while _readPending is still true - the op would
+        // never initiate another readback (silent permanent freeze). Everything degrades to the
+        // last frame instead, per the op's own failure convention.
         try
         {
-            var desc = texture.Description;
-            var formatId = ToFormatId(desc.Format);
-            if (formatId < 0)
+            // Nested map inside TextureReadAccess.Update's bracket - the pattern the other
+            // TextureReadAccess consumer in Lib uses; the outer bracket unmaps after us.
+            ResourceManager.Device.ImmediateContext.MapSubresource(texture, 0, 0, MapMode.Read, MapFlags.None, out var sourceStream);
+            try
             {
-                _unsupportedFormat = desc.Format.ToString();
-                _readPending = false;
-                return;
+                var desc = texture.Description;
+                var formatId = ToFormatId(desc.Format);
+                if (formatId < 0)
+                {
+                    _unsupportedFormat = desc.Format.ToString();
+                    return;
+                }
+
+                _unsupportedFormat = null;
+                var bytesPerPixel = BytesPerPixelOf(formatId);
+                var rowPitch = desc.Width * bytesPerPixel;
+                var totalBytes = rowPitch * desc.Height;
+                if (_stagingBytes.Length < totalBytes)
+                    _stagingBytes = new byte[Math.Max(totalBytes, _stagingBytes.Length * 2)];
+
+                sourceStream.Position = 0;
+                sourceStream.Read(_stagingBytes, 0, totalBytes);
+
+                if (!Session.BeginCopy(desc.Width, desc.Height, _maxResValues[_lastMaxRes]))
+                {
+                    _lastError = "Texture size out of range";
+                    return;
+                }
+
+                Session.CopyFrame(_stagingBytes, rowPitch, desc.Width, desc.Height, formatId);
+                _hasData = true;
+                _newData = true;
             }
-
-            _unsupportedFormat = null;
-            var bytesPerPixel = BytesPerPixelOf(formatId);
-            var rowPitch = desc.Width * bytesPerPixel;
-            var totalBytes = rowPitch * desc.Height;
-            if (_stagingBytes.Length < totalBytes)
-                _stagingBytes = new byte[Math.Max(totalBytes, _stagingBytes.Length * 2)];
-
-            sourceStream.Position = 0;
-            sourceStream.Read(_stagingBytes, 0, totalBytes);
-            _readPending = false;
-
-            if (!Session.BeginCopy(desc.Width, desc.Height, _maxResValues[_lastMaxRes]))
+            finally
             {
-                _lastError = "Texture size out of range";
-                return;
+                sourceStream.Dispose();
             }
-
-            Session.CopyFrame(_stagingBytes, rowPitch, desc.Width, desc.Height, formatId);
-            _hasData = true;
-            _newData = true;
+        }
+        catch (Exception e)
+        {
+            _lastError = $"Readback failed: {e.Message}";
+            Log.Debug($"ImageToLaserPoints: readback failed, keeping the last frame: {e}");
         }
         finally
         {
-            sourceStream.Dispose();
+            _readPending = false;
         }
     }
 
