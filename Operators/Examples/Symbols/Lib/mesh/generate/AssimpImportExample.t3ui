@@ -5,10 +5,10 @@
   "InputUis": [],
   "SymbolChildUis": [
     {
-      "ChildId": "f2442819-575a-41a1-bc50-2555e26275be",
-      "SymbolName": "Lib.mesh.generate.AssimpImport",
+      "ChildId": "6b775ad9-bcde-4900-9a6b-2902440c743f",
+      "SymbolName": "Lib.image.generate.basic.RenderTarget",
       "Position": {
-        "X": 0.0,
+        "X": 960.0,
         "Y": 0.0
       }
     },
@@ -29,10 +29,10 @@
       }
     },
     {
-      "ChildId": "6b775ad9-bcde-4900-9a6b-2902440c743f",
-      "SymbolName": "Lib.image.generate.basic.RenderTarget",
+      "ChildId": "f2442819-575a-41a1-bc50-2555e26275be",
+      "SymbolName": "Lib.mesh.generate.AssimpImport",
       "Position": {
-        "X": 960.0,
+        "X": 0.0,
         "Y": 0.0
       }
     }

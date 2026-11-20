@@ -229,12 +229,9 @@
   <PropertyGroup>
     <AssimpImportHostFolder>$(MSBuildThisFileDirectory)../AssimpImportHost/</AssimpImportHostFolder>
   </PropertyGroup>
-  <Target Name="BuildAssimpImportHost" AfterTargets="AfterBuild"
-          Inputs="$(AssimpImportHostFolder)AssimpImportHost.csproj;$(AssimpImportHostFolder)Program.cs"
-          Outputs="$(TargetDir)AssimpImportHost/AssimpImportHost.dll">
+  <Target Name="BuildAssimpImportHost" AfterTargets="AfterBuild" Inputs="$(AssimpImportHostFolder)AssimpImportHost.csproj;$(AssimpImportHostFolder)Program.cs" Outputs="$(TargetDir)AssimpImportHost/AssimpImportHost.dll">
     <MSBuild Projects="$(AssimpImportHostFolder)AssimpImportHost.csproj" Targets="Restore" Properties="AssimpImportHostRestore=true" />
-    <MSBuild Projects="$(AssimpImportHostFolder)AssimpImportHost.csproj" Targets="Build"
-             Properties="Configuration=$(Configuration);OutDir=$(TargetDir)AssimpImportHost/" />
+    <MSBuild Projects="$(AssimpImportHostFolder)AssimpImportHost.csproj" Targets="Build" Properties="Configuration=$(Configuration);OutDir=$(TargetDir)AssimpImportHost/" />
   </Target>
   <!-- OpenCV's FFmpeg video plugin is unused now that VideoStreamInput decodes via FFmpeg directly, so drop
        it to avoid shipping a second FFmpeg alongside the LGPL FFmpeg build. -->

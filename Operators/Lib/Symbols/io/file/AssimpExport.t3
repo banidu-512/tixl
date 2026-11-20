@@ -19,10 +19,6 @@
       "DefaultValue": false
     },
     {
-      "Id": "ffeb7639-9911-4099-a69f-73bbd1da9757"/*IsolateExport*/,
-      "DefaultValue": true
-    },
-    {
       "Id": "47f14471-1d6e-4bad-a3cc-f372dda4872c"/*MeshData*/,
       "DefaultValue": null
     },
@@ -44,7 +40,11 @@
     },
     {
       "Id": "f784fe22-ba03-499c-bb4e-fe2ded8bf754"/*FolderPath*/,
-      "DefaultValue": "exports"
+      "DefaultValue": "Lib:exports/"
+    },
+    {
+      "Id": "ffeb7639-9911-4099-a69f-73bbd1da9757"/*IsolateExport*/,
+      "DefaultValue": true
     }
   ],
   "Children": [],

@@ -25,6 +25,10 @@ namespace Lib.Utils.AssimpIo;
 /// </remarks>
 internal static class AssimpModelLoader
 {
+    private readonly record struct MeshInstance(int MeshIndex, AssimpNode Node, Matrix4x4 FinalTransform, Matrix4x4 NormalTransform, bool ReverseWinding);
+
+    private readonly record struct SceneNodeEntry(AssimpNode Node, Matrix4x4 Global);
+
     /// <summary>Upper bound that keeps the vertex and index arrays within reasonable GPU buffer sizes.</summary>
     public const int MaxElementCount = 50_000_000;
 
@@ -126,10 +130,6 @@ internal static class AssimpModelLoader
     #endregion
 
     #region conversion
-    private readonly record struct MeshInstance(int MeshIndex, AssimpNode Node, Matrix4x4 FinalTransform, Matrix4x4 NormalTransform, bool ReverseWinding);
-
-    private readonly record struct SceneNodeEntry(AssimpNode Node, Matrix4x4 Global);
-
     /// <summary>
     /// Builds all outputs from parsed scenes. Pure CPU work, meant for a worker thread. With
     /// <paramref name="reusePreviousMaterials"/> materials are only assigned to chunks, not read and

@@ -560,9 +560,13 @@ internal sealed class AssimpImport : Instance<AssimpImport>, IDescriptiveFilenam
         else
         {
             if (isolationRequested)
+            {
                 builder.AppendLine($"Imported in-process: {AssimpIsolatedImport.UnavailableReason}");
+            }
             else
+            {
                 builder.AppendLine("Imported in-process");
+            }
 
             builder.Append($"Assimp {AssimpNative.Version}");
         }

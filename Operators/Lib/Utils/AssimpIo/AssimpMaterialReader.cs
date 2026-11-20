@@ -367,15 +367,6 @@ internal sealed class AssimpMaterialReader(AssimpScene scene, string modelPath, 
         return float.IsFinite(value);
     }
 
-    private const int MaxTextureSize = 16384;
-    private const long MaxTextureFileBytes = 512L * 1024 * 1024;
-
-    /** Decoded pixels retained for one import. Maps stay on the CPU until the render thread uploads them. */
-    private const long MaxDecodedTextureBytes = 1L * 1024 * 1024 * 1024;
-
-    private readonly Dictionary<string, AssimpTextureImage?> _imagesByKey = new(StringComparer.Ordinal);
-    private long _decodedBytes;
-
     /// <summary>Reserves budget before allocating, so a file with many large textures can't exhaust memory.</summary>
     private bool TryReserveTextureBytes(long byteCount)
     {
@@ -385,4 +376,13 @@ internal sealed class AssimpMaterialReader(AssimpScene scene, string modelPath, 
         _decodedBytes += byteCount;
         return true;
     }
+
+    private const int MaxTextureSize = 16384;
+    private const long MaxTextureFileBytes = 512L * 1024 * 1024;
+
+    /** Decoded pixels retained for one import. Maps stay on the CPU until the render thread uploads them. */
+    private const long MaxDecodedTextureBytes = 1L * 1024 * 1024 * 1024;
+
+    private readonly Dictionary<string, AssimpTextureImage?> _imagesByKey = new(StringComparer.Ordinal);
+    private long _decodedBytes;
 }

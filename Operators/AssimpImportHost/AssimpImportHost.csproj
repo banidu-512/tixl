@@ -21,6 +21,8 @@
     <VersionPrefix>1.0.0</VersionPrefix>
     <EditorVersion>4.3.0</EditorVersion>
     <IsEditorOnly>false</IsEditorOnly>
+    <IsArchived>false</IsArchived>
+    <RootNamespace>AssimpImportHost</RootNamespace>
   </PropertyGroup>
   <Target Name="CreatePackageInfo" AfterTargets="AfterBuild">
     <ItemGroup Label="Define json structure of referenced operator packages">

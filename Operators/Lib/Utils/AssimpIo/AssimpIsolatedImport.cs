@@ -20,6 +20,8 @@ namespace Lib.Utils.AssimpIo;
 /// </remarks>
 internal static class AssimpIsolatedImport
 {
+    private readonly record struct HostCommand(string Executable, IReadOnlyList<string> PrefixArguments);
+
     /// <summary>Whether a child process can be started. Probed once per session; blocks up to a few seconds on first use.</summary>
     public static bool IsAvailable => _availability.Value;
 
@@ -309,8 +311,6 @@ internal static class AssimpIsolatedImport
             // Already gone
         }
     }
-
-    private readonly record struct HostCommand(string Executable, IReadOnlyList<string> PrefixArguments);
 
     /// <summary>
     /// Picks how the worker is started: the editor executable itself when the operator runs inside

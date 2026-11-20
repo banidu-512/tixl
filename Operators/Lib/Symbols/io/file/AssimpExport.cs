@@ -148,9 +148,13 @@ internal sealed class AssimpExport : Instance<AssimpExport>, IStatusProvider
                          // Probed on the worker: the first probe can start a process and take a moment
                          request.WasIsolated = isolate && AssimpIsolatedImport.IsAvailable;
                          if (request.WasIsolated)
+                         {
                              AssimpIsolatedImport.Export(source, absolutePath, formatId, meshName, CancellationToken.None);
+                         }
                          else
+                         {
                              AssimpModelExporter.Export(source, absolutePath, formatId, meshName);
+                         }
                      }
                      catch (Exception e)
                      {
