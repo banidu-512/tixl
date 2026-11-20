@@ -183,6 +183,31 @@ public class ShowNetProtocolTests
         Assert.Equal(payload, packet[20..].ToArray());
     }
 
+    [Fact]
+    public void PrepareSend_ScrambleContinuity()
+    {
+        // The reference client runs ONE scrambler per packet, continuously from the header into
+        // the payload: when the header is scrambled it consumes keystream words 1..4, so the
+        // payload starts at keystream word 5. This pins that contract.
+        var packet = new byte[20 + 16];
+        Random.Shared.NextBytes(packet.AsSpan(20));
+        var payload = packet[20..].ToArray();
+
+        ShowNetProtocol.PrepareSend(packet, packet.Length,
+                                    ShowNetSendFlags.ScrambleHeader | ShowNetSendFlags.ScramblePayload, 1);
+
+        var seed = new ShowNetScrambler();
+        var keystream = new uint[8];
+        for (var i = 0; i < 8; i++)
+            keystream[i] = seed.Next();
+
+        for (var i = 0; i < 4; i++)
+        {
+            var expected = BinaryPrimitives.ReadUInt32LittleEndian(payload.AsSpan(i * 4, 4)) ^ keystream[4 + i];
+            Assert.Equal(expected, BinaryPrimitives.ReadUInt32LittleEndian(packet.AsSpan(20 + i * 4, 4)));
+        }
+    }
+
     // ------------------------------------------------------------------ frame bitstream
 
     /// <summary>

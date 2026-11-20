@@ -2703,22 +2703,31 @@ internal static partial class SetupParameterView
             return;
 
         var update = supplier.GetUpdateEnabled(OutputContentResolver.Context);
-        if (FormInputs.AddCheckBox("Update", ref update, "When off, freezes this laser frame and stops evaluating the scene."))
-            SetInputUndoable(instance, supplier.UpdateInput, update);
-
         var output = setup.FindOutput(LaserContent.OutputRefOf(instance));
-        FormInputs.ApplyIndent();
-        CustomComponents.StylizedText(output == null
-                                          ? "Not routed — drop it on a laser output."
-                                          : $"Streams to {output.Name} · {LaserDriver.GetFrame(output).Count} points",
-                                      Fonts.FontSmall, UiColors.TextMuted);
+
+        PanelLayout.StatusPill(output == null ? "Not routed" : "Routed",
+                               output == null ? UiColors.StatusAttention : UiColors.StatusOkay);
+        ImGui.SameLine(0, PanelLayout.SpaceS * T3Ui.UiScaleFactor);
+        PanelLayout.StatusPill(update ? "Updating" : "Frozen", update ? UiColors.TextMuted : UiColors.StatusAttention);
+
+        PanelLayout.Space(PanelLayout.SpaceXS);
+        DrawWrappedSmallText(output == null
+                                 ? "Drop it on a laser output to route it."
+                                 : $"Streams to {output.Name} · {LaserDriver.GetFrame(output).Count} points",
+                             UiColors.TextMuted);
 
         if (instance is IStatusProvider { } status && status.GetStatusLevel() >= IStatusProvider.StatusLevel.Warning
                                                     && status.GetStatusMessage() is { } message)
         {
-            FormInputs.ApplyIndent();
-            CustomComponents.StylizedText(message, Fonts.FontSmall, UiColors.StatusAttention);
+            DrawWrappedSmallText(message, UiColors.StatusAttention);
         }
+
+        PanelLayout.Space(PanelLayout.SpaceM);
+        PanelLayout.BeginSection("Frame");
+        if (FormInputs.AddCheckBox("Update", ref update, "When off, freezes this laser frame and stops evaluating the scene."))
+            SetInputUndoable(instance, supplier.UpdateInput, update);
+
+        PanelLayout.EndSection();
     }
 
     private static void DrawSliceCard(Setup setup, Guid id)

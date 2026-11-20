@@ -35,7 +35,15 @@ public static class SetupFiles
         // The machine config remembers which setup this machine last had active, so it is read first.
         var machineConfigPath = Path.Combine(setupsFolder, MachineConfig.FileName);
         if (File.Exists(machineConfigPath))
+        {
             MachineConfig.TryLoadFromFile(machineConfigPath, out machineConfig);
+
+            // A project folder cloned from another computer carries that machine's adapter IPs.
+            // Re-home them on first load and persist the repair, so the fix sticks (and so the
+            // binding report a boygroup slave sends its master shows this machine's addresses).
+            if (machineConfig.ReconcileLocalInterfaces() > 0)
+                machineConfig.TrySaveToFile(machineConfigPath);
+        }
 
         if (!Directory.Exists(setupsFolder))
             return false;

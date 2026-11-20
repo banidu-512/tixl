@@ -683,10 +683,16 @@ internal sealed class PONKInput : Instance<PONKInput>, IStatusProvider, ICustomD
 
     private static long SumChunkBytes(FrameBuffer frame)
     {
-        long sum = 0;
-        foreach (var chunk in frame.Chunks.Values)
-            sum += chunk.Length;
-        return sum;
+        // Chunks is written under lock(frame) on the listener thread; this runs on
+        // evaluator/other threads (also right after TryRemove, when the listener can still
+        // deliver a late chunk into the same buffer), so enumerate under the same lock.
+        lock (frame)
+        {
+            long sum = 0;
+            foreach (var chunk in frame.Chunks.Values)
+                sum += chunk.Length;
+            return sum;
+        }
     }
 
     /// <summary>Drops every partially reassembled frame and its byte accounting. Listener thread only.</summary>
@@ -837,6 +843,15 @@ internal sealed class PONKInput : Instance<PONKInput>, IStatusProvider, ICustomD
                 }
 
                 offset += bytesPerPoint;
+
+                // A non-finite coordinate from the wire has no position: (int)NaN is int.MinValue,
+                // which the safety clamp turns into a lit point in the field corner. Keep the
+                // point (the path stays intact) but dark, at the centre.
+                if (!float.IsFinite(x) || !float.IsFinite(y))
+                {
+                    _pointAccumulator.Add(LaserPoint.CreateBlanked(0, 0));
+                    continue;
+                }
 
                 // Remap PONK's [-1, 1] XY to the user-configured output range, then scale to ILDA 16-bit
                 var lx = RemapAndScale(x, minX, maxX);
