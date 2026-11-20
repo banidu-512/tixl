@@ -40,8 +40,45 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
 
     private readonly Lock _lockObject = new();
 
+    [Input(Guid = "f5b900ec-ee17-123e-9972-cdd0580c104e")]
+    public readonly InputSlot<string> InputDeviceName = new();
+
     [Input(Guid = "236D4C5C-0022-4416-A22C-D6DF73C306E2")]
     public readonly InputSlot<bool> Active = new();
+
+    [Input(Guid = "49019D29-873E-4B7C-A897-C575A384A650", MappedType = typeof(ResolutionFpsTypeEnum))]
+    public readonly InputSlot<int> ResolutionFpsType = new();
+
+    [Input(Guid = "C9E1C1F6-3A18-4A1C-8A5E-4B4119965B6E")]
+    public readonly InputSlot<Int2> CustomResolution = new();
+
+    [Input(Guid = "11F7432D-31F1-44B9-8F75-B1569B314B13")]
+    public readonly InputSlot<int> CustomFps = new();
+
+    [Input(Guid = "8D2C28C7-1234-40E2-9388-75574519543D")]
+    public readonly InputSlot<bool> OpenSettings = new();
+
+    /// <summary>Values committed in the camera settings window, re-applied whenever the camera opens.</summary>
+    [Input(Guid = "32F597E7-EB25-45BE-B37A-153214B1119E")]
+    public readonly InputSlot<string> CameraSettings = new();
+
+    [Input(Guid = "67E149A5-F7B6-47BC-B147-3B9B11C19C29")]
+    public readonly InputSlot<bool> Reconnect = new();
+
+    [Input(Guid = "22513B82-E77A-417A-8A46-24E677F072D4")]
+    public readonly InputSlot<bool> DeactivateWhenNotShowing = new();
+
+    [Input(Guid = "F187A997-7E4A-48C6-81F9-2A27F150A68A")]
+    public readonly InputSlot<Vector2> Reposition = new();
+
+    [Input(Guid = "805602D5-52B2-4A73-A337-12E00C3C91F2")]
+    public readonly InputSlot<Vector2> Scale = new();
+
+    [Input(Guid = "A57E815D-70C9-4D3B-998C-D13506B8F56E")]
+    public readonly InputSlot<bool> FlipHorizontally = new();
+
+    [Input(Guid = "3022DE8A-5D88-4A37-9799-780F2A838A5F")]
+    public readonly InputSlot<bool> FlipVertically = new();
 
     [Input(Guid = "3022DE8A-5D88-4A37-9799-780F2A838A6E")]
     public readonly InputSlot<float> ApplyRotationData = new();
@@ -49,10 +86,6 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
     /// <summary>Trigger that sends the ControlName/ControlValue/ControlAuto triple to the camera; self-clears.</summary>
     [Input(Guid = "723a1471-c002-44a5-9b9e-f325d716671f")]
     public readonly InputSlot<bool> ApplyControl = new();
-
-    /// <summary>Brightness in device units; applied to the camera when the value changes.</summary>
-    [Input(Guid = "D7A2F851-4C93-46B8-8E71-3B95C6E2D740")]
-    public readonly InputSlot<float> Brightness = new();
 
     /// <summary>Strict two-way switch for the generic control surface: true engages the selected control's
     /// auto mode (ControlValue is ignored); false, the default, applies ControlValue as a manual value —
@@ -69,51 +102,18 @@ public class VideoDeviceInput : Instance<VideoDeviceInput>, ICustomDropdownHolde
     [Input(Guid = "06c894a8-fe69-4cf6-bf54-b9c155b8f035")]
     public readonly InputSlot<float> ControlValue = new();
 
-    [Input(Guid = "11F7432D-31F1-44B9-8F75-B1569B314B13")]
-    public readonly InputSlot<int> CustomFps = new();
-
-    [Input(Guid = "C9E1C1F6-3A18-4A1C-8A5E-4B4119965B6E")]
-    public readonly InputSlot<Int2> CustomResolution = new();
-
-    [Input(Guid = "22513B82-E77A-417A-8A46-24E677F072D4")]
-    public readonly InputSlot<bool> DeactivateWhenNotShowing = new();
-
-    [Input(Guid = "A5F4D2B8-63E9-4C17-8D40-52B7E9C6F183")]
-    public readonly InputSlot<float> Focus = new();
+    /// <summary>Brightness in device units; applied to the camera when the value changes.</summary>
+    [Input(Guid = "D7A2F851-4C93-46B8-8E71-3B95C6E2D740")]
+    public readonly InputSlot<float> Brightness = new();
 
     [Input(Guid = "84B6E3C9-1A52-4F7D-9E28-67D3F1A5B496")]
     public readonly InputSlot<float> Exposure = new();
 
-    [Input(Guid = "A57E815D-70C9-4D3B-998C-D13506B8F56E")]
-    public readonly InputSlot<bool> FlipHorizontally = new();
-
-    [Input(Guid = "3022DE8A-5D88-4A37-9799-780F2A838A5F")]
-    public readonly InputSlot<bool> FlipVertically = new();
-
-    [Input(Guid = "f5b900ec-ee17-123e-9972-cdd0580c104e")]
-    public readonly InputSlot<string> InputDeviceName = new();
-
-    [Input(Guid = "8D2C28C7-1234-40E2-9388-75574519543D")]
-    public readonly InputSlot<bool> OpenSettings = new();
-
-    /// <summary>Values committed in the camera settings window, re-applied whenever the camera opens.</summary>
-    [Input(Guid = "32F597E7-EB25-45BE-B37A-153214B1119E")]
-    public readonly InputSlot<string> CameraSettings = new();
+    [Input(Guid = "A5F4D2B8-63E9-4C17-8D40-52B7E9C6F183")]
+    public readonly InputSlot<float> Focus = new();
 
     [Input(Guid = "D91C4A7E-5B36-4E82-9F10-7C64A2D8E513")]
     public readonly InputSlot<float> Pan = new();
-
-    [Input(Guid = "67E149A5-F7B6-47BC-B147-3B9B11C19C29")]
-    public readonly InputSlot<bool> Reconnect = new();
-
-    [Input(Guid = "F187A997-7E4A-48C6-81F9-2A27F150A68A")]
-    public readonly InputSlot<Vector2> Reposition = new();
-
-    [Input(Guid = "49019D29-873E-4B7C-A897-C575A384A650", MappedType = typeof(ResolutionFpsTypeEnum))]
-    public readonly InputSlot<int> ResolutionFpsType = new();
-
-    [Input(Guid = "805602D5-52B2-4A73-A337-12E00C3C91F2")]
-    public readonly InputSlot<Vector2> Scale = new();
 
     [Input(Guid = "2E75B9C3-8D41-4A6F-B520-93E78F1C4A62")]
     public readonly InputSlot<float> Tilt = new();

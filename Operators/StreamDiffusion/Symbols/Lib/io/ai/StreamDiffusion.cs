@@ -104,6 +104,9 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
     [Input(Guid = "C3D4E5F6-A7B8-9012-CDEF-123456789012")]
     public readonly InputSlot<string> Prompt = new();
 
+    [Input(Guid = "E1F2A3B4-C5D6-7890-4567-901234567890")]
+    public readonly InputSlot<Texture2D?> InputImage = new();
+
     [Input(Guid = "E5F6A7B8-C9D0-1234-EF01-345678901234")]
     public readonly InputSlot<int> Seed = new(-1);
 
@@ -118,21 +121,6 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
     [Input(Guid = "D0E1F2A3-B4C5-6789-3456-890123456789")]
     public readonly InputSlot<int> Steps = new(2);
 
-    [Input(Guid = "E1F2A3B4-C5D6-7890-4567-901234567890")]
-    public readonly InputSlot<Texture2D?> InputImage = new();
-
-    [Input(Guid = "A3B4C5D6-E7F8-9012-6789-123456789012")]
-    public readonly InputSlot<int> CudaDevice = new(0);
-
-    [Input(Guid = "C7D8E9F0-A1B2-3456-7890-1234567890AB", MappedType = typeof(t3.streamdiffusion.Onnx.ExecutionProvider))]
-    public readonly InputSlot<int> ExecutionProviderParam = new((int)t3.streamdiffusion.Onnx.ExecutionProvider.Cuda);
-
-    [Input(Guid = "B4C5D6E7-F8A9-0123-7890-234567890123")]
-    public readonly InputSlot<bool> TriggerGenerate = new();
-
-    [Input(Guid = "C5D6E7F8-A9B0-1234-8901-345678901234")]
-    public readonly InputSlot<bool> AutoGenerate = new();
-
     [Input(Guid = "E2F3A4B5-C6D7-8901-2345-678901234567", MappedType = typeof(ResizeModeOptions))]
     public readonly InputSlot<int> ResizeMode = new(0);
 
@@ -144,20 +132,6 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
     /// </summary>
     [Input(Guid = "C9D0E1F2-A3B4-5678-9ABC-DEF012345678")]
     public readonly InputSlot<float> Feedback = new(0.0f);
-
-    [Input(Guid = "D2E3F4A5-B6C7-8901-2345-678901234567")]
-    public readonly InputSlot<bool> Debug = new(false);
-
-    /// <summary>V2 only: decode one latent instead of a three-latent window. Faster, with less temporal smoothing.</summary>
-    [Input(Guid = "B7C8D9E0-F1A2-3456-7890-123456789012")]
-    public readonly InputSlot<bool> FastDecode = new();
-
-    /// <summary>
-    /// Momentarily true to drop the rolling KV cache and re-prime the stream from the next input frame -
-    /// useful on scene cuts or when the style drifts over a long take.
-    /// </summary>
-    [Input(Guid = "E5A6D7C8-9F0B-4A1C-8B2D-3C4E5F6A7B8D")]
-    public readonly InputSlot<bool> ResetStream = new();
 
     /// <summary>
     /// Pace the stream at this many frames per second (default 16, matching capture and downstream
@@ -174,6 +148,36 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
     /// </summary>
     [Input(Guid = "B4C5D6E7-C8D9-4E0F-A1B2-3C4D5E6F7A8B")]
     public readonly InputSlot<bool> MatchInputAspect = new();
+
+    [Input(Guid = "A3B4C5D6-E7F8-9012-6789-123456789012")]
+    public readonly InputSlot<int> CudaDevice = new(0);
+
+    [Input(Guid = "C7D8E9F0-A1B2-3456-7890-1234567890AB", MappedType = typeof(t3.streamdiffusion.Onnx.ExecutionProvider))]
+    public readonly InputSlot<int> ExecutionProvider = new((int)t3.streamdiffusion.Onnx.ExecutionProvider.Cuda);
+
+    /// <summary>V2 only: decode one latent instead of a three-latent window. Faster, with less temporal smoothing.</summary>
+    [Input(Guid = "B7C8D9E0-F1A2-3456-7890-123456789012")]
+    public readonly InputSlot<bool> FastDecode = new();
+
+    [Input(Guid = "B4C5D6E7-F8A9-0123-7890-234567890123")]
+    public readonly InputSlot<bool> TriggerGenerate = new();
+
+    [Input(Guid = "C5D6E7F8-A9B0-1234-8901-345678901234")]
+    public readonly InputSlot<bool> AutoGenerate = new();
+
+    /// <summary>
+    /// Momentarily true to drop the rolling KV cache and re-prime the stream from the next input frame -
+    /// useful on scene cuts or when the style drifts over a long take.
+    /// </summary>
+    /// <summary>
+    /// Momentarily true to drop the rolling KV cache and re-prime the stream from the next input frame -
+    /// useful on scene cuts or when the style drifts over a long take.
+    /// </summary>
+    [Input(Guid = "E5A6D7C8-9F0B-4A1C-8B2D-3C4E5F6A7B8D")]
+    public readonly InputSlot<bool> ResetStream = new();
+
+    [Input(Guid = "D2E3F4A5-B6C7-8901-2345-678901234567")]
+    public readonly InputSlot<bool> Debug = new(false);
 
     #endregion
 
@@ -332,7 +336,7 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
             var inputImage = InputImage.GetValue(context);
             var resizeMode = ResizeMode.GetValue(context);
             var deviceId = CudaDevice.GetValue(context);
-            var provider = ExecutionProviderParam.GetValue(context);
+            var provider = ExecutionProvider.GetValue(context);
 
             // A provider that cannot run on this OS (a saved CoreML on Windows, DirectML on Linux...)
             // snaps onto the closest one that can, so the dropdown and the label always show a real option.
@@ -1506,7 +1510,7 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
             return mode >= 0 && mode < ResizeModeNames.Length ? ResizeModeNames[mode] : "Unknown";
         }
 
-        if (inputId == ExecutionProviderParam.Id)
+        if (inputId == ExecutionProvider.Id)
         {
             var provider = (t3.streamdiffusion.Onnx.ExecutionProvider)_uiExecutionProvider;
             return ExecutionProviderOptions.FirstOrDefault(o => o.Provider == provider).Name ?? "CPU";
@@ -1543,7 +1547,7 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
             yield break;
         }
 
-        if (inputId == ExecutionProviderParam.Id)
+        if (inputId == ExecutionProvider.Id)
         {
             foreach (var option in ExecutionProviderOptions)
                 yield return option.Name;
@@ -1596,11 +1600,11 @@ public sealed class StreamDiffusion : Instance<StreamDiffusion>, IStatusProvider
                 CudaDevice.SetTypedInputValue(deviceId);
         }
 
-        if (inputId == ExecutionProviderParam.Id)
+        if (inputId == ExecutionProvider.Id)
         {
             var index = Array.FindIndex(ExecutionProviderOptions, o => o.Name == selected);
             if (index >= 0)
-                ExecutionProviderParam.SetTypedInputValue((int)ExecutionProviderOptions[index].Provider);
+                ExecutionProvider.SetTypedInputValue((int)ExecutionProviderOptions[index].Provider);
         }
     }
 

@@ -27,7 +27,7 @@
       "DefaultValue": false
     },
     {
-      "Id": "c7d8e9f0-a1b2-3456-7890-1234567890ab"/*ExecutionProviderParam*/,
+      "Id": "c7d8e9f0-a1b2-3456-7890-1234567890ab"/*ExecutionProvider*/,
       "DefaultValue": 2
     },
     {
