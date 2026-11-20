@@ -63,11 +63,21 @@ internal static class MediaPipeFrameCache
 
                 if (!Readback(texture, maxWidth, entry))
                 {
+                    if (entry.Error.Length == 0)
+                        entry.Error = "texture readback failed"; // format-guard failures return without a message; the same-frame gate below keys on a non-empty Error
                     pixels = [];
                     width = height = 0;
                     error = entry.Error;
                     return false;
                 }
+            }
+            else if (entry.Error.Length > 0)
+            {
+                // This frame's readback already failed; later same-frame callers get the same failure instead of stale or null pixels
+                pixels = [];
+                width = height = 0;
+                error = entry.Error;
+                return false;
             }
 
             if (bytesPerPixel == 4)

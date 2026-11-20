@@ -361,7 +361,7 @@ namespace Lib.io.video.mediapipe
 
         private void ProcessFrame(FaceDetectionRequest request, Mediapipe.Tasks.Vision.FaceDetector.FaceDetector detector, bool debug)
         {
-            using var image = new Image(Mediapipe.ImageFormat.Types.Format.Srgb, request.Width, request.Height, request.Width * 3, request.PixelData!);
+            using var image = new Image(Mediapipe.ImageFormat.Types.Format.Srgba, request.Width, request.Height, request.Width * 4, request.PixelData!);
 
             var result = detector.DetectForVideo(image, request.Timestamp);
 
