@@ -12,4 +12,8 @@ public interface ICameraViewGizmo
 {
     /// <summary>The Vector3 input the gizmo's target drag writes to.</summary>
     IInputSlot TargetInput { get; }
+
+    /// <summary>Whether the gizmo layer draws the beam styling (glowing beam to the landing frame
+    /// plus corner fan) on this camera's view gizmo. Off falls back to plain lines. Default on.</summary>
+    bool BeamsEnabled => true;
 }

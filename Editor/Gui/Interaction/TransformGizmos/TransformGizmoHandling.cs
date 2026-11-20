@@ -1212,7 +1212,8 @@ internal static class TransformGizmoHandling
 
             var isSelectedCamera = camera is ITransformable cameraTransformable && _selectedTransformables.Contains(cameraTransformable);
             DrawCameraViewFrame(viewCamera, isSelectedCamera ? UiColors.StatusAnimated : CameraGizmoTint(camera),
-                                drawFrustumEdges: isSelectedCamera);
+                                drawFrustumEdges: isSelectedCamera,
+                                drawBeams: viewCamera is ICameraViewGizmo { BeamsEnabled: true });
         }
     }
 
@@ -1356,7 +1357,7 @@ internal static class TransformGizmoHandling
         _drawList.AddLine(positionScreen, targetScreen, viewColor, isActive || isHovering ? 2.5f : 1.5f);
         _drawList.AddCircle(targetScreen, handleRadius, viewColor, 24, isActive || isHovering ? 2.5f : 1.5f);
 
-        DrawCameraViewFrame(camera, viewColor, drawFrustumEdges: true);
+        DrawCameraViewFrame(camera, viewColor, drawFrustumEdges: true, drawBeams: camera is ICameraViewGizmo { BeamsEnabled: true });
         return isHovering;
     }
 
@@ -1372,6 +1373,12 @@ internal static class TransformGizmoHandling
     /// <summary>Size cap of the frame drawn at the aim point (half-extent, world units). A marker,
     /// not a projection: it shows WHERE the laser lands and the view's shape, at a fixed scale.</summary>
     private const float TargetFrameHalfExtent = 0.45f;
+
+    /// <summary>Beam strength of cameras that are not being manipulated - visible but quiet.</summary>
+    private const float IdleBeamStrength = 0.45f;
+
+    /// <summary>Strength of the selected camera's corner fan: fainter than the main beam.</summary>
+    private const float CornerBeamStrength = 0.4f;
 
     /// <summary>Per-camera tint, so a rig of overlapping view pyramids can be told apart. Indexed by
     /// the camera instance's path, which is stable for the session.</summary>
@@ -1398,13 +1405,13 @@ internal static class TransformGizmoHandling
     }
 
     /// <summary>
-    /// The camera's view gizmo, in three parts that stay readable with a rig of eight cameras:
-    /// a small frustum marker AT the camera (its icon - it moves with the op), a thin aim line to
-    /// the target, and a small fixed-size frame at the target showing where the laser lands. The
-    /// frame's shape follows the lens (field of view, aspect, roll) but its SIZE is capped, so a
-    /// far aim point can never balloon it across the scene.
+    /// The camera's view gizmo, in parts that stay readable with a rig of eight cameras:
+    /// a small frustum marker AT the camera (its icon - it moves with the op), a laser beam to
+    /// where it lands, and a small fixed-size frame at the target showing where the laser lands.
+    /// The frame's shape follows the lens (field of view, aspect, roll) but its SIZE is capped, so
+    /// a far aim point can never balloon it across the scene.
     /// </summary>
-    private static void DrawCameraViewFrame(ICamera camera, Color tint, bool drawFrustumEdges)
+    private static void DrawCameraViewFrame(ICamera camera, Color tint, bool drawFrustumEdges, bool drawBeams)
     {
         if (_canvas == null)
             return;
@@ -1472,9 +1479,15 @@ internal static class TransformGizmoHandling
         var markerColor = tint.Fade(0.6f);
         DrawFrameQuad(markerCenter, upRolled, rightRolled, markerHalfHeight, markerHalfHeight * aspect, markerColor, 1.5f);
 
-        // 2) Aim line to where the laser actually lands.
+        // 2) The beam gizmo: layered beam + glows when the op's Beam Gizmo input is on, the plain
+        // aim line of the original gizmo when off. The camera being manipulated beams brighter.
         if (TryWorldPosToScreenPos(target, out var targetScreen))
-            _drawList.AddLine(cameraScreen, targetScreen, tint.Fade(0.35f), 1f);
+        {
+            if (drawBeams)
+                DrawLaserBeam(cameraScreen, targetScreen, tint, drawFrustumEdges ? 1f : IdleBeamStrength);
+            else
+                _drawList.AddLine(cameraScreen, targetScreen, tint.Fade(0.35f), 1f);
+        }
 
         // 3) Small frame AT the target: the view's shape where it lands, capped in size so a far
         // aim point cannot balloon it across the scene.
@@ -1489,14 +1502,66 @@ internal static class TransformGizmoHandling
         if (!drawFrustumEdges)
             return;
 
-        var edgeColor = tint.Fade(0.22f);
+        // Frustum edges from the marker to the target frame: faint beams when the beam gizmo is
+        // on, plain 1 px lines when off. Only for the camera being manipulated - the full view
+        // volume of every camera at once turns the viewport into a tangle.
         for (var i = 0; i < 4; i++)
         {
             var corner = target + upRolled * targetHalfHeight * (i == 0 || i == 1 ? 1f : -1f)
                                   + rightRolled * targetHalfHeight * aspect * (i == 0 || i == 3 ? 1f : -1f);
-            if (TryWorldPosToScreenPos(corner, out var cornerScreen))
-                _drawList.AddLine(cameraScreen, cornerScreen, edgeColor, 1f);
+            if (!TryWorldPosToScreenPos(corner, out var cornerScreen))
+                continue;
+
+            if (drawBeams)
+                DrawBeamStroke(cameraScreen, cornerScreen, tint, CornerBeamStrength);
+            else
+                _drawList.AddLine(cameraScreen, cornerScreen, tint.Fade(0.22f), 1f);
         }
+    }
+
+    /// <summary>
+    /// A minimal laser beam: soft halo, mid glow and a bright core stroke, plus a small emitter
+    /// glow at the start and a landing glow at the end. One tint, three strokes - shows where
+    /// each laser camera points at a glance, without textures or extra state. The gentle pulse
+    /// reads as beam haze.
+    /// </summary>
+    private static void DrawLaserBeam(Vector2 from, Vector2 to, Color tint, float strength)
+    {
+        var pulse = BeamPulse();
+        var core = BeamCoreColor(tint);
+        var scaled = pulse * strength;
+
+        DrawBeamStroke(from, to, tint, strength);
+
+        _drawList.AddCircleFilled(from, 5f, tint.Fade(0.12f * scaled));
+        _drawList.AddCircleFilled(from, 2f, core.Fade(0.5f * scaled));
+        _drawList.AddCircleFilled(to, 7f, tint.Fade(0.10f * scaled));
+        _drawList.AddCircleFilled(to, 2.5f, core.Fade(0.5f * scaled));
+    }
+
+    /// <summary>One beam stroke: the halo / mid / core line trio. Shared by the beam and the
+    /// selected camera's corner fan, so every line of a gizmo glows in the same layered style.</summary>
+    private static void DrawBeamStroke(Vector2 from, Vector2 to, Color tint, float strength)
+    {
+        var pulse = BeamPulse();
+        _drawList.AddLine(from, to, tint.Fade(0.08f * pulse * strength), 8f);
+        _drawList.AddLine(from, to, tint.Fade(0.18f * pulse * strength), 3f);
+        _drawList.AddLine(from, to, BeamCoreColor(tint).Fade(0.85f * pulse * strength), 1.25f);
+    }
+
+    /// <summary>The beam's hot core: the tint pulled towards white, like an overexposed beam center.</summary>
+    private static Color BeamCoreColor(Color tint)
+    {
+        const float whiteness = 0.55f;
+        return new Color(tint.Rgba.X + (1f - tint.Rgba.X) * whiteness,
+                         tint.Rgba.Y + (1f - tint.Rgba.Y) * whiteness,
+                         tint.Rgba.Z + (1f - tint.Rgba.Z) * whiteness);
+    }
+
+    /// <summary>The beam's gentle brightness pulse, 0.6..1.0, reading as haze on the beam.</summary>
+    private static float BeamPulse()
+    {
+        return 0.8f + 0.2f * MathF.Sin((float)ImGui.GetTime() * 2.2f);
     }
 
     /// <summary>

@@ -104,8 +104,9 @@ public sealed class MachineConfig
     /// Drops bindings whose device kind disagrees with the kind of the output they name: a display or
     /// stream binding on a laser output (which would present the input full-screen on that display -
     /// a laser output has no canvas, its frame is vector content streamed by the laser driver), and a
-    /// laser binding on a canvas output. Configs written by older builds can carry such a pair; the
-    /// presentation pass skips them, but removing them keeps the board and the status honest.
+    /// laser binding on a canvas output. A config can carry such a pair when an output's kind
+    /// changed after the binding was made; the presentation pass skips them, but removing them
+    /// keeps the board and the status honest.
     /// Returns the number of bindings removed.
     /// </summary>
     public int RemoveKindMismatchedBindings(IEnumerable<OutputDefinition> outputs)

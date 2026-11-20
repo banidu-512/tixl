@@ -756,6 +756,12 @@
       "SourceSlotId": "cc442161-e9ca-40ea-be3b-f87189d4e155",
       "TargetParentOrChildId": "fd0b19bc-ffcc-436f-800b-f934f82a0423",
       "TargetSlotId": "eb601c57-2025-4135-8292-223eaedaf187"
+    },
+    {
+      "SourceParentOrChildId": "00000000-0000-0000-0000-000000000000",
+      "SourceSlotId": "414c8045-5086-4449-9d9a-03f28c3966b3"/*PointSize*/,
+      "TargetParentOrChildId": "0f882c2c-b1ec-420a-ac13-a2921ea624e6"/*Draw*/,
+      "TargetSlotId": "f68fafbc-fe56-4987-9dcb-bd3260d5c1af"/*CapturePointSize*/
     }
   ]
 }

@@ -187,7 +187,18 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
 
         CapturedScene? captured = null;
         if (Scene.HasInputConnections)
+        {
             captured = EvaluateSceneWithCapture(context);
+
+            // Second pass for content the vertex capture cannot see (raymarched fields, volumes):
+            // a small real render of the scene with this camera's lens, whose depth is lifted back
+            // to world-space dots. Costs a second scene evaluation per pump while enabled.
+            if (DepthLiftCapture.GetValue(context))
+            {
+                TryRunDepthLiftPass(context);
+                UpdateDepthLiftCache(context);
+            }
+        }
 
         ConvertAndPublish(context, captured);
     }
@@ -299,6 +310,11 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
         var combined = WorldToCamera * CameraToClipSpace;
         var count = AppendCaptured(captured, combined, dotDwell, maxEdgeStep, cap, creaseCosine, cullBackfaces, cameraWorldPosition, out var stats);
 
+        // Depth-lift dots (raymarched fields, volumes): projected from the world-space cache,
+        // one pump behind the scene. Cap-limited like the captured sources.
+        if (_depthLiftCount > 0)
+            count = AppendDepthLiftDots(combined, dotDwell, cap, count);
+
         if (PrintToLog.GetValue(context))
             LogDiagnostics(captured, count, stats);
 
@@ -402,6 +418,7 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
         public int[] EdgeIndices = [];     // mesh wireframes: unique edge vertex-index pairs (i0, i1, ...)
         public int EdgeIndexCount;
         public Vector3[] EdgeNormals = []; // per edge: the two adjacent face normals (NaN where unknown)
+        public float UniformScale;        // draw-time size multiplier the draw applies outside the buffer
 
     }
 
@@ -555,6 +572,7 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
         source.ObjectToWorld = entry.ObjectToWorld;
         source.Points = points;
         source.PointCount = pointCount;
+        source.UniformScale = entry.UniformScale;
     }
 
     private void ReadMeshSource(CapturedScene scene, GeometryCapture.Entry entry, int entryIndex, int stride, int sizeInBytes)
@@ -614,13 +632,15 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
             switch (source.Kind)
             {
                 case GeometryPrimitiveKind.Lines:
-                    count = AppendLineSegments(source.Points, source.PointCount, objectToClip, maxEdgeStep, cap, count, out var segments);
+                    count = AppendLineSegments(source.Points, source.PointCount, objectToClip, maxEdgeStep, cap, count,
+                                               source.UniformScale, out var segments);
                     stats.Segments += segments;
                     stats.Sources++;
                     break;
 
                 case GeometryPrimitiveKind.PointCloud:
-                    count = AppendDots(source.Points, source.PointCount, objectToClip, dotDwell, cap, count, out var dots);
+                    count = AppendDots(source.Points, source.PointCount, objectToClip, dotDwell, cap, count,
+                                       source.UniformScale, out var dots);
                     stats.Dots += dots;
                     stats.Sources++;
                     break;
@@ -713,7 +733,8 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
     /// The per-point Scale (a multiplier - see DotRadiusBase) sizes the dot: scaled-up
     /// points draw as small circles for brightness, unsized points as dwell dots.
     /// </summary>
-    private int AppendDots(Point[] points, int pointCount, Matrix4x4 objectToClip, int dotDwell, int cap, int count, out int dotsEmitted)
+    private int AppendDots(Point[] points, int pointCount, Matrix4x4 objectToClip, int dotDwell, int cap, int count,
+                           float uniformScale, out int dotsEmitted)
     {
         dotsEmitted = 0;
         pointCount = Math.Min(pointCount, points.Length);
@@ -729,8 +750,8 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
 
             // Point Scale is a multiplier (1 = normal size), not a world-space radius - feeding it
             // straight into the perspective conversion turned every default-sized dot into a
-            // third-of-the-field circle.
-            var radius = Math.Clamp(FiniteOrZero(p.Scale.X) * DotRadiusBase, 0f, DotRadiusMax);
+            // third-of-the-field circle. The draw's uniform size (CapturePointSize) multiplies on top.
+            var radius = Math.Clamp(FiniteOrZero(p.Scale.X) * uniformScale * DotRadiusBase, 0f, DotRadiusMax);
             var isCircle = radius >= 2f;
             var sameSpot = haveLast && lastX == x && lastY == y;
             var needed = (sameSpot ? 0 : 1) + (isCircle ? CircleSegments + 1 : dotDwell);
@@ -783,7 +804,8 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
     /// segments are drawn as thin perspective-corrected rectangles, unsized ones as
     /// single strokes.
     /// </summary>
-    private int AppendLineSegments(Point[] points, int pointCount, Matrix4x4 objectToClip, float maxEdgeStep, int cap, int count, out int segmentsEmitted)
+    private int AppendLineSegments(Point[] points, int pointCount, Matrix4x4 objectToClip, float maxEdgeStep, int cap, int count,
+                                   float uniformScale, out int segmentsEmitted)
     {
         segmentsEmitted = 0;
         pointCount = Math.Min(pointCount, points.Length);
@@ -813,7 +835,8 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
 
             // Same multiplier semantics as the dot radius: Scale.X scales a small base width,
             // it is not a world-space size (default-sized lines drew as field-wide rectangles).
-            var half = Math.Clamp(FiniteOrZero((a.Scale.X + b.Scale.X) * 0.5f) * LineHalfWidthBase, 0f, LineHalfWidthMax);
+            // The draw's uniform size (CapturePointSize) multiplies on top.
+            var half = Math.Clamp(FiniteOrZero((a.Scale.X + b.Scale.X) * 0.5f) * uniformScale * LineHalfWidthBase, 0f, LineHalfWidthMax);
             var isRectangle = half >= 1f;
 
             ToColor(a.Color.X, a.Color.Y, a.Color.Z, 1f, out var r, out var g, out var bl);
@@ -1449,6 +1472,349 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
                                                        ? Rotation
                                                        : Target;
 
+    bool ICameraViewGizmo.BeamsEnabled => BeamGizmo.Value;
+
+    #endregion
+
+    #region depth-lift capture
+
+    // Raymarched fields (RaymarchField), volumes and other raster-only content never touch a
+    // vertex buffer, so the vertex capture pass cannot see them. This optional second pass
+    // renders the scene into a small offscreen target with this camera's own lens and lifts its
+    // depth buffer back to world-space dots - the depth-lift the depth ops use, applied to the
+    // whole scene. Costs a second scene evaluation per pump while enabled; the readback is
+    // pipelined one pump behind (the capture staging pairs' scheme), so a scene that was just
+    // captured still shows its dots from the previous read.
+
+    /// <summary>Renders the scene into the small depth-lift target and issues the pipelined
+    /// readback copies. False on GPU failure - the pass is skipped for this pump.</summary>
+    private bool TryRunDepthLiftPass(EvaluationContext context)
+    {
+        var device = ResourceManager.Device;
+        var deviceContext = device.ImmediateContext;
+        var resolution = DepthLiftResolution.GetValue(context).Clamp(32, 512);
+        if (!TryEnsureDepthLiftTargets(resolution))
+            return false;
+
+        _depthLiftViewClip = WorldToCamera * CameraToClipSpace;
+
+        deviceContext.PushState(StateGroups.Rasterizer | StateGroups.OutputMerger);
+        try
+        {
+            deviceContext.Rasterizer.SetViewport(new T3.Graphics.Viewport(0, 0, resolution, resolution, 0f, 1f));
+            deviceContext.OutputMerger.SetTargets(_depthLiftDsv, _depthLiftRtvs);
+            deviceContext.ClearRenderTargetView(_depthLiftRtv, DepthLiftClearColor);
+            deviceContext.ClearDepthStencilView(_depthLiftDsv, DepthStencilClearFlags.Depth, 1f, 0);
+
+            // Rasterize, don't register: the vertex capture already ran, and the draws must draw
+            // for real into OUR targets. GeometryCapture stays off so Draw ops do not double-
+            // register their buffers; CaptureOnlyDraws off so they rasterize.
+            var prevCapture = context.GeometryCapture;
+            var prevCaptureOnly = context.CaptureOnlyDraws;
+            context.GeometryCapture = null;
+            context.CaptureOnlyDraws = false;
+            try
+            {
+                // Commands re-run on every pull, so the scene draws for real here even though the
+                // capture pass just evaluated it; data ops upstream stay frozen by the dirty flags.
+                Scene.GetValue(context);
+            }
+            finally
+            {
+                context.GeometryCapture = prevCapture;
+                context.CaptureOnlyDraws = prevCaptureOnly;
+            }
+        }
+        finally
+        {
+            deviceContext.PopState();
+        }
+
+        return true;
+    }
+
+    /// <summary>Two staging textures with the capture staging pairs' pipelining: copy this pass,
+    /// map the previous one. The blocking map is safe because the mapped copy is one pump old -
+    /// the GPU finished it long ago. On first use the fresh copy is read once (one wait).</summary>
+    private sealed class StagingTexture
+    {
+        public bool TryRead(Texture2D source, int width, int height, float[] target)
+        {
+            return TryReadImpl(source, width, height, (stream, box) =>
+                   {
+                       for (var y = 0; y < height; y++)
+                       {
+                           stream.Position = y * box.RowPitch;
+                           stream.ReadRange(target, y * width, width);
+                       }
+                   });
+        }
+
+        public bool TryReadBytes(Texture2D source, int width, int height, byte[] target)
+        {
+            return TryReadImpl(source, width, height, (stream, box) =>
+                   {
+                       for (var y = 0; y < height; y++)
+                       {
+                           stream.Position = y * box.RowPitch;
+                           stream.ReadRange(target, y * width * 4, width * 4);
+                       }
+                   });
+        }
+
+        private bool TryReadImpl(Texture2D source, int width, int height, Action<DataStream, DataBox> copyRows)
+        {
+            if (source == null || source.IsDisposed)
+                return false;
+
+            if (!Ensure(source))
+                return false;
+
+            var deviceContext = ResourceManager.Device.ImmediateContext;
+            deviceContext.CopyResource(source, _staging[_writeIndex]);
+
+            // First use reads the fresh copy (waits once); afterwards the previous one.
+            var slot = _hasPrevious ? 1 - _writeIndex : _writeIndex;
+            DataStream stream = null!;
+            var mapped = false;
+            try
+            {
+                var box = deviceContext.MapSubresource(_staging[slot], 0, MapMode.Read, MapFlags.None, out stream);
+                mapped = true;
+                copyRows(stream, box);
+                return true;
+            }
+            catch (Exception e)
+            {
+                Log.Debug($"LaserCamera: depth-lift readback failed - {e.Message}", this);
+                return false;
+            }
+            finally
+            {
+                if (mapped)
+                    deviceContext.UnmapSubresource(_staging[slot], 0);
+
+                _writeIndex = 1 - _writeIndex;
+                _hasPrevious = true;
+            }
+        }
+
+        private bool Ensure(Texture2D source)
+        {
+            var desc = source.Description;
+            if (_staging != null && _staging[0].Description.Width == desc.Width
+                && _staging[0].Description.Height == desc.Height
+                && _staging[0].Description.Format == desc.Format)
+                return true;
+
+            Dispose();
+            try
+            {
+                _staging = new Texture2D[2];
+                for (var i = 0; i < 2; i++)
+                {
+                    _staging[i] = Texture2D.CreateTexture2D(new Texture2DDescription
+                                                                {
+                                                                    ArraySize = 1,
+                                                                    BindFlags = BindFlags.None,
+                                                                    CpuAccessFlags = CpuAccessFlags.Read,
+                                                                    Format = desc.Format,
+                                                                    Width = desc.Width,
+                                                                    Height = desc.Height,
+                                                                    MipLevels = 1,
+                                                                    OptionFlags = ResourceOptionFlags.None,
+                                                                    SampleDescription = new SampleDescription(1, 0),
+                                                                    Usage = ResourceUsage.Staging
+                                                                });
+                }
+
+                _writeIndex = 0;
+                _hasPrevious = false;
+                return true;
+            }
+            catch (Exception e)
+            {
+                Log.Debug($"LaserCamera: depth-lift staging failed - {e.Message}", this);
+                Dispose();
+                return false;
+            }
+        }
+
+        public void Dispose()
+        {
+            if (_staging == null)
+                return;
+
+            foreach (var t in _staging)
+                t?.Dispose();
+
+            _staging = null;
+            _hasPrevious = false;
+        }
+
+        private Texture2D[] _staging;
+        private int _writeIndex;
+        private bool _hasPrevious;
+    }
+
+    /// <summary>Creates or recreates the small offscreen color+depth targets of the depth-lift
+    /// pass. True on success; a GPU failure logs once and skips the pass.</summary>
+    private bool TryEnsureDepthLiftTargets(int resolution)
+    {
+        if (_depthLiftColor != null && !_depthLiftColor.IsDisposed && _depthLiftColor.Description.Width == resolution)
+            return true;
+
+        try
+        {
+            DisposeDepthLiftTargets();
+            var device = ResourceManager.Device;
+            _depthLiftColor = CreateDepthLiftTexture(Format.R8G8B8A8_UNorm, BindFlags.RenderTarget | BindFlags.ShaderResource, resolution);
+            _depthLiftDepth = CreateDepthLiftTexture(Format.R32_Typeless, BindFlags.DepthStencil | BindFlags.ShaderResource, resolution);
+            _depthLiftRtv = new RenderTargetView(device, _depthLiftColor);
+            _depthLiftDsv = new DepthStencilView(device, _depthLiftDepth,
+                                                 new DepthStencilViewDescription
+                                                     {
+                                                         Format = Format.D32_Float,
+                                                         Dimension = DepthStencilViewDimension.Texture2D
+                                                     });
+            _depthLiftDepthScratch = new float[resolution * resolution];
+            _depthLiftColorScratch = new byte[resolution * resolution * 4];
+            return true;
+        }
+        catch (Exception e)
+        {
+            Log.Error($"LaserCamera: depth-lift targets failed - {e.Message}", this);
+            DisposeDepthLiftTargets();
+            return false;
+        }
+    }
+    /// <summary>The depth-lift textures' shared description: one helper for both, differing
+    /// only in format and bind flags.</summary>
+    private static Texture2D CreateDepthLiftTexture(Format format, BindFlags bindFlags, int resolution)
+    {
+        return Texture2D.CreateTexture2D(new Texture2DDescription
+                                             {
+                                                 ArraySize = 1,
+                                                 BindFlags = bindFlags,
+                                                 CpuAccessFlags = CpuAccessFlags.None,
+                                                 Format = format,
+                                                 Width = resolution,
+                                                 Height = resolution,
+                                                 MipLevels = 1,
+                                                 OptionFlags = ResourceOptionFlags.None,
+                                                 SampleDescription = new SampleDescription(1, 0),
+                                                 Usage = ResourceUsage.Default
+                                             });
+    }
+
+    private void DisposeDepthLiftTargets()
+    {
+        GraphicsUtilities.Dispose(ref _depthLiftRtv);
+        GraphicsUtilities.Dispose(ref _depthLiftDsv);
+        GraphicsUtilities.Dispose(ref _depthLiftColor);
+        GraphicsUtilities.Dispose(ref _depthLiftDepth);
+        _depthLiftRtvs[0] = null;
+        _depthLiftDepthScratch = [];
+        _depthLiftColorScratch = [];
+        _depthLiftCount = 0;
+    }
+    /// <summary>Reads the pipelined copies when ready and converts them to world-space points:
+    /// every stride-th pixel with a surface hit unprojects to a dot position and color. A read
+    /// that is not ready keeps the previous conversion, so the dots persist instead of flickering.</summary>
+    private void UpdateDepthLiftCache(EvaluationContext context)
+    {
+        if (_depthLiftDepth == null || _depthLiftDepth.IsDisposed)
+            return;
+
+        var width = _depthLiftColor.Description.Width;
+        var height = _depthLiftColor.Description.Height;
+        var stride = DepthLiftStride.GetValue(context).Clamp(1, 16);
+        if (!_depthLiftDepthStaging.TryRead(_depthLiftDepth, width, height, _depthLiftDepthScratch))
+            return;
+
+        // The color copy may lag one read behind the depth copy - keep the previous colors then.
+        _depthLiftColorStaging.TryReadBytes(_depthLiftColor, width, height, _depthLiftColorScratch);
+
+        if (!Matrix4x4.Invert(_depthLiftViewClip, out var inverse))
+            return;
+
+        var positions = _depthLiftPositions;
+        var colors = _depthLiftColors;
+        if (positions.Length < _depthLiftDepthScratch.Length)
+        {
+            positions = new Vector3[_depthLiftDepthScratch.Length];
+            colors = new Vector3[_depthLiftDepthScratch.Length];
+            _depthLiftPositions = positions;
+            _depthLiftColors = colors;
+        }
+
+        var count = 0;
+        for (var y = 0; y < height; y += stride)
+        {
+            var rowBase = y * width;
+            for (var x = 0; x < width; x += stride)
+            {
+                var d = _depthLiftDepthScratch[rowBase + x];
+                if (!(d < 0.9999f) || d <= 0f)
+                    continue;
+
+                // Pixel center to NDC (D3D viewport: y down, depth 0..1), then through the
+                // inverse view-clip into world space - the homogeneous divide recovers the
+                // perspective weight from the w component.
+                var ndcX = (x + 0.5f) / width * 2f - 1f;
+                var ndcY = 1f - (y + 0.5f) / height * 2f;
+                var clip4 = Vector4.Transform(new Vector4(ndcX, ndcY, d, 1f), inverse);
+                if (clip4.W <= 1e-6f || !float.IsFinite(clip4.W))
+                    continue;
+
+                var ci = (rowBase + x) * 4;
+                positions[count] = new Vector3(clip4.X / clip4.W, clip4.Y / clip4.W, clip4.Z / clip4.W);
+                colors[count] = new Vector3(_depthLiftColorScratch[ci] / 255f,
+                                            _depthLiftColorScratch[ci + 1] / 255f,
+                                            _depthLiftColorScratch[ci + 2] / 255f);
+                count++;
+            }
+        }
+
+        _depthLiftCount = count;
+    }
+    /// <summary>Projects the cached world-space depth-lift points into the laser frame - the dots
+    /// for raymarched fields, volumes and other raster-only content, which never enters the
+    /// vertex capture. Cap-limited like the captured sources.</summary>
+    private int AppendDepthLiftDots(Matrix4x4 viewClip, int dotDwell, int cap, int count)
+    {
+        var positions = _depthLiftPositions;
+        var colors = _depthLiftColors;
+        var lifted = _depthLiftCount;
+        var haveLast = false;
+        var lastX = 0;
+        var lastY = 0;
+
+        for (var i = 0; i < lifted; i++)
+        {
+            if (!TryProject(positions[i], viewClip, out var x, out var y))
+                continue;
+
+            if (!Reserve(count, 1 + dotDwell, cap))
+                break;
+
+            var sameSpot = haveLast && lastX == x && lastY == y;
+            if (!sameSpot)
+            {
+                _scratch[count++] = LaserPoint.CreateBlanked(x, y);
+                lastX = x;
+                lastY = y;
+                haveLast = true;
+            }
+
+            ToColor(colors[i].X, colors[i].Y, colors[i].Z, 1f, out var r, out var g, out var b);
+            for (var d = 0; d < dotDwell; d++)
+                _scratch[count++] = new LaserPoint(x, y, r, g, b);
+        }
+
+        return count;
+    }
+
     #endregion
 
     #region GPU readback
@@ -1675,6 +2041,9 @@ private readonly int[] _copyOffsetElements = new int[2];
         {
             LaserContentRegistry.Unregister(this);
             _published = null;
+            DisposeDepthLiftTargets();
+            _depthLiftDepthStaging.Dispose();
+            _depthLiftColorStaging.Dispose();
 
             for (var slot = 0; slot < _captureStaging.Length; slot++)
             {
@@ -1713,6 +2082,23 @@ private readonly int[] _copyOffsetElements = new int[2];
     /** Last frame handed to the output; compared with the next one so static content publishes without a copy. */
     private StructuredList<LaserPoint>? _published;
     private int _scratchSlackFrames;
+
+    // Depth-lift capture: offscreen targets, pipelined staging and the world-space dot cache.
+    private Texture2D _depthLiftColor;
+    private Texture2D _depthLiftDepth;
+    private RenderTargetView _depthLiftRtv;
+    private DepthStencilView _depthLiftDsv;
+    private readonly RenderTargetView[] _depthLiftRtvs = new RenderTargetView[1];
+    private readonly StagingTexture _depthLiftDepthStaging = new();
+    private readonly StagingTexture _depthLiftColorStaging = new();
+    private float[] _depthLiftDepthScratch = [];
+    private byte[] _depthLiftColorScratch = [];
+    private Vector3[] _depthLiftPositions = [];
+    private Vector3[] _depthLiftColors = [];
+    private int _depthLiftCount;
+    private Matrix4x4 _depthLiftViewClip;
+
+    private static readonly Vector4 DepthLiftClearColor = new(0f, 0f, 0f, 0f);
 
     /// <summary>Per-capture edge table: welded edge plus its two adjacent face normals. Reused
     /// across captures (cleared, capacity kept) so a wireframe pass allocates no per-edge
@@ -1823,6 +2209,29 @@ private readonly int[] _copyOffsetElements = new int[2];
 
     [Input(Guid = "73241494-C686-4013-96C0-EF40D5932F7F")]
     public readonly InputSlot<bool> PrintToLog = new();
+
+    /// <summary>Editor gizmo only: when on, this camera's view gizmo draws the beam styling - the
+    /// glowing beam to the landing frame plus the corner fan. When off it falls back to the plain
+    /// aim lines, for rigs where the glow of many cameras is too busy.</summary>
+    [Input(Guid = "4236C5E7-5665-45F6-B761-C70708E91B00")]
+    public readonly InputSlot<bool> BeamGizmo = new(true);
+
+    /// <summary>Optional second render pass for content the vertex capture cannot see (raymarched
+    /// fields, volumes, and other raster-only draws): a small offscreen render of the scene with
+    /// this camera's lens whose depth is lifted back to world-space dots. Costs a second scene
+    /// evaluation per pump while on.</summary>
+    [Input(Guid = "5C6F85EB-FE4C-4643-AE4D-B3ED0FEB2772")]
+    public readonly InputSlot<bool> DepthLiftCapture = new();
+
+    /// <summary>Resolution of the square depth-lift target (32..512). Higher = more dots from the
+    /// same surface at the cost of the pass.</summary>
+    [Input(Guid = "0BDAC069-CAD2-4F54-A600-5DB4463121DB")]
+    public readonly InputSlot<int> DepthLiftResolution = new(160);
+
+    /// <summary>Samples every Nth pixel of the depth-lift readback; higher values trade dot
+    /// density (and point budget) for fewer dots.</summary>
+    [Input(Guid = "A942CB01-CB02-4487-83D3-71BFBFAB012B")]
+    public readonly InputSlot<int> DepthLiftStride = new(2);
 
     [Input(Guid = "6475CA9C-6ED6-4659-87D2-A602813C823C")]
     public readonly InputSlot<Command> Scene = new();

@@ -21,8 +21,13 @@
     {
       "Id": "e5d1fbd5-dd92-422e-a5fb-d33204421761"/*CaptureIndices*/,
       "DefaultValue": null
+    },
+    {
+      "Id": "f68fafbc-fe56-4987-9dcb-bd3260d5c1af"/*CapturePointSize*/,
+      "DefaultValue": 1.0
     }
   ],
+
   "Children": [],
   "Connections": []
 }

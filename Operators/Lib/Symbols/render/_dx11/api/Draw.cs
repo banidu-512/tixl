@@ -82,7 +82,7 @@ internal sealed class Draw : Instance<Draw>, IRenderStatsProvider
                     };
                 }
                 capture.Register(captureVertices.Buffer, captureIndices?.Buffer, kind, context.ObjectToWorld,
-                                 startVertexLocation, vertexCount);
+                                 startVertexLocation, vertexCount, CapturePointSize.GetValue(context));
             }
         }
     }
@@ -129,5 +129,10 @@ internal sealed class Draw : Instance<Draw>, IRenderStatsProvider
     /// 1 = point cloud, 2 = lines, 3 = mesh. Set by the stock draw graphs.</summary>
     [Input(Guid = "4B524025-F9AF-4AE1-9712-B7C0DCA2723F")]
     public readonly InputSlot<int> CaptureKind = new();
+
+    /// <summary>Draw-time size multiplier the capture consumers apply on top of the buffer's
+    /// per-element Scale (e.g. the points op's PointSize uniform). Wired by the stock draw graphs.</summary>
+    [Input(Guid = "F68FAFBC-FE56-4987-9DCB-BD3260D5C1AF")]
+    public readonly InputSlot<float> CapturePointSize = new(1f);
 
 }

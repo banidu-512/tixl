@@ -4,6 +4,14 @@
   "Description": "Geometry-to-laser converter and a standard camera in one: it aims with its own lens (Position/Target or Use Rotation angles, FieldOfView — camera dropdown, mouse control, gizmo) or borrows the lens of a camera wired into CameraReference, and every point/line/mesh drawn inside the Scene connected to it is captured and encoded into a laser frame — dots, line segments and mesh wireframes merged, with Group/transform scopes applied.\n\nThe Command output renders NOTHING — the only thing it carries is the gizmo. Laser data leaves exclusively through LaserPoints: route it via OutputRef to a laser output of the active output setup, whose driver streams it to the bound device. Each camera keeps its own viewpoint, so multiple cameras stay separate, and the scene is captured once per laser pump on the pump's budget — never per rendered frame.\n\nAll positions are projected into ILDA 16-bit (depth/|NDC| culling), colors from the source geometry, 16-bit.\n\nMesh wireframes can be culled: CreaseAngle skips edges between faces that fold less than the angle, BackfaceCulling drops the mesh's hidden side. When the scene needs more points than the frame budget, the op's status line reports the drop.\n\nOptimization and safety settings are managed in the Output Setup; the app bar's LASER button is the master enable.\n\nLike SendToOutput it lists as content in the Output Setup, where Update freezes the camera on its last frame.",
   "InputUis": [
     {
+      "InputId": "0bdac069-cad2-4f54-a600-5db4463121db"/*DepthLiftResolution*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 275.0
+      },
+      "Description": "Resolution of the square depth-lift target (32..512). Higher resolution puts more dots on the same surface."
+    },
+    {
       "InputId": "0c48ed58-1242-4f8b-869a-7396cb055931"/*DotDwellPoints*/,
       "Position": {
         "X": -200.0,
@@ -57,6 +65,14 @@
       "Description": "Near/far clip planes of the projection matrix."
     },
     {
+      "InputId": "4236c5e7-5665-45f6-b761-c70708e91b00"/*BeamGizmo*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 175.0
+      },
+      "Description": "Editor gizmo only: draws the glowing laser beam and corner fan on this camera's view gizmo. When off, the gizmo falls back to plain aim lines - useful when the glow of a big rig is too busy."
+    },
+    {
       "InputId": "42bcabad-7b49-48d1-95a3-9b0fc2e4eb91"/*Target*/,
       "Position": {
         "X": -200.0,
@@ -99,6 +115,14 @@
       "ClampMin": true,
       "ClampMax": true,
       "Format": "{0:0.0}°"
+    },
+    {
+      "InputId": "5c6f85eb-fe4c-4643-ae4d-b3ed0feb2772"/*DepthLiftCapture*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 250.0
+      },
+      "Description": "Optional second render pass for content the vertex capture cannot see (raymarched SDF fields, volumes): a small offscreen render of the scene with this camera's lens, whose depth is lifted back to world-space dots colored by the scene. Costs a second scene evaluation per pump while on."
     },
     {
       "InputId": "6475ca9c-6ed6-4659-87d2-a602813c823c"/*Scene*/,
@@ -144,6 +168,14 @@
       "ClampMin": true,
       "ClampMax": true,
       "Format": "{0:0.0}°"
+    },
+    {
+      "InputId": "a942cb01-cb02-4487-83d3-71bfbfab012b"/*DepthLiftStride*/,
+      "Position": {
+        "X": -200.0,
+        "Y": 325.0
+      },
+      "Description": "Samples every Nth pixel of the depth-lift readback. Higher values trade dot density (and point budget) for fewer dots."
     },
     {
       "InputId": "d62b1d2f-8b69-4f58-a8cb-9f9eb89a831d"/*AspectRatio*/,
