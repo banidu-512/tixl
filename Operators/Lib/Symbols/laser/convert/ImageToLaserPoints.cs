@@ -458,8 +458,8 @@ internal sealed class ImageToLaserPoints : Instance<ImageToLaserPoints>, ILaserC
     [Input(Guid = "3F6E1A90-7C2B-4E3D-9A41-5B8C2D7E1F60")]
     public readonly InputSlot<Texture2D> Texture = new();
 
-    [Input(Guid = "9D2F4B18-3E57-4C86-B2A9-1F60D3C47E25")]
-    public readonly InputSlot<ImageToLaserModes> Mode = new();
+    [Input(Guid = "9D2F4B18-3E57-4C86-B2A9-1F60D3C47E25", MappedType = typeof(ImageToLaserModes))]
+    public readonly InputSlot<int> Mode = new();
 
     [Input(Guid = "C5E8A273-1B94-4F02-8D36-7A91B4C2E5F8")]
     public readonly InputSlot<float> Threshold = new(0.2f);
@@ -482,8 +482,8 @@ internal sealed class ImageToLaserPoints : Instance<ImageToLaserPoints>, ILaserC
     [Input(Guid = "8C1E5B39-4A72-4D86-9E20-6B3F7C1A2D45")]
     public readonly InputSlot<float> PointSpacing = new(4f);
 
-    [Input(Guid = "D3B7A164-5E28-4C93-AF06-1B9C2D3E4F57")]
-    public readonly InputSlot<ImageToLaserRes> MaxRes = new();
+    [Input(Guid = "D3B7A164-5E28-4C93-AF06-1B9C2D3E4F57", MappedType = typeof(ImageToLaserRes))]
+    public readonly InputSlot<int> MaxRes = new();
 
     [Input(Guid = "B6E2C948-7D13-4A65-8C04-2F1A5B6C7D84")]
     public readonly InputSlot<float> Brightness = new(1f);
