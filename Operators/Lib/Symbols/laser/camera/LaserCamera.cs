@@ -211,8 +211,21 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
         if (_lastVectorizeMode == 0)
             _vectorizeCount = 0;
 
+        // One capture+encode per frame per camera: with a LaserCamera view open, the same op
+        // instance evaluates twice per frame - the view's render and the pump's pull - and the
+        // capture's double-buffered GPU staging interleaves between the two evaluation streams.
+        // The readback then alternates stale/empty and the content flashes on every output
+        // (previews, Capture, the views themselves). The age bound keeps the minimized keep-alive
+        // path re-capturing (it pumps without advancing the frame tick).
+        var tick = DirtyFlag.GlobalTicks;
+        var nowTicks = Stopwatch.GetTimestamp();
+        var isRepeatEvaluation = _lastCaptureTick == tick
+                                 && nowTicks - _lastCaptureTimestamp < ShareMaxAgeTicks;
+        _lastCaptureTick = tick;
+        _lastCaptureTimestamp = nowTicks;
+
         CapturedScene? captured = null;
-        if (Scene.HasInputConnections)
+        if (Scene.HasInputConnections && !isRepeatEvaluation)
         {
             captured = EvaluateSceneWithCapture(context);
 
@@ -231,7 +244,10 @@ internal sealed class LaserCamera : Instance<LaserCamera>, ICamera, ICameraPrope
                 RunVectorizeStage(context);
         }
 
-        ConvertAndPublish(context, captured);
+        // A repeat evaluation (the view's render re-running the op) must leave the published
+        // output untouched - ConvertAndPublish with a null capture would blank it.
+        if (!isRepeatEvaluation)
+            ConvertAndPublish(context, captured);
     }
 
     /// <summary>
@@ -2291,6 +2307,11 @@ private readonly int[] _copyOffsetElements = new int[2];
     private LaserPoint[] _vectorizeBuffer;
     private int _vectorizeCount;
     private int _lastVectorizeMode;
+
+    /// <summary>The frame tick and wall-clock of the last capture+encode pass - the repeat-
+    /// evaluation guard's memory (see RunPipeline).</summary>
+    private int _lastCaptureTick = -1;
+    private long _lastCaptureTimestamp;
 
     /// <summary>Black clear color of both offscreen render passes: the vectorizer reads the
     /// render's brightness, so the background must drop out of it.</summary>
