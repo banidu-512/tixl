@@ -25,9 +25,9 @@ internal static class ShowControlBarStatus
     private static readonly List<string> _peerAddresses = [];
 
     /// <summary>
-    /// Draws the mode selector centered in the menu bar: one pill naming the current show-control
-    /// mode and the machine's role in it. Clicking opens the mode menu (Off / Boygrouping /
-    /// Failover / Collaboration — mutually exclusive); hovering shows the live details.
+    /// Draws the show-control status pill centered in the menu bar: the current mode and the
+    /// machine's role in it. Pure status - modes are switched where they belong (Collab in the
+    /// Collab window's Party tabs); hovering shows the live details.
     /// </summary>
     public static void DrawMenuBarIndicator()
     {
@@ -74,131 +74,6 @@ internal static class ShowControlBarStatus
 
             CustomComponents.EndTooltip();
         }
-
-        if (ImGui.IsItemClicked(ImGuiMouseButton.Left))
-            ImGui.OpenPopup("##showModeMenu");
-
-        var modeMenuOpen = ImGui.BeginPopup("##showModeMenu");
-        if (!modeMenuOpen)
-            return;
-
-        ImGui.TextDisabled("Show-control mode - one at a time");
-        ImGui.Separator();
-
-        // Menu clicks only record what was chosen. Switching inside the open menu would tear down a
-        // live session - and with it whatever window is mid-render this frame - while ImGui still
-        // holds the menu's window stack, which left the frame's ID/style stacks unbalanced.
-        string? requestedMode = null;
-        bool? requestedMaster = null;
-
-        // Plain editing: no show-control feature runs.
-        if (ImGui.Selectable("Editor mode", mode == ShowControlMode.Off))
-            requestedMode = ShowControlMode.Off;
-
-        if (ImGui.IsItemHovered())
-        {
-            CustomComponents.BeginTooltip(300);
-            ImGui.TextWrapped("No show-control feature runs on this machine.");
-            CustomComponents.EndTooltip();
-        }
-
-        // Boygrouping carries a role: pick master or slave right here.
-        if (ImGui.BeginMenu("Boygroup"))
-        {
-            var isMaster = UserSettings.Config.BoygroupIsMaster;
-            if (ImGui.Selectable("as Master", mode == ShowControlMode.Boygroup && isMaster))
-            {
-                requestedMode = ShowControlMode.Boygroup;
-                requestedMaster = true;
-            }
-
-            if (ImGui.IsItemHovered())
-            {
-                CustomComponents.BeginTooltip(300);
-                ImGui.TextWrapped("Serve the show: deploy files and live state to the render nodes and drive playback.");
-                CustomComponents.EndTooltip();
-            }
-
-            if (ImGui.Selectable("as Slave", mode == ShowControlMode.Boygroup && !isMaster))
-            {
-                requestedMode = ShowControlMode.Boygroup;
-                requestedMaster = false;
-            }
-
-            if (ImGui.IsItemHovered())
-            {
-                CustomComponents.BeginTooltip(300);
-                ImGui.TextWrapped("Render what the master sends: join (or wait for) a master and follow its clock.");
-                CustomComponents.EndTooltip();
-            }
-
-            ImGui.EndMenu();
-        }
-
-        // Failover carries a preference like boygrouping's role: Main wins the election, Backup
-        // takes over when Main dies. The arbiter still decides who streams at runtime.
-        if (ImGui.BeginMenu("Failover"))
-        {
-            const int mainPriority = 100;
-            const int backupPriority = 50;
-
-            if (ImGui.Selectable("as Main", mode == ShowControlMode.Failover && UserSettings.Config.FailoverPriority > backupPriority))
-                requestedMode = ShowControlMode.Failover;
-
-            if (ImGui.IsItemHovered())
-            {
-                CustomComponents.BeginTooltip(300);
-                ImGui.TextWrapped("Preferred active machine: streams the show as long as it is alive (priority 100).");
-                CustomComponents.EndTooltip();
-            }
-
-            if (ImGui.Selectable("as Backup", mode == ShowControlMode.Failover && UserSettings.Config.FailoverPriority <= backupPriority))
-                requestedMode = ShowControlMode.Failover + ":backup";
-
-            if (ImGui.IsItemHovered())
-            {
-                CustomComponents.BeginTooltip(300);
-                ImGui.TextWrapped("Standby machine: renders silently and takes over automatically when Main dies (priority 50).");
-                CustomComponents.EndTooltip();
-            }
-
-            ImGui.EndMenu();
-        }
-
-        // Collaboration is hosted and joined in the Collab window (its Party tabs); the menu only
-        // switches the other modes.
-        ImGui.TextDisabled("Collab: host or join in the Collab window");
-
-        ImGui.EndPopup();
-
-        // Everything happens here, with the menu stack closed again.
-        if (requestedMode != null)
-            ApplyModeRequest(requestedMode, requestedMaster);
-    }
-
-    /// <summary>Applies a menu choice once the menu is closed. "Failover:backup" carries the Backup preference.</summary>
-    private static void ApplyModeRequest(string requestedMode, bool? requestedMaster)
-    {
-        const int mainPriority = 100;
-        const int backupPriority = 50;
-
-        var mode = requestedMode;
-        if (mode.StartsWith(ShowControlMode.Failover + ":", StringComparison.Ordinal))
-        {
-            mode = ShowControlMode.Failover;
-            UserSettings.Config.FailoverPriority = requestedMode.EndsWith(":backup", StringComparison.Ordinal) ? backupPriority : mainPriority;
-            UserSettings.Save();
-        }
-
-        if (requestedMaster is { } isMaster)
-            ShowControlMode.SetBoygroupRole(isMaster);
-
-        if (mode == ShowControlMode.Boygroup && ShowControlMode.Current == ShowControlMode.Boygroup && requestedMaster != null)
-            return; // The role switch already re-applied the session.
-
-        var error = ShowControlMode.SwitchTo(mode);
-        if (error != null)
-            Log.Warning($"Show mode: {error}");
     }
 
     private static string ModeDisplayName(string mode) => mode switch
