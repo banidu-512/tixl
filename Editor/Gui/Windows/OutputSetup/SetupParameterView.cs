@@ -1481,7 +1481,7 @@ internal static partial class SetupParameterView
         PanelLayout.Space(PanelLayout.SpaceXS);
         DrawWrappedSmallText($"Streaming for {boundOutput.Name}", UiColors.TextMuted);
         if (hasStream)
-            DrawWrappedSmallText(opStatus, statusColor);
+            DrawWrappedSmallTextStable(opStatus, statusColor, 3); // pump timings change every frame
 
         PanelLayout.Space(PanelLayout.SpaceM);
     }
@@ -3085,15 +3085,16 @@ internal static partial class SetupParameterView
         PanelLayout.StatusPill(update ? "Updating" : "Frozen", update ? UiColors.TextMuted : UiColors.StatusAttention);
 
         PanelLayout.Space(PanelLayout.SpaceXS);
-        DrawWrappedSmallText(output == null
-                                 ? "Drop it on a laser output to route it."
-                                 : $"Streams to {output.Name} · {LaserDriver.GetFrame(output).Count} points",
-                             UiColors.TextMuted);
+        // The point count changes every frame: a wrapped line would resize its card a frame late.
+        DrawWrappedSmallTextStable(output == null
+                                       ? "Drop it on a laser output to route it."
+                                       : $"Streams to {output.Name} · {LaserDriver.GetFrame(output).Count} points",
+                                   UiColors.TextMuted, 1);
 
         if (instance is IStatusProvider { } status && status.GetStatusLevel() >= IStatusProvider.StatusLevel.Warning
                                                     && status.GetStatusMessage() is { } message)
         {
-            DrawWrappedSmallText(message, UiColors.StatusAttention);
+            DrawWrappedSmallTextStable(message, UiColors.StatusAttention, 2);
         }
 
         PanelLayout.Space(PanelLayout.SpaceM);
