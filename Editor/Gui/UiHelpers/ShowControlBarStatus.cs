@@ -80,10 +80,7 @@ internal static class ShowControlBarStatus
 
         var modeMenuOpen = ImGui.BeginPopup("##showModeMenu");
         if (!modeMenuOpen)
-        {
-            DrawJoinRoomModal();
             return;
-        }
 
         ImGui.TextDisabled("Show-control mode - one at a time");
         ImGui.Separator();
@@ -93,8 +90,6 @@ internal static class ShowControlBarStatus
         // holds the menu's window stack, which left the frame's ID/style stacks unbalanced.
         string? requestedMode = null;
         bool? requestedMaster = null;
-        var requestedJoinLast = false;
-        var requestedJoinDialog = false;
 
         // Plain editing: no show-control feature runs.
         if (ImGui.Selectable("Editor mode", mode == ShowControlMode.Off))
@@ -170,49 +165,15 @@ internal static class ShowControlBarStatus
             ImGui.EndMenu();
         }
 
-        // Collaboration carries a choice like boygrouping's role: host a session or join one.
-        if (ImGui.BeginMenu("Collab"))
-        {
-            if (ImGui.Selectable("Host session", mode == ShowControlMode.Collab))
-                requestedMode = ShowControlMode.Collab;
-
-            if (ImGui.IsItemHovered())
-            {
-                CustomComponents.BeginTooltip(300);
-                ImGui.TextWrapped("Start a session and share the session ID.");
-                CustomComponents.EndTooltip();
-            }
-
-            var lastRoom = UserSettings.Config.CollabLastRelayRoom;
-            if (!string.IsNullOrEmpty(lastRoom) && ImGui.Selectable($"Join last session ({lastRoom})", false))
-                requestedJoinLast = true;
-
-            if (!string.IsNullOrEmpty(lastRoom) && ImGui.IsItemHovered())
-            {
-                CustomComponents.BeginTooltip(300);
-                ImGui.TextWrapped("Rejoin the session this machine joined last.");
-                CustomComponents.EndTooltip();
-            }
-
-            if (ImGui.Selectable("Join session..."))
-                requestedJoinDialog = true;
-
-            ImGui.EndMenu();
-        }
+        // Collaboration is hosted and joined in the Collab window (its Party tabs); the menu only
+        // switches the other modes.
+        ImGui.TextDisabled("Collab: host or join in the Collab window");
 
         ImGui.EndPopup();
 
         // Everything happens here, with the menu stack closed again.
         if (requestedMode != null)
             ApplyModeRequest(requestedMode, requestedMaster);
-
-        if (requestedJoinLast)
-            JoinLastSession();
-
-        if (requestedJoinDialog)
-            _openJoinRoomModal = true;
-
-        DrawJoinRoomModal();
     }
 
     /// <summary>Applies a menu choice once the menu is closed. "Failover:backup" carries the Backup preference.</summary>
@@ -238,109 +199,6 @@ internal static class ShowControlBarStatus
         var error = ShowControlMode.SwitchTo(mode);
         if (error != null)
             Log.Warning($"Show mode: {error}");
-    }
-
-    private static void JoinLastSession()
-    {
-        var lastRoom = UserSettings.Config.CollabLastRelayRoom;
-        if (string.IsNullOrEmpty(lastRoom))
-            return;
-
-        ShowControlMode.Activate(ShowControlMode.Collab);
-        var (host, port) = ParseRelayEndpoint(UserSettings.Config.CollabLastRelayHost);
-        CollabManager.Instance.JoinViaRelay(host, port, lastRoom, UserSettings.Config.CollabPassword ?? "");
-    }
-
-    /// <summary>The join modal lives at menu-bar id scope, outside the mode popup.</summary>
-    private static void DrawJoinRoomModal()
-    {
-        if (_openJoinRoomModal)
-        {
-            _openJoinRoomModal = false;
-            ImGui.OpenPopup("Join session");
-        }
-
-    var joinCenter = ImGui.GetWindowWidth() * 0.5f;
-    ImGui.SetNextWindowPos(ImGui.GetWindowPos() + new System.Numerics.Vector2(joinCenter - 140, ImGui.GetFrameHeight() + 8),
-                           ImGuiCond.Appearing);
-    if (ImGui.BeginPopupModal("Join session", ImGuiWindowFlags.AlwaysAutoResize))
-    {
-        ImGui.TextDisabled("Enter the session ID the host shared, or paste an invite.");
-        _joinRoomInput ??= "";
-        var submit = ImGui.InputText("##roomCode", ref _joinRoomInput, 12,
-                                     ImGuiInputTextFlags.EnterReturnsTrue | ImGuiInputTextFlags.CharsUppercase | ImGuiInputTextFlags.CharsNoBlank);
-        if (ImGui.Button("Paste"))
-        {
-            var clipboard = ImGui.GetClipboardText();
-            if (TryParseInvite(clipboard, out var inviteRelay, out var inviteRoom))
-            {
-                if (!string.IsNullOrEmpty(inviteRelay))
-                    UserSettings.Config.CollabRelayAddress = inviteRelay;
-
-                _joinRoomInput = inviteRoom;
-            }
-            else
-            {
-                _joinRoomInput = clipboard?.Trim() ?? "";
-            }
-        }
-
-        CustomComponents.TooltipForLastItem("Reads a copied invite (relay + session ID) or a plain session ID from the clipboard.");
-
-        if (ImGui.Button("Join") || submit)
-        {
-            var room = _joinRoomInput.Trim();
-            if (room.Length > 0)
-            {
-                ShowControlMode.Activate(ShowControlMode.Collab);
-                var (host, port) = ParseRelayEndpoint(UserSettings.Config.CollabRelayAddress);
-                CollabManager.Instance.JoinViaRelay(host, port, room, UserSettings.Config.CollabPassword ?? "");
-                ImGui.CloseCurrentPopup();
-            }
-        }
-
-        ImGui.SameLine();
-        if (ImGui.Button("Cancel"))
-            ImGui.CloseCurrentPopup();
-
-        ImGui.EndPopup();
-    }
-    }
-
-    /// <summary>Reads a copied collab invite ("Relay:" and "Room:" lines); the relay line is optional.</summary>
-    private static bool TryParseInvite(string? text, out string relay, out string room)
-    {
-        relay = "";
-        room = "";
-        if (string.IsNullOrWhiteSpace(text))
-            return false;
-
-        foreach (var line in text.Split('\n'))
-        {
-            var trimmed = line.Trim();
-            if (trimmed.StartsWith("Relay:", StringComparison.OrdinalIgnoreCase))
-                relay = trimmed[6..].Trim();
-            else if (trimmed.StartsWith("Room:", StringComparison.OrdinalIgnoreCase))
-                room = trimmed[5..].Trim();
-        }
-
-        return !string.IsNullOrEmpty(room);
-    }
-
-    private static bool _openJoinRoomModal;
-    private static string _joinRoomInput;
-
-    private static (string Host, int Port) ParseRelayEndpoint(string? configured)
-    {
-        var text = configured?.Trim();
-        if (string.IsNullOrEmpty(text))
-            return (CollabProtocol.DefaultRelayHost, CollabProtocol.DefaultRelayPort);
-
-        var separator = text.LastIndexOf(':');
-        if (separator > 0 && int.TryParse(text[(separator + 1)..], out var port))
-            return (text[..separator], port);
-
-        return (text, CollabProtocol.DefaultRelayPort);
     }
 
     private static string ModeDisplayName(string mode) => mode switch
